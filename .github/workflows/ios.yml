@@ -1,0 +1,55 @@
+name: Build and install Hako
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-pages-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate packaging scripts
+        run: |
+          bash -n scripts/ci-archive.sh
+          python3 -m unittest discover -s Tests -p 'test_*.py'
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Archive and export signed IPA
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROFILE_BASE64 }}
+        run: bash scripts/ci-archive.sh
+      - name: Create installation page
+        env:
+          PAGES_URL: ${{ steps.pages.outputs.base_url }}
+        run: python3 scripts/build-install-page.py --ipa build/ci/export/Hako.ipa --url "$PAGES_URL" --output build/site
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hako-IPA-${{ github.run_number }}
+          path: build/ci/export/*.ipa
+          retention-days: 14
+      - name: Upload installation page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy installation page
+        id: deployment
+        uses: actions/deploy-pages@v4
