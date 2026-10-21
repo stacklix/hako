@@ -11,6 +11,7 @@
 - 新提交由 GitHub 自动签名，返回后检查 `isValid` 和 `wasSignedByGitHub`；如果尚未确认签名，会明确提示数据已提交及对应 commit ID，不冒充已验证。已有提交不重写。提交标题示例：`Update screen-time: 2026-10-08 ~ 2026-10-14`，正文列出本次实际新增日期，单日则仅显示该日期。
 - 快捷指令仅提供「获取app使用时间并同步」一个入口，一次完成读取、本地保存和 GitHub 同步。单独重试同步保留在 App 内。
 - GitHub Token 仅存储于设备 Keychain，不写入 CSV、UserDefaults 或日志。
+- 设置 → 应用更新显示当前版本和构建号，点击「获取最新版本」打开 [Ad Hoc 分发页](https://stacklix.github.io/hako/)，查看并安装最新构建。
 - 使用时间列表优先显示名称；名称字符串不可用时通过系统 `Label(ApplicationToken)` 展示。App token 仅保存在本地，不上传 CSV；名称仅用于 App 内展示，不写入 CSV。
 
 当前处于开发阶段，以当前数据结构为准，不维护旧数据兼容或迁移逻辑。需要调整数据结构时，可清空开发数据后重新采集。
@@ -34,7 +35,7 @@ Apple 文档说明：开发测试可以使用 Apple 提供的 provisioning profi
 
 1. 打开 `Hako.xcodeproj`，选择 Hako target → Signing & Capabilities → 自己的付费开发者 Team。使用匹配上述两个 entitlement 的开发描述文件。若签名报错，先解决开发者后台权限/profile，不能简单删除 entitlement 后宣称可导出。
 2. 连接 iPhone，开启开发者模式，选择该设备并 Run。无需 App Store。
-3. App → 使用时间 → 获取app使用时间并同步；首次点击会请求系统授权，获准后继续读取、保存和同步。已有数据导出授权时不会重复请求；拒绝或授权不足时停止并提示原因。授权由读取操作触发，设置页仅提供 GitHub 配置。
+3. App → 使用时间 → 获取app使用时间并同步；首次点击会请求系统授权，获准后继续读取、保存和同步。已有数据导出授权时不会重复请求；拒绝或授权不足时停止并提示原因。授权由读取操作触发，设置页提供 GitHub 配置和应用更新入口。
 4. 准备已初始化的 GitHub 仓库（例如创建时添加 README），同步使用设置中填写的分支，默认值为 `master`，该分支需已存在。创建 fine-grained PAT，仅授予目标仓库 Contents: Read and write。
 5. 在 App 内填写仓库地址（例如 `https://github.com/stackli/personal-data`）、分支及 Token。所有数据统一放在仓库的 `data/` 下，子目录由各模块调用同步时传入，使用时间模块传入 `screen-time`，其他模块可使用自己的目录，支持带 `.git` 后缀的 HTTPS 仓库地址。不要将 Token 发到聊天或提交进仓库。点击右上角对勾保存。
 6. 使用时间 → 获取app使用时间并同步。确认本地记录及仓库年度 CSV。

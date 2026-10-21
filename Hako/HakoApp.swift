@@ -179,6 +179,7 @@ struct UsageView: View {
 }
 
 struct SettingsView: View {
+    private static let updateURL = URL(string: "https://stacklix.github.io/hako/")!
     @Environment(\.dismiss) private var dismiss
     @State private var settings = GitHubSettings.load()
     @State private var token = ""
@@ -189,6 +190,11 @@ struct SettingsView: View {
     private var hasChanges: Bool {
         guard let savedSettings else { return false }
         return settings != savedSettings || token != savedToken
+    }
+    private var currentVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+        return "\(version) (\(build))"
     }
     var body: some View {
         Form {
@@ -211,6 +217,16 @@ struct SettingsView: View {
                 }
             }.textInputAutocapitalization(.never).autocorrectionDisabled()
                 .disabled(savedSettings == nil)
+            Section {
+                LabeledContent("当前版本", value: currentVersion)
+                Link(destination: Self.updateURL) {
+                    Label("获取最新版本", systemImage: "arrow.up.right.square")
+                }
+            } header: {
+                Text("应用更新")
+            } footer: {
+                Text("打开 Hako 分发页，查看并安装最新版本。")
+            }
         }.navigationTitle("设置")
             // Use a guarded back action while editing; prevent the native swipe
             // from popping this screen and silently losing the draft.
