@@ -37,10 +37,12 @@ def build(ipa, base_url, output):
     (output / manifest_name).write_bytes(plistlib.dumps(manifest))
     template = Path(__file__).resolve().parent.parent / 'web/install.html'
     page = template.read_text()
+    built_at = datetime.datetime.now(datetime.timezone.utc)
     values = {'INSTALL_URL': install_url, 'IPA_URL': ipa_url,
               'VERSION': str(info.get('CFBundleShortVersionString', '1.0')),
               'BUILD': str(info['CFBundleVersion']), 'MIN_IOS': str(info.get('MinimumOSVersion', '26.4')),
-              'DATE': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+              'DATE_ISO': built_at.isoformat(timespec='seconds'),
+              'DATE': built_at.strftime('%Y-%m-%d %H:%M UTC')}
     for key, value in values.items():
         page = page.replace('{{'+key+'}}', html.escape(value, quote=True))
     (output / 'index.html').write_text(page)

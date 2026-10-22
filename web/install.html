@@ -13,5 +13,17 @@
 <body><main>
 <header><div class="brand"><svg class="logo" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" aria-hidden="true"><path d="M50 7 90 30v45L50 97 10 75V30Z M10 30l40 24 40-24 M50 54v43"/></svg><h1>Hako</h1></div><p>你的日常，收进一个盒子。</p></header>
 <section class="card" aria-labelledby="install-title"><h2 id="install-title">安装到 iPhone</h2><dl><dt>版本</dt><dd>{{VERSION}} ({{BUILD}})</dd><dt>系统要求</dt><dd>iOS {{MIN_IOS}} 或更新</dd></dl><a class="install" href="{{INSTALL_URL}}">安装 Hako</a><a class="download" href="{{IPA_URL}}">下载 IPA 文件</a></section>
-<footer>构建于 {{DATE}}</footer>
-</main></body></html>
+<footer>构建于 <time id="build-time" datetime="{{DATE_ISO}}">{{DATE}}</time></footer>
+</main>
+<script>
+const buildTime = document.getElementById('build-time');
+const builtAt = new Date(buildTime.dateTime);
+if (!Number.isNaN(builtAt.getTime())) {
+  buildTime.textContent = new Intl.DateTimeFormat(navigator.language, {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZoneName: 'short'
+  }).format(builtAt);
+}
+</script>
+</body></html>
