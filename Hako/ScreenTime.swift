@@ -5,6 +5,29 @@ import DeviceActivity
 import ManagedSettings
 
 @MainActor enum ScreenTime {
+    private static let previouslyAuthorizedKey = "screenTime.previouslyAuthorizedWithDataAccess"
+
+    static func prepareAuthorization(requestAuthorization: Bool) async throws {
+        let center = AuthorizationCenter.shared
+        if center.authorizationStatus == .approvedWithDataAccess {
+            UserDefaults.standard.set(true, forKey: previouslyAuthorizedKey)
+            return
+        }
+        // A new process starts at notDetermined. Refresh a previous grant before
+        // checking it. The saved flag never substitutes for system authorization.
+        if requestAuthorization ||
+            (center.authorizationStatus == .notDetermined &&
+             UserDefaults.standard.bool(forKey: previouslyAuthorizedKey)) {
+            do {
+                try await authorize()
+            } catch {
+                if requestAuthorization { throw error }
+                throw HakoError(message: "后台刷新屏幕使用时间授权失败：\(error.localizedDescription)。请解锁设备后重试；若仍失败，请打开 Hako 的使用时间模块运行「获取app使用时间并同步」。")
+            }
+        }
+        try checkAuthorization()
+    }
+
     static func installedApplications() async -> [String: Application] {
         guard AuthorizationCenter.shared.authorizationStatus == .approvedWithDataAccess,
               let applications = try? await FamilyActivityData.shared.installedApplications else { return [:] }
@@ -12,20 +35,17 @@ import ManagedSettings
             if let id = application.bundleIdentifier { result[id] = application }
         }
     }
-    static func authorizeIfNeeded() async throws {
-        guard AuthorizationCenter.shared.authorizationStatus != .approvedWithDataAccess else { return }
-        try await authorize()
-    }
     static func authorize() async throws {
         try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
         try checkAuthorization()
+        UserDefaults.standard.set(true, forKey: previouslyAuthorizedKey)
     }
     static func checkAuthorization() throws {
         switch AuthorizationCenter.shared.authorizationStatus {
         case .approvedWithDataAccess:
             return
         case .notDetermined:
-            throw HakoError(message: "尚未授权（notDetermined）。请打开 Hako 的使用时间模块，点击「补齐最近7天并同步」完成系统授权，再运行快捷指令。")
+            throw HakoError(message: "尚未确认屏幕使用时间授权（notDetermined）。请打开 Hako 的使用时间模块，点击「获取app使用时间并同步」完成或刷新系统授权，再运行快捷指令。")
         case .denied:
             throw HakoError(message: "系统授权已被拒绝（denied）。请在 Hako 使用时间模块重新点击「补齐最近7天并同步」，并允许系统请求；如无法重新授权，请检查 iPhone 设置中的屏幕使用时间权限。")
         case .approved:

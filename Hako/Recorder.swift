@@ -12,8 +12,7 @@ import AppIntents
         let context = try Database.context()
         var backfill = UsageBackfill.Result()
         if collect {
-            if requestAuthorization { try await ScreenTime.authorizeIfNeeded() }
-            try ScreenTime.checkAuthorization()
+            try await ScreenTime.prepareAuthorization(requestAuthorization: requestAuthorization)
             backfill = try await UsageBackfill.insertMissing(days: UsageDay.recentWeek(), context: context) {
                 try await ScreenTime.collect($0)
             }
