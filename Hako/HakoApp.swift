@@ -179,6 +179,16 @@ struct UsageView: View {
 }
 
 struct SettingsView: View {
+    private struct Release: Decodable {
+        let version: String
+        let build: String
+        let builtAt: Date
+
+        func isNewer(than currentBuild: String) -> Bool {
+            guard let latest = Int(build), let current = Int(currentBuild) else { return false }
+            return latest > current
+        }
+    }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var settings = GitHubSettings.load()
@@ -187,7 +197,7 @@ struct SettingsView: View {
     @State private var savedToken = ""
     @State private var showDiscardConfirmation = false
     @State private var message: String?
-    @State private var latestBuildDate: Date?
+    @State private var latestRelease: Release?
     @State private var latestBuildDateFailed = false
     private var hasChanges: Bool {
         guard let savedSettings else { return false }
@@ -197,6 +207,12 @@ struct SettingsView: View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
         return "\(version) (\(build))"
+    }
+    private var availableUpdate: Release? {
+        guard let release = latestRelease,
+              let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+              release.isNewer(than: build) else { return nil }
+        return release
     }
     var body: some View {
         Form {
@@ -221,16 +237,27 @@ struct SettingsView: View {
                 .disabled(savedSettings == nil)
             Section {
                 LabeledContent("当前版本", value: currentVersion)
-                Button(action: installLatestVersion) {
-                    HStack {
-                        Label("安装最新版", systemImage: "arrow.down.circle")
-                        Spacer()
-                        Text(latestBuildDate.map { $0.formatted(date: .numeric, time: .shortened) }
-                             ?? (latestBuildDateFailed ? "时间获取失败" : "读取构建时间…"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.trailing)
+                if let release = availableUpdate {
+                    Button(action: installLatestVersion) {
+                        HStack(alignment: .top) {
+                            Image(systemName: "arrow.down.circle")
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text("安装最新版")
+                                    Spacer()
+                                    Text("\(release.version) (\(release.build))")
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("构建于 \(release.builtAt.formatted(date: .numeric, time: .shortened))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
+                } else {
+                    Text(latestBuildDateFailed ? "检查更新失败" : latestRelease == nil ? "正在检查更新…" : "当前无需更新")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Link(destination: URL(string: "https://stacklix.github.io/hako/")!) {
                     Label("查看下载页面", systemImage: "arrow.up.right.square")
@@ -240,6 +267,7 @@ struct SettingsView: View {
             } footer: {
                 Text("「安装最新版」直接发起系统安装；「查看下载页面」打开分发页，查看版本信息或下载 IPA。")
             }
+            BuildStatusView()
         }.navigationTitle("设置")
             // Use a guarded back action while editing; prevent the native swipe
             // from popping this screen and silently losing the draft.
@@ -279,8 +307,7 @@ struct SettingsView: View {
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
     }
     private func loadLatestBuildDate() async {
-        struct Release: Decodable { let builtAt: Date }
-        latestBuildDate = nil
+        latestRelease = nil
         latestBuildDateFailed = false
         var endpoint = URLComponents(string: "https://stacklix.github.io/hako/latest.json")!
         endpoint.queryItems = [URLQueryItem(name: "t", value: String(Int(Date.now.timeIntervalSince1970)))]
@@ -294,8 +321,14 @@ struct SettingsView: View {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let release = try decoder.decode(Release.self, from: data)
+            guard Int(release.build) != nil,
+                  let currentBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+                  Int(currentBuild) != nil else {
+                latestBuildDateFailed = true
+                return
+            }
             try Task.checkCancellation()
-            latestBuildDate = release.builtAt
+            latestRelease = release
         } catch {
             if !Task.isCancelled { latestBuildDateFailed = true }
         }

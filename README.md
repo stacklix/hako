@@ -11,7 +11,8 @@
 - 新提交由 GitHub 自动签名，返回后检查 `isValid` 和 `wasSignedByGitHub`；如果尚未确认签名，会明确提示数据已提交及对应 commit ID，不冒充已验证。已有提交不重写。提交标题示例：`Update screen-time: 2026-10-08 ~ 2026-10-14`，正文列出本次实际新增日期，单日则仅显示该日期。
 - 快捷指令仅提供「获取app使用时间并同步」一个入口，一次完成读取、本地保存和 GitHub 同步。单独重试同步保留在 App 内。
 - GitHub Token 仅存储于设备 Keychain，不写入 CSV、UserDefaults 或日志。
-- 设置 → 应用更新显示当前版本和构建号，点击「安装最新版」直接发起系统 OTA 安装，确认后下载安装最新构建；「查看下载页面」打开 [Ad Hoc 分发页](https://stacklix.github.io/hako/)，查看版本信息或下载 IPA。
+- 设置页显示 `stacklix/hako` 主分支最新 GitHub Actions 构建状态、打包/部署任务及当前步骤；前台每 5 秒刷新，失败后退避至 120 秒，可手动刷新或打开 GitHub。私有源码仓库要求已保存的 Token 额外具备该仓库的 Actions 读取权限。构建进度与已发布的可安装版本分别显示。
+- 设置 → 应用更新显示当前版本和构建号。仅当已发布构建号高于当前安装版本时显示绿色图标的「安装最新版」，同行展示最新版本号和构建号，下一行展示本地时区的构建时间；点击直接发起系统 OTA 安装。「查看下载页面」始终保留，可打开 [Ad Hoc 分发页](https://stacklix.github.io/hako/) 查看版本信息或下载 IPA。
 - 使用时间列表优先显示名称；名称字符串不可用时通过系统 `Label(ApplicationToken)` 展示。App token 仅保存在本地，不上传 CSV；名称仅用于 App 内展示，不写入 CSV。
 
 当前处于开发阶段，以当前数据结构为准，不维护旧数据兼容或迁移逻辑。需要调整数据结构时，可清空开发数据后重新采集。
@@ -77,7 +78,7 @@ xcodebuild -project Hako.xcodeproj -scheme Hako -sdk iphoneos -configuration Deb
 ```sh
 swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
 /tmp/hako-core-tests
-swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
 /tmp/hako-github-tests
 ```
 

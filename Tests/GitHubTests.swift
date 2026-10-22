@@ -145,7 +145,36 @@ final class MockProtocol: URLProtocol {
         do { try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")]); fatalError("Accepted 401") } catch is HakoError { }
         MockProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
         do { try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")]); fatalError("Accepted offline") } catch is URLError { }
-        print("PASS: GraphQL signed commit payload/date messages/snapshot consistency/conflict merge/retry limit/no-op/signature failure/auth/offline/module paths")
+        let builds = BuildStatusClient(session: URLSession(configuration: config), token: "test-token")
+        calls = 0
+        MockProtocol.handler = { req in
+            calls += 1
+            precondition(req.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
+            if calls == 1 {
+                precondition(req.url!.path == "/repos/stacklix/hako/actions/workflows/ios.yml/runs")
+                precondition(req.url!.query == "branch=master&per_page=1")
+                return try json(["workflow_runs": [["id": 123, "run_number": 42, "run_attempt": 2,
+                    "status": "in_progress", "updated_at": "2026-10-22T08:30:00Z"]]])
+            }
+            precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/123/attempts/2/jobs")
+            return try json(["jobs": [["id": 456, "name": "build", "status": "in_progress",
+                "steps": [["name": "Archive and export signed IPA", "status": "in_progress"]]]]])
+        }
+        let progress = try await builds.latest()
+        precondition(calls == 2 && progress?.run.runNumber == 42)
+        precondition(progress?.jobs.first?.activeStep == "Archive and export signed IPA")
+        precondition(BuildStatusClient.statusText("completed", conclusion: "failure") == "失败")
+        precondition(BuildStatusClient.statusText("completed", conclusion: "cancelled") == "已取消")
+        calls = 0
+        MockProtocol.handler = { _ in calls += 1; return try json(["workflow_runs": []]) }
+        let emptyBuild = try await builds.latest()
+        precondition(emptyBuild == nil && calls == 1)
+        for status in [401, 403, 404, 429, 500] {
+            MockProtocol.handler = { _ in (status, Data()) }
+            do { _ = try await builds.latest(); fatalError("Accepted failed build status request") }
+            catch is HakoError { }
+        }
+        print("PASS: GitHub sync; build run/attempt/active step/empty history/auth/rate limit/server errors")
     }
     static func tryRows(_ text: String) -> [[String]] { try! CSV.parse(text) }
 }
