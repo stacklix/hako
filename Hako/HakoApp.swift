@@ -239,10 +239,12 @@ struct SettingsView: View {
             }.textInputAutocapitalization(.never).autocorrectionDisabled()
                 .disabled(savedSettings == nil)
             Section {
-                HStack {
+                HStack(spacing: 16) {
                     LabeledContent("当前版本", value: currentVersion)
                     Button("检测更新") { updateCheckID += 1 }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                        .fixedSize()
                         .disabled(checkingForUpdate)
                 }
                 if let release = availableUpdate {
