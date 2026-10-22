@@ -199,6 +199,7 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var latestRelease: Release?
     @State private var latestBuildDateFailed = false
+    @State private var isVisible = false
     private var hasChanges: Bool {
         guard let savedSettings else { return false }
         return settings != savedSettings || token != savedToken
@@ -267,8 +268,10 @@ struct SettingsView: View {
             } footer: {
                 Text("「安装最新版」直接发起系统安装；「查看下载页面」打开分发页，查看版本信息或下载 IPA。")
             }
-            BuildStatusView()
+            BuildStatusView(isSettingsVisible: isVisible)
         }.navigationTitle("设置")
+            .onAppear { isVisible = true }
+            .onDisappear { isVisible = false }
             // Use a guarded back action while editing; prevent the native swipe
             // from popping this screen and silently losing the draft.
             .navigationBarBackButtonHidden(hasChanges)

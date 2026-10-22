@@ -38,12 +38,14 @@ struct BuildStatusClient {
     }
 
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
+        try Task.checkCancellation()
         let url = URL(string: "https://api.github.com/repos/stacklix/hako/" + path)!
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else {
             switch status {
@@ -97,6 +99,7 @@ struct BuildStatusClient {
 }
 
 struct BuildStatusView: View {
+    let isSettingsVisible: Bool
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshot: BuildStatusClient.Snapshot?
     @State private var errorMessage: String?
@@ -143,10 +146,11 @@ struct BuildStatusView: View {
         } footer: {
             Text("显示 Hako 主分支最新构建，页面在前台时有任务每 5 秒刷新，无任务每 30 秒刷新。可安装版本以已发布的构建时间为准。")
         }
-        .task(id: "\(scenePhase)-\(refreshID)") {
-            guard scenePhase == .active else { return }
+        .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)") {
+            guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
             repeat {
                 await refresh()
+                guard !Task.isCancelled else { return }
                 // Back off after errors instead of repeatedly hitting a rate limit.
                 let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
                 do { try await Task.sleep(for: .seconds(interval)) }
@@ -159,6 +163,7 @@ struct BuildStatusView: View {
         loading = true
         defer { loading = false }
         do {
+            try Task.checkCancellation()
             let token = try TokenStore.read()
             let latest = try await BuildStatusClient(token: token).latest()
             try Task.checkCancellation()
