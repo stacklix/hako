@@ -12,6 +12,10 @@ struct BuildStatusClient {
         let status: String
         let conclusion: String?
         let updatedAt: Date
+
+        var refreshInterval: Int {
+            status == "completed" || conclusion != nil ? 30 : 5
+        }
     }
     struct Job: Decodable, Identifiable {
         struct Step: Decodable {
@@ -137,14 +141,15 @@ struct BuildStatusView: View {
         } header: {
             Text("GitHub 构建进度")
         } footer: {
-            Text("显示 Hako 主分支最新构建，页面在前台时每 5 秒刷新。可安装版本以已发布的构建时间为准。")
+            Text("显示 Hako 主分支最新构建，页面在前台时有任务每 5 秒刷新，无任务每 30 秒刷新。可安装版本以已发布的构建时间为准。")
         }
         .task(id: "\(scenePhase)-\(refreshID)") {
             guard scenePhase == .active else { return }
             repeat {
                 await refresh()
                 // Back off after errors instead of repeatedly hitting a rate limit.
-                do { try await Task.sleep(for: .seconds(errorMessage == nil ? 5 : 120)) }
+                let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
+                do { try await Task.sleep(for: .seconds(interval)) }
                 catch { return }
             } while !Task.isCancelled
         }

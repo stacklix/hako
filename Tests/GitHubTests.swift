@@ -162,6 +162,17 @@ final class MockProtocol: URLProtocol {
         }
         let progress = try await builds.latest()
         precondition(calls == 2 && progress?.run.runNumber == 42)
+        precondition(progress?.run.refreshInterval == 5)
+        for status in ["queued", "waiting", "in_progress", "completed"] {
+            let run = BuildStatusClient.Run(id: 123, runNumber: 42, runAttempt: 1,
+                                           status: status, conclusion: nil, updatedAt: .now)
+            precondition(run.refreshInterval == (status == "completed" ? 30 : 5))
+        }
+        for conclusion in ["success", "failure", "cancelled"] {
+            let run = BuildStatusClient.Run(id: 123, runNumber: 42, runAttempt: 1,
+                                           status: "completed", conclusion: conclusion, updatedAt: .now)
+            precondition(run.refreshInterval == 30)
+        }
         precondition(progress?.jobs.first?.activeStep == "Archive and export signed IPA")
         precondition(BuildStatusClient.statusText("completed", conclusion: "failure") == "失败")
         precondition(BuildStatusClient.statusText("completed", conclusion: "cancelled") == "已取消")
