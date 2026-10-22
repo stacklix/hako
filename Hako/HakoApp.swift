@@ -199,6 +199,8 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var latestRelease: Release?
     @State private var latestBuildDateFailed = false
+    @State private var checkingForUpdate = false
+    @State private var updateCheckID = 0
     @State private var isVisible = false
     private var hasChanges: Bool {
         guard let savedSettings else { return false }
@@ -237,7 +239,12 @@ struct SettingsView: View {
             }.textInputAutocapitalization(.never).autocorrectionDisabled()
                 .disabled(savedSettings == nil)
             Section {
-                LabeledContent("当前版本", value: currentVersion)
+                HStack {
+                    LabeledContent("当前版本", value: currentVersion)
+                    Button("检测更新") { updateCheckID += 1 }
+                        .buttonStyle(.borderless)
+                        .disabled(checkingForUpdate)
+                }
                 if let release = availableUpdate {
                     Button(action: installLatestVersion) {
                         HStack(alignment: .top) {
@@ -306,10 +313,13 @@ struct SettingsView: View {
                     savedSettings = settings
                 } catch { message = error.localizedDescription }
             }
-            .task { await loadLatestBuildDate() }
+            .task(id: updateCheckID) { await loadLatestBuildDate() }
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
     }
     private func loadLatestBuildDate() async {
+        guard !Task.isCancelled else { return }
+        checkingForUpdate = true
+        defer { checkingForUpdate = false }
         latestRelease = nil
         latestBuildDateFailed = false
         var endpoint = URLComponents(string: "https://stacklix.github.io/hako/latest.json")!
