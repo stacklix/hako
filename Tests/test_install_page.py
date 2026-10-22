@@ -1,5 +1,6 @@
 import importlib.util
 import datetime
+import json
 import plistlib
 import tempfile
 import re
@@ -22,6 +23,7 @@ class InstallPageTests(unittest.TestCase):
             module.build(ipa, 'https://example.github.io/hako/', output)
             manifest_path = next(output.glob('manifest-*.plist'))
             item = plistlib.loads(manifest_path.read_bytes())['items'][0]
+            self.assertEqual((output / 'manifest.plist').read_bytes(), manifest_path.read_bytes())
             self.assertEqual(item['metadata']['bundle-version'], '42')
             filename = item['assets'][0]['url'].rsplit('/', 1)[1]
             self.assertEqual((output / filename).read_bytes(), ipa.read_bytes())
@@ -33,6 +35,10 @@ class InstallPageTests(unittest.TestCase):
             built_at = datetime.datetime.fromisoformat(timestamp[1])
             self.assertEqual(built_at.utcoffset(), datetime.timedelta(0))
             self.assertEqual(timestamp[2], built_at.strftime('%Y-%m-%d %H:%M UTC'))
+            release = json.loads((output / 'latest.json').read_text(encoding='utf-8'))
+            self.assertEqual(datetime.datetime.fromisoformat(release['builtAt']), built_at)
+            self.assertEqual(release['version'], '1.0')
+            self.assertEqual(release['build'], '42')
             self.assertIn('itms-services://?action=download-manifest&amp;url=https%3A%2F%2Fexample.github.io%2Fhako%2Fmanifest-', page)
             with self.assertRaises(ValueError):
                 module.build(ipa, 'http://example.com', output)

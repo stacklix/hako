@@ -179,14 +179,16 @@ struct UsageView: View {
 }
 
 struct SettingsView: View {
-    private static let updateURL = URL(string: "https://stacklix.github.io/hako/")!
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var settings = GitHubSettings.load()
     @State private var token = ""
     @State private var savedSettings: GitHubSettings?
     @State private var savedToken = ""
     @State private var showDiscardConfirmation = false
     @State private var message: String?
+    @State private var latestBuildDate: Date?
+    @State private var latestBuildDateFailed = false
     private var hasChanges: Bool {
         guard let savedSettings else { return false }
         return settings != savedSettings || token != savedToken
@@ -219,13 +221,24 @@ struct SettingsView: View {
                 .disabled(savedSettings == nil)
             Section {
                 LabeledContent("当前版本", value: currentVersion)
-                Link(destination: Self.updateURL) {
-                    Label("获取最新版本", systemImage: "arrow.up.right.square")
+                Button(action: installLatestVersion) {
+                    HStack {
+                        Label("安装最新版", systemImage: "arrow.down.circle")
+                        Spacer()
+                        Text(latestBuildDate.map { $0.formatted(date: .numeric, time: .shortened) }
+                             ?? (latestBuildDateFailed ? "时间获取失败" : "读取构建时间…"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+                Link(destination: URL(string: "https://stacklix.github.io/hako/")!) {
+                    Label("查看下载页面", systemImage: "arrow.up.right.square")
                 }
             } header: {
                 Text("应用更新")
             } footer: {
-                Text("打开 Hako 分发页，查看并安装最新版本。")
+                Text("「安装最新版」直接发起系统安装；「查看下载页面」打开分发页，查看版本信息或下载 IPA。")
             }
         }.navigationTitle("设置")
             // Use a guarded back action while editing; prevent the native swipe
@@ -262,7 +275,46 @@ struct SettingsView: View {
                     savedSettings = settings
                 } catch { message = error.localizedDescription }
             }
+            .task { await loadLatestBuildDate() }
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
+    }
+    private func loadLatestBuildDate() async {
+        struct Release: Decodable { let builtAt: Date }
+        latestBuildDate = nil
+        latestBuildDateFailed = false
+        var endpoint = URLComponents(string: "https://stacklix.github.io/hako/latest.json")!
+        endpoint.queryItems = [URLQueryItem(name: "t", value: String(Int(Date.now.timeIntervalSince1970)))]
+        let request = URLRequest(url: endpoint.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                latestBuildDateFailed = true
+                return
+            }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let release = try decoder.decode(Release.self, from: data)
+            try Task.checkCancellation()
+            latestBuildDate = release.builtAt
+        } catch {
+            if !Task.isCancelled { latestBuildDateFailed = true }
+        }
+    }
+    private func installLatestVersion() {
+        var manifest = URLComponents(string: "https://stacklix.github.io/hako/manifest.plist")!
+        manifest.queryItems = [URLQueryItem(name: "t", value: String(Int(Date.now.timeIntervalSince1970)))]
+        var installation = URLComponents()
+        installation.scheme = "itms-services"
+        installation.host = ""
+        installation.queryItems = [
+            URLQueryItem(name: "action", value: "download-manifest"),
+            URLQueryItem(name: "url", value: manifest.url!.absoluteString)
+        ]
+        openURL(installation.url!) { accepted in
+            if !accepted {
+                message = "无法打开系统安装入口，请在 Safari 打开 https://stacklix.github.io/hako/ 安装最新版本。"
+            }
+        }
     }
     private func save() {
         do {

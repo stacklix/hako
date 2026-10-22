@@ -4,6 +4,7 @@ import argparse
 import datetime
 import hashlib
 import html
+import json
 import plistlib
 import shutil
 import urllib.parse
@@ -35,9 +36,16 @@ def build(ipa, base_url, output):
         'bundle-identifier': info['CFBundleIdentifier'], 'bundle-version': str(info['CFBundleVersion']),
         'kind': 'software', 'title': 'Hako'}}]}
     (output / manifest_name).write_bytes(plistlib.dumps(manifest))
+    # Stable entry point for installed apps; the IPA URL remains content-addressed.
+    (output / 'manifest.plist').write_bytes(plistlib.dumps(manifest))
     template = Path(__file__).resolve().parent.parent / 'web/install.html'
     page = template.read_text()
     built_at = datetime.datetime.now(datetime.timezone.utc)
+    (output / 'latest.json').write_text(json.dumps({
+        'builtAt': built_at.isoformat(timespec='seconds'),
+        'version': str(info.get('CFBundleShortVersionString', '1.0')),
+        'build': str(info['CFBundleVersion'])
+    }), encoding='utf-8')
     values = {'INSTALL_URL': install_url, 'IPA_URL': ipa_url,
               'VERSION': str(info.get('CFBundleShortVersionString', '1.0')),
               'BUILD': str(info['CFBundleVersion']), 'MIN_IOS': str(info.get('MinimumOSVersion', '26.4')),
