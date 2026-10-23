@@ -5,19 +5,14 @@ import DeviceActivity
 import ManagedSettings
 
 @MainActor enum ScreenTime {
-    private static let previouslyAuthorizedKey = "screenTime.previouslyAuthorizedWithDataAccess"
-
     static func prepareAuthorization(requestAuthorization: Bool) async throws {
         let center = AuthorizationCenter.shared
         if center.authorizationStatus == .approvedWithDataAccess {
-            UserDefaults.standard.set(true, forKey: previouslyAuthorizedKey)
             return
         }
-        // A new process starts at notDetermined. Refresh a previous grant before
-        // checking it. The saved flag never substitutes for system authorization.
-        if requestAuthorization ||
-            (center.authorizationStatus == .notDetermined &&
-             UserDefaults.standard.bool(forKey: previouslyAuthorizedKey)) {
+        // Every new process starts at notDetermined, including App Intent launches.
+        // Ask the system to resolve the grant even if no local authorization flag exists.
+        if requestAuthorization || center.authorizationStatus == .notDetermined {
             do {
                 try await authorize()
             } catch {
@@ -38,7 +33,6 @@ import ManagedSettings
     static func authorize() async throws {
         try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
         try checkAuthorization()
-        UserDefaults.standard.set(true, forKey: previouslyAuthorizedKey)
     }
     static func checkAuthorization() throws {
         switch AuthorizationCenter.shared.authorizationStatus {
