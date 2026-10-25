@@ -1,0 +1,10 @@
+{
+  "username": "owner",
+  "agents": [],
+  "consoles": [
+    {
+      "name": "我的 iPhone",
+      "publicKeyFile": "/app/config/iphone.public.pem"
+    }
+  ]
+}

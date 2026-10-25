@@ -1,0 +1,25 @@
+<Window x:Class="Hako.Shell.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Hako" Width="940" Height="650" MinWidth="740" MinHeight="520" Background="#F7F8FA">
+ <Grid>
+  <Grid.ColumnDefinitions><ColumnDefinition Width="190"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <Border Background="#17202B" Padding="20">
+   <DockPanel>
+    <StackPanel DockPanel.Dock="Top">
+     <TextBlock Text="HAKO" FontSize="28" FontWeight="Bold" Foreground="White" Margin="0,8,0,30"/>
+     <Button Content="工具首页" Click="HomeClick"/>
+     <Button Content="设备监控" Click="MonitorClick"/>
+     <Button Content="服务器设置" Click="SettingsClick"/>
+    </StackPanel>
+    <TextBlock Text="个人工具箱" VerticalAlignment="Bottom" Foreground="#B6C2CF"/>
+   </DockPanel>
+  </Border>
+  <DockPanel Grid.Column="1" Margin="30">
+   <Border DockPanel.Dock="Bottom" BorderBrush="#DDE2E8" BorderThickness="0,1,0,0" Padding="0,14,0,0">
+    <TextBlock x:Name="ConnectionStatus" Text="未配置服务器" TextWrapping="Wrap" Foreground="#526175"/>
+   </Border>
+   <ContentControl x:Name="Page"/>
+  </DockPanel>
+ </Grid>
+</Window>

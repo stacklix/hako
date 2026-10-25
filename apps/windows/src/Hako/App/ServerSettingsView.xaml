@@ -1,0 +1,21 @@
+<UserControl x:Class="Hako.Shell.ServerSettingsView"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <ScrollViewer VerticalScrollBarVisibility="Auto">
+  <StackPanel>
+   <TextBlock Text="服务器设置" FontSize="26" FontWeight="Bold" Margin="0,12,0,24"/>
+   <TextBlock Text="服务器 URL"/><TextBox x:Name="ServerUrl" ToolTip="https://monitor.example.com"/>
+   <TextBlock Text="账号"/><TextBox x:Name="Username"/>
+   <TextBlock Text="RSA 设备公私钥对" FontWeight="SemiBold"/>
+   <TextBlock x:Name="KeyStatus" Text="尚未配置" TextWrapping="Wrap" Margin="0,8"/>
+   <WrapPanel>
+    <Button Content="导入 PEM 私钥" Click="ImportClick"/>
+    <Button Content="生成公私钥对" Click="GenerateClick"/>
+    <Button x:Name="ExportPublicKey" Content="导出公钥" Click="ExportClick" IsEnabled="False"/>
+   </WrapPanel>
+   <TextBlock Text="生成或导入后，私钥立即经当前 Windows 用户加密保存。将导出的公钥登记到服务端，再保存并连接。" TextWrapping="Wrap" Margin="0,10,0,20" Foreground="#526175"/>
+   <WrapPanel><Button x:Name="SaveButton" Content="保存并连接 / 重新连接" Click="SaveClick"/><Button Content="清除配置并断开" Click="ClearClick"/></WrapPanel>
+   <TextBlock x:Name="Message" TextWrapping="Wrap" Margin="0,12"/>
+  </StackPanel>
+ </ScrollViewer>
+</UserControl>

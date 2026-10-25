@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+DIST="$REPO_ROOT/dist/ios"
 DEVICE=""
 LIST_ONLY=0
 BUILD_ONLY=0
@@ -86,7 +88,8 @@ print(f'目标设备：{name(d)}', file=sys.stderr)
 PY
 [[ "$LIST_ONLY" -eq 0 ]] || exit 0
 TARGET="$(cat "$TEMP/selected")"
-APP="$WORK/DerivedData/Build/Products/Debug-iphoneos/Hako.app"
+BUILT_APP="$WORK/DerivedData/Build/Products/Debug-iphoneos/Hako.app"
+APP="$DIST/Hako.app"
 echo '正在编译并签名…'
 if ! xcodebuild -project "$ROOT/Hako.xcodeproj" -scheme Hako -configuration Debug \
     -destination "platform=iOS,id=$TARGET" -derivedDataPath "$WORK/DerivedData" \
@@ -96,7 +99,11 @@ if ! xcodebuild -project "$ROOT/Hako.xcodeproj" -scheme Hako -configuration Debu
     echo '签名错误请检查 Xcode 账号、Team 及 App and Website Usage 描述文件权限。' >&2
     exit 1
 fi
-[[ -d "$APP" ]] || { echo "找不到编译产物：$APP" >&2; exit 1; }
+[[ -d "$BUILT_APP" ]] || { echo "找不到编译产物：$BUILT_APP" >&2; exit 1; }
+mkdir -p "$DIST"
+[[ "$APP" == "$REPO_ROOT/dist/ios/Hako.app" && ! -L "$REPO_ROOT/dist" && ! -L "$DIST" && ! -L "$APP" ]] || { echo '发布路径无效。' >&2; exit 1; }
+if [[ -e "$APP" ]]; then rm -rf -- "$APP"; fi
+ditto "$BUILT_APP" "$APP"
 codesign --verify --deep --strict "$APP"
 if [[ "$BUILD_ONLY" -eq 1 ]]; then
     echo "编译签名成功：$APP"

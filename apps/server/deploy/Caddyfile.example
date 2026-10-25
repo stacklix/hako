@@ -1,0 +1,4 @@
+# Run Caddy on the Docker host; set your real DNS name before use.
+monitor.example.com {
+    reverse_proxy 127.0.0.1:8080
+}

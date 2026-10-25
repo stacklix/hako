@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Hako · 设备管理</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">设备管理</p><nav><a href="#agents">设备代理 <span>Agent</span></a><a href="#consoles">管理客户端 <span>Console</span></a><a href="#sessions">登录会话 <span>Sessions</span></a></nav><p class="aside-footer">你的设备，收进一个盒子。<br>Hako Server</p></aside>
+  <main>
+    <header><div><p class="eyebrow">YOUR DEVICES, CONNECTED</p><h1>设备管理</h1><p class="muted">登记可信设备，掌握连接状态。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="login-panel" class="card login">
+      <div class="section-heading"><div><p class="eyebrow">WELCOME BACK</p><h2>登录管理控制台</h2></div><span class="pill">单用户</span></div>
+      <p class="muted">打开 iOS「设备监控 → 扫码登录管理页」，扫码后核对确认码并批准。</p>
+      <div class="qr-box"><img id="login-qr" alt="使用已登记的 Console 扫码登录" width="260" height="260" hidden><p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p></div>
+      <p class="qr-caption">确认码 <strong id="qr-code">— — — — — —</strong></p>
+      <p id="qr-expiry" class="muted"></p><button id="refresh-qr" class="primary" type="button">刷新二维码 <span>↻</span></button>
+      <details class="qr-copy"><summary>无法使用摄像头？</summary><p class="help">复制登录请求，在 Console 的扫码登录页中粘贴解析。</p><button id="copy-login" class="quiet" type="button" disabled>复制登录请求</button></details>
+      <p class="help">二维码 90 秒有效。请只扫描自己正在使用的浏览器上的二维码。Console 公钥由服务器配置文件手工登记，所有 Console 都是管理员。管理会话闲置 30 分钟或登录 12 小时后到期。</p>
+    </section>
+    <div id="dashboard" hidden>
+      <div class="stats"><div class="card"><p>在线设备</p><strong id="online-count">—</strong><span class="muted">长连接已建立</span></div><div class="card"><p>设备代理</p><strong id="agent-count">—</strong><span class="muted">已登记的 Windows 设备</span></div><div class="card"><p>管理客户端</p><strong id="console-count">—</strong><span class="muted">可信公钥</span></div></div>
+      <div class="refresh-row"><span id="updated" class="muted">正在加载…</span><button id="refresh" class="quiet">刷新状态 ↻</button></div>
+      <section id="agents" class="card"><div class="section-heading"><div><p class="eyebrow">AGENTS</p><h2>设备代理</h2></div><button class="primary" id="open-agent">＋ 登记 Agent</button></div><p class="muted">Windows Agent 通过长连接接收请求，指标在查询时采集。</p><div id="agent-list" class="device-list"></div></section>
+      <section id="consoles" class="card"><div class="section-heading"><div><p class="eyebrow">CONSOLES</p><h2>管理客户端</h2></div><span class="pill">手工配置 · 全部管理员</span></div><p class="muted">公钥由服务器配置文件维护，修改后重启生效。Console 使用 HTTP，登录会话不代表实时在线。</p><div id="console-list" class="device-list"></div></section>
+      <section id="sessions" class="card"><div class="section-heading"><div><p class="eyebrow">ACCESS</p><h2>Console 登录会话</h2></div><span id="session-count" class="pill">0 个会话</span></div><p class="muted">撤销后该会话立即失效；仍持有可信密钥的设备可以重新登录。</p><div id="session-list" class="device-list"></div></section>
+      <p class="page-footer">Agent 公钥修改即时生效。Console 由服务器手工配置。状态每 10 秒刷新，指标只按需查询。</p>
+    </div>
+  </main>
+</div>
+<dialog id="register-dialog"><form id="register-form"><div class="section-heading"><h2 id="register-title">登记设备</h2><button type="button" id="close-register" class="quiet" aria-label="关闭">✕</button></div><label id="agent-id-label">设备 ID<input name="id" maxlength="80" pattern="[A-Za-z0-9_-]{1,80}" placeholder="desktop-office"><small>英文字母、数字、下划线或连字符；登记后不可修改。</small></label><label>设备名称<input name="name" required maxlength="100" placeholder="例如：办公室电脑"></label><label>公钥 PEM<textarea name="publicKeyPem" rows="7" required placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label><label class="file-label">或从公钥文件读取<input id="public-key-file" type="file" accept=".pem,.pub,.txt"></label><p id="key-hint" class="muted"></p><div id="register-error" class="form-error" role="alert" hidden></div><button type="submit" class="primary">登记公钥</button></form></dialog>
+<dialog id="key-dialog"><div class="section-heading"><h2>设备公钥</h2><button id="close-key" class="quiet" aria-label="关闭">✕</button></div><p id="key-name"></p><pre id="key-pem"></pre><button id="download-key" class="primary">下载公钥 PEM</button></dialog>
+</body></html>

@@ -31,6 +31,12 @@ struct HomeView: View {
                     }.padding(.vertical, 12)
                 }
                 Section("应用") {
+                    NavigationLink { DeviceMonitorView() } label: {
+                        Label { VStack(alignment: .leading, spacing: 5) {
+                            Text("设备监控").font(.headline)
+                            Text("电脑在线状态 · CPU · 内存").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "desktopcomputer").foregroundStyle(.primary) }
+                    }
                     NavigationLink { UsageView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("使用时间").font(.headline)
@@ -219,6 +225,11 @@ struct SettingsView: View {
     }
     var body: some View {
         Form {
+            Section("服务器") {
+                NavigationLink { DeviceServerSettingsView() } label: {
+                    Label("设备管理服务器", systemImage: "server.rack")
+                }
+            }
             Section("GitHub 仓库") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("仓库地址").font(.subheadline).foregroundStyle(.secondary)

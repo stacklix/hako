@@ -1,0 +1,5 @@
+data
+secrets
+config
+build
+*.db*

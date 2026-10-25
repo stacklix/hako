@@ -1,6 +1,7 @@
 .DS_Store
 DerivedData/
 build/
+/dist/
 *.xcuserstate
 xcuserdata/
 .env
@@ -9,3 +10,12 @@ xcuserdata/
 
 __pycache__/
 *.pyc
+
+# Per-application generated files and private deployment configuration.
+bin/
+obj/
+.vs/
+apps/server/data/
+apps/server/secrets/
+apps/server/config/
+*.private.pem

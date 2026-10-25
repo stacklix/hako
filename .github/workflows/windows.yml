@@ -1,0 +1,39 @@
+name: Windows
+on:
+  push:
+    paths: ['apps/windows/**']
+  pull_request:
+    paths: ['apps/windows/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build src/Hako/Hako.csproj -c Release
+      - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
+      - name: Verify real Windows agent interoperability
+        working-directory: apps/server
+        shell: pwsh
+        run: |
+          $env:HAKO_WINDOWS_CHECKS = Join-Path $env:GITHUB_WORKSPACE 'apps/windows/tests/Hako.Checks/bin/Release/net10.0-windows/Hako.Checks.exe'
+          go test ./internal/server -run TestWindowsAgentEndToEnd -v
+      - run: ./scripts/publish.ps1
+      - name: Verify published CLI and help
+        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Hako-Windows
+          path: dist/windows/Hako.exe

@@ -38,7 +38,7 @@ def build(ipa, base_url, output):
     (output / manifest_name).write_bytes(plistlib.dumps(manifest))
     # Stable entry point for installed apps; the IPA URL remains content-addressed.
     (output / 'manifest.plist').write_bytes(plistlib.dumps(manifest))
-    template = Path(__file__).resolve().parent.parent / 'web/install.html'
+    template = Path(__file__).resolve().parent.parent / 'distribution/install.html'
     page = template.read_text()
     built_at = datetime.datetime.now(datetime.timezone.utc)
     (output / 'latest.json').write_text(json.dumps({

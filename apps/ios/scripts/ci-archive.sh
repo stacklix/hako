@@ -5,6 +5,8 @@ set -euo pipefail
 : "${IOS_PROFILE_BASE64:?Set IOS_PROFILE_BASE64}"
 : "${IOS_CERTIFICATE_PASSWORD?Set IOS_CERTIFICATE_PASSWORD (may be empty)}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$ROOT/../.." && pwd)"
+DIST="$REPO_ROOT/dist/ios"
 cd "$ROOT"
 SIGNING_DIR="$(mktemp -d)"
 KEYCHAIN="$SIGNING_DIR/signing.keychain-db"
@@ -56,11 +58,11 @@ mkdir -p "$PROFILE_DIR"
 PROFILE_PATH="$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
 cp "$SIGNING_DIR/profile.mobileprovision" "$PROFILE_PATH"
 xcodebuild -version
-mkdir -p build/ci
+mkdir -p build/ci "$DIST"
 xcodebuild -project Hako.xcodeproj -scheme Hako -configuration Release -destination 'generic/platform=iOS' \
   -archivePath build/ci/Hako.xcarchive -derivedDataPath build/ci/DerivedData \
   CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_IDENTITY="$IDENTITY" \
   PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
   CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-1}" archive
 xcodebuild -exportArchive -archivePath build/ci/Hako.xcarchive \
-  -exportPath build/ci/export -exportOptionsPlist "$SIGNING_DIR/ExportOptions.plist"
+  -exportPath "$DIST" -exportOptionsPlist "$SIGNING_DIR/ExportOptions.plist"

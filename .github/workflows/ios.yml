@@ -1,6 +1,8 @@
 name: Build and install Hako
 on:
   push:
+    paths:
+      - 'apps/ios/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,12 +13,20 @@ jobs:
   build:
     if: github.ref_name == github.event.repository.default_branch
     runs-on: macos-26
+    defaults:
+      run:
+        working-directory: apps/ios
     steps:
       - uses: actions/checkout@v7
       - name: Validate packaging scripts
         run: |
           bash -n scripts/ci-archive.sh
           python3 -m unittest discover -s Tests -p 'test_*.py'
+      - name: Typecheck Console client without signing
+        run: |
+          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleClient.swift
+          swiftc Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
+          /tmp/hako-web-login-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6
@@ -29,17 +39,17 @@ jobs:
       - name: Create installation page
         env:
           PAGES_URL: ${{ steps.pages.outputs.base_url }}
-        run: python3 scripts/build-install-page.py --ipa build/ci/export/Hako.ipa --url "$PAGES_URL" --output build/site
+        run: python3 scripts/build-install-page.py --ipa ../../dist/ios/Hako.ipa --url "$PAGES_URL" --output ../../dist/ios/site
       - name: Upload IPA
         uses: actions/upload-artifact@v7
         with:
           name: Hako-IPA-${{ github.run_number }}
-          path: build/ci/export/*.ipa
+          path: dist/ios/*.ipa
           retention-days: 14
       - name: Upload installation page
         uses: actions/upload-pages-artifact@v5
         with:
-          path: build/site
+          path: dist/ios/site
   deploy:
     needs: build
     runs-on: ubuntu-latest

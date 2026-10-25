@@ -1,6 +1,8 @@
 # 自动打包与网页安装
 
-默认分支每次 push 会编译 Release、导出已签名 IPA，并更新 GitHub Pages 安装页。也可从 Actions 手动运行。非默认分支不会发布。工作流使用 macos-26 的默认 Xcode，要求 Xcode 26.4 或更新。
+仅当默认分支推送包含 `apps/ios/` 目录下的文件变化时，自动编译 Release、导出已签名 IPA，并更新 GitHub Pages 安装页。也可从 Actions 手动运行。非默认分支不会发布。工作流使用 macos-26 的默认 Xcode，要求 Xcode 26.4 或更新。
+
+iOS 工程位于 `apps/ios/`，本页的本地命令均从该目录执行。在仓库根目录先运行 `cd apps/ios`。应用说明见 [iOS README](../../apps/ios/README.md)。
 
 ## 首次配置
 
@@ -36,7 +38,7 @@
 导出 IPA 后运行：
 
 ```sh
-python3 scripts/build-install-page.py --ipa /path/to/Hako.ipa --url https://example.github.io/hako --output build/site
+python3 scripts/build-install-page.py --ipa ../../dist/ios/Hako.ipa --url https://example.github.io/hako --output ../../dist/ios/site
 ```
 
-`build/site/index.html` 可本地预览；真正安装需部署到上述 HTTPS 地址。工作流首次真实签名和 OTA 安装需在配置 Secrets 并推送后验证。
+最终产物统一位于仓库根目录 `dist/ios/`：签名 IPA 为 `Hako.ipa`，网页安装产物为 `site/`。`dist/ios/site/index.html` 可本地预览；真正安装需部署到上述 HTTPS 地址。工作流首次真实签名和 OTA 安装需在配置 Secrets 并推送后验证。
