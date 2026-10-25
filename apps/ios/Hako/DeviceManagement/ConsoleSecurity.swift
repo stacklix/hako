@@ -32,15 +32,77 @@ enum ConsoleKeychain {
         let status = SecItemDelete(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw HakoError(message: "无法清除设备凭据（\(status)）。") }
     }
+    static func clearRetiredIdentityEntries() throws {
+        var q = query("")
+        q.removeValue(forKey: kSecAttrAccount as String)
+        q[kSecReturnAttributes as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitAll
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        if status == errSecItemNotFound { return }
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+            throw HakoError(message: "无法清理旧设备凭据（\(status)）。")
+        }
+        for item in items {
+            guard let account = item[kSecAttrAccount as String], let name = account as? String,
+                  name != ConsoleIdentity.deviceAccount,
+                  name.hasPrefix("identity.") || name.hasPrefix("session.") else { continue }
+            try delete(name)
+        }
+    }
 }
 
 struct ConsoleIdentity: Codable {
     let deviceId: String
     let keyRepresentation: Data
+    var resetGeneration: String? = nil
 
-    static func load(origin: String) throws -> Self {
-        let account = "identity." + origin.consoleDigest
-        if let data = try ConsoleKeychain.read(account) { return try JSONDecoder().decode(Self.self, from: data) }
+    static let deviceAccount = "identity.device.v1"
+
+    static func load(origin: String? = nil,
+                     read: (String) throws -> Data? = ConsoleKeychain.read,
+                     save: (String, Data) throws -> Void = ConsoleKeychain.save,
+                     generate: () throws -> ConsoleIdentity = ConsoleIdentity.generate) throws -> Self {
+        let account = origin.flatMap { $0.isEmpty ? nil : "identity." + $0.consoleDigest }
+        let deviceData = try read(deviceAccount)
+        let device = try deviceData.map { try JSONDecoder().decode(Self.self, from: $0) }
+        // A committed reset takes precedence over every old server binding, even
+        // if the app stopped before it could remove the retired Keychain entries.
+        if let device, device.resetGeneration != nil { return device }
+        // Keep identities already registered with a server. Adopt the first legacy
+        // identity as the device default without replacing any existing binding.
+        if let account, let data = try read(account) {
+            let identity = try JSONDecoder().decode(Self.self, from: data)
+            if deviceData == nil { try save(deviceAccount, data) }
+            return identity
+        }
+        let identity: Self
+        let data: Data
+        if let stored = deviceData, let device {
+            data = stored
+            identity = device
+        } else {
+            identity = try generate()
+            data = try JSONEncoder().encode(identity)
+            try save(deviceAccount, data)
+        }
+        if let account { try save(account, data) }
+        return identity
+    }
+
+    static func reset(save: (String, Data) throws -> Void = ConsoleKeychain.save,
+                      generate: () throws -> ConsoleIdentity = ConsoleIdentity.generate,
+                      prepare: (ConsoleIdentity) throws -> Void = { _ = try $0.publicKeyPEM() }) throws -> Self {
+        var replacement = try generate()
+        replacement.resetGeneration = UUID().uuidString.lowercased()
+        try prepare(replacement)
+        // Persist the new identity and reset marker together before removing any
+        // old key or session. Generation/preparation/save failures preserve the old key.
+        try save(deviceAccount, JSONEncoder().encode(replacement))
+        return replacement
+    }
+
+    static func generate() throws -> Self {
         guard SecureEnclave.isAvailable else { throw HakoError(message: "设备绑定需要支持 Secure Enclave 的 iPhone。") }
         var error: Unmanaged<CFError>?
         guard let control = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .privateKeyUsage, &error) else {
@@ -51,7 +113,6 @@ struct ConsoleIdentity: Codable {
         let jwk = ["kty": "EC", "crv": "P-256", "x": Data(bytes[1..<33]).consoleBase64URL, "y": Data(bytes[33..<65]).consoleBase64URL]
         let canonical = try JSONSerialization.data(withJSONObject: jwk, options: [.sortedKeys])
         let identity = Self(deviceId: Data(SHA256.hash(data: canonical)).consoleBase64URL, keyRepresentation: key.dataRepresentation)
-        try ConsoleKeychain.save(account, data: JSONEncoder().encode(identity))
         return identity
     }
 

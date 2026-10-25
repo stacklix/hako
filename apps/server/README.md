@@ -22,7 +22,7 @@ cp deploy/server.example.json config/server.json
 
 `init` 只生成数据库加密密钥 `master.key`，拒绝覆盖已有文件。它不用于登录，也不是设备私钥；密钥和 SQLite 数据必须一起备份。
 
-先在 iOS「设备监控 → 设置」中填写服务端 HTTPS 根地址和账号，点击「保存并准备设备身份」，导出 `iphone.public.pem`。把这个公钥放入服务器 `config/`，编辑 `config/server.json`：
+先在 iOS「设备监控 → 设置 → 本机设备身份」点击「导出公钥文件」，可在未配置服务器、未联网或未登录时单独导出 `iphone.public.pem`。把这个公钥放入服务器 `config/`，编辑 `config/server.json`：
 
 ```json
 {
@@ -68,8 +68,8 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 ## 登记设备
 
 1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在 Web 管理页「登记 Agent」填写设备 ID、名称和 RSA 公钥。设置 Windows 服务地址和账号，保存并连接。
-2. iOS → 设备监控 → 设置 → 填写 HTTPS 地址和账号 → 保存并准备设备身份 → 导出公钥，手工配置到服务端 `consoles` 后重启。
-3. iOS → 设备监控 → 设置 → 使用本机密钥登录，即可监控和批准网页登录。
+2. iOS → 设备监控 → 设置 → 导出公钥文件，手工配置到服务端 `consoles` 后重启；导出不要求填写服务器信息或登录。
+3. iOS → 设备监控 → 设置 → 填写 HTTPS 地址和账号 → 保存服务器配置 → 使用本机密钥登录，即可监控和批准网页登录。
 4. iOS 选择在线电脑，查询 CPU、物理内存和本次采样时间。
 
 iOS 设备 ID 为公钥的 RFC 7638 JWK 指纹，无需另行配置。服务端从已登记公钥计算相同 ID，校验请求签名和会话绑定。

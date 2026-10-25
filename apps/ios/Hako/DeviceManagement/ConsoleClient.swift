@@ -80,9 +80,11 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     @Published private(set) var metrics: [String: ConsoleMetrics] = [:]
     @Published private(set) var remoteSessions: [ConsoleRemoteSession] = []
     @Published private(set) var busy = false
+    @Published private(set) var resettingKey = false
     @Published var message: String?
     private var saved: ConsoleSession?
     private var refreshTask: Task<Void, Error>?
+    private var refreshTaskID: UUID?
     private let transport: URLSession
 
     private init() {
@@ -93,7 +95,37 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     private var sessionAccount: String { "session." + (serverURL + "\n" + username).consoleDigest }
-    private func identity() throws -> ConsoleIdentity { try ConsoleIdentity.load(origin: serverURL) }
+    private func identity() throws -> ConsoleIdentity { try ConsoleIdentity.load(origin: serverURL.isEmpty ? nil : serverURL) }
+    // This is a local operation: no configuration validation, session check or HTTP request.
+    func publicKeyForExport() throws -> String {
+        guard !resettingKey else { throw HakoError(message: "正在重置密钥对，请稍后导出。") }
+        let device = try identity()
+        let pem = try device.publicKeyPEM()
+        deviceId = device.deviceId; publicKeyPEM = pem
+        return pem
+    }
+    func resetKeyPair() async {
+        await execute {
+            self.resettingKey = true
+            defer { self.resettingKey = false }
+            if let task = self.refreshTask {
+                task.cancel()
+                _ = try? await task.value
+                self.refreshTask = nil; self.refreshTaskID = nil
+            }
+            var pem = ""
+            let device = try ConsoleIdentity.reset(prepare: { pem = try $0.publicKeyPEM() })
+            self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
+            self.agents = []; self.metrics = [:]; self.remoteSessions = []
+            self.deviceId = device.deviceId; self.publicKeyPEM = pem
+            do {
+                try ConsoleKeychain.clearRetiredIdentityEntries()
+                self.message = "密钥对已重置，已退出本机登录。请导出新公钥，替换服务端旧公钥并重启服务后重新登录。"
+            } catch {
+                self.message = "密钥对已重置，旧身份已停用，但旧凭据清理失败：\(error.localizedDescription) 请导出新公钥并更新服务端配置。"
+            }
+        }
+    }
     private func persist(_ value: ConsoleSession?) throws {
         if let value { try ConsoleKeychain.save(sessionAccount, data: JSONEncoder().encode(value)) }
         else { try ConsoleKeychain.delete(sessionAccount) }
@@ -121,17 +153,23 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             UserDefaults.standard.set(origin, forKey: "console.serverURL")
             self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
             self.agents = []; self.metrics = [:]
+            self.deviceId = ""; self.publicKeyPEM = ""
             try await self.restoreInternal()
         }
     }
 
     func restore() async { await execute { try await self.restoreInternal() } }
     private func restoreInternal() async throws {
+        _ = try publicKeyForExport()
         guard !serverURL.isEmpty else { return }
-        let device = try identity()
-        deviceId = device.deviceId
-        publicKeyPEM = try device.publicKeyPEM()
-        if let data = try ConsoleKeychain.read(sessionAccount) { saved = try JSONDecoder().decode(ConsoleSession.self, from: data) }
+        if let data = try ConsoleKeychain.read(sessionAccount) {
+            let restored = try JSONDecoder().decode(ConsoleSession.self, from: data)
+            guard restored.tokens.deviceId == deviceId else {
+                try persist(nil); authenticated = false; agents = []; metrics = [:]; remoteSessions = []
+                return
+            }
+            saved = restored
+        }
         logoutPending = saved?.logoutPending ?? false
         hasSavedSession = saved != nil && !logoutPending
         if logoutPending { try await finishLogout(); return }
@@ -173,6 +211,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
         if let token { request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization") }
         let (data, response) = try await transport.data(for: request)
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw HakoError(message: "服务器响应无效。") }
         guard (200..<300).contains(http.statusCode) else {
             struct Failure: Decodable { let error: String }
@@ -182,6 +221,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     private func authorized(_ path: String, method: String = "GET", body: [String: String]? = nil, nonce: String? = nil) async throws -> Data {
+        guard !resettingKey else { throw HakoError(message: "正在重置设备身份，请稍后重试。") }
         guard !logoutPending || path == "/api/v1/auth/logout" else { throw HakoError(message: "本机已退出，正在等待撤销服务端会话。") }
         guard let session = saved else { throw HakoError(message: "请先登录。") }
         do { return try await request(path, method: method, body: body, token: session.tokens.accessToken, nonce: nonce) }
@@ -192,7 +232,9 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
     }
     private func refresh() async throws {
+        guard !resettingKey else { throw HakoError(message: "正在重置设备身份，请稍后重试。") }
         if let task = refreshTask { return try await task.value }
+        let taskID = UUID()
         let task = Task { @MainActor in
             guard var session = self.saved else { throw HakoError(message: "请重新登录。") }
             if session.rotationId == nil { session.rotationId = UUID().uuidString.lowercased(); try self.persist(session) }
@@ -208,7 +250,10 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             }
         }
         refreshTask = task
-        defer { refreshTask = nil }
+        refreshTaskID = taskID
+        defer {
+            if refreshTaskID == taskID { refreshTask = nil; refreshTaskID = nil }
+        }
         try await task.value
     }
 

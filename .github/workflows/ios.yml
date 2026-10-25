@@ -27,6 +27,8 @@ jobs:
           swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleClient.swift
           swiftc Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
+          /tmp/hako-identity-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

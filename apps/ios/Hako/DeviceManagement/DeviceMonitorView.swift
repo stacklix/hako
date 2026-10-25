@@ -8,7 +8,7 @@ struct DeviceMonitorView: View {
         List {
             if client.serverURL.isEmpty {
                 Section {
-                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("在设备监控设置中填写服务器地址和账号。"))
+                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("可在设备监控设置中先导出本机公钥，再填写服务器地址和账号。"))
                     NavigationLink("配置服务器") { DeviceMonitorSettingsView() }
                 }
             } else if client.authenticated {
