@@ -225,11 +225,6 @@ struct SettingsView: View {
     }
     var body: some View {
         Form {
-            Section("服务器") {
-                NavigationLink { DeviceServerSettingsView() } label: {
-                    Label("设备管理服务器", systemImage: "server.rack")
-                }
-            }
             Section("GitHub 仓库") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("仓库地址").font(.subheadline).foregroundStyle(.secondary)

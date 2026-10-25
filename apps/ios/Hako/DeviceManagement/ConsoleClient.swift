@@ -162,7 +162,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     private func request(_ path: String, method: String, body: [String: String]?, token: String?, signed: Bool = true, nonce: String? = nil) async throws -> Data {
-        guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在主应用设置中配置 HTTPS 服务器。") }
+        guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在设备监控设置中配置 HTTPS 服务器。") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method
         if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
