@@ -1,5 +1,10 @@
 import SwiftUI
 
+private enum DeviceKeySheetRoute: String, Identifiable {
+    case publicKey, reset
+    var id: String { rawValue }
+}
+
 struct DeviceMonitorSettingsView: View {
     @ObservedObject private var client = ConsoleClient.shared
     @State private var url = ""
@@ -68,13 +73,16 @@ struct DeviceMonitorSettingsView: View {
             Button("退出登录", role: .destructive) { Task { await client.logout() } }
         }
         .sheet(item: $keySheet) { route in
-            DevicePublicKeySheet(confirmReset: route == .reset)
+            switch route {
+            case .publicKey: DevicePublicKeySheet()
+            case .reset: DeviceKeyResetSheet()
+            }
         }
     }
 
     @MainActor private func openKeySheet(_ route: DeviceKeySheetRoute) {
         do {
-            _ = try client.publicKeyForExport()
+            if route == .publicKey { _ = try client.publicKeyForExport() }
             keySheet = route
         } catch { client.message = error.localizedDescription }
     }
