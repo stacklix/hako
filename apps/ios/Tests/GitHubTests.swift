@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 final class MockProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (Int, Data))!
@@ -14,7 +15,7 @@ final class MockProtocol: URLProtocol {
     override func stopLoading() {}
 }
 @main struct GitHubTests {
-    static func main() async throws {
+    @MainActor static func main() async throws {
         let parsed = try GitHubSettings(repositoryURL: " https://github.com/stackli/hako.git/ ").repository()
         precondition(parsed.owner == "stackli" && parsed.name == "hako")
         for invalid in ["", "https://example.com/a/b", "https://github.com/a/b/tree/main", "https://github.com/a/b?x=1", "https://github.com/a/..", "https://github.com/a/%20b", "https://user:pass@github.com/a/b"] {
@@ -34,6 +35,10 @@ final class MockProtocol: URLProtocol {
         func snapshot(_ text: String? = nil, head: String = "head-1") throws -> (Int, Data) {
             let file: Any = text.map { ["object": ["text": $0, "isBinary": false, "isTruncated": false]] as [String: Any] } ?? NSNull()
             return try json(["data": ["repository": ["ref": ["target": ["oid": head, "file": file]]]]])
+        }
+        func directory(_ entries: [[String: String]]? = nil) throws -> (Int, Data) {
+            let file: Any = entries.map { ["object": ["entries": $0]] as [String: Any] } ?? NSNull()
+            return try json(["data": ["repository": ["ref": ["target": ["oid": "head-1", "file": file]]]]])
         }
         func success(signed: Bool = true) throws -> (Int, Data) {
             try json(["data": ["createCommitOnBranch": ["commit": ["oid": "new-commit", "signature": ["isValid": signed, "wasSignedByGitHub": signed]]]]])
@@ -79,7 +84,8 @@ final class MockProtocol: URLProtocol {
             precondition(rows.count == 3 && rows[1][0] == "2026-10-13")
             return try success()
         }
-        try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
+        let initialRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
+        precondition(initialRows.count == 2)
         precondition(calls == 2)
 
         // A concurrent writer inserts one date. Retry must preserve its value.
@@ -98,12 +104,14 @@ final class MockProtocol: URLProtocol {
             precondition(tryRows(csv)[2][2] == "999")
             return try success()
         }
-        try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
+        let concurrentRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
+        precondition(concurrentRows[1][2] == "999") // Import the final retry, not the stale snapshot.
         precondition(calls == 4)
 
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try snapshot(CSV.encode([CSV.header, row("2026-10-14", "999")])) }
-        try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")])
+        let unchangedRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")])
+        precondition(unchangedRows == [row("2026-10-14", "999")])
         precondition(calls == 1) // No mutation, even if the existing value differs.
 
         calls = 0
@@ -145,6 +153,99 @@ final class MockProtocol: URLProtocol {
         do { try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")]); fatalError("Accepted 401") } catch is HakoError { }
         MockProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
         do { try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")]); fatalError("Accepted offline") } catch is URLError { }
+
+        // Discover remote-only years while ignoring files from other formats and subdirectories.
+        MockProtocol.handler = { req in
+            let payload = try body(req)
+            precondition((payload["query"] as! String).contains("query HakoYears"))
+            let variables = payload["variables"] as! [String: String]
+            precondition(variables["ref"] == "refs/heads/data/main" && variables["path"] == "data/screen-time")
+            return try directory([
+                ["name": "2026.csv", "type": "blob"], ["name": "2024.csv", "type": "blob"],
+                ["name": "README.md", "type": "blob"], ["name": "2025.csv", "type": "tree"],
+                ["name": "bad.csv", "type": "blob"]
+            ])
+        }
+        let remoteYears = try await client.years(directory: "screen-time")
+        precondition(remoteYears == ["2024", "2026"])
+        MockProtocol.handler = { _ in try directory() }
+        let missingDirectory = try await client.years(directory: "screen-time")
+        precondition(missingDirectory.isEmpty)
+        for response: [String: Any] in [
+            ["errors": [["type": "FORBIDDEN", "message": "Denied"]]],
+            ["data": ["repository": ["ref": NSNull()]]],
+            ["data": ["repository": ["ref": ["target": ["oid": "head-1", "file": ["object": [:]]]]]]]
+        ] {
+            MockProtocol.handler = { _ in try json(response) }
+            do { _ = try await client.years(directory: "screen-time"); fatalError("Accepted invalid directory snapshot") } catch is HakoError { }
+        }
+
+        // Exercise the same database/network orchestration used by the merge button.
+        let container = try ModelContainer(for: DailyUsage.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        var archivedApp = row("2026-10-14", "999")
+        archivedApp[3] = "com.example.app"; archivedApp[4] = "99"
+        var remoteFiles = [
+            "2024": CSV.encode([CSV.header, row("2024-01-01")]),
+            "2026": CSV.encode([CSV.header, archivedApp])
+        ]
+        var mutations = 0
+        MockProtocol.handler = { req in
+            let payload = try body(req), variables = payload["variables"] as! [String: Any]
+            let query = payload["query"] as! String
+            if query.contains("query HakoYears") {
+                return try directory(remoteFiles.keys.map { ["name": $0 + ".csv", "type": "blob"] })
+            }
+            if query.contains("query HakoSnapshot") {
+                let path = variables["path"] as! String
+                let year = String(path.split(separator: "/").last!.prefix(4))
+                return try snapshot(remoteFiles[year])
+            }
+            let input = variables["input"] as! [String: Any]
+            let file = ((input["fileChanges"] as! [String: Any])["additions"] as! [[String: String]])[0]
+            let year = String(file["path"]!.split(separator: "/").last!.prefix(4))
+            remoteFiles[year] = String(data: Data(base64Encoded: file["contents"]!)!, encoding: .utf8)!
+            mutations += 1
+            return try success()
+        }
+        let restored = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
+        precondition(restored.inserted == 2 && restored.days == 2 && mutations == 0)
+        let recovered = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>())
+        precondition(recovered.count == 2 && recovered.allSatisfy { $0.syncedAt != nil })
+
+        let local = try context.fetch(FetchDescriptor<DailyUsage>()).first { $0.day == "2026-10-14" }!
+        local.totalSeconds = 10
+        local.appsData = try JSONEncoder().encode([AppUsage(bundleID: "com.example.app", name: "本地名称", seconds: 1, applicationTokenData: Data([1, 2]))])
+        for day in ["2025-12-31", "2026-10-15"] {
+            context.insert(try DailyUsage(day: day, timeZone: "Asia/Shanghai", totalSeconds: 120, apps: []))
+        }
+        try context.save()
+        remoteFiles["2026"] = CSV.encode([CSV.header, row("2026-10-13"), archivedApp])
+        let union = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
+        precondition(union.inserted == 1 && union.updated == 1 && union.days == 5 && mutations == 2)
+        precondition(local.totalSeconds == 999 && local.apps[0].seconds == 99)
+        precondition(local.apps[0].name == "本地名称" && local.apps[0].applicationTokenData == Data([1, 2]))
+        let persisted = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>())
+        precondition(persisted.count == 5 && persisted.allSatisfy { $0.syncedAt != nil })
+        precondition(tryRows(remoteFiles["2025"]!)[1][0] == "2025-12-31")
+        precondition(tryRows(remoteFiles["2026"]!).map { $0[0] } == ["date", "2026-10-13", "2026-10-14", "2026-10-15"])
+        let repeatMerge = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
+        precondition(repeatMerge.inserted == 0 && repeatMerge.updated == 0 && repeatMerge.days == 5 && mutations == 2)
+
+        // Invalid remote values and network failures leave the saved local data intact.
+        remoteFiles["2026"] = CSV.encode([CSV.header, row("2026-10-14", "NaN")])
+        do { _ = try await UsageSync.merge(context: context, client: client, directory: "screen-time"); fatalError("Imported invalid seconds") } catch is HakoError { }
+        precondition(local.totalSeconds == 999 && mutations == 2)
+        MockProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        do { _ = try await UsageSync.merge(context: context, client: client, directory: "screen-time"); fatalError("Accepted offline merge") } catch is URLError { }
+        let afterFailure = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>())
+        precondition(afterFailure.count == 5)
+
+        let emptyContainer = try ModelContainer(for: DailyUsage.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        MockProtocol.handler = { _ in try directory() }
+        let empty = try await UsageSync.merge(context: ModelContext(emptyContainer), client: client, directory: "screen-time")
+        precondition(empty.days == 0 && empty.inserted == 0)
+
         let builds = BuildStatusClient(session: URLSession(configuration: config), token: "test-token")
         calls = 0
         MockProtocol.handler = { req in
@@ -185,7 +286,7 @@ final class MockProtocol: URLProtocol {
             do { _ = try await builds.latest(); fatalError("Accepted failed build status request") }
             catch is HakoError { }
         }
-        print("PASS: GitHub sync; build run/attempt/active step/empty history/auth/rate limit/server errors")
+        print("PASS: GitHub sync; empty-local restore/multi-year union/conflicts/metadata/idempotency/failures; build status")
     }
     static func tryRows(_ text: String) -> [[String]] { try! CSV.parse(text) }
 }

@@ -75,8 +75,10 @@ struct UsageView: View {
         List {
             Section {
                 Button { execute { try await Recorder.shared.run(collect: true, requestAuthorization: true) } } label: { Label("获取app使用时间并同步", systemImage: "arrow.down.doc") }
-                Button { execute { try await Recorder.shared.run(collect: false) } } label: { Label("重试同步本地记录", systemImage: "arrow.triangle.2.circlepath") }
+                Button { execute { try await Recorder.shared.run(collect: false) } } label: { Label("合并本地与 GitHub 记录", systemImage: "arrow.triangle.2.circlepath") }
                 if busy { ProgressView("正在处理…") }
+            } footer: {
+                Text("合并会补齐双方缺失的日期并保存到本地；同一天内容不一致时，以 GitHub 记录为准。")
             }.disabled(busy)
             if let message {
                 Section {
@@ -93,7 +95,7 @@ struct UsageView: View {
                 }
             }
             if records.isEmpty {
-                ContentUnavailableView("还没有记录", systemImage: "clock", description: Text("点击「获取app使用时间并同步」开始，首次使用会请求授权。GitHub 仓库可在设置中配置。"))
+                ContentUnavailableView("还没有记录", systemImage: "clock", description: Text("点击「获取app使用时间并同步」开始，或点击「合并本地与 GitHub 记录」恢复历史记录。GitHub 仓库可在设置中配置。"))
             }
             if let oldest = records.last.flatMap({ Self.dayFormatter.date(from: $0.day) }),
                let newest = records.first.flatMap({ Self.dayFormatter.date(from: $0.day) }) {

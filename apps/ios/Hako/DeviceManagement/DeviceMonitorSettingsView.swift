@@ -23,15 +23,16 @@ struct DeviceMonitorSettingsView: View {
             }.disabled(client.busy)
 
             Section("本机设备身份") {
-                Text("将本机公钥手工配置到服务端，即可通过设备签名登录。私钥保留在本机 Secure Enclave 中。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                if !client.deviceId.isEmpty {
+                    Text("设备 ID：\n" + client.deviceId)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
                 Button { openKeySheet(.publicKey) } label: {
                     Label("查看与导出公钥", systemImage: "key")
                 }.disabled(client.resettingKey)
-                Text("可直接导出，无需填写服务器或账号，也无需联网登录。首次使用会自动生成并保存本机密钥。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 if !client.deviceId.isEmpty {
-                    Text("设备 ID：" + client.deviceId).font(.caption.monospaced()).textSelection(.enabled)
                     Button("重置密钥对", role: .destructive) { openKeySheet(.reset) }
                         .foregroundStyle(.red)
                         .disabled(client.busy)

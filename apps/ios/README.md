@@ -9,11 +9,12 @@
 - 「设备监控」子应用：在「设备监控 → 设置」配置服务器、账号、本机公钥及登录管理，用 Secure Enclave 生成 P-256 密钥并导出公钥，在服务端文件手工登记后通过签名登录。所有 Console 都是管理员，无密码或 TOTP；本机登录凭据自动续期直到退出或撤销。支持设备状态、CPU/内存查询、Console 会话撤销，以及「扫码登录管理页」：扫码或粘贴请求，核对服务器及两端确认码，再经 Face ID / Touch ID 或设备密码批准网页登录。相机权限只在打开扫描器时申请，只接受当前服务器的请求，批准仅对原浏览器有效。部署和密钥登记见 [服务端说明](../server/README.md)，协议见 [设备监控协议](../../docs/device-monitoring.md)。
 
 - 读取手机当前时区最近 7 个完整自然日（不含今天），按系统的总活动时长统计，汇总各 App 的时长并取前五名。本地已有日期跳过，缺失日期才读取并插入；单日读取失败不阻塞其他日期，已成功记录会保存并同步，失败日期下次重试。
-- SwiftData 本地持久化（SQLite）。先保存再上传，网络失败不会删除本地记录；支持单独重试同步。
+- SwiftData 本地持久化（SQLite）。先保存再上传，网络失败不会删除本地记录；「合并本地与 GitHub 记录」按日期双向补齐，并将合并结果保存到本地，无需屏幕使用时间授权。
 - GitHub GraphQL `createCommitOnBranch`：`data/screen-time/2026.csv`，每年一份、每天一行；时长单位为秒，共 13 列，包含日期、时区、总时长及 5 组 bundle ID、时长，不导出名称。不足 5 个时留空。
 - 读取远端 CSV 后按日期合并、排序；仅补入远端缺失日期，已有日期的整行保持不变；使用 `expectedHeadOid` 校验分支，遇到 `STALE_DATA` 重新读取并合并，最多尝试 3 次；无缺失日期时不重复提交。远端格式错误停止覆盖。
+- 单独合并会扫描 `data/screen-time/` 下全部年度 CSV，合并远端年份与本地年份；本地为空或缺少整年时也能恢复历史记录。本地独有日期补到 GitHub，远端独有日期保存到本地；同一天内容冲突时以 GitHub 整行记录为准，保留匹配 bundle ID 的本地 App 名称和 token。每个年度成功后保存，后续年度失败不会丢失已经保存的记录；双方均为空时提示先采集。无效日期、时区或时长会停止该年度合并。
 - 新提交由 GitHub 自动签名，返回后检查 `isValid` 和 `wasSignedByGitHub`；如果尚未确认签名，会明确提示数据已提交及对应 commit ID，不冒充已验证。已有提交不重写。提交标题示例：`Update screen-time: 2026-10-08 ~ 2026-10-14`，正文列出本次实际新增日期，单日则仅显示该日期。
-- 快捷指令仅提供「获取app使用时间并同步」一个入口，一次完成读取、本地保存和 GitHub 同步。单独重试同步保留在 App 内。
+- 快捷指令仅提供「获取app使用时间并同步」一个入口，一次完成读取、本地保存和 GitHub 同步。双向合并入口保留在 App 内。
 - GitHub Token 仅存储于设备 Keychain，不写入 CSV、UserDefaults 或日志。
 - 设置页显示 `stacklix/hako` 主分支最新 GitHub Actions 构建状态、打包/部署任务及当前步骤；仅在设置页打开且 App 在前台时拉取，关闭设置页或 App 进入后台即取消请求和轮询；有排队、等待或执行中的任务时每 5 秒刷新，无任务或最新任务已结束时每 30 秒刷新，失败后退避至 120 秒，可手动刷新或打开 GitHub。私有源码仓库要求已保存的 Token 额外具备该仓库的 Actions 读取权限。构建进度与已发布的可安装版本分别显示。
 - 设置 → 应用更新显示当前版本和构建号。仅当已发布构建号高于当前安装版本时显示绿色图标的「安装最新版」，同行展示最新版本号和构建号，下一行展示本地时区的构建时间；点击直接发起系统 OTA 安装。「查看下载页面」始终保留，可打开 [Ad Hoc 分发页](https://stacklix.github.io/hako/) 查看版本信息或下载 IPA。
@@ -88,11 +89,11 @@ xcodebuild -project Hako.xcodeproj -scheme Hako -sdk iphoneos -configuration Deb
 ```sh
 swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
 /tmp/hako-core-tests
-swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
 /tmp/hako-github-tests
 ```
 
-真机验收：核对系统「屏幕使用时间」最近 7 天每天的总量与 Top 5；重跑确认数据库/CSV 已有日期不变；核对跨年时生成对应年份文件；断网运行确认本地留存，恢复网络后重试；通过快捷指令实际触发。无签名构建与模拟测试不代表上述真机能力已经验证。
+真机验收：核对系统「屏幕使用时间」最近 7 天每天的总量与 Top 5；重跑采集确认数据库/CSV 已有日期不变；核对跨年时生成对应年份文件；点击「合并本地与 GitHub 记录」确认空本地恢复、跨年历史恢复及双方缺失日期互补，同日冲突以 GitHub 为准，重复合并不产生提交；断网运行确认本地留存，恢复网络后重试；通过快捷指令实际触发。核心和模拟网络测试已接入 GitHub Actions。无签名构建与模拟测试不代表上述真机能力已经验证。
 
 ## GitHub Actions 自动打包与安装页
 

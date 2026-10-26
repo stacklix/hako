@@ -29,6 +29,12 @@ jobs:
           /tmp/hako-web-login-tests
           swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests
+      - name: Test usage storage and GitHub merge
+        run: |
+          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+          /tmp/hako-core-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+          /tmp/hako-github-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

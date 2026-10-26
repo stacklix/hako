@@ -17,6 +17,12 @@ import AppIntents
                 try await ScreenTime.collect($0)
             }
         }
+        if !collect {
+            let client = GitHubClient(settings: .load(), token: try TokenStore.read())
+            let result = try await UsageSync.merge(context: context, client: client, directory: syncDirectory)
+            guard result.days > 0 else { return "本地和 GitHub 均没有使用时间记录，请先获取app使用时间。" }
+            return "合并完成：共 \(result.days) 天，本地新增 \(result.inserted) 天，更新 \(result.updated) 天；GitHub 缺失日期已补齐。同一天以 GitHub 记录为准。"
+        }
         let all = try context.fetch(FetchDescriptor<DailyUsage>(sortBy: [SortDescriptor(\DailyUsage.day)]))
         guard !all.isEmpty else {
             throw HakoError(message: backfill.failures.isEmpty ? "还没有本地记录，请先补齐最近7天。" : backfill.failures.joined(separator: "\n"))
@@ -25,16 +31,7 @@ import AppIntents
         let grouped = Dictionary(grouping: all) { String($0.day.prefix(4)) }
         for year in grouped.keys.sorted() {
             let records = grouped[year]!
-            let rows = records.map { record in
-                var row = [record.day, record.timeZone, String(Int(record.totalSeconds.rounded()))]
-                for index in 0..<5 {
-                    if index < record.apps.count {
-                        let app = record.apps[index]
-                        row += [app.bundleID, String(Int(app.seconds.rounded()))]
-                    } else { row += ["", ""] }
-                }
-                return row
-            }
+            let rows = records.map(\.csvRow)
             try await client.push(directory: syncDirectory, year: year, rows: rows)
             for record in records { record.syncedAt = .now }
             try context.save()

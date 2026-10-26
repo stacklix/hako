@@ -19,6 +19,22 @@ import SwiftData
             do { _ = try CSV.merge(remote: invalid, local: [], year: "2026"); fatalError("Accepted invalid CSV") }
             catch is HakoError { }
         }
+        let recoveredRow = try DailyUsage.fromCSV(row("2026-01-02", "12.5"), year: "2026")
+        precondition(recoveredRow.totalSeconds == 12.5 && recoveredRow.apps.isEmpty)
+        var missingAppSeconds = row("2026-01-01", "120")
+        missingAppSeconds[3] = "com.example.app"
+        var duplicateApps = row("2026-01-01", "120")
+        duplicateApps[3] = "com.example.app"; duplicateApps[4] = "1"
+        duplicateApps[5] = "com.example.app"; duplicateApps[6] = "2"
+        var invalidZone = row("2026-01-01", "120"); invalidZone[1] = "invalid/timezone"
+        for invalid in [
+            ["2026-01-01"], row("2025-01-01", "1"), row("2026-02-30", "1"), row("2026-1-01", "1"),
+            row("2026-01-01", "NaN"), row("2026-01-01", "inf"), row("2026-01-01", "-1"),
+            row("2026-01-01", "1e100"), missingAppSeconds, duplicateApps, invalidZone
+        ] {
+            do { _ = try DailyUsage.fromCSV(invalid, year: "2026"); fatalError("Accepted invalid usage row") }
+            catch is HakoError { }
+        }
         let iso = ISO8601DateFormatter()
         let newYear = UsageDay(now: iso.date(from: "2026-01-01T01:00:00Z")!, timeZone: TimeZone(identifier: "Asia/Shanghai")!)
         precondition(newYear.key == "2025-12-31")
@@ -57,6 +73,18 @@ import SwiftData
         }
         let finalCount = try context.fetchCount(FetchDescriptor<DailyUsage>())
         precondition(again.skipped == 7 && again.inserted == 0 && finalCount == 7)
-        print("PASS: insert-only CSV; 7 completed days/year boundary/DST; local skip/partial failure/retry/idempotency")
+        do {
+            _ = try UsageMerge.save(rows: [row("2026-10-01", "100"), row("2026-10-02", "NaN")], year: "2026", context: context)
+            fatalError("Imported partial invalid archive")
+        } catch is HakoError { }
+        let afterInvalid = try context.fetchCount(FetchDescriptor<DailyUsage>())
+        precondition(afterInvalid == 7)
+        let imported = try UsageMerge.save(rows: [row("2026-10-01", "12.5")], year: "2026", context: context)
+        precondition(imported.inserted == 1 && imported.updated == 0)
+        let updated = try UsageMerge.save(rows: [row("2026-10-01", "12.6")], year: "2026", context: context)
+        precondition(updated.inserted == 0 && updated.updated == 1)
+        let confirmed = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>()).first { $0.day == "2026-10-01" }!
+        precondition(confirmed.totalSeconds == 12.6 && confirmed.syncedAt != nil)
+        print("PASS: insert-only CSV; archive validation/import/update/atomicity; 7 completed days/year boundary/DST; local backfill")
     }
 }

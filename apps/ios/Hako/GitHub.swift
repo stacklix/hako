@@ -72,7 +72,13 @@ struct GitHubClient {
             struct Ref: Decodable {
                 struct Commit: Decodable {
                     struct File: Decodable {
-                        struct Object: Decodable { let text: String?; let isBinary: Bool?; let isTruncated: Bool? }
+                        struct Object: Decodable {
+                            struct Entry: Decodable { let name: String; let type: String }
+                            let text: String?
+                            let isBinary: Bool?
+                            let isTruncated: Bool?
+                            let entries: [Entry]?
+                        }
                         let object: Object?
                     }
                     let oid: String
@@ -115,6 +121,18 @@ struct GitHubClient {
       }
     }
     """
+    private static let yearsQuery = """
+    query HakoYears($owner: String!, $name: String!, $ref: String!, $path: String!) {
+      repository(owner: $owner, name: $name) {
+        ref(qualifiedName: $ref) {
+          target { ... on Commit {
+            oid
+            file(path: $path) { object { ... on Tree { entries { name type } } } }
+          } }
+        }
+      }
+    }
+    """
 
     private func graphql<T: Decodable>(_ query: String, variables: [String: Any], as: T.Type) async throws -> Envelope<T> {
         var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
@@ -135,13 +153,44 @@ struct GitHubClient {
         HakoError(message: "GitHub 同步失败：" + errors.map(\.message).joined(separator: "；") + "。本地记录已保留。")
     }
 
-    func push(directory: String, year: String, rows: [[String]]) async throws {
+    private func validate(directory: String) throws {
         try settings.validate()
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         guard !directory.isEmpty, directory.unicodeScalars.allSatisfy(allowed.contains) else {
             throw HakoError(message: "模块目录名称无效，请使用文字、数字、连字符或下划线。")
         }
         guard !token.isEmpty else { throw HakoError(message: "请先在设置中保存 GitHub Token。") }
+    }
+
+    func years(directory: String) async throws -> [String] {
+        try validate(directory: directory)
+        let repository = try settings.repository()
+        let snapshot = try await graphql(Self.yearsQuery, variables: [
+            "owner": repository.owner, "name": repository.name,
+            "ref": "refs/heads/" + settings.branch, "path": "data/\(directory)"
+        ], as: SnapshotData.self)
+        if let errors = snapshot.errors, !errors.isEmpty { throw failure(errors) }
+        guard let head = snapshot.data?.repository?.ref?.target else {
+            throw HakoError(message: "找不到仓库或分支 \(settings.branch)。请确认仓库已初始化、分支存在且 Token 有权访问。")
+        }
+        guard let file = head.file else { return [] }
+        guard let entries = file.object?.entries else {
+            throw HakoError(message: "远端模块路径不是有效目录，已停止同步。")
+        }
+        return entries.compactMap { entry in
+            guard entry.type == "blob", entry.name.range(of: #"^[0-9]{4}\.csv$"#, options: .regularExpression) != nil else { return nil }
+            return String(entry.name.prefix(4))
+        }.sorted()
+    }
+
+    // Return the exact merged rows from the successful snapshot/commit, including on a no-op.
+    @discardableResult
+    func push(directory: String, year: String, rows: [[String]]) async throws -> [[String]] {
+        try validate(directory: directory)
+        guard year.range(of: #"^[0-9]{4}$"#, options: .regularExpression) != nil else {
+            throw HakoError(message: "年度文件名称无效。")
+        }
+        _ = try rows.map { try DailyUsage.fromCSV($0, year: year) }
         let repository = try settings.repository()
         let path = "data/\(directory)/\(year).csv"
         for attempt in 0..<3 {
@@ -164,9 +213,12 @@ struct GitHubClient {
                 remote = text
             }
             let csv = try CSV.merge(remote: remote, local: rows, year: year)
+            let mergedRows = Array(try CSV.parse(csv).dropFirst())
+            // Validate values before uploading or importing them into the database.
+            _ = try mergedRows.map { try DailyUsage.fromCSV($0, year: year) }
             let existingDates = Set(try remote.map { try CSV.parse($0).dropFirst().map { $0[0] } } ?? [])
             let newDates = Set(rows.map { $0[0] }).subtracting(existingDates).sorted()
-            guard let first = newDates.first, let last = newDates.last else { return }
+            guard let first = newDates.first, let last = newDates.last else { return mergedRows }
             let dateLabel = first == last ? first : "\(first) ~ \(last)"
             let input: [String: Any] = [
                 "branch": ["repositoryNameWithOwner": "\(repository.owner)/\(repository.name)", "branchName": settings.branch],
@@ -187,7 +239,8 @@ struct GitHubClient {
             guard commit.signature?.isValid == true, commit.signature?.wasSignedByGitHub == true else {
                 throw HakoError(message: "数据已提交，但 GitHub 尚未确认签名有效。请在仓库检查提交 \(commit.oid) 的 Verified 状态。")
             }
-            return
+            return mergedRows
         }
+        throw HakoError(message: "GitHub 分支持续变化，请稍后重试合并。")
     }
 }
