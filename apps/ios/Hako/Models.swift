@@ -17,8 +17,14 @@ struct AppUsage: Codable, Hashable {
     var capturedAt: Date
     var syncedAt: Date?
     init(day: String, timeZone: String, totalSeconds: Double, apps: [AppUsage]) throws {
-        self.day = day; self.timeZone = timeZone; self.totalSeconds = totalSeconds
-        self.appsData = try JSONEncoder().encode(apps); self.capturedAt = .now
+        self.day = day; self.timeZone = timeZone; self.totalSeconds = totalSeconds.rounded()
+        // Round once after collection has aggregated usage, before persisting the record.
+        let roundedApps = apps.map { app in
+            var value = app
+            value.seconds = value.seconds.rounded()
+            return value
+        }
+        self.appsData = try JSONEncoder().encode(roundedApps); self.capturedAt = .now
     }
     var apps: [AppUsage] { (try? JSONDecoder().decode([AppUsage].self, from: appsData)) ?? [] }
     var csvRow: [String] {
@@ -76,10 +82,10 @@ struct AppUsage: Codable, Hashable {
         do {
             for record in incoming {
                 if let local = existing[record.day] {
-                    let localValues = local.apps.map { ($0.bundleID, $0.seconds) }
-                    let remoteValues = record.apps.map { ($0.bundleID, $0.seconds) }
-                    if local.timeZone != record.timeZone || local.totalSeconds != record.totalSeconds ||
-                        !localValues.elementsEqual(remoteValues, by: { $0.0 == $1.0 && $0.1 == $1.1 }) {
+                    // Compare at the exported whole-second precision. Local subsecond values,
+                    // app names/tokens and sync timestamps do not represent archive changes.
+                    let changed = local.csvRow != record.csvRow
+                    if changed {
                         // CSV has no display names or tokens; keep matching local app metadata.
                         let apps = record.apps.map { app in
                             let metadata = local.apps.first { $0.bundleID == app.bundleID }
@@ -91,7 +97,7 @@ struct AppUsage: Codable, Hashable {
                         local.totalSeconds = record.totalSeconds
                         result.updated += 1
                     }
-                    local.syncedAt = .now
+                    if changed || local.syncedAt == nil { local.syncedAt = .now }
                 } else {
                     record.syncedAt = .now
                     context.insert(record)

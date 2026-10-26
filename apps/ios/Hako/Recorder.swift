@@ -20,8 +20,8 @@ import AppIntents
         if !collect {
             let client = GitHubClient(settings: .load(), token: try TokenStore.read())
             let result = try await UsageSync.merge(context: context, client: client, directory: syncDirectory)
-            guard result.days > 0 else { return "本地和 GitHub 均没有使用时间记录，请先获取app使用时间。" }
-            return "合并完成：共 \(result.days) 天，本地新增 \(result.inserted) 天，更新 \(result.updated) 天；GitHub 缺失日期已补齐。同一天以 GitHub 记录为准。"
+            let summary = "合并完成：共 \(result.days) 天。本地新增 \(result.inserted) 天，GitHub 新增 \(result.githubInserted) 天，本地更新 \(result.updated) 天。"
+            return result.days == 0 ? summary + "双方均没有记录，请先获取app使用时间。" : summary
         }
         let all = try context.fetch(FetchDescriptor<DailyUsage>(sortBy: [SortDescriptor(\DailyUsage.day)]))
         guard !all.isEmpty else {

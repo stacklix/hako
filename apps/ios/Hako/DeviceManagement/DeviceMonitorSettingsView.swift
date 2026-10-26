@@ -16,9 +16,19 @@ struct DeviceMonitorSettingsView: View {
     var body: some View {
         Form {
             Section("服务器连接") {
-                TextField("https://monitor.example.com", text: $url).keyboardType(.URL)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("账号", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("服务器地址").font(.subheadline).foregroundStyle(.secondary)
+                    TextField("https://monitor.example.com", text: $url)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityLabel("服务器地址")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("账号").font(.subheadline).foregroundStyle(.secondary)
+                    TextField("输入账号", text: $username)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityLabel("账号")
+                }
                 Button("保存服务器配置") { Task { await client.saveServer(url, username: username) } }
             }.disabled(client.busy)
 

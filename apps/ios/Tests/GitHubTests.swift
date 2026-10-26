@@ -85,7 +85,7 @@ final class MockProtocol: URLProtocol {
             return try success()
         }
         let initialRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
-        precondition(initialRows.count == 2)
+        precondition(initialRows.rows.count == 2 && initialRows.inserted == 2)
         precondition(calls == 2)
 
         // A concurrent writer inserts one date. Retry must preserve its value.
@@ -105,14 +105,26 @@ final class MockProtocol: URLProtocol {
             return try success()
         }
         let concurrentRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14"), row("2026-10-13")])
-        precondition(concurrentRows[1][2] == "999") // Import the final retry, not the stale snapshot.
+        precondition(concurrentRows.rows[1][2] == "999") // Import the final retry, not the stale snapshot.
+        precondition(concurrentRows.inserted == 1) // The concurrent writer's date is not ours.
         precondition(calls == 4)
 
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try snapshot(CSV.encode([CSV.header, row("2026-10-14", "999")])) }
         let unchangedRows = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")])
-        precondition(unchangedRows == [row("2026-10-14", "999")])
+        precondition(unchangedRows.rows == [row("2026-10-14", "999")] && unchangedRows.inserted == 0)
         precondition(calls == 1) // No mutation, even if the existing value differs.
+
+        // A retry can find every missing date already filled by another writer.
+        calls = 0
+        MockProtocol.handler = { _ in
+            calls += 1
+            if calls == 1 { return try snapshot() }
+            if calls == 2 { return try json(["errors": [["type": "STALE_DATA", "message": "Branch moved"]]]) }
+            return try snapshot(CSV.encode([CSV.header, row("2026-10-14")]))
+        }
+        let concurrentNoOp = try await client.push(directory: "screen-time", year: "2026", rows: [row("2026-10-14")])
+        precondition(concurrentNoOp.inserted == 0 && calls == 3)
 
         calls = 0
         MockProtocol.handler = { req in
@@ -209,28 +221,38 @@ final class MockProtocol: URLProtocol {
             return try success()
         }
         let restored = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
-        precondition(restored.inserted == 2 && restored.days == 2 && mutations == 0)
+        precondition(restored.inserted == 2 && restored.updated == 0 && restored.githubInserted == 0 && restored.days == 2 && mutations == 0)
         let recovered = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>())
         precondition(recovered.count == 2 && recovered.allSatisfy { $0.syncedAt != nil })
 
         let local = try context.fetch(FetchDescriptor<DailyUsage>()).first { $0.day == "2026-10-14" }!
+        // Simulate old fractional records: equivalent integer seconds are still not updates.
+        local.totalSeconds = 999.2
+        local.appsData = try JSONEncoder().encode([AppUsage(bundleID: "com.example.app", name: "本地名称", seconds: 99.4, applicationTokenData: Data([1, 2]))])
+        try context.save()
+        let previousSync = local.syncedAt
+        let equivalentMerge = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
+        precondition(equivalentMerge.inserted == 0 && equivalentMerge.updated == 0 && equivalentMerge.githubInserted == 0 && mutations == 0)
+        precondition(local.totalSeconds == 999.2 && local.apps[0].seconds == 99.4 && local.syncedAt == previousSync)
+
         local.totalSeconds = 10
         local.appsData = try JSONEncoder().encode([AppUsage(bundleID: "com.example.app", name: "本地名称", seconds: 1, applicationTokenData: Data([1, 2]))])
         for day in ["2025-12-31", "2026-10-15"] {
-            context.insert(try DailyUsage(day: day, timeZone: "Asia/Shanghai", totalSeconds: 120, apps: []))
+            context.insert(try DailyUsage(day: day, timeZone: "Asia/Shanghai", totalSeconds: 120.2, apps: []))
         }
         try context.save()
         remoteFiles["2026"] = CSV.encode([CSV.header, row("2026-10-13"), archivedApp])
         let union = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
-        precondition(union.inserted == 1 && union.updated == 1 && union.days == 5 && mutations == 2)
+        precondition(union.inserted == 1 && union.updated == 1 && union.githubInserted == 2 && union.days == 5 && mutations == 2)
         precondition(local.totalSeconds == 999 && local.apps[0].seconds == 99)
         precondition(local.apps[0].name == "本地名称" && local.apps[0].applicationTokenData == Data([1, 2]))
         let persisted = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>())
         precondition(persisted.count == 5 && persisted.allSatisfy { $0.syncedAt != nil })
+        precondition(persisted.first { $0.day == "2025-12-31" }!.totalSeconds == 120)
         precondition(tryRows(remoteFiles["2025"]!)[1][0] == "2025-12-31")
         precondition(tryRows(remoteFiles["2026"]!).map { $0[0] } == ["date", "2026-10-13", "2026-10-14", "2026-10-15"])
         let repeatMerge = try await UsageSync.merge(context: context, client: client, directory: "screen-time")
-        precondition(repeatMerge.inserted == 0 && repeatMerge.updated == 0 && repeatMerge.days == 5 && mutations == 2)
+        precondition(repeatMerge.inserted == 0 && repeatMerge.updated == 0 && repeatMerge.githubInserted == 0 && repeatMerge.days == 5 && mutations == 2)
 
         // Invalid remote values and network failures leave the saved local data intact.
         remoteFiles["2026"] = CSV.encode([CSV.header, row("2026-10-14", "NaN")])
@@ -244,7 +266,7 @@ final class MockProtocol: URLProtocol {
         let emptyContainer = try ModelContainer(for: DailyUsage.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         MockProtocol.handler = { _ in try directory() }
         let empty = try await UsageSync.merge(context: ModelContext(emptyContainer), client: client, directory: "screen-time")
-        precondition(empty.days == 0 && empty.inserted == 0)
+        precondition(empty.days == 0 && empty.inserted == 0 && empty.updated == 0 && empty.githubInserted == 0)
 
         let builds = BuildStatusClient(session: URLSession(configuration: config), token: "test-token")
         calls = 0

@@ -65,6 +65,11 @@ struct GitHubClient {
     let token: String
     var session: URLSession = .shared
 
+    struct PushResult {
+        let rows: [[String]]
+        let inserted: Int
+    }
+
     private struct APIError: Decodable { let message: String; let type: String? }
     private struct Envelope<T: Decodable>: Decodable { let data: T?; let errors: [APIError]? }
     private struct SnapshotData: Decodable {
@@ -183,9 +188,9 @@ struct GitHubClient {
         }.sorted()
     }
 
-    // Return the exact merged rows from the successful snapshot/commit, including on a no-op.
+    // Count only dates added by the successful commit, after any concurrency retries.
     @discardableResult
-    func push(directory: String, year: String, rows: [[String]]) async throws -> [[String]] {
+    func push(directory: String, year: String, rows: [[String]]) async throws -> PushResult {
         try validate(directory: directory)
         guard year.range(of: #"^[0-9]{4}$"#, options: .regularExpression) != nil else {
             throw HakoError(message: "年度文件名称无效。")
@@ -218,7 +223,9 @@ struct GitHubClient {
             _ = try mergedRows.map { try DailyUsage.fromCSV($0, year: year) }
             let existingDates = Set(try remote.map { try CSV.parse($0).dropFirst().map { $0[0] } } ?? [])
             let newDates = Set(rows.map { $0[0] }).subtracting(existingDates).sorted()
-            guard let first = newDates.first, let last = newDates.last else { return mergedRows }
+            guard let first = newDates.first, let last = newDates.last else {
+                return PushResult(rows: mergedRows, inserted: 0)
+            }
             let dateLabel = first == last ? first : "\(first) ~ \(last)"
             let input: [String: Any] = [
                 "branch": ["repositoryNameWithOwner": "\(repository.owner)/\(repository.name)", "branchName": settings.branch],
@@ -239,7 +246,7 @@ struct GitHubClient {
             guard commit.signature?.isValid == true, commit.signature?.wasSignedByGitHub == true else {
                 throw HakoError(message: "数据已提交，但 GitHub 尚未确认签名有效。请在仓库检查提交 \(commit.oid) 的 Verified 状态。")
             }
-            return mergedRows
+            return PushResult(rows: mergedRows, inserted: newDates.count)
         }
         throw HakoError(message: "GitHub 分支持续变化，请稍后重试合并。")
     }

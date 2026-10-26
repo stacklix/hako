@@ -5,6 +5,7 @@ import SwiftData
     struct Result {
         var inserted = 0
         var updated = 0
+        var githubInserted = 0
         var days = 0
     }
 
@@ -16,11 +17,12 @@ import SwiftData
         var result = Result()
         for year in years {
             try Task.checkCancellation()
-            let rows = try await client.push(directory: directory, year: year, rows: (grouped[year] ?? []).map(\.csvRow))
-            let saved = try UsageMerge.save(rows: rows, year: year, context: context)
+            let pushed = try await client.push(directory: directory, year: year, rows: (grouped[year] ?? []).map(\.csvRow))
+            let saved = try UsageMerge.save(rows: pushed.rows, year: year, context: context)
             result.inserted += saved.inserted
             result.updated += saved.updated
-            result.days += rows.count
+            result.githubInserted += pushed.inserted
+            result.days += pushed.rows.count
         }
         return result
     }

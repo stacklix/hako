@@ -20,7 +20,7 @@ import SwiftData
             catch is HakoError { }
         }
         let recoveredRow = try DailyUsage.fromCSV(row("2026-01-02", "12.5"), year: "2026")
-        precondition(recoveredRow.totalSeconds == 12.5 && recoveredRow.apps.isEmpty)
+        precondition(recoveredRow.totalSeconds == 13 && recoveredRow.apps.isEmpty)
         var missingAppSeconds = row("2026-01-01", "120")
         missingAppSeconds[3] = "com.example.app"
         var duplicateApps = row("2026-01-01", "120")
@@ -46,10 +46,12 @@ import SwiftData
         precondition(dstWeek.reduce(0) { $0 + $1.interval.duration } == 167 * 3600)
         let container = try ModelContainer(for: DailyUsage.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
         let context = ModelContext(container)
-        let record = try DailyUsage(day: "2026-10-14", timeZone: "Asia/Shanghai", totalSeconds: 3600, apps: [AppUsage(bundleID: "test", name: "测试", seconds: 100)])
+        let record = try DailyUsage(day: "2026-10-14", timeZone: "Asia/Shanghai", totalSeconds: 3600.5, apps: [AppUsage(bundleID: "test", name: "测试", seconds: 100.4, applicationTokenData: Data([1, 2, 3]))])
         context.insert(record); try context.save()
         let saved = try context.fetch(FetchDescriptor<DailyUsage>())
         precondition(saved.count == 1 && saved[0].apps[0].name == "测试" && saved[0].syncedAt == nil)
+        precondition(saved[0].totalSeconds == 3601 && saved[0].apps[0].seconds == 100)
+        precondition(saved[0].apps[0].applicationTokenData == Data([1, 2, 3]))
         saved[0].totalSeconds = 7200; try context.save()
         let count = try context.fetchCount(FetchDescriptor<DailyUsage>()); precondition(count == 1)
         let week = UsageDay.recentWeek(now: iso.date(from: "2026-10-15T10:00:00Z")!, timeZone: TimeZone(identifier: "Asia/Shanghai")!)
@@ -81,10 +83,18 @@ import SwiftData
         precondition(afterInvalid == 7)
         let imported = try UsageMerge.save(rows: [row("2026-10-01", "12.5")], year: "2026", context: context)
         precondition(imported.inserted == 1 && imported.updated == 0)
+        // Imported fractions are rounded before storage; equivalent values are not updates.
+        let original = try context.fetch(FetchDescriptor<DailyUsage>()).first { $0.day == "2026-10-01" }!
+        let originalSync = original.syncedAt
+        let equivalent = try UsageMerge.save(rows: [row("2026-10-01", "13")], year: "2026", context: context)
+        precondition(equivalent.inserted == 0 && equivalent.updated == 0)
+        precondition(original.totalSeconds == 13 && original.syncedAt == originalSync)
         let updated = try UsageMerge.save(rows: [row("2026-10-01", "12.6")], year: "2026", context: context)
-        precondition(updated.inserted == 0 && updated.updated == 1)
+        precondition(updated.inserted == 0 && updated.updated == 0)
+        let changed = try UsageMerge.save(rows: [row("2026-10-01", "13.6")], year: "2026", context: context)
+        precondition(changed.inserted == 0 && changed.updated == 1)
         let confirmed = try ModelContext(container).fetch(FetchDescriptor<DailyUsage>()).first { $0.day == "2026-10-01" }!
-        precondition(confirmed.totalSeconds == 12.6 && confirmed.syncedAt != nil)
+        precondition(confirmed.totalSeconds == 14 && confirmed.syncedAt != nil)
         print("PASS: insert-only CSV; archive validation/import/update/atomicity; 7 completed days/year boundary/DST; local backfill")
     }
 }
