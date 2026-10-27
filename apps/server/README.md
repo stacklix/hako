@@ -6,19 +6,24 @@
 
 ## Docker 部署
 
-### 自动打包镜像
+### 自动发布镜像到 GHCR
 
-GitHub Actions 工作流 [Server Docker](../../.github/workflows/server-docker.yml) 自动构建 Linux amd64 镜像。镜像压缩包 `hako-server.tar.gz` 保存在对应运行的 `Hako-Server-Docker` 构建产物中，无需配置镜像仓库凭据。
+GitHub Actions 工作流 [Server Docker](../../.github/workflows/server-docker.yml) 自动构建 Linux amd64 镜像并发布到 `ghcr.io/stacklix/hako-server`，使用自带的 `GITHUB_TOKEN` 和仅授予发布任务的 `packages: write` 权限，无需另配仓库密码或 PAT。发布结果取代原来的镜像压缩包构建产物。
 
-- `master`：仅在 `apps/server/` 有变更时打包，对比本次推送前后的提交，镜像带有 `latest`、`master` 和 `sha-<短提交号>` 标签。仅修改 iOS、Windows 或仓库级文档时跳过。
-- tag：推送任意 tag 都打包，不过滤路径，镜像带有对应 tag 和 `sha-<短提交号>` 标签。tag 名中的 `/` 等字符由 Docker metadata action 转换为合法镜像标签字符。
-- 删除分支或 tag 时不打包。
+- `master`：在 `apps/server/` 或镜像工作流有变更时发布，对比本次推送前后的提交，镜像带有 `latest`、`master` 和 `sha-<短提交号>` 标签。仅修改 iOS、Windows 或仓库级文档时跳过。
+- tag：推送任意 tag 都发布，不过滤路径，镜像带有对应 tag 和 `sha-<短提交号>` 标签。tag 名中的 `/` 等字符由 Docker metadata action 转换为合法镜像标签字符。
+- 手动运行：在 Actions 中执行 Run workflow，按所选分支或 tag 生成标签；选择 `master` 时也更新 `latest`。
+- 删除分支或 tag 时不发布。
 
-下载并解压构建产物后导入镜像：
+服务器直接拉取：
 
 ```sh
-docker load -i hako-server.tar.gz
+docker pull ghcr.io/stacklix/hako-server:latest
 ```
+
+GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性改为 Public；私有包需要先通过 `docker login ghcr.io` 登录，使用拥有该包读取权限且具有 `read:packages` scope 的 PAT（classic），通过 `--password-stdin` 传入。工作流发布使用的 `GITHUB_TOKEN` 无需手工配置该 PAT。参见 [GHCR 官方文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
+
+使用发布镜像部署时，将下方初始化命令中的镜像名换为 `ghcr.io/stacklix/hako-server:latest`；将 Compose 的 `build: .` 换为 `image: ghcr.io/stacklix/hako-server:latest`，完成配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
 
 ### 本地构建与启动
 
