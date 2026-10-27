@@ -1,5 +1,6 @@
 {
   "username": "owner",
+  "masterKey": "",
   "agents": [],
   "consoles": [
     {

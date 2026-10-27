@@ -25,24 +25,32 @@ docker load -i hako-server.tar.gz
 以下命令从 `apps/server/` 执行，面向 Linux Docker 主机。
 
 ```sh
-mkdir -p secrets config
+mkdir -p data config
 docker build -t hako-server .
 docker run --rm --user 0 \
-  -v "$PWD/secrets:/secrets" \
-  -e HAKO_MASTER_KEY_FILE=/secrets/master.key \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/config:/app/config" \
   --entrypoint sh hako-server \
-  -c 'hako-server init && chown 10001:10001 /secrets/master.key'
-chmod 700 secrets
-cp deploy/server.example.json config/server.json
+  -c 'hako-server init && chown 10001:10001 /app/data /app/config /app/config/server.json && chmod 700 /app/data /app/config'
 ```
 
-`init` 只生成数据库加密密钥 `master.key`，拒绝覆盖已有文件。它不用于登录，也不是设备私钥；密钥和 SQLite 数据必须一起备份。
+`init` 创建 `config/server.json`，自动生成 `masterKey`，账号默认为 `owner`，设备列表为空；已有配置文件不会被覆盖。`masterKey` 是 32 字节随机数据的不带补位 Base64URL 编码，共 43 个字符，用于加密持久化业务状态和生成刷新令牌。配置与 SQLite 数据需要一起备份。
+
+持久化文件均位于 `compose.yaml` 旁，挂载关系如下：
+
+| 宿主机路径 | 容器路径 | 用途 |
+| --- | --- | --- |
+| `./data/` | `/app/data/` | SQLite 数据，允许服务端读写 |
+| `./config/` | `/app/config/` | 主密钥、账号、设备配置与公钥，只读 |
+
+主密钥与 Console 公钥配置统一保存在 `config/server.json`。手工配置时可参考 [deploy/server.example.json](deploy/server.example.json)，其 `masterKey` 留空，需要填入生成的实际密钥。
 
 先在 iOS「设备监控 → 设置 → 本机设备身份」打开「查看与导出公钥」，在 sheet 中查看、复制 PEM 内容或导出 `iphone.public.pem`。无需配置服务器、联网或登录。把这个公钥放入服务器 `config/`，编辑 `config/server.json`：
 
 ```json
 {
   "username": "owner",
+  "masterKey": "保留 init 生成的 43 字符密钥",
   "agents": [],
   "consoles": [
     { "name": "我的 iPhone", "publicKeyFile": "/app/config/iphone.public.pem" }
@@ -52,7 +60,7 @@ cp deploy/server.example.json config/server.json
 
 可配置多台 Console，每台使用独立 P-256 公钥，均具有管理员权限；也可用 `publicKeyPem` 直接填写 PEM 公钥字符串。私钥始终保留在 iPhone。未登记 Console 时，网页会提示手工配置，不能登录。
 
-Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动或旧库迁移时从配置导入，之后由数据库和 Web 管理页即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
+Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动时从配置导入，之后由数据库和 Web 管理页即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
 
 ```sh
 HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
@@ -60,7 +68,7 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 
 将实际的 `HAKO_PUBLIC_URL` 写入本目录 `.env` 可避免每次输入。地址必须是外部客户端实际访问的 HTTPS 根地址，不带路径、查询或 fragment，三端地址需保持一致。Compose 仅将 HTTP 端口暴露到主机 `127.0.0.1:8080`。在主机配置 HTTPS 反向代理，Caddy 示例见 [deploy/Caddyfile.example](deploy/Caddyfile.example)，支持 WebSocket Upgrade。
 
-容器使用非 root 用户、只读根文件系统、持久化数据卷、健康检查和自动重启。Windows Docker 或其他 UID 映射环境需要相应设置密钥文件读权限，确保容器 UID 10001 可读。
+编辑配置时保留 `init` 生成的 `masterKey`。容器使用非 root 用户、只读根文件系统、宿主机数据目录挂载、健康检查和自动重启。Windows Docker 或其他 UID 映射环境需要相应设置权限，确保容器 UID 10001 可读写 `data/`、可读 `config/` 中的配置与公钥。
 
 ## Web 管理页
 
@@ -79,8 +87,6 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 
 管理页使用 HttpOnly、SameSite=Strict 的独立会话 Cookie，HTTPS 下启用 Secure 和 `__Host-`；修改请求还校验 origin 和 CSRF。网页会话闲置 30 分钟、登录 12 小时、主动退出或服务重启后失效，状态轮询不续期。网页还绑定批准它的 Console 会话：Console 退出、被撤销或重新主动登录替换旧会话后，关联网页会话失效。Console 长期凭据不会传给网页。
 
-已有部署升级时，将所有可信 Console 公钥明确写入 `server.json`。旧版曾在网页添加、但未写入文件的 Console 不再被信任；原有可信 Console 会话和 Agent 清单保留。旧 `admin.key`、`HAKO_ADMIN_KEY_FILE` 和 `init-admin` 不再使用，更新 Compose 后重新部署即可。不要删除数据库；备份数据卷、`master.key`、配置及 Console 公钥文件。
-
 ## 设备调用接口
 
 - Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
@@ -89,7 +95,7 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
 - Agent 使用 WebSocket v2，在 `hello.methods` 中声明动作名与版本；设备列表和管理概览返回当前连接的 `methods`。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
 
-这是不兼容的协议更新：旧 `/metrics/query` 路由和 Agent v1 已移除，服务端、Windows Agent、iOS Console 需同步更新。超时、断线可能发生在动作已经执行之后，有副作用的动作应先确认结果再决定是否重试。具体格式及限制见[设备监控协议](../../docs/device-monitoring.md)。
+超时、断线可能发生在动作已经执行之后，有副作用的动作应先确认结果再决定是否重试。具体格式及限制见[设备监控协议](../../docs/device-monitoring.md)。
 
 ## 登记设备
 
@@ -132,7 +138,7 @@ go run ./cmd/hako-server
 
 独立 Linux x64 二进制统一输出到仓库根目录 `dist/server/hako-server-linux-amd64`：Windows 执行 `./scripts/publish.ps1`，Linux/macOS 执行 `bash scripts/publish.sh`。CI 同时提供该产物；Docker 部署继续使用本目录的 Dockerfile 和 Compose 配置。
 
-默认配置文件 `config/server.json`、数据目录 `data/`、密钥文件 `secrets/master.key`；可通过 `HAKO_CONFIG_FILE`、`HAKO_DATA_DIR`、`HAKO_MASTER_KEY_FILE` 覆盖。`HAKO_LISTEN` 默认 `:8080`。本地开发默认公开地址 `http://localhost:8080`；仅 loopback 允许 HTTP。iOS 始终要求 HTTPS。
+默认配置文件 `config/server.json`、数据目录 `data/`；可通过 `HAKO_CONFIG_FILE`、`HAKO_DATA_DIR` 覆盖。主密钥在配置文件的 `masterKey` 字段中维护。`HAKO_LISTEN` 默认 `:8080`。本地开发默认公开地址 `http://localhost:8080`；仅 loopback 允许 HTTP。iOS 始终要求 HTTPS。
 
 测试覆盖 Console 和 Agent 认证、签名重放、长期会话、轮换恢复、退出、查询转发、离线和超时，以及二维码过期、拒绝、刷新、浏览器绑定、一次性领取、确认码与签名 nonce、Console 撤销联动、Cookie/CSRF、并发 Agent 登记及配置迁移。网页和二维码生成功能内嵌于二进制，无需 CDN 或前端运行依赖。
 

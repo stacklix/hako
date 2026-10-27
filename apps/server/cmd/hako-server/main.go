@@ -29,7 +29,15 @@ func main() {
 		log.Fatal(err)
 	}
 }
-func createSecret(path string) error {
+
+type fileConfig struct {
+	Username  string                 `json:"username"`
+	MasterKey string                 `json:"masterKey"`
+	Agents    []server.AgentConfig   `json:"agents"`
+	Consoles  []server.ConsoleConfig `json:"consoles"`
+}
+
+func createConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -37,35 +45,53 @@ func createSecret(path string) error {
 	if _, err := rand.Read(b); err != nil {
 		return err
 	}
+	configuration := fileConfig{Username: "owner", MasterKey: base64.RawURLEncoding.EncodeToString(b), Agents: []server.AgentConfig{}, Consoles: []server.ConsoleConfig{}}
+	data, err := json.MarshalIndent(configuration, "", "  ")
+	if err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return fmt.Errorf("refusing to overwrite secret %s: %w", path, err)
+		return fmt.Errorf("cannot create configuration %s (existing files are never overwritten): %w", path, err)
 	}
-	_, err = f.WriteString(base64.RawURLEncoding.EncodeToString(b) + "\n")
+	_, err = f.Write(append(data, '\n'))
 	closeErr := f.Close()
 	if err != nil {
 		return err
 	}
 	return closeErr
 }
+
+func loadConfig(path string) (fileConfig, []byte, error) {
+	var configuration fileConfig
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return configuration, nil, err
+	}
+	if err = json.Unmarshal(data, &configuration); err != nil {
+		return configuration, nil, fmt.Errorf("invalid server configuration: %w", err)
+	}
+	key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(configuration.MasterKey))
+	if err != nil || len(key) != 32 {
+		return configuration, nil, fmt.Errorf("masterKey must be an unpadded Base64URL encoding of 32 bytes")
+	}
+	return configuration, key, nil
+}
+
 func run() error {
 	dataDir := env("HAKO_DATA_DIR", "./data")
-	keyPath := env("HAKO_MASTER_KEY_FILE", "./secrets/master.key")
+	configPath := env("HAKO_CONFIG_FILE", "./config/server.json")
 	if len(os.Args) > 1 && os.Args[1] != "init" && os.Args[1] != "revoke-consoles" {
 		return fmt.Errorf("unknown command; supported commands: init, revoke-consoles")
 	}
 	if len(os.Args) > 1 && os.Args[1] == "init" {
-		if err := createSecret(keyPath); err != nil {
+		if err := createConfig(configPath); err != nil {
 			return err
 		}
-		fmt.Println("Created master key file. Keep it private and back it up with the database.")
+		fmt.Println("Created server configuration with a master key. Add trusted Console public keys before starting the server. Keep the configuration private and back it up with the database.")
 		return nil
 	}
-	keyText, err := os.ReadFile(keyPath)
-	if err != nil {
-		return err
-	}
-	key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(keyText)))
+	configuration, key, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
@@ -75,18 +101,6 @@ func run() error {
 	database := filepath.Join(dataDir, "hako.db")
 	if len(os.Args) > 1 && os.Args[1] == "revoke-consoles" {
 		return server.RevokeConsoles(database, key)
-	}
-	var configuration struct {
-		Username string                 `json:"username"`
-		Agents   []server.AgentConfig   `json:"agents"`
-		Consoles []server.ConsoleConfig `json:"consoles"`
-	}
-	configData, err := os.ReadFile(env("HAKO_CONFIG_FILE", "./config/server.json"))
-	if err != nil {
-		return err
-	}
-	if err = json.Unmarshal(configData, &configuration); err != nil {
-		return err
 	}
 	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), Agents: configuration.Agents})
 	if err != nil {
