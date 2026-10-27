@@ -1,0 +1,103 @@
+name: Server Docker
+
+on:
+  push:
+    branches: [master]
+    tags: ['**']
+    paths: ['apps/server/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    outputs:
+      server: ${{ steps.changes.outputs.server }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Decide whether to build the server image
+        id: changes
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # Always package tags, including releases with no server changes.
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            echo 'server=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          head=$(git rev-parse HEAD)
+          empty_tree=$(git hash-object -t tree /dev/null)
+          if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            base=$empty_tree
+          else
+            base=$PUSH_BEFORE
+            # A force push can leave the previous commit outside the fetched history.
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$base"
+            fi
+          fi
+
+          if git diff --quiet "$base" "$head" -- apps/server/; then
+            echo 'server=false' >> "$GITHUB_OUTPUT"
+            echo 'No server changes; skipping image build.'
+          else
+            status=$?
+            if [[ "$status" != 1 ]]; then
+              exit "$status"
+            fi
+            echo 'server=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Generate image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: hako-server
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+      - name: Build and export server image
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/server
+          file: apps/server/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=${{ runner.temp }}/hako-server.tar
+          cache-from: type=gha,scope=server-docker
+          cache-to: type=gha,mode=max,scope=server-docker
+      - name: Compress image archive
+        run: gzip -1 "$RUNNER_TEMP/hako-server.tar"
+      - name: Upload Docker image archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: Hako-Server-Docker
+          path: ${{ runner.temp }}/hako-server.tar.gz
+          compression-level: 0
+          if-no-files-found: error
