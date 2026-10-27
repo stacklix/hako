@@ -1,6 +1,7 @@
 services:
   server:
-    build: .
+    image: ghcr.io/stacklix/hako-server:latest
+    container_name: hako-server
     restart: unless-stopped
     environment:
       HAKO_PUBLIC_URL: ${HAKO_PUBLIC_URL:?Set HAKO_PUBLIC_URL to the public HTTPS origin}
