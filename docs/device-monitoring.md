@@ -1,6 +1,8 @@
-# 设备监控协议 v1
+# 设备监控协议 v2
 
 单用户、多设备。Windows 为 Agent，iOS 为 Console，服务端为设备管理服务。三端各自实现协议，不共享代码包。
+
+本版统一使用通用设备请求，移除旧的 `/metrics/query` 接口和 Agent v1 消息协议，不提供兼容层。部署时同步更新服务端、Windows Agent 和 iOS Console；认证、会话与扫码登录 HTTP 路径保持不变。
 
 ## 配置与身份
 
@@ -46,20 +48,56 @@ Console 只接受当前 HTTPS 服务器的二维码，带现有 DPoP 会话 GET 
 | `POST /api/v1/auth/logout` | 撤销当前会话 |
 | `GET /api/v1/sessions` | 查看已登录的管理设备 |
 | `DELETE /api/v1/sessions/{id}` | 撤销指定会话 |
-| `GET /api/v1/agents` | 返回 `agents` 数组：`id,name,platform,online,lastSeen` |
-| `POST /api/v1/agents/{id}/metrics/query` | 同步等待设备本次采样，默认最多 10 秒 |
+| `GET /api/v1/agents` | 返回 `agents` 数组：`id,name,platform,online,lastSeen,methods` |
+| `POST /api/v1/agents/{id}/requests` | 转发通用动作请求，默认最多等待 10 秒 |
 
 网络错误保留登录凭据；明确会话撤销后才进入重新登录流程。离线退出持久标记 `logoutPending`，停止本地使用并在下次联网时尝试服务端撤销。
+
+## 通用设备调用
+
+Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/api/agents/{id}/requests`。两者共用同一转发实现，各自沿用 DPoP 或 Cookie/CSRF 认证；所有可信 Console 及其批准的网页会话都具有管理员权限，可以调用 Agent 声明的动作。
+
+请求必须为 JSON 对象，包含 `method` 和对象类型的 `params`（无参数时传 `{}`），不接受额外顶层字段。请求正文上限 16 KiB：
+
+```json
+{"method":"system.metrics","params":{}}
+```
+
+服务端只校验消息格式和动作是否在当前连接的能力清单中，不解析业务参数、不校验具体指标，也不按动作建立 HTTP 路由。参数及结果使用原始 JSON 转发，保留嵌套字段和大整数精度。新增字段、动作、参数和业务错误码通常只需更新 Agent 和相应客户端，无需更新服务端。
+
+设备列表和网页 `overview` 中的每台设备包含 `methods`：
+
+```json
+{"id":"pc","name":"PC","platform":"windows","online":true,"lastSeen":"2026-10-27T10:00:00Z","methods":[{"name":"system.metrics","version":1}]}
+```
+
+能力清单由 Agent 在认证连接的 `hello` 中上报，包含 1–64 个不重复动作。动作名称最长 100 字符，格式为小写字母开头的点分段名称（段内允许小写字母、数字、下划线，例如 `disk.metrics`、`process.list`），版本为正整数。版本用于客户端选择可理解的参数与结果，不由服务端解释。离线设备的 `methods` 为空数组；能力变化需重连，重复设备连接使用最新已认证连接的清单。Agent 只能执行自身注册的动作。
+
+HTTP 成功转发后统一返回 200，正文为以下两种结构之一；动作执行失败也以 200 返回业务错误，客户端必须检查 `error`：
+
+```json
+{"result":{"cpuUsagePercent":12.3,"memoryUsagePercent":50,"memoryUsedBytes":8589934592,"memoryTotalBytes":17179869184,"sampledAt":"2026-10-25T10:00:00Z","sampleWindowMs":1000}}
+```
+
+```json
+{"error":{"code":"sample_failed","message":"设备采样失败。"}}
+```
+
+`result` 可以是任意 JSON 值（包含数组、标量和 `null`），必须与 `error` 二选一。错误码为 1–80 位英文字母、数字、下划线或连字符，错误信息最多 1024 个 UTF-8 字节。服务端不维护业务错误码列表。
+
+鉴权、转发失败仍使用 HTTP 错误状态和 `{"error":"错误码"}`：参数格式无效或动作未声明为 400（`invalid_request` / `unsupported_method`），离线或连接中断为 409，并发上限为 429，超时为 504。超时或断线不代表动作未执行，也不会自动取消 Agent 上的动作；客户端不得自动重试有副作用的动作，应先确认执行结果。需要流式响应、超过消息大小/等待时限的任务或新的权限规则时，仍需扩展协议与服务端。
+
+当前 Windows 注册 `system.metrics` v1，参数为 `{}`，结果为本次 CPU 与物理内存采样；额外参数返回 `invalid_params`。网页保留指标展示，同时提供基于能力清单的动作选择、JSON 参数输入和 JSON 结果查看；iOS 通过通用调用解码系统指标，新增专用展示需更新客户端。
 
 ## Agent WebSocket
 
 端点 `/ws/agent`，JSON 文本消息，最大 64 KiB。建立连接后 10 秒内认证。
 
 ```json
-{"type":"hello","version":1,"username":"owner","keyId":"公钥指纹"}
+{"type":"hello","version":2,"username":"owner","keyId":"公钥指纹","methods":[{"name":"system.metrics","version":1}]}
 ```
 
-`keyId=base64url(SHA256(SPKI_DER))`。服务端查找预登记 RSA 公钥，返回 `{"type":"challenge","payload":"标准 Base64"}`。payload 以 `hako-agent-auth/v1\n` 开头，绑定 origin、账号、keyId 以及随机数；Windows 检查前缀绑定后，用 RSA-PSS/SHA-256（salt 长度 32 字节）对原始 payload 字节签名，返回：
+`keyId=base64url(SHA256(SPKI_DER))`。服务端查找预登记 RSA 公钥，返回 `{"type":"challenge","payload":"标准 Base64"}`。payload 以 `hako-agent-auth/v2\n` 开头，绑定 origin、账号、keyId 以及随机数；Windows 检查前缀绑定后，用 RSA-PSS/SHA-256（salt 长度 32 字节）对原始 payload 字节签名，返回：
 
 ```json
 {"type":"authenticate","signature":"标准 Base64"}
@@ -67,10 +105,10 @@ Console 只接受当前 HTTPS 服务器的二维码，带现有 DPoP 会话 GET 
 
 成功返回 `type=authenticated,agentId,name`。身份验证失败以 WebSocket 1008 关闭。重复设备连接仅保留最新的已认证连接。服务端每 20 秒发送 `{"type":"ping"}`，Agent 返回 `{"type":"pong"}`；60 秒未收到有效消息断开。
 
-查询消息：
+动作请求消息：
 
 ```json
-{"type":"request","id":"随机请求 ID","method":"system.metrics"}
+{"type":"request","id":"随机请求 ID","method":"system.metrics","params":{}}
 ```
 
 结果消息：
@@ -90,10 +128,10 @@ Console 只接受当前 HTTPS 服务器的二维码，带现有 DPoP 会话 GET 
 }
 ```
 
-失败返回 `type=response,id,error=sample_failed`，不伪造零值。服务端按当前设备连接和请求 ID 匹配，超时或旧连接响应不会作为新查询结果。每设备最多 4 个待处理查询，服务全局最多 32 个。
+失败返回 `{"type":"response","id":"原请求 ID","error":{"code":"sample_failed","message":"设备采样失败。"}}`，不伪造零值。缺失结果、同时包含结果与错误或错误结构无效会断开连接。服务端按当前设备连接和请求 ID 匹配，超时或旧连接响应不会作为新查询结果。每设备最多 4 个待处理请求，服务全局最多 32 个。
 
-服务端把本次 `result` 作为 HTTP JSON 返回，离线返回 409、超时返回 504、采样失败返回 502。iOS 手动刷新，不持续轮询，不保存历史指标。
+服务端把本次 `result` 或 `error` 包装为上述 HTTP JSON 返回，不包含 WebSocket 的 `type`、`id`。iOS 手动刷新，不持续轮询，不保存历史指标。
 
 ## 验证边界
 
-Go 测试覆盖认证、重放、持久登录、轮换恢复、撤销及设备转发。Windows 检查覆盖真实指标和 DPAPI；可与 Go 服务端进行真实 C# Agent 联调。iOS 的 Secure Enclave、公钥导出、Keychain 和实际 UI 需要在 iPhone 上验收；Windows 环境跳过 iOS 编译、签名和安装。
+Go 测试覆盖认证、重放、持久登录、轮换恢复、撤销、任意动作与嵌套 JSON 转发、大整数与 null 保真、能力清单、业务错误、旧接口移除及迟到响应隔离。Windows 检查覆盖真实指标和 DPAPI；可与 Go 服务端进行真实 C# Agent 联调。iOS 的 Secure Enclave、公钥导出、Keychain 和实际 UI 需要在 iPhone 上验收；Windows 环境跳过 iOS 编译、签名和安装。

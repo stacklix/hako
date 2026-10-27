@@ -41,7 +41,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/overview", s.admin(s.adminOverview))
 	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.adminAddAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
-	s.mux.HandleFunc("POST /admin/api/agents/{id}/metrics/query", s.admin(s.queryMetrics))
+	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
 	s.mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.admin(s.adminRevokeSession))
 }
 

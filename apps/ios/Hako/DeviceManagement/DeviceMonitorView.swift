@@ -59,11 +59,15 @@ struct DeviceMonitorView: View {
 struct DeviceMetricsView: View {
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
+    private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
+    private var canQuery: Bool { currentAgent.online && currentAgent.methods.contains { $0.name == "system.metrics" && $0.version == 1 } }
     var body: some View {
         List {
             Section {
                 LabeledContent("设备", value: agent.name)
-                Button("查询当前状态") { Task { await client.query(agent) } }.disabled(client.busy)
+                Button("查询当前状态") { Task { await client.query(currentAgent) } }.disabled(client.busy || !canQuery)
+                if !currentAgent.online { Text("设备当前离线。").foregroundStyle(.secondary) }
+                else if !canQuery { Text("设备未提供支持的系统指标采集动作。").foregroundStyle(.secondary) }
             }
             if let metrics = client.metrics[agent.id] {
                 Section("CPU") {
@@ -84,7 +88,7 @@ struct DeviceMetricsView: View {
             }
             if client.busy { ProgressView("正在查询设备…") }
             if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
-        }.navigationTitle("设备监控").task { await client.query(agent) }
+        }.navigationTitle("设备监控").task { if canQuery { await client.query(currentAgent) } }
     }
     private func sampleTime(_ value: String) -> String {
         let formatter = ISO8601DateFormatter()

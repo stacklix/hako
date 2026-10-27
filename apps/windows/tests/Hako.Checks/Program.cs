@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Hako.Core;
@@ -46,11 +47,27 @@ internal static class Program
             settings.Validate();
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
-            var metrics = await new SystemMetrics().SampleAsync(CancellationToken.None);
+            var dispatcher = new AgentDispatcher(new SystemMetrics());
+            if (dispatcher.Methods.Count != 1 || dispatcher.Methods[0] != new AgentMethod("system.metrics", 1))
+                throw new Exception("Agent capabilities do not match registered actions");
+            using var emptyParams = JsonDocument.Parse("{}");
+            using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
+            using var arrayParams = JsonDocument.Parse("[]");
+            foreach (var parameters in new[] { invalidParams.RootElement, arrayParams.RootElement })
+            {
+                try { await dispatcher.InvokeAsync("system.metrics", parameters, CancellationToken.None); throw new Exception("Invalid action params accepted"); }
+                catch (AgentActionException e) when (e.Code == "invalid_params") { }
+            }
+            try { await dispatcher.InvokeAsync("future.unsupported", emptyParams.RootElement, CancellationToken.None); throw new Exception("Unknown action accepted"); }
+            catch (AgentActionException e) when (e.Code == "unsupported_method") { }
+            Metrics? observedMetrics = null;
+            dispatcher.MetricsReceived += value => observedMetrics = value;
+            var metrics = (Metrics)(await dispatcher.InvokeAsync("system.metrics", emptyParams.RootElement, CancellationToken.None))!;
+            if (observedMetrics != metrics) throw new Exception("Remote sampling did not update local metrics");
             if (metrics.CpuUsagePercent < 0 || metrics.CpuUsagePercent > 100 || metrics.MemoryUsagePercent <= 0 ||
                 metrics.MemoryUsagePercent > 100 || metrics.MemoryUsedBytes > metrics.MemoryTotalBytes || metrics.SampleWindowMs < 900)
                 throw new Exception("Invalid real system metrics");
-            Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
+            Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CliChecks.RunAsync();
             return 0;
         }

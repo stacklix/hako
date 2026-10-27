@@ -1,6 +1,6 @@
 # Hako Server
 
-单用户设备管理服务，使用 Go、SQLite 和 WebSocket，内置 `/admin/` Web 管理页。Windows 是设备代理（Agent），iOS 是管理客户端（Console）。服务端按需转发 CPU、内存查询，不保存历史指标。
+单用户设备管理服务，使用 Go、SQLite 和 WebSocket，内置 `/admin/` Web 管理页。Windows 是设备代理（Agent），iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
 
 两类客户端使用配置中的唯一账号及预先登记的设备公钥：Agent 使用 RSA-PSS/SHA-256，Console 使用 Secure Enclave P-256 和 DPoP。所有已登记 Console 都是管理员，可以批准网页登录。没有密码、TOTP、管理密钥登录或公开注册入口。
 
@@ -55,7 +55,7 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 5. 网页自动完成登录；只扫描不会登录。也可在 Console 拒绝请求。
 
 - Agent：查看在线/离线状态、最近活动时间、密钥指纹；粘贴或读取 PEM 公钥文件登记，查看和下载公钥，移除设备。
-- 指标：对在线 Agent 按需查询 CPU、物理内存及采样时间。状态每 10 秒刷新，指标不自动持续采集。
+- 指标与动作：对在线 Agent 按需查询 CPU、物理内存及采样时间，也可从 Agent 上报的能力清单选择动作、填写 JSON 参数并查看 JSON 结果。状态每 10 秒刷新，指标不自动持续采集。
 - Console：只读查看和下载公钥；查看和撤销登录会话。HTTP 客户端没有实时在线标识。所有 Console 公钥必须在文件中手工维护。
 - Agent 修改即时生效，移除后关闭现有连接并拒绝后续认证。Console 从配置移除并重启后，清理其所有会话和未完成的登录挑战；重新加入不会恢复旧会话。
 
@@ -64,6 +64,16 @@ HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
 管理页使用 HttpOnly、SameSite=Strict 的独立会话 Cookie，HTTPS 下启用 Secure 和 `__Host-`；修改请求还校验 origin 和 CSRF。网页会话闲置 30 分钟、登录 12 小时、主动退出或服务重启后失效，状态轮询不续期。网页还绑定批准它的 Console 会话：Console 退出、被撤销或重新主动登录替换旧会话后，关联网页会话失效。Console 长期凭据不会传给网页。
 
 已有部署升级时，将所有可信 Console 公钥明确写入 `server.json`。旧版曾在网页添加、但未写入文件的 Console 不再被信任；原有可信 Console 会话和 Agent 清单保留。旧 `admin.key`、`HAKO_ADMIN_KEY_FILE` 和 `init-admin` 不再使用，更新 Compose 后重新部署即可。不要删除数据库；备份数据卷、`master.key`、配置及 Console 公钥文件。
+
+## 设备调用接口
+
+- Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
+- 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
+- 正文：`{"method":"system.metrics","params":{}}`。
+- HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
+- Agent 使用 WebSocket v2，在 `hello.methods` 中声明动作名与版本；设备列表和管理概览返回当前连接的 `methods`。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
+
+这是不兼容的协议更新：旧 `/metrics/query` 路由和 Agent v1 已移除，服务端、Windows Agent、iOS Console 需同步更新。超时、断线可能发生在动作已经执行之后，有副作用的动作应先确认结果再决定是否重试。具体格式及限制见[设备监控协议](../../docs/device-monitoring.md)。
 
 ## 登记设备
 

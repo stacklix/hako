@@ -211,12 +211,14 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	go func() {
 		var req agentMessage
 		if ws.ReadJSON(&req) == nil {
-			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, Result: &Metrics{CPUUsagePercent: 25, MemoryUsagePercent: 50, MemoryUsedBytes: 4 << 30, MemoryTotalBytes: 8 << 30, SampledAt: time.Now().UTC().Format(time.RFC3339Nano), SampleWindowMS: 1000}})
+			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: json.RawMessage(`{"cpuUsagePercent":25,"newMetric":{"value":42}}`)}})
 		}
 	}()
-	data := a.call("POST", "agents/pc/metrics/query", map[string]bool{}, 200)
-	var m Metrics
-	if json.Unmarshal(data, &m) != nil || m.CPUUsagePercent != 25 {
+	data := a.call("POST", "agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 200)
+	var m struct {
+		Result struct{ CPUUsagePercent float64 }
+	}
+	if json.Unmarshal(data, &m) != nil || m.Result.CPUUsagePercent != 25 {
 		t.Fatal("admin metrics not forwarded")
 	}
 	a.call("DELETE", "agents/pc", nil, 200)
@@ -225,7 +227,7 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	if ws.ReadJSON(&msg) == nil {
 		t.Fatal("removed Agent remains connected")
 	}
-	a.call("POST", "agents/pc/metrics/query", map[string]bool{}, 409)
+	a.call("POST", "agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 409)
 	a.call("DELETE", "agents/pc", nil, 404)
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	body := map[string]string{"id": "new-pc", "name": "新电脑", "publicKeyPem": publicPEM(t, &key.PublicKey)}
@@ -298,7 +300,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Close()
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 1, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID})
+	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Methods: []agentMethod{{Name: "system.metrics", Version: 1}}})
 	var challenge struct {
 		Payload string `json:"payload"`
 	}

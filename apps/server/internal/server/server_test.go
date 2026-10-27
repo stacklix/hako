@@ -55,7 +55,7 @@ func newFixture(t *testing.T, authenticated bool) *fixture {
 	ts := httptest.NewUnstartedServer(nil)
 	master := make([]byte, 32)
 	_, _ = rand.Read(master)
-	app, err := New(Config{Database: filepath.Join(dir, "hako.db"), MasterKey: master, Username: "owner", PublicURL: "https://" + ts.Listener.Addr().String(), Agents: []AgentConfig{{ID: "pc", Name: "PC", PublicKeyFile: publicFile}}, Consoles: []ConsoleConfig{{Name: "iPhone", PublicKeyFile: consoleFile}}, QueryTimeout: 150 * time.Millisecond})
+	app, err := New(Config{Database: filepath.Join(dir, "hako.db"), MasterKey: master, Username: "owner", PublicURL: "https://" + ts.Listener.Addr().String(), Agents: []AgentConfig{{ID: "pc", Name: "PC", PublicKeyFile: publicFile}}, Consoles: []ConsoleConfig{{Name: "iPhone", PublicKeyFile: consoleFile}}, RequestTimeout: 150 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,15 +343,21 @@ func TestRefreshProofReplayDoesNotDestroyRecoverableSession(t *testing.T) {
 	}
 }
 
-func (f *fixture) connectAgent(wrongKey bool) *websocket.Conn {
+func (f *fixture) connectAgent(wrongKey bool, methods ...agentMethod) *websocket.Conn {
+	if len(methods) == 0 {
+		methods = []agentMethod{{Name: "system.metrics", Version: 1}}
+	}
 	f.t.Helper()
+	f.s.mu.Lock()
+	previous := f.s.online["pc"]
+	f.s.mu.Unlock()
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
 	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 1, Username: "owner", KeyID: f.s.config.Agents[0].keyID})
+	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Methods: methods})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`
@@ -381,7 +387,7 @@ func (f *fixture) connectAgent(wrongKey bool) *websocket.Conn {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		f.s.mu.Lock()
-		online := f.s.online["pc"] != nil
+		online := f.s.online["pc"] != nil && f.s.online["pc"] != previous
 		f.s.mu.Unlock()
 		if online {
 			return ws
@@ -402,27 +408,33 @@ func TestAgentQueryForwarding(t *testing.T) {
 		if ws.ReadJSON(&req) != nil {
 			return
 		}
-		m := Metrics{CPUUsagePercent: 25, MemoryUsagePercent: 50, MemoryUsedBytes: 4 << 30, MemoryTotalBytes: 8 << 30, SampledAt: time.Now().UTC().Format(time.RFC3339Nano), SampleWindowMS: 1000}
-		_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, Result: &m})
+		m := json.RawMessage(`{"cpuUsagePercent":25,"memoryUsagePercent":50,"memoryUsedBytes":4294967296,"memoryTotalBytes":8589934592,"sampledAt":"2026-10-25T10:00:00Z","sampleWindowMs":1000,"gpu":{"usage":42}}`)
+		_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: m}})
 	}()
-	status, data := f.call("POST", "/api/v1/agents/pc/metrics/query", nil, f.tokens.AccessToken)
+	status, data := f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
-	var m Metrics
-	if json.Unmarshal(data, &m) != nil || m.CPUUsagePercent != 25 || m.MemoryUsedBytes != 4<<30 {
+	var reply struct {
+		Result struct {
+			CPUUsagePercent float64
+			MemoryUsedBytes uint64
+			GPU             struct{ Usage int }
+		}
+	}
+	if json.Unmarshal(data, &reply) != nil || reply.Result.CPUUsagePercent != 25 || reply.Result.MemoryUsedBytes != 4<<30 || reply.Result.GPU.Usage != 42 {
 		t.Fatal("metrics mismatch")
 	}
 }
 
 func TestAgentOfflineAndTimeout(t *testing.T) {
 	f := newFixture(t, true)
-	status, _ := f.call("POST", "/api/v1/agents/pc/metrics/query", nil, f.tokens.AccessToken)
+	status, _ := f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 409 {
 		t.Fatal(status)
 	}
 	f.connectAgent(false)
-	status, _ = f.call("POST", "/api/v1/agents/pc/metrics/query", nil, f.tokens.AccessToken)
+	status, _ = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 504 {
 		t.Fatal(status)
 	}

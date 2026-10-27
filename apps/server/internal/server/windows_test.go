@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -55,14 +56,37 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	f.s.config.QueryTimeout = 10 * time.Second
-	status, data := f.call("POST", "/api/v1/agents/pc/metrics/query", nil, f.tokens.AccessToken)
+	f.s.config.RequestTimeout = 10 * time.Second
+	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
+	if status != 200 || !bytes.Contains(data, []byte(`"methods":[{"name":"system.metrics","version":1}]`)) {
+		t.Fatal("Windows capabilities missing", status, string(data))
+	}
+	status, data = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
-	var result Metrics
-	if json.Unmarshal(data, &result) != nil || !result.valid() {
+	var reply struct{ Result testMetrics }
+	if json.Unmarshal(data, &reply) != nil || !reply.Result.valid() {
 		t.Fatal("Windows metrics invalid")
 	}
-	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", result.CPUUsagePercent, result.MemoryUsagePercent)
+	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
+	status, data = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
+	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
+		t.Fatal("Windows action error not forwarded", status, string(data))
+	}
+}
+
+// Metric semantics belong to the client/agent, not the production relay.
+type testMetrics struct {
+	CPUUsagePercent    float64 `json:"cpuUsagePercent"`
+	MemoryUsagePercent float64 `json:"memoryUsagePercent"`
+	MemoryUsedBytes    uint64  `json:"memoryUsedBytes"`
+	MemoryTotalBytes   uint64  `json:"memoryTotalBytes"`
+	SampledAt          string  `json:"sampledAt"`
+	SampleWindowMS     int     `json:"sampleWindowMs"`
+}
+
+func (m testMetrics) valid() bool {
+	_, err := time.Parse(time.RFC3339Nano, m.SampledAt)
+	return err == nil && m.CPUUsagePercent >= 0 && m.CPUUsagePercent <= 100 && m.MemoryUsagePercent >= 0 && m.MemoryUsagePercent <= 100 && m.MemoryTotalBytes > 0 && m.MemoryUsedBytes <= m.MemoryTotalBytes && m.SampleWindowMS >= 500 && m.SampleWindowMS <= 5000
 }

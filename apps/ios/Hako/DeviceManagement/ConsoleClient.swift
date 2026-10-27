@@ -8,6 +8,29 @@ struct ConsoleAgent: Decodable, Identifiable {
     let platform: String
     let online: Bool
     let lastSeen: String
+    let methods: [ConsoleAgentMethod]
+}
+struct ConsoleAgentMethod: Decodable {
+    let name: String
+    let version: Int
+}
+private struct ConsoleAgentError: Decodable, Error, LocalizedError {
+    let code: String
+    let message: String
+    var errorDescription: String? { message.isEmpty ? "设备执行失败（\(code)）。" : message }
+}
+private enum ConsoleAgentReply<Result: Decodable>: Decodable {
+    case result(Result)
+    case failure(ConsoleAgentError)
+    private enum CodingKeys: String, CodingKey { case result, error }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.contains(.result) != container.contains(.error) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Expected result or error"))
+        }
+        if container.contains(.error) { self = .failure(try container.decode(ConsoleAgentError.self, forKey: .error)) }
+        else { self = .result(try container.decode(Result.self, forKey: .result)) }
+    }
 }
 struct ConsoleMetrics: Decodable {
     let cpuUsagePercent: Double
@@ -16,6 +39,15 @@ struct ConsoleMetrics: Decodable {
     let memoryTotalBytes: UInt64
     let sampledAt: String
     let sampleWindowMs: Int
+    var isValid: Bool {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = formatter.date(from: sampledAt) ?? ISO8601DateFormatter().date(from: sampledAt)
+        return date != nil && cpuUsagePercent.isFinite && (0...100).contains(cpuUsagePercent)
+            && memoryUsagePercent.isFinite && (0...100).contains(memoryUsagePercent)
+            && memoryTotalBytes > 0 && memoryUsedBytes <= memoryTotalBytes && (500...5000).contains(sampleWindowMs)
+            && abs(memoryUsagePercent - Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100) < 0.1
+    }
 }
 struct ConsoleTokens: Codable {
     let sessionId: String
@@ -44,11 +76,11 @@ private struct ConsoleHTTPError: Error, LocalizedError {
         switch code {
         case "agent_offline": return "设备当前离线。"
         case "agent_disconnected": return "设备连接已中断，请重试。"
-        case "agent_timeout": return "设备查询超时，请稍后重试。"
-        case "agent_sample_failed": return "设备采样失败。"
+        case "agent_timeout": return "设备响应超时，动作可能仍在执行，请先确认结果。"
+        case "unsupported_method": return "设备不支持此动作，请刷新设备列表。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
-        case "rate_limited", "too_many_queries", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
+        case "rate_limited", "too_many_requests", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
         case "session_revoked": return "登录会话已撤销，请重新登录。"
         case "storage_unavailable": return "服务器暂时无法保存会话，请稍后重试。"
         case "login_request_expired": return "二维码已过期，请在网页刷新后重新扫码。"
@@ -199,11 +231,11 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         try persist(ConsoleSession(tokens: tokens))
     }
 
-    private func request(_ path: String, method: String, body: [String: String]?, token: String?, signed: Bool = true, nonce: String? = nil) async throws -> Data {
+    private func request(_ path: String, method: String, body: [String: Any]?, token: String?, signed: Bool = true, nonce: String? = nil) async throws -> Data {
         guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在设备监控设置中配置 HTTPS 服务器。") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method
-        if let body { request.httpBody = try JSONEncoder().encode(body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if signed {
             let device = try identity()
             request.setValue(try device.proof(method: method, url: url, accessToken: token, nonce: nonce), forHTTPHeaderField: "DPoP")
@@ -220,7 +252,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         return data
     }
 
-    private func authorized(_ path: String, method: String = "GET", body: [String: String]? = nil, nonce: String? = nil) async throws -> Data {
+    private func authorized(_ path: String, method: String = "GET", body: [String: Any]? = nil, nonce: String? = nil) async throws -> Data {
         guard !resettingKey else { throw HakoError(message: "正在重置设备身份，请稍后重试。") }
         guard !logoutPending || path == "/api/v1/auth/logout" else { throw HakoError(message: "本机已退出，正在等待撤销服务端会话。") }
         guard let session = saved else { throw HakoError(message: "请先登录。") }
@@ -296,8 +328,17 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     func query(_ agent: ConsoleAgent) async {
         await execute {
             self.metrics.removeValue(forKey: agent.id)
-            let data = try await self.authorized("/api/v1/agents/\(agent.id)/metrics/query", method: "POST")
-            self.metrics[agent.id] = try JSONDecoder().decode(ConsoleMetrics.self, from: data)
+            let metrics = try await self.invokeAgent(agent, method: "system.metrics", as: ConsoleMetrics.self)
+            guard metrics.isValid else { throw HakoError(message: "设备返回的指标格式无效。") }
+            self.metrics[agent.id] = metrics
+        }
+    }
+    func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
+        let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST", body: ["method": method, "params": params])
+        let reply = try JSONDecoder().decode(ConsoleAgentReply<Result>.self, from: data)
+        switch reply {
+        case .failure(let error): throw error
+        case .result(let result): return result
         }
     }
     func fetchSessions() async {

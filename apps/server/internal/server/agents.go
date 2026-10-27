@@ -6,41 +6,71 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-type Metrics struct {
-	CPUUsagePercent    float64 `json:"cpuUsagePercent"`
-	MemoryUsagePercent float64 `json:"memoryUsagePercent"`
-	MemoryUsedBytes    uint64  `json:"memoryUsedBytes"`
-	MemoryTotalBytes   uint64  `json:"memoryTotalBytes"`
-	SampledAt          string  `json:"sampledAt"`
-	SampleWindowMS     int     `json:"sampleWindowMs"`
+type agentMethod struct {
+	Name    string `json:"name"`
+	Version int    `json:"version"`
 }
 
 var errAgentBusy = errors.New("agent_busy")
+var methodName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 
-func (m Metrics) valid() bool {
-	_, err := time.Parse(time.RFC3339Nano, m.SampledAt)
-	return err == nil && !math.IsNaN(m.CPUUsagePercent) && !math.IsInf(m.CPUUsagePercent, 0) && m.CPUUsagePercent >= 0 && m.CPUUsagePercent <= 100 && m.MemoryUsagePercent >= 0 && m.MemoryUsagePercent <= 100 && m.MemoryTotalBytes > 0 && m.MemoryUsedBytes <= m.MemoryTotalBytes && m.SampleWindowMS >= 500 && m.SampleWindowMS <= 5000 && math.Abs(m.MemoryUsagePercent-float64(m.MemoryUsedBytes)/float64(m.MemoryTotalBytes)*100) < 0.1
+func validMethods(methods []agentMethod) bool {
+	if len(methods) == 0 || len(methods) > 64 {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, m := range methods {
+		if len(m.Name) > 100 || !methodName.MatchString(m.Name) || m.Version < 1 || seen[m.Name] {
+			return false
+		}
+		seen[m.Name] = true
+	}
+	return true
+}
+
+type agentError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type agentResult struct {
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  *agentError     `json:"error,omitempty"`
+}
+
+func (m agentResult) valid() bool {
+	if m.Error != nil {
+		return len(m.Result) == 0 && identifier.MatchString(m.Error.Code) && len(m.Error.Message) <= 1024
+	}
+	return len(m.Result) != 0 && json.Valid(m.Result)
+}
+
+type agentRequest struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 }
 
 type agentMessage struct {
-	Type      string   `json:"type"`
-	ID        string   `json:"id,omitempty"`
-	Method    string   `json:"method,omitempty"`
-	Version   int      `json:"version,omitempty"`
-	Username  string   `json:"username,omitempty"`
-	KeyID     string   `json:"keyId,omitempty"`
-	Signature string   `json:"signature,omitempty"`
-	Result    *Metrics `json:"result,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	agentResult
+	Type      string          `json:"type"`
+	ID        string          `json:"id,omitempty"`
+	Method    string          `json:"method,omitempty"`
+	Version   int             `json:"version,omitempty"`
+	Username  string          `json:"username,omitempty"`
+	KeyID     string          `json:"keyId,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Params    json.RawMessage `json:"params,omitempty"`
+	Methods   []agentMethod   `json:"methods,omitempty"`
 }
 
 type agentConnection struct {
@@ -50,6 +80,7 @@ type agentConnection struct {
 	pending map[string]chan agentMessage
 	done    chan struct{}
 	once    sync.Once
+	methods []agentMethod
 }
 
 func (c *agentConnection) send(v any) error {
@@ -79,7 +110,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication failed"), time.Now().Add(time.Second))
 	}
 	var hello agentMessage
-	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != 1 {
+	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != 2 || !validMethods(hello.Methods) {
 		authFail()
 		return
 	}
@@ -96,7 +127,8 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		authFail()
 		return
 	}
-	payload := []byte("hako-agent-auth/v1\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
+	c.methods = append([]agentMethod{}, hello.Methods...)
+	payload := []byte("hako-agent-auth/v2\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
 	if c.send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
 		return
 	}
@@ -176,7 +208,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		if message.Type != "response" || message.ID == "" {
 			return
 		}
-		if message.Error == "" && (message.Result == nil || !message.Result.valid()) {
+		if !message.agentResult.valid() {
 			return
 		}
 		c.mu.Lock()
@@ -212,7 +244,11 @@ func (s *Server) agentItems(includeKey bool) []map[string]any {
 			default:
 			}
 		}
-		item := map[string]any{"id": a.ID, "name": a.Name, "platform": "windows", "online": online, "lastSeen": s.lastSeen[a.ID]}
+		methods := []agentMethod{}
+		if online {
+			methods = c.methods
+		}
+		item := map[string]any{"id": a.ID, "name": a.Name, "platform": "windows", "online": online, "lastSeen": s.lastSeen[a.ID], "methods": methods}
 		if includeKey {
 			item["keyId"] = a.keyID
 			item["publicKeyPem"] = a.PublicKeyPEM
@@ -223,20 +259,28 @@ func (s *Server) agentItems(includeKey bool) []map[string]any {
 	return items
 }
 
-func (s *Server) query(w http.ResponseWriter, r *http.Request) {
+func (s *Server) requestAgent(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.authorized(w, r)
 	if !ok {
 		return
 	}
-	s.queryMetrics(w, r)
+	s.forwardAgentRequest(w, r)
 }
 
-func (s *Server) queryMetrics(w http.ResponseWriter, r *http.Request) {
+func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
+	var request agentRequest
+	if !decode(w, r, &request) {
+		return
+	}
+	if len(request.Method) > 100 || !methodName.MatchString(request.Method) || len(request.Params) == 0 || request.Params[0] != '{' {
+		reject(w, 400, "invalid_request")
+		return
+	}
 	select {
-	case s.queries <- struct{}{}:
-		defer func() { <-s.queries }()
+	case s.requests <- struct{}{}:
+		defer func() { <-s.requests }()
 	default:
-		reject(w, 429, "too_many_queries")
+		reject(w, 429, "too_many_requests")
 		return
 	}
 	s.mu.Lock()
@@ -246,9 +290,20 @@ func (s *Server) queryMetrics(w http.ResponseWriter, r *http.Request) {
 		reject(w, 409, "agent_offline")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.config.QueryTimeout)
+	supported := false
+	for _, m := range c.methods {
+		if m.Name == request.Method {
+			supported = true
+			break
+		}
+	}
+	if !supported {
+		reject(w, 400, "unsupported_method")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.config.RequestTimeout)
 	defer cancel()
-	result, err := c.query(ctx)
+	result, err := c.request(ctx, request)
 	if err != nil {
 		if errors.Is(err, errAgentBusy) {
 			reject(w, 429, "agent_busy")
@@ -259,14 +314,10 @@ func (s *Server) queryMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if result.Error != "" {
-		reject(w, 502, "agent_sample_failed")
-		return
-	}
-	respond(w, 200, result.Result)
+	respond(w, 200, result.agentResult)
 }
 
-func (c *agentConnection) query(ctx context.Context) (agentMessage, error) {
+func (c *agentConnection) request(ctx context.Context, request agentRequest) (agentMessage, error) {
 	id := randomToken()
 	ch := make(chan agentMessage, 1)
 	c.mu.Lock()
@@ -277,7 +328,7 @@ func (c *agentConnection) query(ctx context.Context) (agentMessage, error) {
 	c.pending[id] = ch
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
-	if err := c.send(agentMessage{Type: "request", ID: id, Method: "system.metrics"}); err != nil {
+	if err := c.send(agentMessage{Type: "request", ID: id, Method: request.Method, Params: request.Params}); err != nil {
 		c.close()
 		return agentMessage{}, err
 	}

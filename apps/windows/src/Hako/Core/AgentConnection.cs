@@ -19,12 +19,16 @@ public sealed class AgentConnection : IAsyncDisposable
     public ConnectionState Status => status;
     public event Action<string>? StatusChanged;
     public event Action<Metrics>? MetricsReceived;
-    private readonly SystemMetrics metrics;
+    private readonly AgentDispatcher dispatcher;
     private readonly SemaphoreSlim writing = new(1, 1);
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-    public AgentConnection(SystemMetrics metrics) => this.metrics = metrics;
+    public AgentConnection(SystemMetrics metrics)
+    {
+        dispatcher = new AgentDispatcher(metrics);
+        dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
+    }
 
     public async Task StartAsync(AgentSettings settings)
     {
@@ -65,11 +69,11 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("authenticating", "正在验证身份…");
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await SendAsync(socket, new { type = "hello", version = 1, username = settings.Username, keyId }, authTimeout.Token);
+                    await SendAsync(socket, new { type = "hello", version = 2, username = settings.Username, keyId, methods = dispatcher.Methods }, authTimeout.Token);
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
-                    var expected = "hako-agent-auth/v1\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
+                    var expected = "hako-agent-auth/v2\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
                     if (!Encoding.UTF8.GetString(payload).StartsWith(expected, StringComparison.Ordinal)) throw new AuthenticationException("服务端认证挑战不匹配。");
                     var signature = Convert.ToBase64String(rsa.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
                     await SendAsync(socket, new { type = "authenticate", signature }, authTimeout.Token);
@@ -89,19 +93,15 @@ public sealed class AgentConnection : IAsyncDisposable
                         case "ping": await SendAsync(socket, new { type = "pong" }, token); break;
                         case "request":
                             var id = root.GetProperty("id").GetString()!;
-                            if (root.GetProperty("method").GetString() != "system.metrics")
-                                await SendAsync(socket, new { type = "response", id, error = "unsupported_method" }, token);
-                            else
+                            try
                             {
-                                try
-                                {
-                                    var result = await metrics.SampleAsync(token);
-                                    MetricsReceived?.Invoke(result);
-                                    await SendAsync(socket, new { type = "response", id, result }, token);
-                                }
-                                catch (Exception e) when (e is not OperationCanceledException && socket.State == WebSocketState.Open)
-                                { await SendAsync(socket, new { type = "response", id, error = "sample_failed" }, token); }
+                                var result = await dispatcher.InvokeAsync(root.GetProperty("method").GetString()!, root.GetProperty("params"), token);
+                                await SendAsync(socket, new { type = "response", id, result }, token);
                             }
+                            catch (AgentActionException e) when (socket.State == WebSocketState.Open)
+                            { await SendAsync(socket, new { type = "response", id, error = new { code = e.Code, message = e.Message } }, token); }
+                            catch (Exception e) when (e is not OperationCanceledException && socket.State == WebSocketState.Open)
+                            { await SendAsync(socket, new { type = "response", id, error = new { code = "action_failed", message = "设备执行失败。" } }, token); }
                             break;
                         default: throw new InvalidDataException("未知的服务端消息。");
                     }

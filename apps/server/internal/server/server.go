@@ -26,13 +26,13 @@ type AgentConfig struct {
 }
 
 type Config struct {
-	Database     string
-	MasterKey    []byte
-	Username     string
-	Consoles     []ConsoleConfig
-	PublicURL    string
-	Agents       []AgentConfig
-	QueryTimeout time.Duration
+	Database       string
+	MasterKey      []byte
+	Username       string
+	Consoles       []ConsoleConfig
+	PublicURL      string
+	Agents         []AgentConfig
+	RequestTimeout time.Duration
 }
 
 type bucket struct {
@@ -48,7 +48,7 @@ type Server struct {
 	online        map[string]*agentConnection
 	lastSeen      map[string]string
 	limits        map[string]bucket
-	queries       chan struct{}
+	requests      chan struct{}
 	registry      atomic.Pointer[Registry]
 	registryMu    sync.Mutex
 	adminMu       sync.Mutex
@@ -71,14 +71,14 @@ func New(config Config) (*Server, error) {
 	if len(config.MasterKey) != 32 || !identifier.MatchString(config.Username) {
 		return nil, fmt.Errorf("master key must be 32 bytes; configure a valid single username")
 	}
-	if config.QueryTimeout == 0 {
-		config.QueryTimeout = 10 * time.Second
+	if config.RequestTimeout == 0 {
+		config.RequestTimeout = 10 * time.Second
 	}
 	st, err := openStore(config.Database, config.MasterKey)
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{config: config, store: st, mux: http.NewServeMux(), online: map[string]*agentConnection{}, lastSeen: map[string]string{}, limits: map[string]bucket{}, queries: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
+	s := &Server{config: config, store: st, mux: http.NewServeMux(), online: map[string]*agentConnection{}, lastSeen: map[string]string{}, limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	var registry *Registry
 	if err := st.update(func(value *state) error {
 		var err error
@@ -119,7 +119,7 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /api/v1/sessions", s.sessions)
 	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.revokeSession)
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
-	s.mux.HandleFunc("POST /api/v1/agents/{id}/metrics/query", s.query)
+	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
 	return s, nil
 }
