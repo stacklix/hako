@@ -18,10 +18,11 @@ import (
 )
 
 type AgentConfig struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	PublicKeyFile string `json:"publicKeyFile"`
-	PublicKeyPEM  string `json:"publicKeyPem,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	PublicKeyFile string            `json:"publicKeyFile"`
+	PublicKeyPEM  string            `json:"publicKeyPem,omitempty"`
+	Capabilities  []agentCapability `json:"capabilities"`
 	key           *rsa.PublicKey
 	keyID         string
 }
@@ -32,6 +33,7 @@ type Config struct {
 	Username       string
 	Consoles       []ConsoleConfig
 	PublicURL      string
+	TrustedProxies string
 	Agents         []AgentConfig
 	RequestTimeout time.Duration
 }
@@ -42,19 +44,20 @@ type bucket struct {
 }
 
 type Server struct {
-	config        Config
-	store         *store
-	mux           *http.ServeMux
-	mu            sync.Mutex
-	online        map[string]*agentConnection
-	lastSeen      map[string]string
-	limits        map[string]bucket
-	requests      chan struct{}
-	registry      atomic.Pointer[Registry]
-	registryMu    sync.Mutex
-	adminMu       sync.Mutex
-	adminSessions map[string]adminSession
-	adminLogins   map[string]*adminLoginRequest
+	config         Config
+	trustedProxies proxyTrust
+	store          *store
+	mux            *http.ServeMux
+	mu             sync.Mutex
+	online         map[string]*agentConnection
+	lastSeen       map[string]string
+	limits         map[string]bucket
+	requests       chan struct{}
+	registry       atomic.Pointer[Registry]
+	registryMu     sync.Mutex
+	adminMu        sync.Mutex
+	adminSessions  map[string]adminSession
+	adminLogins    map[string]*adminLoginRequest
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -75,11 +78,16 @@ func New(config Config) (*Server, error) {
 	if config.RequestTimeout == 0 {
 		config.RequestTimeout = 10 * time.Second
 	}
+	proxies, err := parseTrustedProxies(config.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
 	st, err := openStore(config.Database, config.MasterKey)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{config: config, store: st, mux: http.NewServeMux(), online: map[string]*agentConnection{}, lastSeen: map[string]string{}, limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
+	s.trustedProxies = proxies
 	var registry *Registry
 	if err := st.update(func(value *state) error {
 		var err error

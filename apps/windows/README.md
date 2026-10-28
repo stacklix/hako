@@ -15,7 +15,7 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 关闭窗口后保留系统托盘和长连接，通过托盘“退出”结束进程。首版不安装 Windows Service、不自动配置开机启动。
 
-Agent 使用 WebSocket v2，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `system.metrics` v1，参数必须为 `{}`。旧 Agent v1 不兼容，部署时同步更新服务端与客户端。
+Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1（参数 `{}`）及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
 
 「设备监控」支持本地刷新和远程查询，CPU 使用率为约 1 秒窗口内的整机平均值，使用可跨语言系统和处理器组的 PDH 计数器；内存为总物理内存减去可用物理内存。没有服务端请求时不会持续上传指标。
 
@@ -93,3 +93,5 @@ CLI 冒烟检查使用独立配置目录，验证发布 EXE 的帮助、JSON、�
 协议和三端关系见 [设备监控协议](../../docs/device-monitoring.md)。
 
 返回 [仓库说明](../../README.md)。
+
+命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。

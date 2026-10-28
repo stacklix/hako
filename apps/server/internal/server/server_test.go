@@ -343,14 +343,14 @@ func TestRefreshProofReplayDoesNotDestroyRecoverableSession(t *testing.T) {
 	}
 }
 
-func (f *fixture) connectAgent(wrongKey bool, methods ...agentMethod) *websocket.Conn {
+func (f *fixture) connectAgent(wrongKey bool, methods ...agentCapability) *websocket.Conn {
 	f.t.Helper()
 	return f.connectAgentID("PC", wrongKey, methods...)
 }
 
-func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentMethod) *websocket.Conn {
-	if len(methods) == 0 {
-		methods = []agentMethod{{Name: "system.metrics", Version: 1}}
+func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentCapability) *websocket.Conn {
+	if methods == nil {
+		methods = []agentCapability{{Name: "query.system.metrics", Version: 1}}
 	}
 	f.t.Helper()
 	f.s.mu.Lock()
@@ -362,7 +362,7 @@ func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentMetho
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Methods: methods})
+	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": 3, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`
@@ -416,7 +416,7 @@ func TestAgentQueryForwarding(t *testing.T) {
 		m := json.RawMessage(`{"cpuUsagePercent":25,"memoryUsagePercent":50,"memoryUsedBytes":4294967296,"memoryTotalBytes":8589934592,"sampledAt":"2026-10-25T10:00:00Z","sampleWindowMs":1000,"gpu":{"usage":42}}`)
 		_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: m}})
 	}()
-	status, data := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, data := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
@@ -434,12 +434,12 @@ func TestAgentQueryForwarding(t *testing.T) {
 
 func TestAgentOfflineAndTimeout(t *testing.T) {
 	f := newFixture(t, true)
-	status, _ := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, _ := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 409 {
 		t.Fatal(status)
 	}
 	f.connectAgent(false)
-	status, _ = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, _ = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 504 {
 		t.Fatal(status)
 	}

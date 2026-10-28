@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -23,6 +24,8 @@ type qrInspection struct {
 	ConfirmationCode string `json:"confirmationCode"`
 	Nonce            string `json:"nonce"`
 	Origin           string `json:"origin"`
+	ClientIP         string `json:"clientIP"`
+	Browser          string `json:"browser"`
 }
 
 func ensureConsoleLogin(f *fixture) {
@@ -87,6 +90,40 @@ func approveLogin(f *fixture, qr qrStart) {
 	}
 }
 
+func TestQRInspectionShowsCreatingBrowserSourceIP(t *testing.T) {
+	for _, forwarded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "proxy"}[forwarded], func(t *testing.T) {
+			f := newFixture(t, true)
+			r := httptest.NewRequest("POST", f.s.config.PublicURL+"/admin/api/login/requests", strings.NewReader("{}"))
+			r.Header.Set("Origin", f.s.config.PublicURL)
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("User-Agent", "Mozilla/5.0 (iPhone) CriOS/130.0 Mobile/15E148 Safari/604.1")
+			r.RemoteAddr = "198.51.100.12:54321"
+			if forwarded {
+				f.s.trustedProxies, _ = parseTrustedProxies("127.0.0.1")
+				r.RemoteAddr = "127.0.0.1:1234"
+				r.Header.Set("X-Forwarded-For", "198.51.100.12")
+			}
+			w := httptest.NewRecorder()
+			f.s.ServeHTTP(w, r)
+			if w.Code != 201 {
+				t.Fatalf("create QR: %d %s", w.Code, w.Body.String())
+			}
+			var qr qrStart
+			if err := json.Unmarshal(w.Body.Bytes(), &qr); err != nil {
+				t.Fatal(err)
+			}
+			info := inspectLogin(f, qr.ID)
+			if info.ClientIP != "198.51.100.12" || info.Browser != "Chrome" {
+				t.Fatalf("inspection must use creating browser metadata: %+v", info)
+			}
+			if strings.Contains(w.Body.String(), "clientIP") {
+				t.Fatal("unauthenticated creation response exposes source IP")
+			}
+		})
+	}
+}
+
 func TestQRLoginBindsBrowserAndDoesNotExposeApprovalNonce(t *testing.T) {
 	f := newFixture(t, true)
 	a, qr := startLogin(f)
@@ -106,7 +143,7 @@ func TestQRLoginBindsBrowserAndDoesNotExposeApprovalNonce(t *testing.T) {
 	stranger.call("POST", "login/requests/"+qr.ID+"/complete", map[string]bool{}, 404)
 	a.call("POST", "login/requests/"+qr.ID+"/complete", map[string]bool{}, 409)
 	data := a.call("GET", "login/requests/"+qr.ID, nil, 200)
-	if strings.Contains(string(data), "nonce") || strings.Contains(string(data), "confirmationCode") {
+	if strings.Contains(string(data), "nonce") || strings.Contains(string(data), "confirmationCode") || strings.Contains(string(data), "clientIP") {
 		t.Fatal("poll response exposes Console approval data")
 	}
 	status, png, res := a.request("GET", "/admin/api/login/requests/"+qr.ID+"/qr", nil, "", "")

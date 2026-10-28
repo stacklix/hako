@@ -48,26 +48,27 @@ internal static class Program
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
-            if (dispatcher.Methods.Count != 1 || dispatcher.Methods[0] != new AgentMethod("system.metrics", 1))
+            if (dispatcher.Capabilities.Count != 2 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1) || dispatcher.Capabilities[1] != new AgentCapability("action.network.http.check", 1))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
             using var arrayParams = JsonDocument.Parse("[]");
             foreach (var parameters in new[] { invalidParams.RootElement, arrayParams.RootElement })
             {
-                try { await dispatcher.InvokeAsync("system.metrics", parameters, CancellationToken.None); throw new Exception("Invalid action params accepted"); }
+                try { await dispatcher.InvokeAsync("query.system.metrics", 1, parameters, CancellationToken.None); throw new Exception("Invalid action params accepted"); }
                 catch (AgentActionException e) when (e.Code == "invalid_params") { }
             }
-            try { await dispatcher.InvokeAsync("future.unsupported", emptyParams.RootElement, CancellationToken.None); throw new Exception("Unknown action accepted"); }
+            try { await dispatcher.InvokeAsync("future.unsupported", 1, emptyParams.RootElement, CancellationToken.None); throw new Exception("Unknown action accepted"); }
             catch (AgentActionException e) when (e.Code == "unsupported_method") { }
             Metrics? observedMetrics = null;
             dispatcher.MetricsReceived += value => observedMetrics = value;
-            var metrics = (Metrics)(await dispatcher.InvokeAsync("system.metrics", emptyParams.RootElement, CancellationToken.None))!;
+            var metrics = (Metrics)(await dispatcher.InvokeAsync("query.system.metrics", 1, emptyParams.RootElement, CancellationToken.None))!;
             if (observedMetrics != metrics) throw new Exception("Remote sampling did not update local metrics");
             if (metrics.CpuUsagePercent < 0 || metrics.CpuUsagePercent > 100 || metrics.MemoryUsagePercent <= 0 ||
                 metrics.MemoryUsagePercent > 100 || metrics.MemoryUsedBytes > metrics.MemoryTotalBytes || metrics.SampleWindowMs < 900)
                 throw new Exception("Invalid real system metrics");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
+            await CapabilityChecks.RunAsync(dispatcher);
             await CliChecks.RunAsync();
             return 0;
         }

@@ -16,10 +16,10 @@ import (
 const adminLoginLifetime = 90 * time.Second
 
 type adminLoginRequest struct {
-	BrowserHash, Code, Nonce, Browser, Status string
-	Created, Expires                          time.Time
-	ApproverSessionID, ApproverThumb          string
-	QR                                        []byte
+	BrowserHash, Code, Nonce, Browser, Status, ClientIP string
+	Created, Expires                                    time.Time
+	ApproverSessionID, ApproverThumb                    string
+	QR                                                  []byte
 }
 
 func (s *Server) qrLoginRoutes() {
@@ -57,7 +57,7 @@ func (s *Server) pendingCookie(w http.ResponseWriter, value string, maxAge int) 
 }
 
 func browserLabel(ua string) string {
-	for _, item := range []struct{ match, name string }{{"Edg/", "Edge"}, {"Firefox/", "Firefox"}, {"Chrome/", "Chrome"}, {"Safari/", "Safari"}} {
+	for _, item := range []struct{ match, name string }{{"Edg/", "Edge"}, {"EdgiOS/", "Edge"}, {"EdgA/", "Edge"}, {"Firefox/", "Firefox"}, {"FxiOS/", "Firefox"}, {"Chrome/", "Chrome"}, {"CriOS/", "Chrome"}, {"Safari/", "Safari"}} {
 		if strings.Contains(ua, item.match) {
 			return item.name
 		}
@@ -128,7 +128,7 @@ func (s *Server) createAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 429, "too_many_login_requests")
 		return
 	}
-	s.adminLogins[digest(id)] = &adminLoginRequest{BrowserHash: digest(browser), Code: code, Nonce: nonce, Browser: browserLabel(r.UserAgent()), Status: "pending", Created: now, Expires: expires, QR: png}
+	s.adminLogins[digest(id)] = &adminLoginRequest{BrowserHash: digest(browser), Code: code, Nonce: nonce, Browser: browserLabel(r.UserAgent()), ClientIP: s.loginClientIP(r), Status: "pending", Created: now, Expires: expires, QR: png}
 	s.adminMu.Unlock()
 	s.pendingCookie(w, browser, int(adminLoginLifetime.Seconds()))
 	respond(w, 201, map[string]any{"id": id, "confirmationCode": code, "qrPayload": payload, "expiresAt": expires.UTC().Format(time.RFC3339), "pollIntervalMs": 2000})
@@ -277,7 +277,7 @@ func (s *Server) inspectAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Status = "scanned"
-	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce})
+	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "clientIP": req.ClientIP, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce})
 }
 
 func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {

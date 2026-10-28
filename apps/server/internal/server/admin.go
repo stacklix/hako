@@ -3,7 +3,6 @@ package server
 import (
 	"crypto/rand"
 	"embed"
-	"errors"
 	"mime"
 	"net/http"
 	"net/url"
@@ -20,8 +19,6 @@ type adminSession struct {
 	Created, LastUsed                time.Time
 	ApproverSessionID, ApproverThumb string
 }
-
-var errMissingAdminSession = errors.New("session not found")
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
@@ -44,7 +41,6 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
-	s.mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.admin(s.adminRevokeSession))
 }
 
 func adminHeaders(w http.ResponseWriter) {
@@ -139,17 +135,7 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]bool{"ok": true})
 }
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
-	consoles := []map[string]any{}
-	for _, c := range s.registry.Load().Consoles {
-		consoles = append(consoles, map[string]any{"id": c.thumb, "name": c.Name, "publicKeyPem": c.PublicKeyPEM, "role": "admin"})
-	}
-	sessions := []map[string]any{}
-	s.store.inspect(func(st state) {
-		for _, ss := range st.Sessions {
-			sessions = append(sessions, map[string]any{"id": ss.ID, "deviceId": ss.DeviceID, "createdAt": time.Unix(ss.CreatedAt, 0).UTC().Format(time.RFC3339)})
-		}
-	})
-	respond(w, 200, map[string]any{"username": s.config.Username, "agents": s.agentItems(true), "consoles": consoles, "sessions": sessions, "updatedAt": time.Now().UTC().Format(time.RFC3339)})
+	respond(w, 200, map[string]any{"username": s.config.Username, "agents": s.agentItems(true), "updatedAt": time.Now().UTC().Format(time.RFC3339)})
 }
 func registryError(w http.ResponseWriter, err error) {
 	respond(w, 400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()})
@@ -232,24 +218,6 @@ func (s *Server) adminDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if c != nil {
 		c.close()
-	}
-	respond(w, 200, map[string]bool{"ok": true})
-}
-func (s *Server) adminRevokeSession(w http.ResponseWriter, r *http.Request) {
-	err := s.store.update(func(st *state) error {
-		if st.Sessions[r.PathValue("id")] == nil {
-			return errMissingAdminSession
-		}
-		delete(st.Sessions, r.PathValue("id"))
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, errMissingAdminSession) {
-			reject(w, 404, "session_not_found")
-		} else {
-			reject(w, 503, "storage_unavailable")
-		}
-		return
 	}
 	respond(w, 200, map[string]bool{"ok": true})
 }

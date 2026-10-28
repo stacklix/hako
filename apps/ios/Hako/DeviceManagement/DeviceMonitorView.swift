@@ -18,10 +18,10 @@ struct DeviceMonitorView: View {
                     ForEach(client.agents) { agent in
                         NavigationLink { DeviceMetricsView(agent: agent) } label: {
                             HStack {
-                                Image(systemName: "desktopcomputer")
+                                Image(systemName: "network")
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(agent.name)
-                                    Text(agent.online ? "在线 · Windows" : "离线 · Windows").font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
+                                    Text(agent.online ? "在线" : "离线").font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
                                     Text("设备 ID：" + agent.id)
                                         .font(.caption.monospaced()).foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -83,52 +83,111 @@ struct DeviceMonitorView: View {
 struct DeviceMetricsView: View {
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
+    @State private var targetURL = ""
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
+    private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
+    private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
+    private var canQuery: Bool { currentAgent.capabilities?.contains { $0.name.hasPrefix("query.") } ?? true }
     var body: some View {
         List {
             Section {
                 LabeledContent("设备", value: currentAgent.name)
                 LabeledContent("设备 ID") {
-                    Text(currentAgent.id)
-                        .font(.footnote.monospaced())
-                        .multilineTextAlignment(.trailing)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                    Text(currentAgent.id).font(.footnote.monospaced()).textSelection(.enabled)
                 }
             }
-            if let metrics = client.metrics[agent.id] {
-                Section("CPU") {
-                    LabeledContent("使用率", value: String(format: "%.1f%%", metrics.cpuUsagePercent))
-                    ProgressView(value: metrics.cpuUsagePercent, total: 100)
+            if let capabilities = currentAgent.capabilities {
+                if capabilities.isEmpty { Section { Text("此设备尚未提供能力。").foregroundStyle(.secondary) } }
+                ForEach(capabilities) { capability in
+                    if capability.name == "query.system.metrics" && capability.version == 1 {
+                        metricsSection(capability)
+                    } else if capability.name == "action.network.http.check" && capability.version == 1 {
+                        httpSection
+                    } else {
+                        Section(capability.name + " · v\(capability.version)") {
+                            if capability.name.hasPrefix("query.") {
+                                queryStatus(capability)
+                                if let entry = state.entries[capability.name], entry.version == capability.version,
+                                   let value = entry.result {
+                                    Text(value.formatted).font(.caption.monospaced()).textSelection(.enabled)
+                                }
+                            } else { Text("当前客户端暂不支持此操作或版本。").foregroundStyle(.secondary) }
+                        }
+                    }
                 }
-                Section("物理内存") {
-                    LabeledContent("使用率", value: String(format: "%.1f%%", metrics.memoryUsagePercent))
-                    ProgressView(value: metrics.memoryUsagePercent, total: 100)
-                    LabeledContent("已用 / 总量", value: String(format: "%.1f / %.1f GiB", Double(metrics.memoryUsedBytes)/1_073_741_824, Double(metrics.memoryTotalBytes)/1_073_741_824))
+            } else {
+                Section("设备能力") {
+                    if state.loading { ProgressView("正在获取能力与数据…") }
+                    else { Text("尚未获取设备能力，请刷新数据。").foregroundStyle(.secondary) }
                 }
+            }
+            if let error = state.error {
                 Section {
-                    Text("采样于 \(sampleTime(metrics.sampledAt))")
-                    Text("采样窗口 \(metrics.sampleWindowMs) ms")
-                }.font(.footnote).foregroundStyle(.secondary)
-            } else if !client.busy {
-                ContentUnavailableView("尚无本次采样结果", systemImage: "chart.bar", description: Text("查询会通过服务端转发到电脑，不持续上传历史数据。"))
+                    Text(error).foregroundStyle(.red)
+                    if state.loaded { Text("当前显示上次查询结果，尚未刷新成功。").foregroundStyle(.secondary) }
+                }.font(.footnote)
             }
-            if client.busy { ProgressView("正在查询设备…") }
-            if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
         .navigationTitle("设备监控")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await client.query(currentAgent) }
-                } label: {
+                Button { Task { await client.query(currentAgent) } } label: {
                     Label("刷新设备数据", systemImage: "arrow.clockwise")
-                }
-                .disabled(client.busy || !client.authenticated)
+                }.disabled(state.loading || !client.authenticated || !canQuery)
             }
         }
         .refreshable { if client.authenticated { await client.query(currentAgent) } }
         .task { if client.authenticated { await client.query(currentAgent) } }
+    }
+    @ViewBuilder private func queryStatus(_ capability: ConsoleAgentCapability) -> some View {
+        if state.loading { ProgressView("正在查询…") }
+        if let entry = state.entries[capability.name] {
+            if let error = entry.error { Text(error.localizedDescription).font(.footnote).foregroundStyle(.red) }
+            else if entry.version != capability.version { Text("返回的数据版本与能力清单不一致。").foregroundStyle(.red) }
+        } else if state.loaded && !state.loading {
+            Text("未返回数据").foregroundStyle(.secondary)
+        } else if !state.loading { Text("等待查询数据").foregroundStyle(.secondary) }
+    }
+    private func metricsSection(_ capability: ConsoleAgentCapability) -> some View {
+        let entry = state.entries[capability.name]
+        let decoded = entry?.version == 1 ? entry?.result?.decode(ConsoleMetrics.self) : nil
+        let metrics = decoded?.isValid == true ? decoded : nil
+        return Section("系统指标") {
+            queryStatus(capability)
+            LabeledContent("CPU 使用率", value: metrics.map { String(format: "%.1f%%", $0.cpuUsagePercent) } ?? "—")
+            ProgressView(value: metrics?.cpuUsagePercent ?? 0, total: 100).opacity(metrics == nil ? 0.3 : 1)
+            LabeledContent("内存使用率", value: metrics.map { String(format: "%.1f%%", $0.memoryUsagePercent) } ?? "—")
+            ProgressView(value: metrics?.memoryUsagePercent ?? 0, total: 100).opacity(metrics == nil ? 0.3 : 1)
+            LabeledContent("已用 / 总内存", value: metrics.map { String(format: "%.1f / %.1f GiB", Double($0.memoryUsedBytes)/1_073_741_824, Double($0.memoryTotalBytes)/1_073_741_824) } ?? "—")
+            LabeledContent("采样时间", value: metrics.map { sampleTime($0.sampledAt) } ?? "—")
+            LabeledContent("采样窗口", value: metrics.map { "\($0.sampleWindowMs) ms" } ?? "—")
+            if entry?.result != nil && metrics == nil && entry?.error == nil && entry?.version == 1 {
+                Text("设备返回的系统指标格式无效。").font(.footnote).foregroundStyle(.red)
+            }
+        }
+    }
+    private var httpSection: some View {
+        Section("URL 连通性检测") {
+            TextField("https://example.com", text: $targetURL)
+                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Button { Task { await client.checkHTTP(currentAgent, url: targetURL) } } label: {
+                Label("检测", systemImage: "network")
+            }.disabled(check.loading || !client.authenticated || targetURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if check.loading { ProgressView("正在从设备检测…") }
+            if let error = check.error {
+                Text(error).font(.footnote).foregroundStyle(.red)
+                if check.result != nil { Text("以下为上次检测结果。").font(.footnote).foregroundStyle(.secondary) }
+            }
+            if let result = check.result {
+                LabeledContent("地址", value: result.url).textSelection(.enabled)
+                LabeledContent("连通状态", value: result.reachable ? "地址可达" : "未获得 HTTP 响应")
+                LabeledContent("请求结果", value: result.httpSuccess ? "成功" : result.reachable ? "目标返回非 2xx 状态" : "检测失败")
+                LabeledContent("HTTP 状态", value: result.statusCode.map(String.init) ?? "—")
+                LabeledContent("耗时", value: "\(result.elapsedMs) ms")
+                LabeledContent("检测时间", value: sampleTime(result.checkedAt))
+                if let failure = result.failure { Text(failure.localizedDescription).font(.footnote).foregroundStyle(.red) }
+            } else if !check.loading { Text("输入 URL 后点击检测，由此设备发起访问。").font(.footnote).foregroundStyle(.secondary) }
+        }
     }
     private func sampleTime(_ value: String) -> String {
         let formatter = ISO8601DateFormatter()

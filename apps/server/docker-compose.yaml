@@ -7,6 +7,7 @@ services:
       HAKO_PUBLIC_URL: ${HAKO_PUBLIC_URL:?Set HAKO_PUBLIC_URL to the public HTTPS origin}
       HAKO_DATA_DIR: /app/data
       HAKO_CONFIG_FILE: /app/config/server.json
+      HAKO_TRUSTED_PROXIES: ${HAKO_TRUSTED_PROXIES:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

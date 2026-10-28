@@ -20,7 +20,8 @@ struct ConsoleWebLoginView: View {
                 Form {
                     Section("网页登录请求") {
                         LabeledContent("服务器", value: request.origin)
-                        LabeledContent("浏览器", value: request.browser)
+                        LabeledContent("来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
+                            .textSelection(.enabled)
                         Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
                             .frame(maxWidth: .infinity).padding(.vertical, 12)
                         Text("请核对网页上的六位确认码，确认一致后点击“确认登录”。不要确认他人发送的二维码。")
@@ -43,7 +44,7 @@ struct ConsoleWebLoginView: View {
                 } description: {
                     Text(approved ? "网页将自动完成登录。" : "此次网页登录请求已拒绝。")
                 } actions: {
-                    Button("完成") { dismiss() }.buttonStyle(.borderedProminent)
+                    Button("完成") { dismiss() }.buttonStyle(.borderedProminent).tint(.blue)
                 }
             } else {
                 VStack(spacing: 0) {
@@ -56,7 +57,7 @@ struct ConsoleWebLoginView: View {
                         } description: {
                             Text(scannerError)
                         } actions: {
-                            Button("重新扫码") { scanAgain() }.buttonStyle(.borderedProminent)
+                            Button("重新扫码") { scanAgain() }.buttonStyle(.borderedProminent).tint(.blue)
                         }
                         .frame(maxHeight: .infinity)
                     } else {
@@ -80,7 +81,7 @@ struct ConsoleWebLoginView: View {
                             .accessibilityLabel("登录请求")
                             .overlay { RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.3)) }
                         Button("解析登录请求") { Task { await inspect(text) } }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.borderedProminent).tint(.blue)
                             .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !client.authenticated)
                         if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
                     }

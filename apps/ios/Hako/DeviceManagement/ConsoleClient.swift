@@ -1,53 +1,6 @@
 import Foundation
 import Combine
 
-struct ConsoleAgent: Decodable, Identifiable {
-    let id: String
-    let name: String
-    let platform: String
-    let online: Bool
-    let lastSeen: String
-    let methods: [ConsoleAgentMethod]
-}
-struct ConsoleAgentMethod: Decodable {
-    let name: String
-    let version: Int
-}
-private struct ConsoleAgentError: Decodable, Error, LocalizedError {
-    let code: String
-    let message: String
-    var errorDescription: String? { message.isEmpty ? "设备执行失败（\(code)）。" : message }
-}
-private enum ConsoleAgentReply<Result: Decodable>: Decodable {
-    case result(Result)
-    case failure(ConsoleAgentError)
-    private enum CodingKeys: String, CodingKey { case result, error }
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard container.contains(.result) != container.contains(.error) else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Expected result or error"))
-        }
-        if container.contains(.error) { self = .failure(try container.decode(ConsoleAgentError.self, forKey: .error)) }
-        else { self = .result(try container.decode(Result.self, forKey: .result)) }
-    }
-}
-struct ConsoleMetrics: Decodable {
-    let cpuUsagePercent: Double
-    let memoryUsagePercent: Double
-    let memoryUsedBytes: UInt64
-    let memoryTotalBytes: UInt64
-    let sampledAt: String
-    let sampleWindowMs: Int
-    var isValid: Bool {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: sampledAt) ?? ISO8601DateFormatter().date(from: sampledAt)
-        return date != nil && cpuUsagePercent.isFinite && (0...100).contains(cpuUsagePercent)
-            && memoryUsagePercent.isFinite && (0...100).contains(memoryUsagePercent)
-            && memoryTotalBytes > 0 && memoryUsedBytes <= memoryTotalBytes && (500...5000).contains(sampleWindowMs)
-            && abs(memoryUsagePercent - Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100) < 0.1
-    }
-}
 struct ConsoleTokens: Codable {
     let sessionId: String
     let deviceId: String
@@ -115,7 +68,8 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     @Published private(set) var deviceId = ""
     @Published private(set) var publicKeyPEM = ""
     @Published private(set) var agents: [ConsoleAgent] = []
-    @Published private(set) var metrics: [String: ConsoleMetrics] = [:]
+    @Published private(set) var deviceData: [String: ConsoleDeviceData] = [:]
+    @Published private(set) var httpChecks: [String: ConsoleHTTPCheckState] = [:]
     @Published private(set) var remoteSessions: [ConsoleRemoteSession] = []
     @Published private(set) var busy = false
     @Published private(set) var resettingKey = false
@@ -154,7 +108,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             var pem = ""
             let device = try ConsoleIdentity.reset(prepare: { pem = try $0.publicKeyPEM() })
             self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
-            self.agents = []; self.metrics = [:]; self.remoteSessions = []
+            self.agents = []; self.deviceData = [:]; self.httpChecks = [:]; self.remoteSessions = []
             self.deviceId = device.deviceId; self.publicKeyPEM = pem
             do {
                 try ConsoleKeychain.clearRetiredIdentityEntries()
@@ -190,7 +144,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             self.serverURL = origin
             UserDefaults.standard.set(origin, forKey: "console.serverURL")
             self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
-            self.agents = []; self.metrics = [:]
+            self.agents = []; self.deviceData = [:]; self.httpChecks = [:]
             self.deviceId = ""; self.publicKeyPEM = ""
             try await self.restoreInternal()
         }
@@ -203,7 +157,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         if let data = try ConsoleKeychain.read(sessionAccount) {
             let restored = try JSONDecoder().decode(ConsoleSession.self, from: data)
             guard restored.tokens.deviceId == deviceId else {
-                try persist(nil); authenticated = false; agents = []; metrics = [:]; remoteSessions = []
+                try persist(nil); authenticated = false; agents = []; deviceData = [:]; httpChecks = [:]; remoteSessions = []
                 return
             }
             saved = restored
@@ -283,7 +237,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
                 guard tokens.deviceId == session.tokens.deviceId else { throw HakoError(message: "设备绑定不匹配。") }
                 try self.persist(ConsoleSession(tokens: tokens, logoutPending: session.logoutPending))
             } catch let error as ConsoleHTTPError where error.code == "session_revoked" {
-                try self.persist(nil); self.authenticated = false; self.agents = []; self.metrics = [:]
+                try self.persist(nil); self.authenticated = false; self.agents = []; self.deviceData = [:]; self.httpChecks = [:]
                 throw error
             }
         }
@@ -315,7 +269,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         // presenting another submit would encourage duplicate registration.
         if let registered = try? JSONDecoder().decode(ConsoleAgentRegistrationReply.self, from: response),
            !registered.id.isEmpty, !agents.contains(where: { $0.id == registered.id }) {
-            agents.append(ConsoleAgent(id: registered.id, name: registration.name, platform: "windows", online: false, lastSeen: "", methods: []))
+            agents.append(ConsoleAgent(id: registered.id, name: registration.name, online: false, lastSeen: "", capabilities: nil))
         }
         do {
             try await fetchAgentsInternal()
@@ -349,16 +303,50 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         struct List: Decodable { let agents: [ConsoleAgent] }
         agents = try JSONDecoder().decode(List.self, from: await authorized("/api/v1/agents")).agents
     }
+    private var requestContext: String { serverURL + "\n" + (saved?.tokens.sessionId ?? "") }
     func query(_ agent: ConsoleAgent) async {
-        await execute {
-            self.metrics.removeValue(forKey: agent.id)
-            let metrics = try await self.invokeAgent(agent, method: "system.metrics", as: ConsoleMetrics.self)
-            guard metrics.isValid else { throw HakoError(message: "设备返回的指标格式无效。") }
-            self.metrics[agent.id] = metrics
-        }
+        guard authenticated, !logoutPending, deviceData[agent.id]?.loading != true else { return }
+        if let capabilities = agent.capabilities, !capabilities.contains(where: { $0.name.hasPrefix("query.") }) { return }
+        let context = requestContext
+        deviceData[agent.id, default: ConsoleDeviceData()].loading = true
+        deviceData[agent.id]?.error = nil
+        defer { if context == requestContext { deviceData[agent.id]?.loading = false } }
+        do {
+            let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST",
+                                            body: ["method": "query.all", "version": 1, "params": [String: Any]()])
+            let manifest = try JSONDecoder().decode(ConsoleQueryEnvelope.self, from: data)
+            guard context == requestContext else { return }
+            if let index = agents.firstIndex(where: { $0.id == agent.id }) {
+                let old = agents[index]
+                agents[index] = ConsoleAgent(id: old.id, name: old.name, online: true,
+                                            lastSeen: old.lastSeen, capabilities: manifest.capabilities)
+            }
+            let reply = try JSONDecoder().decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: data)
+            switch reply {
+            case .failure(let error): throw error
+            case .result(let result):
+                deviceData[agent.id]?.entries = result.data
+                deviceData[agent.id]?.loaded = true
+            }
+        } catch is CancellationError { }
+        catch { if context == requestContext { deviceData[agent.id]?.error = error.localizedDescription } }
     }
-    func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
-        let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST", body: ["method": method, "params": params])
+    func checkHTTP(_ agent: ConsoleAgent, url: String) async {
+        guard authenticated, !logoutPending, httpChecks[agent.id]?.loading != true else { return }
+        let context = requestContext
+        httpChecks[agent.id, default: ConsoleHTTPCheckState()].loading = true
+        httpChecks[agent.id]?.error = nil
+        defer { if context == requestContext { httpChecks[agent.id]?.loading = false } }
+        do {
+            let result = try await invokeAgent(agent, method: "action.network.http.check", version: 1,
+                                               params: ["url": url.trimmingCharacters(in: .whitespacesAndNewlines)], as: ConsoleHTTPCheck.self)
+            guard context == requestContext else { return }
+            httpChecks[agent.id]?.result = result
+        } catch is CancellationError { }
+        catch { if context == requestContext { httpChecks[agent.id]?.error = error.localizedDescription } }
+    }
+    func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
+        let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST", body: ["method": method, "version": version, "params": params])
         let reply = try JSONDecoder().decode(ConsoleAgentReply<Result>.self, from: data)
         switch reply {
         case .failure(let error): throw error
@@ -385,7 +373,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             guard var session = self.saved else { return }
             session.logoutPending = true
             try self.persist(session)
-            self.authenticated = false; self.agents = []; self.metrics = [:]; self.remoteSessions = []
+            self.authenticated = false; self.agents = []; self.deviceData = [:]; self.httpChecks = [:]; self.remoteSessions = []
             try await self.finishLogout()
         }
     }

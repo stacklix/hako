@@ -30,6 +30,9 @@ func publicBlock(text string) (*pem.Block, error) {
 }
 
 func parseAgent(a AgentConfig, fromFile bool) (AgentConfig, error) {
+	if a.Capabilities != nil && !validCapabilities(a.Capabilities) {
+		return a, fmt.Errorf("Agent 能力清单无效")
+	}
 	if !validAgentID(a.ID) {
 		return a, fmt.Errorf("Agent ID 应为 1–5 位大写字母或数字，并以字母开头")
 	}

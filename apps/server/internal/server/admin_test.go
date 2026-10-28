@@ -192,7 +192,17 @@ func TestAdminEmbeddedPagesAndNoSecrets(t *testing.T) {
 		}
 	}
 	data := a.call("GET", "overview", nil, 200)
-	for _, secret := range []string{f.tokens.AccessToken, f.tokens.RefreshToken, "PRIVATE KEY"} {
+	var overview map[string]json.RawMessage
+	if err := json.Unmarshal(data, &overview); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := overview["sessions"]; present {
+		t.Fatal("web overview still includes phone sessions")
+	}
+	if _, present := overview["consoles"]; present {
+		t.Fatal("web overview still includes management clients")
+	}
+	for _, secret := range []string{f.tokens.AccessToken, f.tokens.RefreshToken, f.tokens.SessionID, "PRIVATE KEY"} {
 		if bytes.Contains(data, []byte(secret)) {
 			t.Fatal("overview exposes credentials")
 		}
@@ -214,7 +224,7 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: json.RawMessage(`{"cpuUsagePercent":25,"newMetric":{"value":42}}`)}})
 		}
 	}()
-	data := a.call("POST", "agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 200)
+	data := a.call("POST", "agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, 200)
 	var m struct {
 		Result struct{ CPUUsagePercent float64 }
 	}
@@ -227,7 +237,7 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	if ws.ReadJSON(&msg) == nil {
 		t.Fatal("removed Agent remains connected")
 	}
-	a.call("POST", "agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 409)
+	a.call("POST", "agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, 409)
 	a.call("DELETE", "agents/PC", nil, 404)
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	body := map[string]string{"id": "NEWPC", "name": "新电脑", "publicKeyPem": publicPEM(t, &key.PublicKey)}
@@ -246,11 +256,26 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	}
 }
 
-func TestAdminConsoleRevocationAndReenrollment(t *testing.T) {
+func TestAdminCannotRevokeConsoleSessions(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
-	a.call("DELETE", "sessions/"+f.tokens.SessionID, nil, 200)
-	status, _ := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
+	// Even a valid browser cookie, origin and CSRF token grant no Console revocation route.
+	a.call("DELETE", "sessions/"+f.tokens.SessionID, nil, http.StatusMethodNotAllowed)
+	status, _, _ := a.request("DELETE", "/api/v1/sessions/"+f.tokens.SessionID, nil, f.s.config.PublicURL, a.csrf)
+	if status != http.StatusUnauthorized {
+		t.Fatal("browser cookie bypassed Console proof", status)
+	}
+	status, _ = f.call("GET", "/api/v1/auth/session", nil, f.tokens.AccessToken)
+	if status != http.StatusOK {
+		t.Fatal("browser removal attempt changed the phone session", status)
+	}
+	a.call("GET", "overview", nil, http.StatusOK)
+	// Phone session management remains available through the Console's signed API.
+	status, _ = f.call("DELETE", "/api/v1/sessions/"+f.tokens.SessionID, nil, f.tokens.AccessToken)
+	if status != http.StatusOK {
+		t.Fatal("signed Console session revocation failed", status)
+	}
+	status, _ = f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 	if status != 401 {
 		t.Fatal("revoked Console session remains valid")
 	}
@@ -300,7 +325,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Close()
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Methods: []agentMethod{{Name: "system.metrics", Version: 1}}})
+	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 3, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}})
 	var challenge struct {
 		Payload string `json:"payload"`
 	}

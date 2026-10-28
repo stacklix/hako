@@ -10,13 +10,14 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-type agentMethod struct {
+type agentCapability struct {
 	Name    string `json:"name"`
 	Version int    `json:"version"`
 }
@@ -24,13 +25,13 @@ type agentMethod struct {
 var errAgentBusy = errors.New("agent_busy")
 var methodName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 
-func validMethods(methods []agentMethod) bool {
-	if len(methods) == 0 || len(methods) > 64 {
+func validCapabilities(methods []agentCapability) bool {
+	if methods == nil || len(methods) > 64 {
 		return false
 	}
 	seen := map[string]bool{}
 	for _, m := range methods {
-		if len(m.Name) > 100 || !methodName.MatchString(m.Name) || m.Version < 1 || seen[m.Name] {
+		if len(m.Name) > 100 || !methodName.MatchString(m.Name) || (!strings.HasPrefix(m.Name, "query.") && !strings.HasPrefix(m.Name, "action.")) || m.Name == "query.all" || strings.Count(m.Name, ".") < 2 || m.Version < 1 || seen[m.Name] {
 			return false
 		}
 		seen[m.Name] = true
@@ -56,31 +57,32 @@ func (m agentResult) valid() bool {
 }
 
 type agentRequest struct {
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
+	Method  string          `json:"method"`
+	Version int             `json:"version"`
+	Params  json.RawMessage `json:"params"`
 }
 
 type agentMessage struct {
 	agentResult
-	Type      string          `json:"type"`
-	ID        string          `json:"id,omitempty"`
-	Method    string          `json:"method,omitempty"`
-	Version   int             `json:"version,omitempty"`
-	Username  string          `json:"username,omitempty"`
-	KeyID     string          `json:"keyId,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	Params    json.RawMessage `json:"params,omitempty"`
-	Methods   []agentMethod   `json:"methods,omitempty"`
+	Type         string            `json:"type"`
+	ID           string            `json:"id,omitempty"`
+	Method       string            `json:"method,omitempty"`
+	Version      int               `json:"version,omitempty"`
+	Username     string            `json:"username,omitempty"`
+	KeyID        string            `json:"keyId,omitempty"`
+	Signature    string            `json:"signature,omitempty"`
+	Params       json.RawMessage   `json:"params,omitempty"`
+	Capabilities []agentCapability `json:"capabilities,omitempty"`
 }
 
 type agentConnection struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[string]chan agentMessage
-	done    chan struct{}
-	once    sync.Once
-	methods []agentMethod
+	conn         *websocket.Conn
+	writeMu      sync.Mutex
+	mu           sync.Mutex
+	pending      map[string]chan agentMessage
+	done         chan struct{}
+	once         sync.Once
+	capabilities []agentCapability
 }
 
 func (c *agentConnection) send(v any) error {
@@ -110,7 +112,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication failed"), time.Now().Add(time.Second))
 	}
 	var hello agentMessage
-	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != 2 || !validMethods(hello.Methods) {
+	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != 3 || !validCapabilities(hello.Capabilities) {
 		authFail()
 		return
 	}
@@ -127,8 +129,8 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		authFail()
 		return
 	}
-	c.methods = append([]agentMethod{}, hello.Methods...)
-	payload := []byte("hako-agent-auth/v2\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
+	c.capabilities = append([]agentCapability{}, hello.Capabilities...)
+	payload := []byte("hako-agent-auth/v3\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
 	if c.send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
 		return
 	}
@@ -155,6 +157,18 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	if !stillTrusted {
 		s.registryMu.Unlock()
 		authFail()
+		return
+	}
+	// Persist only authenticated manifests, under the same lock as registration/deletion.
+	next := *s.registry.Load()
+	next.Agents = append([]AgentConfig{}, next.Agents...)
+	for i := range next.Agents {
+		if next.Agents[i].ID == configured.ID {
+			next.Agents[i].Capabilities = c.capabilities
+		}
+	}
+	if s.saveRegistry(&next) != nil {
+		s.registryMu.Unlock()
 		return
 	}
 	if c.send(map[string]string{"type": "authenticated", "agentId": configured.ID, "name": configured.Name}) != nil {
@@ -251,11 +265,11 @@ func (s *Server) agentItems(includeKey bool) []map[string]any {
 			default:
 			}
 		}
-		methods := []agentMethod{}
+		capabilities := a.Capabilities
 		if online {
-			methods = c.methods
+			capabilities = c.capabilities
 		}
-		item := map[string]any{"id": a.ID, "name": a.Name, "platform": "windows", "online": online, "lastSeen": s.lastSeen[a.ID], "methods": methods}
+		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": s.lastSeen[a.ID], "capabilities": capabilities}
 		if includeKey {
 			item["keyId"] = a.keyID
 			item["publicKeyPem"] = a.PublicKeyPEM
@@ -279,7 +293,7 @@ func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
-	if len(request.Method) > 100 || !methodName.MatchString(request.Method) || len(request.Params) == 0 || request.Params[0] != '{' {
+	if len(request.Method) > 100 || !methodName.MatchString(request.Method) || request.Version < 1 || len(request.Params) == 0 || request.Params[0] != '{' {
 		reject(w, 400, "invalid_request")
 		return
 	}
@@ -297,9 +311,9 @@ func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
 		reject(w, 409, "agent_offline")
 		return
 	}
-	supported := false
-	for _, m := range c.methods {
-		if m.Name == request.Method {
+	supported := request.Method == "query.all" && request.Version == 1
+	for _, m := range c.capabilities {
+		if m.Name == request.Method && m.Version == request.Version {
 			supported = true
 			break
 		}
@@ -321,7 +335,14 @@ func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	respond(w, 200, result.agentResult)
+	if request.Method == "query.all" {
+		respond(w, 200, struct {
+			agentResult
+			Capabilities []agentCapability `json:"capabilities"`
+		}{result.agentResult, c.capabilities})
+	} else {
+		respond(w, 200, result.agentResult)
+	}
 }
 
 func (c *agentConnection) request(ctx context.Context, request agentRequest) (agentMessage, error) {
@@ -335,7 +356,7 @@ func (c *agentConnection) request(ctx context.Context, request agentRequest) (ag
 	c.pending[id] = ch
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
-	if err := c.send(agentMessage{Type: "request", ID: id, Method: request.Method, Params: request.Params}); err != nil {
+	if err := c.send(agentMessage{Type: "request", ID: id, Method: request.Method, Version: request.Version, Params: request.Params}); err != nil {
 		c.close()
 		return agentMessage{}, err
 	}

@@ -6,7 +6,7 @@
 </head>
 <body>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">设备管理</p><nav><a href="#agents">设备代理 <span>Agent</span></a><a href="#consoles">管理客户端 <span>Console</span></a><a href="#sessions">登录会话 <span>Sessions</span></a></nav><p class="aside-footer">你的设备，收进一个盒子。<br>Hako Server</p></aside>
+  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">设备管理</p><nav><a href="#agents">设备代理 <span>Agent</span></a></nav><p class="aside-footer">你的设备，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header><div><p class="eyebrow">YOUR DEVICES, CONNECTED</p><h1>设备管理</h1><p class="muted">登记可信设备，掌握连接状态。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -20,16 +20,14 @@
       <p class="help">二维码 90 秒有效。请只扫描自己正在使用的浏览器上的二维码。Console 公钥由服务器配置文件手工登记，所有 Console 都是管理员。管理会话闲置 30 分钟或登录 12 小时后到期。</p>
     </section>
     <div id="dashboard" hidden>
-      <div class="stats"><div class="card"><p>在线设备</p><strong id="online-count">—</strong><span class="muted">长连接已建立</span></div><div class="card"><p>设备代理</p><strong id="agent-count">—</strong><span class="muted">已登记的 Windows 设备</span></div><div class="card"><p>管理客户端</p><strong id="console-count">—</strong><span class="muted">可信公钥</span></div></div>
+      <div class="stats"><div class="card"><p>在线设备</p><strong id="online-count">—</strong><span class="muted">长连接已建立</span></div><div class="card"><p>设备代理</p><strong id="agent-count">—</strong><span class="muted">已登记设备</span></div></div>
       <div class="refresh-row"><span id="updated" class="muted">正在加载…</span><button id="refresh" class="quiet">刷新状态 ↻</button></div>
-      <section id="agents" class="card"><div class="section-heading"><div><p class="eyebrow">AGENTS</p><h2>设备代理</h2></div><button class="primary" id="open-agent">＋ 登记 Agent</button></div><p class="muted">Windows Agent 通过长连接接收请求，指标在查询时采集。</p><div id="agent-list" class="device-list"></div></section>
-      <section id="consoles" class="card"><div class="section-heading"><div><p class="eyebrow">CONSOLES</p><h2>管理客户端</h2></div><span class="pill">手工配置 · 全部管理员</span></div><p class="muted">公钥由服务器配置文件维护，修改后重启生效。Console 使用 HTTP，登录会话不代表实时在线。</p><div id="console-list" class="device-list"></div></section>
-      <section id="sessions" class="card"><div class="section-heading"><div><p class="eyebrow">ACCESS</p><h2>Console 登录会话</h2></div><span id="session-count" class="pill">0 个会话</span></div><p class="muted">撤销后该会话立即失效；仍持有可信密钥的设备可以重新登录。</p><div id="session-list" class="device-list"></div></section>
-      <p class="page-footer">Agent 公钥修改即时生效。Console 由服务器手工配置。状态每 10 秒刷新，指标只按需查询。</p>
+      <section id="agents" class="card"><div class="section-heading"><div><p class="eyebrow">AGENTS</p><h2>设备代理</h2></div><button class="primary" id="open-agent">＋ 登记 Agent</button></div><p class="muted">选择 Agent 声明的能力，填写 JSON 参数后发起请求。</p><div id="agent-list" class="device-list"></div></section>
+      <p class="page-footer">Agent 公钥修改即时生效。状态每 10 秒刷新，能力仅在手动调用时执行。</p>
     </div>
   </main>
 </div>
 <dialog id="register-dialog"><form id="register-form"><div class="section-heading"><h2 id="register-title">登记设备</h2><button type="button" id="close-register" class="quiet" aria-label="关闭">✕</button></div><label>设备名称<input name="name" required maxlength="100" placeholder="例如：我的设备"></label><label>公钥 PEM<textarea name="publicKeyPem" rows="7" required placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label><label class="file-label">或从公钥文件读取<input id="public-key-file" type="file" accept=".pem,.pub,.txt"></label><p id="key-hint" class="muted"></p><div id="register-error" class="form-error" role="alert" hidden></div><button type="submit" class="primary">登记公钥</button></form></dialog>
 <dialog id="key-dialog"><div class="section-heading"><h2>设备公钥</h2><button id="close-key" class="quiet" aria-label="关闭">✕</button></div><p id="key-name"></p><pre id="key-pem"></pre><button id="download-key" class="primary">下载公钥 PEM</button></dialog>
-<dialog id="request-dialog"><form id="request-form"><div class="section-heading"><h2>执行设备动作</h2><button type="button" id="close-request" class="quiet" aria-label="关闭">✕</button></div><p id="request-agent"></p><label>动作<select id="request-method" required></select></label><label>参数（JSON 对象）<textarea id="request-params" rows="5" required spellcheck="false">{}</textarea></label><p class="muted">动作会立即执行。超时后动作可能仍在运行，请确认结果后再决定是否重试。</p><div id="request-error" class="form-error" role="alert" hidden></div><button id="execute-request" type="submit" class="primary">执行</button><pre id="request-result" aria-live="polite"></pre></form></dialog>
+<dialog id="request-dialog"><form id="request-form"><div class="section-heading"><h2>调用设备能力</h2><button type="button" id="close-request" class="quiet" aria-label="关闭">✕</button></div><p id="request-agent"></p><label>能力<select id="request-method" required></select></label><label>参数（JSON 对象）<textarea id="request-params" rows="5" required spellcheck="false">{}</textarea></label><p class="muted">填写该能力需要的 JSON 参数，无参数时使用 {}。请求超时后，请先确认结果再决定是否重试。</p><div id="request-error" class="form-error" role="alert" hidden></div><button id="execute-request" type="submit" class="primary">执行</button><pre id="request-result" aria-live="polite"></pre></form></dialog>
 </body></html>

@@ -1,6 +1,6 @@
 # Hako Server
 
-单用户设备管理服务，使用 Go、SQLite 和 WebSocket，内置 `/admin/` Web 管理页。Windows 是设备代理（Agent），iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
+单用户设备管理服务，使用 Go、SQLite 和 WebSocket，内置 `/admin/` Web 管理页。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
 
 两类客户端使用配置中的唯一账号及预先登记的设备公钥：Agent 使用 RSA-PSS/SHA-256，Console 使用 Secure Enclave P-256 和 DPoP。所有已登记 Console 都是管理员，可以批准网页登录。没有密码、TOTP、管理密钥登录或公开注册入口。
 
@@ -83,7 +83,7 @@ openssl rand -hex 32
 
 可配置多台 Console，每台使用独立 P-256 公钥，均具有管理员权限；也可用 `publicKeyPem` 直接填写 PEM 公钥字符串。私钥始终保留在 iPhone。未登记 Console 时，网页会提示手工配置，不能登录。
 
-Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动时从配置导入，之后由数据库、Web 管理页和已登录的 iOS Console 即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
+Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页不展示管理客户端及其公钥。Agent 公钥首次启动时从配置导入，之后由数据库、Web 管理页和已登录的 iOS Console 即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
 
 ```sh
 docker compose config --quiet
@@ -99,28 +99,32 @@ docker compose up -d
 1. iOS「设备监控」使用本机密钥登录 Console。
 2. 浏览器打开 `https://你的服务地址/admin/`，显示二维码和六位确认码。
 3. iOS「设备监控 → 扫码登录」直接扫描二维码，或在扫码区域下方粘贴并解析网页登录请求。
-4. 在确认页核对服务器、浏览器及两端确认码，点击「确认登录」，使用设备签名和有效 Console 会话提交批准，无需额外的 Face ID、Touch ID 或设备密码验证。
+4. 在确认页核对服务器、来源 IP 及两端确认码，点击「确认登录」，使用设备签名和有效 Console 会话提交批准，无需额外的 Face ID、Touch ID 或设备密码验证。
 5. 网页自动完成登录；只扫描不会登录。也可在 Console 拒绝请求。
 
+确认页的「来源 IP」由服务端在浏览器创建二维码时记录，支持 IPv4/IPv6，不是扫码手机的 IP。它是服务端看到的来源地址；经过 NAT、VPN 时通常是出口地址，无法据此取得浏览器设备的局域网 IP。浏览器名称仍用于已登录设备列表，依据 HTTP User-Agent 判断，包含 iOS Chrome 的 `CriOS`、Firefox 的 `FxiOS` 和 Edge 的 `EdgiOS` 标识；该名称只是提示信息。
+
+通过反向代理部署时，在 `.env` 设置 `HAKO_TRUSTED_PROXIES`，填写**服务端实际看到的代理 IP 或 CIDR**，多项以逗号分隔，并重建容器使环境变量生效。原生部署可使用 `127.0.0.1,::1`；Docker 下应填写实际网关/代理地址，不能直接照抄 loopback。默认留空，不信任转发头，显示直接连接地址。仅可信代理提供的 `X-Forwarded-For` 会被读取，并从右向左取首个不可信地址；代理须覆盖或正确追加该头。不要将所有地址设为可信，否则来源可能被伪造。来源 IP 仅通过已认证 Console 的请求详情返回，不写入二维码或公开轮询响应；需要同步更新 iOS 与服务端。
+
 - Agent：查看在线/离线状态、最近活动时间、密钥指纹；粘贴或读取 PEM 公钥文件登记，查看和下载公钥，移除设备。
-- 指标与动作：对在线 Agent 按需查询 CPU、物理内存及采样时间，也可从 Agent 上报的能力清单选择动作、填写 JSON 参数并查看 JSON 结果。状态每 10 秒刷新，指标不自动持续采集。
-- Console：只读查看和下载公钥；查看和撤销登录会话。HTTP 客户端没有实时在线标识。所有 Console 公钥必须在文件中手工维护。
+- 能力调用：下拉选项完全来自 Agent 上报的能力清单，显示能力名称与版本；用户填写 JSON 对象参数后提交，统一以 JSON 展示返回结果或业务错误。网页不内置具体业务能力、参数模板、字段校验或专用数据展示，也不额外插入清单以外的命令。状态每 10 秒刷新，不自动调用能力。
+- 网页只展示 Agent，不展示管理客户端列表、数量、公钥或手机登录会话；概览接口不返回管理客户端信息。手机会话由经过 DPoP 认证的 iOS Console 管理，Console 公钥在服务端配置文件中手工维护。
 - Agent 修改即时生效，移除后关闭现有连接并拒绝后续认证。Console 从配置移除并重启后，清理其所有会话和未完成的登录挑战；重新加入不会恢复旧会话。
 
 二维码有效期 90 秒，批准和领取只允许一次；二维码不包含浏览器私有 Cookie、Console 凭据或私钥。领取会话必须由原浏览器持有 HttpOnly Cookie 并从正确 origin 发起。刷新二维码废弃同一浏览器之前的请求。只扫描自己正在使用的网页，不批准他人转发的二维码；两端确认码核对参考 [RFC 8628 远程诱导防护](https://www.rfc-editor.org/rfc/rfc8628.html#section-5.4)。
 
 管理页使用 HttpOnly、SameSite=Strict 的独立会话 Cookie，HTTPS 下启用 Secure 和 `__Host-`；修改请求还校验 origin 和 CSRF。网页会话闲置 30 分钟、登录 12 小时、主动退出或服务重启后失效，状态轮询不续期。网页还绑定批准它的 Console 会话：Console 退出、被撤销或重新主动登录替换旧会话后，关联网页会话失效。Console 长期凭据不会传给网页。
 
-iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有效的网页管理端登录，网页项显示浏览器、登录时间及最近活动时间，可下拉刷新。点击「移除网页登录」可单独撤销所选浏览器会话，该浏览器下次请求即需要重新扫码；其他网页和手机的登录不受影响。此功能需要同步更新服务端和 iOS。网页管理页中的会话列表仍仅管理 Console 会话。
+iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有效的网页管理端登录，网页项显示浏览器、登录时间及最近活动时间，可下拉刷新。点击「移除网页登录」可单独撤销所选浏览器会话，该浏览器下次请求即需要重新扫码；其他网页和手机的登录不受影响。此功能需要同步更新服务端和 iOS。网页不提供登录会话列表，手机及网页登录会话统一在 iOS 中管理。
 
 ## 设备调用接口
 
 - Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
 - Console 登记 Agent：`POST /api/v1/agents`，使用同样的 DPoP 会话与设备签名认证，正文为 `{"name":"我的设备","publicKeyPem":"PEM 公钥"}`；服务端自动生成 5 位设备 ID（大写字母和数字，以字母开头），成功返回 HTTP 201 及 `id,keyId`，无需重启。iOS 和网页只需填写名称与公钥。接口仍接受可选的 `id`，格式为 `[A-Z][A-Z0-9]{0,4}`。与网页共用 RSA 公钥校验、重复检查及持久化；重复公钥或显式指定的 ID 返回 409，非法设备信息、公钥或私钥返回 400。需要同步更新服务端与 iOS。
 - 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
-- 正文：`{"method":"system.metrics","params":{}}`。
+- 正文：`{"method":"query.all","version":1,"params":{}}`。
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
-- Agent 使用 WebSocket v2，在 `hello.methods` 中声明动作名与版本；设备列表和管理概览返回当前连接的 `methods`。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
+- Agent 使用 WebSocket v3，在 `hello.capabilities` 中声明动作名与版本；设备列表和管理概览返回最近一次成功认证的 `capabilities`（离线仍保留，首次连接前为 null）。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
 
 超时、断线可能发生在动作已经执行之后，有副作用的动作应先确认结果再决定是否重试。具体格式及限制见[设备监控协议](../../docs/device-monitoring.md)。
 
@@ -129,7 +133,7 @@ iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有�
 1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在已登录 iOS 的「设备监控 → 添加 Agent」填写设备名称，粘贴或导入 RSA 公钥；也可使用 Web 管理页「登记 Agent」，设备 ID 均由服务端自动生成。设置 Windows 服务地址和账号，保存并连接；认证失败后完成登记需重新连接。
 2. iOS → 设备监控 → 设置 → 查看与导出公钥 → 复制内容或导出文件，手工配置到服务端 `consoles` 后重启；此操作不要求填写服务器信息或登录。
 3. iOS → 设备监控 → 设置 → 填写 HTTPS 地址和账号 → 保存服务器配置 → 使用本机密钥登录，即可监控和批准网页登录。
-4. iOS 选择在线电脑，查询 CPU、物理内存和本次采样时间。
+4. iOS 选择在线设备，按设备声明的能力查询数据或发起操作；支持系统指标的设备可查看 CPU、物理内存和本次采样时间。
 
 iOS 设备 ID 为公钥的 RFC 7638 JWK 指纹，无需另行配置。服务端从已登记公钥计算相同 ID，校验请求签名和会话绑定。
 
@@ -174,3 +178,5 @@ iOS 扫码、相机权限、会话列表和网页登录移除需在 iPhone 上�
 Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序](../windows/README.md) 的绝对路径后运行 `go test ./internal/server -run TestWindowsAgentEndToEnd -v`。该检查启动真实 C# 代理，验证 RSA 认证、请求转发及实际 CPU/内存采样。
 
 协议见 [设备监控协议](../../docs/device-monitoring.md)。返回 [仓库说明](../../README.md)。
+
+命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。

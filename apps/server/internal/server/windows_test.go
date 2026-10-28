@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -58,10 +60,10 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
-	if status != 200 || !bytes.Contains(data, []byte(`"methods":[{"name":"system.metrics","version":1}]`)) {
+	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}]`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
@@ -70,11 +72,93 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
 		t.Fatal("Windows action error not forwarded", status, string(data))
 	}
+	var redirects atomic.Int32
+	slowStarted := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			w.Header().Set("Location", "/followed")
+			w.WriteHeader(301)
+		case "/followed":
+			redirects.Add(1)
+		case "/slow":
+			slowStarted <- struct{}{}
+			<-r.Context().Done()
+		case "/body":
+			w.WriteHeader(200)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		default:
+			w.WriteHeader(500)
+		}
+	}))
+	defer target.Close()
+	check := func(url string) (int, []byte) {
+		return f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "action.network.http.check", Version: 1, Params: json.RawMessage(`{"url":` + string(mustJSON(url)) + `}`)}, f.tokens.AccessToken)
+	}
+	for _, path := range []string{"/redirect", "/error", "/body"} {
+		started := time.Now()
+		status, data = check(target.URL + path)
+		want := `"statusCode":500`
+		if path == "/redirect" {
+			want = `"statusCode":301`
+		}
+		if path == "/body" {
+			want = `"statusCode":200`
+		}
+		if status != 200 || !bytes.Contains(data, []byte(`"reachable":true`)) || !bytes.Contains(data, []byte(want)) || time.Since(started) > 3*time.Second {
+			t.Fatal("HTTP headers/status check failed", status, string(data))
+		}
+	}
+	if redirects.Load() != 0 {
+		t.Fatal("Agent followed redirect")
+	}
+	probeDone := make(chan []byte, 1)
+	go func() { _, data := check(target.URL + "/slow"); probeDone <- data }()
+	select {
+	case <-slowStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("probe did not start")
+	}
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.all", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	var aggregate struct {
+		Result struct {
+			Data map[string]struct {
+				Version int
+				Result  testMetrics
+			}
+		}
+		Capabilities []agentCapability
+	}
+	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 1 || len(aggregate.Capabilities) != 2 {
+		t.Fatal("real aggregate query failed", status, string(data))
+	}
+	select {
+	case data := <-probeDone:
+		t.Fatal("probe blocked aggregate query", string(data))
+	default:
+	}
+	select {
+	case data := <-probeDone:
+		if !bytes.Contains(data, []byte(`"code":"timeout"`)) || !bytes.Contains(data, []byte(`"reachable":false`)) {
+			t.Fatal("probe timeout result invalid", string(data))
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("probe timeout budget exceeded")
+	}
+	tlsTarget := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer tlsTarget.Close()
+	status, data = check(tlsTarget.URL)
+	if status != 200 || !bytes.Contains(data, []byte(`"code":"tls_failed"`)) {
+		t.Fatal("Agent bypassed TLS verification", status, string(data))
+	}
 }
+
+func mustJSON(value string) []byte { data, _ := json.Marshal(value); return data }
 
 // Metric semantics belong to the client/agent, not the production relay.
 type testMetrics struct {

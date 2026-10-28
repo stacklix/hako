@@ -43,6 +43,7 @@ struct ConsoleWebLoginRequest: Decodable, Identifiable {
     let origin: String
     let confirmationCode: String
     let browser: String
+    var clientIP: String? = nil
     let requestedAt: String
     let expiresAt: String
     let nonce: String

@@ -34,8 +34,8 @@ struct HomeView: View {
                     NavigationLink { DeviceMonitorView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("设备监控").font(.headline)
-                            Text("电脑在线状态 · CPU · 内存").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "desktopcomputer").foregroundStyle(.primary) }
+                            Text("设备在线状态 · 能力调用").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "network").foregroundStyle(.primary) }
                     }
                     NavigationLink { UsageView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {

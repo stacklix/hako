@@ -69,11 +69,11 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("authenticating", "正在验证身份…");
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await SendAsync(socket, new { type = "hello", version = 2, username = settings.Username, keyId, methods = dispatcher.Methods }, authTimeout.Token);
+                    await SendAsync(socket, new { type = "hello", version = 3, username = settings.Username, keyId, capabilities = dispatcher.Capabilities }, authTimeout.Token);
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
-                    var expected = "hako-agent-auth/v2\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
+                    var expected = "hako-agent-auth/v3\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
                     if (!Encoding.UTF8.GetString(payload).StartsWith(expected, StringComparison.Ordinal)) throw new AuthenticationException("服务端认证挑战不匹配。");
                     var signature = Convert.ToBase64String(rsa.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
                     await SendAsync(socket, new { type = "authenticate", signature }, authTimeout.Token);
@@ -82,29 +82,35 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("connected", "已连接 · 身份验证通过", ack.RootElement.GetProperty("agentId").GetString());
                 }
                 attempt = 0;
-                while (!token.IsCancellationRequested)
+                using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var workers = new List<Task>();
+                try
                 {
-                    using var receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-                    receiveTimeout.CancelAfter(TimeSpan.FromSeconds(65));
-                    using var message = await ReceiveAsync(socket, receiveTimeout.Token);
-                    var root = message.RootElement;
-                    switch (root.GetProperty("type").GetString())
+                    while (!connection.IsCancellationRequested)
                     {
-                        case "ping": await SendAsync(socket, new { type = "pong" }, token); break;
-                        case "request":
-                            var id = root.GetProperty("id").GetString()!;
-                            try
-                            {
-                                var result = await dispatcher.InvokeAsync(root.GetProperty("method").GetString()!, root.GetProperty("params"), token);
-                                await SendAsync(socket, new { type = "response", id, result }, token);
-                            }
-                            catch (AgentActionException e) when (socket.State == WebSocketState.Open)
-                            { await SendAsync(socket, new { type = "response", id, error = new { code = e.Code, message = e.Message } }, token); }
-                            catch (Exception e) when (e is not OperationCanceledException && socket.State == WebSocketState.Open)
-                            { await SendAsync(socket, new { type = "response", id, error = new { code = "action_failed", message = "设备执行失败。" } }, token); }
-                            break;
-                        default: throw new InvalidDataException("未知的服务端消息。");
+                        using var receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
+                        receiveTimeout.CancelAfter(TimeSpan.FromSeconds(65));
+                        using var message = await ReceiveAsync(socket, receiveTimeout.Token);
+                        var root = message.RootElement;
+                        switch (root.GetProperty("type").GetString())
+                        {
+                            case "ping": await SendAsync(socket, new { type = "pong" }, token); break;
+                            case "request":
+                                workers.RemoveAll(task => task.IsCompleted);
+                                var request = root.Clone();
+                                if (workers.Count >= 4)
+                                    await SendAsync(socket, new { type = "response", id = request.GetProperty("id").GetString(), error = new { code = "agent_busy", message = "设备繁忙，请稍后重试。" } }, connection.Token);
+                                else
+                                    workers.Add(Task.Run(() => ExecuteRequestAsync(socket, request, connection.Token), connection.Token));
+                                break;
+                            default: throw new InvalidDataException("未知的服务端消息。");
+                        }
                     }
+                }
+                finally
+                {
+                    await connection.CancelAsync();
+                    try { await Task.WhenAll(workers); } catch (OperationCanceledException) { }
                 }
             }
             catch (AuthenticationException)
@@ -116,6 +122,28 @@ public sealed class AgentConnection : IAsyncDisposable
             try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)) + Random.Shared.NextDouble()), token); }
             catch (OperationCanceledException) { return; }
         }
+    }
+
+    private async Task ExecuteRequestAsync(ClientWebSocket socket, JsonElement request, CancellationToken token)
+    {
+        try
+        {
+            var id = request.GetProperty("id").GetString()!;
+            object response;
+            try
+            {
+                var result = await dispatcher.InvokeAsync(request.GetProperty("method").GetString()!,
+                    request.GetProperty("version").GetInt32(), request.GetProperty("params"), token);
+                response = new { type = "response", id, result };
+            }
+            catch (AgentActionException e)
+            { response = new { type = "response", id, error = new { code = e.Code, message = e.Message } }; }
+            catch (Exception e) when (e is not OperationCanceledException)
+            { response = new { type = "response", id, error = new { code = "execution_failed", message = "设备执行失败。" } }; }
+            await SendAsync(socket, response, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch { socket.Abort(); }
     }
 
     private async Task SendAsync(ClientWebSocket socket, object value, CancellationToken token)
