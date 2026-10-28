@@ -33,7 +33,10 @@ struct DeviceMonitorView: View {
                 Section {
                     Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink("扫码登录") { ConsoleWebLoginView() }
+                    NavigationLink { ConsoleWebLoginView() } label: {
+                        Label("扫码登录", systemImage: "qrcode.viewfinder")
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }.disabled(client.busy)
             } else if client.hasSavedSession {
                 Section {
