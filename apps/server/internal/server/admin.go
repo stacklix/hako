@@ -14,6 +14,7 @@ import (
 var adminFiles embed.FS
 
 type adminSession struct {
+	ID, Browser                      string
 	CSRF                             string
 	Created, LastUsed                time.Time
 	ApproverSessionID, ApproverThumb string
@@ -39,7 +40,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
 	s.mux.HandleFunc("GET /admin/api/overview", s.admin(s.adminOverview))
-	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.adminAddAgent))
+	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
 	s.mux.HandleFunc("DELETE /admin/api/sessions/{id}", s.admin(s.adminRevokeSession))
@@ -152,7 +153,9 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 func registryError(w http.ResponseWriter, err error) {
 	respond(w, 400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()})
 }
-func (s *Server) adminAddAgent(w http.ResponseWriter, r *http.Request) {
+
+// Both entry points authenticate before sharing registry validation and persistence.
+func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ID           string `json:"id"`
 		Name         string `json:"name"`

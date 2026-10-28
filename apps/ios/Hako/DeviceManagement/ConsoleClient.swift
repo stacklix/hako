@@ -62,9 +62,13 @@ struct ConsoleSession: Codable {
 }
 
 struct ConsoleRemoteSession: Decodable, Identifiable {
+    enum Kind: String, Decodable { case console, web }
     let id: String
-    let deviceId: String
+    let type: Kind
+    let deviceId: String?
+    let browser: String?
     let createdAt: String
+    let lastUsedAt: String?
     let current: Bool
 }
 
@@ -78,10 +82,12 @@ private struct ConsoleHTTPError: Error, LocalizedError {
         case "agent_timeout": return "设备响应超时，动作可能仍在执行，请先确认结果。"
         case "unsupported_method": return "设备不支持此动作，请刷新设备列表。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
+        case "duplicate_agent": return "设备 ID 或公钥已登记，请刷新设备列表，或为另一台设备使用不同的 ID 和公钥。"
+        case "invalid_public_key_or_device": return "设备 ID、名称或 RSA 公钥无效，请使用 Windows 导出的 RSA 2048–8192 位公钥。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
         case "session_revoked": return "登录会话已撤销，请重新登录。"
-        case "storage_unavailable": return "服务器暂时无法保存会话，请稍后重试。"
+        case "storage_unavailable": return "服务器暂时无法保存更改，请稍后重试。"
         case "login_request_expired": return "二维码已过期，请在网页刷新后重新扫码。"
         case "login_request_not_found", "login_request_finished": return "登录请求已失效或已处理，请刷新网页二维码。"
         case "login_confirmation_mismatch": return "登录确认码或签名挑战不匹配，请重新扫码。"
@@ -290,6 +296,32 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
 
     func fetchAgents() async { await execute { try await self.fetchAgentsInternal() } }
 
+    func addAgent(id: String, name: String, publicKeyPEM: String) async throws {
+        guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录设备监控。") }
+        let registration = try ConsoleAgentRegistration(id: id, name: name, publicKeyPEM: publicKeyPEM)
+        busy = true; message = nil
+        defer { busy = false }
+        do {
+            _ = try await authorized("/api/v1/agents", method: "POST", body: registration.body)
+        } catch let error as ConsoleHTTPError where error.status == 404 || error.status == 405 {
+            throw HakoError(message: "服务端尚不支持添加 Agent，请先更新服务端。")
+        } catch is URLError {
+            throw HakoError(message: "网络请求失败，登记结果尚未确认。请先刷新设备列表，确认后再重试。")
+        }
+        // Registration has succeeded. Keep it visible even if the follow-up GET fails;
+        // presenting another submit would encourage duplicate registration.
+        if !agents.contains(where: { $0.id == registration.id }) {
+            agents.append(ConsoleAgent(id: registration.id, name: registration.name, platform: "windows", online: false, lastSeen: "", methods: []))
+        }
+        do {
+            try await fetchAgentsInternal()
+            message = "Agent 已添加，公钥即时生效。请在 Windows 中重新连接服务器。"
+        } catch {
+            message = "Agent 已添加，但设备列表刷新失败：\(error.localizedDescription) 请刷新列表查看最新状态。"
+        }
+    }
+
     func inspectWebLogin(_ payload: String) async throws -> ConsoleWebLoginRequest {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Console 登录态。") }
         let origin = serverURL
@@ -338,8 +370,10 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
     func revoke(_ session: ConsoleRemoteSession) async {
         await execute {
-            _ = try await self.authorized("/api/v1/sessions/\(session.id)", method: "DELETE")
+            let path = session.type == .web ? "/api/v1/web-sessions/" : "/api/v1/sessions/"
+            _ = try await self.authorized(path + session.id, method: "DELETE")
             self.remoteSessions.removeAll { $0.id == session.id }
+            self.message = session.type == .web ? "已移除网页登录，该浏览器需要重新扫码登录。" : "已撤销此设备的登录。"
         }
     }
 

@@ -231,6 +231,13 @@ func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]any{"agents": s.agentItems(false)})
 }
 
+func (s *Server) addAgent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorized(w, r); !ok {
+		return
+	}
+	s.registerAgent(w, r)
+}
+
 func (s *Server) agentItems(includeKey bool) []map[string]any {
 	items := []map[string]any{}
 	s.mu.Lock()

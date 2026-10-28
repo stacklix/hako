@@ -227,7 +227,7 @@ func (s *Server) completeAdminLogin(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(s.adminCookieName()); err == nil {
 		delete(s.adminSessions, digest(c.Value))
 	}
-	s.adminSessions[digest(token)] = adminSession{CSRF: csrf, Created: now, LastUsed: now, ApproverSessionID: req.ApproverSessionID, ApproverThumb: req.ApproverThumb}
+	s.adminSessions[digest(token)] = adminSession{ID: randomToken(), Browser: req.Browser, CSRF: csrf, Created: now, LastUsed: now, ApproverSessionID: req.ApproverSessionID, ApproverThumb: req.ApproverThumb}
 	delete(s.adminLogins, digest(r.PathValue("id")))
 	s.pendingCookie(w, "", -1)
 	s.adminCookie(w, token, 12*60*60)

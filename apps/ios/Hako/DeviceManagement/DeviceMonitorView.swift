@@ -3,6 +3,7 @@ import SwiftUI
 struct DeviceMonitorView: View {
     @ObservedObject private var client = ConsoleClient.shared
     @Environment(\.scenePhase) private var scenePhase
+    @State private var addingAgent = false
 
     var body: some View {
         List {
@@ -13,7 +14,7 @@ struct DeviceMonitorView: View {
                 }
             } else if client.authenticated {
                 Section("设备") {
-                    if client.agents.isEmpty { Text("暂无登记的设备，请在服务端配置设备公钥。").foregroundStyle(.secondary) }
+                    if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记 Windows 公钥。").foregroundStyle(.secondary) }
                     ForEach(client.agents) { agent in
                         NavigationLink { DeviceMetricsView(agent: agent) } label: {
                             HStack {
@@ -27,6 +28,7 @@ struct DeviceMonitorView: View {
                     }
                 }
                 Section {
+                    Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
                     Button("刷新设备列表") { Task { await client.fetchAgents() } }
                     NavigationLink("扫码登录") { ConsoleWebLoginView() }
                 }.disabled(client.busy)
@@ -51,6 +53,7 @@ struct DeviceMonitorView: View {
             NavigationLink { DeviceMonitorSettingsView() } label: { Image(systemName: "gearshape") }
                 .accessibilityLabel("设备监控设置")
         }
+        .sheet(isPresented: $addingAgent) { AddAgentSheet() }
         .task { await client.restore() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await client.restore() } } }
     }
@@ -104,15 +107,29 @@ struct ConsoleSessionsView: View {
         List {
             ForEach(client.remoteSessions) { session in
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(session.current ? "当前 iPhone" : "管理客户端")
-                    Text(session.deviceId).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Label(session.type == .web ? "网页管理端 · \(session.browser ?? "网页浏览器")" : session.current ? "当前 iPhone" : "管理客户端",
+                          systemImage: session.type == .web ? "globe" : "iphone")
+                    if let deviceId = session.deviceId {
+                        Text(deviceId).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                    Text("登录时间：\(sessionTime(session.createdAt))").font(.caption).foregroundStyle(.secondary)
+                    if let lastUsedAt = session.lastUsedAt {
+                        Text("最近活动：\(sessionTime(lastUsedAt))").font(.caption).foregroundStyle(.secondary)
+                    }
                     if !session.current {
-                        Button("撤销此设备的登录", role: .destructive) { Task { await client.revoke(session) } }.disabled(client.busy)
+                        Button(session.type == .web ? "移除网页登录" : "撤销此设备的登录", role: .destructive) {
+                            Task { await client.revoke(session) }
+                        }.disabled(client.busy)
                     }
                 }.padding(.vertical, 5)
             }
             if client.busy { ProgressView() }
             if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
-        }.navigationTitle("已登录设备").task { await client.fetchSessions() }
+        }.navigationTitle("已登录设备")
+            .task { await client.fetchSessions() }
+            .refreshable { await client.fetchSessions() }
+    }
+    private func sessionTime(_ value: String) -> String {
+        ISO8601DateFormatter().date(from: value)?.formatted(date: .numeric, time: .shortened) ?? value
     }
 }

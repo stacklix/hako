@@ -6,7 +6,7 @@
 
 ## 配置与身份
 
-服务端 `config/server.json` 包含唯一 `username` 和手工登记的 `consoles` P-256 公钥，所有 Console 都是管理员。每次启动以文件更新 Console 信任，增删需重启。`agents` 仅用于首次导入，之后由数据库及 `/admin/` 管理页即时维护。Console 无密码、TOTP 或公开注册，私钥由 iPhone Secure Enclave 保存，只导出 SPKI PEM 公钥；Agent 使用 RSA，私钥由 Windows 保存。
+服务端 `config/server.json` 包含唯一 `username` 和手工登记的 `consoles` P-256 公钥，所有 Console 都是管理员。每次启动以文件更新 Console 信任，增删需重启。`agents` 仅用于首次导入，之后由数据库、`/admin/` 管理页及已登录 iOS Console 即时维护。Console 无密码、TOTP 或公开注册，私钥由 iPhone Secure Enclave 保存，只导出 SPKI PEM 公钥；Agent 使用 RSA，私钥由 Windows 保存。
 
 Console 设备身份可在未配置服务器、未联网、未登录时本地生成并单独导出公钥，立即持久保存，后续新服务器沿用该身份。旧版本已有的服务器密钥绑定继续保留，首次读取时可作为本机默认身份；重复导出不重新生成密钥，登录会话仍按服务器和账号隔离。
 
@@ -46,10 +46,16 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 | --- | --- |
 | `GET /api/v1/auth/session` | 校验当前登录态 |
 | `POST /api/v1/auth/logout` | 撤销当前会话 |
-| `GET /api/v1/sessions` | 查看已登录的管理设备 |
-| `DELETE /api/v1/sessions/{id}` | 撤销指定会话 |
+| `GET /api/v1/sessions` | 查看有效的 Console 和网页管理端登录会话 |
+| `DELETE /api/v1/sessions/{id}` | 撤销指定 Console 会话 |
+| `DELETE /api/v1/web-sessions/{id}` | 单独撤销指定网页管理端会话，需 Console DPoP 认证 |
 | `GET /api/v1/agents` | 返回 `agents` 数组：`id,name,platform,online,lastSeen,methods` |
+| `POST /api/v1/agents` | 登记 Agent，正文 `id,name,publicKeyPem`，需 Console DPoP 会话认证；成功返回 201 和 `id,keyId` |
 | `POST /api/v1/agents/{id}/requests` | 转发通用动作请求，默认最多等待 10 秒 |
+
+会话列表的 `sessions` 数组包含 `id,type,createdAt,current`，`type` 为 `console` 或 `web`；Console 项包含 `deviceId`，网页项包含 `browser,lastUsedAt`。网页的 `id` 是独立的管理标识，不是登录 Cookie 或其哈希；列表不返回 Cookie、CSRF 或 Console 令牌。当前 Console 优先，其余按登录时间倒序排列。列表过滤过期或批准方已失效的网页会话，读取列表不延长网页闲置期限。iOS「已登录设备」显示会话类型、浏览器和时间，支持下拉刷新及「移除网页登录」；移除后该浏览器下次请求即返回未登录，不影响其他浏览器或 Console。服务端与 iOS 需同步更新。
+
+iOS「设备监控 → 添加 Agent」支持粘贴或导入 Windows RSA 公钥；添加成功立即生效并刷新设备列表，无需重启服务端。Console 登记和网页登记共用校验、持久化及并发锁：设备 ID 为 1–80 位英文字母、数字、下划线或连字符，名称非空且最多 100 个 UTF-8 字节，接受单个 SPKI 或 PKCS#1 PEM RSA 2048–8192 位公钥，不接受私钥或文件路径。请求上限 16 KiB。重复设备 ID 或公钥返回 409 `duplicate_agent`，非法设备或公钥返回 400 `invalid_public_key_or_device`，存储失败返回 503 `storage_unavailable`。iOS 在发送前拒绝私钥并校验输入；登记成功但列表刷新失败时保留新增设备并提示刷新，不再次提交。请求超时或断网时结果可能未确认，应先刷新列表。旧服务端需升级后才能使用此入口。
 
 网络错误保留登录凭据；明确会话撤销后才进入重新登录流程。离线退出持久标记 `logoutPending`，停止本地使用并在下次联网时尝试服务端撤销。
 

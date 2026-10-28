@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -118,7 +119,9 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /api/v1/auth/session", s.currentSession)
 	s.mux.HandleFunc("GET /api/v1/sessions", s.sessions)
 	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.revokeSession)
+	s.mux.HandleFunc("DELETE /api/v1/web-sessions/{id}", s.revokeWebSession)
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
+	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
 	return s, nil
@@ -350,19 +353,64 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, 200, map[string]bool{"ok": true})
 }
+
+type sessionSummary struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	DeviceID   string `json:"deviceId,omitempty"`
+	Browser    string `json:"browser,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+	LastUsedAt string `json:"lastUsedAt,omitempty"`
+	Current    bool   `json:"current"`
+}
+
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.authorized(w, r)
 	if !ok {
 		return
 	}
-	items := []map[string]any{}
+	items := []sessionSummary{}
 	s.store.inspect(func(st state) {
 		for _, ss := range st.Sessions {
-			items = append(items, map[string]any{"id": ss.ID, "deviceId": ss.DeviceID, "createdAt": time.Unix(ss.CreatedAt, 0).UTC().Format(time.RFC3339), "current": ss.ID == id})
+			items = append(items, sessionSummary{ID: ss.ID, Type: "console", DeviceID: ss.DeviceID, CreatedAt: time.Unix(ss.CreatedAt, 0).UTC().Format(time.RFC3339), Current: ss.ID == id})
 		}
+	})
+	s.adminMu.Lock()
+	for key, ss := range s.adminSessions {
+		if adminExpired(ss, time.Now()) || !s.validAdminApprover(ss.ApproverSessionID, ss.ApproverThumb) {
+			delete(s.adminSessions, key)
+			continue
+		}
+		items = append(items, sessionSummary{ID: ss.ID, Type: "web", Browser: ss.Browser, CreatedAt: ss.Created.UTC().Format(time.RFC3339), LastUsedAt: ss.LastUsed.UTC().Format(time.RFC3339)})
+	}
+	s.adminMu.Unlock()
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Current != items[j].Current {
+			return items[i].Current
+		}
+		if items[i].CreatedAt != items[j].CreatedAt {
+			return items[i].CreatedAt > items[j].CreatedAt
+		}
+		return items[i].ID < items[j].ID
 	})
 	respond(w, 200, map[string]any{"sessions": items})
 }
+
+func (s *Server) revokeWebSession(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorized(w, r); !ok {
+		return
+	}
+	s.adminMu.Lock()
+	for key, ss := range s.adminSessions {
+		if ss.ID == r.PathValue("id") {
+			delete(s.adminSessions, key)
+			break
+		}
+	}
+	s.adminMu.Unlock()
+	respond(w, 200, map[string]bool{"ok": true})
+}
+
 func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.authorized(w, r)
 	if !ok {

@@ -83,7 +83,7 @@ openssl rand -hex 32
 
 可配置多台 Console，每台使用独立 P-256 公钥，均具有管理员权限；也可用 `publicKeyPem` 直接填写 PEM 公钥字符串。私钥始终保留在 iPhone。未登记 Console 时，网页会提示手工配置，不能登录。
 
-Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动时从配置导入，之后由数据库和 Web 管理页即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
+Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动时从配置导入，之后由数据库、Web 管理页和已登录的 iOS Console 即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
 
 ```sh
 docker compose config --quiet
@@ -98,8 +98,8 @@ docker compose up -d
 
 1. iOS「设备监控」使用本机密钥登录 Console。
 2. 浏览器打开 `https://你的服务地址/admin/`，显示二维码和六位确认码。
-3. iOS「设备监控 → 扫码登录管理页」扫描二维码，或复制网页登录请求后在该页粘贴解析。
-4. 核对服务器、浏览器及两端确认码，勾选已核对后批准。批准前用 Face ID / Touch ID 或设备密码验证本机身份，随后使用设备签名和有效 Console 会话提交批准。
+3. iOS「设备监控 → 扫码登录」直接扫描二维码，或在扫码区域下方粘贴并解析网页登录请求。
+4. 在确认页核对服务器、浏览器及两端确认码，点击「确认登录」，使用设备签名和有效 Console 会话提交批准，无需额外的 Face ID、Touch ID 或设备密码验证。
 5. 网页自动完成登录；只扫描不会登录。也可在 Console 拒绝请求。
 
 - Agent：查看在线/离线状态、最近活动时间、密钥指纹；粘贴或读取 PEM 公钥文件登记，查看和下载公钥，移除设备。
@@ -111,9 +111,12 @@ docker compose up -d
 
 管理页使用 HttpOnly、SameSite=Strict 的独立会话 Cookie，HTTPS 下启用 Secure 和 `__Host-`；修改请求还校验 origin 和 CSRF。网页会话闲置 30 分钟、登录 12 小时、主动退出或服务重启后失效，状态轮询不续期。网页还绑定批准它的 Console 会话：Console 退出、被撤销或重新主动登录替换旧会话后，关联网页会话失效。Console 长期凭据不会传给网页。
 
+iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有效的网页管理端登录，网页项显示浏览器、登录时间及最近活动时间，可下拉刷新。点击「移除网页登录」可单独撤销所选浏览器会话，该浏览器下次请求即需要重新扫码；其他网页和手机的登录不受影响。此功能需要同步更新服务端和 iOS。网页管理页中的会话列表仍仅管理 Console 会话。
+
 ## 设备调用接口
 
 - Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
+- Console 登记 Agent：`POST /api/v1/agents`，使用同样的 DPoP 会话与设备签名认证，正文为 `{"id":"desktop","name":"我的电脑","publicKeyPem":"PEM 公钥"}`；成功返回 HTTP 201 及 `id,keyId`，无需重启。与网页共用 RSA 公钥校验、重复检查及持久化；重复 ID 或公钥返回 409，非法设备信息、公钥或私钥返回 400。需要同步更新服务端与 iOS。
 - 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
 - 正文：`{"method":"system.metrics","params":{}}`。
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
@@ -123,7 +126,7 @@ docker compose up -d
 
 ## 登记设备
 
-1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在 Web 管理页「登记 Agent」填写设备 ID、名称和 RSA 公钥。设置 Windows 服务地址和账号，保存并连接。
+1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在已登录 iOS 的「设备监控 → 添加 Agent」填写设备 ID、名称，粘贴或导入 RSA 公钥；也可使用 Web 管理页「登记 Agent」。设置 Windows 服务地址和账号，保存并连接；认证失败后完成登记需重新连接。
 2. iOS → 设备监控 → 设置 → 查看与导出公钥 → 复制内容或导出文件，手工配置到服务端 `consoles` 后重启；此操作不要求填写服务器信息或登录。
 3. iOS → 设备监控 → 设置 → 填写 HTTPS 地址和账号 → 保存服务器配置 → 使用本机密钥登录，即可监控和批准网页登录。
 4. iOS 选择在线电脑，查询 CPU、物理内存和本次采样时间。
@@ -166,7 +169,7 @@ go run ./cmd/hako-server
 
 测试覆盖 Console 和 Agent 认证、签名重放、长期会话、轮换恢复、退出、查询转发、离线和超时，以及二维码过期、拒绝、刷新、浏览器绑定、一次性领取、确认码与签名 nonce、Console 撤销联动、Cookie/CSRF、并发 Agent 登记及配置迁移。网页和二维码生成功能内嵌于二进制，无需 CDN 或前端运行依赖。
 
-iOS 扫码、相机权限和本机身份验证需在 iPhone 上验收；Windows 本机跳过 iOS 构建，macOS CI 执行协议测试、类型检查和打包。
+iOS 扫码、相机权限、会话列表和网页登录移除需在 iPhone 上验收；Windows 本机跳过 iOS 构建，macOS CI 执行协议测试、类型检查和打包。
 
 Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序](../windows/README.md) 的绝对路径后运行 `go test ./internal/server -run TestWindowsAgentEndToEnd -v`。该检查启动真实 C# 代理，验证 RSA 认证、请求转发及实际 CPU/内存采样。
 
