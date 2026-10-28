@@ -30,7 +30,6 @@ struct DeviceMonitorView: View {
                 Section {
                     Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    Button("刷新设备列表") { Task { await client.fetchAgents() } }
                     NavigationLink("扫码登录") { ConsoleWebLoginView() }
                 }.disabled(client.busy)
             } else if client.hasSavedSession {
@@ -51,12 +50,27 @@ struct DeviceMonitorView: View {
         }
         .navigationTitle("设备监控")
         .toolbar {
-            NavigationLink { DeviceMonitorSettingsView() } label: { Image(systemName: "gearshape") }
-                .accessibilityLabel("设备监控设置")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    Task { await refreshDevices() }
+                } label: {
+                    Label("刷新设备列表", systemImage: "arrow.clockwise")
+                }
+                .disabled(client.busy || client.logoutPending || (!client.authenticated && !client.hasSavedSession))
+                NavigationLink { DeviceMonitorSettingsView() } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("设备监控设置")
+            }
         }
+        .refreshable { await refreshDevices() }
         .sheet(isPresented: $addingAgent) { AddAgentSheet() }
         .task { await client.restore() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await client.restore() } } }
+    }
+
+    @MainActor private func refreshDevices() async {
+        guard !client.serverURL.isEmpty, !client.logoutPending else { return }
+        if client.authenticated { await client.fetchAgents() }
+        else if client.hasSavedSession { await client.restore() }
     }
 }
 
@@ -69,7 +83,6 @@ struct DeviceMetricsView: View {
         List {
             Section {
                 LabeledContent("设备", value: agent.name)
-                Button("查询当前状态") { Task { await client.query(currentAgent) } }.disabled(client.busy || !canQuery)
                 if !currentAgent.online { Text("设备当前离线。").foregroundStyle(.secondary) }
                 else if !canQuery { Text("设备未提供支持的系统指标采集动作。").foregroundStyle(.secondary) }
             }
@@ -92,7 +105,20 @@ struct DeviceMetricsView: View {
             }
             if client.busy { ProgressView("正在查询设备…") }
             if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
-        }.navigationTitle("设备监控").task { if canQuery { await client.query(currentAgent) } }
+        }
+        .navigationTitle("设备监控")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await client.query(currentAgent) }
+                } label: {
+                    Label("刷新设备数据", systemImage: "arrow.clockwise")
+                }
+                .disabled(client.busy || !client.authenticated)
+            }
+        }
+        .refreshable { if client.authenticated { await client.query(currentAgent) } }
+        .task { if client.authenticated { await client.query(currentAgent) } }
     }
     private func sampleTime(_ value: String) -> String {
         let formatter = ISO8601DateFormatter()
