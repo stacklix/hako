@@ -81,7 +81,6 @@ struct DeviceMetricsView: View {
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
-    private var canQuery: Bool { currentAgent.online && currentAgent.methods.contains { $0.name == "system.metrics" && $0.version == 1 } }
     var body: some View {
         List {
             Section {
@@ -93,8 +92,6 @@ struct DeviceMetricsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                if !currentAgent.online { Text("设备当前离线。").foregroundStyle(.secondary) }
-                else if !canQuery { Text("设备未提供支持的系统指标采集动作。").foregroundStyle(.secondary) }
             }
             if let metrics = client.metrics[agent.id] {
                 Section("CPU") {

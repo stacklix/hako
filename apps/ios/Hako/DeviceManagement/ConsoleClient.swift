@@ -352,15 +352,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     func query(_ agent: ConsoleAgent) async {
         await execute {
             self.metrics.removeValue(forKey: agent.id)
-            try await self.fetchAgentsInternal()
-            guard let current = self.agents.first(where: { $0.id == agent.id }) else {
-                throw HakoError(message: "此设备已移除，请返回设备列表。")
-            }
-            guard current.online else { throw HakoError(message: "设备当前离线。") }
-            guard current.methods.contains(where: { $0.name == "system.metrics" && $0.version == 1 }) else {
-                throw HakoError(message: "设备未提供支持的系统指标采集动作。")
-            }
-            let metrics = try await self.invokeAgent(current, method: "system.metrics", as: ConsoleMetrics.self)
+            let metrics = try await self.invokeAgent(agent, method: "system.metrics", as: ConsoleMetrics.self)
             guard metrics.isValid else { throw HakoError(message: "设备返回的指标格式无效。") }
             self.metrics[agent.id] = metrics
         }
