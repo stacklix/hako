@@ -4,6 +4,7 @@ struct DeviceMonitorView: View {
     @ObservedObject private var client = ConsoleClient.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var addingAgent = false
+    @State private var isVisible = false
 
     var body: some View {
         List {
@@ -38,6 +39,10 @@ struct DeviceMonitorView: View {
                 Section {
                     Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                    NavigationLink { DeviceMonitorSettingsView() } label: {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { ConsoleWebLoginView() } label: {
                         Label("扫码登录", systemImage: "qrcode.viewfinder")
                     }
@@ -47,6 +52,7 @@ struct DeviceMonitorView: View {
                 Section {
                     Text("已保存本机登录凭据，等待服务端验证。网络恢复后可继续使用。").foregroundStyle(.secondary)
                     Button("验证并继续") { Task { await client.restore() } }
+                    NavigationLink("设置与登录") { DeviceMonitorSettingsView() }
                 }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
@@ -56,30 +62,27 @@ struct DeviceMonitorView: View {
                     NavigationLink("设置与登录") { DeviceMonitorSettingsView() }
                 }
             }
-            if client.busy { Section { ProgressView("正在处理…") } }
             if let message = client.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
         }
         .navigationTitle("设备监控")
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    Task { await refreshDevices() }
-                } label: {
-                    Label("刷新设备列表", systemImage: "arrow.clockwise")
-                }
-                .disabled(client.busy || client.logoutPending || (!client.authenticated && !client.hasSavedSession))
-                NavigationLink { DeviceMonitorSettingsView() } label: { Image(systemName: "gearshape") }
-                    .accessibilityLabel("设备监控设置")
-            }
-        }
         .refreshable { await refreshDevices() }
         .sheet(isPresented: $addingAgent) { AddAgentSheet() }
-        .task { await client.restore() }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await client.restore() } } }
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false }
+        .task(id: "\(isVisible)-\(scenePhase)-\(addingAgent)") {
+            guard isVisible, scenePhase == .active, !addingAgent, !Task.isCancelled else { return }
+            await client.restore()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                await refreshDevices()
+            }
+        }
     }
 
     @MainActor private func refreshDevices() async {
-        guard !client.serverURL.isEmpty, !client.logoutPending else { return }
+        guard !Task.isCancelled, !client.busy, !client.serverURL.isEmpty, !client.logoutPending else { return }
         if client.authenticated { await client.fetchAgents() }
         else if client.hasSavedSession { await client.restore() }
     }
@@ -107,11 +110,11 @@ struct DeviceMetricsView: View {
             }
             if let capabilities = currentAgent.capabilities {
                 let visible = capabilities.filter { selectedTab == .query ? $0.name.hasPrefix("query.") : !$0.name.hasPrefix("query.") }
-                if visible.isEmpty {
-                    Section { Text(selectedTab == .query ? "此设备暂无查询能力。" : "此设备暂无操作能力。").foregroundStyle(.secondary) }
-                }
-                ForEach(visible) { capability in
-                    Section {
+                Section {
+                    if visible.isEmpty {
+                        Text(selectedTab == .query ? "此设备暂无查询能力。" : "此设备暂无操作能力。").foregroundStyle(.secondary)
+                    }
+                    ForEach(visible) { capability in
                         DisclosureGroup(isExpanded: expansion(for: capability.name)) {
                             if capability.name == "query.system.metrics" && capability.version == 1 {
                                 metricsContent(capability)
@@ -136,8 +139,7 @@ struct DeviceMetricsView: View {
                 }
             } else {
                 Section("设备能力") {
-                    if state.loading { ProgressView("正在获取能力与数据…") }
-                    else { Text("尚未获取设备能力，请刷新数据。").foregroundStyle(.secondary) }
+                    Text("尚未获取设备能力，请刷新数据。").foregroundStyle(.secondary)
                 }
             }
             if let error = state.error {
@@ -160,7 +162,7 @@ struct DeviceMetricsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await client.query(currentAgent) } } label: {
-                    Label("刷新设备数据", systemImage: "arrow.clockwise")
+                    MonitorRefreshLabel(title: "刷新设备数据", isRefreshing: state.loading)
                 }.disabled(state.loading || !client.authenticated || !canQuery)
             }
         }
@@ -184,13 +186,12 @@ struct DeviceMetricsView: View {
         }
     }
     @ViewBuilder private func queryStatus(_ capability: ConsoleAgentCapability) -> some View {
-        if state.loading { ProgressView("正在查询…") }
         if let entry = state.entries[capability.name] {
             if let error = entry.error { Text(error.localizedDescription).font(.footnote).foregroundStyle(.red) }
             else if entry.version != capability.version { Text("返回的数据版本与能力清单不一致。").foregroundStyle(.red) }
-        } else if state.loaded && !state.loading {
+        } else if state.loaded {
             Text("未返回数据").foregroundStyle(.secondary)
-        } else if !state.loading { Text("等待查询数据").foregroundStyle(.secondary) }
+        } else { Text("等待查询数据").foregroundStyle(.secondary) }
     }
     private func metricsContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
@@ -314,6 +315,22 @@ struct DeviceMetricsView: View {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
         return date?.formatted(date: .numeric, time: .standard) ?? value
+    }
+}
+
+private struct MonitorRefreshLabel: View {
+    let title: String
+    let isRefreshing: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: "arrow.clockwise")
+                .symbolEffect(.rotate, options: .repeating, isActive: isRefreshing && !reduceMotion)
+        }
+        .accessibilityValue(isRefreshing ? "正在刷新" : "")
     }
 }
 
