@@ -86,9 +86,13 @@ struct DeviceMonitorView: View {
 }
 
 struct DeviceMetricsView: View {
+    private enum DetailTab: String, CaseIterable { case query = "查询", action = "操作" }
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
     @State private var targetURL = ""
+    @State private var selectedTab: DetailTab = .query
+    @State private var expandedCapability: String? = "query.system.metrics"
+    @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
     private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
@@ -102,24 +106,32 @@ struct DeviceMetricsView: View {
                 }
             }
             if let capabilities = currentAgent.capabilities {
-                if capabilities.isEmpty { Section { Text("此设备尚未提供能力。").foregroundStyle(.secondary) } }
-                ForEach(capabilities) { capability in
-                    if capability.name == "query.system.metrics" && capability.version == 1 {
-                        metricsSection(capability)
-                    } else if capability.name == "query.codex.usage" && capability.version == 1 {
-                        codexSection(capability)
-                    } else if capability.name == "action.network.http.check" && capability.version == 1 {
-                        httpSection
-                    } else {
-                        Section(capability.name + " · v\(capability.version)") {
-                            if capability.name.hasPrefix("query.") {
-                                queryStatus(capability)
-                                if let entry = state.entries[capability.name], entry.version == capability.version,
-                                   let value = entry.result {
-                                    Text(value.formatted).font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                            } else { Text("当前客户端暂不支持此操作或版本。").foregroundStyle(.secondary) }
+                let visible = capabilities.filter { selectedTab == .query ? $0.name.hasPrefix("query.") : !$0.name.hasPrefix("query.") }
+                if visible.isEmpty {
+                    Section { Text(selectedTab == .query ? "此设备暂无查询能力。" : "此设备暂无操作能力。").foregroundStyle(.secondary) }
+                }
+                ForEach(visible) { capability in
+                    Section {
+                        DisclosureGroup(isExpanded: expansion(for: capability.name)) {
+                            if capability.name == "query.system.metrics" && capability.version == 1 {
+                                metricsContent(capability)
+                            } else if capability.name == "query.codex.usage" && capability.version == 1 {
+                                codexContent(capability)
+                            } else if capability.name == "action.network.http.check" && capability.version == 1 {
+                                httpContent
+                            } else {
+                                if capability.name.hasPrefix("query.") {
+                                    queryStatus(capability)
+                                    if let entry = state.entries[capability.name], entry.version == capability.version,
+                                       let value = entry.result {
+                                        Text(value.formatted).font(.caption.monospaced()).textSelection(.enabled)
+                                    }
+                                } else { Text("当前客户端暂不支持此操作或版本。").foregroundStyle(.secondary) }
+                            }
+                        } label: {
+                            Text(capabilityTitle(capability)).foregroundStyle(.primary)
                         }
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     }
                 }
             } else {
@@ -136,6 +148,15 @@ struct DeviceMetricsView: View {
             }
         }
         .navigationTitle("设备监控")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Picker("设备详情", selection: $selectedTab) {
+                ForEach(DetailTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal).padding(.vertical, 8)
+            .background(.bar)
+        }
+        .onChange(of: selectedTab) { _, _ in expandedCapability = nil }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await client.query(currentAgent) } } label: {
@@ -146,6 +167,22 @@ struct DeviceMetricsView: View {
         .refreshable { if client.authenticated { await client.query(currentAgent) } }
         .task { if client.authenticated { await client.query(currentAgent) } }
     }
+    private func expansion(for name: String) -> Binding<Bool> {
+        Binding(get: { expandedCapability == name }, set: { expanded in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if expanded { expandedCapability = name }
+                else if expandedCapability == name { expandedCapability = nil }
+            }
+        })
+    }
+    private func capabilityTitle(_ capability: ConsoleAgentCapability) -> String {
+        switch (capability.name, capability.version) {
+        case ("query.system.metrics", 1): return "系统指标"
+        case ("query.codex.usage", 1): return "Codex"
+        case ("action.network.http.check", 1): return "URL 连通性检测"
+        default: return capability.name + " · v\(capability.version)"
+        }
+    }
     @ViewBuilder private func queryStatus(_ capability: ConsoleAgentCapability) -> some View {
         if state.loading { ProgressView("正在查询…") }
         if let entry = state.entries[capability.name] {
@@ -155,11 +192,11 @@ struct DeviceMetricsView: View {
             Text("未返回数据").foregroundStyle(.secondary)
         } else if !state.loading { Text("等待查询数据").foregroundStyle(.secondary) }
     }
-    private func metricsSection(_ capability: ConsoleAgentCapability) -> some View {
+    private func metricsContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
         let decoded = entry?.version == 1 ? entry?.result?.decode(ConsoleMetrics.self) : nil
         let metrics = decoded?.isValid == true ? decoded : nil
-        return Section("系统指标") {
+        return Group {
             queryStatus(capability)
             LabeledContent("CPU 使用率", value: metrics.map { String(format: "%.1f%%", $0.cpuUsagePercent) } ?? "—")
             ProgressView(value: metrics?.cpuUsagePercent ?? 0, total: 100).opacity(metrics == nil ? 0.3 : 1)
@@ -173,8 +210,8 @@ struct DeviceMetricsView: View {
             }
         }
     }
-    private var httpSection: some View {
-        Section("URL 连通性检测") {
+    private var httpContent: some View {
+        Group {
             TextField("https://example.com", text: $targetURL)
                 .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
             Button { Task { await client.checkHTTP(currentAgent, url: targetURL) } } label: {
@@ -197,31 +234,14 @@ struct DeviceMetricsView: View {
             } else if !check.loading { Text("输入 URL 后点击检测，由此设备发起访问。").font(.footnote).foregroundStyle(.secondary) }
         }
     }
-    @ViewBuilder private func codexSection(_ capability: ConsoleAgentCapability) -> some View {
+    @ViewBuilder private func codexContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
         let decoded = entry?.version == 1 ? entry?.result?.decode(ConsoleCodexUsage.self) : nil
         let usage = decoded?.isValid == true ? decoded : nil
-        Section {
-            queryStatus(capability)
-            if let usage {
-                CodexUsageChart(usage: usage).listRowSeparator(.hidden)
-                if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
-                ForEach(Array(usage.warnings.enumerated()), id: \.offset) { _, warning in
-                    Text(warning).font(.footnote).foregroundStyle(.orange)
-                }
-                Text("采集于 \(sampleTime(usage.collectedAt))").font(.footnote).foregroundStyle(.secondary)
-                Text("设备时区：\(usage.timeZone)").font(.footnote).foregroundStyle(.secondary)
-            } else if entry?.result != nil && entry?.error == nil && entry?.version == 1 {
-                Text("设备返回的 Codex 统计格式无效。").font(.footnote).foregroundStyle(.red)
-            }
-        } header: {
-            Text("Codex · 最近 7 天")
-        } footer: {
-            Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。设备每分钟采集，刷新可读取最新统计。")
-        }
-        Section("Codex · 处理中") {
-            LabeledContent("会话数", value: usage?.runningSessions.map { String($0) } ?? "暂不可用")
-            if let sessions = usage?.runningSessionDetails {
+        queryStatus(capability)
+        if let usage {
+            LabeledContent("处理中会话", value: usage.runningSessions.map { String($0) } ?? "暂不可用")
+            if let sessions = usage.runningSessionDetails {
                 ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(session.title).fixedSize(horizontal: false, vertical: true)
@@ -229,9 +249,40 @@ struct DeviceMetricsView: View {
                     }.padding(.vertical, 3)
                 }
                 if sessions.isEmpty { Text("暂无处理中会话").font(.footnote).foregroundStyle(.secondary) }
-            } else if let count = usage?.runningSessions, count > 0 {
+            } else if let count = usage.runningSessions, count > 0 {
                 Text("此 Agent 未提供会话信息，更新后可查看项目与标题。").font(.footnote).foregroundStyle(.secondary)
             }
+            Text("最近 7 天").font(.subheadline.weight(.semibold))
+            CodexUsageChart(usage: usage).listRowSeparator(.hidden)
+            if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
+            DisclosureGroup(isExpanded: $showingCodexNotes) {
+                ForEach(Array(usage.warnings.enumerated()), id: \.offset) { _, warning in
+                    Text(codexWarning(warning)).font(.footnote).foregroundStyle(.orange)
+                }
+                Text("采集于 \(sampleTime(usage.collectedAt))").font(.footnote).foregroundStyle(.secondary)
+                Text("设备时区：\(usage.timeZone)").font(.footnote).foregroundStyle(.secondary)
+                Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。设备每分钟采集，刷新可读取最新统计。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } label: {
+                HStack {
+                    Text("数据说明")
+                    Spacer()
+                    if !usage.warnings.isEmpty {
+                        Text("\(usage.warnings.count) 条提示").font(.caption).foregroundStyle(.orange)
+                    }
+                }
+            }
+        } else if entry?.result != nil && entry?.error == nil && entry?.version == 1 {
+            Text("设备返回的 Codex 统计格式无效。").font(.footnote).foregroundStyle(.red)
+        }
+    }
+    private func codexWarning(_ warning: String) -> String {
+        switch warning {
+        case "部分旧版 token 用量来自日志更新记录，可能不完整。":
+            return "部分历史 Token 记录可能缺失，统计值可能低于实际消耗。"
+        case "部分旧版记录只有 token 总量，输入/输出明细不完整。":
+            return "部分历史记录仅有 Token 总量，已记录的总量仍会展示，但无法准确拆分输入与输出。"
+        default: return warning
         }
     }
     private func sampleTime(_ value: String) -> String {
