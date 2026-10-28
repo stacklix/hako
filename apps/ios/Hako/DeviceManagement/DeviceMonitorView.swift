@@ -29,6 +29,7 @@ struct DeviceMonitorView: View {
                 }
                 Section {
                     Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     Button("刷新设备列表") { Task { await client.fetchAgents() } }
                     NavigationLink("扫码登录") { ConsoleWebLoginView() }
                 }.disabled(client.busy)
