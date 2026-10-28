@@ -24,7 +24,9 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Typecheck Console client without signing
         run: |
-          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/DeviceManagement/ConsoleClient.swift
+          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/DeviceManagement/ConsoleSessionRestoration.swift Hako/DeviceManagement/ConsoleClient.swift
+          swiftc Hako/DeviceManagement/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
+          /tmp/hako-session-restoration-tests
           swiftc Hako/DeviceManagement/ConsoleAgentProtocol.swift Tests/ConsoleAgentProtocolTests.swift -o /tmp/hako-agent-protocol-tests
           /tmp/hako-agent-protocol-tests
           swiftc Hako/DeviceManagement/ConsoleAgentRegistration.swift Tests/ConsoleAgentRegistrationTests.swift -o /tmp/hako-agent-registration-tests

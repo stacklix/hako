@@ -50,7 +50,8 @@ struct DeviceMonitorView: View {
                 }.disabled(client.busy)
             } else if client.hasSavedSession {
                 Section {
-                    Text("已保存本机登录凭据，等待服务端验证。网络恢复后可继续使用。").foregroundStyle(.secondary)
+                    Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
+                        .foregroundStyle(.secondary)
                     Button("验证并继续") { Task { await client.restore() } }
                     NavigationLink("设置与登录") { DeviceMonitorSettingsView() }
                 }.disabled(client.busy)

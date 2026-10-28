@@ -75,6 +75,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     @Published private(set) var resettingKey = false
     @Published var message: String?
     private var saved: ConsoleSession?
+    private let restoration = ConsoleSessionRestoration()
     private var refreshTask: Task<Void, Error>?
     private var refreshTaskID: UUID?
     private let transport: URLSession
@@ -150,7 +151,11 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
     }
 
-    func restore() async { await execute { try await self.restoreInternal() } }
+    func restore() async {
+        await restoration.run {
+            await self.execute { try await self.restoreInternal() }
+        }
+    }
     private func restoreInternal() async throws {
         _ = try publicKeyForExport()
         guard !serverURL.isEmpty else { return }
@@ -202,7 +207,18 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             request.setValue(device.deviceId, forHTTPHeaderField: "X-Hako-Device")
         }
         if let token { request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await transport.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await transport.data(for: request)
+        } catch {
+            // URLSession uses URLError.cancelled for task cancellation; callers
+            // already handle CancellationError silently and retain credentials.
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw HakoError(message: "服务器响应无效。") }
         guard (200..<300).contains(http.statusCode) else {

@@ -58,7 +58,7 @@ struct DeviceMonitorSettingsView: View {
                         NavigationLink("已登录设备") { ConsoleSessionsView() }
                         Button("退出登录", role: .destructive) { confirmLogout = true }
                     } else if client.hasSavedSession {
-                        Text("已保存本机登录凭据，等待服务端验证。网络恢复后可继续使用。")
+                        Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
                             .font(.footnote).foregroundStyle(.secondary)
                         Button("验证并继续") { Task { await client.restore() } }
                         Button("退出登录", role: .destructive) { confirmLogout = true }
