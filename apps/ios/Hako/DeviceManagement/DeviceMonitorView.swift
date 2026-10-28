@@ -21,10 +21,14 @@ struct DeviceMonitorView: View {
                                 Image(systemName: "desktopcomputer")
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(agent.name)
-                                    Text(agent.online ? "在线" : "离线").font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
-                                    Text("设备 ID：" + agent.id)
-                                        .font(.caption.monospaced()).foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                    HStack(spacing: 10) {
+                                        Text("设备 ID：" + agent.id)
+                                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text(agent.online ? "在线" : "离线")
+                                            .font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
+                                            .fixedSize()
+                                    }
                                 }
                             }.padding(.vertical, 5)
                         }
@@ -102,6 +106,8 @@ struct DeviceMetricsView: View {
                 ForEach(capabilities) { capability in
                     if capability.name == "query.system.metrics" && capability.version == 1 {
                         metricsSection(capability)
+                    } else if capability.name == "query.codex.usage" && capability.version == 1 {
+                        codexSection(capability)
                     } else if capability.name == "action.network.http.check" && capability.version == 1 {
                         httpSection
                     } else {
@@ -189,6 +195,43 @@ struct DeviceMetricsView: View {
                 LabeledContent("检测时间", value: sampleTime(result.checkedAt))
                 if let failure = result.failure { Text(failure.localizedDescription).font(.footnote).foregroundStyle(.red) }
             } else if !check.loading { Text("输入 URL 后点击检测，由此设备发起访问。").font(.footnote).foregroundStyle(.secondary) }
+        }
+    }
+    private func codexSection(_ capability: ConsoleAgentCapability) -> some View {
+        let entry = state.entries[capability.name]
+        let decoded = entry?.version == 1 ? entry?.result?.decode(ConsoleCodexUsage.self) : nil
+        let usage = decoded?.isValid == true ? decoded : nil
+        return Section {
+            queryStatus(capability)
+            if let usage {
+                LabeledContent("处理中会话", value: usage.runningSessions.map { String($0) } ?? "暂不可用")
+                ForEach(usage.days.reversed()) { day in
+                    LabeledContent(day.date) {
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text("\(day.requestCount.formatted()) 次请求")
+                            Text("\(day.totalTokens.formatted()) token").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let today = usage.days.last, today.breakdownAvailable {
+                    LabeledContent("今日输入 token", value: today.inputTokens.formatted())
+                    LabeledContent("其中缓存输入", value: today.cachedInputTokens.formatted())
+                    LabeledContent("今日输出 token", value: today.outputTokens.formatted())
+                    LabeledContent("其中推理输出", value: today.reasoningOutputTokens.formatted())
+                }
+                if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
+                ForEach(Array(usage.warnings.enumerated()), id: \.offset) { _, warning in
+                    Text(warning).font(.footnote).foregroundStyle(.orange)
+                }
+                Text("采集于 \(sampleTime(usage.collectedAt))").font(.footnote).foregroundStyle(.secondary)
+                Text("设备时区：\(usage.timeZone)").font(.footnote).foregroundStyle(.secondary)
+            } else if entry?.result != nil && entry?.error == nil && entry?.version == 1 {
+                Text("设备返回的 Codex 统计格式无效。").font(.footnote).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Codex · 最近 7 天")
+        } footer: {
+            Text("请求数按已记录用量的模型调用计数，一次任务可能有多次请求；工具调用不计入。token 总量以本机用量记录为准，输入已含缓存、输出已含推理，不重复相加。设备每分钟采集，刷新可读取最新统计。")
         }
     }
     private func sampleTime(_ value: String) -> String {

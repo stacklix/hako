@@ -5,6 +5,7 @@
 | 类别 | 固定前缀 | 例子 |
 | --- | --- | --- |
 | 查询：提供数据 | `query.` | `query.system.metrics` |
+| Codex 本机统计 | `query.` | `query.codex.usage` |
 | 操作：按需执行 | `action.` | `action.network.http.check` |
 | 内置聚合查询 | `query.all` | 获取全部已声明查询能力的数据 |
 
@@ -32,3 +33,5 @@
 ```
 
 详细消息、参数、结果及错误约定见 [设备监控协议](device-monitoring.md)。
+
+`query.codex.usage` v1 统计本机最近 7 天的模型请求次数、token 用量及当前处理中会话数，参数 `{}`，详见 [Codex 用量采集](codex-usage.md)。

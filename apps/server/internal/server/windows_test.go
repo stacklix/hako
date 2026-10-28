@@ -41,6 +41,19 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := exec.Command(program, "agent", plain.URL, "owner", keyPath)
+	codexHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(codexHome, "sessions"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	usageRecord, err := json.Marshal(map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "type": "token_usage_record",
+		"payload": map[string]any{"response_id": "private-response-fixture", "usage": map[string]int{"input_tokens": 30, "cached_input_tokens": 10, "output_tokens": 3, "reasoning_output_tokens": 1, "total_tokens": 33}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "sessions", "fixture.jsonl"), bytes.Join([][]byte{usageRecord, usageRecord, nil}, []byte("\n")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
 	if err = command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +73,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
-	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}]`)) {
+	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"action.network.http.check","version":1}]`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
@@ -72,6 +85,19 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.codex.usage", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	var usage struct {
+		Result struct {
+			Days []struct {
+				RequestCount int
+				TotalTokens  int
+			}
+			RunningSessions *int
+		}
+	}
+	if status != 200 || json.Unmarshal(data, &usage) != nil || len(usage.Result.Days) != 7 || usage.Result.Days[6].RequestCount != 1 || usage.Result.Days[6].TotalTokens != 33 || usage.Result.RunningSessions != nil || bytes.Contains(data, []byte("private-response-fixture")) {
+		t.Fatal("Codex usage query, deduplication or metadata privacy failed", status, string(data))
+	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
 		t.Fatal("Windows action error not forwarded", status, string(data))
@@ -134,7 +160,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		}
 		Capabilities []agentCapability
 	}
-	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 1 || len(aggregate.Capabilities) != 2 {
+	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 2 || len(aggregate.Capabilities) != 3 {
 		t.Fatal("real aggregate query failed", status, string(data))
 	}
 	select {

@@ -15,9 +15,11 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 关闭窗口后保留系统托盘和长连接，通过托盘“退出”结束进程。首版不安装 Windows Service、不自动配置开机启动。
 
-Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1（参数 `{}`）及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
+Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1 与 `query.codex.usage` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
 
 「设备监控」支持本地刷新和远程查询，CPU 使用率为约 1 秒窗口内的整机平均值，使用可跨语言系统和处理器组的 PDH 计数器；内存为总物理内存减去可用物理内存。没有服务端请求时不会持续上传指标。
+
+新增 `query.codex.usage` v1：Agent 运行时每分钟增量采集当前电脑的 Codex 用量，保留今天及之前 6 天的每日模型请求次数、token 用量，并查询当前处理中会话数。只读取用量和运行状态元数据，缓存到当前配置目录的 `codex-usage.json`，不采集对话正文或凭据；旧版数据会标明估算或明细缺失。参数固定为 `{}`，支持单独查询及 `query.all`，手机按能力展示，网页使用通用 JSON 调用。详见 [统计口径与存储说明](../../docs/codex-usage.md)。
 
 ## 命令行
 

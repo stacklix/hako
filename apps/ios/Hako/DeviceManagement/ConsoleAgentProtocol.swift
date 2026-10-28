@@ -12,6 +12,37 @@ struct ConsoleAgentCapability: Decodable, Identifiable {
     let version: Int
     var id: String { name }
 }
+struct ConsoleCodexUsage: Decodable {
+    let available: Bool
+    let collectedAt: String
+    let timeZone: String
+    let days: [ConsoleCodexUsageDay]
+    let runningSessions: Int?
+    let warnings: [String]
+    var isValid: Bool {
+        days.count == 7 && Set(days.map(\.date)).count == 7 && days.allSatisfy(\.isValid)
+            && days.map(\.date) == days.map(\.date).sorted()
+            && (runningSessions == nil || runningSessions! >= 0)
+    }
+}
+struct ConsoleCodexUsageDay: Decodable, Identifiable {
+    let date: String
+    let requestCount: Int64
+    let inputTokens: Int64
+    let cachedInputTokens: Int64
+    let outputTokens: Int64
+    let reasoningOutputTokens: Int64
+    let totalTokens: Int64
+    let breakdownAvailable: Bool
+    var id: String { date }
+    var isValid: Bool {
+        date.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", options: .regularExpression) != nil
+            && requestCount >= 0 && inputTokens >= 0 && outputTokens >= 0 && cachedInputTokens >= 0
+            && reasoningOutputTokens >= 0 && totalTokens >= 0
+            && (!breakdownAvailable || (cachedInputTokens <= inputTokens && reasoningOutputTokens <= outputTokens
+                && inputTokens <= Int64.max - outputTokens && totalTokens == inputTokens + outputTokens))
+    }
+}
 struct ConsoleAgentError: Decodable, Error, LocalizedError {
     let code: String
     let message: String

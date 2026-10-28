@@ -29,8 +29,9 @@ public sealed class AgentDispatcher
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
-    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null)
+    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null)
     {
+        var codex = codexUsage ?? new CodexUsage();
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -45,6 +46,12 @@ public sealed class AgentDispatcher
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 { throw new AgentActionException("sample_failed", "系统指标采样失败。"); }
+            }),
+            ["query.codex.usage"] = new(1, async (parameters, token) =>
+            {
+                if (parameters.EnumerateObject().Any())
+                    throw new AgentActionException("invalid_params", "query.codex.usage 不接受参数。");
+                return await codex.ReadAsync(token);
             })
         };
         var probe = connectivity ?? new HttpConnectivity();

@@ -12,6 +12,22 @@ import Foundation
         precondition(empty.capabilities?.isEmpty == true)
         let manifest = try agent("[{\"name\":\"query.system.metrics\",\"version\":1},{\"name\":\"action.network.http.check\",\"version\":1}]")
         precondition(manifest.capabilities?.count == 2)
+        var days: [[String: Any]] = (22...28).map { day in
+            ["date": "2026-10-\(day)", "requestCount": 2, "inputTokens": 100, "cachedInputTokens": 40,
+             "outputTokens": 10, "reasoningOutputTokens": 3, "totalTokens": 110, "breakdownAvailable": true]
+        }
+        func codex(_ days: [[String: Any]]) throws -> ConsoleCodexUsage {
+            let payload: [String: Any] = ["available": true, "collectedAt": "2026-10-28T08:00:00Z", "timeZone": "Asia/Shanghai",
+                                          "days": days, "runningSessions": NSNull(), "warnings": ["运行状态暂不可用"]]
+            return try decoder.decode(ConsoleCodexUsage.self, from: JSONSerialization.data(withJSONObject: payload))
+        }
+        let usage = try codex(days)
+        precondition(usage.isValid && usage.runningSessions == nil && usage.days.last?.requestCount == 2)
+        let incompleteUsage = try codex(Array(days.dropLast()))
+        precondition(!incompleteUsage.isValid)
+        days[0]["totalTokens"] = 111
+        let invalidUsage = try codex(days)
+        precondition(!invalidUsage.isValid)
         let payload = Data(#"{"capabilities":[{"name":"query.system.metrics","version":1}],"result":{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}},"query.future.data":{"version":7,"result":{"bytes":9007199254740993}},"query.future.null":{"version":1,"result":null},"query.future.invalid":{"version":1,"error":{},"result":0}}}}"#.utf8)
         let envelope = try decoder.decode(ConsoleQueryEnvelope.self, from: payload)
         precondition(envelope.capabilities.first?.name == "query.system.metrics")

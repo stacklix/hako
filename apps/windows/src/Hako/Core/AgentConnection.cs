@@ -24,9 +24,9 @@ public sealed class AgentConnection : IAsyncDisposable
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-    public AgentConnection(SystemMetrics metrics)
+    public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null)
     {
-        dispatcher = new AgentDispatcher(metrics);
+        dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
 

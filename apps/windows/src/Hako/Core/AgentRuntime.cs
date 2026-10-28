@@ -20,16 +20,19 @@ public sealed class AgentRuntime : IAsyncDisposable
     private readonly SemaphoreSlim operations = new(1, 1);
     private readonly bool running;
     private string? configurationError;
+    private readonly CodexUsage codexUsage;
 
     public AgentRuntime(AgentSettingsStore store, bool running)
     {
         Store = store; this.running = running;
-        Connection = new AgentConnection(Metrics);
+        codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
+        Connection = new AgentConnection(Metrics, codexUsage);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
         Connection.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
     public async Task InitializeAsync(bool autoConnect)
     {
+        if (running) codexUsage.Start();
         try
         {
             var saved = Store.Load();
@@ -158,5 +161,9 @@ public sealed class AgentRuntime : IAsyncDisposable
         catch (OperationCanceledException) { return CommandReply.Failure(4, "timeout", "操作超时，结果可能尚未确认，请查询状态后重试。"); }
         catch (Exception error) { return CommandReply.Failure(1, "operation_failed", error.Message); }
     }
-    public async ValueTask DisposeAsync() => await Connection.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await Connection.DisposeAsync();
+        await codexUsage.DisposeAsync();
+    }
 }

@@ -13,6 +13,12 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 3 && args[0] == "codex-usage")
+            {
+                await using var usage = new CodexUsage(args[1], args[2]);
+                Console.WriteLine(JsonSerializer.Serialize(await usage.CollectAsync(CancellationToken.None), AgentConnection.Json));
+                return 0;
+            }
             if (args.Length == 4 && args[0] == "agent")
             {
                 await using var agent = new AgentConnection(new SystemMetrics());
@@ -48,7 +54,8 @@ internal static class Program
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
-            if (dispatcher.Capabilities.Count != 2 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1) || dispatcher.Capabilities[1] != new AgentCapability("action.network.http.check", 1))
+            if (dispatcher.Capabilities.Count != 3 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
+                || dispatcher.Capabilities[1] != new AgentCapability("query.codex.usage", 1) || dispatcher.Capabilities[2] != new AgentCapability("action.network.http.check", 1))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
@@ -69,6 +76,7 @@ internal static class Program
                 throw new Exception("Invalid real system metrics");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CapabilityChecks.RunAsync(dispatcher);
+            await CodexUsageChecks.RunAsync();
             await CliChecks.RunAsync();
             return 0;
         }

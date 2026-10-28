@@ -27,7 +27,8 @@ internal static class CapabilityChecks
         var samples = 0;
         real.MetricsReceived += _ => samples++;
         var data = (QueryData)(await real.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
-        if (samples != 1 || data.Data.Count != 1 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics)
+        if (samples != 1 || data.Data.Count != 2 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics
+            || data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json)?.Days.Count != 7)
             throw new Exception("query.all must sample system metrics once");
         var json = JsonSerializer.SerializeToElement(data, AgentConnection.Json).GetProperty("data");
         if (json.GetProperty("query.system.metrics").TryGetProperty("error", out _) || json.TryGetProperty("action.network.http.check", out _))
@@ -35,10 +36,15 @@ internal static class CapabilityChecks
         var nullResult = JsonSerializer.SerializeToElement(new CapabilityData(1, JsonSerializer.SerializeToElement<object?>(null)), AgentConnection.Json);
         if (nullResult.GetProperty("result").ValueKind != JsonValueKind.Null || nullResult.TryGetProperty("error", out _))
             throw new Exception("Null query result was lost");
-        foreach (var method in new[] { "query.all", "query.system.metrics", "action.network.http.check" })
+        foreach (var method in new[] { "query.all", "query.system.metrics", "query.codex.usage", "action.network.http.check" })
         {
             try { await real.InvokeAsync(method, 2, empty.RootElement, CancellationToken.None); throw new Exception("Unsupported version accepted"); }
             catch (AgentActionException e) when (e.Code == "unsupported_method") { }
+        }
+        using (var extra = JsonDocument.Parse("{\"path\":\"C:/other\"}"))
+        {
+            try { await real.InvokeAsync("query.codex.usage", 1, extra.RootElement, CancellationToken.None); throw new Exception("Codex query accepted arbitrary paths"); }
+            catch (AgentActionException e) when (e.Code == "invalid_params") { }
         }
         foreach (var status in new[] { 200, 204, 301, 401, 404, 500 })
         {
