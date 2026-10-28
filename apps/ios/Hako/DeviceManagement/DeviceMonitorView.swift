@@ -28,7 +28,7 @@ struct DeviceMonitorView: View {
                 }
                 Section {
                     Button("刷新设备列表") { Task { await client.fetchAgents() } }
-                    NavigationLink("扫码登录管理页") { ConsoleWebLoginView() }
+                    NavigationLink("扫码登录") { ConsoleWebLoginView() }
                 }.disabled(client.busy)
             } else if client.hasSavedSession {
                 Section {

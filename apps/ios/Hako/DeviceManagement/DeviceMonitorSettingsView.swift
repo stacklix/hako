@@ -29,7 +29,12 @@ struct DeviceMonitorSettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityLabel("账号")
                 }
-                Button("保存服务器配置") { Task { await client.saveServer(url, username: username) } }
+                Button { Task { await client.saveServer(url, username: username) } } label: {
+                    Text("保存服务器配置").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .listRowSeparator(.hidden)
             }.disabled(client.busy)
 
             Section("本机设备身份") {

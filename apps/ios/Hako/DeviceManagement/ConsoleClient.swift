@@ -1,6 +1,5 @@
 import Foundation
 import Combine
-import LocalAuthentication
 
 struct ConsoleAgent: Decodable, Identifiable {
     let id: String
@@ -306,16 +305,6 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Console 登录态。") }
         let origin = serverURL
         try login.validate(origin: origin, requestId: login.id)
-        if approve {
-            let context = LAContext()
-            var error: NSError?
-            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-                throw HakoError(message: "无法验证本机身份，请启用 Face ID 或设备密码后重试。")
-            }
-            let allowed = try await context.evaluatePolicy(.deviceOwnerAuthentication,
-                localizedReason: "批准 \(origin) 的网页管理登录，确认码 \(login.confirmationCode)")
-            guard allowed else { throw HakoError(message: "本机身份验证未通过。") }
-        }
         guard serverURL == origin, authenticated, !logoutPending else { throw ConsoleWebLoginError.serverMismatch }
         try login.validate(origin: origin, requestId: login.id)
         _ = try await authorized("/api/v1/admin-login/requests/\(login.id)/\(approve ? "approve" : "deny")",
