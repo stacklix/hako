@@ -125,7 +125,7 @@ func TestAdminAuthenticationAndCSRF(t *testing.T) {
 		t.Fatal("insecure admin cookie")
 	}
 	for _, test := range []struct{ origin, csrf string }{{"", a.csrf}, {"https://attacker.example", a.csrf}, {f.http.URL, ""}, {f.http.URL, "wrong"}} {
-		status, _, _ = a.request("DELETE", "/admin/api/agents/pc", nil, test.origin, test.csrf)
+		status, _, _ = a.request("DELETE", "/admin/api/agents/PC", nil, test.origin, test.csrf)
 		if status != 403 {
 			t.Fatal("CSRF mutation accepted", test)
 		}
@@ -214,23 +214,23 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: json.RawMessage(`{"cpuUsagePercent":25,"newMetric":{"value":42}}`)}})
 		}
 	}()
-	data := a.call("POST", "agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 200)
+	data := a.call("POST", "agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 200)
 	var m struct {
 		Result struct{ CPUUsagePercent float64 }
 	}
 	if json.Unmarshal(data, &m) != nil || m.Result.CPUUsagePercent != 25 {
 		t.Fatal("admin metrics not forwarded")
 	}
-	a.call("DELETE", "agents/pc", nil, 200)
+	a.call("DELETE", "agents/PC", nil, 200)
 	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 	var msg any
 	if ws.ReadJSON(&msg) == nil {
 		t.Fatal("removed Agent remains connected")
 	}
-	a.call("POST", "agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 409)
-	a.call("DELETE", "agents/pc", nil, 404)
+	a.call("POST", "agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, 409)
+	a.call("DELETE", "agents/PC", nil, 404)
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
-	body := map[string]string{"id": "new-pc", "name": "新电脑", "publicKeyPem": publicPEM(t, &key.PublicKey)}
+	body := map[string]string{"id": "NEWPC", "name": "新电脑", "publicKeyPem": publicPEM(t, &key.PublicKey)}
 	a.call("POST", "agents", body, 201)
 	a.call("POST", "agents", body, 409)
 	config := f.s.config
@@ -241,7 +241,7 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if len(restarted.registry.Load().Agents) != 1 || restarted.registry.Load().Agents[0].ID != "new-pc" {
+	if len(restarted.registry.Load().Agents) != 1 || restarted.registry.Load().Agents[0].ID != "NEWPC" {
 		t.Fatal("registry edits lost or seed reimported")
 	}
 }
@@ -261,22 +261,22 @@ func TestAdminRejectsPrivateKeysWrongAlgorithmsAndUnsafeIDs(t *testing.T) {
 	f := newFixture(t, false)
 	a := loginAdmin(f)
 	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.agentKey)}))
-	a.call("POST", "agents", map[string]string{"id": "pc2", "name": "PC", "publicKeyPem": private}, 400)
+	a.call("POST", "agents", map[string]string{"id": "PC2", "name": "PC", "publicKeyPem": private}, 400)
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	a.call("POST", "agents", map[string]string{"id": "pc2", "name": "PC", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, 400)
+	a.call("POST", "agents", map[string]string{"id": "PC2", "name": "PC", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, 400)
 	status, _, _ := a.request("POST", "/admin/api/consoles", map[string]string{"name": "Phone", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, f.s.config.PublicURL, a.csrf)
 	if status != 405 && status != 404 {
 		t.Fatal("Console configuration is writable through Web API")
 	}
 	a.call("POST", "agents", map[string]string{"id": "../bad", "name": "PC", "publicKeyPem": publicPEM(t, &f.agentKey.PublicKey)}, 400)
-	a.call("POST", "agents", map[string]string{"id": "pc2", "name": "PC", "publicKeyPem": publicPEM(t, &f.agentKey.PublicKey), "publicKeyFile": "/etc/passwd"}, 400)
+	a.call("POST", "agents", map[string]string{"id": "PC2", "name": "PC", "publicKeyPem": publicPEM(t, &f.agentKey.PublicKey), "publicKeyFile": "/etc/passwd"}, 400)
 }
 
 func TestAdminConcurrentEditsKeepBothKeys(t *testing.T) {
 	f := newFixture(t, false)
 	a := loginAdmin(f)
 	var wg sync.WaitGroup
-	for _, name := range []string{"pc-a", "pc-b"} {
+	for _, name := range []string{"PCA", "PCB"} {
 		key, _ := rsa.GenerateKey(rand.Reader, 2048)
 		text := publicPEM(t, &key.PublicKey)
 		wg.Add(1)
@@ -307,7 +307,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 	if err = ws.ReadJSON(&challenge); err != nil {
 		t.Fatal(err)
 	}
-	a.call("DELETE", "agents/pc", nil, 200)
+	a.call("DELETE", "agents/PC", nil, 200)
 	payload, _ := base64.StdEncoding.DecodeString(challenge.Payload)
 	hash := sha256.Sum256(payload)
 	signature, _ := rsa.SignPSS(rand.Reader, f.agentKey, crypto.SHA256, hash[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
@@ -319,7 +319,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 	}
 	f.s.mu.Lock()
 	defer f.s.mu.Unlock()
-	if f.s.online["pc"] != nil {
+	if f.s.online["PC"] != nil {
 		t.Fatal("revoked Agent registered online")
 	}
 }

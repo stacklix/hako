@@ -39,9 +39,9 @@ func TestGenericAgentRequests(t *testing.T) {
 			body := agentRequest{Method: "future.action", Params: params}
 			var data []byte
 			if browser {
-				data = a.call("POST", "agents/pc/requests", body, 200)
+				data = a.call("POST", "agents/PC/requests", body, 200)
 			} else {
-				status, response := f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+				status, response := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 				if status != 200 {
 					t.Fatal(status, string(response))
 				}
@@ -89,7 +89,7 @@ func TestAgentActionErrorAndValidation(t *testing.T) {
 			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Error: &agentError{Code: "future_error", Message: "A new error from the agent"}}})
 		}
 	}()
-	status, data := f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+	status, data := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"future_error"`)) || !bytes.Contains(data, []byte(`"message":"A new error from the agent"`)) || bytes.Contains(data, []byte(`"result"`)) {
 		t.Fatal("agent error was lost", status, string(data))
 	}
@@ -99,21 +99,21 @@ func TestAgentActionErrorAndValidation(t *testing.T) {
 		`{"method":"system.metrics","params":"{}"}`, `{"method":"system.metrics","params":{},"extra":true}`,
 		`{"method":"future.unsupported","params":{}}`, `{"method":"system.metrics","params":{}} {}`,
 	} {
-		status, _ = f.call("POST", "/api/v1/agents/pc/requests", json.RawMessage(invalid), f.tokens.AccessToken)
+		status, _ = f.call("POST", "/api/v1/agents/PC/requests", json.RawMessage(invalid), f.tokens.AccessToken)
 		if status != 400 {
 			t.Fatal("invalid request accepted", invalid, status)
 		}
 	}
-	status, _ = f.call("POST", "/api/v1/agents/pc/requests", body, "")
+	status, _ = f.call("POST", "/api/v1/agents/PC/requests", body, "")
 	if status != 401 {
 		t.Fatal("unsigned request accepted", status)
 	}
 	a := loginAdmin(f)
-	status, _, _ = a.request("POST", "/admin/api/agents/pc/requests", body, f.s.config.PublicURL, "")
+	status, _, _ = a.request("POST", "/admin/api/agents/PC/requests", body, f.s.config.PublicURL, "")
 	if status != 403 {
 		t.Fatal("request without CSRF accepted", status)
 	}
-	for _, path := range []string{"agents/pc/metrics/query"} {
+	for _, path := range []string{"agents/PC/metrics/query"} {
 		status, _ = f.call("POST", "/api/v1/"+path, nil, f.tokens.AccessToken)
 		if status != 404 {
 			t.Fatal("legacy Console route retained", status)
@@ -133,7 +133,7 @@ func TestLateAgentReplyCannotCompleteNextRequest(t *testing.T) {
 	}
 	done := make(chan response, 1)
 	call := func() {
-		status, data := f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+		status, data := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 		done <- response{status, data}
 	}
 	go call()
@@ -168,7 +168,7 @@ func TestInvalidAgentResponseDisconnects(t *testing.T) {
 				_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: response})
 			}
 		}()
-		status, _ := f.call("POST", "/api/v1/agents/pc/requests", agentRequest{Method: "system.metrics", Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+		status, _ := f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "system.metrics", Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 		if status != 409 {
 			t.Fatal("invalid response accepted", status)
 		}
@@ -207,7 +207,7 @@ func TestAgentConnectionReplacesCapabilities(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		f.s.mu.Lock()
-		offline := f.s.online["pc"] == nil
+		offline := f.s.online["PC"] == nil
 		f.s.mu.Unlock()
 		if offline {
 			break
@@ -254,14 +254,14 @@ func TestAgentRequestConcurrencyLimits(t *testing.T) {
 	requests := make([]agentMessage, 4)
 	for i := range requests {
 		go func() {
-			status, _ := f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+			status, _ := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 			completed <- status
 		}()
 		if err := ws.ReadJSON(&requests[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	status, data := f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+	status, data := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 	if status != 429 || !bytes.Contains(data, []byte(`agent_busy`)) {
 		t.Fatal("per-agent limit lost", status, string(data))
 	}
@@ -277,7 +277,7 @@ func TestAgentRequestConcurrencyLimits(t *testing.T) {
 	for i := 0; i < cap(f.s.requests); i++ {
 		f.s.requests <- struct{}{}
 	}
-	status, data = f.call("POST", "/api/v1/agents/pc/requests", body, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)
 	for i := 0; i < cap(f.s.requests); i++ {
 		<-f.s.requests
 	}

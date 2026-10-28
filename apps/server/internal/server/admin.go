@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"embed"
 	"errors"
 	"mime"
@@ -164,17 +165,26 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	old := s.registry.Load()
 	if request.ID == "" {
-		request.ID = "agent-" + randomToken()
+		used := make(map[string]bool, len(old.Agents))
+		for _, agent := range old.Agents {
+			used[agent.ID] = true
+		}
+		var err error
+		request.ID, err = allocateAgentID(used, rand.Reader)
+		if err != nil {
+			reject(w, 503, "device_id_unavailable")
+			return
+		}
 	}
 	a, err := parseAgent(AgentConfig{ID: request.ID, Name: request.Name, PublicKeyPEM: request.PublicKeyPEM}, false)
 	if err != nil {
 		registryError(w, err)
 		return
 	}
-	s.registryMu.Lock()
-	defer s.registryMu.Unlock()
-	old := s.registry.Load()
 	for _, v := range old.Agents {
 		if v.ID == a.ID || v.keyID == a.keyID {
 			reject(w, 409, "duplicate_agent")

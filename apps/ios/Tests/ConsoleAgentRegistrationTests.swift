@@ -8,8 +8,8 @@ import Foundation
         precondition(request.name == "我的设备" && request.publicKeyPEM == pem)
         precondition(request.body["publicKeyPem"] as? String == pem && request.body.count == 2 && request.body["id"] == nil)
         let reply = try JSONDecoder().decode(ConsoleAgentRegistrationReply.self,
-                                             from: Data("{\"id\":\"agent-server-generated\",\"keyId\":\"fingerprint\"}".utf8))
-        precondition(reply.id == "agent-server-generated" && reply.keyId == "fingerprint")
+                                             from: Data("{\"id\":\"A1B2C\",\"keyId\":\"fingerprint\"}".utf8))
+        precondition(reply.id == "A1B2C" && reply.keyId == "fingerprint")
         _ = try ConsoleAgentRegistration(name: String(repeating: "n", count: 100), publicKeyPEM: pem)
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "PUBLIC KEY", with: "RSA PUBLIC KEY"))
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "\n", with: "\r\n"))

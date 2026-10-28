@@ -55,7 +55,7 @@ func newFixture(t *testing.T, authenticated bool) *fixture {
 	ts := httptest.NewUnstartedServer(nil)
 	master := make([]byte, 32)
 	_, _ = rand.Read(master)
-	app, err := New(Config{Database: filepath.Join(dir, "hako.db"), MasterKey: master, Username: "owner", PublicURL: "https://" + ts.Listener.Addr().String(), Agents: []AgentConfig{{ID: "pc", Name: "PC", PublicKeyFile: publicFile}}, Consoles: []ConsoleConfig{{Name: "iPhone", PublicKeyFile: consoleFile}}, RequestTimeout: 150 * time.Millisecond})
+	app, err := New(Config{Database: filepath.Join(dir, "hako.db"), MasterKey: master, Username: "owner", PublicURL: "https://" + ts.Listener.Addr().String(), Agents: []AgentConfig{{ID: "PC", Name: "PC", PublicKeyFile: publicFile}}, Consoles: []ConsoleConfig{{Name: "iPhone", PublicKeyFile: consoleFile}}, RequestTimeout: 150 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestRefreshProofReplayDoesNotDestroyRecoverableSession(t *testing.T) {
 
 func (f *fixture) connectAgent(wrongKey bool, methods ...agentMethod) *websocket.Conn {
 	f.t.Helper()
-	return f.connectAgentID("pc", wrongKey, methods...)
+	return f.connectAgentID("PC", wrongKey, methods...)
 }
 
 func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentMethod) *websocket.Conn {
@@ -416,7 +416,7 @@ func TestAgentQueryForwarding(t *testing.T) {
 		m := json.RawMessage(`{"cpuUsagePercent":25,"memoryUsagePercent":50,"memoryUsedBytes":4294967296,"memoryTotalBytes":8589934592,"sampledAt":"2026-10-25T10:00:00Z","sampleWindowMs":1000,"gpu":{"usage":42}}`)
 		_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: m}})
 	}()
-	status, data := f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, data := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
@@ -434,12 +434,12 @@ func TestAgentQueryForwarding(t *testing.T) {
 
 func TestAgentOfflineAndTimeout(t *testing.T) {
 	f := newFixture(t, true)
-	status, _ := f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, _ := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 409 {
 		t.Fatal(status)
 	}
 	f.connectAgent(false)
-	status, _ = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, _ = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 504 {
 		t.Fatal(status)
 	}

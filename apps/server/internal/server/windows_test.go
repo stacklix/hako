@@ -46,7 +46,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		f.s.mu.Lock()
-		online := f.s.online["pc"] != nil
+		online := f.s.online["PC"] != nil
 		f.s.mu.Unlock()
 		if online {
 			break
@@ -61,7 +61,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	if status != 200 || !bytes.Contains(data, []byte(`"methods":[{"name":"system.metrics","version":1}]`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
-	status, data = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
 		t.Fatal(status, string(data))
 	}
@@ -70,7 +70,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
-	status, data = f.call("POST", "/api/v1/agents/pc/requests", map[string]any{"method": "system.metrics", "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "system.metrics", "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
 		t.Fatal("Windows action error not forwarded", status, string(data))
 	}

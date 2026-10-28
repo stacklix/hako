@@ -30,8 +30,11 @@ func publicBlock(text string) (*pem.Block, error) {
 }
 
 func parseAgent(a AgentConfig, fromFile bool) (AgentConfig, error) {
-	if !identifier.MatchString(a.ID) || strings.TrimSpace(a.Name) == "" || len(a.Name) > 100 {
-		return a, fmt.Errorf("Agent ID 或名称无效")
+	if !validAgentID(a.ID) {
+		return a, fmt.Errorf("Agent ID 应为 1–5 位大写字母或数字，并以字母开头")
+	}
+	if strings.TrimSpace(a.Name) == "" || len(a.Name) > 100 {
+		return a, fmt.Errorf("Agent 名称无效")
 	}
 	if fromFile && a.PublicKeyPEM == "" {
 		b, err := os.ReadFile(a.PublicKeyFile)

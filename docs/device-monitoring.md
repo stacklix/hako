@@ -55,7 +55,7 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 
 会话列表的 `sessions` 数组包含 `id,type,createdAt,current`，`type` 为 `console` 或 `web`；Console 项包含 `deviceId`，网页项包含 `browser,lastUsedAt`。网页的 `id` 是独立的管理标识，不是登录 Cookie 或其哈希；列表不返回 Cookie、CSRF 或 Console 令牌。当前 Console 优先，其余按登录时间倒序排列。列表过滤过期或批准方已失效的网页会话，读取列表不延长网页闲置期限。iOS「已登录设备」显示会话类型、浏览器和时间，支持下拉刷新及「移除网页登录」；移除后该浏览器下次请求即返回未登录，不影响其他浏览器或 Console。服务端与 iOS 需同步更新。
 
-iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公钥，支持粘贴或导入 Agent 导出的 RSA 公钥；添加成功立即生效并刷新设备列表，无需重启服务端。两者共用校验、持久化及并发锁。未提供或提供空 `id` 时，服务端使用 `agent-` 加密码学随机编号生成唯一 ID，并与公钥一同持久化，重启后保留；客户端使用响应中的 `id` 定位设备。接口仍接受可选的显式 `id`（1–80 位英文字母、数字、下划线或连字符），已有设备的 ID 保持不变。名称非空且最多 100 个 UTF-8 字节，接受单个 SPKI 或 PKCS#1 PEM RSA 2048–8192 位公钥，不接受私钥或文件路径。请求上限 16 KiB。重复公钥或显式 ID 返回 409 `duplicate_agent`，非法设备或公钥返回 400 `invalid_public_key_or_device`，存储失败返回 503 `storage_unavailable`。iOS 在发送前拒绝私钥并校验输入；登记成功但列表刷新失败时使用响应 ID 保留新增设备并提示刷新，不再次提交。请求超时或断网时结果可能未确认，应先刷新列表。需同步更新服务端和 iOS。
+iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公钥，支持粘贴或导入 Agent 导出的 RSA 公钥；添加成功立即生效并刷新设备列表，无需重启服务端。两者共用校验、持久化及并发锁。未提供或提供空 `id` 时，服务端使用密码学随机数生成 5 位唯一 ID，只含大写字母和数字，以字母开头（如 `A7K2Q`），发生重号时重新生成，并与公钥一同持久化，重启后保留；客户端使用响应中的 `id` 定位设备。接口仍接受可选的显式 `id`，格式为 `[A-Z][A-Z0-9]{0,4}`，即 1–5 位大写字母或数字且以字母开头。登记和去重在同一把锁内完成，避免并发重号。名称非空且最多 100 个 UTF-8 字节，接受单个 SPKI 或 PKCS#1 PEM RSA 2048–8192 位公钥，不接受私钥或文件路径。请求上限 16 KiB。重复公钥或显式 ID 返回 409 `duplicate_agent`，非法设备或公钥返回 400 `invalid_public_key_or_device`，存储失败返回 503 `storage_unavailable`，无法分配 ID 时返回 503 `device_id_unavailable`。iOS 在发送前拒绝私钥并校验输入；登记成功但列表刷新失败时使用响应 ID 保留新增设备并提示刷新，不再次提交。请求超时或断网时结果可能未确认，应先刷新列表。需同步更新服务端和 iOS。
 
 网络错误保留登录凭据；明确会话撤销后才进入重新登录流程。离线退出持久标记 `logoutPending`，停止本地使用并在下次联网时尝试服务端撤销。
 
@@ -74,7 +74,7 @@ Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/a
 设备列表和网页 `overview` 中的每台设备包含 `methods`：
 
 ```json
-{"id":"pc","name":"PC","platform":"windows","online":true,"lastSeen":"2026-10-27T10:00:00Z","methods":[{"name":"system.metrics","version":1}]}
+{"id":"N100","name":"PC","platform":"windows","online":true,"lastSeen":"2026-10-27T10:00:00Z","methods":[{"name":"system.metrics","version":1}]}
 ```
 
 能力清单由 Agent 在认证连接的 `hello` 中上报，包含 1–64 个不重复动作。动作名称最长 100 字符，格式为小写字母开头的点分段名称（段内允许小写字母、数字、下划线，例如 `disk.metrics`、`process.list`），版本为正整数。版本用于客户端选择可理解的参数与结果，不由服务端解释。离线设备的 `methods` 为空数组；能力变化需重连，重复设备连接使用最新已认证连接的清单。Agent 只能执行自身注册的动作。

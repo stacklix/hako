@@ -83,6 +83,7 @@ private struct ConsoleHTTPError: Error, LocalizedError {
         case "unsupported_method": return "设备不支持此动作，请刷新设备列表。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
         case "duplicate_agent": return "此公钥已登记，请刷新设备列表查看对应设备。"
+        case "device_id_unavailable": return "服务器暂时无法分配设备 ID，请稍后重试。"
         case "invalid_public_key_or_device": return "设备名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥，并确认服务端已更新。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
