@@ -18,7 +18,7 @@ struct DeviceMonitorView: View {
                     ForEach(client.agents) { agent in
                         NavigationLink { DeviceMetricsView(agent: agent) } label: {
                             HStack {
-                                Image(systemName: "network")
+                                Image(systemName: "desktopcomputer")
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(agent.name)
                                     Text(agent.online ? "在线" : "离线").font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
@@ -28,6 +28,7 @@ struct DeviceMonitorView: View {
                                 }
                             }.padding(.vertical, 5)
                         }
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     }
                 }
                 Section {
@@ -173,6 +174,7 @@ struct DeviceMetricsView: View {
             Button { Task { await client.checkHTTP(currentAgent, url: targetURL) } } label: {
                 Label("检测", systemImage: "network")
             }.disabled(check.loading || !client.authenticated || targetURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             if check.loading { ProgressView("正在从设备检测…") }
             if let error = check.error {
                 Text(error).font(.footnote).foregroundStyle(.red)
@@ -218,6 +220,7 @@ struct ConsoleSessionsView: View {
                         }.disabled(client.busy)
                     }
                 }.padding(.vertical, 5)
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
             if client.busy { ProgressView() }
             if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }

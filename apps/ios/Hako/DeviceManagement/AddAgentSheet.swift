@@ -31,6 +31,7 @@ struct AddAgentSheet: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityLabel("Agent PEM 公钥")
                     Button { importingKey = true } label: { Label("导入公钥文件", systemImage: "doc") }
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 } header: { Text("RSA 公钥 · PEM") } footer: {
                     Text("粘贴或导入 Agent 导出的 PEM 公钥（RSA 2048–8192 位），保留完整的 BEGIN 和 END 标记。")
                 }

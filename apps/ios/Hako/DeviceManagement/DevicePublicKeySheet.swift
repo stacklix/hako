@@ -49,6 +49,7 @@ struct DevicePublicKeySheet: View {
                     } label: {
                         Label(copied ? "已复制公钥" : "复制公钥内容", systemImage: copied ? "checkmark" : "doc.on.doc")
                     }.disabled(client.resettingKey)
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     Button {
                         do {
                             exportedPublicKey = try client.publicKeyForExport()
@@ -57,6 +58,7 @@ struct DevicePublicKeySheet: View {
                     } label: {
                         Label("导出公钥文件", systemImage: "square.and.arrow.up")
                     }.disabled(client.resettingKey)
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
                 if let message = client.message {
                     Section { Text(message).font(.footnote).foregroundStyle(.secondary) }

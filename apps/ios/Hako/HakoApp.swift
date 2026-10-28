@@ -35,14 +35,16 @@ struct HomeView: View {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("设备监控").font(.headline)
                             Text("设备在线状态 · 能力调用").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "network").foregroundStyle(.primary) }
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "desktopcomputer").foregroundStyle(.primary) }
                     }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { UsageView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("使用时间").font(.headline)
                             Text("每日概览 · Top 5 · GitHub 归档").font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 8) } icon: { Image(systemName: "chart.bar.xaxis").foregroundStyle(.primary) }
                     }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
             }
             .navigationTitle("Hako")
@@ -75,7 +77,9 @@ struct UsageView: View {
         List {
             Section {
                 Button { execute { try await Recorder.shared.run(collect: true, requestAuthorization: true) } } label: { Label("获取app使用时间并同步", systemImage: "arrow.down.doc") }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 Button { execute { try await Recorder.shared.run(collect: false) } } label: { Label("合并本地与 GitHub 记录", systemImage: "arrow.triangle.2.circlepath") }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 if busy { ProgressView("正在处理…") }
             } footer: {
                 Text("合并会补齐双方缺失的日期并保存到本地；同一天内容不一致时，以 GitHub 记录为准。")
@@ -92,6 +96,7 @@ struct UsageView: View {
                             .foregroundStyle(.secondary)
                             .accessibilityLabel("关闭提示")
                     }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
             }
             if records.isEmpty {
@@ -109,6 +114,7 @@ struct UsageView: View {
                         .buttonStyle(.borderless)
                     }
                     .frame(height: dateRowHeight)
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     .popover(isPresented: $showDatePicker) {
                             DatePicker("日期", selection: Binding(
                                 get: { activeDay.flatMap { Self.dayFormatter.date(from: $0) } ?? newest },
@@ -140,6 +146,7 @@ struct UsageView: View {
                     }
                     Label(record.syncedAt == nil ? "等待同步" : "已同步", systemImage: record.syncedAt == nil ? "arrow.clockwise" : "checkmark.circle")
                         .font(.caption).foregroundStyle(.secondary)
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 } header: { Text(record.day) } footer: { Text("时区：\(record.timeZone)") }
             } else if !records.isEmpty {
                 ContentUnavailableView("这一天没有记录", systemImage: "calendar", description: Text("请选择其他日期查看。"))
@@ -273,6 +280,7 @@ struct SettingsView: View {
                             }
                         }
                     }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 } else {
                     Text(latestBuildDateFailed ? "检查更新失败" : latestRelease == nil ? "正在检查更新…" : "当前无需更新")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -280,6 +288,7 @@ struct SettingsView: View {
                 Link(destination: URL(string: "https://stacklix.github.io/hako/")!) {
                     Label("查看下载页面", systemImage: "arrow.up.right.square")
                 }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             } header: {
                 Text("应用更新")
             } footer: {
