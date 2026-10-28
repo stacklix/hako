@@ -82,8 +82,8 @@ private struct ConsoleHTTPError: Error, LocalizedError {
         case "agent_timeout": return "设备响应超时，动作可能仍在执行，请先确认结果。"
         case "unsupported_method": return "设备不支持此动作，请刷新设备列表。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
-        case "duplicate_agent": return "设备 ID 或公钥已登记，请刷新设备列表，或为另一台设备使用不同的 ID 和公钥。"
-        case "invalid_public_key_or_device": return "设备 ID、名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥。"
+        case "duplicate_agent": return "此公钥已登记，请刷新设备列表查看对应设备。"
+        case "invalid_public_key_or_device": return "设备名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥，并确认服务端已更新。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
         case "session_revoked": return "登录会话已撤销，请重新登录。"
@@ -296,14 +296,15 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
 
     func fetchAgents() async { await execute { try await self.fetchAgentsInternal() } }
 
-    func addAgent(id: String, name: String, publicKeyPEM: String) async throws {
+    func addAgent(name: String, publicKeyPEM: String) async throws {
         guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
         guard authenticated, !logoutPending else { throw HakoError(message: "请先登录设备监控。") }
-        let registration = try ConsoleAgentRegistration(id: id, name: name, publicKeyPEM: publicKeyPEM)
+        let registration = try ConsoleAgentRegistration(name: name, publicKeyPEM: publicKeyPEM)
         busy = true; message = nil
         defer { busy = false }
+        let response: Data
         do {
-            _ = try await authorized("/api/v1/agents", method: "POST", body: registration.body)
+            response = try await authorized("/api/v1/agents", method: "POST", body: registration.body)
         } catch let error as ConsoleHTTPError where error.status == 404 || error.status == 405 {
             throw HakoError(message: "服务端尚不支持添加 Agent，请先更新服务端。")
         } catch is URLError {
@@ -311,8 +312,9 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
         // Registration has succeeded. Keep it visible even if the follow-up GET fails;
         // presenting another submit would encourage duplicate registration.
-        if !agents.contains(where: { $0.id == registration.id }) {
-            agents.append(ConsoleAgent(id: registration.id, name: registration.name, platform: "windows", online: false, lastSeen: "", methods: []))
+        if let registered = try? JSONDecoder().decode(ConsoleAgentRegistrationReply.self, from: response),
+           !registered.id.isEmpty, !agents.contains(where: { $0.id == registered.id }) {
+            agents.append(ConsoleAgent(id: registered.id, name: registration.name, platform: "windows", online: false, lastSeen: "", methods: []))
         }
         do {
             try await fetchAgentsInternal()

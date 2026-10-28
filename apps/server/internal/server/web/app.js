@@ -127,13 +127,13 @@ $('refresh-qr').addEventListener('click',startQr);
 $('copy-login').addEventListener('click',async () => { if (!qrRequest) return; try { await navigator.clipboard.writeText(qrRequest.qrPayload); notice('已复制，请在 Console 中粘贴并核对确认码。',true); } catch { notice('无法访问剪贴板，请使用 Console 摄像头扫码。'); } });
 $('logout').addEventListener('click',async () => { try { await api('logout','POST',{}); loggedIn(false); notice('已退出管理。',true); await startQr(); } catch (e) { notice(e.message); } });
 $('refresh').addEventListener('click',() => refresh().catch(e => notice(e.message)));
-function register() { $('register-form').reset(); $('register-error').hidden = true; $('register-title').textContent = '登记设备代理'; $('register-form').elements.id.required = true; $('key-hint').textContent = '请使用 Windows Agent 导出的 RSA 公钥（2048–8192 位）。'; $('register-dialog').showModal(); }
+function register() { $('register-form').reset(); $('register-error').hidden = true; $('register-title').textContent = '登记设备代理'; $('key-hint').textContent = '请使用 Agent 导出的 RSA 公钥（2048–8192 位）。'; $('register-dialog').showModal(); }
 $('open-agent').addEventListener('click',register);
 $('close-register').addEventListener('click',() => $('register-dialog').close()); $('close-key').addEventListener('click',() => $('key-dialog').close());
 $('public-key-file').addEventListener('change',async event => { try { const file = event.target.files[0]; if (!file) return; if (file.size > 16384) throw new Error('公钥文件过大。'); const text = await file.text(); if (/PRIVATE KEY/.test(text)) throw new Error('请选择公钥文件，不要上传私钥。'); $('register-form').elements.publicKeyPem.value = text; $('register-error').hidden = true; } catch (e) { $('register-error').textContent = e.message; $('register-error').hidden = false; } });
 $('register-form').addEventListener('submit',async event => {
   event.preventDefault(); const form = event.currentTarget, button = form.querySelector('button[type=submit]'); button.disabled = true; $('register-error').hidden = true;
-  try { const values = new FormData(form); const data = {name:values.get('name'),publicKeyPem:values.get('publicKeyPem')}; if (/PRIVATE KEY/.test(data.publicKeyPem)) throw new Error('请提供公钥，不要上传私钥。'); data.id = values.get('id'); await api('agents','POST',data); $('register-dialog').close(); await refresh(); notice('公钥已登记，即时生效。',true); }
+  try { const values = new FormData(form); const data = {name:values.get('name'),publicKeyPem:values.get('publicKeyPem')}; if (/PRIVATE KEY/.test(data.publicKeyPem)) throw new Error('请提供公钥，不要上传私钥。'); await api('agents','POST',data); $('register-dialog').close(); await refresh(); notice('公钥已登记，即时生效。',true); }
   catch (e) { $('register-error').textContent = e.message; $('register-error').hidden = false; } finally { button.disabled = false; }
 });
 $('download-key').addEventListener('click',() => { if (!selectedKey) return; const url = URL.createObjectURL(new Blob([selectedKey.pem],{type:'application/x-pem-file'})); const a = node('a'); a.href = url; a.download = selectedKey.filename; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000); });

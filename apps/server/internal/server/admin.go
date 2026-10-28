@@ -164,6 +164,9 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &request) {
 		return
 	}
+	if request.ID == "" {
+		request.ID = "agent-" + randomToken()
+	}
 	a, err := parseAgent(AgentConfig{ID: request.ID, Name: request.Name, PublicKeyPEM: request.PublicKeyPEM}, false)
 	if err != nil {
 		registryError(w, err)

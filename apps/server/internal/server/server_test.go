@@ -344,12 +344,17 @@ func TestRefreshProofReplayDoesNotDestroyRecoverableSession(t *testing.T) {
 }
 
 func (f *fixture) connectAgent(wrongKey bool, methods ...agentMethod) *websocket.Conn {
+	f.t.Helper()
+	return f.connectAgentID("pc", wrongKey, methods...)
+}
+
+func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentMethod) *websocket.Conn {
 	if len(methods) == 0 {
 		methods = []agentMethod{{Name: "system.metrics", Version: 1}}
 	}
 	f.t.Helper()
 	f.s.mu.Lock()
-	previous := f.s.online["pc"]
+	previous := f.s.online[id]
 	f.s.mu.Unlock()
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
 	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)
@@ -381,13 +386,13 @@ func (f *fixture) connectAgent(wrongKey bool, methods ...agentMethod) *websocket
 		}
 		return ws
 	}
-	if err != nil || ack["type"] != "authenticated" {
+	if err != nil || ack["type"] != "authenticated" || ack["agentId"] != id {
 		f.t.Fatal("agent authentication failed", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		f.s.mu.Lock()
-		online := f.s.online["pc"] != nil && f.s.online["pc"] != previous
+		online := f.s.online[id] != nil && f.s.online[id] != previous
 		f.s.mu.Unlock()
 		if online {
 			return ws

@@ -116,7 +116,7 @@ iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有�
 ## 设备调用接口
 
 - Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
-- Console 登记 Agent：`POST /api/v1/agents`，使用同样的 DPoP 会话与设备签名认证，正文为 `{"id":"desktop","name":"我的电脑","publicKeyPem":"PEM 公钥"}`；成功返回 HTTP 201 及 `id,keyId`，无需重启。与网页共用 RSA 公钥校验、重复检查及持久化；重复 ID 或公钥返回 409，非法设备信息、公钥或私钥返回 400。需要同步更新服务端与 iOS。
+- Console 登记 Agent：`POST /api/v1/agents`，使用同样的 DPoP 会话与设备签名认证，正文为 `{"name":"我的设备","publicKeyPem":"PEM 公钥"}`；服务端自动生成唯一设备 ID，成功返回 HTTP 201 及 `id,keyId`，无需重启。iOS 和网页只需填写名称与公钥。接口仍接受可选的 `id`，已有设备的 ID 保持不变。与网页共用 RSA 公钥校验、重复检查及持久化；重复公钥或显式指定的 ID 返回 409，非法设备信息、公钥或私钥返回 400。需要同步更新服务端与 iOS。
 - 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
 - 正文：`{"method":"system.metrics","params":{}}`。
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
@@ -126,7 +126,7 @@ iOS「设备监控 → 设置 → 已登录设备」统一显示 Console 和有�
 
 ## 登记设备
 
-1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在已登录 iOS 的「设备监控 → 添加 Agent」填写设备 ID、名称，粘贴或导入 RSA 公钥；也可使用 Web 管理页「登记 Agent」。设置 Windows 服务地址和账号，保存并连接；认证失败后完成登记需重新连接。
+1. Windows → 服务器设置 → 生成密钥或导入 RSA 私钥 → 导出公钥，在已登录 iOS 的「设备监控 → 添加 Agent」填写设备名称，粘贴或导入 RSA 公钥；也可使用 Web 管理页「登记 Agent」，设备 ID 均由服务端自动生成。设置 Windows 服务地址和账号，保存并连接；认证失败后完成登记需重新连接。
 2. iOS → 设备监控 → 设置 → 查看与导出公钥 → 复制内容或导出文件，手工配置到服务端 `consoles` 后重启；此操作不要求填写服务器信息或登录。
 3. iOS → 设备监控 → 设置 → 填写 HTTPS 地址和账号 → 保存服务器配置 → 使用本机密钥登录，即可监控和批准网页登录。
 4. iOS 选择在线电脑，查询 CPU、物理内存和本次采样时间。

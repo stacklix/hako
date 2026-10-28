@@ -4,18 +4,17 @@ import Foundation
     static func main() throws {
         // Only the PEM envelope is validated locally; RSA validation is covered by server tests.
         let pem = "-----BEGIN PUBLIC KEY-----\nMAA=\n-----END PUBLIC KEY-----"
-        let request = try ConsoleAgentRegistration(id: " desktop-1 ", name: " 我的电脑 ", publicKeyPEM: "\n" + pem + "\n")
-        precondition(request.id == "desktop-1" && request.name == "我的电脑" && request.publicKeyPEM == pem)
-        precondition(request.body["publicKeyPem"] as? String == pem && request.body.count == 3)
-        _ = try ConsoleAgentRegistration(id: String(repeating: "A", count: 80), name: String(repeating: "n", count: 100), publicKeyPEM: pem)
+        let request = try ConsoleAgentRegistration(name: " 我的设备 ", publicKeyPEM: "\n" + pem + "\n")
+        precondition(request.name == "我的设备" && request.publicKeyPEM == pem)
+        precondition(request.body["publicKeyPem"] as? String == pem && request.body.count == 2 && request.body["id"] == nil)
+        let reply = try JSONDecoder().decode(ConsoleAgentRegistrationReply.self,
+                                             from: Data("{\"id\":\"agent-server-generated\",\"keyId\":\"fingerprint\"}".utf8))
+        precondition(reply.id == "agent-server-generated" && reply.keyId == "fingerprint")
+        _ = try ConsoleAgentRegistration(name: String(repeating: "n", count: 100), publicKeyPEM: pem)
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "PUBLIC KEY", with: "RSA PUBLIC KEY"))
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "\n", with: "\r\n"))
-        for id in ["", "../pc", "pc/id", "pc\nid", "中文", String(repeating: "A", count: 81)] {
-            do { _ = try ConsoleAgentRegistration(id: id, name: "PC", publicKeyPEM: pem); fatalError("Unsafe ID accepted") }
-            catch ConsoleAgentRegistrationError.invalidID { }
-        }
         for name in ["  ", String(repeating: "中", count: 34), String(repeating: "n", count: 101)] {
-            do { _ = try ConsoleAgentRegistration(id: "pc", name: name, publicKeyPEM: pem); fatalError("Invalid name accepted") }
+            do { _ = try ConsoleAgentRegistration(name: name, publicKeyPEM: pem); fatalError("Invalid name accepted") }
             catch ConsoleAgentRegistrationError.invalidName { }
         }
         for value in [pem.replacingOccurrences(of: "PUBLIC KEY", with: "PRIVATE KEY"),
@@ -33,8 +32,8 @@ import Foundation
         do { _ = try ConsoleAgentRegistration.validatePublicKey(String(repeating: "A", count: 16385)); fatalError("Large key accepted") }
         catch ConsoleAgentRegistrationError.tooLarge { }
         // A key can fit its own limit while the escaped JSON exceeds the HTTP limit.
-        let large = pem.replacingOccurrences(of: "MAA=", with: String(repeating: "A", count: 16160))
-        do { _ = try ConsoleAgentRegistration(id: String(repeating: "a", count: 80), name: String(repeating: "n", count: 100), publicKeyPEM: large); fatalError("Large JSON accepted") }
+        let large = pem.replacingOccurrences(of: "MAA=", with: String(repeating: "A", count: 16240))
+        do { _ = try ConsoleAgentRegistration(name: String(repeating: "n", count: 100), publicKeyPEM: large); fatalError("Large JSON accepted") }
         catch ConsoleAgentRegistrationError.tooLarge { }
         print("PASS: Agent form validation, PEM imports, private-key rejection and request limits")
     }

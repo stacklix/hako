@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 struct AddAgentSheet: View {
     @ObservedObject private var client = ConsoleClient.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var deviceID = ""
     @State private var name = ""
     @State private var publicKeyPEM = ""
     @State private var importingKey = false
@@ -12,7 +11,7 @@ struct AddAgentSheet: View {
     @State private var errorMessage: String?
 
     private var missingInput: Bool {
-        [deviceID, name, publicKeyPEM].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        [name, publicKeyPEM].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     var body: some View {
@@ -23,14 +22,9 @@ struct AddAgentSheet: View {
                     LabeledContent("账号", value: client.username)
                 }
                 Section {
-                    TextField("设备 ID，例如 agent-1", text: $deviceID)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .accessibilityLabel("设备 ID")
                     TextField("设备名称，例如我的设备", text: $name)
                         .accessibilityLabel("设备名称")
-                } header: { Text("设备信息") } footer: {
-                    Text("设备 ID 用于在服务端标识设备，支持英文字母、数字、下划线和连字符。")
-                }
+                } header: { Text("设备信息") }
                 Section {
                     TextEditor(text: $publicKeyPEM)
                         .font(.caption.monospaced()).frame(minHeight: 180)
@@ -72,7 +66,7 @@ struct AddAgentSheet: View {
         submitting = true; errorMessage = nil
         defer { submitting = false }
         do {
-            try await client.addAgent(id: deviceID, name: name, publicKeyPEM: publicKeyPEM)
+            try await client.addAgent(name: name, publicKeyPEM: publicKeyPEM)
             dismiss()
         } catch is CancellationError {
             errorMessage = "请求已取消，登记结果尚未确认。请刷新设备列表，确认后再重试。"

@@ -1,20 +1,14 @@
 import Foundation
 
 struct ConsoleAgentRegistration {
-    let id: String
     let name: String
     let publicKeyPEM: String
 
-    var body: [String: Any] { ["id": id, "name": name, "publicKeyPem": publicKeyPEM] }
+    var body: [String: Any] { ["name": name, "publicKeyPem": publicKeyPEM] }
 
-    init(id: String, name: String, publicKeyPEM: String) throws {
-        self.id = id.trimmingCharacters(in: .whitespacesAndNewlines)
+    init(name: String, publicKeyPEM: String) throws {
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         self.publicKeyPEM = try Self.validatePublicKey(publicKeyPEM)
-        guard !self.id.isEmpty, self.id.utf8.count <= 80,
-              self.id.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95 || $0 == 45 }) else {
-            throw ConsoleAgentRegistrationError.invalidID
-        }
         guard !self.name.isEmpty, self.name.utf8.count <= 100 else { throw ConsoleAgentRegistrationError.invalidName }
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw ConsoleAgentRegistrationError.tooLarge }
     }
@@ -36,12 +30,16 @@ struct ConsoleAgentRegistration {
     }
 }
 
+struct ConsoleAgentRegistrationReply: Decodable {
+    let id: String
+    let keyId: String
+}
+
 enum ConsoleAgentRegistrationError: LocalizedError {
-    case invalidID, invalidName, privateKey, invalidPublicKey, tooLarge
+    case invalidName, privateKey, invalidPublicKey, tooLarge
 
     var errorDescription: String? {
         switch self {
-        case .invalidID: return "设备 ID 应为 1–80 位英文字母、数字、下划线或连字符。"
         case .invalidName: return "设备名称不能为空或过长，请缩短后重试。"
         case .privateKey: return "请使用 Agent 导出的公钥，不要粘贴或导入私钥。"
         case .invalidPublicKey: return "请提供完整的 PEM 公钥，包含 BEGIN 和 END PUBLIC KEY 标记。"
