@@ -138,8 +138,60 @@ internal static class CodexUsageChecks
         await using (var collector = new CodexUsage(home, cache, zone, () => now))
             if (!(await collector.CollectAsync(CancellationToken.None)).Warnings.Any(w => w.Contains("缓存不可用")))
                 throw new Exception("Invalid cache was silently accepted");
+        await CheckMirroredUsage(directory, zone, now);
         await CheckRunningSessions(home, zone, now);
         Console.WriteLine("PASS: Codex seven-day requests/tokens, timezone boundaries, exact/legacy deduplication, partial writes, persistence, retention, privacy and live/stale session locks");
+    }
+
+    private static async Task CheckMirroredUsage(string directory, TimeZoneInfo zone, DateTimeOffset now)
+    {
+        var home = Path.Combine(directory, "mirrors"); Directory.CreateDirectory(Path.Combine(home, "sessions"));
+        var path = Path.Combine(home, "sessions", "one.jsonl"); var cache = Path.Combine(directory, "mirrors.json");
+        string Exact(string id, string at, string turn) => JsonSerializer.Serialize(new { timestamp = at, type = "token_usage_record",
+            payload = new { response_id = id, turn_id = turn, usage = Tokens(), thread_token_usage = Tokens(9000, 900) } });
+        await File.WriteAllTextAsync(path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"mirror-session\"}}\n"
+            + "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-A\"}}\n"
+            + Legacy("2026-11-05T01:00:00Z", 100) + "\n" + Exact("one", "2026-11-05T01:00:02Z", "turn-A") + "\n"
+            + "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-B\"}}\n"
+            + "{\"timestamp\":\"2026-11-05T01:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":20,\"output_tokens\":10,\"reasoning_output_tokens\":5,\"total_tokens\":110},\"last_token_usage\":{\"total_tokens\":55}}}}\n"
+            + Legacy("2026-11-05T01:00:04Z", 200) + "\n");
+        File.SetLastWriteTimeUtc(path, now.UtcDateTime);
+        await using (var collector = new CodexUsage(home, cache, zone, () => now))
+        {
+            var result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[^1].TotalTokens != 220 || !result.Days[^1].BreakdownAvailable || result.Warnings.Any(w => w.Contains("只有 token 总量")))
+                throw new Exception("Divergent cumulative streams or a replayed zero-breakdown snapshot inflated usage");
+            await File.AppendAllTextAsync(path, Exact("two", "2026-11-05T01:00:05Z", "turn-B") + "\n"
+                + Legacy("2026-11-05T01:00:06Z", 300) + "\n");
+            result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[^1].TotalTokens != 330)
+                throw new Exception("Matching a mirror also removed a separate legacy request with identical token values");
+            await File.AppendAllTextAsync(path, Exact("three", "2026-11-05T01:00:07Z", "turn-B") + "\n");
+            result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[^1].TotalTokens != 330 || result.Warnings.Any(w => w.Contains("日志更新记录")))
+                throw new Exception("A delayed precise response did not replace its compatibility mirror");
+        }
+        await using (var collector = new CodexUsage(home, cache, zone, () => now))
+            if ((await collector.CollectAsync(CancellationToken.None)).Days[^1].TotalTokens != 330)
+                throw new Exception("Mirror pairing was not stable across cached restarts");
+        var old = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(cache))!;
+        old["Version"] = 4;
+        foreach (var item in old["Requests"]!.AsObject())
+        { item.Value!.AsObject().Remove("TurnId"); item.Value.AsObject().Remove("PreviousUsages"); }
+        old["Requests"]!["legacy:turn-B:100:20:10:5:110"] = System.Text.Json.Nodes.JsonNode.Parse(
+            "{\"At\":\"2026-11-05T01:00:03Z\",\"Usage\":{\"Input\":0,\"Cached\":0,\"Output\":0,\"Reasoning\":0,\"Total\":55,\"BreakdownAvailable\":false},\"Estimated\":true}");
+        old["Requests"]!["response:deleted-source"] = System.Text.Json.Nodes.JsonNode.Parse(
+            "{\"At\":\"2026-11-05T01:00:00Z\",\"Usage\":{\"Input\":7,\"Cached\":0,\"Output\":3,\"Reasoning\":0,\"Total\":10,\"BreakdownAvailable\":true},\"Estimated\":false}");
+        await File.WriteAllTextAsync(cache, old.ToJsonString());
+        File.SetLastWriteTimeUtc(path, now.UtcDateTime);
+        await using (var collector = new CodexUsage(home, cache, zone, () => now))
+        {
+            var result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[^1].TotalTokens != 340 || !result.Days[^1].BreakdownAvailable || !result.Warnings.Any(w => w.Contains("去重规则")))
+                throw new Exception("Old cache replay failed to repair duplicates while retaining deleted-source usage");
+        }
+        Console.WriteLine("PASS: divergent usage streams, replay snapshots, one-to-one mirrors, identical real requests, delayed responses and cache repair");
     }
 
     private static async Task CheckRunningSessions(string home, TimeZoneInfo zone, DateTimeOffset now)

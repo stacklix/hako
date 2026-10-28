@@ -148,7 +148,7 @@ struct DeviceMetricsView: View {
             }
         }
         .navigationTitle("设备监控")
-        .safeAreaInset(edge: .top, spacing: 0) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             Picker("设备详情", selection: $selectedTab) {
                 ForEach(DetailTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
@@ -240,19 +240,8 @@ struct DeviceMetricsView: View {
         let usage = decoded?.isValid == true ? decoded : nil
         queryStatus(capability)
         if let usage {
-            LabeledContent("处理中会话", value: usage.runningSessions.map { String($0) } ?? "暂不可用")
-            if let sessions = usage.runningSessionDetails {
-                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(session.title).fixedSize(horizontal: false, vertical: true)
-                        Text("项目：\(session.projectName)").font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 3)
-                }
-                if sessions.isEmpty { Text("暂无处理中会话").font(.footnote).foregroundStyle(.secondary) }
-            } else if let count = usage.runningSessions, count > 0 {
-                Text("此 Agent 未提供会话信息，更新后可查看项目与标题。").font(.footnote).foregroundStyle(.secondary)
-            }
-            Text("最近 7 天").font(.subheadline.weight(.semibold))
+            runningSessionsContent(usage).listRowSeparator(.hidden)
+            Text("最近 7 天").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
             CodexUsageChart(usage: usage).listRowSeparator(.hidden)
             if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
             DisclosureGroup(isExpanded: $showingCodexNotes) {
@@ -275,6 +264,41 @@ struct DeviceMetricsView: View {
         } else if entry?.result != nil && entry?.error == nil && entry?.version == 1 {
             Text("设备返回的 Codex 统计格式无效。").font(.footnote).foregroundStyle(.red)
         }
+    }
+    private func runningSessionsContent(_ usage: ConsoleCodexUsage) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("处理中会话").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Text(usage.runningSessions.map { "\($0) 个" } ?? "—")
+                    .font(.caption.weight(.semibold)).monospacedDigit()
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                Spacer()
+            }
+            if let sessions = usage.runningSessionDetails, !sessions.isEmpty {
+                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(session.projectName)
+                            .font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                        Text(session.title)
+                            .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityElement(children: .combine)
+                }
+            } else if usage.runningSessions == 0 {
+                Text("暂无处理中会话").font(.footnote).foregroundStyle(.secondary)
+            } else if let count = usage.runningSessions, count > 0 {
+                Text("此 Agent 未提供会话信息，更新后可查看项目与标题。").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("当前会话状态暂不可用").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
     }
     private func codexWarning(_ warning: String) -> String {
         switch warning {

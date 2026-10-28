@@ -21,22 +21,23 @@ public sealed record CodexUsageSnapshot(bool Available, string CollectedAt, stri
 public sealed class CodexUsage : IAsyncDisposable
 {
     public sealed record TokenUsage(long Input, long Cached, long Output, long Reasoning, long Total, bool BreakdownAvailable = true);
-    public sealed record RequestUsage(DateTimeOffset At, TokenUsage Usage, bool Estimated);
+    public sealed record RequestUsage(DateTimeOffset At, TokenUsage Usage, bool Estimated, string TurnId = "",
+        IReadOnlyList<TokenUsage>? PreviousUsages = null);
     public sealed class Cursor
     {
         public long Offset { get; set; }
         public string ThreadId { get; set; } = "";
         public string TurnId { get; set; } = "";
         public TokenUsage? Previous { get; set; }
+        public string PreviousKey { get; set; } = "";
         public bool IsInternal { get; set; }
     }
     public sealed class Checkpoint
     {
-        public int Version { get; set; } = 4;
+        public int Version { get; set; } = 5;
         public string Home { get; set; } = "";
         public Dictionary<string, Cursor> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RequestUsage> Requests { get; set; } = new();
-        public Dictionary<string, DateTimeOffset> PreciseAliases { get; set; } = new();
         public Dictionary<string, DateTimeOffset> UserCalls { get; set; } = new();
         public Dictionary<string, DateTimeOffset> UserTurns { get; set; } = new();
         public Dictionary<string, DateTimeOffset> TaskStarts { get; set; } = new();
@@ -54,6 +55,7 @@ public sealed class CodexUsage : IAsyncDisposable
     private Checkpoint checkpoint;
     private bool cacheInvalid;
     private bool countMigrated;
+    private bool tokenDedupMigrated;
     public CodexUsage(string? codexHome = null, string? cachePath = null, TimeZoneInfo? zone = null, Func<DateTimeOffset>? clock = null)
     {
         home = Path.GetFullPath(codexHome ?? Environment.GetEnvironmentVariable("CODEX_HOME")
@@ -65,18 +67,21 @@ public sealed class CodexUsage : IAsyncDisposable
             try
             {
                 var saved = JsonSerializer.Deserialize<Checkpoint>(File.ReadAllBytes(cachePath));
-                if (saved?.Version is 3 or 4 && saved.Files is not null && saved.Requests is not null && saved.PreciseAliases is not null
+                if (saved?.Version is 3 or 4 or 5 && saved.Files is not null && saved.Requests is not null
                     && saved.UserCalls is not null && saved.UserTurns is not null && saved.TaskStarts is not null
                     && saved.Files.Values.All(c => c is not null && c.Offset >= 0)
-                    && saved.Requests.Values.All(r => r is not null && r.Usage is not null)
+                    && saved.Requests.Values.All(r => r is not null && r.Usage is not null && r.TurnId is not null
+                        && (r.PreviousUsages is null || r.PreviousUsages.All(u => u is not null)))
                     && string.Equals(saved.Home, home, StringComparison.OrdinalIgnoreCase))
                 {
                     checkpoint = saved;
                     checkpoint.Files = new(saved.Files, StringComparer.OrdinalIgnoreCase);
-                    if (saved.Version == 3)
+                    if (saved.Version < 5)
                     {
-                        // Keep collected token history, but replay metadata to rebuild human message counts.
-                        checkpoint.Version = 4; checkpoint.Files.Clear(); countMigrated = true;
+                        // Retain deleted-source history. Replay available logs to restore usage provenance.
+                        countMigrated = saved.Version == 3;
+                        tokenDedupMigrated = true;
+                        checkpoint.Version = 5; checkpoint.Files.Clear();
                     }
                 }
                 else cacheInvalid = true;
@@ -116,6 +121,7 @@ public sealed class CodexUsage : IAsyncDisposable
             var warnings = new List<string>();
             if (cacheInvalid) warnings.Add("本地统计缓存不可用，已从现有 Codex 日志重建；已删除的日志无法回补。");
             if (countMigrated) warnings.Add("调用数已改为用户发送次数，历史调用数从现有日志重建；已删除的消息无法回补。");
+            if (tokenDedupMigrated) warnings.Add("已升级 Token 去重规则，已从现有日志校正重复统计；已删除的日志无法重新核对。");
             var roots = new[] { Path.Combine(home, "sessions"), Path.Combine(home, "archived_sessions") };
             var available = roots.Any(Directory.Exists);
             if (!available) warnings.Add("未找到本机 Codex 会话日志；统计仅覆盖此前已采集的数据。");
@@ -147,20 +153,20 @@ public sealed class CodexUsage : IAsyncDisposable
                 { warnings.Add("部分 Codex 日志暂时无法读取，下次采集会重试。"); }
             }
             foreach (var key in checkpoint.Requests.Where(p => p.Value.At < cutoff).Select(p => p.Key).ToArray()) checkpoint.Requests.Remove(key);
-            foreach (var key in checkpoint.PreciseAliases.Where(p => p.Value < cutoff).Select(p => p.Key).ToArray()) checkpoint.PreciseAliases.Remove(key);
             foreach (var values in new[] { checkpoint.UserCalls, checkpoint.UserTurns, checkpoint.TaskStarts })
                 foreach (var key in values.Where(p => p.Value < cutoff).Select(p => p.Key).ToArray()) values.Remove(key);
             foreach (var path in checkpoint.Files.Keys.Where(p => !paths.Contains(p)).ToArray()) checkpoint.Files.Remove(path);
             if (checkpoint.IncompleteAt >= cutoff) warnings.Add("部分 Codex 日志记录格式无效，统计可能不完整。");
             else checkpoint.IncompleteAt = null;
-            if (checkpoint.Requests.Values.Any(r => r.Estimated)) warnings.Add("部分旧版 token 用量来自日志更新记录，可能不完整。");
+            var effectiveRequests = EffectiveRequests();
+            if (effectiveRequests.Any(r => r.Estimated)) warnings.Add("部分旧版 token 用量来自日志更新记录，可能不完整。");
             var fallbackCalls = checkpoint.TaskStarts.Where(p => !checkpoint.UserTurns.ContainsKey(p.Key)).ToArray();
             if (fallbackCalls.Length > 0) warnings.Add("部分旧版日志缺少用户消息标记，调用数按用户任务开始事件估算。");
-            if (checkpoint.Requests.Values.Any(r => !r.Usage.BreakdownAvailable)) warnings.Add("部分旧版记录只有 token 总量，输入/输出明细不完整。");
+            if (effectiveRequests.Any(r => !r.Usage.BreakdownAvailable)) warnings.Add("部分旧版记录只有 token 总量，输入/输出明细不完整。");
             var days = Enumerable.Range(0, 7).Select(i =>
             {
                 var day = firstDay.AddDays(i);
-                var requests = checkpoint.Requests.Values.Where(r => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(r.At, zone).DateTime) == day).ToArray();
+                var requests = effectiveRequests.Where(r => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(r.At, zone).DateTime) == day).ToArray();
                 var callCount = checkpoint.UserCalls.Values.Concat(fallbackCalls.Select(p => p.Value))
                     .LongCount(at => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(at, zone).DateTime) == day);
                 return new CodexUsageDay(day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), callCount,
@@ -174,7 +180,7 @@ public sealed class CodexUsage : IAsyncDisposable
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(cachePath))!);
                     await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(checkpoint), token);
-                    File.Move(temporary, cachePath, true); cacheInvalid = false; countMigrated = false;
+                    File.Move(temporary, cachePath, true); cacheInvalid = false; countMigrated = false; tokenDedupMigrated = false;
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { warnings.Add("统计缓存保存失败，下次启动需重新读取日志。"); }
                 finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { } }
@@ -263,15 +269,9 @@ public sealed class CodexUsage : IAsyncDisposable
                 if (response.Length == 0) return;
                 var turn = Text(payload, "turn_id");
                 if (turn.Length > 0) cursor.TurnId = turn;
-                if (payload.TryGetProperty("thread_token_usage", out var cumulative) && Totals(cumulative) is { } threadTotals)
-                {
-                    cursor.Previous = threadTotals;
-                    var alias = LegacyKey(cursor.ThreadId, turn, threadTotals);
-                    checkpoint.Requests.Remove(alias);
-                    if (DateTimeOffset.TryParse(Text(row, "timestamp"), out var aliasAt) && aliasAt >= cutoff)
-                        checkpoint.PreciseAliases[alias] = aliasAt;
-                }
-                Add("response:" + response, row, totals, false, cutoff, now); return;
+                // The precise and compatibility streams have different cumulative values.
+                // Never replace the compatibility stream's previous snapshot with this one.
+                Add("response:" + response, row, totals, false, cutoff, now, turn); return;
             case "event_msg":
                 if (Text(payload, "type") == "task_started")
                 {
@@ -284,10 +284,17 @@ public sealed class CodexUsage : IAsyncDisposable
                 }
                 if (Text(payload, "type") != "token_count" || !payload.TryGetProperty("info", out var info) || info.ValueKind != JsonValueKind.Object
                     || !info.TryGetProperty("total_token_usage", out var totalElement) || Totals(totalElement) is not { } total) return;
-                var previous = cursor.Previous; cursor.Previous = total;
-                if (previous == total || !info.TryGetProperty("last_token_usage", out var last) || Totals(last) is not { } delta) return;
                 var legacyKey = LegacyKey(cursor.ThreadId, cursor.TurnId, total);
-                if (!checkpoint.PreciseAliases.ContainsKey(legacyKey)) Add(legacyKey, row, delta, true, cutoff, now);
+                if (cursor.Previous == total)
+                {
+                    // Repair an old cache entry attributed to a new turn by a replayed snapshot.
+                    if (cursor.PreviousKey != legacyKey && checkpoint.Requests.TryGetValue(legacyKey, out var replayed) && replayed.Estimated)
+                        checkpoint.Requests.Remove(legacyKey);
+                    return;
+                }
+                cursor.Previous = total; cursor.PreviousKey = legacyKey;
+                if (!info.TryGetProperty("last_token_usage", out var last) || Totals(last) is not { } delta) return;
+                Add(legacyKey, row, delta, true, cutoff, now, cursor.TurnId.Length > 0 ? cursor.TurnId : cursor.ThreadId);
                 return;
         }
     }
@@ -312,11 +319,44 @@ public sealed class CodexUsage : IAsyncDisposable
 
     private static string LegacyKey(string thread, string turn, TokenUsage total) =>
         "legacy:" + (turn.Length > 0 ? turn : thread) + ":" + total.Input + ":" + total.Cached + ":" + total.Output + ":" + total.Reasoning + ":" + total.Total;
-    private void Add(string key, JsonElement row, TokenUsage usage, bool estimated, DateTimeOffset cutoff, DateTimeOffset now)
+    private void Add(string key, JsonElement row, TokenUsage usage, bool estimated, DateTimeOffset cutoff, DateTimeOffset now, string turn = "")
     {
-        if (DateTimeOffset.TryParse(Text(row, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
-            && at >= cutoff && at <= now.AddMinutes(5) && (!checkpoint.Requests.TryGetValue(key, out var previous)
-                || (at >= previous.At && usage.Total >= previous.Usage.Total))) checkpoint.Requests[key] = new(at, usage, estimated);
+        if (!DateTimeOffset.TryParse(Text(row, "timestamp"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+            || at < cutoff || at > now.AddMinutes(5)) return;
+        checkpoint.Requests.TryGetValue(key, out var previous);
+        var next = previous is null || (at >= previous.At && usage.Total >= previous.Usage.Total)
+            ? new RequestUsage(at, usage, estimated, turn) : previous;
+        if (!estimated && previous is not null)
+        {
+            // A final response can correct an earlier usage snapshot. Neither mirror is extra usage.
+            var versions = (previous.PreviousUsages ?? Array.Empty<TokenUsage>()).Append(previous.Usage).Append(usage)
+                .Where(u => u != next.Usage).Distinct().ToArray();
+            next = next with { PreviousUsages = versions.Length > 0 ? versions : null,
+                TurnId = next.TurnId.Length > 0 ? next.TurnId : turn };
+        }
+        checkpoint.Requests[key] = next;
+    }
+    private RequestUsage[] EffectiveRequests()
+    {
+        // Keep both candidates in the checkpoint so matching is deterministic across scans/restarts.
+        // Equal usage alone is not a request ID: pair one compatibility candidate per precise response.
+        var precise = checkpoint.Requests.Values.Where(r => !r.Estimated).ToArray();
+        var candidates = checkpoint.Requests.Where(p => p.Value.Estimated).Select(p =>
+            p.Value.TurnId.Length > 0 ? p.Value : p.Value with { TurnId = p.Key.Split(':').ElementAtOrDefault(1) ?? "" }).ToArray();
+        var remaining = candidates.GroupBy(r => (r.TurnId, r.Usage)).ToDictionary(g => g.Key, g => g.OrderBy(r => r.At).ToList());
+        foreach (var request in precise.OrderBy(r => r.At))
+        {
+            if (request.TurnId.Length == 0) continue;
+            foreach (var usage in (request.PreviousUsages ?? Array.Empty<TokenUsage>()).Append(request.Usage).Distinct())
+            {
+                if (!remaining.TryGetValue((request.TurnId, usage), out var matches) || matches.Count == 0) continue;
+                var closest = 0;
+                for (var i = 1; i < matches.Count; i++)
+                    if ((matches[i].At - request.At).Duration() < (matches[closest].At - request.At).Duration()) closest = i;
+                matches.RemoveAt(closest);
+            }
+        }
+        return precise.Concat(remaining.Values.SelectMany(r => r)).ToArray();
     }
     private static string Text(JsonElement obj, string name) => obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString()! : "";
     private static TokenUsage? Totals(JsonElement value)
