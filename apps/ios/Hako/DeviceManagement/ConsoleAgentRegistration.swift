@@ -43,7 +43,7 @@ enum ConsoleAgentRegistrationError: LocalizedError {
         switch self {
         case .invalidID: return "设备 ID 应为 1–80 位英文字母、数字、下划线或连字符。"
         case .invalidName: return "设备名称不能为空或过长，请缩短后重试。"
-        case .privateKey: return "请使用 Windows 导出的公钥，不要粘贴或导入私钥。"
+        case .privateKey: return "请使用 Agent 导出的公钥，不要粘贴或导入私钥。"
         case .invalidPublicKey: return "请提供完整的 PEM 公钥，包含 BEGIN 和 END PUBLIC KEY 标记。"
         case .tooLarge: return "公钥或登记内容过大，请检查是否只包含一个 PEM 公钥。"
         }

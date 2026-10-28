@@ -83,7 +83,7 @@ private struct ConsoleHTTPError: Error, LocalizedError {
         case "unsupported_method": return "设备不支持此动作，请刷新设备列表。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
         case "duplicate_agent": return "设备 ID 或公钥已登记，请刷新设备列表，或为另一台设备使用不同的 ID 和公钥。"
-        case "invalid_public_key_or_device": return "设备 ID、名称或 RSA 公钥无效，请使用 Windows 导出的 RSA 2048–8192 位公钥。"
+        case "invalid_public_key_or_device": return "设备 ID、名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests", "agent_busy": return "请求过于频繁或设备繁忙，请稍后重试。"
         case "session_revoked": return "登录会话已撤销，请重新登录。"
@@ -316,7 +316,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
         do {
             try await fetchAgentsInternal()
-            message = "Agent 已添加，公钥即时生效。请在 Windows 中重新连接服务器。"
+            message = "Agent 已添加，公钥即时生效。请在对应设备的 Agent 中重新连接服务器。"
         } catch {
             message = "Agent 已添加，但设备列表刷新失败：\(error.localizedDescription) 请刷新列表查看最新状态。"
         }

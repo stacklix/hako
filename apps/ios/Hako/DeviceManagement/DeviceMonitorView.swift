@@ -14,7 +14,7 @@ struct DeviceMonitorView: View {
                 }
             } else if client.authenticated {
                 Section("设备") {
-                    if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记 Windows 公钥。").foregroundStyle(.secondary) }
+                    if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary) }
                     ForEach(client.agents) { agent in
                         NavigationLink { DeviceMetricsView(agent: agent) } label: {
                             HStack {

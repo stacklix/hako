@@ -23,13 +23,13 @@ struct AddAgentSheet: View {
                     LabeledContent("账号", value: client.username)
                 }
                 Section {
-                    TextField("设备 ID，例如 desktop", text: $deviceID)
+                    TextField("设备 ID，例如 agent-1", text: $deviceID)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityLabel("设备 ID")
-                    TextField("设备名称，例如我的电脑", text: $name)
+                    TextField("设备名称，例如我的设备", text: $name)
                         .accessibilityLabel("设备名称")
-                } header: { Text("Windows 设备") } footer: {
-                    Text("设备 ID 用于在服务端标识电脑，支持英文字母、数字、下划线和连字符。")
+                } header: { Text("设备信息") } footer: {
+                    Text("设备 ID 用于在服务端标识设备，支持英文字母、数字、下划线和连字符。")
                 }
                 Section {
                     TextEditor(text: $publicKeyPEM)
@@ -38,7 +38,7 @@ struct AddAgentSheet: View {
                         .accessibilityLabel("Agent PEM 公钥")
                     Button { importingKey = true } label: { Label("导入公钥文件", systemImage: "doc") }
                 } header: { Text("RSA 公钥 · PEM") } footer: {
-                    Text("粘贴或导入 Windows 导出的 desktop.public.pem（RSA 2048–8192 位），保留完整的 BEGIN 和 END 标记。")
+                    Text("粘贴或导入 Agent 导出的 PEM 公钥（RSA 2048–8192 位），保留完整的 BEGIN 和 END 标记。")
                 }
                 if let errorMessage {
                     Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
