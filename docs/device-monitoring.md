@@ -71,7 +71,7 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 设备清单不预设操作系统，也不返回固定的 `platform`；网页与 iOS 使用设备名称、在线状态和能力清单展示 Agent。移除平台字段后需同步更新服务端与 iOS。
 
-`query.codex.usage` v1 是 Windows Agent 新增的数据提供器，返回本机最近 7 天每日模型请求次数、token 用量和当前处理中会话数，参数 `{}`，同时加入 `query.all`；详细口径、隐私边界及缓存策略见 [Codex 用量采集](codex-usage.md)。服务端继续通用转发，无新增业务路由。
+`query.codex.usage` v1 是 Windows Agent 新增的数据提供器，返回本机最近 7 天每日用户发送调用数、token 用量和当前处理中会话数、项目名与显示标题，参数 `{}`，同时加入 `query.all`；详细口径、隐私边界及缓存策略见 [Codex 用量采集](codex-usage.md)。服务端继续通用转发，无新增业务路由。
 
 ## 通用设备调用
 

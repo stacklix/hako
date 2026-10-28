@@ -16,13 +16,32 @@ import Foundation
             ["date": "2026-10-\(day)", "requestCount": 2, "inputTokens": 100, "cachedInputTokens": 40,
              "outputTokens": 10, "reasoningOutputTokens": 3, "totalTokens": 110, "breakdownAvailable": true]
         }
-        func codex(_ days: [[String: Any]]) throws -> ConsoleCodexUsage {
-            let payload: [String: Any] = ["available": true, "collectedAt": "2026-10-28T08:00:00Z", "timeZone": "Asia/Shanghai",
-                                          "days": days, "runningSessions": NSNull(), "warnings": ["运行状态暂不可用"]]
+        func codex(_ days: [[String: Any]], running: Int? = nil, details: [[String: Any]]? = nil) throws -> ConsoleCodexUsage {
+            var payload: [String: Any] = ["available": true, "collectedAt": "2026-10-28T08:00:00Z", "timeZone": "Asia/Shanghai",
+                                          "days": days, "requestCountKind": "user_messages", "runningSessions": NSNull(), "warnings": ["运行状态暂不可用"]]
+            if let running { payload["runningSessions"] = running }
+            if let details { payload["runningSessionDetails"] = details }
             return try decoder.decode(ConsoleCodexUsage.self, from: JSONSerialization.data(withJSONObject: payload))
         }
         let usage = try codex(days)
-        precondition(usage.isValid && usage.runningSessions == nil && usage.days.last?.requestCount == 2)
+        precondition(usage.isValid && usage.countsUserMessages && usage.totalCalls == 14 && usage.totalTokens == 770
+                     && usage.runningSessions == nil && usage.days.last?.requestCount == 2)
+        let active = try codex(days, running: 1, details: [["title": "调整图表", "projectName": "hako"]])
+        precondition(active.isValid && active.runningSessionDetails?.first?.title == "调整图表")
+        let oldAgent = try codex(days, running: 1)
+        precondition(oldAgent.isValid && oldAgent.runningSessionDetails == nil)
+        let idle = try codex(days, running: 0, details: [])
+        precondition(idle.isValid && idle.runningSessionDetails?.isEmpty == true)
+        let inconsistent = try codex(days, running: 2, details: [["title": "调整图表", "projectName": "hako"]])
+        precondition(!inconsistent.isValid)
+        let invalidDetails = try codex(days, running: 1, details: [["title": " ", "projectName": "hako"]])
+        precondition(!invalidDetails.isValid)
+        let chartMaxima: [Int64] = [0, 1, 7, 163, 100_000_000, Int64.max]
+        for maximum in chartMaxima {
+            let scale = ConsoleCodexChartScale.maximum(for: maximum)
+            precondition(scale.isFinite && scale > 0 && scale >= Double(maximum))
+            precondition((scale / 4).rounded() == scale / 4)
+        }
         let incompleteUsage = try codex(Array(days.dropLast()))
         precondition(!incompleteUsage.isValid)
         days[0]["totalTokens"] = 111

@@ -50,7 +50,12 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(codexHome, "sessions", "fixture.jsonl"), bytes.Join([][]byte{usageRecord, usageRecord, nil}, []byte("\n")), 0600); err != nil {
+	userRecord, err := json.Marshal(map[string]any{"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "type": "response_item", "payload": map[string]any{
+		"type": "message", "role": "user", "id": "private-user-fixture", "internal_chat_message_metadata_passthrough": map[string]any{"turn_id": "test-turn", "content_item_kinds": []string{"user.text", "user.image"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexHome, "sessions", "fixture.jsonl"), bytes.Join([][]byte{userRecord, userRecord, usageRecord, usageRecord, nil}, []byte("\n")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	command.Env = append(os.Environ(), "CODEX_HOME="+codexHome)
@@ -92,10 +97,11 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 				RequestCount int
 				TotalTokens  int
 			}
-			RunningSessions *int
+			RunningSessions  *int
+			RequestCountKind string
 		}
 	}
-	if status != 200 || json.Unmarshal(data, &usage) != nil || len(usage.Result.Days) != 7 || usage.Result.Days[6].RequestCount != 1 || usage.Result.Days[6].TotalTokens != 33 || usage.Result.RunningSessions != nil || bytes.Contains(data, []byte("private-response-fixture")) {
+	if status != 200 || json.Unmarshal(data, &usage) != nil || usage.Result.RequestCountKind != "user_messages" || len(usage.Result.Days) != 7 || usage.Result.Days[6].RequestCount != 1 || usage.Result.Days[6].TotalTokens != 33 || usage.Result.RunningSessions != nil || bytes.Contains(data, []byte("private-response-fixture")) || bytes.Contains(data, []byte("private-user-fixture")) {
 		t.Fatal("Codex usage query, deduplication or metadata privacy failed", status, string(data))
 	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{"unexpected": true}}, f.tokens.AccessToken)

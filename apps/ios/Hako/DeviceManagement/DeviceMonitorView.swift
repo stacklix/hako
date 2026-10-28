@@ -197,28 +197,14 @@ struct DeviceMetricsView: View {
             } else if !check.loading { Text("输入 URL 后点击检测，由此设备发起访问。").font(.footnote).foregroundStyle(.secondary) }
         }
     }
-    private func codexSection(_ capability: ConsoleAgentCapability) -> some View {
+    @ViewBuilder private func codexSection(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
         let decoded = entry?.version == 1 ? entry?.result?.decode(ConsoleCodexUsage.self) : nil
         let usage = decoded?.isValid == true ? decoded : nil
-        return Section {
+        Section {
             queryStatus(capability)
             if let usage {
-                LabeledContent("处理中会话", value: usage.runningSessions.map { String($0) } ?? "暂不可用")
-                ForEach(usage.days.reversed()) { day in
-                    LabeledContent(day.date) {
-                        VStack(alignment: .trailing, spacing: 3) {
-                            Text("\(day.requestCount.formatted()) 次请求")
-                            Text("\(day.totalTokens.formatted()) token").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if let today = usage.days.last, today.breakdownAvailable {
-                    LabeledContent("今日输入 token", value: today.inputTokens.formatted())
-                    LabeledContent("其中缓存输入", value: today.cachedInputTokens.formatted())
-                    LabeledContent("今日输出 token", value: today.outputTokens.formatted())
-                    LabeledContent("其中推理输出", value: today.reasoningOutputTokens.formatted())
-                }
+                CodexUsageChart(usage: usage).listRowSeparator(.hidden)
                 if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }
                 ForEach(Array(usage.warnings.enumerated()), id: \.offset) { _, warning in
                     Text(warning).font(.footnote).foregroundStyle(.orange)
@@ -231,7 +217,21 @@ struct DeviceMetricsView: View {
         } header: {
             Text("Codex · 最近 7 天")
         } footer: {
-            Text("请求数按已记录用量的模型调用计数，一次任务可能有多次请求；工具调用不计入。token 总量以本机用量记录为准，输入已含缓存、输出已含推理，不重复相加。设备每分钟采集，刷新可读取最新统计。")
+            Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。设备每分钟采集，刷新可读取最新统计。")
+        }
+        Section("Codex · 处理中") {
+            LabeledContent("会话数", value: usage?.runningSessions.map { String($0) } ?? "暂不可用")
+            if let sessions = usage?.runningSessionDetails {
+                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(session.title).fixedSize(horizontal: false, vertical: true)
+                        Text("项目：\(session.projectName)").font(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 3)
+                }
+                if sessions.isEmpty { Text("暂无处理中会话").font(.footnote).foregroundStyle(.secondary) }
+            } else if let count = usage?.runningSessions, count > 0 {
+                Text("此 Agent 未提供会话信息，更新后可查看项目与标题。").font(.footnote).foregroundStyle(.secondary)
+            }
         }
     }
     private func sampleTime(_ value: String) -> String {

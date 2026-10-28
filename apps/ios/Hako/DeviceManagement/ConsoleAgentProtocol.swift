@@ -18,11 +18,44 @@ struct ConsoleCodexUsage: Decodable {
     let timeZone: String
     let days: [ConsoleCodexUsageDay]
     let runningSessions: Int?
+    let runningSessionDetails: [ConsoleCodexRunningSession]?
     let warnings: [String]
+    let requestCountKind: String?
+    var countsUserMessages: Bool { requestCountKind == "user_messages" }
+    var totalCalls: Int64? { Self.sum(days.map(\.requestCount)) }
+    var totalTokens: Int64? { Self.sum(days.map(\.totalTokens)) }
+    private static func sum(_ values: [Int64]) -> Int64? {
+        var total: Int64 = 0
+        for value in values {
+            let result = total.addingReportingOverflow(value)
+            guard !result.overflow else { return nil }
+            total = result.partialValue
+        }
+        return total
+    }
     var isValid: Bool {
         days.count == 7 && Set(days.map(\.date)).count == 7 && days.allSatisfy(\.isValid)
             && days.map(\.date) == days.map(\.date).sorted()
             && (runningSessions == nil || runningSessions! >= 0)
+            && (runningSessionDetails == nil || (runningSessionDetails?.count == runningSessions
+                && runningSessionDetails!.allSatisfy(\.isValid)))
+            && totalCalls != nil && totalTokens != nil
+    }
+}
+struct ConsoleCodexRunningSession: Decodable {
+    let title: String
+    let projectName: String
+    var isValid: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+}
+enum ConsoleCodexChartScale {
+    static func maximum(for value: Int64) -> Double {
+        guard value > 0 else { return 4 }
+        let rawStep = Double(value) / 4
+        let magnitude = pow(10, floor(log10(rawStep)))
+        let fraction = rawStep / magnitude
+        let factor = [1.0, 2.0, 2.5, 5.0, 10.0].first { $0 >= fraction } ?? 10
+        return 4 * max(1, ceil(factor * magnitude))
     }
 }
 struct ConsoleCodexUsageDay: Decodable, Identifiable {

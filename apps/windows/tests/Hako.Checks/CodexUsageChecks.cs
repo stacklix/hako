@@ -18,6 +18,12 @@ internal static class CodexUsageChecks
     {
         timestamp, type = "event_msg", payload = new { type = "token_count", info = new { total_token_usage = Tokens(input), last_token_usage = Tokens() } }
     });
+    private static string Message(string id, string timestamp, string turn = "turn-A", string[]? kinds = null) => JsonSerializer.Serialize(new
+    {
+        timestamp, type = "response_item", payload = new { type = "message", role = "user", id,
+            internal_chat_message_metadata_passthrough = JsonSerializer.Serialize(new { turn_id = turn,
+                create_time = DateTimeOffset.Parse(timestamp).ToUnixTimeMilliseconds() / 1000.0, content_item_kinds = kinds ?? new[] { "user.text" } }) }
+    });
     public static async Task RunAsync()
     {
         var directory = Path.Combine(Path.GetTempPath(), "hako-codex-usage-" + Guid.NewGuid().ToString("N"));
@@ -30,24 +36,38 @@ internal static class CodexUsageChecks
         var path = Path.Combine(sessions, "test.jsonl");
         await File.WriteAllTextAsync(path, string.Join("\n", new[] {
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-A\"}}",
+            Message("old-human", "2026-10-21T15:59:59Z", "old-turn"),
             Usage("too-old", "2026-10-21T15:59:59Z"),
+            Message("first-human", "2026-10-21T16:00:00Z", "first-turn"),
             Usage("first", "2026-10-21T16:00:00Z"),
+            "{\"timestamp\":\"2026-10-27T16:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-A\"}}",
+            Message("auto-context", "2026-10-27T16:01:00Z", kinds: new[] { "agents_md.instructions", "environments.environment_context" }),
+            Message("today-human", "2026-10-27T16:01:00Z", kinds: new[] { "user.text", "user.image", "user.image" }),
             Usage("today", "2026-10-27T16:01:00Z"),
             Legacy("2026-10-27T16:01:00Z", 100),
             "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"content\":\"PRIVATE_BODY_MUST_NOT_BE_SAVED\"}}"
         }) + "\n");
-        await File.WriteAllTextAsync(Path.Combine(archive, "duplicate.jsonl"), Usage("today", "2026-10-27T16:01:00Z") + "\n" + Usage("child", "2026-10-28T01:00:00Z", 50, 5) + "\n");
+        await File.WriteAllTextAsync(Path.Combine(archive, "duplicate.jsonl"), Message("today-human", "2026-10-27T16:01:00Z") + "\n"
+            + Usage("today", "2026-10-27T16:01:00Z") + "\n"
+            + "{\"type\":\"session_meta\",\"payload\":{\"source\":{\"subagent\":{\"other\":\"guardian\"}}}}\n"
+            + Message("internal-human-role", "2026-10-28T01:00:00Z") + "\n" + Usage("child", "2026-10-28T01:00:00Z", 50, 5) + "\n");
         await using (var collector = new CodexUsage(home, cache, zone, () => now))
         {
             var result = await collector.CollectAsync(CancellationToken.None);
             if (!result.Available || result.Days.Count != 7 || result.Days[0].Date != "2026-10-22"
-                || result.Days[0].RequestCount != 1 || result.Days[6].RequestCount != 2 || result.Days[6].TotalTokens != 165
-                || result.Days[6].InputTokens != 150 || result.RunningSessions is not null || result.Warnings.Any(w => w.Contains("估算")))
+                || result.RequestCountKind != "user_messages" || result.Days[0].RequestCount != 1 || result.Days[6].RequestCount != 1 || result.Days[6].TotalTokens != 165
+                || result.Days[6].InputTokens != 150 || result.RunningSessions is not null || result.RunningSessionDetails is not null || result.Warnings.Any(w => w.Contains("估算")))
                 throw new Exception("Codex daily boundaries, response deduplication, subset tokens or missing runtime status are incorrect");
+            await File.AppendAllTextAsync(path, Usage("another-model-request", "2026-10-28T00:10:00Z", 40, 4) + "\n");
+            result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[6].RequestCount != 1 || result.Days[6].TotalTokens != 209)
+                throw new Exception("Multiple model iterations must not increase the number of user calls");
+            await File.AppendAllTextAsync(path, Message("steer-human", "2026-10-28T00:30:00Z") + "\n");
             await File.AppendAllTextAsync(path, Usage("today", "2026-10-28T01:00:00Z", 120, 12) + "\n");
-            if ((await collector.CollectAsync(CancellationToken.None)).Days[6].TotalTokens != 187)
+            result = await collector.CollectAsync(CancellationToken.None);
+            if (result.Days[6].TotalTokens != 231 || result.Days[6].RequestCount != 2)
                 throw new Exception("Final usage update for the same response was lost or double-counted");
-            var partial = Usage("partial", "2026-10-28T12:00:01Z");
+            var partial = Message("partial-human", "2026-10-28T12:00:01Z", "second-turn");
             await File.AppendAllTextAsync(path, partial[..(partial.Length / 2)]);
             if ((await collector.CollectAsync(CancellationToken.None)).Days[6].RequestCount != 2)
                 throw new Exception("Partially written JSONL record was counted");
@@ -62,6 +82,18 @@ internal static class CodexUsageChecks
         var stored = await File.ReadAllTextAsync(cache);
         if (stored.Contains("PRIVATE_BODY") || stored.Contains("response_item")) throw new Exception("Conversation body persisted in statistics cache");
         File.Delete(path);
+        var oldCache = System.Text.Json.Nodes.JsonNode.Parse(stored)!;
+        oldCache["Version"] = 3;
+        oldCache.AsObject().Remove("UserCalls"); oldCache.AsObject().Remove("UserTurns"); oldCache.AsObject().Remove("TaskStarts");
+        var oldCachePath = Path.Combine(directory, "old-cache.json");
+        await File.WriteAllTextAsync(oldCachePath, oldCache.ToJsonString());
+        await using (var migrated = new CodexUsage(home, oldCachePath, zone, () => now))
+        {
+            var migratedResult = await migrated.CollectAsync(CancellationToken.None);
+            if (migratedResult.Days[0].TotalTokens != 110 || migratedResult.Days[6].TotalTokens != 231
+                || migratedResult.Days[6].RequestCount != 1 || !migratedResult.Warnings.Any(w => w.Contains("调用数已改")))
+                throw new Exception("Count migration must preserve deleted-source token history and rebuild only real user messages");
+        }
         await using (var resumed = new CodexUsage(home, cache, zone, () => now))
         {
             var result = await resumed.CollectAsync(CancellationToken.None);
@@ -72,7 +104,7 @@ internal static class CodexUsageChecks
                 throw new Exception("Statistics older than seven local dates were retained");
         }
         var legacyHome = Path.Combine(directory, "legacy"); Directory.CreateDirectory(Path.Combine(legacyHome, "sessions"));
-        var legacy = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"legacy-turn\"}}\n"
+        var legacy = "{\"timestamp\":\"2026-11-05T01:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"legacy-turn\"}}\n"
             + Legacy("2026-11-05T01:00:00Z", 100) + "\n" + Legacy("2026-11-05T01:00:01Z", 100) + "\n"
             + Legacy("2026-11-05T01:00:02Z", 200) + "\n";
         await File.WriteAllTextAsync(Path.Combine(legacyHome, "sessions", "one.jsonl"), legacy);
@@ -81,23 +113,23 @@ internal static class CodexUsageChecks
         await using (var collector = new CodexUsage(legacyHome, zone: zone, clock: () => now))
         {
             var result = await collector.CollectAsync(CancellationToken.None);
-            if (result.Days.Sum(d => d.RequestCount) != 2 || !result.Warnings.Any(w => w.Contains("估算")))
+            if (result.Days.Sum(d => d.RequestCount) != 1 || !result.Warnings.Any(w => w.Contains("估算")))
                 throw new Exception("Legacy cumulative duplicates or inherited fork records were double-counted");
             await File.AppendAllTextAsync(Path.Combine(legacyHome, "sessions", "one.jsonl"),
                 "{\"timestamp\":\"2026-11-05T01:05:00Z\",\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"total-only\",\"usage\":{\"total_tokens\":999}}}\n");
             result = await collector.CollectAsync(CancellationToken.None);
-            if (result.Days[^1].TotalTokens != 1219 || result.Days[^1].RequestCount != 3 || result.Days[^1].BreakdownAvailable)
+            if (result.Days[^1].TotalTokens != 1219 || result.Days[^1].RequestCount != 1 || result.Days[^1].BreakdownAvailable)
                 throw new Exception("Legacy total-only usage must preserve request/total counts without inventing a breakdown");
         }
         var mixedHome = Path.Combine(directory, "mixed"); Directory.CreateDirectory(Path.Combine(mixedHome, "sessions"));
         var modernPath = Path.Combine(mixedHome, "sessions", "modern.jsonl");
-        await File.WriteAllTextAsync(modernPath, Usage("mixed-response", "2026-11-05T01:00:00Z") + "\n");
+        await File.WriteAllTextAsync(modernPath, Message("mixed-human", "2026-11-05T01:00:00Z") + "\n" + Usage("mixed-response", "2026-11-05T01:00:00Z") + "\n");
         File.SetLastWriteTimeUtc(modernPath, now.UtcDateTime);
         await using (var collector = new CodexUsage(mixedHome, zone: zone, clock: () => now))
         {
             await collector.CollectAsync(CancellationToken.None);
             var inherited = Path.Combine(mixedHome, "sessions", "inherited.jsonl");
-            await File.WriteAllTextAsync(inherited, "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-A\"}}\n" + Legacy("2026-11-05T01:00:00Z", 100) + "\n");
+            await File.WriteAllTextAsync(inherited, "{\"timestamp\":\"2026-11-05T01:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-A\"}}\n" + Legacy("2026-11-05T01:00:00Z", 100) + "\n");
             File.SetLastWriteTimeUtc(inherited, now.UtcDateTime);
             if ((await collector.CollectAsync(CancellationToken.None)).Days.Sum(d => d.RequestCount) != 1)
                 throw new Exception("An inherited legacy token event duplicated an already known exact request");
@@ -113,8 +145,11 @@ internal static class CodexUsageChecks
     private static async Task CheckRunningSessions(string home, TimeZoneInfo zone, DateTimeOffset now)
     {
         var active = Guid.NewGuid().ToString(); var stale = Guid.NewGuid().ToString(); var guardian = Guid.NewGuid().ToString();
-        CreateDatabase(Path.Combine(home, "state_5.sqlite"), "CREATE TABLE threads(id TEXT,source TEXT);"
-            + $"INSERT INTO threads VALUES('{active}','vscode'),('{stale}','cli'),('{guardian}','{{\"subagent\":{{\"other\":\"guardian\"}}}}');");
+        var state = Path.Combine(home, "state_5.sqlite");
+        CreateDatabase(state, "CREATE TABLE threads(id TEXT,source TEXT,thread_source TEXT,name TEXT,title TEXT,cwd TEXT);"
+            + $"INSERT INTO threads VALUES('{active}','vscode','user','调整图表','PRIVATE_INITIAL_PROMPT', 'C:\\Users\\private-user\\Code\\hako\\'),"
+            + $"('{stale}','cli','user','stale','PRIVATE_INITIAL_PROMPT','C:\\private'),"
+            + $"('{guardian}','vscode','guardian_review','internal','PRIVATE_INITIAL_PROMPT','C:\\private');");
         CreateDatabase(Path.Combine(home, "thread_history_1.sqlite"), "CREATE TABLE thread_turns(thread_id TEXT,status TEXT,completed_at INTEGER);"
             + $"INSERT INTO thread_turns VALUES('{active}','inProgress',NULL),('{active}','inProgress',NULL),('{stale}','inProgress',NULL),('{guardian}','inProgress',NULL);");
         var locks = Path.Combine(home, "thread-writer-locks"); Directory.CreateDirectory(locks);
@@ -122,12 +157,29 @@ internal static class CodexUsageChecks
         using var guardianLock = new FileStream(Path.Combine(locks, guardian + ".lock"), FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
         activeLock.Lock(0, 1); guardianLock.Lock(0, 1);
         await using var collector = new CodexUsage(home, zone: zone, clock: () => now);
-        if ((await collector.CollectAsync(CancellationToken.None)).RunningSessions != 1)
+        var result = await collector.CollectAsync(CancellationToken.None);
+        if (result.RunningSessions != 1 || result.RunningSessionDetails?.Single() != new CodexRunningSession("调整图表", "hako"))
             throw new Exception("Current active session count includes stale/subagent rows or duplicate turns");
+        var payload = JsonSerializer.Serialize(result);
+        if (payload.Contains(active) || payload.Contains("private-user") || payload.Contains("PRIVATE_INITIAL_PROMPT"))
+            throw new Exception("Runtime details leaked an internal identifier, full path or initial prompt");
+        // Updating only the display name must be visible even while the daily snapshot is cached.
+        CreateDatabase(state, $"UPDATE threads SET name='新标题' WHERE id='{active}';");
+        if ((await collector.ReadAsync(CancellationToken.None)).RunningSessionDetails?.Single().Title != "新标题")
+            throw new Exception("Runtime title did not refresh with the current session status");
         activeLock.Unlock(0, 1);
-        if ((await collector.ReadAsync(CancellationToken.None)).RunningSessions != 0)
+        result = await collector.ReadAsync(CancellationToken.None);
+        if (result.RunningSessions != 0 || result.RunningSessionDetails?.Count != 0)
             throw new Exception("Released writer lock did not clear stale inProgress metadata");
         guardianLock.Unlock(0, 1);
+        // Older schema still supports the count, without using the initial request as a title.
+        CreateDatabase(Path.Combine(home, "state_6.sqlite"), "CREATE TABLE threads(id TEXT,source TEXT,title TEXT);"
+            + $"INSERT INTO threads VALUES('{active}','cli','PRIVATE_INITIAL_PROMPT');");
+        activeLock.Lock(0, 1);
+        result = await collector.ReadAsync(CancellationToken.None);
+        if (result.RunningSessionDetails?.Single() != new CodexRunningSession("未命名会话", "未关联项目"))
+            throw new Exception("Older metadata schema lost live sessions or exposed the initial message as a title");
+        activeLock.Unlock(0, 1);
     }
     private static void CreateDatabase(string path, string sql)
     {

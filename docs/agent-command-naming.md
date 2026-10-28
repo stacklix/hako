@@ -34,4 +34,4 @@
 
 详细消息、参数、结果及错误约定见 [设备监控协议](device-monitoring.md)。
 
-`query.codex.usage` v1 统计本机最近 7 天的模型请求次数、token 用量及当前处理中会话数，参数 `{}`，详见 [Codex 用量采集](codex-usage.md)。
+`query.codex.usage` v1 统计本机最近 7 天的用户发送调用数、token 用量及当前处理中会话数、项目名与显示标题，参数 `{}`，详见 [Codex 用量采集](codex-usage.md)。
