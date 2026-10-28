@@ -17,5 +17,6 @@ obj/
 .vs/
 apps/server/data/
 apps/server/secrets/
-apps/server/config/
+apps/server/config/*
+!apps/server/config/server.example.json
 *.private.pem

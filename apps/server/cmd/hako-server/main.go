@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -45,7 +45,7 @@ func createConfig(path string) error {
 	if _, err := rand.Read(b); err != nil {
 		return err
 	}
-	configuration := fileConfig{Username: "owner", MasterKey: base64.RawURLEncoding.EncodeToString(b), Agents: []server.AgentConfig{}, Consoles: []server.ConsoleConfig{}}
+	configuration := fileConfig{Username: "owner", MasterKey: hex.EncodeToString(b), Agents: []server.AgentConfig{}, Consoles: []server.ConsoleConfig{}}
 	data, err := json.MarshalIndent(configuration, "", "  ")
 	if err != nil {
 		return err
@@ -71,9 +71,9 @@ func loadConfig(path string) (fileConfig, []byte, error) {
 	if err = json.Unmarshal(data, &configuration); err != nil {
 		return configuration, nil, fmt.Errorf("invalid server configuration: %w", err)
 	}
-	key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(configuration.MasterKey))
+	key, err := hex.DecodeString(strings.TrimSpace(configuration.MasterKey))
 	if err != nil || len(key) != 32 {
-		return configuration, nil, fmt.Errorf("masterKey must be an unpadded Base64URL encoding of 32 bytes")
+		return configuration, nil, fmt.Errorf("masterKey must be a 64-character hex encoding of 32 bytes")
 	}
 	return configuration, key, nil
 }

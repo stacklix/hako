@@ -23,39 +23,57 @@ docker pull ghcr.io/stacklix/hako-server:latest
 
 GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性改为 Public；私有包需要先通过 `docker login ghcr.io` 登录，使用拥有该包读取权限且具有 `read:packages` scope 的 PAT（classic），通过 `--password-stdin` 传入。工作流发布使用的 `GITHUB_TOKEN` 无需手工配置该 PAT。参见 [GHCR 官方文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-使用发布镜像部署时，将下方初始化命令中的镜像名换为 `ghcr.io/stacklix/hako-server:latest`；将 Compose 的 `build: .` 换为 `image: ghcr.io/stacklix/hako-server:latest`，完成配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
+仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `hako-server`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
 
-### 本地构建与启动
+### 部署配置与启动
 
 以下命令从 `apps/server/` 执行，面向 Linux Docker 主机。
 
+部署文件与示例：
+
+```text
+docker-compose.yaml
+.env.example                 # 复制为 .env，填写实际 HTTPS 地址
+config/server.example.json   # 配置格式示例；实际 server.json 由 init 生成
+```
+
 ```sh
+cp .env.example .env
+# 编辑 .env，设置实际的 HAKO_PUBLIC_URL。
 mkdir -p data config
-docker build -t hako-server .
+docker compose pull
 docker run --rm --user 0 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/config:/app/config" \
-  --entrypoint sh hako-server \
+  --entrypoint sh ghcr.io/stacklix/hako-server:latest \
   -c 'hako-server init && chown 10001:10001 /app/data /app/config /app/config/server.json && chmod 700 /app/data /app/config'
 ```
 
-`init` 创建 `config/server.json`，自动生成 `masterKey`，账号默认为 `owner`，设备列表为空；已有配置文件不会被覆盖。`masterKey` 是 32 字节随机数据的不带补位 Base64URL 编码，共 43 个字符，用于加密持久化业务状态和生成刷新令牌。配置与 SQLite 数据需要一起备份。
+`init` 创建 `config/server.json`，自动生成 `masterKey`，账号默认为 `owner`，设备列表为空；已有配置文件不会被覆盖。`masterKey` 是 32 字节随机数据的 hex（十六进制）编码，共 64 个字符，读取时支持大小写，不带 `0x` 前缀，用于加密持久化业务状态和生成刷新令牌。配置与 SQLite 数据需要一起备份。
 
-持久化文件均位于 `compose.yaml` 旁，挂载关系如下：
+手工配置时，可运行以下命令生成密钥，将输出填入 `masterKey`：
+
+```sh
+openssl rand -hex 32
+```
+
+已有数据库升级时，需将原有 Base64URL 密钥解码为原来的 32 字节后再转成 hex，保持密钥字节不变；不能重新生成密钥，否则无法解密已有数据库。服务端启动只读取配置，不自动生成或写回密钥。
+
+持久化文件均位于 `docker-compose.yaml` 旁，挂载关系如下：
 
 | 宿主机路径 | 容器路径 | 用途 |
 | --- | --- | --- |
 | `./data/` | `/app/data/` | SQLite 数据，允许服务端读写 |
 | `./config/` | `/app/config/` | 主密钥、账号、设备配置与公钥，只读 |
 
-主密钥与 Console 公钥配置统一保存在 `config/server.json`。手工配置时可参考 [deploy/server.example.json](deploy/server.example.json)，其 `masterKey` 留空，需要填入生成的实际密钥。
+主密钥与 Console 公钥配置统一保存在 `config/server.json`。手工配置时可参考 [config/server.example.json](config/server.example.json)，其 `masterKey` 留空，不能直接用于启动。建议先执行上述 `init` 生成随机密钥，再参照示例填写 Console 公钥。若选择复制模板为 `server.json`，需自行填入安全生成的实际密钥，且不要再运行 `init`。真实 `.env`、`config/server.json` 和公钥文件不纳入版本控制。
 
 先在 iOS「设备监控 → 设置 → 本机设备身份」打开「查看与导出公钥」，在 sheet 中查看、复制 PEM 内容或导出 `iphone.public.pem`。无需配置服务器、联网或登录。把这个公钥放入服务器 `config/`，编辑 `config/server.json`：
 
 ```json
 {
   "username": "owner",
-  "masterKey": "保留 init 生成的 43 字符密钥",
+  "masterKey": "保留 init 生成的 64 字符 hex 密钥",
   "agents": [],
   "consoles": [
     { "name": "我的 iPhone", "publicKeyFile": "/app/config/iphone.public.pem" }
@@ -68,10 +86,11 @@ docker run --rm --user 0 \
 Console 公钥**每次启动都以配置文件为准**，增删后重启生效，网页只读。Agent 公钥首次启动时从配置导入，之后由数据库和 Web 管理页即时维护；重启不重新引入已删除的 Agent 公钥。`agents` 初始可为空。
 
 ```sh
-HAKO_PUBLIC_URL=https://monitor.example.com docker compose up -d --build
+docker compose config --quiet
+docker compose up -d
 ```
 
-将实际的 `HAKO_PUBLIC_URL` 写入本目录 `.env` 可避免每次输入。地址必须是外部客户端实际访问的 HTTPS 根地址，不带路径、查询或 fragment，三端地址需保持一致。Compose 仅将 HTTP 端口暴露到主机 `127.0.0.1:8080`。在主机配置 HTTPS 反向代理，Caddy 示例见 [deploy/Caddyfile.example](deploy/Caddyfile.example)，支持 WebSocket Upgrade。
+本目录提供 [.env.example](.env.example)，复制为 `.env` 后必须将 `HAKO_PUBLIC_URL` 改为外部客户端实际访问的 HTTPS 根地址，不带路径、查询或 fragment，三端地址需保持一致。Compose 仅将 HTTP 端口暴露到主机 `127.0.0.1:8080`。在主机配置 HTTPS 反向代理，Caddy 示例见 [deploy/Caddyfile.example](deploy/Caddyfile.example)，支持 WebSocket Upgrade。
 
 编辑配置时保留 `init` 生成的 `masterKey`。容器使用非 root 用户、只读根文件系统、宿主机数据目录挂载、健康检查和自动重启。Windows Docker 或其他 UID 映射环境需要相应设置权限，确保容器 UID 10001 可读写 `data/`、可读 `config/` 中的配置与公钥。
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ func TestInitConfigNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	configuration, key, err := loadConfig(path)
-	if err != nil || len(key) != 32 || len(configuration.MasterKey) != 43 {
+	if err != nil || len(key) != 32 || len(configuration.MasterKey) != 64 || configuration.MasterKey != strings.ToLower(configuration.MasterKey) {
 		t.Fatalf("masterKey must contain 256 random bits: %v", err)
 	}
 	if configuration.Username != "owner" || configuration.Agents == nil || configuration.Consoles == nil {
@@ -40,20 +41,25 @@ func TestInitConfigNeverOverwrites(t *testing.T) {
 }
 
 func TestLoadConfigMasterKey(t *testing.T) {
-	validKey := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{255}, 32))
+	validKey := hex.EncodeToString(bytes.Repeat([]byte{255}, 32))
 	for _, tc := range []struct {
 		name  string
 		key   string
 		valid bool
 	}{
 		{"valid", validKey, true},
+		{"uppercase", strings.ToUpper(validKey), true},
+		{"mixed case", strings.Repeat("fF", 32), true},
 		{"surrounding whitespace", " \n" + validKey + "\t", true},
 		{"missing", "", false},
 		{"invalid encoding", "private-invalid-key!", false},
-		{"padded encoding", validKey + "=", false},
-		{"wrong alphabet", base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{255}, 32)), false},
-		{"short key", base64.RawURLEncoding.EncodeToString(make([]byte, 16)), false},
-		{"long key", base64.RawURLEncoding.EncodeToString(make([]byte, 33)), false},
+		{"non-hex characters", strings.Repeat("gg", 32), false},
+		{"hex prefix", "0x" + validKey, false},
+		{"odd length", validKey[:63], false},
+		{"internal whitespace", validKey[:32] + " " + validKey[32:], false},
+		{"legacy base64url", base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{255}, 32)), false},
+		{"short key", hex.EncodeToString(make([]byte, 16)), false},
+		{"long key", hex.EncodeToString(make([]byte, 33)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "server.json")
@@ -118,7 +124,7 @@ func TestRevokeConsolesUsesConfigKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration.MasterKey = base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	configuration.MasterKey = hex.EncodeToString(make([]byte, 32))
 	data, err := json.Marshal(configuration)
 	if err != nil {
 		t.Fatal(err)
