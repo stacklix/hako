@@ -93,6 +93,8 @@ struct DeviceMetricsView: View {
     private enum DetailTab: String, CaseIterable { case query = "查询", action = "操作" }
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var refreshButtonActive = false
     @State private var targetURL = ""
     @State private var selectedTab: DetailTab = .query
     @State private var expandedCapability: String? = "query.system.metrics"
@@ -162,13 +164,32 @@ struct DeviceMetricsView: View {
         .onChange(of: selectedTab) { _, _ in expandedCapability = nil }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await client.query(currentAgent) } } label: {
-                    MonitorRefreshLabel(title: "刷新设备数据", isRefreshing: state.loading)
-                }.disabled(state.loading || !client.authenticated || !canQuery)
+                Button {
+                    guard !refreshButtonActive else { return }
+                    refreshButtonActive = true
+                    Task { await refreshFromButton() }
+                } label: {
+                    MonitorRefreshIcon(isRefreshing: state.loading || refreshButtonActive)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("刷新设备数据")
+                .accessibilityValue(state.loading || refreshButtonActive ? "正在刷新" : "")
+                .disabled(refreshButtonActive || state.loading || !client.authenticated || !canQuery)
             }
         }
         .refreshable { if client.authenticated { await client.query(currentAgent) } }
         .task { if client.authenticated { await client.query(currentAgent) } }
+    }
+    @MainActor private func refreshFromButton() async {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        defer { refreshButtonActive = false }
+        await client.query(currentAgent)
+        // Keep feedback visible for one turn without delaying the query or its results.
+        if !reduceMotion {
+            let remaining = Duration.milliseconds(800) - startedAt.duration(to: clock.now)
+            if remaining > .zero { try? await Task.sleep(for: remaining) }
+        }
     }
     private func expansion(for name: String) -> Binding<Bool> {
         Binding(get: { expandedCapability == name }, set: { expanded in
@@ -319,19 +340,23 @@ struct DeviceMetricsView: View {
     }
 }
 
-private struct MonitorRefreshLabel: View {
-    let title: String
+private struct MonitorRefreshIcon: View {
     let isRefreshing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var rotationStartedAt = Date.now
+    private var isRotating: Bool { isRefreshing && !reduceMotion }
 
     var body: some View {
-        Label {
-            Text(title)
-        } icon: {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isRotating)) { context in
+            let elapsed = max(0, context.date.timeIntervalSince(rotationStartedAt))
+            let degrees = isRotating ? elapsed.truncatingRemainder(dividingBy: 0.8) / 0.8 * 360 : 0
             Image(systemName: "arrow.clockwise")
-                .symbolEffect(.rotate, options: .repeating, isActive: isRefreshing && !reduceMotion)
+                .rotationEffect(.degrees(degrees))
+                .frame(width: 32, height: 32)
         }
-        .accessibilityValue(isRefreshing ? "正在刷新" : "")
+        .onChange(of: isRotating) { _, rotating in
+            if rotating { rotationStartedAt = .now }
+        }
     }
 }
 
