@@ -22,6 +22,9 @@ struct DeviceMonitorView: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(agent.name)
                                     Text(agent.online ? "在线 · Windows" : "离线 · Windows").font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
+                                    Text("设备 ID：" + agent.id)
+                                        .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }.padding(.vertical, 5)
                         }
@@ -82,7 +85,14 @@ struct DeviceMetricsView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("设备", value: agent.name)
+                LabeledContent("设备", value: currentAgent.name)
+                LabeledContent("设备 ID") {
+                    Text(currentAgent.id)
+                        .font(.footnote.monospaced())
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
                 if !currentAgent.online { Text("设备当前离线。").foregroundStyle(.secondary) }
                 else if !canQuery { Text("设备未提供支持的系统指标采集动作。").foregroundStyle(.secondary) }
             }
