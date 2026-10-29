@@ -131,11 +131,15 @@ struct ContainersView: View {
                     HStack(spacing: 6) {
                         ForEach(ContainerFilter.allCases) { option in filterButton(option) }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
                 .scrollIndicators(.hidden)
-                .frame(height: filterRowHeight)
+                .scrollClipDisabled()
+                .frame(height: filterRowHeight + 8)
             }
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            // Keep the filters above the inset-grouped row's bottom corner mask.
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } footer: {
