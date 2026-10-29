@@ -60,23 +60,21 @@ func TestConsoleListsAndIndependentlyRevokesWebSessions(t *testing.T) {
 	}
 	// A management ID cannot be substituted for the private session cookie.
 	stranger := &adminClient{f: f, cookie: &http.Cookie{Name: first.cookie.Name, Value: firstSession.ID}}
-	stranger.call("GET", "overview", nil, 401)
-	// Console and browser revocation use separate namespaces.
-	for _, path := range []string{"/api/v1/sessions/" + firstSession.ID, "/api/v1/web-sessions/" + f.tokens.SessionID} {
-		status, body := f.call("DELETE", path, nil, f.tokens.AccessToken)
-		if status != 200 {
-			t.Fatalf("idempotent removal: %d %s", status, body)
-		}
+	stranger.call("GET", "agents", nil, 401)
+	// A Console session ID cannot revoke a browser or the Console itself.
+	status, body := f.call("DELETE", "/api/v1/web-sessions/"+f.tokens.SessionID, nil, f.tokens.AccessToken)
+	if status != 200 {
+		t.Fatalf("idempotent removal: %d %s", status, body)
 	}
-	first.call("GET", "overview", nil, 200)
+	first.call("GET", "agents", nil, 200)
 	for range 2 {
 		status, body := f.call("DELETE", "/api/v1/web-sessions/"+firstSession.ID, nil, f.tokens.AccessToken)
 		if status != 200 {
 			t.Fatalf("revoke browser: %d %s", status, body)
 		}
 	}
-	first.call("GET", "overview", nil, 401)
-	second.call("GET", "overview", nil, 200)
+	first.call("GET", "agents", nil, 401)
+	second.call("GET", "agents", nil, 200)
 	items, data = listedSessions(f)
 	if len(items) != 2 || !items[0].Current || items[1].ID != secondSession.ID {
 		t.Fatalf("revocation affected unrelated sessions: %s", data)
@@ -110,7 +108,7 @@ func TestWebSessionManagementRequiresConsoleProof(t *testing.T) {
 		t.Fatal("invalid device proof revoked a browser")
 	}
 	f.key = originalKey
-	a.call("GET", "overview", nil, 200)
+	a.call("GET", "agents", nil, 200)
 }
 
 func TestSessionListingHidesExpiredAndOrphanedBrowsersWithoutRenewingThem(t *testing.T) {
@@ -143,7 +141,7 @@ func TestSessionListingHidesExpiredAndOrphanedBrowsersWithoutRenewingThem(t *tes
 			if len(items) != 1 || !items[0].Current {
 				t.Fatalf("inactive browser was listed: %s", data)
 			}
-			a.call("GET", "overview", nil, 401)
+			a.call("GET", "agents", nil, 401)
 		})
 	}
 }

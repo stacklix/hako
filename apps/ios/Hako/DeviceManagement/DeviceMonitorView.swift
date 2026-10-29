@@ -10,8 +10,8 @@ struct DeviceMonitorView: View {
         List {
             if client.serverURL.isEmpty {
                 Section {
-                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("可在设备监控设置中先导出本机公钥，再填写服务器地址和账号。"))
-                    NavigationLink("配置服务器") { DeviceMonitorSettingsView() }
+                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("可在 Hako 设置的“服务器与登录”中先导出本机公钥，再填写服务器地址和账号。"))
+                    NavigationLink("配置服务器") { ServerSettingsView() }
                 }
             } else if client.authenticated {
                 Section("设备") {
@@ -33,18 +33,15 @@ struct DeviceMonitorView: View {
                                 }
                             }.padding(.vertical, 5)
                         }
+                        .disabled(!agent.online)
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     }
                 }
                 Section {
                     Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { DeviceMonitorSettingsView() } label: {
-                        Label("设置", systemImage: "gearshape")
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { ConsoleWebLoginView() } label: {
-                        Label("扫码登录", systemImage: "qrcode.viewfinder")
+                    NavigationLink { ServerSettingsView() } label: {
+                        Label("服务器与登录", systemImage: "server.rack")
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }.disabled(client.busy)
@@ -52,15 +49,15 @@ struct DeviceMonitorView: View {
                 Section {
                     Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
                         .foregroundStyle(.secondary)
-                    Button("验证并继续") { Task { await client.restore() } }
-                    NavigationLink("设置与登录") { DeviceMonitorSettingsView() }
+                    Button("验证并继续") { Task { await refreshDevices() } }
+                    NavigationLink("服务器与登录") { ServerSettingsView() }
                 }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
-                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在设备监控设置中重试。" : "在设备监控设置中导出本机公钥，手工登记到服务端后登录。")
+                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在 Hako 设置的“服务器与登录”中重试。" : "在 Hako 设置的“服务器与登录”中导出本机公钥，手工登记到服务端后登录。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    NavigationLink("设置与登录") { DeviceMonitorSettingsView() }
+                    NavigationLink("服务器与登录") { ServerSettingsView() }
                 }
             }
             if let message = client.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
@@ -73,6 +70,7 @@ struct DeviceMonitorView: View {
         .task(id: "\(isVisible)-\(scenePhase)-\(addingAgent)") {
             guard isVisible, scenePhase == .active, !addingAgent, !Task.isCancelled else { return }
             await client.restore()
+            if client.authenticated { await refreshDevices() }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(10)) }
                 catch { return }
@@ -84,8 +82,8 @@ struct DeviceMonitorView: View {
 
     @MainActor private func refreshDevices() async {
         guard !Task.isCancelled, !client.busy, !client.serverURL.isEmpty, !client.logoutPending else { return }
+        if !client.authenticated, client.hasSavedSession { await client.restore() }
         if client.authenticated { await client.fetchAgents() }
-        else if client.hasSavedSession { await client.restore() }
     }
 }
 
@@ -357,39 +355,5 @@ private struct MonitorRefreshIcon: View {
         .onChange(of: isRotating) { _, rotating in
             if rotating { rotationStartedAt = .now }
         }
-    }
-}
-
-struct ConsoleSessionsView: View {
-    @ObservedObject private var client = ConsoleClient.shared
-    var body: some View {
-        List {
-            ForEach(client.remoteSessions) { session in
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(session.type == .web ? "网页管理端 · \(session.browser ?? "网页浏览器")" : session.current ? "当前 iPhone" : "管理客户端",
-                          systemImage: session.type == .web ? "globe" : "iphone")
-                    if let deviceId = session.deviceId {
-                        Text(deviceId).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    }
-                    Text("登录时间：\(sessionTime(session.createdAt))").font(.caption).foregroundStyle(.secondary)
-                    if let lastUsedAt = session.lastUsedAt {
-                        Text("最近活动：\(sessionTime(lastUsedAt))").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !session.current {
-                        Button(session.type == .web ? "移除网页登录" : "撤销此设备的登录", role: .destructive) {
-                            Task { await client.revoke(session) }
-                        }.disabled(client.busy)
-                    }
-                }.padding(.vertical, 5)
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-            }
-            if client.busy { ProgressView() }
-            if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
-        }.navigationTitle("已登录设备")
-            .task { await client.fetchSessions() }
-            .refreshable { await client.fetchSessions() }
-    }
-    private func sessionTime(_ value: String) -> String {
-        ISO8601DateFormatter().date(from: value)?.formatted(date: .numeric, time: .shortened) ?? value
     }
 }

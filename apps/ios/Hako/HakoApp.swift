@@ -15,6 +15,8 @@ import ManagedSettings
 }
 
 struct HomeView: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         NavigationStack {
             List {
@@ -46,10 +48,20 @@ struct HomeView: View {
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
+                Section("Hako 服务") {
+                    NavigationLink { ConsoleWebLoginView() } label: {
+                        Label("扫码登录", systemImage: "qrcode.viewfinder")
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                }
             }
             .navigationTitle("Hako")
             .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
         }.tint(.primary)
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await ConsoleClient.shared.restore()
+            }
     }
 }
 
@@ -234,6 +246,11 @@ struct SettingsView: View {
     }
     var body: some View {
         Form {
+            Section("Hako 服务") {
+                NavigationLink { ServerSettingsView() } label: {
+                    Label("服务器与登录", systemImage: "server.rack")
+                }
+            }
             Section("GitHub 仓库") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("仓库地址").font(.subheadline).foregroundStyle(.secondary)

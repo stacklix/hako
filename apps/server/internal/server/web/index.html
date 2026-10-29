@@ -2,17 +2,17 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 设备管理</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script>
 </head>
 <body>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">设备管理</p><nav><a href="#agents">设备代理 <span>Agent</span></a></nav><p class="aside-footer">你的设备，收进一个盒子。<br>Hako Server</p></aside>
+  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav><a href="#agents">设备代理 <span>Agent</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
-    <header><div><p class="eyebrow">YOUR DEVICES, CONNECTED</p><h1>设备管理</h1><p class="muted">登记可信设备，掌握连接状态。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
+    <header><div><p class="eyebrow">HAKO SERVER</p><h1>管理控制台</h1><p class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
     <section id="login-panel" class="card login">
       <div class="section-heading"><div><p class="eyebrow">WELCOME BACK</p><h2>登录管理控制台</h2></div><span class="pill">单用户</span></div>
-      <p class="muted">打开 iOS「设备监控 → 扫码登录管理页」，扫码后核对确认码并批准。</p>
+      <p class="muted">打开 Hako iOS 首页「扫码登录」，扫码后核对确认码并批准。服务器配置及登录管理位于「设置 → 服务器与登录」。</p>
       <div class="qr-box"><img id="login-qr" alt="使用已登记的 Console 扫码登录" width="260" height="260" hidden><p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p></div>
       <p class="qr-caption">确认码 <strong id="qr-code">— — — — — —</strong></p>
       <p id="qr-expiry" class="muted"></p><button id="refresh-qr" class="primary" type="button">刷新二维码 <span>↻</span></button>

@@ -5,14 +5,15 @@ import Foundation
         let origin = "https://monitor.example.com"
         let id = String(repeating: "A", count: 43)
         var url = URLComponents()
-        url.scheme = "hako"; url.host = "admin-login"
+        url.scheme = "hako"; url.host = "web-login"
         url.queryItems = [URLQueryItem(name: "v", value: "1"), URLQueryItem(name: "server", value: origin), URLQueryItem(name: "request", value: id)]
         let valid = url.string!
         let parsed = try ConsoleWebLoginPayload(valid, origin: origin)
         precondition(parsed.requestId == id)
         precondition(!ConsoleWebLoginPayload.validID(id + "\n"))
         for invalid in [valid + "&request=" + id, valid + "&other=1", valid + "#fragment", valid.replacingOccurrences(of: "v=1", with: "v=2"),
-                        valid.replacingOccurrences(of: "hako://", with: "https://"), valid.replacingOccurrences(of: "hako://", with: "hako://user@"), valid.replacingOccurrences(of: "admin-login?", with: "admin-login/path?"),
+                        valid.replacingOccurrences(of: "web-login?", with: "admin-login?"),
+                        valid.replacingOccurrences(of: "hako://", with: "https://"), valid.replacingOccurrences(of: "hako://", with: "hako://user@"), valid.replacingOccurrences(of: "web-login?", with: "web-login/path?"),
                         valid.replacingOccurrences(of: "request=" + id, with: "request=../bad")] {
             do { _ = try ConsoleWebLoginPayload(invalid, origin: origin); fatalError("Unsafe QR payload accepted") }
             catch is ConsoleWebLoginError { }

@@ -5,6 +5,7 @@ import UIKit
 
 struct ConsoleWebLoginView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var client = ConsoleClient.shared
     @State private var request: ConsoleWebLoginRequest?
     @State private var approved: Bool?
@@ -16,7 +17,23 @@ struct ConsoleWebLoginView: View {
 
     var body: some View {
         Group {
-            if let request {
+            if !client.authenticated || client.logoutPending {
+                Form {
+                    Section("Hako 服务器登录") {
+                        Text(client.serverURL.isEmpty ? "请先配置 Hako 服务器，并使用已登记的本机密钥登录后批准网页登录。" : "请先验证 Hako 服务器登录，再扫描网页登录二维码。")
+                            .foregroundStyle(.secondary)
+                        NavigationLink("服务器与登录") { ServerSettingsView() }
+                        if client.hasSavedSession || client.logoutPending {
+                            Button(client.logoutPending ? "重试撤销服务端会话" : "验证并继续") {
+                                Task { await client.restore() }
+                            }.disabled(client.busy)
+                        }
+                    }
+                    if let message = client.message {
+                        Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                    }
+                }
+            } else if let request {
                 Form {
                     Section("网页登录请求") {
                         LabeledContent("服务器", value: request.origin)
@@ -66,7 +83,7 @@ struct ConsoleWebLoginView: View {
                         }, onError: { scannerError = $0 })
                         .frame(maxHeight: .infinity)
                         .overlay(alignment: .bottom) {
-                            Text("扫描自己正在使用的网页管理登录二维码")
+                            Text("扫描自己正在使用的 Hako 网页登录二维码")
                                 .font(.callout).foregroundStyle(.white)
                                 .padding().background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
                                 .padding()
@@ -92,6 +109,10 @@ struct ConsoleWebLoginView: View {
         }
         .navigationTitle(request != nil ? "确认网页登录" : approved != nil ? "网页登录" : "扫描二维码")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await client.restore()
+        }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
     }
     private func scanAgain() {

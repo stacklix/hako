@@ -1,12 +1,12 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let csrf = '', overview = null, selectedKey = null, refreshing = false;
+let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
 let qrRequest = null, qrTimer = null, qrCountdown = null, qrGeneration = 0, qrStarting = false;
 let requestAgentId = null;
 const messages = {admin_login_required:'管理登录已到期，请重新扫码。',admin_not_configured:'请先在服务器手工配置 Console 公钥，然后重启服务。',login_request_expired:'二维码已过期，请刷新。',login_request_not_found:'登录请求已失效，请刷新二维码。',login_not_approved:'请先在 Console 核对确认码并批准。',approver_revoked:'批准此登录的 Console 会话已撤销，请重新扫码。',invalid_origin:'访问地址与服务器公开地址不一致，请通过配置的 HTTPS 地址访问。',invalid_csrf:'请求校验失败，请刷新页面后重试。',rate_limited:'请求过于频繁，请稍后重试。',duplicate_agent:'设备 ID 或公钥已经登记。',device_id_unavailable:'暂时无法分配设备 ID，请稍后重试。',agent_offline:'设备当前离线。',agent_disconnected:'设备连接已断开。',agent_timeout:'设备响应超时，动作可能仍在执行，请先确认结果。',agent_busy:'设备正在处理其他请求，请稍后重试。',unsupported_method:'设备不支持此能力或版本，请刷新设备状态。',too_many_requests:'并发请求过多，请稍后重试。',storage_unavailable:'保存失败，请检查服务端存储后重试。',too_many_admin_sessions:'管理会话过多，请稍后重试。'};
 function notice(text, success = false) { $('notice').textContent = text; $('notice').className = success ? 'success' : ''; $('notice').hidden = !text; }
 function stopQr() { qrGeneration++; clearTimeout(qrTimer); clearInterval(qrCountdown); qrRequest = null; $('copy-login').disabled = true; }
-function loggedIn(yes) { $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) stopQr(); else { csrf = ''; overview = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
+function loggedIn(yes) { $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) stopQr(); else { csrf = ''; agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;
@@ -35,8 +35,8 @@ function showCommands(agent) {
 }
 function drawAgents() {
   $('agent-list').replaceChildren();
-  if (!overview.agents.length) { empty('agent-list','还没有设备代理，登记 Agent 导出的公钥即可开始。'); return; }
-  for (const agent of overview.agents) {
+  if (!agentListing.agents.length) { empty('agent-list','还没有设备代理，登记 Agent 导出的公钥即可开始。'); return; }
+  for (const agent of agentListing.agents) {
     const row = node('div',undefined,'device'), info = node('div'), title = node('div',agent.name,'device-title');
     title.append(node('span',agent.online ? '在线' : '离线','badge' + (agent.online ? ' online' : '')));
     info.append(title,node('p',`${agent.id} · 最近活动 ${date(agent.lastSeen)}`,'device-meta'),node('p','公钥指纹 ' + agent.keyId,'device-meta'));
@@ -52,10 +52,10 @@ async function refresh() {
   if (refreshing || !csrf) return;
   refreshing = true;
   try {
-    overview = await api('overview');
-    $('online-count').textContent = overview.agents.filter(a => a.online).length;
-    $('agent-count').textContent = overview.agents.length;
-    $('updated').textContent = '状态更新于 ' + date(overview.updatedAt);
+    agentListing = await api('agents');
+    $('online-count').textContent = agentListing.agents.filter(a => a.online).length;
+    $('agent-count').textContent = agentListing.agents.length;
+    $('updated').textContent = '状态更新于 ' + date(agentListing.updatedAt);
     drawAgents();
   } finally { refreshing = false; }
 }

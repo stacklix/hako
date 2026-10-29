@@ -6,9 +6,9 @@
 
 | 应用 | 目录 | 当前状态 |
 | --- | --- | --- |
-| iOS | [apps/ios](apps/ios/README.md) | 使用时间采集与 GitHub 同步；设备监控 Console |
+| iOS | [apps/ios](apps/ios/README.md) | 主应用服务器登录与扫码；使用时间采集与 GitHub 同步；设备监控 Console |
 | Windows | [apps/windows](apps/windows/README.md) | WPF 工具箱、设备代理、CPU 与内存监控 |
-| 服务端 | [apps/server](apps/server/README.md) | Go 设备管理服务、Web 管理页、Docker 部署、公钥认证与请求转发 |
+| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证与设备请求转发 |
 
 ## 仓库结构
 
@@ -25,7 +25,7 @@ hako/
 └─ README.md
 ```
 
-各应用使用不同语言开发，没有共享代码包。各自目录变化触发对应 CI，设备监控的三端接口见 [设备监控协议](docs/device-monitoring.md)。
+各应用使用不同语言开发，没有共享代码包。各自目录变化触发对应 CI，应用级认证、会话和扫码登录见 [Hako 服务器认证协议](docs/server-authentication.md)，设备监控的三端接口见 [设备监控协议](docs/device-monitoring.md)。
 
 ## 构建产物
 

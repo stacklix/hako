@@ -30,9 +30,9 @@ func TestConsoleAddAgentLifecycleAndPersistence(t *testing.T) {
 		t.Fatal("registration did not normalize the device or compute its fingerprint")
 	}
 	// Enrollment is immediately shared with the Web UI and the Agent handshake.
-	data = a.call("GET", "overview", nil, 200)
+	data = a.call("GET", "agents", nil, 200)
 	if !bytes.Contains(data, []byte(created.KeyID)) {
-		t.Fatal("Console enrollment is absent from Web overview")
+		t.Fatal("Console enrollment is absent from Web agent listing")
 	}
 	f.connectAgent(false)
 	status, data = f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)

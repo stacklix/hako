@@ -12,7 +12,7 @@ struct DeviceKeyResetSheet: View {
                     Label("旧密钥不可恢复", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    Text("确认后将生成新密钥并退出本机设备监控登录。请重新导出公钥，替换服务端旧公钥并重启服务后重新登录。")
+                    Text("确认后将生成新密钥并退出本机 Hako 服务器登录。请重新导出公钥，替换服务端旧公钥并重启服务后重新登录。")
                         .font(.footnote)
                 }
                 Section {

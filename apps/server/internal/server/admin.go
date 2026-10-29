@@ -37,7 +37,7 @@ func (s *Server) adminRoutes() {
 	s.qrLoginRoutes()
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
-	s.mux.HandleFunc("GET /admin/api/overview", s.admin(s.adminOverview))
+	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))
 	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
@@ -111,7 +111,7 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		// Passive polling does not extend an idle administrator's session.
-		if r.URL.Path != "/admin/api/overview" {
+		if r.Method != http.MethodGet || r.URL.Path != "/admin/api/agents" {
 			ss.LastUsed = time.Now()
 			s.adminSessions[id] = ss
 		}
@@ -134,8 +134,8 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 	s.adminCookie(w, "", -1)
 	respond(w, 200, map[string]bool{"ok": true})
 }
-func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
-	respond(w, 200, map[string]any{"username": s.config.Username, "agents": s.agentItems(true), "updatedAt": time.Now().UTC().Format(time.RFC3339)})
+func (s *Server) adminAgents(w http.ResponseWriter, r *http.Request) {
+	respond(w, 200, map[string]any{"agents": s.agentItems(true), "updatedAt": time.Now().UTC().Format(time.RFC3339)})
 }
 func registryError(w http.ResponseWriter, err error) {
 	respond(w, 400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()})

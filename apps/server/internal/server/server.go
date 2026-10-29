@@ -126,7 +126,6 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	s.mux.HandleFunc("GET /api/v1/auth/session", s.currentSession)
 	s.mux.HandleFunc("GET /api/v1/sessions", s.sessions)
-	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.revokeSession)
 	s.mux.HandleFunc("DELETE /api/v1/web-sessions/{id}", s.revokeWebSession)
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
 	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
@@ -416,18 +415,6 @@ func (s *Server) revokeWebSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.adminMu.Unlock()
-	respond(w, 200, map[string]bool{"ok": true})
-}
-
-func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
-	_, ok := s.authorized(w, r)
-	if !ok {
-		return
-	}
-	if err := s.store.update(func(st *state) error { delete(st.Sessions, r.PathValue("id")); return nil }); err != nil {
-		reject(w, 500, "storage_error")
-		return
-	}
 	respond(w, 200, map[string]bool{"ok": true})
 }
 

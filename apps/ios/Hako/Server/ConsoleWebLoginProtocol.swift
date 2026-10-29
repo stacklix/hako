@@ -15,7 +15,7 @@ struct ConsoleWebLoginPayload {
     let requestId: String
     init(_ payload: String, origin: String) throws {
         guard payload.utf8.count <= 2048,
-              let url = URLComponents(string: payload), url.scheme == "hako", url.host == "admin-login",
+              let url = URLComponents(string: payload), url.scheme == "hako", url.host == "web-login",
               url.user == nil, url.password == nil, url.port == nil, url.path.isEmpty, url.fragment == nil,
               let items = url.queryItems, items.count == 3 else { throw ConsoleWebLoginError.invalidRequest }
         var values: [String: String] = [:]

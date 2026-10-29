@@ -80,7 +80,7 @@ func loginAdmin(f *fixture) *adminClient {
 	}
 	_ = json.Unmarshal(data, &qr)
 	info := inspectLogin(f, qr.ID)
-	status, data = f.call("POST", "/api/v1/admin-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
+	status, data = f.call("POST", "/api/v1/auth/web-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
 	if status != 200 {
 		f.t.Fatalf("approve QR login: %d %s", status, data)
 	}
@@ -115,7 +115,7 @@ func publicPEM(t *testing.T, key any) string {
 func TestAdminAuthenticationAndCSRF(t *testing.T) {
 	f := newFixture(t, false)
 	a := &adminClient{f: f}
-	a.call("GET", "overview", nil, 401)
+	a.call("GET", "agents", nil, 401)
 	status, _, _ := a.request("POST", "/admin/api/login/requests", map[string]string{}, "https://attacker.example", "")
 	if status != 403 {
 		t.Fatal("cross-origin login accepted")
@@ -132,7 +132,7 @@ func TestAdminAuthenticationAndCSRF(t *testing.T) {
 	}
 	a.call("GET", "session", nil, 200)
 	a.call("POST", "logout", map[string]bool{}, 200)
-	a.call("GET", "overview", nil, 401)
+	a.call("GET", "agents", nil, 401)
 }
 
 func TestAdminExpiryAndDisabledMode(t *testing.T) {
@@ -144,24 +144,38 @@ func TestAdminExpiryAndDisabledMode(t *testing.T) {
 	ss.LastUsed = time.Now().Add(-31 * time.Minute)
 	f.s.adminSessions[id] = ss
 	f.s.adminMu.Unlock()
-	a.call("GET", "overview", nil, 401)
+	a.call("GET", "agents", nil, 401)
 	a = loginAdmin(f)
 	f.s.adminMu.Lock()
 	ss = f.s.adminSessions[digest(a.cookie.Value)]
 	ss.Created = time.Now().Add(-13 * time.Hour)
 	f.s.adminSessions[digest(a.cookie.Value)] = ss
 	f.s.adminMu.Unlock()
-	a.call("GET", "overview", nil, 401)
+	a.call("GET", "agents", nil, 401)
 	a = loginAdmin(f)
 	f.s.adminMu.Lock()
 	before := f.s.adminSessions[digest(a.cookie.Value)].LastUsed
 	f.s.adminMu.Unlock()
-	a.call("GET", "overview", nil, 200)
+	a.call("GET", "agents", nil, 200)
 	f.s.adminMu.Lock()
 	after := f.s.adminSessions[digest(a.cookie.Value)].LastUsed
 	f.s.adminMu.Unlock()
 	if !before.Equal(after) {
 		t.Fatal("passive polling extended idle session")
+	}
+	// Registration shares the list URL, but an active POST must renew idle time.
+	f.s.adminMu.Lock()
+	ss = f.s.adminSessions[digest(a.cookie.Value)]
+	before = time.Now().Add(-5 * time.Minute)
+	ss.LastUsed = before
+	f.s.adminSessions[digest(a.cookie.Value)] = ss
+	f.s.adminMu.Unlock()
+	a.call("POST", "agents", map[string]string{}, http.StatusBadRequest)
+	f.s.adminMu.Lock()
+	after = f.s.adminSessions[digest(a.cookie.Value)].LastUsed
+	f.s.adminMu.Unlock()
+	if !after.After(before) {
+		t.Fatal("active Agent registration did not renew idle session")
 	}
 	next, err := loadRegistry(f.s.registry.Load().Agents, nil, false)
 	if err != nil {
@@ -191,20 +205,24 @@ func TestAdminEmbeddedPagesAndNoSecrets(t *testing.T) {
 			t.Fatal("embedded page or headers missing", path)
 		}
 	}
-	data := a.call("GET", "overview", nil, 200)
-	var overview map[string]json.RawMessage
-	if err := json.Unmarshal(data, &overview); err != nil {
+	data := a.call("GET", "agents", nil, 200)
+	var agentListing map[string]json.RawMessage
+	if err := json.Unmarshal(data, &agentListing); err != nil {
 		t.Fatal(err)
 	}
-	if _, present := overview["sessions"]; present {
-		t.Fatal("web overview still includes phone sessions")
+	if len(agentListing) != 2 || agentListing["agents"] == nil || agentListing["updatedAt"] == nil {
+		t.Fatalf("agent listing must contain only agents and updatedAt: %s", data)
 	}
-	if _, present := overview["consoles"]; present {
-		t.Fatal("web overview still includes management clients")
+	a.call("GET", "overview", nil, http.StatusNotFound)
+	if _, present := agentListing["sessions"]; present {
+		t.Fatal("web agent listing still includes phone sessions")
+	}
+	if _, present := agentListing["consoles"]; present {
+		t.Fatal("web agent listing still includes management clients")
 	}
 	for _, secret := range []string{f.tokens.AccessToken, f.tokens.RefreshToken, f.tokens.SessionID, "PRIVATE KEY"} {
 		if bytes.Contains(data, []byte(secret)) {
-			t.Fatal("overview exposes credentials")
+			t.Fatal("agent listing exposes credentials")
 		}
 	}
 	// Admin cookies cannot substitute for the device signature on the Console API.
@@ -256,30 +274,42 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	}
 }
 
-func TestAdminCannotRevokeConsoleSessions(t *testing.T) {
+func TestConsoleSessionRemovalIsUnavailableAndLogoutPreservesKeyTrust(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
 	// Even a valid browser cookie, origin and CSRF token grant no Console revocation route.
 	a.call("DELETE", "sessions/"+f.tokens.SessionID, nil, http.StatusMethodNotAllowed)
 	status, _, _ := a.request("DELETE", "/api/v1/sessions/"+f.tokens.SessionID, nil, f.s.config.PublicURL, a.csrf)
-	if status != http.StatusUnauthorized {
-		t.Fatal("browser cookie bypassed Console proof", status)
+	if status != http.StatusNotFound {
+		t.Fatal("removed Console revocation endpoint is still registered", status)
 	}
 	status, _ = f.call("GET", "/api/v1/auth/session", nil, f.tokens.AccessToken)
 	if status != http.StatusOK {
 		t.Fatal("browser removal attempt changed the phone session", status)
 	}
-	a.call("GET", "overview", nil, http.StatusOK)
-	// Phone session management remains available through the Console's signed API.
+	a.call("GET", "agents", nil, http.StatusOK)
+	// Even a signed Console request cannot remotely remove a Console session.
 	status, _ = f.call("DELETE", "/api/v1/sessions/"+f.tokens.SessionID, nil, f.tokens.AccessToken)
+	if status != http.StatusNotFound {
+		t.Fatal("signed Console request reached removed revocation endpoint", status)
+	}
+	// Local logout invalidates the current session and its browsers, not key trust.
+	status, _ = f.call("POST", "/api/v1/auth/logout", nil, f.tokens.AccessToken)
 	if status != http.StatusOK {
-		t.Fatal("signed Console session revocation failed", status)
+		t.Fatal("Console logout failed", status)
 	}
 	status, _ = f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 	if status != 401 {
 		t.Fatal("revoked Console session remains valid")
 	}
-	a.call("GET", "overview", nil, 401)
+	a.call("GET", "agents", nil, 401)
+	f.tokens = tokens{}
+	ensureConsoleLogin(f)
+	status, _ = f.call("GET", "/api/v1/auth/session", nil, f.tokens.AccessToken)
+	if status != http.StatusOK {
+		t.Fatal("trusted key cannot log in again after logout", status)
+	}
+	a.call("GET", "agents", nil, 401)
 }
 
 func TestAdminRejectsPrivateKeysWrongAlgorithmsAndUnsafeIDs(t *testing.T) {

@@ -35,7 +35,11 @@ struct CodexUsageChart: View {
                             }
                             .font(.caption).monospacedDigit()
                             .padding(8)
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+                            }
                         }
                         .zIndex(1)
                 }

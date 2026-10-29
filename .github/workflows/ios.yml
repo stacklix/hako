@@ -24,16 +24,16 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Typecheck Console client without signing
         run: |
-          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/DeviceManagement/ConsoleSessionRestoration.swift Hako/DeviceManagement/ConsoleClient.swift
-          swiftc Hako/DeviceManagement/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
+          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/Server/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
           /tmp/hako-session-restoration-tests
           swiftc Hako/DeviceManagement/ConsoleAgentProtocol.swift Tests/ConsoleAgentProtocolTests.swift -o /tmp/hako-agent-protocol-tests
           /tmp/hako-agent-protocol-tests
           swiftc Hako/DeviceManagement/ConsoleAgentRegistration.swift Tests/ConsoleAgentRegistrationTests.swift -o /tmp/hako-agent-registration-tests
           /tmp/hako-agent-registration-tests
-          swiftc Hako/DeviceManagement/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
-          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/DeviceManagement/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests
       - name: Test usage storage and GitHub merge
         run: |

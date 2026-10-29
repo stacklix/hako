@@ -57,7 +57,7 @@ func TestGenericAgentRequests(t *testing.T) {
 		}
 	}
 	for _, data := range [][]byte{
-		a.call("GET", "overview", nil, 200),
+		a.call("GET", "agents", nil, 200),
 		func() []byte {
 			status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 			if status != 200 {

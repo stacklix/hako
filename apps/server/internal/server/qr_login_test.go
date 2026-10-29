@@ -70,7 +70,7 @@ func startLogin(f *fixture) (*adminClient, qrStart) {
 
 func inspectLogin(f *fixture, id string) qrInspection {
 	f.t.Helper()
-	status, data := f.call("GET", "/api/v1/admin-login/requests/"+id, nil, f.tokens.AccessToken)
+	status, data := f.call("GET", "/api/v1/auth/web-login/requests/"+id, nil, f.tokens.AccessToken)
 	if status != 200 {
 		f.t.Fatalf("inspect QR: %d %s", status, data)
 	}
@@ -84,9 +84,20 @@ func inspectLogin(f *fixture, id string) qrInspection {
 func approveLogin(f *fixture, qr qrStart) {
 	f.t.Helper()
 	info := inspectLogin(f, qr.ID)
-	status, data := f.call("POST", "/api/v1/admin-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
+	status, data := f.call("POST", "/api/v1/auth/web-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
 	if status != 200 {
 		f.t.Fatalf("approve QR: %d %s", status, data)
+	}
+}
+
+func TestLegacyWebLoginRoutesRemoved(t *testing.T) {
+	f := newFixture(t, true)
+	_, qr := startLogin(f)
+	for _, endpoint := range []struct{ method, suffix string }{{"GET", ""}, {"POST", "/approve"}, {"POST", "/deny"}} {
+		status, data := f.call(endpoint.method, "/api/v1/admin-login/requests/"+qr.ID+endpoint.suffix, nil, f.tokens.AccessToken)
+		if status != http.StatusNotFound {
+			t.Fatalf("legacy route still available: %s %s: %d %s", endpoint.method, endpoint.suffix, status, data)
+		}
 	}
 }
 
@@ -128,7 +139,7 @@ func TestQRLoginBindsBrowserAndDoesNotExposeApprovalNonce(t *testing.T) {
 	f := newFixture(t, true)
 	a, qr := startLogin(f)
 	u, err := url.Parse(qr.Payload)
-	if err != nil || u.Scheme != "hako" || u.Host != "admin-login" || u.Query().Get("server") != f.s.config.PublicURL || u.Query().Get("request") != qr.ID || !validLoginID(qr.ID) || len(qr.Code) != 6 {
+	if err != nil || u.Scheme != "hako" || u.Host != "web-login" || u.Query().Get("server") != f.s.config.PublicURL || u.Query().Get("request") != qr.ID || !validLoginID(qr.ID) || len(qr.Code) != 6 {
 		t.Fatal("QR payload is invalid")
 	}
 	if strings.Contains(qr.Payload, a.pendingCookie.Value) || strings.Contains(qr.Payload, f.tokens.AccessToken) {
@@ -156,7 +167,7 @@ func TestQRLoginApprovalAndRedemptionAreSingleUse(t *testing.T) {
 	f := newFixture(t, true)
 	a, qr := startLogin(f)
 	info := inspectLogin(f, qr.ID)
-	path := "/api/v1/admin-login/requests/" + qr.ID + "/approve"
+	path := "/api/v1/auth/web-login/requests/" + qr.ID + "/approve"
 	for _, body := range []map[string]string{{"confirmationCode": "wrong"}} {
 		status, _ := f.call("POST", path, body, f.tokens.AccessToken, info.Nonce)
 		if status != 400 {
@@ -195,7 +206,7 @@ func TestQRLoginExpiryDenialAndRefresh(t *testing.T) {
 	f := newFixture(t, true)
 	a, qr := startLogin(f)
 	info := inspectLogin(f, qr.ID)
-	status, _ := f.call("POST", "/api/v1/admin-login/requests/"+qr.ID+"/deny", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
+	status, _ := f.call("POST", "/api/v1/auth/web-login/requests/"+qr.ID+"/deny", map[string]string{"confirmationCode": info.ConfirmationCode}, f.tokens.AccessToken, info.Nonce)
 	if status != 200 {
 		t.Fatal("denial failed")
 	}
@@ -210,7 +221,7 @@ func TestQRLoginExpiryDenialAndRefresh(t *testing.T) {
 	f.s.adminMu.Lock()
 	f.s.adminLogins[digest(qr.ID)].Expires = time.Now().Add(-time.Second)
 	f.s.adminMu.Unlock()
-	status, _ = f.call("GET", "/api/v1/admin-login/requests/"+qr.ID, nil, f.tokens.AccessToken)
+	status, _ = f.call("GET", "/api/v1/auth/web-login/requests/"+qr.ID, nil, f.tokens.AccessToken)
 	if status != 410 {
 		t.Fatal("expired QR inspected")
 	}
@@ -242,11 +253,11 @@ func TestQRLoginRequiresRegisteredConsole(t *testing.T) {
 	if status != 401 {
 		t.Fatal("removed Console retained monitoring access")
 	}
-	status, _ = f.call("GET", "/api/v1/admin-login/requests/"+qr.ID, nil, f.tokens.AccessToken)
+	status, _ = f.call("GET", "/api/v1/auth/web-login/requests/"+qr.ID, nil, f.tokens.AccessToken)
 	if status != 401 {
 		t.Fatal("removed Console inspected login")
 	}
-	status, _ = f.call("POST", "/api/v1/admin-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": qr.Code}, f.tokens.AccessToken)
+	status, _ = f.call("POST", "/api/v1/auth/web-login/requests/"+qr.ID+"/approve", map[string]string{"confirmationCode": qr.Code}, f.tokens.AccessToken)
 	if status != 401 {
 		t.Fatal("removed Console approved login")
 	}
@@ -287,12 +298,12 @@ func TestEveryConfiguredConsoleIsAdministrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := loginAdmin(f)
-	first.call("GET", "overview", nil, 200)
+	first.call("GET", "agents", nil, 200)
 	f.key = secondKey
 	f.deviceID = second.thumb
 	f.tokens = tokens{}
 	secondAdmin := loginAdmin(f)
-	secondAdmin.call("GET", "overview", nil, 200)
+	secondAdmin.call("GET", "agents", nil, 200)
 }
 
 func TestUnknownQRRequestsCannotFillSharedRateLimiter(t *testing.T) {

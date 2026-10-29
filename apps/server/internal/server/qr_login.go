@@ -27,9 +27,9 @@ func (s *Server) qrLoginRoutes() {
 	s.mux.HandleFunc("GET /admin/api/login/requests/{id}", s.pollAdminLogin)
 	s.mux.HandleFunc("GET /admin/api/login/requests/{id}/qr", s.adminLoginQR)
 	s.mux.HandleFunc("POST /admin/api/login/requests/{id}/complete", s.completeAdminLogin)
-	s.mux.HandleFunc("GET /api/v1/admin-login/requests/{id}", s.inspectAdminLogin)
-	s.mux.HandleFunc("POST /api/v1/admin-login/requests/{id}/approve", s.approveAdminLogin)
-	s.mux.HandleFunc("POST /api/v1/admin-login/requests/{id}/deny", s.approveAdminLogin)
+	s.mux.HandleFunc("GET /api/v1/auth/web-login/requests/{id}", s.inspectAdminLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/web-login/requests/{id}/approve", s.approveAdminLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/web-login/requests/{id}/deny", s.approveAdminLogin)
 }
 
 func (s *Server) hasAdminConsole() bool {
@@ -108,7 +108,7 @@ func (s *Server) createAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := fmt.Sprintf("%06d", number.Int64())
-	payload := "hako://admin-login?" + url.Values{"v": {"1"}, "server": {s.config.PublicURL}, "request": {id}}.Encode()
+	payload := "hako://web-login?" + url.Values{"v": {"1"}, "server": {s.config.PublicURL}, "request": {id}}.Encode()
 	png, err := qrcode.Encode(payload, qrcode.Medium, -5)
 	if err != nil {
 		reject(w, 503, "login_unavailable")

@@ -133,7 +133,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             guard let components = URLComponents(string: trimmed), components.scheme == "https", let host = components.host, !host.isEmpty,
                   components.user == nil, components.password == nil, components.query == nil, components.fragment == nil,
                   components.path.isEmpty || components.path == "/" else {
-                throw HakoError(message: "请输入 HTTPS 服务器根地址，例如 https://monitor.example.com。")
+                throw HakoError(message: "请输入 HTTPS 服务器根地址，例如 https://hako.example.com。")
             }
             var normalized = components
             normalized.host = host.lowercased(); normalized.path = ""
@@ -145,7 +145,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             self.serverURL = origin
             UserDefaults.standard.set(origin, forKey: "console.serverURL")
             self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
-            self.agents = []; self.deviceData = [:]; self.httpChecks = [:]
+            self.agents = []; self.deviceData = [:]; self.httpChecks = [:]; self.remoteSessions = []
             self.deviceId = ""; self.publicKeyPEM = ""
             try await self.restoreInternal()
         }
@@ -173,8 +173,6 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         if saved != nil {
             _ = try await authorized("/api/v1/auth/session")
             authenticated = true
-            try await fetchAgentsInternal()
-
         }
     }
 
@@ -187,7 +185,6 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             let result = try await self.request("/api/v1/auth/login", method: "POST", body: ["username": self.username, "deviceId": device.deviceId, "challengeId": challenge.challengeId], token: nil, nonce: challenge.nonce)
             try self.acceptTokens(result)
             self.authenticated = true
-            try await self.fetchAgentsInternal()
         }
     }
     private func acceptTokens(_ data: Data) throws {
@@ -197,7 +194,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     private func request(_ path: String, method: String, body: [String: Any]?, token: String?, signed: Bool = true, nonce: String? = nil) async throws -> Data {
-        guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在设备监控设置中配置 HTTPS 服务器。") }
+        guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在 Hako 设置的“服务器与登录”中配置 HTTPS 服务器。") }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
@@ -269,7 +266,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
 
     func addAgent(name: String, publicKeyPEM: String) async throws {
         guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
-        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录设备监控。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
         let registration = try ConsoleAgentRegistration(name: name, publicKeyPEM: publicKeyPEM)
         busy = true; message = nil
         defer { busy = false }
@@ -296,10 +293,10 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     func inspectWebLogin(_ payload: String) async throws -> ConsoleWebLoginRequest {
-        guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Console 登录态。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Hako 服务器登录。") }
         let origin = serverURL
         let parsed = try ConsoleWebLoginPayload(payload.trimmingCharacters(in: .whitespacesAndNewlines), origin: origin)
-        let data = try await authorized("/api/v1/admin-login/requests/\(parsed.requestId)")
+        let data = try await authorized("/api/v1/auth/web-login/requests/\(parsed.requestId)")
         let result = try JSONDecoder().decode(ConsoleWebLoginRequest.self, from: data)
         guard serverURL == origin else { throw ConsoleWebLoginError.serverMismatch }
         try result.validate(origin: origin, requestId: parsed.requestId)
@@ -307,12 +304,12 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
     }
 
     func confirmWebLogin(_ login: ConsoleWebLoginRequest, approve: Bool) async throws {
-        guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Console 登录态。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先验证 Hako 服务器登录。") }
         let origin = serverURL
         try login.validate(origin: origin, requestId: login.id)
         guard serverURL == origin, authenticated, !logoutPending else { throw ConsoleWebLoginError.serverMismatch }
         try login.validate(origin: origin, requestId: login.id)
-        _ = try await authorized("/api/v1/admin-login/requests/\(login.id)/\(approve ? "approve" : "deny")",
+        _ = try await authorized("/api/v1/auth/web-login/requests/\(login.id)/\(approve ? "approve" : "deny")",
                                  method: "POST", body: ["confirmationCode": login.confirmationCode], nonce: login.nonce)
     }
     private func fetchAgentsInternal() async throws {
@@ -375,12 +372,12 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             self.remoteSessions = try JSONDecoder().decode(List.self, from: await self.authorized("/api/v1/sessions")).sessions
         }
     }
-    func revoke(_ session: ConsoleRemoteSession) async {
+    func revokeWebSession(_ session: ConsoleRemoteSession) async {
+        guard session.type == .web else { return }
         await execute {
-            let path = session.type == .web ? "/api/v1/web-sessions/" : "/api/v1/sessions/"
-            _ = try await self.authorized(path + session.id, method: "DELETE")
+            _ = try await self.authorized("/api/v1/web-sessions/" + session.id, method: "DELETE")
             self.remoteSessions.removeAll { $0.id == session.id }
-            self.message = session.type == .web ? "已移除网页登录，该浏览器需要重新扫码登录。" : "已撤销此设备的登录。"
+            self.message = "已移除网页登录，该浏览器需要重新扫码登录。"
         }
     }
 

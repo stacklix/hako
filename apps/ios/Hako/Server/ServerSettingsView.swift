@@ -5,7 +5,7 @@ private enum DeviceKeySheetRoute: String, Identifiable {
     var id: String { rawValue }
 }
 
-struct DeviceMonitorSettingsView: View {
+struct ServerSettingsView: View {
     @ObservedObject private var client = ConsoleClient.shared
     @State private var url = ""
     @State private var username = ""
@@ -18,7 +18,7 @@ struct DeviceMonitorSettingsView: View {
             Section("服务器连接") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("服务器地址").font(.subheadline).foregroundStyle(.secondary)
-                    TextField("https://monitor.example.com", text: $url)
+                    TextField("https://hako.example.com", text: $url)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityLabel("服务器地址")
@@ -75,14 +75,14 @@ struct DeviceMonitorSettingsView: View {
             if client.busy { ProgressView("正在处理…") }
             if let message = client.message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
-        .navigationTitle("设备监控设置")
+        .navigationTitle("服务器与登录")
         .task {
             guard !loaded else { return }
             loaded = true
             url = client.serverURL; username = client.username
             await client.restore()
         }
-        .confirmationDialog("退出设备监控登录？", isPresented: $confirmLogout, titleVisibility: .visible) {
+        .confirmationDialog("退出 Hako 服务器登录？", isPresented: $confirmLogout, titleVisibility: .visible) {
             Button("退出登录", role: .destructive) { Task { await client.logout() } }
         }
         .sheet(item: $keySheet) { route in
