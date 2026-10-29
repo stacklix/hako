@@ -65,6 +65,12 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(minimal.id == "new" && minimal.state == nil)
         let details = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"old","name":"/postgres","state":{"running":true,"status":"running","health":{"status":"unhealthy"}},"config":{"env":["PASSWORD=a=b"]},"networkSettings":{"networks":{"default":{"ipAddress":"172.20.0.3"}}},"ports":[{"privatePort":80,"publicPort":8080,"type":"tcp"}],"mounts":null}"#))
         precondition(details.displayName == "postgres" && details.state?.health?.status == "unhealthy" && details.ports?.first?.text == "8080 → 80/tcp")
+        let multiplePorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"ports","ports":[{"privatePort":80,"publicPort":0,"type":"tcp"},{"privatePort":443,"type":"tcp"},{"privatePort":53,"publicPort":1053,"type":"udp"}]}"#))
+        precondition(multiplePorts.portsText == "80/tcp\n443/tcp\n1053 → 53/udp",
+                     "Unmapped ports must omit host port zero; all ports share one multiline value")
+        let emptyPorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"no-ports","ports":[]}"#))
+        precondition(emptyPorts.portsText == nil && minimal.portsText == nil)
+        precondition(details.portsText == "8080 → 80/tcp")
 
         let rawStats = bytes(#"{"read":"2026-10-29T12:00:00.000000000Z","cpu_stats":{"cpu_usage":{"total_usage":300},"system_cpu_usage":2000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":200},"system_cpu_usage":1000},"memory_stats":{"usage":4000,"limit":10000,"stats":{"inactive_file":1000}},"networks":{"eth0":{"rx_bytes":1000,"tx_bytes":2000},"eth1":{"rx_bytes":3000,"tx_bytes":4000}}}"#)
         let sample = try ArcaneResourceSample.parse(rawStats)

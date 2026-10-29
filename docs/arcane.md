@@ -31,7 +31,11 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 列表加载完整分页（单次最多 10,000 项），按名称排序；顶部依次为紧凑的环境卡片、搜索框和独立圆角筛选按钮，选中项深色显示。可搜索名称、镜像、Compose 项目，筛选全部、异常、停止及有更新的容器；筛选按钮不展示数量，空间不足时可横向滚动。「容器」列表标题右侧显示「Compose 分组」复选框，勾选后按项目分组，取消后恢复按名称排列的列表。运行状态及其图标为绿色，停止为灰色，异常为红色；「有更新」显示在状态右侧。分组只改变展示方式，不对项目执行批量修改。列表前台可见时每 10 秒刷新，进入详情、打开设置或切后台时停止列表轮询。失败保留原数据和最近更新时间，支持下拉刷新。
 
-进入详情立即加载数据，前台可见时每 10 秒刷新状态；移除导航栏刷新按钮，保留下拉刷新，同时重连实时资源及日志。详情加载期间先显示列表已有的容器状态，运行状态及图标为绿色，停止为灰色，异常为红色。CPU、内存及网络从单容器 WebSocket 读取，不把缺失值填成零。内存扣除 Docker 缓存后显示使用率及使用量；右侧网络以上行 `tx_bytes`、下行 `rx_bytes` 汇总所有接口，以两次采样的差值／时间间隔计算 B/s、KB/s、MB/s、GB/s，同时可展开累计流量。首次采样、重连、计数重置或间隔超过 30 秒时等待下一次有效采样；没有网络计数时明确显示不可用。累计值属于 Docker 当前容器计数，不是 Hako 历史流量。
+同一连接复用客户端及网络会话。首次加载环境后直接读取容器，自动选择默认环境不会取消并重启首轮加载；后续轮询直接请求容器，下拉刷新或环境卡片的刷新按钮同时重新读取环境元数据。
+
+列表及详情各行分隔线统一对齐内容区两端。「有更新」的图标与文字紧凑排列。详情中的所有端口合并到一个「端口」行，多个端口在值区域逐项换行；未映射的端口显示 `80/tcp` 等容器端口，不显示无效的宿主机端口 `0`，有效映射显示 `8080 → 80/tcp`。
+
+进入详情立即展示列表已有的名称、镜像、状态、项目和资源采样，并行读取完整配置和订阅实时资源，不等待详情接口才显示资源区。列表采样明确标注来源，实时采样到达后替换。前台可见时每 10 秒刷新状态；移除导航栏刷新按钮，保留下拉刷新，同时重连实时资源及日志。取消后重新进入立即开始新请求，旧请求不能覆盖新数据、错误或加载状态。完整配置读取成功前不开放管理操作。运行状态及图标为绿色，停止为灰色，异常为红色。CPU、内存及网络从单容器 WebSocket 读取，不把缺失值填成零。内存扣除 Docker 缓存后显示使用率及使用量；右侧网络以上行 `tx_bytes`、下行 `rx_bytes` 汇总所有接口，以两次采样的差值／时间间隔计算 B/s、KB/s、MB/s、GB/s，同时可展开累计流量。首次采样、重连、计数重置或间隔超过 30 秒时等待下一次有效采样；没有网络计数时明确显示不可用。累计值属于 Docker 当前容器计数，不是 Hako 历史流量。
 
 日志仅在日志页前台且开启跟随时订阅，重连读取最近 100 行，内存中最多保留 500 行／512 KiB；长行有显示长度上限。离开详情、切后台或操作开始时取消实时订阅。导出通过下载接口获取 Docker 仍保留的日志，最多 256 MB，保存临时文件后由系统分享；离开页面清理该导出文件。环境变量默认遮蔽，用户可主动显示。
 
@@ -57,8 +61,10 @@ macOS CI 新增模拟网络测试，无真实服务器和容器写入：
 cd apps/ios
 swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
 /tmp/hako-arcane-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
+/tmp/hako-arcane-loading-tests
 ```
 
-测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。
+测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝；加载回归测试覆盖会话复用、直接轮询容器、显式刷新环境、旧响应与旧错误隔离、取消后立即重载及容器替换。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。
 
 官方参考：[API](https://getarcane.app/docs/reference/api)、[容器](https://getarcane.app/docs/docker/containers)、[权限](https://getarcane.app/docs/access/roles)、[v2.17.1 容器实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/container/service.go)。

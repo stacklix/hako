@@ -8,6 +8,7 @@ struct ContainersView: View {
     @State private var search = ""
     @State private var filter = ContainerFilter.all
     @State private var groupByProject = false
+    @State private var environmentRevision = UUID()
     @ScaledMetric(relativeTo: .subheadline) private var filterRowHeight = 44
 
     private enum ContainerFilter: String, CaseIterable, Identifiable {
@@ -32,7 +33,7 @@ struct ContainersView: View {
         }
     }
     private var pollKey: String {
-        "\(visible && scenePhase == .active && !showingSettings)-\(store.connection?.id ?? "")-\(store.environmentID)"
+        "\(visible && scenePhase == .active && !showingSettings)-\(store.connection?.id ?? "")-\(environmentRevision)"
     }
     private var projects: [String] {
         Array(Set(filtered.map { $0.project ?? "独立容器" })).sorted()
@@ -53,7 +54,7 @@ struct ContainersView: View {
                 }
             }
             if let error = store.error {
-                Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) }
+                Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
             }
             ArcaneOperationSection(store: store)
         }
@@ -66,7 +67,7 @@ struct ContainersView: View {
                     .accessibilityLabel("Arcane 连接设置").disabled(store.operationRunning)
             }
         }
-        .refreshable { await store.refresh() }
+        .refreshable { await store.refresh(forceEnvironments: true) }
         .sheet(isPresented: $showingSettings) { ArcaneSettingsSheet(store: store) }
         .onAppear { visible = true; store.loadConfiguration() }
         .onDisappear { visible = false }
@@ -162,7 +163,11 @@ struct ContainersView: View {
         HStack(spacing: 12) {
             Image(systemName: "server.rack").font(.title3).foregroundStyle(.secondary)
             Menu {
-                Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: { store.selectEnvironment($0) })) {
+                Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: {
+                    guard $0 != store.environmentID else { return }
+                    store.selectEnvironment($0)
+                    environmentRevision = UUID()
+                })) {
                     ForEach(store.environments) { environment in
                         Text("\(environment.displayName) · \(environment.statusText)").tag(environment.id)
                     }
@@ -188,7 +193,7 @@ struct ContainersView: View {
             }
             .disabled(store.environments.isEmpty)
             .accessibilityLabel("Docker 环境，\(store.environment?.displayName ?? "尚未选择")")
-            Button { Task { await store.refresh() } } label: {
+            Button { Task { await store.refresh(forceEnvironments: true) } } label: {
                 Image(systemName: "arrow.clockwise").frame(minWidth: 44, minHeight: 44)
             }
             .buttonStyle(.plain)
@@ -264,7 +269,12 @@ struct ContainersView: View {
                         }
                         .foregroundStyle(container.abnormal ? Color.red : container.state == "running" ? Color.green : Color.gray)
                         if let update = container.update, update.hasUpdate == true, update.error?.isEmpty != false {
-                            Label("有更新", systemImage: "arrow.down.circle").foregroundStyle(.orange)
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down.circle").accessibilityHidden(true)
+                                Text("有更新")
+                            }
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                     .font(.caption)
@@ -278,6 +288,7 @@ struct ContainersView: View {
                 }
             }.padding(.vertical, 5)
         }
+        .arcaneRowSeparators()
     }
 }
 
@@ -287,22 +298,23 @@ struct ArcaneOperationSection: View {
         if let message = store.operationMessage {
             Section("容器操作") {
                 if let pending = store.pending {
-                    Text("\(pending.environmentName) · \(pending.containerName)").font(.subheadline)
+                    Text("\(pending.environmentName) · \(pending.containerName)").font(.subheadline).arcaneRowSeparators()
                 }
                 if store.operationRunning {
-                    if let value = store.operationProgress { ProgressView(value: Double(value), total: 100) }
-                    else { ProgressView() }
+                    if let value = store.operationProgress { ProgressView(value: Double(value), total: 100).arcaneRowSeparators() }
+                    else { ProgressView().arcaneRowSeparators() }
                 }
-                Text(message).font(.footnote).textSelection(.enabled)
+                Text(message).font(.footnote).textSelection(.enabled).arcaneRowSeparators()
                 if !store.operationLogs.isEmpty {
                     DisclosureGroup("操作日志") {
                         Text(store.operationLogs.joined(separator: "\n"))
-                            .font(.caption.monospaced()).textSelection(.enabled)
+                            .font(.caption.monospaced()).textSelection(.enabled).arcaneRowSeparators()
                     }
+                    .arcaneRowSeparators()
                 }
                 if store.pending != nil && !store.operationRunning {
-                    Button("刷新容器状态") { Task { await store.refresh() } }
-                    Button("已核对状态，清除此提示") { store.acknowledgeUnknownOperation() }
+                    Button("刷新容器状态") { Task { await store.refresh() } }.arcaneRowSeparators()
+                    Button("已核对状态，清除此提示") { store.acknowledgeUnknownOperation() }.arcaneRowSeparators()
                 }
             }
         }

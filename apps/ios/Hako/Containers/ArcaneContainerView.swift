@@ -8,11 +8,10 @@ struct ArcaneContainerView: View {
     let environment: ArcaneEnvironment
     let container: ArcaneContainer
     @StateObject private var live = ArcaneLiveData()
+    @StateObject private var data = ArcaneContainerData()
     @State private var containerID: String
-    @State private var details: ArcaneContainerDetails?
     @State private var update: ArcaneContainerUpdate?
     @State private var error: String?
-    @State private var loading = false
     @State private var checkingUpdate = false
     @State private var visible = false
     @State private var following = true
@@ -26,6 +25,12 @@ struct ArcaneContainerView: View {
     init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer) {
         self.store = store; self.environment = environment; self.container = container
         _containerID = State(initialValue: container.id)
+        _update = State(initialValue: container.update)
+    }
+    private var details: ArcaneContainerDetails? { data.details }
+    private var loading: Bool { data.loading }
+    private var resourceSample: ArcaneResourceSample? {
+        live.sample ?? (containerID == container.id ? container.resourceSample : nil)
     }
     private var active: Bool { visible && scenePhase == .active && !store.operationRunning }
     private var taskKey: String { "\(active)-\(containerID)" }
@@ -46,14 +51,16 @@ struct ArcaneContainerView: View {
                     Text(details?.displayName ?? container.name).font(.title2.bold())
                     Label(environment.displayName, systemImage: "server.rack").font(.caption).foregroundStyle(.secondary)
                     statusBadge
-                }.padding(.vertical, 6).arcaneDetailRowSeparators()
-                Picker("详情页签", selection: $tab) {
-                    Text("概览").tag("overview")
-                    Text("日志").tag("logs")
-                }.pickerStyle(.segmented).arcaneDetailRowSeparators()
-            }
-            if loading && details == nil { Section { ProgressView("正在读取容器…") } }
-            if let error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneDetailRowSeparators() } }
+                }.padding(.vertical, 6).arcaneRowSeparators()
+            }.listSectionSpacing(12)
+            Section {
+                detailTabs
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }.listSectionSpacing(12)
+            if loading && details == nil { Section { ProgressView("正在读取容器…").arcaneRowSeparators() } }
+            if let error = error ?? data.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() } }
             if tab == "overview" { overview }
             else { logs }
             if let details {
@@ -66,13 +73,13 @@ struct ArcaneContainerView: View {
                         } else if ["exited", "created"].contains(details.state?.status ?? "") {
                             Button("启动") { confirming = .start }
                         } else { Text("请在 Arcane 中处理当前容器状态。 ").foregroundStyle(.secondary) }
-                    }.disabled(!canAct).arcaneDetailRowSeparators()
+                    }.disabled(!canAct).arcaneRowSeparators()
                     Button { confirming = .redeploy } label: {
                         Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
-                    }.disabled(!canAct || details.redeployDisabled == true).arcaneDetailRowSeparators()
+                    }.disabled(!canAct || details.redeployDisabled == true).arcaneRowSeparators()
                     Button("删除容器", role: .destructive) { confirming = .delete }
                         .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
-                        .arcaneDetailRowSeparators()
+                        .arcaneRowSeparators()
                 } header: {
                     Text("管理")
                 } footer: {
@@ -81,6 +88,39 @@ struct ArcaneContainerView: View {
             }
             ArcaneOperationSection(store: store)
         }
+    }
+
+    private var detailTabs: some View {
+        HStack(spacing: 0) {
+            detailTab("概览", value: "overview")
+            detailTab("日志", value: "logs")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("详情页签")
+    }
+
+    private func detailTab(_ title: String, value: String) -> some View {
+        let selected = tab == value
+        return Button {
+            tab = value
+        } label: {
+            VStack(spacing: 0) {
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .padding(.vertical, 12)
+                    .frame(minHeight: 44)
+                Capsule()
+                    .fill(selected ? Color.primary : Color.clear)
+                    .frame(width: 28, height: 3)
+                    .accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var statusBadge: some View {
@@ -115,7 +155,7 @@ struct ArcaneContainerView: View {
         .onChange(of: store.lastChange?.id) { _, _ in
             guard let change = store.lastChange, change.environmentID == environment.id, change.originalID == containerID else { return }
             guard let replacement = change.replacementID else { dismiss(); return }
-            containerID = replacement; details = nil; update = nil; showVariableValues = false
+            containerID = replacement; data.reset(); update = nil; showVariableValues = false
             live.reset(); revision = UUID()
         }
         .task(id: taskKey) {
@@ -138,52 +178,40 @@ struct ArcaneContainerView: View {
     }
 
     @ViewBuilder private var overview: some View {
+        resourceSection
         if let details {
             if details.state?.health?.status == "unhealthy" {
-                Section { Label("健康检查未通过，建议先查看日志。", systemImage: "exclamationmark.circle").foregroundStyle(.red).arcaneDetailRowSeparators() }
-            }
-            Section("资源") {
-                if let sample = live.sample, isRunning {
-                    if dynamicTypeSize.isAccessibilitySize {
-                        VStack(alignment: .leading, spacing: 16) { resourceMetrics(sample) }.arcaneDetailRowSeparators()
-                    } else {
-                        HStack(alignment: .top, spacing: 12) { resourceMetrics(sample) }.arcaneDetailRowSeparators()
-                    }
-                    if let traffic = live.networkTraffic, let received = traffic.receivedBytes, let sent = traffic.transmittedBytes {
-                        DisclosureGroup("网络累计流量") {
-                            LabeledContent("上行", value: ByteCountFormatter.string(fromByteCount: sent, countStyle: .decimal))
-                            LabeledContent("下行", value: ByteCountFormatter.string(fromByteCount: received, countStyle: .decimal))
-                        }.font(.caption)
-                    }
-                    if let date = live.sampleAt { Text("最近采样：\(date.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }
-                } else { Text(isRunning ? "等待资源采样…" : "容器未运行").foregroundStyle(.secondary) }
-                if let error = live.statsError { Text(error).font(.footnote).foregroundStyle(.orange) }
+                Section { Label("健康检查未通过，建议先查看日志。", systemImage: "exclamationmark.circle").foregroundStyle(.red).arcaneRowSeparators() }
             }
             Section("容器信息") {
-                LabeledContent("镜像", value: details.image ?? "未知")
-                LabeledContent("容器 ID", value: String(details.id.prefix(12)))
-                if let project = details.project { LabeledContent("Compose 项目", value: project) }
-                if let policy = details.hostConfig?.restartPolicy { LabeledContent("重启策略", value: policy) }
-                if let started = details.state?.startedAt, !started.hasPrefix("0001") { LabeledContent("启动时间", value: started) }
-                if let exit = details.state?.exitCode, !isRunning { LabeledContent("退出码", value: String(exit)) }
-                ForEach(Array((details.ports ?? []).enumerated()), id: \.offset) { _, port in
-                    LabeledContent("端口", value: port.text)
+                LabeledContent("镜像", value: details.image ?? "未知").arcaneRowSeparators()
+                LabeledContent("容器 ID", value: String(details.id.prefix(12))).arcaneRowSeparators()
+                if let project = details.project { LabeledContent("Compose 项目", value: project).arcaneRowSeparators() }
+                if let policy = details.hostConfig?.restartPolicy { LabeledContent("重启策略", value: policy).arcaneRowSeparators() }
+                if let started = details.state?.startedAt, !started.hasPrefix("0001") { LabeledContent("启动时间", value: started).arcaneRowSeparators() }
+                if let exit = details.state?.exitCode, !isRunning { LabeledContent("退出码", value: String(exit)).arcaneRowSeparators() }
+                if let ports = details.portsText {
+                    LabeledContent("端口") {
+                        Text(verbatim: ports)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.arcaneRowSeparators()
                 }
             }.font(.subheadline).textSelection(.enabled)
             Section("镜像更新") {
-                LabeledContent("更新状态", value: update?.text ?? "尚未检查")
-                if let current = update?.currentVersion, !current.isEmpty { LabeledContent("当前版本", value: current) }
-                if let latest = update?.latestVersion, !latest.isEmpty { LabeledContent("可用版本", value: latest) }
+                LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
+                if let current = update?.currentVersion, !current.isEmpty { LabeledContent("当前版本", value: current).arcaneRowSeparators() }
+                if let latest = update?.latestVersion, !latest.isEmpty { LabeledContent("可用版本", value: latest).arcaneRowSeparators() }
                 if let digest = update?.latestDigest, !digest.isEmpty {
-                    LabeledContent("可用摘要", value: String(digest.prefix(24)) + "…")
+                    LabeledContent("可用摘要", value: String(digest.prefix(24)) + "…").arcaneRowSeparators()
                 }
-                if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary) }
-                if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange) }
+                if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
+                if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
                 Button {
                     Task { await checkUpdate() }
                 } label: {
                     HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
-                }.disabled(checkingUpdate || store.operationRunning)
+                }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
             }
             Section("配置") {
                 DisclosureGroup("挂载与存储（\(details.mounts?.count ?? 0)）") {
@@ -192,27 +220,61 @@ struct ArcaneContainerView: View {
                             Text(mount.destination ?? "未知路径")
                             Text(mount.name ?? mount.source ?? "临时挂载").foregroundStyle(.secondary)
                             Text(mount.rw == true ? "读写" : "只读").font(.caption).foregroundStyle(.secondary)
-                        }.textSelection(.enabled)
+                        }.textSelection(.enabled).arcaneRowSeparators()
                     }
-                }
+                }.arcaneRowSeparators()
                 DisclosureGroup("网络") {
                     ForEach(Array((details.networkSettings?.networks ?? [:]).keys).sorted(), id: \.self) { name in
                         let network = details.networkSettings?.networks?[name]
-                        LabeledContent(name, value: [network?.ipAddress, network?.globalIPv6Address].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n"))
+                        LabeledContent(name, value: [network?.ipAddress, network?.globalIPv6Address].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")).arcaneRowSeparators()
                     }
-                }
+                }.arcaneRowSeparators()
                 DisclosureGroup("环境变量（\(details.config?.env?.count ?? 0)）") {
-                    Toggle("显示变量值", isOn: $showVariableValues)
+                    Toggle("显示变量值", isOn: $showVariableValues).arcaneRowSeparators()
                     ForEach(Array((details.config?.env ?? []).enumerated()), id: \.offset) { _, variable in
                         let parts = variable.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(String(parts.first ?? "")).font(.caption.monospaced())
                             Text(showVariableValues ? String(parts.dropFirst().first ?? "") : "••••••••")
                                 .foregroundStyle(.secondary).textSelection(.enabled).privacySensitive()
-                        }
+                        }.arcaneRowSeparators()
                     }
-                }
+                }.arcaneRowSeparators()
             }.font(.subheadline)
+        } else {
+            Section("容器信息") {
+                LabeledContent("镜像", value: container.image ?? "未知").arcaneRowSeparators()
+                LabeledContent("容器 ID", value: String(containerID.prefix(12))).arcaneRowSeparators()
+                if let project = container.project { LabeledContent("Compose 项目", value: project).arcaneRowSeparators() }
+                Text(data.error == nil ? "正在读取完整配置…" : "完整配置读取失败，请下拉重试。")
+                    .font(.caption).foregroundStyle(.secondary).arcaneRowSeparators()
+            }.font(.subheadline).textSelection(.enabled)
+        }
+    }
+
+    private var resourceSection: some View {
+        Section("资源") {
+            if let sample = resourceSample, isRunning {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 16) { resourceMetrics(sample) }.arcaneRowSeparators()
+                } else {
+                    HStack(alignment: .top, spacing: 12) { resourceMetrics(sample) }.arcaneRowSeparators()
+                }
+                if let traffic = live.networkTraffic, let received = traffic.receivedBytes, let sent = traffic.transmittedBytes {
+                    DisclosureGroup("网络累计流量") {
+                        LabeledContent("上行", value: ByteCountFormatter.string(fromByteCount: sent, countStyle: .decimal)).arcaneRowSeparators()
+                        LabeledContent("下行", value: ByteCountFormatter.string(fromByteCount: received, countStyle: .decimal)).arcaneRowSeparators()
+                    }.font(.caption).arcaneRowSeparators()
+                }
+                if let date = live.sampleAt {
+                    Text("最近采样：\(date.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators()
+                } else {
+                    Text("列表采样 · 正在连接实时数据…").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators()
+                }
+            } else {
+                Text(isRunning ? "等待资源采样…" : "容器未运行").foregroundStyle(.secondary).arcaneRowSeparators()
+            }
+            if let error = live.statsError { Text(error).font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
         }
     }
 
@@ -244,24 +306,24 @@ struct ArcaneContainerView: View {
 
     private var logs: some View {
         Section {
-            Toggle("实时跟随", isOn: $following)
-            if let error = live.logsError { Text(error).font(.footnote).foregroundStyle(.orange) }
+            Toggle("实时跟随", isOn: $following).arcaneRowSeparators()
+            if let error = live.logsError { Text(error).font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
             if live.logs.isEmpty {
                 Text(live.logsConnected ? "暂时没有日志输出。" : following ? "等待日志输出…" : "已暂停跟随。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary).arcaneRowSeparators()
             } else {
                 ForEach(live.logs) { line in
                     Text(line.text).font(.caption.monospaced()).textSelection(.enabled)
                         .listRowSeparator(.hidden)
                 }
             }
-            Button("重新连接日志") { revision = UUID(); following = true }
+            Button("重新连接日志") { revision = UUID(); following = true }.arcaneRowSeparators()
             Button {
                 Task { await exportLogs() }
             } label: {
                 HStack { Label("导出日志", systemImage: "square.and.arrow.up"); Spacer(); if exporting { ProgressView() } }
-            }.disabled(exporting).arcaneDetailRowSeparators()
-            if let exportedLog { ShareLink("分享日志文件", item: exportedLog).arcaneDetailRowSeparators() }
+            }.disabled(exporting).arcaneRowSeparators()
+            if let exportedLog { ShareLink("分享日志文件", item: exportedLog).arcaneRowSeparators() }
         } header: {
             Text(live.logsConnected && following ? "容器日志 · 已连接" : "容器日志")
         } footer: {
@@ -270,17 +332,12 @@ struct ArcaneContainerView: View {
     }
 
     private func refreshDetails() async {
-        guard !loading, !store.operationRunning else { return }
-        let id = containerID
-        loading = true
-        defer { loading = false }
+        guard !store.operationRunning else { return }
         do {
-            let value = try await store.client().details(environment.id, id: id)
-            try Task.checkCancellation()
-            guard id == containerID else { return }
-            details = value; update = value.updateInfo?.forContainer(value.id); error = nil
-        } catch is CancellationError { }
-        catch { if id == containerID { self.error = error.localizedDescription } }
+            if let value = await data.refresh(client: try store.client(), environment: environment.id, container: containerID) {
+                update = value.updateInfo?.forContainer(value.id); error = nil
+            }
+        } catch { self.error = error.localizedDescription }
     }
 
     private func checkUpdate() async {
@@ -324,12 +381,5 @@ struct ArcaneContainerView: View {
         case .delete: return "删除容器，保留数据卷。此操作不能撤销。"
         case .redeploy: return details?.project == nil ? "拉取镜像并重建容器，服务会短暂中断。" : "由 Arcane 依据 Compose 项目配置更新此服务，关联副本也可能重建，服务会短暂中断。"
         }
-    }
-}
-
-private extension View {
-    func arcaneDetailRowSeparators() -> some View {
-        alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in dimensions.width }
     }
 }

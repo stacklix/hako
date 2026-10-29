@@ -26,13 +26,20 @@ struct ArcaneContainerChange {
     private var configurationLoaded = false
     private var actionTask: Task<Void, Never>?
     private var refreshTicket: UUID?
-    private var refreshContext: String?
+    private var cachedClient: ArcaneClient?
+    private let defaults: UserDefaults
+    private let clientFactory: (ArcaneConnection) throws -> ArcaneClient
     private static let pendingKey = "arcane.pending-operation"
     var environment: ArcaneEnvironment? { environments.first { $0.id == environmentID } }
     var environmentName: String { environment?.displayName ?? environmentID }
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: Self.pendingKey) {
+    init(connection: ArcaneConnection? = nil, defaults: UserDefaults = .standard,
+         clientFactory: @escaping (ArcaneConnection) throws -> ArcaneClient = { try ArcaneClient(connection: $0) }) {
+        self.connection = connection
+        self.defaults = defaults
+        self.clientFactory = clientFactory
+        configurationLoaded = connection != nil
+        if let data = defaults.data(forKey: Self.pendingKey) {
             pending = try? JSONDecoder().decode(ArcanePendingOperation.self, from: data)
             if pending != nil { operationMessage = "上次操作的结果尚未确认，请刷新状态并核对 Arcane 活动记录。" }
         }
@@ -55,45 +62,49 @@ struct ArcaneContainerChange {
         }
         try ArcaneKeychain.save(normalized)
         connection = normalized
+        cachedClient = nil
         configurationLoaded = true
         containers = []; environments = []; environmentID = ""; updatedAt = nil; error = nil
         operationMessage = nil; operationLogs = []; lastChange = nil
-        refreshTicket = nil; refreshContext = nil; loading = false
+        refreshTicket = nil; loading = false
     }
 
     func client() throws -> ArcaneClient {
         guard let connection else { throw ArcaneFailure(message: "请先配置 Arcane 连接。") }
-        return try ArcaneClient(connection: connection)
+        if let cachedClient { return cachedClient }
+        let client = try clientFactory(connection)
+        cachedClient = client
+        return client
     }
 
     func selectEnvironment(_ id: String) {
         guard id != environmentID, environments.contains(where: { $0.id == id }) else { return }
         environmentID = id
         containers = []; updatedAt = nil; error = nil
-        refreshTicket = nil; refreshContext = nil; loading = false
-        if let connection { UserDefaults.standard.set(id, forKey: "arcane.environment." + connection.id) }
+        refreshTicket = nil; loading = false
+        if let connection { defaults.set(id, forKey: "arcane.environment." + connection.id) }
     }
 
-    func refresh() async {
+    func refresh(forceEnvironments: Bool = false) async {
         loadConfiguration()
         guard let connection else { return }
-        let context = connection.id + ":" + environmentID
-        guard refreshContext != context else { return }
         let ticket = UUID()
-        refreshTicket = ticket; refreshContext = context
+        refreshTicket = ticket
         loading = true
-        defer { if refreshTicket == ticket { loading = false; refreshContext = nil } }
+        defer { if refreshTicket == ticket { loading = false } }
         do {
             let client = try client()
-            let environments = try await client.environments()
-            try Task.checkCancellation()
-            guard self.connection?.id == connection.id, refreshTicket == ticket else { return }
-            self.environments = environments
-            if !environments.contains(where: { $0.id == environmentID }) {
-                let stored = UserDefaults.standard.string(forKey: "arcane.environment." + connection.id)
-                environmentID = environments.first(where: { $0.id == stored })?.id
-                    ?? environments.first(where: { $0.id == "0" })?.id ?? environments.first?.id ?? ""
-                containers = []; updatedAt = nil
+            if environments.isEmpty || forceEnvironments {
+                let environments = try await client.environments()
+                try Task.checkCancellation()
+                guard self.connection?.id == connection.id, refreshTicket == ticket else { return }
+                self.environments = environments
+                if !environments.contains(where: { $0.id == environmentID }) {
+                    let stored = defaults.string(forKey: "arcane.environment." + connection.id)
+                    environmentID = environments.first(where: { $0.id == stored })?.id
+                        ?? environments.first(where: { $0.id == "0" })?.id ?? environments.first?.id ?? ""
+                    containers = []; updatedAt = nil
+                }
             }
             guard !environmentID.isEmpty else { error = "当前 API Key 没有可访问的 Docker 环境。"; return }
             let id = environmentID
@@ -113,7 +124,7 @@ struct ArcaneContainerChange {
             let operation = ArcanePendingOperation(connectionID: client.connection.id, environmentID: environment.id,
                 environmentName: environment.displayName, containerID: container.id, containerName: container.displayName, action: action)
             // Persist before sending: app termination or background suspension must not cause an automatic retry.
-            UserDefaults.standard.set(try JSONEncoder().encode(operation), forKey: Self.pendingKey)
+            defaults.set(try JSONEncoder().encode(operation), forKey: Self.pendingKey)
             pending = operation; operationRunning = true
             operationMessage = "正在\(action.title)：\(operation.containerName)"
             operationLogs = []; operationProgress = nil
@@ -146,7 +157,7 @@ struct ArcaneContainerChange {
 
     private func clearPending() {
         pending = nil
-        UserDefaults.standard.removeObject(forKey: Self.pendingKey)
+        defaults.removeObject(forKey: Self.pendingKey)
     }
 
     private func observeOperation(_ operation: ArcanePendingOperation, client: ArcaneClient, baseline: Set<String>) async {
@@ -166,6 +177,36 @@ struct ArcaneContainerChange {
                 try await Task.sleep(for: .seconds(2))
             } catch { return } // Activity permission is optional; never block or retry the mutation.
         }
+    }
+}
+
+@MainActor final class ArcaneContainerData: ObservableObject {
+    @Published private(set) var details: ArcaneContainerDetails?
+    @Published private(set) var loading = false
+    @Published private(set) var error: String?
+    private var refreshTicket: UUID?
+
+    func reset() {
+        refreshTicket = nil
+        details = nil; loading = false; error = nil
+    }
+
+    // A new visible-page task supersedes a cancelled request immediately. Old
+    // completions cannot clear its loading state or replace its data/errors.
+    func refresh(client: ArcaneClient, environment: String, container: String) async -> ArcaneContainerDetails? {
+        let ticket = UUID()
+        refreshTicket = ticket
+        loading = true
+        defer { if refreshTicket == ticket { loading = false } }
+        do {
+            let value = try await client.details(environment, id: container)
+            try Task.checkCancellation()
+            guard refreshTicket == ticket else { return nil }
+            details = value; error = nil
+            return value
+        } catch is CancellationError { }
+        catch { if refreshTicket == ticket { self.error = error.localizedDescription } }
+        return nil
     }
 }
 

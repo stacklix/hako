@@ -179,7 +179,11 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
     struct HostConfig: Decodable { let restartPolicy: String?; let memory: Int64?; let autoRemove: Bool? }
     struct Port: Decodable {
         let privatePort: Int; let publicPort: Int?; let type: String?
-        var text: String { "\(publicPort.map { "\($0) → " } ?? "")\(privatePort)/\(type ?? "tcp")" }
+        var text: String {
+            let containerPort = "\(privatePort)/\(type ?? "tcp")"
+            guard let publicPort, publicPort > 0 else { return containerPort }
+            return "\(publicPort) → \(containerPort)"
+        }
     }
     struct Mount: Decodable { let type: String?; let name: String?; let source: String?; let destination: String?; let rw: Bool? }
     struct Networks: Decodable {
@@ -188,6 +192,10 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
     }
     var displayName: String { (name ?? String(id.prefix(12))).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
     var project: String? { labels?["com.docker.compose.project"] }
+    var portsText: String? {
+        guard let ports, !ports.isEmpty else { return nil }
+        return ports.map(\.text).joined(separator: "\n")
+    }
 }
 
 struct ArcaneResourceSample: Decodable {
