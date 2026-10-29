@@ -86,7 +86,7 @@ struct ContainersView: View {
         .searchable(text: $search, prompt: "搜索容器、镜像或项目")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                Button { showingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel("Arcane 连接设置").disabled(store.operationRunning)
             }
         }

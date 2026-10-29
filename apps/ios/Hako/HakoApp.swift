@@ -244,17 +244,17 @@ struct SettingsView: View {
         Form {
             Section("Hako 服务") {
                 Button { sheet = .server } label: {
-                    Label("服务器与登录", systemImage: "server.rack")
+                    settingsEntry("服务器与登录", systemImage: "server.rack")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 Button { sheet = .scanner } label: {
-                    Label("扫码登录", systemImage: "qrcode.viewfinder")
+                    settingsEntry("扫码登录", systemImage: "qrcode.viewfinder")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
             Section("GitHub") {
                 Button { sheet = .github } label: {
-                    Label("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
+                    settingsEntry("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
@@ -313,6 +313,18 @@ struct SettingsView: View {
             .task(id: updateCheckID) { await loadLatestBuildDate() }
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
     }
+    private func settingsEntry(_ title: String, systemImage: String) -> some View {
+        HStack {
+            Label(title, systemImage: systemImage)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+        }
+        .contentShape(Rectangle())
+    }
+
     private func loadLatestBuildDate() async {
         guard !Task.isCancelled else { return }
         checkingForUpdate = true
