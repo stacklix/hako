@@ -22,8 +22,11 @@ struct AddAgentSheet: View {
                     LabeledContent("账号", value: client.username)
                 }
                 Section {
-                    TextField("设备名称，例如我的设备", text: $name)
-                        .accessibilityLabel("设备名称")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("设备名称").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("例如我的设备", text: $name)
+                            .accessibilityLabel("设备名称")
+                    }
                 } header: { Text("设备信息") }
                 Section {
                     TextEditor(text: $publicKeyPEM)

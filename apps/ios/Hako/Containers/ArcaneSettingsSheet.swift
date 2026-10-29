@@ -16,11 +16,21 @@ struct ArcaneSettingsSheet: View {
                       saveEnabled: loaded && hasChanges && store.pending == nil, onSave: save) {
             Form {
                 Section("连接信息") {
-                    TextField("连接名称", text: $connection.name)
-                    TextField("https://arcane.example.com", text: $connection.address)
-                        .keyboardType(.URL).accessibilityLabel("Arcane 服务地址")
-                    SecureField("API Key", text: $connection.apiKey)
-                        .accessibilityLabel("Arcane API Key")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("连接名称").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("例如我的服务器", text: $connection.name)
+                            .accessibilityLabel("连接名称")
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("服务地址").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("https://arcane.example.com", text: $connection.address)
+                            .keyboardType(.URL).accessibilityLabel("Arcane 服务地址")
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("API Key").font(.subheadline).foregroundStyle(.secondary)
+                        SecureField("输入 API Key", text: $connection.apiKey)
+                            .accessibilityLabel("Arcane API Key")
+                    }
                 }
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .disabled(!loaded || testing)
