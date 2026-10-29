@@ -41,6 +41,10 @@ jobs:
           /tmp/hako-core-tests
           swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
           /tmp/hako-github-tests
+      - name: Test device card ordering, layout and scroll restoration
+        run: |
+          swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
+          /tmp/hako-device-card-tests
       - name: Test Arcane client protocols and networking
         run: |
           swiftc -target arm64-apple-macos14.0 -typecheck Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift
