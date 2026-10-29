@@ -12,17 +12,20 @@ struct ContainersView: View {
     private enum ContainerFilter: String, CaseIterable, Identifiable {
         case all = "全部", abnormal = "异常", stopped = "已停止", updates = "有更新"
         var id: String { rawValue }
+
+        func includes(_ container: ArcaneContainer) -> Bool {
+            switch self {
+            case .all: return true
+            case .abnormal: return container.abnormal
+            case .stopped: return container.stopped
+            case .updates: return container.update?.hasUpdate == true && container.update?.error?.isEmpty != false
+            }
+        }
     }
     private var filtered: [ArcaneContainer] {
         store.containers.filter { item in
             let matches = search.isEmpty || [item.name, item.image ?? "", item.project ?? ""].contains { $0.localizedCaseInsensitiveContains(search) }
-            guard matches else { return false }
-            switch filter {
-            case .all: return true
-            case .abnormal: return item.abnormal
-            case .stopped: return item.stopped
-            case .updates: return item.update?.hasUpdate == true && item.update?.error?.isEmpty != false
-            }
+            return matches && filter.includes(item)
         }.sorted {
             if $0.abnormal != $1.abnormal { return $0.abnormal }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -40,24 +43,7 @@ struct ContainersView: View {
                     Button("配置 Arcane 连接") { showingSettings = true }
                 }
             } else {
-                Section {
-                    if !store.environments.isEmpty {
-                        Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: { store.selectEnvironment($0) })) {
-                            ForEach(store.environments) { environment in
-                                Text("\(environment.displayName) · \(environment.statusText)").tag(environment.id)
-                            }
-                        }
-                    }
-                    LabeledContent(store.connection?.name ?? "Arcane", value: "\(store.containers.count) 个容器")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    Picker("筛选", selection: $filter) {
-                        ForEach(ContainerFilter.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented)
-                    Toggle("按 Compose 项目分组", isOn: $groupByProject)
-                        .font(.subheadline)
-                } footer: {
-                    if let updatedAt = store.updatedAt { Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新") }
-                }
+                controls
                 if store.loading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
                 if let environment = store.environment {
                     if filtered.isEmpty && !store.loading {
@@ -83,7 +69,7 @@ struct ContainersView: View {
             ArcaneOperationSection(store: store)
         }
         .navigationTitle("容器管理")
-        .searchable(text: $search, prompt: "搜索容器、镜像或项目")
+        .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
@@ -101,6 +87,137 @@ struct ContainersView: View {
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
             }
         }
+    }
+
+    private var controls: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 12) {
+                environmentSelector
+                searchField
+                HStack(spacing: 12) {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(ContainerFilter.allCases) { option in filterButton(option) }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    composeCheckbox
+                }
+                if let updatedAt = store.updatedAt {
+                    Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    private var composeCheckbox: some View {
+        Button { groupByProject.toggle() } label: {
+            Label("Compose", systemImage: groupByProject ? "checkmark.square.fill" : "square")
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityRepresentation {
+            Toggle("按 Compose 项目分组", isOn: $groupByProject).toggleStyle(.switch)
+        }
+    }
+
+    private var environmentSelector: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "server.rack").font(.title3).foregroundStyle(.secondary)
+            Menu {
+                Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: { store.selectEnvironment($0) })) {
+                    ForEach(store.environments) { environment in
+                        Text("\(environment.displayName) · \(environment.statusText)").tag(environment.id)
+                    }
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
+                        Text(store.environment?.displayName ?? "选择 Docker 环境")
+                            .font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(.primary)
+                    HStack(spacing: 6) {
+                        Circle().fill(environmentStatusColor).frame(width: 6, height: 6).accessibilityHidden(true)
+                        Text(store.environment?.statusText ?? "状态未知")
+                        Text("·")
+                        Text(store.connection?.name ?? "Arcane").lineLimit(1)
+                        Spacer(minLength: 0)
+                        Text("\(store.containers.count) 个容器").fixedSize()
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            }
+            .disabled(store.environments.isEmpty)
+            .accessibilityLabel("Docker 环境，\(store.environment?.displayName ?? "尚未选择")")
+            Button { Task { await store.refresh() } } label: {
+                Image(systemName: "arrow.clockwise").frame(minWidth: 44, minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .disabled(store.loading)
+            .accessibilityLabel(store.loading ? "正在刷新容器" : "刷新容器")
+        }
+        .padding(12)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var environmentStatusColor: Color {
+        guard store.environment?.enabled != false else { return .secondary }
+        switch store.environment?.status?.lowercased() {
+        case "online", "connected": return .green
+        case "standby": return .orange
+        case "offline", "disconnected", "error": return .red
+        default: return .secondary
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("搜索容器、镜像或项目", text: $search)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .submitLabel(.search).accessibilityLabel("搜索容器、镜像或项目")
+            if !search.isEmpty {
+                Button { search = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        .frame(minWidth: 44, minHeight: 44)
+                }.buttonStyle(.plain).accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func filterButton(_ option: ContainerFilter) -> some View {
+        let selected = filter == option
+        let count = store.containers.filter { option.includes($0) }.count
+        let title = "\(option.rawValue) \(count)"
+        let foreground = selected ? Color(uiColor: .systemBackground) : Color.primary
+        let background = selected ? Color.primary : Color(uiColor: .secondarySystemGroupedBackground)
+        return Button { filter = option } label: {
+            Text(verbatim: title)
+                .font(.subheadline)
+                .monospacedDigit()
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(background, in: Capsule())
+                .foregroundStyle(foreground)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(option.rawValue)，\(count) 个容器")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func containerLink(_ container: ArcaneContainer, environment: ArcaneEnvironment) -> some View {
