@@ -64,12 +64,14 @@ private struct ArcaneHostDetails: View {
             if let ports = data.ports {
                 if ports.isEmpty { Text("没有 Docker 网络端口").foregroundStyle(.secondary).arcaneRowSeparators() }
                 ForEach(ports) { container in
-                    VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 12) {
                         Text(container.name).font(.subheadline.weight(.semibold))
-                        ForEach(container.ports) { port in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(port.title).font(.subheadline).monospacedDigit()
-                                Text(port.bindingText).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            ForEach(container.ports) { port in
+                                Text(port.title).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.trailing).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }.padding(.vertical, 4).textSelection(.enabled).arcaneRowSeparators()
@@ -79,9 +81,7 @@ private struct ArcaneHostDetails: View {
                 Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
                 Button("重新读取端口") { Task { await refreshPorts() } }.disabled(data.portsLoading).arcaneRowSeparators()
             }
-        } header: { Text("网络端口") } footer: {
-            Text("按容器展示 Docker 声明的端口及宿主机映射，映射格式为「宿主端口 → 容器端口/协议」。0.0.0.0／:: 表示绑定所有 IPv4／IPv6 地址。未映射端口也会展示；外部访问取决于网络及防火墙。")
-        }
+        } header: { Text("网络端口") }
     }
 
     private var resources: some View {

@@ -70,8 +70,8 @@ private final class HostMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(grouped.map(\.name) == ["app", "caddy"])
         precondition(grouped[0].ports.map(\.title) == ["8080 → 80/tcp"])
         precondition(grouped[1].ports.map(\.title) == ["80/tcp", "80 → 80/tcp", "443 → 443/tcp", "443 → 443/udp", "2019/tcp"])
-        precondition(grouped[1].ports[1].bindingText == "绑定：0.0.0.0、::" && grouped[0].ports[0].bindingText == "绑定：127.0.0.1")
-        precondition(grouped[1].ports[0].bindingText == "未映射到宿主机" && grouped[1].ports[4].bindingText == "未映射到宿主机")
+        precondition(grouped[1].ports[1].addresses == ["0.0.0.0", "::"] && grouped[0].ports[0].addresses == ["127.0.0.1"])
+        precondition(grouped[1].ports[0].id.hostPort == nil && grouped[1].ports[4].id.hostPort == nil)
         let reversed = ArcaneContainerPorts.summarize(Array(bindings.reversed()))
         precondition(reversed.map(\.id) == grouped.map(\.id) && reversed.flatMap { $0.ports.map(\.id) } == grouped.flatMap { $0.ports.map(\.id) },
                      "Group by container and sort ports numerically without changing on refresh")

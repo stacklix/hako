@@ -129,10 +129,6 @@ struct ArcaneNetworkPort: Identifiable {
         let target = "\(id.containerPort)/\(id.transport)"
         return id.hostPort.map { "\($0) → " + target } ?? target
     }
-    var bindingText: String {
-        guard id.hostPort != nil else { return "未映射到宿主机" }
-        return "绑定：" + addresses.map { $0.isEmpty ? "未指定地址" : $0 }.joined(separator: "、")
-    }
 }
 
 struct ArcaneContainerPorts: Identifiable {
