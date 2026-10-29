@@ -47,6 +47,26 @@ import Foundation
         days[0]["totalTokens"] = 111
         let invalidUsage = try codex(days)
         precondition(!invalidUsage.isValid)
+        func metrics(_ network: Any? = nil) throws -> ConsoleMetrics {
+            var payload: [String: Any] = ["cpuUsagePercent": 25, "memoryUsagePercent": 50,
+                "memoryUsedBytes": 4_294_967_296, "memoryTotalBytes": 8_589_934_592,
+                "sampledAt": "2026-10-29T08:00:00Z", "sampleWindowMs": 1000]
+            if let network { payload["network"] = network }
+            return try decoder.decode(ConsoleMetrics.self, from: JSONSerialization.data(withJSONObject: payload))
+        }
+        let legacyMetrics = try metrics()
+        precondition(legacyMetrics.isValid && !legacyMetrics.networkReported && legacyMetrics.network == nil)
+        let networkMetrics = try metrics(["available": true, "downloadBytesPerSecond": 3072,
+            "uploadBytesPerSecond": 1536, "interfaceCount": 2])
+        precondition(networkMetrics.isValid && networkMetrics.networkReported && networkMetrics.network?.isValid == true
+            && networkMetrics.network?.downloadBytesPerSecond == 3072 && networkMetrics.network?.uploadBytesPerSecond == 1536)
+        let unavailableMetrics = try metrics(["available": false, "interfaceCount": 0, "message": "暂不可用"])
+        precondition(unavailableMetrics.isValid && unavailableMetrics.network?.isValid == true && unavailableMetrics.network?.available == false)
+        let malformedNetwork = try metrics(["available": "bad"])
+        precondition(malformedNetwork.isValid && malformedNetwork.networkReported && malformedNetwork.network == nil)
+        let negativeRate = try metrics(["available": true, "downloadBytesPerSecond": -1,
+            "uploadBytesPerSecond": 1, "interfaceCount": 1])
+        precondition(negativeRate.isValid && negativeRate.network?.isValid == false)
         let payload = Data(#"{"capabilities":[{"name":"query.system.metrics","version":1}],"result":{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}},"query.future.data":{"version":7,"result":{"bytes":9007199254740993}},"query.future.null":{"version":1,"result":null},"query.future.invalid":{"version":1,"error":{},"result":0}}}}"#.utf8)
         let envelope = try decoder.decode(ConsoleQueryEnvelope.self, from: payload)
         precondition(envelope.capabilities.first?.name == "query.system.metrics")

@@ -101,6 +101,24 @@ struct ConsoleMetrics: Decodable {
     let memoryTotalBytes: UInt64
     let sampledAt: String
     let sampleWindowMs: Int
+    let network: ConsoleNetworkMetrics?
+    let networkReported: Bool
+    private enum CodingKeys: String, CodingKey {
+        case cpuUsagePercent, memoryUsagePercent, memoryUsedBytes, memoryTotalBytes, sampledAt, sampleWindowMs, network
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        cpuUsagePercent = try values.decode(Double.self, forKey: .cpuUsagePercent)
+        memoryUsagePercent = try values.decode(Double.self, forKey: .memoryUsagePercent)
+        memoryUsedBytes = try values.decode(UInt64.self, forKey: .memoryUsedBytes)
+        memoryTotalBytes = try values.decode(UInt64.self, forKey: .memoryTotalBytes)
+        sampledAt = try values.decode(String.self, forKey: .sampledAt)
+        sampleWindowMs = try values.decode(Int.self, forKey: .sampleWindowMs)
+        if values.contains(.network) { networkReported = !(try values.decodeNil(forKey: .network)) }
+        else { networkReported = false }
+        // A malformed optional network result must not discard valid CPU/memory data.
+        network = try? values.decode(ConsoleNetworkMetrics.self, forKey: .network)
+    }
     var isValid: Bool {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -109,6 +127,18 @@ struct ConsoleMetrics: Decodable {
             && memoryUsagePercent.isFinite && (0...100).contains(memoryUsagePercent)
             && memoryTotalBytes > 0 && memoryUsedBytes <= memoryTotalBytes && (500...5000).contains(sampleWindowMs)
             && abs(memoryUsagePercent - Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100) < 0.1
+    }
+}
+struct ConsoleNetworkMetrics: Decodable {
+    let available: Bool
+    let downloadBytesPerSecond: Double?
+    let uploadBytesPerSecond: Double?
+    let interfaceCount: Int
+    let message: String?
+    var isValid: Bool {
+        interfaceCount >= 0 && (!available || (interfaceCount > 0
+            && downloadBytesPerSecond.map { $0.isFinite && $0 >= 0 } == true
+            && uploadBytesPerSecond.map { $0.isFinite && $0 >= 0 } == true))
     }
 }
 // Preserve integer values when presenting unknown query payloads.

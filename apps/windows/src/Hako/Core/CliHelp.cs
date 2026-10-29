@@ -17,7 +17,7 @@ public static class CliHelp
         new("key export-public", "导出 SPKI PEM 公钥；省略 --output 则输出到终端；覆盖文件需要 --force。", "Hako.exe key export-public [--output desktop.public.pem] [--force] [--json]"),
         new("connect", "启动或复用后台实例并发起连接；使用 status 检查是否已通过身份验证。", "Hako.exe connect [--json]"),
         new("disconnect", "断开连接并停止重试，保留后台进程和配置。", "Hako.exe disconnect [--json]"),
-        new("metrics", "按需采样本机 CPU、物理内存（约 1 秒），无需连接服务器。", "Hako.exe metrics [--json]"),
+        new("metrics", "按需采样本机 CPU、物理内存及网络上下行速度（约 1 秒），无需连接服务器。", "Hako.exe metrics [--json]"),
         new("exit", "退出当前配置对应的 Hako 实例，保留已保存的配置和密钥。", "Hako.exe exit [--json]")
     ];
     public static Entry[] Get(string topic)

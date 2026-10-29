@@ -14,11 +14,10 @@ struct DeviceMonitorView: View {
         List {
             if client.serverURL.isEmpty {
                 Section {
-                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("可在 Hako 设置的“服务器与登录”中先导出本机公钥，再填写服务器地址和账号。"))
-                    Button("配置服务器") { sheet = .server }
+                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("点击右上角设置，在“服务器与登录”中导出本机公钥并填写连接信息。"))
                 }
             } else if client.authenticated {
-                Section("设备") {
+                Section {
                     if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary) }
                     ForEach(client.agents) { agent in
                         NavigationLink { DeviceMetricsView(agent: agent) } label: {
@@ -40,33 +39,47 @@ struct DeviceMonitorView: View {
                         .disabled(!agent.online)
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     }
-                }
-                Section {
-                    Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
-                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    Button { sheet = .server } label: {
-                        Label("服务器与登录", systemImage: "server.rack")
+                    if client.agents.isEmpty {
+                        Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
+                            .disabled(client.busy)
+                            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                }.disabled(client.busy)
+                } header: {
+                    HStack {
+                        Text("设备")
+                        Spacer()
+                        if !client.agents.isEmpty {
+                            Button { sheet = .addAgent } label: {
+                                Image(systemName: "plus").font(.body.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.primary)
+                            .accessibilityLabel("添加 Agent").disabled(client.busy)
+                        }
+                    }
+                }
             } else if client.hasSavedSession {
                 Section {
                     Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
                         .foregroundStyle(.secondary)
                     Button("验证并继续") { Task { await refreshDevices() } }
-                    Button("服务器与登录") { sheet = .server }
+                    Text("可在右上角设置中检查服务器与登录。").font(.footnote).foregroundStyle(.secondary)
                 }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
-                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在 Hako 设置的“服务器与登录”中重试。" : "在 Hako 设置的“服务器与登录”中导出本机公钥，手工登记到服务端后登录。")
+                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在右上角设置的“服务器与登录”中重试。" : "在右上角设置的“服务器与登录”中导出本机公钥，手工登记到服务端后登录。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Button("服务器与登录") { sheet = .server }
                 }
             }
             if let message = client.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
         }
         .navigationTitle("设备监控")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { sheet = .server } label: { Image(systemName: "gearshape") }
+                    .accessibilityLabel("服务器与登录设置")
+            }
+        }
         .refreshable { await refreshDevices() }
         .sheet(item: $sheet) { route in
             switch route {
@@ -101,9 +114,7 @@ struct DeviceMetricsView: View {
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
     @ObservedObject private var client = ConsoleClient.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var refreshButtonActive = false
     @State private var targetURL = ""
     @State private var selectedTab: DetailTab = .query
     @State private var codexTab: CodexTab = .sessions
@@ -111,7 +122,6 @@ struct DeviceMetricsView: View {
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
     private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
-    private var canQuery: Bool { currentAgent.capabilities?.contains { $0.name.hasPrefix("query.") } ?? true }
     private var visibleCapabilities: [ConsoleAgentCapability] {
         (currentAgent.capabilities ?? []).filter { selectedTab == .query ? $0.name.hasPrefix("query.") : !$0.name.hasPrefix("query.") }
     }
@@ -141,21 +151,6 @@ struct DeviceMetricsView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal).padding(.vertical, 8)
             .background(.bar)
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    guard !refreshButtonActive else { return }
-                    refreshButtonActive = true
-                    Task { await refreshFromButton() }
-                } label: {
-                    MonitorRefreshIcon(isRefreshing: state.loading || refreshButtonActive)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("刷新设备数据")
-                .accessibilityValue(state.loading || refreshButtonActive ? "正在刷新" : "")
-                .disabled(refreshButtonActive || state.loading || !client.authenticated || !canQuery)
-            }
         }
         .task { if client.authenticated { await client.query(currentAgent) } }
     }
@@ -255,17 +250,6 @@ struct DeviceMetricsView: View {
             } else { Text("当前客户端暂不支持此操作或版本。").font(.footnote).foregroundStyle(.secondary) }
         }
     }
-    @MainActor private func refreshFromButton() async {
-        let clock = ContinuousClock()
-        let startedAt = clock.now
-        defer { refreshButtonActive = false }
-        await client.query(currentAgent)
-        // Keep feedback visible for one turn without delaying the query or its results.
-        if !reduceMotion {
-            let remaining = Duration.milliseconds(800) - startedAt.duration(to: clock.now)
-            if remaining > .zero { try? await Task.sleep(for: remaining) }
-        }
-    }
     private func capabilityTitle(_ capability: ConsoleAgentCapability) -> String {
         switch (capability.name, capability.version) {
         case ("query.system.metrics", 1): return "系统指标"
@@ -292,6 +276,8 @@ struct DeviceMetricsView: View {
             } else {
                 HStack(alignment: .top, spacing: 18) { resourceMetrics(metrics) }
             }
+            Divider()
+            networkContent(metrics)
             Text(metrics.map { "\(sampleTime($0.sampledAt)) 采样 · 窗口 \($0.sampleWindowMs) ms" } ?? "尚无采样信息")
                 .font(.caption2).foregroundStyle(.secondary)
             if entry?.result != nil && metrics == nil && entry?.error == nil && entry?.version == 1 {
@@ -314,6 +300,43 @@ struct DeviceMetricsView: View {
                 .accessibilityHidden(true)
             Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
+    }
+    @ViewBuilder private func networkContent(_ metrics: ConsoleMetrics?) -> some View {
+        if let network = metrics?.network, network.isValid {
+            if network.available {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 18) { networkRates(network) }
+                } else {
+                    HStack(alignment: .top, spacing: 18) { networkRates(network) }
+                }
+                Text("\(network.interfaceCount) 个物理网卡合计 · 含局域网流量")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Label(network.message ?? "网络速率暂不可用，请下拉刷新。", systemImage: "network")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        } else {
+            Text(metrics == nil ? "等待网络采样数据" : metrics?.networkReported == true ? "设备返回的网络数据格式无效。" : "更新 Windows Agent 后可查看网络上下行速度。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+    @ViewBuilder private func networkRates(_ network: ConsoleNetworkMetrics) -> some View {
+        networkRate("下行", symbol: "arrow.down", value: network.downloadBytesPerSecond)
+        networkRate("上行", symbol: "arrow.up", value: network.uploadBytesPerSecond)
+    }
+    private func networkRate(_ title: String, symbol: String, value: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
+            Text(value.map(formatNetworkRate) ?? "—").font(.title3.weight(.semibold)).monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
+    }
+    private func formatNetworkRate(_ bytes: Double) -> String {
+        let units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
+        var value = bytes
+        var index = 0
+        while value >= 1024 && index < units.count - 1 { value /= 1024; index += 1 }
+        return String(format: index == 0 ? "%.0f %@" : "%.1f %@", value, units[index])
     }
     private var httpContent: some View {
         Group {
@@ -435,25 +458,5 @@ struct DeviceMetricsView: View {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
         return date?.formatted(date: .numeric, time: .standard) ?? value
-    }
-}
-
-private struct MonitorRefreshIcon: View {
-    let isRefreshing: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var rotationStartedAt = Date.now
-    private var isRotating: Bool { isRefreshing && !reduceMotion }
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isRotating)) { context in
-            let elapsed = max(0, context.date.timeIntervalSince(rotationStartedAt))
-            let degrees = isRotating ? elapsed.truncatingRemainder(dividingBy: 0.8) / 0.8 * 360 : 0
-            Image(systemName: "arrow.clockwise")
-                .rotationEffect(.degrees(degrees))
-                .frame(width: 32, height: 32)
-        }
-        .onChange(of: isRotating) { _, rotating in
-            if rotating { rotationStartedAt = .now }
-        }
     }
 }

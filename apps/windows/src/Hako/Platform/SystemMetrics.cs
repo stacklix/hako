@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 namespace Hako.Platform;
 
 public sealed record Metrics(double CpuUsagePercent, double MemoryUsagePercent, ulong MemoryUsedBytes,
-    ulong MemoryTotalBytes, string SampledAt, int SampleWindowMs);
+    ulong MemoryTotalBytes, string SampledAt, int SampleWindowMs, NetworkMetrics? Network = null);
 
 public sealed class SystemMetrics
 {
@@ -43,7 +43,9 @@ public sealed class SystemMetrics
             Check(PdhAddEnglishCounter(query, @"\Processor Information(_Total)\% Processor Time", UIntPtr.Zero, out var counter));
             Check(PdhCollectQueryData(query));
             var start = System.Diagnostics.Stopwatch.StartNew();
+            var networkBefore = NetworkTraffic.Capture();
             await Task.Delay(1000, token);
+            var networkAfter = NetworkTraffic.Capture();
             Check(PdhCollectQueryData(query));
             Check(PdhGetFormattedCounterValue(counter, 0x200, out _, out var cpu));
             if (cpu.Status != 0 && cpu.Status != 1) throw new InvalidOperationException("CPU 计数器尚未就绪。");
@@ -51,7 +53,8 @@ public sealed class SystemMetrics
             if (!GlobalMemoryStatusEx(ref memory) || memory.TotalPhysical == 0) throw new InvalidOperationException("无法读取物理内存。");
             var used = memory.TotalPhysical - memory.AvailablePhysical;
             return new Metrics(Math.Clamp(cpu.Value, 0, 100), used * 100.0 / memory.TotalPhysical, used,
-                memory.TotalPhysical, DateTimeOffset.UtcNow.ToString("O"), (int)start.ElapsedMilliseconds);
+                memory.TotalPhysical, DateTimeOffset.UtcNow.ToString("O"), (int)start.ElapsedMilliseconds,
+                NetworkTraffic.Measure(networkBefore, networkAfter));
         }
         finally { if (query != IntPtr.Zero) PdhCloseQuery(query); sampling.Release(); }
     }

@@ -106,7 +106,11 @@ public sealed class AgentRuntime : IAsyncDisposable
             if (request.Command == "metrics")
             {
                 var result = await Metrics.SampleAsync(token); MetricsReceived?.Invoke(result);
-                return CommandReply.Success(result, $"CPU：{result.CpuUsagePercent:F1}%\n内存：{result.MemoryUsagePercent:F1}%\n采样：{result.SampledAt}");
+                var network = result.Network;
+                var networkText = network?.Available == true
+                    ? $"下行：{NetworkTraffic.FormatRate(network.DownloadBytesPerSecond)}\n上行：{NetworkTraffic.FormatRate(network.UploadBytesPerSecond)}"
+                    : "网络：" + (network?.Message ?? "暂不可用");
+                return CommandReply.Success(result, $"CPU：{result.CpuUsagePercent:F1}%\n内存：{result.MemoryUsagePercent:F1}%\n{networkText}\n采样：{result.SampledAt}");
             }
             if (request.Command == "config set")
             {

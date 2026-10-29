@@ -8,6 +8,7 @@ struct ContainersView: View {
     @State private var search = ""
     @State private var filter = ContainerFilter.all
     @State private var groupByProject = false
+    @ScaledMetric(relativeTo: .subheadline) private var filterRowHeight = 44
 
     private enum ContainerFilter: String, CaseIterable, Identifiable {
         case all = "全部", abnormal = "异常", stopped = "已停止", updates = "有更新"
@@ -27,12 +28,14 @@ struct ContainersView: View {
             let matches = search.isEmpty || [item.name, item.image ?? "", item.project ?? ""].contains { $0.localizedCaseInsensitiveContains(search) }
             return matches && filter.includes(item)
         }.sorted {
-            if $0.abnormal != $1.abnormal { return $0.abnormal }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
     }
     private var pollKey: String {
         "\(visible && scenePhase == .active && !showingSettings)-\(store.connection?.id ?? "")-\(store.environmentID)"
+    }
+    private var projects: [String] {
+        Array(Set(filtered.map { $0.project ?? "独立容器" })).sorted()
     }
 
     var body: some View {
@@ -46,21 +49,7 @@ struct ContainersView: View {
                 controls
                 if store.loading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
                 if let environment = store.environment {
-                    if filtered.isEmpty && !store.loading {
-                        ContentUnavailableView("没有符合条件的容器", systemImage: "shippingbox", description: Text("可调整搜索或筛选条件，或下拉刷新。"))
-                    } else if groupByProject {
-                        ForEach(Array(Set(filtered.map { $0.project ?? "独立容器" })).sorted(), id: \.self) { project in
-                            Section(project) {
-                                ForEach(filtered.filter { ($0.project ?? "独立容器") == project }) { container in
-                                    containerLink(container, environment: environment)
-                                }
-                            }
-                        }
-                    } else {
-                        Section("容器 · 异常优先") {
-                            ForEach(filtered) { container in containerLink(container, environment: environment) }
-                        }
-                    }
+                    containerSections(environment: environment)
                 }
             }
             if let error = store.error {
@@ -68,6 +57,7 @@ struct ContainersView: View {
             }
             ArcaneOperationSection(store: store)
         }
+        .listSectionSpacing(8)
         .navigationTitle("容器管理")
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
@@ -89,22 +79,47 @@ struct ContainersView: View {
         }
     }
 
+    @ViewBuilder
+    private func containerSections(environment: ArcaneEnvironment) -> some View {
+        if groupByProject && !filtered.isEmpty {
+            ForEach(projects, id: \.self) { project in
+                Section {
+                    ForEach(filtered.filter { ($0.project ?? "独立容器") == project }) { container in
+                        containerLink(container, environment: environment)
+                    }
+                } header: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if project == projects.first { containerListHeader }
+                        Text(project)
+                    }
+                    .textCase(nil)
+                }
+            }
+        } else {
+            Section {
+                if filtered.isEmpty && !store.loading {
+                    ContentUnavailableView("没有符合条件的容器", systemImage: "shippingbox", description: Text("可调整搜索或筛选条件，或下拉刷新。"))
+                } else {
+                    ForEach(filtered) { container in containerLink(container, environment: environment) }
+                }
+            } header: {
+                containerListHeader
+            }
+        }
+    }
+
     private var controls: some View {
         Section {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 environmentSelector
                 searchField
-                HStack(spacing: 12) {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(ContainerFilter.allCases) { option in filterButton(option) }
-                        }
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(ContainerFilter.allCases) { option in filterButton(option) }
                     }
-                    .scrollIndicators(.hidden)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity)
-                    composeCheckbox
                 }
+                .scrollIndicators(.hidden)
+                .frame(height: filterRowHeight)
                 if let updatedAt = store.updatedAt {
                     Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新")
                         .font(.caption).foregroundStyle(.secondary)
@@ -116,9 +131,21 @@ struct ContainersView: View {
         }
     }
 
+    private var containerListHeader: some View {
+        HStack {
+            Text("容器")
+            Spacer(minLength: 8)
+            composeCheckbox
+        }
+        .textCase(nil)
+    }
+
     private var composeCheckbox: some View {
         Button { groupByProject.toggle() } label: {
-            Label("Compose", systemImage: groupByProject ? "checkmark.square.fill" : "square")
+            HStack(spacing: 5) {
+                Image(systemName: groupByProject ? "checkmark.square.fill" : "square")
+                Text("Compose 分组")
+            }
                 .font(.subheadline)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: true, vertical: false)
@@ -202,21 +229,21 @@ struct ContainersView: View {
 
     private func filterButton(_ option: ContainerFilter) -> some View {
         let selected = filter == option
-        let count = store.containers.filter { option.includes($0) }.count
-        let title = "\(option.rawValue) \(count)"
         let foreground = selected ? Color(uiColor: .systemBackground) : Color.primary
         let background = selected ? Color.primary : Color(uiColor: .secondarySystemGroupedBackground)
         return Button { filter = option } label: {
-            Text(verbatim: title)
+            Text(option.rawValue)
                 .font(.subheadline)
-                .monospacedDigit()
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
+                .fixedSize()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
                 .background(background, in: Capsule())
                 .foregroundStyle(foreground)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(option.rawValue)，\(count) 个容器")
+        .accessibilityLabel(option.rawValue)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -229,14 +256,18 @@ struct ContainersView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(container.name).font(.headline)
                     Text(container.image ?? "镜像未知").font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    HStack(spacing: 6) {
-                        Image(systemName: container.abnormal ? "exclamationmark.circle.fill" : container.state == "running" ? "circle.fill" : "stop.circle")
-                            .font(.caption2)
-                        Text(container.abnormal ? "\(container.stateText) · 不健康或异常" : container.stateText)
-                    }.font(.caption).foregroundStyle(container.abnormal ? Color.orange : Color.secondary)
-                    if let update = container.update, update.hasUpdate == true, update.error?.isEmpty != false {
-                        Label("有更新", systemImage: "arrow.down.circle").font(.caption).foregroundStyle(.orange)
+                    HStack(spacing: 10) {
+                        HStack(spacing: 6) {
+                            Image(systemName: container.abnormal ? "exclamationmark.circle.fill" : container.state == "running" ? "circle.fill" : "stop.circle")
+                                .font(.caption2)
+                            Text(container.abnormal ? "\(container.stateText) · 不健康或异常" : container.stateText)
+                        }
+                        .foregroundStyle(container.abnormal ? Color.red : container.state == "running" ? Color.green : Color.gray)
+                        if let update = container.update, update.hasUpdate == true, update.error?.isEmpty != false {
+                            Label("有更新", systemImage: "arrow.down.circle").foregroundStyle(.orange)
+                        }
                     }
+                    .font(.caption)
                 }
                 Spacer(minLength: 2)
                 if let sample = container.resourceSample {

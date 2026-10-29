@@ -28,9 +28,15 @@ struct ArcaneContainerView: View {
         _containerID = State(initialValue: container.id)
     }
     private var active: Bool { visible && scenePhase == .active && !store.operationRunning }
-    private var taskKey: String { "\(active)-\(containerID)-\(revision)" }
-    private var statsKey: String { taskKey + "-\(details?.state?.running == true)" }
-    private var logsKey: String { taskKey + "-\(tab)-\(following)" }
+    private var taskKey: String { "\(active)-\(containerID)" }
+    private var status: String { details?.state?.status ?? container.state ?? "" }
+    private var isRunning: Bool { details?.state?.running ?? (status == "running") }
+    private var isAbnormal: Bool {
+        guard let state = details?.state else { return container.abnormal }
+        return state.health?.status == "unhealthy" || ["dead", "restarting"].contains(status)
+    }
+    private var statsKey: String { taskKey + "-\(isRunning)-\(revision)" }
+    private var logsKey: String { taskKey + "-\(tab)-\(following)-\(revision)" }
     private var canAct: Bool { details != nil && !loading && !store.operationRunning && store.pending == nil && !checkingUpdate && !exporting }
 
     private var content: some View {
@@ -39,18 +45,15 @@ struct ArcaneContainerView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(details?.displayName ?? container.name).font(.title2.bold())
                     Label(environment.displayName, systemImage: "server.rack").font(.caption).foregroundStyle(.secondary)
-                    if let state = details?.state {
-                        Label(ArcaneContainerState.text(state.status ?? ""), systemImage: "circle.fill")
-                            .font(.caption).foregroundStyle(state.health?.status == "unhealthy" ? Color.orange : Color.secondary)
-                    }
-                }.padding(.vertical, 6)
+                    statusBadge
+                }.padding(.vertical, 6).arcaneDetailRowSeparators()
                 Picker("详情页签", selection: $tab) {
                     Text("概览").tag("overview")
                     Text("日志").tag("logs")
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).arcaneDetailRowSeparators()
             }
             if loading && details == nil { Section { ProgressView("正在读取容器…") } }
-            if let error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }
+            if let error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneDetailRowSeparators() } }
             if tab == "overview" { overview }
             else { logs }
             if let details {
@@ -63,12 +66,13 @@ struct ArcaneContainerView: View {
                         } else if ["exited", "created"].contains(details.state?.status ?? "") {
                             Button("启动") { confirming = .start }
                         } else { Text("请在 Arcane 中处理当前容器状态。 ").foregroundStyle(.secondary) }
-                    }.disabled(!canAct)
+                    }.disabled(!canAct).arcaneDetailRowSeparators()
                     Button { confirming = .redeploy } label: {
                         Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
-                    }.disabled(!canAct || details.redeployDisabled == true)
+                    }.disabled(!canAct || details.redeployDisabled == true).arcaneDetailRowSeparators()
                     Button("删除容器", role: .destructive) { confirming = .delete }
                         .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
+                        .arcaneDetailRowSeparators()
                 } header: {
                     Text("管理")
                 } footer: {
@@ -79,16 +83,23 @@ struct ArcaneContainerView: View {
         }
     }
 
+    private var statusBadge: some View {
+        let text = ArcaneContainerState.text(status)
+        let title = isAbnormal ? "\(text) · 不健康或异常" : text
+        let icon = isAbnormal ? "exclamationmark.circle.fill" : isRunning ? "circle.fill" : "stop.circle"
+        let color: Color = isAbnormal ? .red : isRunning ? .green : .gray
+        return Label(title, systemImage: icon).font(.caption).foregroundStyle(color)
+    }
+
     var body: some View {
         content
         .navigationTitle("容器详情")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            Button { revision = UUID() } label: { Image(systemName: "arrow.clockwise") }
-                .accessibilityLabel("刷新容器并重新连接实时数据").disabled(store.operationRunning)
+        .refreshable {
+            await refreshDetails()
+            revision = UUID()
         }
-        .refreshable { await refreshDetails() }
-        .confirmationDialog("确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), titleVisibility: .visible) {
+        .alert("确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
             if let action = confirming, let details {
                 Button(action.title, role: action == .delete || action == .stop ? .destructive : nil) {
                     store.start(action, container: details, environment: environment)
@@ -115,7 +126,7 @@ struct ArcaneContainerView: View {
             }
         }
         .task(id: statsKey) {
-            guard active, details?.state?.running == true else { return }
+            guard active, isRunning else { return }
             do { await live.stats(client: try store.client(), environment: environment.id, container: containerID) }
             catch { self.error = error.localizedDescription }
         }
@@ -129,14 +140,14 @@ struct ArcaneContainerView: View {
     @ViewBuilder private var overview: some View {
         if let details {
             if details.state?.health?.status == "unhealthy" {
-                Section { Label("健康检查未通过，建议先查看日志。", systemImage: "exclamationmark.circle").foregroundStyle(.orange) }
+                Section { Label("健康检查未通过，建议先查看日志。", systemImage: "exclamationmark.circle").foregroundStyle(.red).arcaneDetailRowSeparators() }
             }
             Section("资源") {
-                if let sample = live.sample, details.state?.running == true {
+                if let sample = live.sample, isRunning {
                     if dynamicTypeSize.isAccessibilitySize {
-                        VStack(alignment: .leading, spacing: 16) { resourceMetrics(sample) }
+                        VStack(alignment: .leading, spacing: 16) { resourceMetrics(sample) }.arcaneDetailRowSeparators()
                     } else {
-                        HStack(alignment: .top, spacing: 12) { resourceMetrics(sample) }
+                        HStack(alignment: .top, spacing: 12) { resourceMetrics(sample) }.arcaneDetailRowSeparators()
                     }
                     if let traffic = live.networkTraffic, let received = traffic.receivedBytes, let sent = traffic.transmittedBytes {
                         DisclosureGroup("网络累计流量") {
@@ -145,7 +156,7 @@ struct ArcaneContainerView: View {
                         }.font(.caption)
                     }
                     if let date = live.sampleAt { Text("最近采样：\(date.formatted(date: .omitted, time: .standard))").font(.caption).foregroundStyle(.secondary) }
-                } else { Text(details.state?.running == true ? "等待资源采样…" : "容器未运行").foregroundStyle(.secondary) }
+                } else { Text(isRunning ? "等待资源采样…" : "容器未运行").foregroundStyle(.secondary) }
                 if let error = live.statsError { Text(error).font(.footnote).foregroundStyle(.orange) }
             }
             Section("容器信息") {
@@ -154,7 +165,7 @@ struct ArcaneContainerView: View {
                 if let project = details.project { LabeledContent("Compose 项目", value: project) }
                 if let policy = details.hostConfig?.restartPolicy { LabeledContent("重启策略", value: policy) }
                 if let started = details.state?.startedAt, !started.hasPrefix("0001") { LabeledContent("启动时间", value: started) }
-                if let exit = details.state?.exitCode, details.state?.running != true { LabeledContent("退出码", value: String(exit)) }
+                if let exit = details.state?.exitCode, !isRunning { LabeledContent("退出码", value: String(exit)) }
                 ForEach(Array((details.ports ?? []).enumerated()), id: \.offset) { _, port in
                     LabeledContent("端口", value: port.text)
                 }
@@ -249,8 +260,8 @@ struct ArcaneContainerView: View {
                 Task { await exportLogs() }
             } label: {
                 HStack { Label("导出日志", systemImage: "square.and.arrow.up"); Spacer(); if exporting { ProgressView() } }
-            }.disabled(exporting)
-            if let exportedLog { ShareLink("分享日志文件", item: exportedLog) }
+            }.disabled(exporting).arcaneDetailRowSeparators()
+            if let exportedLog { ShareLink("分享日志文件", item: exportedLog).arcaneDetailRowSeparators() }
         } header: {
             Text(live.logsConnected && following ? "容器日志 · 已连接" : "容器日志")
         } footer: {
@@ -313,5 +324,12 @@ struct ArcaneContainerView: View {
         case .delete: return "删除容器，保留数据卷。此操作不能撤销。"
         case .redeploy: return details?.project == nil ? "拉取镜像并重建容器，服务会短暂中断。" : "由 Arcane 依据 Compose 项目配置更新此服务，关联副本也可能重建，服务会短暂中断。"
         }
+    }
+}
+
+private extension View {
+    func arcaneDetailRowSeparators() -> some View {
+        alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+            .alignmentGuide(.listRowSeparatorTrailing) { dimensions in dimensions.width }
     }
 }

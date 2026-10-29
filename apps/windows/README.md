@@ -17,7 +17,7 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1 与 `query.codex.usage` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
 
-「设备监控」支持本地刷新和远程查询，CPU 使用率为约 1 秒窗口内的整机平均值，使用可跨语言系统和处理器组的 PDH 计数器；内存为总物理内存减去可用物理内存。没有服务端请求时不会持续上传指标。
+「设备监控」支持本地刷新和远程查询，CPU 使用率为约 1 秒窗口内的整机平均值，使用可跨语言系统和处理器组的 PDH 计数器；内存为总物理内存减去可用物理内存。网络上下行速度使用同一采样过程前后的物理网卡 64 位字节计数器差值，按实际经过时间计算，`network` 字段返回 B/s、网卡数量和可用状态；包含局域网，排除非物理、过滤、回环与隧道接口，网卡变化或计数器重置时显示暂不可用。GUI、CLI 与远程查询使用同一份指标。网络按需采样，不后台统计或保存今日累计流量；没有服务端请求时不会持续上传指标。
 
 新增 `query.codex.usage` v1：Agent 运行时每分钟增量采集当前电脑的 Codex 用量，保留今天及之前 6 天的每日用户发送调用数、token 用量，并查询当前处理中会话数、项目名与显示标题。调用数按主会话中的用户消息 ID 去重，不把多轮模型请求或工具调用计为用户发送；自动上下文和内部审核消息不计数。只读取用量和运行状态元数据，缓存到当前配置目录的 `codex-usage.json`，不采集对话正文或凭据；旧版数据会标明估算或明细缺失。参数固定为 `{}`，支持单独查询及 `query.all`，手机按能力展示，网页使用通用 JSON 调用。详见 [统计口径与存储说明](../../docs/codex-usage.md)。
 
@@ -56,7 +56,7 @@ Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/Agen
 | `key export-public [--output <文件>] [--force]` | 导出公钥，省略文件时输出到终端 |
 | `connect` | 启动或复用后台实例并发起连接 |
 | `disconnect` | 断开并停止重试，保留进程和配置 |
-| `metrics` | 采样本机 CPU 和物理内存 |
+| `metrics` | 采样本机 CPU、物理内存和网络上下行速度 |
 | `exit` | 退出实例，保留配置和密钥 |
 
 替换现有密钥或覆盖公钥文件必须显式使用 `--force`。CLI 不接受私钥文本参数，也不输出私钥。`connect` 成功表示已发起连接，请查询 `status` 的 `connectionState`，值为 `connected` 时才表示服务端身份验证通过。修改配置或密钥后需重新执行 `connect`。
@@ -77,7 +77,7 @@ dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
 dotnet run --project src/Hako/Hako.csproj -c Release
 ```
 
-检查程序验证 DPAPI 加解密和篡改拒绝、RSA 3072 位密钥生成、公钥导出与验签、私钥导入、URL 约束、CLI 参数和帮助、配置隔离、命名管道控制，以及真实 Windows CPU/内存采样。
+检查程序验证 DPAPI 加解密和篡改拒绝、RSA 3072 位密钥生成、公钥导出与验签、私钥导入、URL 约束、CLI 参数和帮助、配置隔离、命名管道控制，以及真实 Windows CPU/内存/网络采样。网络检查另覆盖网卡筛选、多网卡汇总、真实时间窗口、64 位计数器精度、空闲、计数器重置、网卡增减和读取失败。
 
 发布包含 .NET 运行时的 Windows x64 单文件 EXE：
 

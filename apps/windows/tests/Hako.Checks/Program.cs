@@ -27,6 +27,7 @@ internal static class Program
                 await Task.Delay(TimeSpan.FromSeconds(30));
                 return 0;
             }
+            NetworkTrafficChecks.Run();
             byte[] secret = RandomNumberGenerator.GetBytes(64);
             var encrypted = DataProtection.Protect(secret);
             if (CryptographicOperations.FixedTimeEquals(secret, encrypted) || !CryptographicOperations.FixedTimeEquals(secret, DataProtection.Unprotect(encrypted)))
@@ -74,6 +75,9 @@ internal static class Program
             if (metrics.CpuUsagePercent < 0 || metrics.CpuUsagePercent > 100 || metrics.MemoryUsagePercent <= 0 ||
                 metrics.MemoryUsagePercent > 100 || metrics.MemoryUsedBytes > metrics.MemoryTotalBytes || metrics.SampleWindowMs < 900)
                 throw new Exception("Invalid real system metrics");
+            if (metrics.Network is null || (metrics.Network.Available &&
+                (metrics.Network.DownloadBytesPerSecond is not >= 0 || metrics.Network.UploadBytesPerSecond is not >= 0)))
+                throw new Exception("Network metrics were not included in the system query");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CapabilityChecks.RunAsync(dispatcher);
             await CodexUsageChecks.RunAsync();

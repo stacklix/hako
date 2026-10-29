@@ -16,6 +16,11 @@ public partial class MonitorView : UserControl, IDisposable
         Cpu.Text = $"{value.CpuUsagePercent:F1}%";
         Memory.Text = $"{value.MemoryUsagePercent:F1}%";
         MemorySize.Text = $"{value.MemoryUsedBytes / 1073741824.0:F1} / {value.MemoryTotalBytes / 1073741824.0:F1} GiB";
+        var network = value.Network;
+        NetworkRate.Text = network?.Available == true
+            ? $"↓ {NetworkTraffic.FormatRate(network.DownloadBytesPerSecond)}   ↑ {NetworkTraffic.FormatRate(network.UploadBytesPerSecond)}" : "—";
+        NetworkScope.Text = network?.Available == true ? $"{network.InterfaceCount} 个物理网卡合计，含局域网流量"
+            : network?.Message ?? "网络速率暂不可用";
         SampleTime.Text = $"采样于 {DateTimeOffset.Parse(value.SampledAt).ToLocalTime():yyyy-MM-dd HH:mm:ss} · 窗口 {value.SampleWindowMs} ms";
     }
     private async void RefreshClick(object sender, RoutedEventArgs e)

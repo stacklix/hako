@@ -7,6 +7,9 @@
   <TextBlock Text="CPU 使用率" FontSize="16"/><TextBlock x:Name="Cpu" Text="—" FontSize="44" FontWeight="SemiBold" Margin="0,8,0,24"/>
   <TextBlock Text="内存使用率" FontSize="16"/><TextBlock x:Name="Memory" Text="—" FontSize="44" FontWeight="SemiBold" Margin="0,8,0,4"/>
   <TextBlock x:Name="MemorySize" Text="尚未采样" FontSize="16" Foreground="#526175" Margin="0,0,0,24"/>
+  <TextBlock Text="网络速率" FontSize="16"/>
+  <TextBlock x:Name="NetworkRate" Text="—" FontSize="24" FontWeight="SemiBold" Margin="0,8,0,4" TextWrapping="Wrap"/>
+  <TextBlock x:Name="NetworkScope" Text="物理网卡合计，含局域网流量" FontSize="14" Foreground="#526175" Margin="0,0,0,24" TextWrapping="Wrap"/>
   <Button x:Name="Refresh" Content="刷新本机状态" Click="RefreshClick" HorizontalAlignment="Left"/>
   <TextBlock x:Name="SampleTime" TextWrapping="Wrap" Margin="0,16" Foreground="#526175"/>
  </StackPanel>
