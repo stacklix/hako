@@ -91,7 +91,6 @@ struct ArcaneFileEditorSession: Identifiable {
     let environment: String
     let project: ArcaneProjectDocument
     let initialFile: ArcaneProjectFile
-    let files: [ArcaneProjectFile]
 }
 
 struct ArcaneWorkspace: Decodable {

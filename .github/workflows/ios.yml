@@ -56,6 +56,8 @@ jobs:
           /tmp/hako-arcane-workspace-tests
           swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
           /tmp/hako-arcane-syntax-tests
+          swiftc Hako/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
+          /tmp/hako-arcane-editor-lines-tests
           swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
           /tmp/hako-arcane-host-tests
       - name: Configure Pages

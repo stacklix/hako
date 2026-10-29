@@ -34,7 +34,7 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 列表加载完整分页（单次最多 10,000 项），按名称排序；顶部依次为紧凑的环境卡片、搜索框和独立圆角筛选按钮，选中项深色显示。可搜索名称、镜像、Compose 项目，筛选全部、异常、停止及有更新的容器；筛选按钮不展示数量，空间不足时可横向滚动。「容器」列表标题右侧显示「Compose 分组」复选框，勾选后按项目分组，取消后恢复按名称排列的列表。运行状态及其图标为绿色，停止为灰色，异常为红色；「有更新」显示在状态右侧。分组只改变展示方式，不对项目执行批量修改。列表前台可见时每 10 秒刷新，进入详情、打开设置或切后台时停止列表轮询。失败保留原数据和最近更新时间，支持下拉刷新。
 
-同一连接复用客户端及网络会话。首次加载环境后直接读取容器，自动选择默认环境不会取消并重启首轮加载；后续轮询直接请求容器，下拉刷新或环境卡片的刷新按钮同时重新读取环境元数据。
+同一连接复用客户端及网络会话。首次加载环境后直接读取容器，自动选择默认环境不会取消并重启首轮加载；后续轮询直接请求容器。环境卡片不显示刷新按钮，下拉刷新同时重新读取环境元数据和容器列表。
 
 容器首页不显示「最近更新」、自动刷新频率或「正在刷新容器」提示；每 10 秒自动刷新静默进行，不显示刷新动画，不因轮询切换按钮颜色或让空列表提示反复消失。仅首次尚无数据时显示读取提示，手动下拉刷新保留系统反馈。在本客户端发起更新等操作后，列表顶部、对应容器行及详情顶部显示「更新中」「重启中」等状态，不显示百分比或进度条。更新时即使原容器暂时不在列表中，顶部状态仍保留；替换后的容器 ID 也能显示当前操作，直到状态刷新结束。结果不确定时改为「更新结果待确认」，不继续显示正在更新。
 
@@ -46,13 +46,13 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 日志仅在日志页前台且开启跟随时订阅，重连读取最近 100 行，内存中最多保留 500 行／512 KiB；长行有显示长度上限。离开详情、切后台或操作开始时取消实时订阅。导出通过下载接口获取 Docker 仍保留的日志，最多 256 MB，保存临时文件后由系统分享；离开页面清理该导出文件。环境变量默认遮蔽，用户可主动显示。
 
-## 主机资源
+## 主机信息
 
-环境卡片下方的「主机资源」打开当前环境的详情，本地 Manager 和远程 Agent 均通过同一个 Manager 地址访问，客户端不另外连接各主机。系统及 Docker 信息使用 `GET /api/environments/{id}/system/docker/info`；该接口返回平铺的 Docker Info，不是通用 `data` 包装。实时资源使用 `GET /api/environments/{id}/ws/system/stats?interval=2`，需要对应环境的 `system:read` 权限。接口依据 [Arcane v2.17.1 系统路由](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/system/module.go) 与 [主机指标实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/api/ws/system_stats.go)。
+点击环境卡片的主机名称及状态行打开当前环境的「主机信息」，不单独增加入口行；卡片右侧的独立下拉按钮选择服务器，两个点击区域互不嵌套。本地 Manager 和远程 Agent 均通过同一个 Manager 地址访问，客户端不另外连接各主机。系统及 Docker 信息使用 `GET /api/environments/{id}/system/docker/info`；该接口返回平铺的 Docker Info，不是通用 `data` 包装。实时资源使用 `GET /api/environments/{id}/ws/system/stats?interval=2`，需要对应环境的 `system:read` 权限。接口依据 [Arcane v2.17.1 系统路由](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/system/module.go) 与 [主机指标实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/api/ws/system_stats.go)。
 
 详情展示 CPU 使用率及核心数、内存与磁盘已用／总量和百分比；服务端启用并返回 GPU 信息时展示各 GPU 显存使用量。系统信息包括主机名、操作系统、内核和架构，Docker 信息包括版本、存储／日志驱动、数据目录、容器与镜像数量。磁盘仅代表 Arcane 配置的统计路径所在文件系统，默认 `/`，不是所有磁盘的容量汇总。缺失指标显示 `—`，不伪造零使用率。
 
-进入页面自动读取并订阅，保留下拉刷新；离开页面或进入后台取消订阅，返回后重新连接。网络断线保留上次样本并标记状态，每 5 秒重连；401／403／404 停止自动重连，显示错误并允许下拉重试。超过 15 秒没有新样本时不再标为实时。连接、环境切换及新请求会隔离旧响应，防止串用主机数据。主机资源仅查询，不触发 Docker 变更。
+CPU、内存、磁盘及可用 GPU 指标每约 2 秒通过 WebSocket 更新；系统、Docker 版本及容器／镜像数量在进入页面、返回前台或下拉刷新时读取，不定时轮询。进入页面自动读取并订阅，保留下拉刷新；离开页面或进入后台取消订阅，返回后重新连接。网络断线保留上次样本并标记状态，每 5 秒重连；401／403／404 停止自动重连，显示错误并允许下拉重试。超过 15 秒没有新样本时不再标为实时。连接、环境切换及新请求会隔离旧响应，防止串用主机数据。主机资源仅查询，不触发 Docker 变更。
 
 ## 项目文件
 
@@ -71,13 +71,15 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 二进制、特殊文件和符号链接只显示文件信息，不提供内容预览及编辑；Git 同步管理的源文件保持只读。Git 项目的有效 `.env` 通过 Arcane 专用保存接口处理覆盖层，不修改 `.env.git` 源文件。目录列表遵守服务端的忽略目录、最大深度、条目数和文件大小限制；返回截断标志时提示列表不完整。
 
-文件页使用紧凑列表，不显示项目信息卡片、文件搜索框或快捷入口。「文件」标题沿用「管理」分区的系统字号，下方仅显示 Compose 所在文件夹名称（如 `frps`），不展示完整路径，并可通过目录导航返回上级目录；Compose、`.env` 与其他配置统一从列表打开。返回上级目录时定位到此前进入的目录项，关闭编辑器后保留浏览位置。管理区域继续保留。编辑器的信息按钮提供文件说明，不常驻文件列表底部。
+文件页使用紧凑列表，不显示项目信息卡片、文件搜索框或快捷入口。「文件」标题沿用「管理」分区的系统字号，下方仅显示 Compose 所在文件夹名称（如 `frps`），不展示完整路径，并可通过目录导航返回上级目录；Compose、`.env` 与其他配置统一从列表打开。返回上级目录时定位到此前进入的目录项，关闭编辑器后保留浏览位置。管理区域继续保留。
 
-编辑器由容器详情页的单一呈现入口打开，持有打开时的项目、文件和目录快照，不依赖异步刷新的列表分区。缺少 `.env` 时首次打开即进入空白可编辑状态，打开或关闭不创建文件，仅显式保存内容时写入服务端。
+编辑器由容器详情页的单一呈现入口打开，持有打开时的项目和文件快照，不依赖异步刷新的列表分区。缺少 `.env` 时首次打开即进入空白可编辑状态，打开或关闭不创建文件，仅显式保存内容时写入服务端。
 
-文本文件全屏打开，点击顶部文件名可搜索并切换项目文件。编辑器默认使用 12 点等宽字体，并跟随系统辅助字号缩放；YAML、`.env`、JSON、TOML／INI、Shell 和常见 `.conf` 配置提供轻量词法高亮，其他文件使用纯文本。高亮只调整显示属性，不格式化内容，不修改换行；关闭智能引号、智能破折号、自动纠错等输入替换。分词在后台计算，过期结果不会覆盖新输入，中文输入法组词期间不重设高亮。语法高亮不代替 Arcane 的内容校验。
+文本文件全屏打开，顶部仅显示当前文件名，不提供文件切换。编辑器左侧显示随内容滚动的实际行号，长行自动折行时不重复编号，空文件与末尾空行也有行号。默认使用 12 点等宽字体，并跟随系统辅助字号缩放；YAML、`.env`、JSON、TOML／INI、Shell 和常见 `.conf` 配置提供轻量词法高亮，其他文件使用纯文本。高亮只调整显示属性，不格式化内容，不修改换行；关闭智能引号、智能破折号、自动纠错等输入替换。分词在后台计算，过期结果不会覆盖新输入，中文输入法组词期间不重设高亮。语法高亮不代替 Arcane 的内容校验。
 
-普通文件保存携带 `fileTreeRevision` 及 `baselineIndex` 对应的原文，服务端拒绝目录变化和同文件并发修改。Compose／`.env` 专用接口没有版本参数，保存前重新读取并比对该字段，但这不能提供与 Workspace 基线相同的原子冲突保证。保存失败保留草稿；响应不确定时阻止重复保存，需重新读取核对。返回、重新读取或切换文件时，未保存修改提供「保存并继续／放弃修改／继续编辑」；保存失败停留原文件，保存成功后默认继续留在编辑器。草稿仅在当前编辑器内存中保留，不写入本地文件、UserDefaults 或日志。
+底部仅保留「覆盖粘贴」，点击时读取剪贴板文本并替换整个文件草稿，仍需点击右上角「保存」才写入服务端。剪贴板没有可读取文本时提示并保留原内容；只读、加载或保存期间禁用覆盖粘贴。键盘上方提供「收起键盘」，也支持向下拖动编辑区交互收起键盘。
+
+普通文件保存携带 `fileTreeRevision` 及 `baselineIndex` 对应的原文，服务端拒绝目录变化和同文件并发修改。Compose／`.env` 专用接口没有版本参数，保存前重新读取并比对该字段，但这不能提供与 Workspace 基线相同的原子冲突保证。保存失败保留草稿；响应不确定时阻止重复保存，需重新读取核对。正常编辑时不显示重新读取按钮，读取或保存失败时在错误提示下提供「重新读取服务器文件」。返回或重新读取时，未保存修改提供「保存并继续／放弃修改／继续编辑」；保存失败停留原文件，保存成功后默认继续留在编辑器。草稿仅在当前编辑器内存中保留，不写入本地文件、UserDefaults 或日志。
 
 保存只修改文件，不主动部署或重启容器。项目文件写入与已有容器操作互斥，防止保存和重建同时执行。
 
@@ -111,6 +113,8 @@ swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProto
 /tmp/hako-arcane-workspace-tests
 swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
 /tmp/hako-arcane-syntax-tests
+swiftc Hako/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
+/tmp/hako-arcane-editor-lines-tests
 swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
 /tmp/hako-arcane-host-tests
 ```
@@ -118,5 +122,7 @@ swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/C
 测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝；加载回归测试覆盖会话复用、直接轮询容器、显式刷新环境、旧响应与旧错误隔离、取消后立即重载及容器替换。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。
 
 项目文件回归测试覆盖同名项目匹配、相对路径隔离、二进制／只读元数据、包含 Unicode 与特殊字符的文件名、multipart 上传与精确原文基线、专用配置接口只提交修改字段、保存冲突及不确定结果不重试。
+
+编辑器行号测试覆盖空文件、末尾空行、连续空行、混合换行、Unicode／Emoji 的 UTF-16 偏移和行号查找，已接入 macOS CI。iPhone 验收需检查长行折行与滚动时行号对齐、中文输入、覆盖粘贴后保存／放弃、无文本剪贴板、只读文件，以及短文件和长文件编辑时点击「收起键盘」。
 
 官方参考：[API](https://getarcane.app/docs/reference/api)、[容器](https://getarcane.app/docs/docker/containers)、[权限](https://getarcane.app/docs/access/roles)、[v2.17.1 容器实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/container/service.go)。

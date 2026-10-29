@@ -46,7 +46,7 @@ private struct ArcaneHostDetails: View {
                 }
             }
         }
-        .navigationTitle("主机资源").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("主机信息").navigationBarTitleDisplayMode(.inline)
         .refreshable { revision = UUID(); await refreshInfo() }
         .onAppear { visible = true }.onDisappear { visible = false }
         .task(id: taskKey) { if active { await refreshInfo() } }

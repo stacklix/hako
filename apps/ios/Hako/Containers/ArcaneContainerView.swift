@@ -140,7 +140,7 @@ struct ArcaneContainerView: View {
             if fileChanged { fileChanged = false; revision = UUID() }
         }) { session in
             ArcaneProjectFileEditor(store: store, environment: session.environment, project: session.project,
-                initialFile: session.initialFile, files: session.files) { fileChanged = true }
+                initialFile: session.initialFile) { fileChanged = true }
         }
         .refreshable {
             if tab != "files" { await refreshDetails() }

@@ -111,7 +111,7 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         await files.load(client: client, environment: "remote", name: "no-env", workingDir: nil)
         precondition(files.error == nil && files.project?.envContent == nil && files.workspace?.files.isEmpty == true)
         let envFile = files.files.first { $0.kind == .env }!
-        let editorSession = ArcaneFileEditorSession(environment: "remote", project: files.project!, initialFile: envFile, files: files.files)
+        let editorSession = ArcaneFileEditorSession(environment: "remote", project: files.project!, initialFile: envFile)
         let editor = ArcaneFileEditorData()
         await editor.load(client: client, environment: editorSession.environment, project: editorSession.project, file: editorSession.initialFile)
         precondition(!editor.loading && editor.error == nil && editor.viewable && editor.editable && editor.draft.isEmpty && !editor.dirty,

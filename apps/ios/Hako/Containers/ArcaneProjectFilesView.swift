@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ArcaneProjectFilesSection: View {
     @ObservedObject var store: ArcaneStore
@@ -66,7 +67,7 @@ struct ArcaneProjectFilesSection: View {
             bookmarks[folder] = file.id
             if file.isDirectory && file.entry?.isSymlink != true { navigate(file.relativePath) }
             else if let project = data.project {
-                openEditor(ArcaneFileEditorSession(environment: environment, project: project, initialFile: file, files: data.files))
+                openEditor(ArcaneFileEditorSession(environment: environment, project: project, initialFile: file))
             }
         } label: {
             HStack(spacing: 10) {
@@ -122,37 +123,16 @@ private struct ArcaneFileBreadcrumbs: View {
     }
 }
 
-private struct ArcaneProjectFilesHelp: View {
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            List {
-                Text("显示 Arcane 可访问的项目目录及子目录，部分路径可能由服务端隐藏或设为只读。")
-                Text("从文件列表打开 Compose、.env 及其他配置；路径导航可返回任意上级目录。缺少 .env 时可先编辑内容，保存后才会写入服务端。")
-                Text("二进制文件、符号链接及超出服务端大小限制的文件仅显示信息，不预览内容。")
-                Text("保存只修改文件，不会自动部署或重启容器。")
-            }.navigationTitle("项目文件说明").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-        }.presentationDetents([.medium, .large])
-    }
-}
-
 struct ArcaneProjectFileEditor: View {
     @ObservedObject var store: ArcaneStore
     let environment: String
     let project: ArcaneProjectDocument
-    let files: [ArcaneProjectFile]
+    let initialFile: ArcaneProjectFile
     let onSaved: () -> Void
-    @State private var file: ArcaneProjectFile
-    init(store: ArcaneStore, environment: String, project: ArcaneProjectDocument,
-         initialFile: ArcaneProjectFile, files: [ArcaneProjectFile], onSaved: @escaping () -> Void) {
-        self.store = store; self.environment = environment; self.project = project
-        self.files = files; self.onSaved = onSaved; _file = State(initialValue: initialFile)
-    }
     var body: some View {
         NavigationStack {
             ArcaneProjectFileDocument(store: store, environment: environment, project: project,
-                file: file, files: files, onSaved: onSaved, switchFile: { file = $0 }).id(file.id)
+                file: initialFile, onSaved: onSaved)
         }
     }
 }
@@ -163,16 +143,13 @@ private struct ArcaneProjectFileDocument: View {
     let environment: String
     let project: ArcaneProjectDocument
     let file: ArcaneProjectFile
-    let files: [ArcaneProjectFile]
     let onSaved: () -> Void
-    let switchFile: (ArcaneProjectFile) -> Void
     @StateObject private var data = ArcaneFileEditorData()
     @State private var pending: FileAction?
     @State private var readID = UUID()
-    @State private var showPicker = false
-    @State private var picked: ArcaneProjectFile?
-    @State private var showHelp = false
-    private enum FileAction { case close, reload, switchFile(ArcaneProjectFile) }
+    @State private var pasteError: String?
+    private enum FileAction { case close, reload }
+    private var canEdit: Bool { data.editable && !data.loading && !data.saving }
     private var canSave: Bool {
         data.editable && data.dirty && !data.loading && !data.saving && !data.uncertain
             && !store.operationRunning && !store.fileSaveRunning && store.pending == nil
@@ -198,10 +175,9 @@ private struct ArcaneProjectFileDocument: View {
         } message: { _ in
             Text(data.uncertain ? "保存结果尚未确认。请重新读取服务器文件核对，或放弃当前草稿。" : "保存后继续，或放弃当前文件的修改。")
         }
-        .sheet(isPresented: $showPicker, onDismiss: {
-            if let picked { self.picked = nil; request(.switchFile(picked)) }
-        }) { ArcaneFileSwitcher(files: files, selectedID: file.id) { picked = $0; showPicker = false } }
-        .sheet(isPresented: $showHelp) { ArcaneProjectFilesHelp() }
+        .alert("无法覆盖粘贴", isPresented: Binding(get: { pasteError != nil }, set: { if !$0 { pasteError = nil } })) {
+            Button("好", role: .cancel) { pasteError = nil }
+        } message: { Text(pasteError ?? "") }
         .task(id: readID) { await load() }
         .interactiveDismissDisabled(data.dirty || data.saving || data.uncertain)
     }
@@ -212,12 +188,7 @@ private struct ArcaneProjectFileDocument: View {
                 .accessibilityLabel("返回项目文件").disabled(data.saving)
         }
         ToolbarItem(placement: .principal) {
-            Button { showPicker = true } label: {
-                HStack(spacing: 5) {
-                    Text(file.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2)
-                }
-            }.accessibilityLabel("切换文件，当前为 \(file.name)").disabled(data.saving)
+            Text(file.name).font(.subheadline.weight(.semibold)).lineLimit(1)
         }
         ToolbarItem(placement: .confirmationAction) {
             Button { Task { await save() } } label: {
@@ -225,12 +196,10 @@ private struct ArcaneProjectFileDocument: View {
             }.disabled(!canSave).accessibilityLabel("保存文件")
         }
         ToolbarItemGroup(placement: .bottomBar) {
-            Text(ArcaneSyntax.language(filename: file.relativePath).rawValue).font(.caption).foregroundStyle(.secondary)
-            Text(ByteCountFormatter.string(fromByteCount: data.viewable ? Int64(data.draft.utf8.count) : data.size, countStyle: .file))
-                .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button { showHelp = true } label: { Image(systemName: "info.circle") }.accessibilityLabel("项目文件说明")
-            Button("重新读取") { request(.reload) }.disabled(data.loading || data.saving)
+            Button("覆盖粘贴", systemImage: "doc.on.clipboard") { pasteOverFile() }
+                .disabled(!canEdit).accessibilityHint("用剪贴板文本替换整个文件的草稿，点击保存后写入服务器")
+            Spacer()
         }
     }
     private var messages: some View {
@@ -239,11 +208,21 @@ private struct ArcaneProjectFileDocument: View {
             if !data.viewable, !data.mimeType.isEmpty { Text(data.mimeType).foregroundStyle(.secondary) }
             if let reason = data.readOnlyReason { Text(reason).foregroundStyle(.secondary) }
             if let error = data.error { Text(error).foregroundStyle(.orange) }
+            if data.error != nil {
+                Button("重新读取服务器文件") { request(.reload) }.disabled(data.loading || data.saving)
+            }
             if let notice = data.notice { Text(notice).foregroundStyle(.green) }
         }.font(.footnote).padding(.horizontal, 16).padding(.vertical, 8)
     }
+    private func pasteOverFile() {
+        guard canEdit else { return }
+        guard let contents = UIPasteboard.general.string else {
+            pasteError = "剪贴板中没有可读取的文本，文件内容未改变。"
+            return
+        }
+        data.draft = contents
+    }
     private func request(_ action: FileAction) {
-        if case .switchFile(let selected) = action, selected.id == file.id { return }
         if data.dirty || data.uncertain { pending = action } else { perform(action) }
     }
     private func perform(_ action: FileAction) {
@@ -251,7 +230,6 @@ private struct ArcaneProjectFileDocument: View {
         switch action {
         case .close: dismiss()
         case .reload: readID = UUID()
-        case .switchFile(let next): switchFile(next)
         }
     }
     private func save(then action: FileAction? = nil) async {
@@ -262,36 +240,5 @@ private struct ArcaneProjectFileDocument: View {
     private func load() async {
         do { await data.load(client: try store.client(), environment: environment, project: project, file: file) }
         catch { data.fail(error) }
-    }
-}
-
-private struct ArcaneFileSwitcher: View {
-    @Environment(\.dismiss) private var dismiss
-    let files: [ArcaneProjectFile]
-    let selectedID: String
-    let select: (ArcaneProjectFile) -> Void
-    @State private var search = ""
-    private var matches: [ArcaneProjectFile] {
-        files.filter { (!$0.isDirectory || $0.entry?.isSymlink == true) && (search.isEmpty || $0.relativePath.localizedCaseInsensitiveContains(search)) }
-            .sorted {
-                if ($0.kind != .workspace) != ($1.kind != .workspace) { return $0.kind != .workspace }
-                return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
-            }
-    }
-    var body: some View {
-        NavigationStack {
-            List(matches) { file in
-                Button { select(file) } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "doc.text").foregroundStyle(.secondary)
-                        Text(file.relativePath).font(.subheadline).foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        if file.id == selectedID { Image(systemName: "checkmark") }
-                    }.frame(minHeight: 36)
-                }
-            }.searchable(text: $search, prompt: "搜索项目文件")
-            .navigationTitle("切换文件").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
-        }.presentationDetents([.medium, .large])
     }
 }
