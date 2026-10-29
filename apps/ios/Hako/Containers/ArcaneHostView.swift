@@ -37,6 +37,7 @@ private struct ArcaneHostDetails: View {
                 }.padding(.vertical, 6).arcaneRowSeparators()
             }
             resources
+            networkPorts
             if let info = data.info { systemInformation(info); dockerInformation(info); counts(info) }
             if data.infoLoading && data.info == nil { Section { ProgressView("正在读取主机信息…").arcaneRowSeparators() } }
             if let error = data.infoError {
@@ -47,13 +48,39 @@ private struct ArcaneHostDetails: View {
             }
         }
         .navigationTitle("主机信息").navigationBarTitleDisplayMode(.inline)
-        .refreshable { revision = UUID(); await refreshInfo() }
+        .refreshable { revision = UUID(); await refreshOverview() }
         .onAppear { visible = true }.onDisappear { visible = false }
-        .task(id: taskKey) { if active { await refreshInfo() } }
+        .task(id: taskKey) { if active { await refreshOverview() } }
         .task(id: taskKey + revision.uuidString) {
             guard active else { return }
             do { await data.observe(client: try store.client(), environment: environment.id) }
             catch { data.fail(error) }
+        }
+    }
+
+    private var networkPorts: some View {
+        Section {
+            if data.portsLoading && data.ports == nil { ProgressView("正在读取网络端口…").arcaneRowSeparators() }
+            if let ports = data.ports {
+                if ports.isEmpty { Text("没有 Docker 网络端口").foregroundStyle(.secondary).arcaneRowSeparators() }
+                ForEach(ports) { container in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(container.name).font(.subheadline.weight(.semibold))
+                        ForEach(container.ports) { port in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(port.title).font(.subheadline).monospacedDigit()
+                                Text(port.bindingText).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }.padding(.vertical, 4).textSelection(.enabled).arcaneRowSeparators()
+                }
+            }
+            if let error = data.portsError {
+                Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
+                Button("重新读取端口") { Task { await refreshPorts() } }.disabled(data.portsLoading).arcaneRowSeparators()
+            }
+        } header: { Text("网络端口") } footer: {
+            Text("按容器展示 Docker 声明的端口及宿主机映射，映射格式为「宿主端口 → 容器端口/协议」。0.0.0.0／:: 表示绑定所有 IPv4／IPv6 地址。未映射端口也会展示；外部访问取决于网络及防火墙。")
         }
     }
 
@@ -131,5 +158,14 @@ private struct ArcaneHostDetails: View {
     private func refreshInfo() async {
         do { await data.refresh(client: try store.client(), environment: environment.id) }
         catch { data.fail(error) }
+    }
+    private func refreshPorts() async {
+        do { await data.refreshPorts(client: try store.client(), environment: environment.id) }
+        catch { data.failPorts(error) }
+    }
+    private func refreshOverview() async {
+        async let info: Void = refreshInfo()
+        async let ports: Void = refreshPorts()
+        _ = await (info, ports)
     }
 }

@@ -100,3 +100,73 @@ enum ArcaneHostFormat {
         "\(bytes(used)) / \(bytes(total.flatMap { $0 > 0 ? $0 : nil }))"
     }
 }
+
+struct ArcanePortMapping: Decodable, Identifiable {
+    let id: String
+    let containerId: String
+    let containerName: String
+    let hostIp: String?
+    let hostPort: Int?
+    let containerPort: Int
+    let transport: String
+    let isPublished: Bool
+    enum CodingKeys: String, CodingKey {
+        case id, containerId, containerName, hostIp, hostPort, containerPort, isPublished
+        case transport = "protocol"
+    }
+}
+
+struct ArcaneNetworkPort: Identifiable {
+    struct Key: Hashable {
+        let containerID: String
+        let hostPort: Int?
+        let containerPort: Int
+        let transport: String
+    }
+    let id: Key
+    let addresses: [String]
+    var title: String {
+        let target = "\(id.containerPort)/\(id.transport)"
+        return id.hostPort.map { "\($0) → " + target } ?? target
+    }
+    var bindingText: String {
+        guard id.hostPort != nil else { return "未映射到宿主机" }
+        return "绑定：" + addresses.map { $0.isEmpty ? "未指定地址" : $0 }.joined(separator: "、")
+    }
+}
+
+struct ArcaneContainerPorts: Identifiable {
+    let id: String
+    let name: String
+    let ports: [ArcaneNetworkPort]
+
+    static func summarize(_ mappings: [ArcanePortMapping]) -> [Self] {
+        var rows: [ArcaneNetworkPort.Key: Set<String>] = [:]
+        var names: [String: Set<String>] = [:]
+        for mapping in mappings {
+            guard (1...65535).contains(mapping.containerPort) else { continue }
+            let host: Int?
+            if mapping.isPublished, let port = mapping.hostPort, port != 0 {
+                guard (1...65535).contains(port) else { continue }
+                host = port
+            } else { host = nil }
+            let transport = mapping.transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !transport.isEmpty else { continue }
+            let key = ArcaneNetworkPort.Key(containerID: mapping.containerId, hostPort: host, containerPort: mapping.containerPort, transport: transport)
+            let name = mapping.containerName.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if !name.isEmpty { names[mapping.containerId, default: []].insert(name) }
+            rows[key, default: []].insert(host == nil ? "" : mapping.hostIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        }
+        let ports = rows.map { ArcaneNetworkPort(id: $0.key, addresses: $0.value.sorted()) }
+        return Dictionary(grouping: ports, by: { $0.id.containerID }).map { containerID, ports in
+            Self(id: containerID, name: names[containerID]?.sorted().first ?? String(containerID.prefix(12)), ports: ports.sorted {
+                if $0.id.containerPort != $1.id.containerPort { return $0.id.containerPort < $1.id.containerPort }
+                if $0.id.transport != $1.id.transport { return $0.id.transport < $1.id.transport }
+                return ($0.id.hostPort ?? 0) < ($1.id.hostPort ?? 0)
+            })
+        }.sorted {
+            if $0.name != $1.name { return $0.name < $1.name }
+            return $0.id < $1.id
+        }
+    }
+}

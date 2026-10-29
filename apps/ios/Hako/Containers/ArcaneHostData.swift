@@ -5,6 +5,7 @@ import Combine
     typealias Consumer = @Sendable (Data) async throws -> Void
     typealias InfoReader = (ArcaneClient, String) async throws -> ArcaneHostInfo
     typealias StatsReader = (ArcaneClient, String, @escaping Consumer) async throws -> Void
+    typealias PortsReader = (ArcaneClient, String) async throws -> [ArcanePortMapping]
     @Published private(set) var info: ArcaneHostInfo?
     @Published private(set) var sample: ArcaneHostStats?
     @Published private(set) var infoLoading = false
@@ -12,15 +13,21 @@ import Combine
     @Published private(set) var infoError: String?
     @Published private(set) var streamError: String?
     @Published private(set) var sampledAt: Date?
+    @Published private(set) var ports: [ArcaneContainerPorts]?
+    @Published private(set) var portsLoading = false
+    @Published private(set) var portsError: String?
     private var context = ""
     private var infoTicket: UUID?
     private var streamTicket: UUID?
+    private var portsTicket: UUID?
     private let readInfo: InfoReader
     private let readStats: StatsReader
+    private let readPorts: PortsReader
 
     init(readInfo: @escaping InfoReader = { try await $0.hostInfo($1) },
-         readStats: @escaping StatsReader = { try await $0.hostStats($1, consume: $2) }) {
-        self.readInfo = readInfo; self.readStats = readStats
+         readStats: @escaping StatsReader = { try await $0.hostStats($1, consume: $2) },
+         readPorts: @escaping PortsReader = { try await $0.hostPorts($1) }) {
+        self.readInfo = readInfo; self.readStats = readStats; self.readPorts = readPorts
     }
 
     private func prepare(client: ArcaneClient, environment: String) {
@@ -29,7 +36,23 @@ import Combine
         context = next; infoTicket = nil; streamTicket = nil
         info = nil; sample = nil; sampledAt = nil
         infoError = nil; streamError = nil; connected = false; infoLoading = false
+        portsTicket = nil; ports = nil; portsLoading = false; portsError = nil
     }
+
+    func refreshPorts(client: ArcaneClient, environment: String) async {
+        prepare(client: client, environment: environment)
+        let ticket = UUID(); portsTicket = ticket; portsLoading = true; portsError = nil
+        defer { if portsTicket == ticket { portsLoading = false } }
+        do {
+            let mappings = try await readPorts(client, environment)
+            try Task.checkCancellation()
+            guard portsTicket == ticket else { return }
+            ports = ArcaneContainerPorts.summarize(mappings)
+        } catch is CancellationError { }
+        catch { if portsTicket == ticket { portsError = error.localizedDescription } }
+    }
+
+    func failPorts(_ error: Error) { portsError = error.localizedDescription }
 
     func refresh(client: ArcaneClient, environment: String) async {
         prepare(client: client, environment: environment)

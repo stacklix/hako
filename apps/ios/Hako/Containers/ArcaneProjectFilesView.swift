@@ -52,21 +52,20 @@ struct ArcaneProjectFilesSection: View {
                 ForEach(entries) { file in fileRow(file).id("arcane-file-" + file.id) }
             }
         } header: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("文件")
-                    Spacer()
-                    Menu {
-                        Button { presentMutation(.createFile(parent: folder)) } label: { Label("新建文件", systemImage: "doc.badge.plus") }
-                        Button { presentMutation(.createFolder(parent: folder)) } label: { Label("新建文件夹", systemImage: "folder.badge.plus") }
-                    } label: {
-                        Image(systemName: "plus").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                    }
-                    .disabled(data.project == nil || data.workspace == nil || data.project?.isArchived == true || data.loading || store.operationRunning || store.fileSaveRunning || store.pending != nil)
-                    .accessibilityLabel("在当前目录添加文件或文件夹")
-                }
+            VStack(alignment: .leading, spacing: 0) {
+                Text("文件")
                 if projectName?.isEmpty == false {
-                    ArcaneFileBreadcrumbs(rootName: rootDirectoryName, folder: folder) { navigate($0) }
+                    HStack(spacing: 8) {
+                        ArcaneFileBreadcrumbs(rootName: rootDirectoryName, folder: folder) { navigate($0) }
+                        Menu {
+                            Button { presentMutation(.createFile(parent: folder)) } label: { Label("新建文件", systemImage: "doc.badge.plus") }
+                            Button { presentMutation(.createFolder(parent: folder)) } label: { Label("新建文件夹", systemImage: "folder.badge.plus") }
+                        } label: {
+                            Image(systemName: "plus").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                        }
+                        .disabled(data.project == nil || data.workspace == nil || data.project?.isArchived == true || data.loading || store.operationRunning || store.fileSaveRunning || store.pending != nil)
+                        .accessibilityLabel("在当前目录添加文件或文件夹")
+                    }
                 }
             }.textCase(nil).id("arcane-file-directory")
                 .task(id: context) { await reload() }

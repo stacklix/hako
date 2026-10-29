@@ -52,6 +52,10 @@ final class ArcaneClient: @unchecked Sendable {
         return try ArcaneHostInfo.parse(data)
     }
 
+    func hostPorts(_ environment: String) async throws -> [ArcanePortMapping] {
+        try await pages(["environments", environment, "ports"], sort: "hostPort", as: ArcanePortMapping.self)
+    }
+
     func hostStatsRequest(_ environment: String) throws -> URLRequest {
         try connection.request(["environments", environment, "ws", "system", "stats"],
             query: [URLQueryItem(name: "interval", value: "2")], websocket: true)
@@ -61,14 +65,14 @@ final class ArcaneClient: @unchecked Sendable {
         try await consumeSocket(hostStatsRequest(environment), consume: consume)
     }
 
-    private func pages<T: Decodable & Identifiable>(_ path: [String], as: T.Type) async throws -> [T] where T.ID == String {
+    private func pages<T: Decodable & Identifiable>(_ path: [String], sort: String = "name", as: T.Type) async throws -> [T] where T.ID == String {
         var items: [T] = []
         var seen = Set<String>()
         while items.count < 10_000 {
             try Task.checkCancellation()
             let page: ArcaneEnvelope<[T]> = try await envelope(path,
                 query: [URLQueryItem(name: "start", value: String(items.count)), URLQueryItem(name: "limit", value: "100"),
-                        URLQueryItem(name: "sort", value: "name"), URLQueryItem(name: "order", value: "asc")])
+                        URLQueryItem(name: "sort", value: sort), URLQueryItem(name: "order", value: "asc")])
             for item in page.data {
                 guard seen.insert(item.id).inserted else {
                     throw ArcaneFailure(message: "资源列表在分页期间发生变化，请重新刷新。")
