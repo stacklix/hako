@@ -38,6 +38,7 @@ struct ContainersView: View {
     private var projects: [String] {
         Array(Set(filtered.map { $0.project ?? "独立容器" })).sorted()
     }
+    private var initialLoading: Bool { store.loading && store.updatedAt == nil }
 
     var body: some View {
         List {
@@ -49,7 +50,7 @@ struct ContainersView: View {
             } else {
                 controls
                 operationSummary
-                if store.loading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
+                if initialLoading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
                 if let environment = store.environment {
                     containerSections(environment: environment)
                 }
@@ -60,6 +61,7 @@ struct ContainersView: View {
             ArcaneOperationSection(store: store)
         }
         .listSectionSpacing(8)
+        .animation(nil, value: store.updatedAt)
         .navigationTitle("容器管理")
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
@@ -111,7 +113,7 @@ struct ContainersView: View {
             }
         } else {
             Section {
-                if filtered.isEmpty && !store.loading {
+                if filtered.isEmpty && !initialLoading {
                     ContentUnavailableView("没有符合条件的容器", systemImage: "shippingbox", description: Text("可调整搜索或筛选条件，或下拉刷新。"))
                 } else {
                     ForEach(filtered) { container in containerLink(container, environment: environment) }
@@ -142,23 +144,6 @@ struct ContainersView: View {
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
-        } footer: {
-            VStack(alignment: .leading, spacing: 4) {
-                if store.loading {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("正在刷新容器…")
-                    }
-                }
-                if let updatedAt = store.updatedAt {
-                    Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新")
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 2)
-            .textCase(nil)
         }
     }
 
@@ -227,8 +212,8 @@ struct ContainersView: View {
                 Image(systemName: "arrow.clockwise").frame(minWidth: 44, minHeight: 44)
             }
             .buttonStyle(.plain)
-            .disabled(store.loading)
-            .accessibilityLabel(store.loading ? "正在刷新容器" : "刷新容器")
+            .disabled(initialLoading)
+            .accessibilityLabel(initialLoading ? "正在读取容器" : "刷新容器")
         }
         .padding(12)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
