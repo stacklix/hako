@@ -195,12 +195,11 @@ private struct ArcaneProjectFileDocument: View {
                 if data.saving { ProgressView() } else { Text("保存") }
             }.disabled(!canSave).accessibilityLabel("保存文件")
         }
-        ToolbarItemGroup(placement: .bottomBar) {
-            Spacer()
-            Button("覆盖粘贴", systemImage: "doc.on.clipboard") { pasteOverFile() }
+        ToolbarItem(placement: .bottomBar) { Spacer() }
+        ToolbarItem(placement: .bottomBar) {
+            Button { pasteOverFile() } label: { Text("覆盖粘贴") }
                 .disabled(!canEdit).accessibilityHint("用剪贴板文本替换整个文件的草稿，点击保存后写入服务器")
-            Spacer()
-        }
+        }.sharedBackgroundVisibility(.visible)
     }
     private var messages: some View {
         VStack(alignment: .leading, spacing: 4) {
