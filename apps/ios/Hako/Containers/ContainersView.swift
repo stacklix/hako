@@ -41,33 +41,46 @@ struct ContainersView: View {
     private var initialLoading: Bool { store.loading && store.updatedAt == nil }
 
     var body: some View {
-        List {
-            if store.connection == nil {
-                Section {
-                    ContentUnavailableView("连接你的 Arcane", systemImage: "shippingbox", description: Text("填写已有 Arcane 服务地址和 API Key，即可查看和管理 Docker 容器。"))
-                    Button("配置 Arcane 连接") { showingSettings = true }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if store.connection == nil {
+                    VStack(spacing: 12) {
+                        ContentUnavailableView("连接你的 Arcane", systemImage: "shippingbox", description: Text("填写已有 Arcane 服务地址和 API Key，即可查看和管理 Docker 容器。"))
+                        Button("配置 Arcane 连接") { showingSettings = true }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                } else {
+                    controls.padding(.bottom, 6)
+                    operationSummary
+                    if initialLoading && store.containers.isEmpty {
+                        ProgressView("正在读取容器…").frame(maxWidth: .infinity).padding(.vertical, 16)
+                    }
+                    if let environment = store.environment {
+                        containerSections(environment: environment)
+                    }
                 }
-            } else {
-                controls
-                operationSummary
-                if initialLoading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
-                if let environment = store.environment {
-                    containerSections(environment: environment)
+                if let error = store.error {
+                    Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange)
+                        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                        .padding(.top, 16)
                 }
+                if store.operationMessage != nil { ArcaneOperationSection(store: store).padding(.top, 16) }
             }
-            if let error = store.error {
-                Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
-            }
-            ArcaneOperationSection(store: store)
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
         }
-        .listSectionSpacing(8)
+        .background(Color(uiColor: .systemGroupedBackground))
         .animation(nil, value: store.updatedAt)
         .navigationTitle("容器管理")
         .scrollDismissesKeyboard(.interactively)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingSettings = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("Arcane 连接设置").disabled(store.operationRunning)
+                    .accessibilityLabel("Arcane 连接设置").disabled(store.operationRunning || store.fileSaveRunning)
             }
         }
         .refreshable { await store.refresh(forceEnvironments: true) }
@@ -86,64 +99,55 @@ struct ContainersView: View {
     @ViewBuilder private var operationSummary: some View {
         if let operation = store.activeOperation ?? store.pending,
            let status = store.operationStatus(environmentID: store.environmentID, containerID: operation.containerID) {
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(operation.containerName).font(.subheadline.weight(.semibold))
-                    ArcaneOperationBadge(status: status)
-                }.arcaneRowSeparators()
+            VStack(alignment: .leading, spacing: 6) {
+                Text(operation.containerName).font(.subheadline.weight(.semibold))
+                ArcaneOperationBadge(status: status)
             }
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+            .padding(.top, 12).padding(.bottom, 16)
         }
     }
 
     @ViewBuilder
     private func containerSections(environment: ArcaneEnvironment) -> some View {
+        containerListHeader
         if groupByProject && !filtered.isEmpty {
             ForEach(projects, id: \.self) { project in
-                Section {
-                    ForEach(filtered.filter { ($0.project ?? "独立容器") == project }) { container in
-                        containerLink(container, environment: environment)
-                    }
-                } header: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if project == projects.first { containerListHeader }
-                        Text(project)
-                    }
-                    .textCase(nil)
-                }
+                Text(project).font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 3).padding(.top, project == projects.first ? 4 : 16).padding(.bottom, 8)
+                containerRows(filtered.filter { ($0.project ?? "独立容器") == project }, environment: environment)
             }
         } else {
-            Section {
-                if filtered.isEmpty && !initialLoading {
-                    ContentUnavailableView("没有符合条件的容器", systemImage: "shippingbox", description: Text("可调整搜索或筛选条件，或下拉刷新。"))
-                } else {
-                    ForEach(filtered) { container in containerLink(container, environment: environment) }
-                }
-            } header: {
-                containerListHeader
+            if filtered.isEmpty && !initialLoading {
+                ContentUnavailableView("没有符合条件的容器", systemImage: "shippingbox", description: Text("可调整搜索或筛选条件，或下拉刷新。"))
+                    .frame(maxWidth: .infinity)
+                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+            } else {
+                containerRows(filtered, environment: environment)
             }
         }
     }
 
+    private func containerRows(_ containers: [ArcaneContainer], environment: ArcaneEnvironment) -> some View {
+        ForEach(containers) { container in
+            containerLink(container, environment: environment,
+                first: container.id == containers.first?.id, last: container.id == containers.last?.id)
+        }
+    }
+
     private var controls: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                environmentSelector
-                searchField
-                ScrollView(.horizontal) {
-                    HStack(spacing: 6) {
-                        ForEach(ContainerFilter.allCases) { option in filterButton(option) }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+        VStack(alignment: .leading, spacing: 0) {
+            environmentSelector.padding(.bottom, 16)
+            searchField.padding(.bottom, 8)
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(ContainerFilter.allCases) { option in filterButton(option) }
                 }
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
-                .frame(height: filterRowHeight + 8)
             }
-            // Keep the filters above the inset-grouped row's bottom corner mask.
-            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0))
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
+            .frame(height: filterRowHeight)
         }
     }
 
@@ -153,7 +157,9 @@ struct ContainersView: View {
             Spacer(minLength: 8)
             composeCheckbox
         }
-        .textCase(nil)
+        .font(.caption).foregroundStyle(.secondary)
+        .frame(minHeight: 36)
+        .padding(.horizontal, 3)
     }
 
     private var composeCheckbox: some View {
@@ -165,7 +171,7 @@ struct ContainersView: View {
                 .font(.subheadline)
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: true, vertical: false)
-                .frame(minHeight: 44)
+                .frame(minHeight: 36)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -215,7 +221,7 @@ struct ContainersView: View {
             .disabled(initialLoading)
             .accessibilityLabel(initialLoading ? "正在读取容器" : "刷新容器")
         }
-        .padding(12)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
     }
 
@@ -255,8 +261,9 @@ struct ContainersView: View {
             Text(option.rawValue)
                 .font(.subheadline)
                 .fixedSize()
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 7)
+                .frame(minHeight: 36)
                 .background(background, in: Capsule())
                 .foregroundStyle(foreground)
                 .frame(minHeight: 44)
@@ -267,14 +274,14 @@ struct ContainersView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func containerLink(_ container: ArcaneContainer, environment: ArcaneEnvironment) -> some View {
+    private func containerLink(_ container: ArcaneContainer, environment: ArcaneEnvironment, first: Bool, last: Bool) -> some View {
         let operation = store.operationStatus(environmentID: environment.id, containerID: container.id)
         return NavigationLink {
             ArcaneContainerView(store: store, environment: environment, container: container)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "shippingbox").foregroundStyle(.secondary).padding(.top, 3)
-                VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 11) {
+                Image(systemName: "shippingbox").foregroundStyle(.secondary).frame(width: 30, height: 34).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
                     Text(container.name).font(.headline)
                     Text(container.image ?? "镜像未知").font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     HStack(spacing: 10) {
@@ -298,14 +305,25 @@ struct ContainersView: View {
                 }
                 Spacer(minLength: 2)
                 if let sample = container.resourceSample {
-                    VStack(alignment: .trailing, spacing: 5) {
+                    VStack(alignment: .trailing, spacing: 4) {
                         if let cpu = sample.cpuPercent { Text("CPU \(cpu, specifier: "%.1f")%") }
                         if let memory = sample.memoryUsageBytes { Text(ByteCountFormatter.string(fromByteCount: memory, countStyle: .memory)) }
                     }.font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                 }
-            }.padding(.vertical, 5)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true)
+            }
+            .padding(.horizontal, 13).padding(.vertical, 15)
+            .frame(minHeight: 85)
+            .contentShape(Rectangle())
         }
-        .arcaneRowSeparators()
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: UnevenRoundedRectangle(
+            topLeadingRadius: first ? 16 : 0, bottomLeadingRadius: last ? 16 : 0,
+            bottomTrailingRadius: last ? 16 : 0, topTrailingRadius: first ? 16 : 0))
+        .overlay(alignment: .bottom) {
+            if !last { Color(uiColor: .separator).frame(height: 0.5).padding(.horizontal, 13).allowsHitTesting(false) }
+        }
     }
 }
 
@@ -313,25 +331,28 @@ struct ArcaneOperationSection: View {
     @ObservedObject var store: ArcaneStore
     var body: some View {
         if let message = store.operationMessage {
-            Section("容器操作") {
-                if let pending = store.pending {
-                    Text("\(pending.environmentName) · \(pending.containerName)").font(.subheadline).arcaneRowSeparators()
-                }
-                if store.operationRunning {
-                    ProgressView().arcaneRowSeparators()
-                }
-                Text(message).font(.footnote).textSelection(.enabled).arcaneRowSeparators()
-                if !store.operationLogs.isEmpty {
-                    DisclosureGroup("操作日志") {
-                        Text(store.operationLogs.joined(separator: "\n"))
-                            .font(.caption.monospaced()).textSelection(.enabled).arcaneRowSeparators()
+            VStack(alignment: .leading, spacing: 8) {
+                Text("容器操作").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 3)
+                VStack(alignment: .leading, spacing: 12) {
+                    if let pending = store.pending {
+                        Text("\(pending.environmentName) · \(pending.containerName)").font(.subheadline)
                     }
-                    .arcaneRowSeparators()
+                    if store.operationRunning { ProgressView() }
+                    Text(message).font(.footnote).textSelection(.enabled)
+                    if !store.operationLogs.isEmpty {
+                        DisclosureGroup("操作日志") {
+                            Text(store.operationLogs.joined(separator: "\n"))
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if store.pending != nil && !store.operationRunning {
+                        Button("刷新容器状态") { Task { await store.refresh() } }.frame(minHeight: 44)
+                        Button("已核对状态，清除此提示") { store.acknowledgeUnknownOperation() }.frame(minHeight: 44)
+                    }
                 }
-                if store.pending != nil && !store.operationRunning {
-                    Button("刷新容器状态") { Task { await store.refresh() } }.arcaneRowSeparators()
-                    Button("已核对状态，清除此提示") { store.acknowledgeUnknownOperation() }.arcaneRowSeparators()
-                }
+                .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
             }
         }
     }

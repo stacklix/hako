@@ -19,6 +19,7 @@ struct ArcaneContainerChange {
     @Published private(set) var updatedAt: Date?
     @Published private(set) var pending: ArcanePendingOperation?
     @Published private(set) var operationRunning = false
+    @Published private(set) var fileSaveRunning = false
     @Published private(set) var activeOperation: ArcanePendingOperation?
     @Published private(set) var operationMessage: String?
     @Published private(set) var operationLogs: [String] = []
@@ -65,7 +66,7 @@ struct ArcaneContainerChange {
     }
 
     func configure(_ value: ArcaneConnection) throws {
-        guard pending == nil, !operationRunning else { throw ArcaneFailure(message: "请先核对或等待当前容器操作完成，再修改连接。") }
+        guard pending == nil, !operationRunning, !fileSaveRunning else { throw ArcaneFailure(message: "请先核对或等待当前操作完成，再修改连接。") }
         var normalized = try value.normalized()
         if let connection, connection.address != normalized.address || connection.apiKey != normalized.apiKey || connection.allowHTTP != normalized.allowHTTP {
             normalized.id = UUID().uuidString
@@ -128,7 +129,7 @@ struct ArcaneContainerChange {
     }
 
     func start(_ action: ArcaneAction, container: ArcaneContainerDetails, environment: ArcaneEnvironment) {
-        guard pending == nil, !operationRunning else { return }
+        guard pending == nil, !operationRunning, !fileSaveRunning else { return }
         do {
             let client = try client()
             let operation = ArcanePendingOperation(connectionID: client.connection.id, environmentID: environment.id,
@@ -158,6 +159,15 @@ struct ArcaneContainerChange {
                 }
             }
         } catch { operationMessage = error.localizedDescription }
+    }
+
+    func withFileSave(_ action: () async throws -> Void) async throws {
+        guard !operationRunning, !fileSaveRunning, pending == nil else {
+            throw ArcaneFailure(message: "请先等待或核对当前操作，再保存文件。")
+        }
+        fileSaveRunning = true
+        defer { fileSaveRunning = false }
+        try await action()
     }
 
     func acknowledgeUnknownOperation() {

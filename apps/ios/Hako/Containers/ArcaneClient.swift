@@ -77,6 +77,80 @@ final class ArcaneClient: @unchecked Sendable {
         try await read(["environments", environment, "containers", id], as: ArcaneContainerDetails.self)
     }
 
+    func projects(_ environment: String) async throws -> [ArcaneProjectSummary] {
+        try await pages(["environments", environment, "projects"], as: ArcaneProjectSummary.self)
+    }
+
+    func projectDocument(_ environment: String, project: String) async throws -> ArcaneProjectDocument {
+        let value = try await read(["environments", environment, "projects", project, "compose"], as: ArcaneProjectDocument.self)
+        guard value.id == project else { throw ArcaneFailure(message: "服务端返回的项目与请求不一致。") }
+        return value
+    }
+
+    func workspace(_ environment: String, project: String) async throws -> ArcaneWorkspace {
+        let value = try await read(["environments", environment, "projects", project, "workspace"], as: ArcaneWorkspace.self)
+        for entry in value.files { try ArcaneWorkspacePath.validate(entry.relativePath) }
+        guard Set(value.files.map(\.relativePath)).count == value.files.count else { throw ArcaneFailure(message: "服务端返回了重复的项目文件路径。") }
+        return value
+    }
+
+    func workspaceFile(_ environment: String, project: String, path: String) async throws -> ArcaneWorkspaceContent {
+        try ArcaneWorkspacePath.validate(path)
+        let value = try await read(["environments", environment, "projects", project, "workspace", "file"],
+                                   query: [URLQueryItem(name: "relativePath", value: path)], as: ArcaneWorkspaceContent.self)
+        guard value.relativePath == path else { throw ArcaneFailure(message: "服务端返回的文件路径与请求不一致。") }
+        return value
+    }
+
+    func saveProjectFile(_ environment: String, project: String, kind: ArcaneProjectFileKind,
+                         baseline: String, content: String) async throws -> ArcaneProjectDocument {
+        // The dedicated Compose/.env endpoint has no revision field. Re-read the
+        // edited field before writing; never send unrelated configuration fields.
+        let current = try await projectDocument(environment, project: project)
+        guard current.editable(kind) else { throw ArcaneFailure(message: "此配置由 Git 同步管理或项目已归档，不能修改。") }
+        guard current.content(kind) == baseline else {
+            throw ArcaneFailure(message: "此文件已被其他操作修改，当前草稿已保留。请重新读取服务器内容后再编辑。", status: 409)
+        }
+        var request = try request(["environments", environment, "projects", project], method: "PUT")
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ArcaneProjectPatch(kind: kind, content: content))
+        return try decodeWriteResponse(try await send(request), as: ArcaneProjectDocument.self)
+    }
+
+    func saveWorkspaceFile(_ environment: String, project: String, path: String, revision: String,
+                           baseline: String, content: String) async throws -> ArcaneWorkspace {
+        try ArcaneWorkspacePath.validate(path)
+        guard !revision.isEmpty else { throw ArcaneFailure(message: "缺少项目文件版本，请重新读取目录后再保存。") }
+        let manifest = ArcaneWorkspaceManifest(fileTreeRevision: revision, fileChanges: [.init(relativePath: path)])
+        let boundary = "Hako-" + UUID().uuidString
+        var body = Data()
+        func append(_ text: String) { body.append(Data(text.utf8)) }
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"manifest\"\r\nContent-Type: application/json\r\n\r\n")
+        body.append(try JSONEncoder().encode(manifest))
+        append("\r\n")
+        for (index, text) in [content, baseline].enumerated() {
+            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"files\"; filename=\"content-\(index).txt\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n")
+            append(text); append("\r\n")
+        }
+        append("--\(boundary)--\r\n")
+        var request = try request(["environments", environment, "projects", project, "workspace"], method: "PUT")
+        request.timeoutInterval = 60
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        // baselineIndex makes the server reject concurrent edits to this file.
+        return try decodeWriteResponse(try await send(request), as: ArcaneWorkspace.self)
+    }
+
+    private func decodeWriteResponse<T: Decodable>(_ data: Data, as: T.Type) throws -> T {
+        do {
+            let value = try JSONDecoder().decode(ArcaneEnvelope<T>.self, from: data)
+            guard value.success == true else { throw ArcaneFailure(message: "无法确认文件保存结果，请重新读取服务器内容核对。", outcomeUnknown: true) }
+            return value.data
+        } catch let error as ArcaneFailure { throw error }
+        catch { throw ArcaneFailure(message: "无法确认文件保存结果，请重新读取服务器内容核对。", outcomeUnknown: true) }
+    }
+
     func checkUpdate(_ environment: String, image: String, containerID: String) async throws -> ArcaneContainerUpdate {
         let update = try await read(["environments", environment, "image-updates", "check"],
             query: [URLQueryItem(name: "imageRef", value: image)], as: ArcaneUpdateInfo.self)

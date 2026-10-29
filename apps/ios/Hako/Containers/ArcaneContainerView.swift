@@ -42,7 +42,8 @@ struct ArcaneContainerView: View {
     }
     private var statsKey: String { taskKey + "-\(isRunning)-\(revision)" }
     private var logsKey: String { taskKey + "-\(tab)-\(following)-\(revision)" }
-    private var canAct: Bool { details != nil && !loading && !store.operationRunning && store.pending == nil && !checkingUpdate && !exporting }
+    private var managementProtected: Bool { details?.redeployDisabled ?? container.redeployDisabled ?? false }
+    private var canAct: Bool { details != nil && !managementProtected && !loading && !store.operationRunning && !store.fileSaveRunning && store.pending == nil && !checkingUpdate && !exporting }
     private var operationStatus: ArcaneOperationStatus? {
         store.operationStatus(environmentID: environment.id, containerID: containerID)
     }
@@ -66,8 +67,13 @@ struct ArcaneContainerView: View {
             if loading && details == nil { Section { ProgressView("正在读取容器…").arcaneRowSeparators() } }
             if let error = error ?? data.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() } }
             if tab == "overview" { overview }
-            else { logs }
-            if let details {
+            else if tab == "logs" { logs }
+            else {
+                ArcaneProjectFilesSection(store: store, environment: environment.id,
+                    projectName: details?.project ?? container.project,
+                    workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision)
+            }
+            if let details, !managementProtected {
                 Section {
                     if details.state?.status == "running" {
                         HStack(spacing: 16) {
@@ -96,13 +102,16 @@ struct ArcaneContainerView: View {
                     Text(details.redeployDisabled == true ? "Arcane 禁止重新部署此容器，请使用服务端对应的管理入口。" : "删除前需先停止容器；删除时保留数据卷。所有操作以 Arcane 实际授权和状态校验为准。")
                 }
             }
-            ArcaneOperationSection(store: store)
         }
     }
 
     private var detailTabs: some View {
-        HakoUnderlineTabs(title: "详情页签", options: ["overview", "logs"], selection: $tab) {
-            $0 == "overview" ? "概览" : "日志"
+        HakoUnderlineTabs(title: "详情页签", options: ["overview", "logs", "files"], selection: $tab) {
+            switch $0 {
+            case "overview": return "概览"
+            case "logs": return "日志"
+            default: return "文件"
+            }
         }
     }
 
@@ -119,7 +128,7 @@ struct ArcaneContainerView: View {
         .navigationTitle("容器详情")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable {
-            await refreshDetails()
+            if tab != "files" { await refreshDetails() }
             revision = UUID()
         }
         .alert(confirming?.confirmationTitle ?? "确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), presenting: confirming) { action in

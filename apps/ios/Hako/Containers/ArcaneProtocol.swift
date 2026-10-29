@@ -175,6 +175,7 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
     let redeployDisabled: Bool?
     let updateInfo: ArcaneUpdateInfo?
     let activityId: String?
+    let composeInfo: ArcaneComposeReference?
     struct Config: Decodable { let env: [String]?; let cmd: [String]?; let workingDir: String? }
     struct HostConfig: Decodable { let restartPolicy: String?; let memory: Int64?; let autoRemove: Bool? }
     struct Port: Decodable {
@@ -191,7 +192,7 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
         struct Endpoint: Decodable { let ipAddress: String?; let globalIPv6Address: String? }
     }
     var displayName: String { (name ?? String(id.prefix(12))).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
-    var project: String? { labels?["com.docker.compose.project"] }
+    var project: String? { composeInfo?.projectName ?? labels?["com.docker.compose.project"] }
     var portsText: String? {
         guard let ports, !ports.isEmpty else { return nil }
         return ports.map(\.text).joined(separator: "\n")
