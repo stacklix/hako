@@ -50,7 +50,7 @@ jobs:
           swiftc -target arm64-apple-macos14.0 -typecheck Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift
           swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
           /tmp/hako-arcane-tests
-          swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
           /tmp/hako-arcane-loading-tests
           swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
           /tmp/hako-arcane-workspace-tests

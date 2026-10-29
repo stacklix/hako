@@ -21,6 +21,8 @@ struct ArcaneContainerView: View {
     @State private var confirming: ArcaneAction?
     @State private var exportedLog: URL?
     @State private var exporting = false
+    @State private var fileEditor: ArcaneFileEditorSession?
+    @State private var fileChanged = false
 
     init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer) {
         self.store = store; self.environment = environment; self.container = container
@@ -78,7 +80,7 @@ struct ArcaneContainerView: View {
                 ArcaneProjectFilesSection(store: store, environment: environment.id,
                     projectName: details?.project ?? container.project,
                     workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision,
-                    scrollToFile: scrollToFile)
+                    scrollToFile: scrollToFile, openEditor: { fileEditor = $0 })
             }
             if let details, !managementProtected {
                 Section {
@@ -134,6 +136,12 @@ struct ArcaneContainerView: View {
         content
         .navigationTitle("容器详情")
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $fileEditor, onDismiss: {
+            if fileChanged { fileChanged = false; revision = UUID() }
+        }) { session in
+            ArcaneProjectFileEditor(store: store, environment: session.environment, project: session.project,
+                initialFile: session.initialFile, files: session.files) { fileChanged = true }
+        }
         .refreshable {
             if tab != "files" { await refreshDetails() }
             revision = UUID()

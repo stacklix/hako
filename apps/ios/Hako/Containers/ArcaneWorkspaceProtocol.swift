@@ -85,6 +85,15 @@ struct ArcaneProjectFile: Identifiable {
     var isDirectory: Bool { entry?.isDirectory == true }
 }
 
+// Own the complete presentation input independently of directory reloads.
+struct ArcaneFileEditorSession: Identifiable {
+    let id = UUID()
+    let environment: String
+    let project: ArcaneProjectDocument
+    let initialFile: ArcaneProjectFile
+    let files: [ArcaneProjectFile]
+}
+
 struct ArcaneWorkspace: Decodable {
     let files: [ArcaneWorkspaceEntry]
     let fileTreeRevision: String

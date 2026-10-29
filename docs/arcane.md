@@ -62,7 +62,9 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 二进制、特殊文件和符号链接只显示文件信息，不提供内容预览及编辑；Git 同步管理的源文件保持只读。Git 项目的有效 `.env` 通过 Arcane 专用保存接口处理覆盖层，不修改 `.env.git` 源文件。目录列表遵守服务端的忽略目录、最大深度、条目数和文件大小限制；返回截断标志时提示列表不完整。
 
-文件页使用紧凑列表、独立搜索、Compose／`.env` 快捷入口和可点击的路径导航；返回上级目录时定位到此前进入的目录项，关闭编辑器后保留浏览位置。管理区域继续保留。长说明收进信息按钮，不常驻文件列表底部。
+文件页使用紧凑列表、独立搜索和可点击的路径导航；Compose、`.env` 与其他配置统一从列表打开，不另外提供快捷入口。返回上级目录时定位到此前进入的目录项，关闭编辑器后保留浏览位置。管理区域继续保留。长说明收进信息按钮，不常驻文件列表底部。
+
+编辑器由容器详情页的单一呈现入口打开，持有打开时的项目、文件和目录快照，不依赖异步刷新的列表分区。缺少 `.env` 时首次打开即进入空白可编辑状态，打开或关闭不创建文件，仅显式保存内容时写入服务端。
 
 文本文件全屏打开，点击顶部文件名可搜索并切换项目文件。编辑器默认使用 12 点等宽字体，并跟随系统辅助字号缩放；YAML、`.env`、JSON、TOML／INI、Shell 和常见 `.conf` 配置提供轻量词法高亮，其他文件使用纯文本。高亮只调整显示属性，不格式化内容，不修改换行；关闭智能引号、智能破折号、自动纠错等输入替换。分词在后台计算，过期结果不会覆盖新输入，中文输入法组词期间不重设高亮。语法高亮不代替 Arcane 的内容校验。
 
@@ -94,7 +96,7 @@ macOS CI 新增模拟网络测试，无真实服务器和容器写入：
 cd apps/ios
 swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
 /tmp/hako-arcane-tests
-swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
 /tmp/hako-arcane-loading-tests
 swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
 /tmp/hako-arcane-workspace-tests

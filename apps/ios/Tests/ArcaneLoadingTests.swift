@@ -16,10 +16,17 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
         lock.lock()
         requests.append(request.request)
         let automatic = path.hasSuffix("/environments") || path.hasSuffix("/activities") || (path.hasSuffix("/containers") && !holdsContainers)
+            || path.hasSuffix("/projects") || path.hasSuffix("/projects/missing-env/compose") || path.hasSuffix("/projects/missing-env/workspace")
         if !automatic { pending[path, default: []].append(request) }
         lock.unlock()
         guard automatic else { return }
-        if path.hasSuffix("/environments") {
+        if path.hasSuffix("/projects") {
+            request.complete(#"{"success":true,"data":[{"id":"missing-env","name":"no-env","path":"/projects/no-env"}]}"#)
+        } else if path.hasSuffix("/projects/missing-env/compose") {
+            request.complete(#"{"success":true,"data":{"id":"missing-env","name":"no-env","composeContent":"services: {}","composeFileName":"compose.yaml"}}"#)
+        } else if path.hasSuffix("/projects/missing-env/workspace") {
+            request.complete(#"{"success":true,"data":{"files":[],"fileTreeRevision":"empty-tree","fileTreeTruncated":false}}"#)
+        } else if path.hasSuffix("/environments") {
             request.complete(#"{"success":true,"data":[{"id":"0","name":"Local"},{"id":"remote","name":"Remote"}]}"#)
         } else if path.hasSuffix("/activities") {
             request.complete(#"{"success":true,"data":[]}"#)
@@ -32,6 +39,11 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
     func count(_ suffix: String) -> Int {
         lock.lock(); defer { lock.unlock() }
         return requests.filter { $0.url!.path.hasSuffix(suffix) }.count
+    }
+
+    func writeCount() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return requests.filter { $0.httpMethod != "GET" }.count
     }
 
     func complete(_ suffix: String, index: Int = 0, id: String, status: Int = 200, list: Bool = false) {
@@ -94,6 +106,21 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         await store.refresh()
         precondition(probe.count("/environments") == 2 && probe.count("/remote/containers") == 1)
         precondition(store.containers.first?.id == "remote-container" && createdClients == 1)
+
+        let files = ArcaneFilesData()
+        await files.load(client: client, environment: "remote", name: "no-env", workingDir: nil)
+        precondition(files.error == nil && files.project?.envContent == nil && files.workspace?.files.isEmpty == true)
+        let envFile = files.files.first { $0.kind == .env }!
+        let editorSession = ArcaneFileEditorSession(environment: "remote", project: files.project!, initialFile: envFile, files: files.files)
+        let editor = ArcaneFileEditorData()
+        await editor.load(client: client, environment: editorSession.environment, project: editorSession.project, file: editorSession.initialFile)
+        precondition(!editor.loading && editor.error == nil && editor.viewable && editor.editable && editor.draft.isEmpty && !editor.dirty,
+                     "A missing .env must open as an empty editable document on the first load")
+        await editor.save(store: store, environment: editorSession.environment, project: editorSession.project, file: editorSession.initialFile)
+        precondition(probe.writeCount() == 0, "Opening a missing .env must never create it or write an empty file")
+        await files.load(client: client, environment: "remote", name: "no-env", workingDir: nil)
+        precondition(editorSession.initialFile.kind == .env && editor.viewable && editor.error == nil && !editor.loading,
+                     "Reloading the directory must not replace the open editor's inputs")
 
         probe.holdContainers(true)
         let cancelledList = Task { await store.refresh() }
@@ -177,7 +204,7 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
                      "An uncertain outcome must not keep displaying an active update")
         store.acknowledgeUnknownOperation()
         precondition(store.operationStatus(environmentID: "remote", containerID: target.id) == nil)
-        print("PASS: Arcane session reuse, direct container polling, explicit environment refresh, immediate replacement loads, cancellation, stale response isolation and scoped operation lifecycle status")
+        print("PASS: Arcane session reuse, polling, missing .env first load without writes, editor snapshots, cancellation, stale response isolation and scoped operation lifecycle status")
     }
 
     private static func waitFor(_ suffix: String, count: Int = 1) async throws {

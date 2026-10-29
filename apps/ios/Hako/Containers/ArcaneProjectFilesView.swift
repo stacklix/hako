@@ -7,11 +7,10 @@ struct ArcaneProjectFilesSection: View {
     let workingDir: String?
     let refreshID: UUID
     var scrollToFile: (String) -> Void = { _ in }
+    let openEditor: (ArcaneFileEditorSession) -> Void
     @StateObject private var data = ArcaneFilesData()
     @State private var folder = ""
     @State private var search = ""
-    @State private var selected: ArcaneProjectFile?
-    @State private var changed = false
     @State private var showHelp = false
     @State private var reloadID = UUID()
     @State private var bookmarks: [String: String] = [:]
@@ -31,38 +30,34 @@ struct ArcaneProjectFilesSection: View {
     var body: some View {
         Group {
             projectSummary
-            if data.workspace != nil { searchAndShortcuts; directory }
-        }
-        .task(id: context) { await reload() }
-        .sheet(isPresented: $showHelp) { ArcaneProjectFilesHelp() }
-        .fullScreenCover(item: $selected, onDismiss: {
-            if changed { changed = false; reloadID = UUID() }
-        }) { file in
-            if let project = data.project {
-                ArcaneProjectFileEditor(store: store, environment: environment, project: project,
-                    initialFile: file, files: data.files) { changed = true }
-            }
+            if data.workspace != nil { fileSearch; directory }
         }
     }
 
     private var projectSummary: some View {
         Section {
-            if projectName?.isEmpty != false {
-                ContentUnavailableView("没有 Compose 项目目录", systemImage: "folder",
-                    description: Text("此容器未关联 Compose 项目。项目文件需要先由 Arcane 收录和管理。"))
-            } else {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(data.project?.name ?? projectName ?? "项目文件").font(.subheadline.weight(.semibold))
-                        if let path = data.project?.path ?? workingDir {
-                            Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            // A single concrete row owns loading/help. Attaching these modifiers
+            // to Group distributes them across changing list sections.
+            VStack(alignment: .leading, spacing: 0) {
+                if projectName?.isEmpty != false {
+                    ContentUnavailableView("没有 Compose 项目目录", systemImage: "folder",
+                        description: Text("此容器未关联 Compose 项目。项目文件需要先由 Arcane 收录和管理。"))
+                } else {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(data.project?.name ?? projectName ?? "项目文件").font(.subheadline.weight(.semibold))
+                            if let path = data.project?.path ?? workingDir {
+                                Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
                         }
+                        Spacer(minLength: 0)
+                        Button { showHelp = true } label: { Image(systemName: "info.circle").frame(minWidth: 44, minHeight: 44) }
+                            .buttonStyle(.borderless).accessibilityLabel("项目文件说明")
                     }
-                    Spacer(minLength: 0)
-                    Button { showHelp = true } label: { Image(systemName: "info.circle").frame(minWidth: 44, minHeight: 44) }
-                        .buttonStyle(.borderless).accessibilityLabel("项目文件说明")
-                }.arcaneRowSeparators()
-            }
+                }
+            }.arcaneRowSeparators()
+                .task(id: context) { await reload() }
+                .sheet(isPresented: $showHelp) { ArcaneProjectFilesHelp() }
             if data.loading { ProgressView("正在读取项目文件…").arcaneRowSeparators() }
             if let error = data.error {
                 Text(error).font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
@@ -71,7 +66,7 @@ struct ArcaneProjectFilesSection: View {
         }.listSectionSpacing(12)
     }
 
-    private var searchAndShortcuts: some View {
+    private var fileSearch: some View {
         Section {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -82,14 +77,6 @@ struct ArcaneProjectFilesSection: View {
                         .buttonStyle(.borderless).accessibilityLabel("清除文件搜索")
                 }
             }.frame(minHeight: 32).arcaneRowSeparators()
-            HStack(spacing: 12) {
-                ForEach(data.project?.configurationFiles.filter { $0.kind == .compose || $0.kind == .env } ?? []) { file in
-                    Button { selected = file } label: {
-                        Label(file.kind == .compose ? "Compose" : ".env", systemImage: file.kind == .compose ? "doc.text" : "curlybraces")
-                            .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, minHeight: 36)
-                    }.buttonStyle(.borderless)
-                }
-            }.arcaneRowSeparators()
         }.listSectionSpacing(12)
     }
 
@@ -112,7 +99,9 @@ struct ArcaneProjectFilesSection: View {
         return Button {
             bookmarks[folder] = file.id
             if file.isDirectory && file.entry?.isSymlink != true { navigate(file.relativePath) }
-            else { selected = file }
+            else if let project = data.project {
+                openEditor(ArcaneFileEditorSession(environment: environment, project: project, initialFile: file, files: data.files))
+            }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: file.isDirectory ? "folder" : "doc.text").foregroundStyle(.secondary).frame(width: 22)
@@ -171,7 +160,7 @@ private struct ArcaneProjectFilesHelp: View {
         NavigationStack {
             List {
                 Text("显示 Arcane 可访问的项目目录及子目录，部分路径可能由服务端隐藏或设为只读。")
-                Text("Compose 和 .env 快捷入口直接打开项目配置；路径导航可返回任意上级目录。")
+                Text("从文件列表打开 Compose、.env 及其他配置；路径导航可返回任意上级目录。缺少 .env 时可先编辑内容，保存后才会写入服务端。")
                 Text("二进制文件、符号链接及超出服务端大小限制的文件仅显示信息，不预览内容。")
                 Text("保存只修改文件，不会自动部署或重启容器。")
             }.navigationTitle("项目文件说明").navigationBarTitleDisplayMode(.inline)
@@ -180,7 +169,7 @@ private struct ArcaneProjectFilesHelp: View {
     }
 }
 
-private struct ArcaneProjectFileEditor: View {
+struct ArcaneProjectFileEditor: View {
     @ObservedObject var store: ArcaneStore
     let environment: String
     let project: ArcaneProjectDocument
