@@ -33,7 +33,7 @@ struct ArcaneContainerView: View {
     private var logsKey: String { taskKey + "-\(tab)-\(following)" }
     private var canAct: Bool { details != nil && !loading && !store.operationRunning && store.pending == nil && !checkingUpdate && !exporting }
 
-    var body: some View {
+    private var content: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 7) {
@@ -75,6 +75,10 @@ struct ArcaneContainerView: View {
             }
             ArcaneOperationSection(store: store)
         }
+    }
+
+    var body: some View {
+        content
         .navigationTitle("容器详情")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -91,9 +95,7 @@ struct ArcaneContainerView: View {
             }
             Button("取消", role: .cancel) { confirming = nil }
         } message: {
-            if let action = confirming {
-                Text("\(environment.displayName) · \(details?.displayName ?? container.name)\n" + confirmationText(action))
-            }
+            Text(verbatim: confirmationMessage)
         }
         .onAppear { visible = true }
         .onDisappear { visible = false; removeExport() }
@@ -292,6 +294,13 @@ struct ArcaneContainerView: View {
     private func removeExport() {
         if let exportedLog { try? FileManager.default.removeItem(at: exportedLog) }
         exportedLog = nil
+    }
+
+    private var confirmationMessage: String {
+        guard let action = confirming else { return "" }
+        let name: String = details?.displayName ?? container.name
+        let target: String = "\(environment.displayName) · \(name)"
+        return target + "\n" + confirmationText(action)
     }
 
     private func confirmationText(_ action: ArcaneAction) -> String {
