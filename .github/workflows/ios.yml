@@ -41,6 +41,11 @@ jobs:
           /tmp/hako-core-tests
           swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
           /tmp/hako-github-tests
+      - name: Test Arcane client protocols and networking
+        run: |
+          swiftc -target arm64-apple-macos14.0 -typecheck Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift
+          swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
+          /tmp/hako-arcane-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

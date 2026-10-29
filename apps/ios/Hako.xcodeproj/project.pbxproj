@@ -145,6 +145,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A23G28RL2L;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Hako;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Hako 网页管理登录二维码";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "验证本机身份以批准网页管理登录";
@@ -168,6 +169,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A23G28RL2L;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Hako;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Hako 网页管理登录二维码";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "验证本机身份以批准网页管理登录";

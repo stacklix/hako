@@ -33,6 +33,13 @@ struct HomeView: View {
                     }.padding(.vertical, 12)
                 }
                 Section("应用") {
+                    NavigationLink { ContainersView() } label: {
+                        Label { VStack(alignment: .leading, spacing: 5) {
+                            Text("容器管理").font(.headline)
+                            Text("Arcane · 容器状态 · 日志与更新").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "shippingbox").foregroundStyle(.primary) }
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { DeviceMonitorView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("设备监控").font(.headline)
