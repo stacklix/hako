@@ -76,7 +76,7 @@ struct DeviceMonitorView: View {
         .navigationTitle("设备监控")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { sheet = .server } label: { Image(systemName: "gearshape") }
+                Button { sheet = .server } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel("服务器与登录设置")
             }
         }
@@ -145,10 +145,9 @@ struct DeviceMetricsView: View {
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            Picker("设备详情", selection: $selectedTab) {
-                ForEach(DetailTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            HakoUnderlineTabs(title: "设备详情", options: DetailTab.allCases, selection: $selectedTab) {
+                $0.rawValue
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal).padding(.vertical, 8)
             .background(.bar)
         }
@@ -381,9 +380,9 @@ struct DeviceMetricsView: View {
         let usage = codexUsage(for: capability)
         queryStatus(capability)
         if let usage {
-            Picker("Codex 数据", selection: $codexTab) {
-                ForEach(CodexTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }.pickerStyle(.segmented)
+            HakoUnderlineTabs(title: "Codex 数据", options: CodexTab.allCases, selection: $codexTab) {
+                $0.rawValue
+            }
             if codexTab == .sessions { runningSessionsContent(usage) }
             else { CodexUsageChart(usage: usage) }
             if !usage.available { Text("未检测到本机 Codex 日志，显示的是此前采集的数据。").font(.footnote).foregroundStyle(.secondary) }

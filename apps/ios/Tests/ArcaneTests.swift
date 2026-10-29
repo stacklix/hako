@@ -71,6 +71,9 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         let emptyPorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"no-ports","ports":[]}"#))
         precondition(emptyPorts.portsText == nil && minimal.portsText == nil)
         precondition(details.portsText == "8080 → 80/tcp")
+        precondition(ArcaneAction.restart.confirmationTitle == "重启容器？" && ArcaneAction.stop.confirmationTitle == "停止容器？")
+        precondition(ArcaneOperationStatus(action: .redeploy, running: true).text == "更新中…")
+        precondition(ArcaneOperationStatus(action: .redeploy, running: false).text == "更新结果待确认")
 
         let rawStats = bytes(#"{"read":"2026-10-29T12:00:00.000000000Z","cpu_stats":{"cpu_usage":{"total_usage":300},"system_cpu_usage":2000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":200},"system_cpu_usage":1000},"memory_stats":{"usage":4000,"limit":10000,"stats":{"inactive_file":1000}},"networks":{"eth0":{"rx_bytes":1000,"tx_bytes":2000},"eth1":{"rx_bytes":3000,"tx_bytes":4000}}}"#)
         let sample = try ArcaneResourceSample.parse(rawStats)

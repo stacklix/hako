@@ -15,12 +15,14 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
         let path = request.request.url!.path
         lock.lock()
         requests.append(request.request)
-        let automatic = path.hasSuffix("/environments") || (path.hasSuffix("/containers") && !holdsContainers)
+        let automatic = path.hasSuffix("/environments") || path.hasSuffix("/activities") || (path.hasSuffix("/containers") && !holdsContainers)
         if !automatic { pending[path, default: []].append(request) }
         lock.unlock()
         guard automatic else { return }
         if path.hasSuffix("/environments") {
             request.complete(#"{"success":true,"data":[{"id":"0","name":"Local"},{"id":"remote","name":"Remote"}]}"#)
+        } else if path.hasSuffix("/activities") {
+            request.complete(#"{"success":true,"data":[]}"#)
         } else if path.hasSuffix("/containers") {
             let environment = path.contains("/remote/") ? "remote" : "0"
             request.complete("{\"success\":true,\"data\":[{\"id\":\"\(environment)-container\",\"state\":\"running\"}]}")
@@ -146,7 +148,36 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         probe.complete("/containers/replaced", id: "replaced")
         _ = await replaced.value
         precondition(data.details == nil && !data.loading && data.error == nil, "A replacement must invalidate old requests")
-        print("PASS: Arcane session reuse, direct container polling, explicit environment refresh, immediate replacement loads, cancellation and stale response isolation")
+
+        let target = try JSONDecoder().decode(ArcaneContainerDetails.self, from: Data(#"{"id":"operation-source","name":"/service","state":{"status":"running","running":true}}"#.utf8))
+        let environment = store.environment!
+        store.start(.redeploy, container: target, environment: environment)
+        precondition(store.operationStatus(environmentID: "remote", containerID: target.id)?.text == "更新中…")
+        precondition(store.operationStatus(environmentID: "0", containerID: target.id) == nil)
+        precondition(store.operationStatus(environmentID: "remote", containerID: "other-container") == nil)
+        try await waitFor("/operation-source/redeploy")
+        probe.holdContainers(true)
+        probe.complete("/operation-source/redeploy", id: "operation-replacement")
+        try await waitFor("/remote/containers", count: 4)
+        precondition(store.pending == nil && store.operationRunning)
+        precondition(store.operationStatus(environmentID: "remote", containerID: "operation-replacement")?.running == true,
+                     "Operation status must follow the replacement ID until the list refresh finishes")
+        probe.complete("/remote/containers", index: 2, id: "operation-replacement", list: true)
+        try await waitForCompletion(store)
+        precondition(store.operationStatus(environmentID: "remote", containerID: "operation-replacement") == nil)
+        probe.holdContainers(false)
+
+        store.start(.redeploy, container: target, environment: environment)
+        precondition(store.operationStatus(environmentID: "remote", containerID: "operation-replacement") == nil,
+                     "A prior operation's replacement ID must not be attached to a new operation")
+        try await waitFor("/operation-source/redeploy", count: 2)
+        probe.complete("/operation-source/redeploy", index: 1, id: "unused", status: 500)
+        try await waitForCompletion(store)
+        precondition(store.operationStatus(environmentID: "remote", containerID: target.id)?.text == "更新结果待确认",
+                     "An uncertain outcome must not keep displaying an active update")
+        store.acknowledgeUnknownOperation()
+        precondition(store.operationStatus(environmentID: "remote", containerID: target.id) == nil)
+        print("PASS: Arcane session reuse, direct container polling, explicit environment refresh, immediate replacement loads, cancellation, stale response isolation and scoped operation lifecycle status")
     }
 
     private static func waitFor(_ suffix: String, count: Int = 1) async throws {
@@ -155,5 +186,13 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(10))
         }
         fatalError("Request did not start: \(suffix)")
+    }
+
+    private static func waitForCompletion(_ store: ArcaneStore) async throws {
+        for _ in 0..<500 {
+            if !store.operationRunning { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        fatalError("Operation did not finish")
     }
 }

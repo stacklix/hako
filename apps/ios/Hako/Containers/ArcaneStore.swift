@@ -19,9 +19,9 @@ struct ArcaneContainerChange {
     @Published private(set) var updatedAt: Date?
     @Published private(set) var pending: ArcanePendingOperation?
     @Published private(set) var operationRunning = false
+    @Published private(set) var activeOperation: ArcanePendingOperation?
     @Published private(set) var operationMessage: String?
     @Published private(set) var operationLogs: [String] = []
-    @Published private(set) var operationProgress: Int?
     @Published private(set) var lastChange: ArcaneContainerChange?
     private var configurationLoaded = false
     private var actionTask: Task<Void, Never>?
@@ -32,6 +32,16 @@ struct ArcaneContainerChange {
     private static let pendingKey = "arcane.pending-operation"
     var environment: ArcaneEnvironment? { environments.first { $0.id == environmentID } }
     var environmentName: String { environment?.displayName ?? environmentID }
+
+    func operationStatus(environmentID: String, containerID: String) -> ArcaneOperationStatus? {
+        guard let operation = activeOperation ?? pending,
+              operation.connectionID == connection?.id, operation.environmentID == environmentID else { return nil }
+        let replacement = lastChange.flatMap { change in
+            change.environmentID == environmentID && change.originalID == operation.containerID ? change.replacementID : nil
+        }
+        guard operation.containerID == containerID || replacement == containerID else { return nil }
+        return ArcaneOperationStatus(action: operation.action, running: operationRunning)
+    }
 
     init(connection: ArcaneConnection? = nil, defaults: UserDefaults = .standard,
          clientFactory: @escaping (ArcaneConnection) throws -> ArcaneClient = { try ArcaneClient(connection: $0) }) {
@@ -125,15 +135,16 @@ struct ArcaneContainerChange {
                 environmentName: environment.displayName, containerID: container.id, containerName: container.displayName, action: action)
             // Persist before sending: app termination or background suspension must not cause an automatic retry.
             defaults.set(try JSONEncoder().encode(operation), forKey: Self.pendingKey)
-            pending = operation; operationRunning = true
+            pending = operation; activeOperation = operation; operationRunning = true
+            lastChange = nil
             operationMessage = "正在\(action.title)：\(operation.containerName)"
-            operationLogs = []; operationProgress = nil
+            operationLogs = []
             actionTask = Task {
                 let baseline = try? await client.activities(operation.environmentID)
                 let observer = Task {
                     if let baseline { await observeOperation(operation, client: client, baseline: Set(baseline.map(\.id))) }
                 }
-                defer { observer.cancel(); operationRunning = false; operationProgress = nil; actionTask = nil }
+                defer { observer.cancel(); operationRunning = false; activeOperation = nil; actionTask = nil }
                 do {
                     let newID = try await client.perform(action, environment: operation.environmentID, id: operation.containerID)
                     // Only the mutation response confirms success; progress events alone never do.
@@ -171,7 +182,6 @@ struct ArcaneContainerChange {
                 if let activityID {
                     let detail = try await client.activity(operation.environmentID, id: activityID)
                     guard !Task.isCancelled, pending?.id == operation.id else { return }
-                    operationProgress = detail.activity.progress.map { min(100, max(0, $0)) }
                     operationLogs = (detail.messages ?? []).suffix(100).map { client.redacted($0.message) }
                 }
                 try await Task.sleep(for: .seconds(2))

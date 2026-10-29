@@ -48,6 +48,7 @@ struct ContainersView: View {
                 }
             } else {
                 controls
+                operationSummary
                 if store.loading && store.containers.isEmpty { Section { ProgressView("正在读取容器…") } }
                 if let environment = store.environment {
                     containerSections(environment: environment)
@@ -76,6 +77,18 @@ struct ContainersView: View {
             while !Task.isCancelled {
                 await store.refresh()
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            }
+        }
+    }
+
+    @ViewBuilder private var operationSummary: some View {
+        if let operation = store.activeOperation ?? store.pending,
+           let status = store.operationStatus(environmentID: store.environmentID, containerID: operation.containerID) {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(operation.containerName).font(.subheadline.weight(.semibold))
+                    ArcaneOperationBadge(status: status)
+                }.arcaneRowSeparators()
             }
         }
     }
@@ -121,14 +134,27 @@ struct ContainersView: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(height: filterRowHeight)
-                if let updatedAt = store.updatedAt {
-                    Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
             }
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                if store.loading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("正在刷新容器…")
+                    }
+                }
+                if let updatedAt = store.updatedAt {
+                    Text("最近更新：\(updatedAt.formatted(date: .omitted, time: .standard)) · 每 10 秒刷新")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 2)
+            .textCase(nil)
         }
     }
 
@@ -253,7 +279,8 @@ struct ContainersView: View {
     }
 
     private func containerLink(_ container: ArcaneContainer, environment: ArcaneEnvironment) -> some View {
-        NavigationLink {
+        let operation = store.operationStatus(environmentID: environment.id, containerID: container.id)
+        return NavigationLink {
             ArcaneContainerView(store: store, environment: environment, container: container)
         } label: {
             HStack(alignment: .top, spacing: 12) {
@@ -268,7 +295,7 @@ struct ContainersView: View {
                             Text(container.abnormal ? "\(container.stateText) · 不健康或异常" : container.stateText)
                         }
                         .foregroundStyle(container.abnormal ? Color.red : container.state == "running" ? Color.green : Color.gray)
-                        if let update = container.update, update.hasUpdate == true, update.error?.isEmpty != false {
+                        if operation?.action != .redeploy, let update = container.update, update.hasUpdate == true, update.error?.isEmpty != false {
                             HStack(spacing: 4) {
                                 Image(systemName: "arrow.down.circle").accessibilityHidden(true)
                                 Text("有更新")
@@ -278,6 +305,7 @@ struct ContainersView: View {
                         }
                     }
                     .font(.caption)
+                    if let operation { ArcaneOperationBadge(status: operation) }
                 }
                 Spacer(minLength: 2)
                 if let sample = container.resourceSample {
@@ -301,8 +329,7 @@ struct ArcaneOperationSection: View {
                     Text("\(pending.environmentName) · \(pending.containerName)").font(.subheadline).arcaneRowSeparators()
                 }
                 if store.operationRunning {
-                    if let value = store.operationProgress { ProgressView(value: Double(value), total: 100).arcaneRowSeparators() }
-                    else { ProgressView().arcaneRowSeparators() }
+                    ProgressView().arcaneRowSeparators()
                 }
                 Text(message).font(.footnote).textSelection(.enabled).arcaneRowSeparators()
                 if !store.operationLogs.isEmpty {

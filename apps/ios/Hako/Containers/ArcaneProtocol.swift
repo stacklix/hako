@@ -302,6 +302,33 @@ enum ArcaneAction: String, Codable, Identifiable {
         case .delete: return "删除容器"
         }
     }
+    var confirmationTitle: String {
+        switch self {
+        case .start: return "启动容器？"
+        case .stop: return "停止容器？"
+        case .restart: return "重启容器？"
+        case .redeploy: return "拉取镜像并重新部署？"
+        case .delete: return "删除容器？"
+        }
+    }
+    var progressTitle: String {
+        switch self {
+        case .start: return "启动中"
+        case .stop: return "停止中"
+        case .restart: return "重启中"
+        case .redeploy: return "更新中"
+        case .delete: return "删除中"
+        }
+    }
+}
+
+struct ArcaneOperationStatus {
+    let action: ArcaneAction
+    let running: Bool
+    var text: String {
+        guard running else { return action == .redeploy ? "更新结果待确认" : "\(action.title)结果待确认" }
+        return action.progressTitle + "…"
+    }
 }
 
 struct ArcanePendingOperation: Codable, Identifiable {

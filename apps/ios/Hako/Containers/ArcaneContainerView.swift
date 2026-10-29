@@ -43,6 +43,9 @@ struct ArcaneContainerView: View {
     private var statsKey: String { taskKey + "-\(isRunning)-\(revision)" }
     private var logsKey: String { taskKey + "-\(tab)-\(following)-\(revision)" }
     private var canAct: Bool { details != nil && !loading && !store.operationRunning && store.pending == nil && !checkingUpdate && !exporting }
+    private var operationStatus: ArcaneOperationStatus? {
+        store.operationStatus(environmentID: environment.id, containerID: containerID)
+    }
 
     private var content: some View {
         List {
@@ -51,6 +54,7 @@ struct ArcaneContainerView: View {
                     Text(details?.displayName ?? container.name).font(.title2.bold())
                     Label(environment.displayName, systemImage: "server.rack").font(.caption).foregroundStyle(.secondary)
                     statusBadge
+                    if let operationStatus { ArcaneOperationBadge(status: operationStatus) }
                 }.padding(.vertical, 6).arcaneRowSeparators()
             }.listSectionSpacing(12)
             Section {
@@ -65,15 +69,21 @@ struct ArcaneContainerView: View {
             else { logs }
             if let details {
                 Section {
-                    HStack {
-                        if details.state?.status == "running" {
-                            Button("重启") { confirming = .restart }
-                            Spacer()
-                            Button("停止", role: .destructive) { confirming = .stop }
-                        } else if ["exited", "created"].contains(details.state?.status ?? "") {
-                            Button("启动") { confirming = .start }
-                        } else { Text("请在 Arcane 中处理当前容器状态。 ").foregroundStyle(.secondary) }
-                    }.disabled(!canAct).arcaneRowSeparators()
+                    if details.state?.status == "running" {
+                        HStack(spacing: 16) {
+                            Button { confirming = .restart } label: {
+                                Text("重启").frame(maxWidth: .infinity, minHeight: 44)
+                            }.buttonStyle(.borderless)
+                            Button(role: .destructive) { confirming = .stop } label: {
+                                Text("停止").frame(maxWidth: .infinity, minHeight: 44)
+                            }.buttonStyle(.borderless)
+                        }.disabled(!canAct).arcaneRowSeparators()
+                    } else if ["exited", "created"].contains(details.state?.status ?? "") {
+                        Button("启动") { confirming = .start }
+                            .buttonStyle(.borderless).disabled(!canAct).arcaneRowSeparators()
+                    } else {
+                        Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary).arcaneRowSeparators()
+                    }
                     Button { confirming = .redeploy } label: {
                         Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
                     }.disabled(!canAct || details.redeployDisabled == true).arcaneRowSeparators()
@@ -91,36 +101,9 @@ struct ArcaneContainerView: View {
     }
 
     private var detailTabs: some View {
-        HStack(spacing: 0) {
-            detailTab("概览", value: "overview")
-            detailTab("日志", value: "logs")
+        HakoUnderlineTabs(title: "详情页签", options: ["overview", "logs"], selection: $tab) {
+            $0 == "overview" ? "概览" : "日志"
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("详情页签")
-    }
-
-    private func detailTab(_ title: String, value: String) -> some View {
-        let selected = tab == value
-        return Button {
-            tab = value
-        } label: {
-            VStack(spacing: 0) {
-                Text(title)
-                    .font(.subheadline)
-                    .fontWeight(selected ? .semibold : .regular)
-                    .foregroundStyle(selected ? Color.primary : Color.secondary)
-                    .padding(.vertical, 12)
-                    .frame(minHeight: 44)
-                Capsule()
-                    .fill(selected ? Color.primary : Color.clear)
-                    .frame(width: 28, height: 3)
-                    .accessibilityHidden(true)
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var statusBadge: some View {
@@ -139,16 +122,16 @@ struct ArcaneContainerView: View {
             await refreshDetails()
             revision = UUID()
         }
-        .alert("确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
-            if let action = confirming, let details {
+        .alert(confirming?.confirmationTitle ?? "确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), presenting: confirming) { action in
+            if let details {
                 Button(action.title, role: action == .delete || action == .stop ? .destructive : nil) {
                     store.start(action, container: details, environment: environment)
                     confirming = nil
                 }
             }
             Button("取消", role: .cancel) { confirming = nil }
-        } message: {
-            Text(verbatim: confirmationMessage)
+        } message: { action in
+            Text(verbatim: confirmationMessage(action))
         }
         .onAppear { visible = true }
         .onDisappear { visible = false; removeExport() }
@@ -366,8 +349,7 @@ struct ArcaneContainerView: View {
         exportedLog = nil
     }
 
-    private var confirmationMessage: String {
-        guard let action = confirming else { return "" }
+    private func confirmationMessage(_ action: ArcaneAction) -> String {
         let name: String = details?.displayName ?? container.name
         let target: String = "\(environment.displayName) · \(name)"
         return target + "\n" + confirmationText(action)
@@ -376,8 +358,10 @@ struct ArcaneContainerView: View {
     private func confirmationText(_ action: ArcaneAction) -> String {
         switch action {
         case .start: return "按现有配置启动容器。"
-        case .stop, .restart:
-            return details?.hostConfig?.autoRemove == true ? "此容器启用了自动移除，停止时 Docker 可能删除容器及其匿名卷。" : "服务将中断，数据卷保留。"
+        case .stop:
+            return details?.hostConfig?.autoRemove == true ? "停止此容器。此容器启用了自动移除，Docker 可能删除容器及其匿名卷。" : "停止此容器，服务将中断，数据卷保留。"
+        case .restart:
+            return details?.hostConfig?.autoRemove == true ? "重启此容器。此容器启用了自动移除，重启过程中的停止可能导致 Docker 删除容器及其匿名卷。" : "重启此容器，服务会短暂中断，数据卷保留。"
         case .delete: return "删除容器，保留数据卷。此操作不能撤销。"
         case .redeploy: return details?.project == nil ? "拉取镜像并重建容器，服务会短暂中断。" : "由 Arcane 依据 Compose 项目配置更新此服务，关联副本也可能重建，服务会短暂中断。"
         }
