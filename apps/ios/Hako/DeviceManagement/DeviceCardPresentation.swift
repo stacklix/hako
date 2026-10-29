@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 // Stored per server, account, device and command group. Missing commands retain their
 // saved place; newly advertised commands are appended in the Agent's manifest order.
