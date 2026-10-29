@@ -79,7 +79,7 @@ internal static class Program
                 (metrics.Network.DownloadBytesPerSecond is not >= 0 || metrics.Network.UploadBytesPerSecond is not >= 0)))
                 throw new Exception("Network metrics were not included in the system query");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
-            await CapabilityChecks.RunAsync(dispatcher);
+            await CapabilityChecks.RunAsync();
             await CodexUsageChecks.RunAsync();
             await CliChecks.RunAsync();
             return 0;

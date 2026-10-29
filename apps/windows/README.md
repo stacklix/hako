@@ -77,7 +77,9 @@ dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
 dotnet run --project src/Hako/Hako.csproj -c Release
 ```
 
-检查程序验证 DPAPI 加解密和篡改拒绝、RSA 3072 位密钥生成、公钥导出与验签、私钥导入、URL 约束、CLI 参数和帮助、配置隔离、命名管道控制，以及真实 Windows CPU/内存/网络采样。网络检查另覆盖网卡筛选、多网卡汇总、真实时间窗口、64 位计数器精度、空闲、计数器重置、网卡增减和读取失败。
+检查程序验证 DPAPI 加解密和篡改拒绝、RSA 3072 位密钥生成、公钥导出与验签、私钥导入、URL 约束、CLI 参数和帮助、配置隔离、命名管道控制，以及真实 Windows CPU/内存/网络采样。网络检查另覆盖网卡筛选（排除硬件不存在的 USB 接口记录，保留未连接的物理网卡）、多网卡汇总、真实时间窗口、64 位计数器精度、空闲、计数器重置、网卡增减和读取失败。
+
+`query.all` 能力检查使用独立的临时 Codex 日志，验证已知调用数、Token 用量及日志缺失场景，避免本机真实日志量和运行状态影响聚合查询断言；CPU、内存、网络仍执行真实 Windows 采样。失败信息分别标识采样次数、结果结构和 Codex 用量错误。
 
 发布包含 .NET 运行时的 Windows x64 单文件 EXE：
 

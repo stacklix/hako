@@ -36,10 +36,21 @@ internal static class NetworkTrafficChecks
             if (unavailable.Available || unavailable.DownloadBytesPerSecond != null || unavailable.UploadBytesPerSecond != null
                 || string.IsNullOrEmpty(unavailable.Message)) throw new Exception("Missing/reset counters must not appear as zero or a rate spike");
         }
-        if (!NetworkTraffic.IsIncluded(6, 1) || !NetworkTraffic.IsIncluded(71, 1)
-            || NetworkTraffic.IsIncluded(6, 0) || NetworkTraffic.IsIncluded(6, 3)
-            || NetworkTraffic.IsIncluded(24, 1) || NetworkTraffic.IsIncluded(131, 1))
+        if (!NetworkTraffic.IsIncluded(6, 1, 1) || !NetworkTraffic.IsIncluded(71, 1, 1)
+            || NetworkTraffic.IsIncluded(6, 0, 1) || NetworkTraffic.IsIncluded(6, 3, 1)
+            || NetworkTraffic.IsIncluded(24, 1, 1) || NetworkTraffic.IsIncluded(131, 1, 1))
             throw new Exception("Virtual, filter, loopback or tunnel adapters were included");
+        // Reproduce this PC: two Intel ports and Wi-Fi, plus three absent USB
+        // interfaces which GetIfTable2 still marks as hardware (even with connectors).
+        var adapterRows = new (uint Type, byte Flags, uint OperStatus)[] {
+            (6, 21, 2), (6, 5, 1), (71, 21, 2),
+            (6, 5, 6), (6, 5, 6), (6, 1, 6)
+        };
+        var included = 0;
+        foreach (var row in adapterRows)
+            if (NetworkTraffic.IsIncluded(row.Type, row.Flags, row.OperStatus)) included++;
+        if (included != 3)
+            throw new Exception("Absent USB adapters must be excluded while disconnected Ethernet/Wi-Fi remain counted");
         var large = NetworkTraffic.Measure(Sample(0, ("ethernet", ulong.MaxValue - 4096, ulong.MaxValue - 2048)),
             Sample(Stopwatch.Frequency, ("ethernet", ulong.MaxValue, ulong.MaxValue)));
         if (!large.Available || large.DownloadBytesPerSecond != 4096 || large.UploadBytesPerSecond != 2048)
@@ -49,6 +60,6 @@ internal static class NetworkTrafficChecks
             throw new Exception("Network rate units or missing values are invalid");
         var live = NetworkTraffic.Capture();
         if (live.Error != null) throw new Exception("Windows network counter read failed: " + live.Error);
-        Console.WriteLine($"PASS: physical network filtering, 64-bit deltas, elapsed rate, idle/reset/missing/error handling; {live.Interfaces.Count} live physical adapter(s)");
+        Console.WriteLine($"PASS: physical/absent network filtering, 64-bit deltas, elapsed rate, idle/reset/missing/error handling; {live.Interfaces.Count} live physical adapter(s)");
     }
 }

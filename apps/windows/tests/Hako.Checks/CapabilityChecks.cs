@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -21,15 +22,59 @@ internal static class CapabilityChecks
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new Exception("Response body was read");
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
-    public static async Task RunAsync(AgentDispatcher real)
+    public static async Task RunAsync()
+    {
+        // Aggregate checks must not scan the developer's live Codex logs under an
+        // eight-second request budget. Use known input for both aggregate queries.
+        var directory = Path.Combine(Path.GetTempPath(), "hako-capability-check-" + Guid.NewGuid().ToString("N"));
+        var home = Path.Combine(directory, "codex");
+        var sessions = Path.Combine(home, "sessions");
+        Directory.CreateDirectory(sessions);
+        try
+        {
+            var now = DateTimeOffset.Parse("2026-10-28T12:00:00Z");
+            var path = Path.Combine(sessions, "test.jsonl");
+            await File.WriteAllTextAsync(path, """
+                {"timestamp":"2026-10-28T12:00:00Z","type":"response_item","payload":{"type":"message","role":"user","id":"test-human","internal_chat_message_metadata_passthrough":{"turn_id":"test-turn","content_item_kinds":["user.text"]}}}
+                {"timestamp":"2026-10-28T12:00:00Z","type":"token_usage_record","payload":{"response_id":"test-response","turn_id":"test-turn","usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110}}}
+                """ + "\n");
+            File.SetLastWriteTimeUtc(path, now.UtcDateTime);
+            await using var codex = new CodexUsage(home, zone: TimeZoneInfo.Utc, clock: () => now);
+            await RunAsync(new AgentDispatcher(new SystemMetrics(), codexUsage: codex), codex);
+
+            // Missing local Codex data is a valid seven-day unavailable result.
+            await using var missing = new CodexUsage(Path.Combine(directory, "missing"));
+            using var empty = JsonDocument.Parse("{}");
+            var data = (QueryData)(await new AgentDispatcher(new SystemMetrics(), codexUsage: missing)
+                .InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
+            var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
+            if (data.Data["query.system.metrics"].Error is not null || usage is not { Available: false, Days.Count: 7 }
+                || usage.Days.Any(day => day.RequestCount != 0 || day.TotalTokens != 0))
+                throw new Exception("Missing Codex logs must not break query.all or fabricate usage");
+        }
+        finally
+        {
+            if (!Path.GetFullPath(directory).StartsWith(Path.GetFullPath(Path.GetTempPath()) + "hako-capability-check-", StringComparison.OrdinalIgnoreCase))
+                throw new Exception("Unsafe capability fixture cleanup path");
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private static async Task RunAsync(AgentDispatcher real, CodexUsage codexUsage)
     {
         using var empty = JsonDocument.Parse("{}");
         var samples = 0;
         real.MetricsReceived += _ => samples++;
         var data = (QueryData)(await real.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
-        if (samples != 1 || data.Data.Count != 2 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics
-            || data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json)?.Days.Count != 7)
-            throw new Exception("query.all must sample system metrics once");
+        if (samples != 1)
+            throw new Exception($"query.all must sample system metrics once; observed {samples}, error={data.Data["query.system.metrics"].Error?.Code}");
+        if (data.Data.Count != 2 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics)
+            throw new Exception("query.all did not return both queries with system metrics");
+        var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
+        if (usage is not { Available: true, Days.Count: 7 })
+            throw new Exception($"query.all did not return seven Codex usage days; error={data.Data["query.codex.usage"].Error?.Code}");
+        if (usage.Days.Sum(day => day.RequestCount) != 1 || usage.Days.Sum(day => day.TotalTokens) != 110)
+            throw new Exception("query.all did not return the known fixture's user count and token usage");
         var json = JsonSerializer.SerializeToElement(data, AgentConnection.Json).GetProperty("data");
         if (json.GetProperty("query.system.metrics").TryGetProperty("error", out _) || json.TryGetProperty("action.network.http.check", out _))
             throw new Exception("Query result alternatives/actions are invalid");
@@ -59,7 +104,7 @@ internal static class CapabilityChecks
             var result = await probe.CheckAsync(parameters.RootElement, CancellationToken.None);
             if (!result.Reachable || result.StatusCode != status || result.HttpSuccess != (status < 300) || result.Failure != null || handler.Calls != 1)
                 throw new Exception("HTTP status classification failed");
-            var dispatcher = new AgentDispatcher(new SystemMetrics(), probe);
+            var dispatcher = new AgentDispatcher(new SystemMetrics(), probe, codexUsage);
             await dispatcher.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None);
             if (handler.Calls != 1) throw new Exception("query.all executed an action");
         }

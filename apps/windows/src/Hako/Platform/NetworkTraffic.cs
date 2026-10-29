@@ -16,6 +16,7 @@ public static class NetworkTraffic
 
     // MIB_IF_ROW2 uses 64-bit octet counters. The hardware flag excludes virtual
     // adapters and VPN/filter layers, which otherwise count the same traffic twice.
+    // Hardware flags can remain on removed USB adapters; also check OperStatus.
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct InterfaceRow
     {
@@ -61,7 +62,7 @@ public static class NetworkTraffic
             for (var i = 0; i < count; i++)
             {
                 var row = Marshal.PtrToStructure<InterfaceRow>(IntPtr.Add(table, checked(offset + i * size)));
-                if (!IsIncluded(row.Type, row.Flags)) continue;
+                if (!IsIncluded(row.Type, row.Flags, row.OperStatus)) continue;
                 var id = row.Guid == Guid.Empty ? "luid:" + row.Luid : row.Guid.ToString("D");
                 interfaces[id] = new Counters(row.InOctets, row.OutOctets);
             }
@@ -74,7 +75,11 @@ public static class NetworkTraffic
         finally { if (table != IntPtr.Zero) FreeMibTable(table); }
     }
 
-    public static bool IsIncluded(uint type, byte flags) => (flags & 1) != 0 && (flags & 2) == 0 && type is not 24 and not 131;
+    public static bool IsIncluded(uint type, byte flags, uint operStatus) =>
+        (flags & 1) != 0 && (flags & 2) == 0 && type is not 24 and not 131
+        // IfOperStatusNotPresent = 6: hardware is absent. Down/disconnected adapters
+        // still count, so unplugging a cable does not change the sampling set.
+        && operStatus != 6;
 
     public static NetworkMetrics Measure(Sample before, Sample after)
     {
