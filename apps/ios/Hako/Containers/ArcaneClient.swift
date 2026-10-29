@@ -47,6 +47,20 @@ final class ArcaneClient: @unchecked Sendable {
         try await pages(["environments", environment, "containers"], as: ArcaneContainer.self)
     }
 
+    func hostInfo(_ environment: String) async throws -> ArcaneHostInfo {
+        let data = try await send(request(["environments", environment, "system", "docker", "info"]))
+        return try ArcaneHostInfo.parse(data)
+    }
+
+    func hostStatsRequest(_ environment: String) throws -> URLRequest {
+        try connection.request(["environments", environment, "ws", "system", "stats"],
+            query: [URLQueryItem(name: "interval", value: "2")], websocket: true)
+    }
+
+    func hostStats(_ environment: String, consume: @escaping @Sendable (Data) async throws -> Void) async throws {
+        try await consumeSocket(hostStatsRequest(environment), consume: consume)
+    }
+
     private func pages<T: Decodable & Identifiable>(_ path: [String], as: T.Type) async throws -> [T] where T.ID == String {
         var items: [T] = []
         var seen = Set<String>()
@@ -216,6 +230,10 @@ final class ArcaneClient: @unchecked Sendable {
         let query = kind == "logs" ? [URLQueryItem(name: "tail", value: "100"), URLQueryItem(name: "follow", value: "true"),
                                       URLQueryItem(name: "timestamps", value: "true"), URLQueryItem(name: "format", value: "json")] : []
         let request = try connection.request(["environments", environment, "ws", "containers", id, kind], query: query, websocket: true)
+        try await consumeSocket(request, consume: consume)
+    }
+
+    private func consumeSocket(_ request: URLRequest, consume: @escaping @Sendable (Data) async throws -> Void) async throws {
         let socket = session.webSocketTask(with: request)
         socket.maximumMessageSize = 1_048_576
         try await withTaskCancellationHandler {
@@ -243,7 +261,7 @@ final class ArcaneClient: @unchecked Sendable {
                 if let failure = error as? ArcaneFailure { throw failure }
                 let code = (socket.response as? HTTPURLResponse)?.statusCode
                 if let code, code != 101 { throw failure(code, method: "GET") }
-                throw ArcaneFailure(message: "实时连接已断开。请检查网络、容器状态、API Key 权限和反向代理的 WebSocket 支持。")
+                throw ArcaneFailure(message: "实时连接已断开。请检查网络、环境状态、API Key 权限和反向代理的 WebSocket 支持。")
             }
         } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
     }

@@ -20,6 +20,7 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 | 环境选择 | API Key 对相应环境有授权；环境列表按 Arcane 返回 |
 | 容器列表、搜索、状态／更新筛选、Compose 分组 | `containers:list` |
 | 详情、配置及 CPU／内存／网络监控 | `containers:read` |
+| 主机资源、系统与 Docker 信息 | `system:read`，授予对应环境 |
 | 实时日志、导出 Docker 留存日志 | `containers:logs` |
 | 启动、停止、重启 | `containers:start`、`containers:stop`、`containers:restart` |
 | 检查镜像更新 | `image-updates:check` |
@@ -44,6 +45,14 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 进入详情立即展示列表已有的名称、镜像、状态、项目和资源采样，并行读取完整配置和订阅实时资源，不等待详情接口才显示资源区。列表采样明确标注来源，实时采样到达后替换。前台可见时每 10 秒刷新状态；移除导航栏刷新按钮，保留下拉刷新，同时重连实时资源及日志。取消后重新进入立即开始新请求，旧请求不能覆盖新数据、错误或加载状态。完整配置读取成功前不开放管理操作。运行状态及图标为绿色，停止为灰色，异常为红色。CPU、内存及网络从单容器 WebSocket 读取，不把缺失值填成零。内存扣除 Docker 缓存后显示使用率及使用量；右侧网络以上行 `tx_bytes`、下行 `rx_bytes` 汇总所有接口，以两次采样的差值／时间间隔计算 B/s、KB/s、MB/s、GB/s，同时可展开累计流量。首次采样、重连、计数重置或间隔超过 30 秒时等待下一次有效采样；没有网络计数时明确显示不可用。累计值属于 Docker 当前容器计数，不是 Hako 历史流量。
 
 日志仅在日志页前台且开启跟随时订阅，重连读取最近 100 行，内存中最多保留 500 行／512 KiB；长行有显示长度上限。离开详情、切后台或操作开始时取消实时订阅。导出通过下载接口获取 Docker 仍保留的日志，最多 256 MB，保存临时文件后由系统分享；离开页面清理该导出文件。环境变量默认遮蔽，用户可主动显示。
+
+## 主机资源
+
+环境卡片下方的「主机资源」打开当前环境的详情，本地 Manager 和远程 Agent 均通过同一个 Manager 地址访问，客户端不另外连接各主机。系统及 Docker 信息使用 `GET /api/environments/{id}/system/docker/info`；该接口返回平铺的 Docker Info，不是通用 `data` 包装。实时资源使用 `GET /api/environments/{id}/ws/system/stats?interval=2`，需要对应环境的 `system:read` 权限。接口依据 [Arcane v2.17.1 系统路由](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/system/module.go) 与 [主机指标实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/api/ws/system_stats.go)。
+
+详情展示 CPU 使用率及核心数、内存与磁盘已用／总量和百分比；服务端启用并返回 GPU 信息时展示各 GPU 显存使用量。系统信息包括主机名、操作系统、内核和架构，Docker 信息包括版本、存储／日志驱动、数据目录、容器与镜像数量。磁盘仅代表 Arcane 配置的统计路径所在文件系统，默认 `/`，不是所有磁盘的容量汇总。缺失指标显示 `—`，不伪造零使用率。
+
+进入页面自动读取并订阅，保留下拉刷新；离开页面或进入后台取消订阅，返回后重新连接。网络断线保留上次样本并标记状态，每 5 秒重连；401／403／404 停止自动重连，显示错误并允许下拉重试。超过 15 秒没有新样本时不再标为实时。连接、环境切换及新请求会隔离旧响应，防止串用主机数据。主机资源仅查询，不触发 Docker 变更。
 
 ## 项目文件
 
@@ -94,14 +103,16 @@ macOS CI 新增模拟网络测试，无真实服务器和容器写入：
 
 ```sh
 cd apps/ios
-swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
 /tmp/hako-arcane-tests
-swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
 /tmp/hako-arcane-loading-tests
-swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
 /tmp/hako-arcane-workspace-tests
 swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
 /tmp/hako-arcane-syntax-tests
+swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
+/tmp/hako-arcane-host-tests
 ```
 
 测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝；加载回归测试覆盖会话复用、直接轮询容器、显式刷新环境、旧响应与旧错误隔离、取消后立即重载及容器替换。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。

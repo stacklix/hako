@@ -181,45 +181,60 @@ struct ContainersView: View {
     }
 
     private var environmentSelector: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "server.rack").font(.title3).foregroundStyle(.secondary)
-            Menu {
-                Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: {
-                    guard $0 != store.environmentID else { return }
-                    store.selectEnvironment($0)
-                    environmentRevision = UUID()
-                })) {
-                    ForEach(store.environments) { environment in
-                        Text("\(environment.displayName) · \(environment.statusText)").tag(environment.id)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "server.rack").font(.title3).foregroundStyle(.secondary)
+                Menu {
+                    Picker("Docker 环境", selection: Binding(get: { store.environmentID }, set: {
+                        guard $0 != store.environmentID else { return }
+                        store.selectEnvironment($0)
+                        environmentRevision = UUID()
+                    })) {
+                        ForEach(store.environments) { environment in
+                            Text("\(environment.displayName) · \(environment.statusText)").tag(environment.id)
+                        }
                     }
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text(store.environment?.displayName ?? "选择 Docker 环境")
+                                .font(.subheadline.weight(.semibold)).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(.primary)
+                        HStack(spacing: 6) {
+                            Circle().fill(environmentStatusColor).frame(width: 6, height: 6).accessibilityHidden(true)
+                            Text(store.environment?.statusText ?? "状态未知")
+                            Text("·")
+                            Text(store.connection?.name ?? "Arcane").lineLimit(1)
+                            Spacer(minLength: 0)
+                            Text("\(store.containers.count) 个容器").fixedSize()
+                        }.font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 }
-            } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        Text(store.environment?.displayName ?? "选择 Docker 环境")
-                            .font(.subheadline.weight(.semibold)).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                    }
-                    .foregroundStyle(.primary)
-                    HStack(spacing: 6) {
-                        Circle().fill(environmentStatusColor).frame(width: 6, height: 6).accessibilityHidden(true)
-                        Text(store.environment?.statusText ?? "状态未知")
-                        Text("·")
-                        Text(store.connection?.name ?? "Arcane").lineLimit(1)
+                .disabled(store.environments.isEmpty)
+                .accessibilityLabel("Docker 环境，\(store.environment?.displayName ?? "尚未选择")")
+                Button { Task { await store.refresh(forceEnvironments: true) } } label: {
+                    Image(systemName: "arrow.clockwise").frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(initialLoading)
+                .accessibilityLabel(initialLoading ? "正在读取容器" : "刷新容器")
+            }
+            if let environment = store.environment {
+                Divider().padding(.top, 8)
+                NavigationLink {
+                    ArcaneHostView(store: store, environment: environment)
+                } label: {
+                    HStack(spacing: 8) {
+                        Label("主机资源", systemImage: "chart.bar.xaxis").font(.subheadline)
                         Spacer(minLength: 0)
-                        Text("\(store.containers.count) 个容器").fixedSize()
-                    }.font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(.primary)
+                    .accessibilityLabel("查看 \(environment.displayName) 的主机资源")
             }
-            .disabled(store.environments.isEmpty)
-            .accessibilityLabel("Docker 环境，\(store.environment?.displayName ?? "尚未选择")")
-            Button { Task { await store.refresh(forceEnvironments: true) } } label: {
-                Image(systemName: "arrow.clockwise").frame(minWidth: 44, minHeight: 44)
-            }
-            .buttonStyle(.plain)
-            .disabled(initialLoading)
-            .accessibilityLabel(initialLoading ? "正在读取容器" : "刷新容器")
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
