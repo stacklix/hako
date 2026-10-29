@@ -46,13 +46,14 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
         return requests.filter { $0.httpMethod != "GET" }.count
     }
 
-    func complete(_ suffix: String, index: Int = 0, id: String, status: Int = 200, list: Bool = false) {
+    func complete(_ suffix: String, index: Int = 0, id: String, status: Int = 200, list: Bool = false, startedAt: String? = nil) {
         lock.lock()
         let matches = pending.first { $0.key.hasSuffix(suffix) }!.value
         let request = matches[index]
         lock.unlock()
+        let startField = startedAt.map { ",\"startedAt\":\"\($0)\"" } ?? ""
         let data = list ? "[{\"id\":\"\(id)\",\"state\":\"running\"}]"
-            : "{\"id\":\"\(id)\",\"name\":\"/\(id)\",\"state\":{\"status\":\"running\",\"running\":true}}"
+            : "{\"id\":\"\(id)\",\"name\":\"/\(id)\",\"state\":{\"status\":\"running\",\"running\":true\(startField)}}"
         request.complete("{\"success\":true,\"data\":\(data)}", status: status)
     }
 }
@@ -204,6 +205,26 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
                      "An uncertain outcome must not keep displaying an active update")
         store.acknowledgeUnknownOperation()
         precondition(store.operationStatus(environmentID: "remote", containerID: target.id) == nil)
+        let restartTarget = try JSONDecoder().decode(ArcaneContainerDetails.self, from: Data(#"{"id":"restart-source","name":"/service","state":{"status":"running","running":true,"startedAt":"2026-10-29T16:00:00Z"}}"#.utf8))
+        store.start(.restart, container: restartTarget, environment: environment)
+        try await waitFor("/restart-source/restart")
+        probe.complete("/restart-source/restart", id: "unused", status: 500)
+        try await waitForCompletion(store)
+        try await waitFor("/containers/restart-source")
+        precondition(store.verifyingOperation && store.pending?.previousStartedAt == "2026-10-29T16:00:00Z")
+        let persisted = try JSONDecoder().decode(ArcanePendingOperation.self, from: defaults.data(forKey: "arcane.pending-operation")!)
+        precondition(persisted.previousStartedAt == restartTarget.state?.startedAt)
+        probe.complete("/containers/restart-source", id: "restart-source", startedAt: "2026-10-29T16:00:00Z")
+        try await waitForVerification(store)
+        precondition(store.pending != nil, "An unchanged running container must not clear an uncertain restart")
+        let writesBeforeVerification = probe.writeCount()
+        await store.refresh()
+        try await waitFor("/containers/restart-source", count: 2)
+        probe.complete("/containers/restart-source", index: 1, id: "restart-source", startedAt: "2026-10-29T17:00:00.123456789Z")
+        try await waitForVerification(store)
+        precondition(store.pending == nil && defaults.data(forKey: "arcane.pending-operation") == nil)
+        precondition(store.operationStatus(environmentID: "remote", containerID: restartTarget.id) == nil)
+        precondition(probe.writeCount() == writesBeforeVerification, "Verification must only read status; never repeat the restart")
         print("PASS: Arcane session reuse, polling, missing .env first load without writes, editor snapshots, cancellation, stale response isolation and scoped operation lifecycle status")
     }
 
@@ -221,5 +242,13 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(10))
         }
         fatalError("Operation did not finish")
+    }
+
+    private static func waitForVerification(_ store: ArcaneStore) async throws {
+        for _ in 0..<500 {
+            if !store.verifyingOperation { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        fatalError("Restart verification did not finish")
     }
 }

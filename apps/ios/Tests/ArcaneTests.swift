@@ -106,6 +106,24 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(ArcaneAction.restart.confirmationTitle == "重启容器？" && ArcaneAction.stop.confirmationTitle == "停止容器？")
         precondition(ArcaneOperationStatus(action: .redeploy, running: true).text == "更新中…")
         precondition(ArcaneOperationStatus(action: .redeploy, running: false).text == "更新结果待确认")
+        func restartState(_ id: String = "restart-proof", startedAt: String, status: String = "running") throws -> ArcaneContainerDetails {
+            try decoder.decode(ArcaneContainerDetails.self, from: JSONSerialization.data(withJSONObject:
+                ["id": id, "state": ["status": status, "running": status == "running", "startedAt": startedAt]]))
+        }
+        var restartProof = ArcanePendingOperation(connectionID: "connection", environmentID: "0", environmentName: "local",
+            containerID: "restart-proof", containerName: "service", action: .restart, previousStartedAt: "2026-10-29T16:00:00Z")
+        let unchangedStart = try restartState(startedAt: "2026-10-29T16:00:00Z")
+        let changedStart = try restartState(startedAt: "2026-10-29T17:00:00.123456789Z")
+        precondition(!restartProof.restartObserved(in: unchangedStart) && restartProof.restartObserved(in: changedStart))
+        let wrongContainer = try restartState("other", startedAt: "2026-10-29T17:00:00Z")
+        let stillRestarting = try restartState(startedAt: "2026-10-29T17:00:00Z", status: "restarting")
+        let invalidStart = try restartState(startedAt: "invalid")
+        precondition(!restartProof.restartObserved(in: wrongContainer) && !restartProof.restartObserved(in: stillRestarting) && !restartProof.restartObserved(in: invalidStart))
+        let legacy = try decoder.decode(ArcanePendingOperation.self, from: bytes(#"{"id":"legacy","connectionID":"connection","environmentID":"0","environmentName":"local","containerID":"restart-proof","containerName":"service","action":"restart","startedAt":0}"#))
+        precondition(legacy.previousStartedAt == nil && legacy.restartObserved(in: changedStart), "Old pending records must remain readable")
+        restartProof.previousStartedAt = nil
+        restartProof.startedAt = Date(timeIntervalSince1970: 4_000_000_000)
+        precondition(!restartProof.restartObserved(in: changedStart), "A legacy record must not accept a start older than its request")
 
         let rawStats = bytes(#"{"read":"2026-10-29T12:00:00.000000000Z","cpu_stats":{"cpu_usage":{"total_usage":300},"system_cpu_usage":2000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":200},"system_cpu_usage":1000},"memory_stats":{"usage":4000,"limit":10000,"stats":{"inactive_file":1000}},"networks":{"eth0":{"rx_bytes":1000,"tx_bytes":2000},"eth1":{"rx_bytes":3000,"tx_bytes":4000}}}"#)
         let sample = try ArcaneResourceSample.parse(rawStats)

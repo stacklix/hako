@@ -19,6 +19,7 @@ struct ArcaneContainerChange {
     @Published private(set) var updatedAt: Date?
     @Published private(set) var pending: ArcanePendingOperation?
     @Published private(set) var operationRunning = false
+    @Published private(set) var verifyingOperation = false
     @Published private(set) var fileSaveRunning = false
     @Published private(set) var activeOperation: ArcanePendingOperation?
     @Published private(set) var operationMessage: String?
@@ -27,6 +28,8 @@ struct ArcaneContainerChange {
     private var configurationLoaded = false
     private var actionTask: Task<Void, Never>?
     private var refreshTicket: UUID?
+    private var verificationTask: Task<Void, Never>?
+    private var verificationTicket: UUID?
     private var cachedClient: ArcaneClient?
     private let defaults: UserDefaults
     private let clientFactory: (ArcaneConnection) throws -> ArcaneClient
@@ -124,6 +127,7 @@ struct ArcaneContainerChange {
             guard self.connection?.id == connection.id, environmentID == id, refreshTicket == ticket else { return }
             self.containers = containers
             updatedAt = Date(); error = nil
+            verifyPendingRestart(client: client, environment: id)
         } catch is CancellationError { }
         catch { if self.connection?.id == connection.id && refreshTicket == ticket { self.error = error.localizedDescription } }
     }
@@ -133,7 +137,8 @@ struct ArcaneContainerChange {
         do {
             let client = try client()
             let operation = ArcanePendingOperation(connectionID: client.connection.id, environmentID: environment.id,
-                environmentName: environment.displayName, containerID: container.id, containerName: container.displayName, action: action)
+                environmentName: environment.displayName, containerID: container.id, containerName: container.displayName,
+                action: action, previousStartedAt: container.state?.startedAt)
             // Persist before sending: app termination or background suspension must not cause an automatic retry.
             defaults.set(try JSONEncoder().encode(operation), forKey: Self.pendingKey)
             pending = operation; activeOperation = operation; operationRunning = true
@@ -145,10 +150,13 @@ struct ArcaneContainerChange {
                 let observer = Task {
                     if let baseline { await observeOperation(operation, client: client, baseline: Set(baseline.map(\.id))) }
                 }
-                defer { observer.cancel(); operationRunning = false; activeOperation = nil; actionTask = nil }
+                defer {
+                    observer.cancel(); operationRunning = false; activeOperation = nil; actionTask = nil
+                    verifyPendingRestart(client: client, environment: operation.environmentID)
+                }
                 do {
                     let newID = try await client.perform(action, environment: operation.environmentID, id: operation.containerID)
-                    // Only the mutation response confirms success; progress events alone never do.
+                    // A successful mutation response confirms completion; activity progress alone never does.
                     clearPending()
                     operationMessage = "\(action.title)已完成：\(operation.containerName)"
                     lastChange = ArcaneContainerChange(environmentID: operation.environmentID, originalID: operation.containerID, replacementID: newID)
@@ -179,6 +187,28 @@ struct ArcaneContainerChange {
     private func clearPending() {
         pending = nil
         defaults.removeObject(forKey: Self.pendingKey)
+        verificationTicket = nil
+        verificationTask?.cancel(); verificationTask = nil
+        verifyingOperation = false
+    }
+
+    private func verifyPendingRestart(client: ArcaneClient, environment: String) {
+        guard !operationRunning, verificationTask == nil, let operation = pending, operation.action == .restart,
+              operation.connectionID == client.connection.id, operation.environmentID == environment else { return }
+        let ticket = UUID(); verificationTicket = ticket; verifyingOperation = true
+        verificationTask = Task {
+            defer {
+                if verificationTicket == ticket { verificationTask = nil; verificationTicket = nil; verifyingOperation = false }
+            }
+            do {
+                let details = try await client.details(operation.environmentID, id: operation.containerID)
+                guard !Task.isCancelled, verificationTicket == ticket, pending?.id == operation.id,
+                      connection?.id == operation.connectionID, !operationRunning,
+                      operation.restartObserved(in: details) else { return }
+                clearPending()
+                operationMessage = "已核对：\(operation.containerName) 的启动时间已更新，当前运行中。"
+            } catch { } // Keep the record if status cannot be read or doesn't prove a restart.
+        }
     }
 
     private func observeOperation(_ operation: ArcanePendingOperation, client: ArcaneClient, baseline: Set<String>) async {

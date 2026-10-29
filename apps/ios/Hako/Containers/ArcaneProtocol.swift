@@ -363,7 +363,29 @@ struct ArcanePendingOperation: Codable, Identifiable {
     let containerID: String
     let containerName: String
     let action: ArcaneAction
+    var previousStartedAt: String? = nil
     var startedAt = Date()
+
+    func restartObserved(in details: ArcaneContainerDetails) -> Bool {
+        guard action == .restart, details.id == containerID,
+              details.state?.status == "running", details.state?.running != false,
+              let current = Self.date(details.state?.startedAt) else { return false }
+        if let previous = Self.date(previousStartedAt), previous.timeIntervalSince1970 > 0 {
+            return current > previous
+        }
+        // Legacy records have no server-side baseline. Only a start newer than
+        // the saved request time is evidence; an unchanged running state isn't.
+        return current > startedAt
+    }
+
+    private static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
 }
 
 struct ArcaneActivity: Decodable, Identifiable {

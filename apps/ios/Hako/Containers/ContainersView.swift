@@ -102,6 +102,13 @@ struct ContainersView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(operation.containerName).font(.subheadline.weight(.semibold))
                 ArcaneOperationBadge(status: status)
+                if !store.operationRunning && store.pending != nil {
+                    HStack(spacing: 16) {
+                        Button(store.verifyingOperation ? "正在核对…" : "核对状态") { Task { await store.refresh() } }
+                            .disabled(store.loading || store.verifyingOperation)
+                        Button("已核对，清除提示") { store.acknowledgeUnknownOperation() }
+                    }.font(.subheadline).buttonStyle(.borderless).frame(minHeight: 44)
+                }
             }
             .padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
