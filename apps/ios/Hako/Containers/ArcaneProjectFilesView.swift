@@ -79,9 +79,13 @@ struct ArcaneProjectFilesSection: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-            }.frame(minHeight: 36)
+            }
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
         }.buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16)).arcaneRowSeparators()
+        .listRowInsets(EdgeInsets()).arcaneRowSeparators()
     }
 
     private func navigate(_ path: String) {
