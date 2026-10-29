@@ -97,7 +97,8 @@ struct DeviceCardDragHeader<Content: View>: UIViewRepresentable {
             parent.begin()
         }
         func dragInteraction(_ interaction: UIDragInteraction, sessionDidMove session: UIDragSession) {
-            parent.moved(session.location(in: interaction.view))
+            guard let view = interaction.view else { return }
+            parent.moved(session.location(in: view))
         }
         func dragInteraction(_ interaction: UIDragInteraction, session: UIDragSession, willEndWith operation: UIDropOperation) {
             guard dragging, !finalized else { return }
