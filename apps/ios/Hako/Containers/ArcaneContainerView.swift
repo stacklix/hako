@@ -54,7 +54,7 @@ struct ArcaneContainerView: View {
             if tab == "overview" { overview }
             else { logs }
             if let details {
-                Section("管理") {
+                Section {
                     HStack {
                         if details.state?.status == "running" {
                             Button("重启") { confirming = .restart }
@@ -69,6 +69,8 @@ struct ArcaneContainerView: View {
                     }.disabled(!canAct || details.redeployDisabled == true)
                     Button("删除容器", role: .destructive) { confirming = .delete }
                         .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
+                } header: {
+                    Text("管理")
                 } footer: {
                     Text(details.redeployDisabled == true ? "Arcane 禁止重新部署此容器，请使用服务端对应的管理入口。" : "删除前需先停止容器；删除时保留数据卷。所有操作以 Arcane 实际授权和状态校验为准。")
                 }
@@ -115,12 +117,12 @@ struct ArcaneContainerView: View {
         .task(id: statsKey) {
             guard active, details?.state?.running == true else { return }
             do { await live.stats(client: try store.client(), environment: environment.id, container: containerID) }
-            catch { error = error.localizedDescription }
+            catch { self.error = error.localizedDescription }
         }
         .task(id: logsKey) {
             guard active, tab == "logs", following else { return }
             do { await live.logStream(client: try store.client(), environment: environment.id, container: containerID) }
-            catch { error = error.localizedDescription }
+            catch { self.error = error.localizedDescription }
         }
     }
 
