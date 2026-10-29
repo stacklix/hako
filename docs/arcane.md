@@ -62,7 +62,11 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 
 二进制、特殊文件和符号链接只显示文件信息，不提供内容预览及编辑；Git 同步管理的源文件保持只读。Git 项目的有效 `.env` 通过 Arcane 专用保存接口处理覆盖层，不修改 `.env.git` 源文件。目录列表遵守服务端的忽略目录、最大深度、条目数和文件大小限制；返回截断标志时提示列表不完整。
 
-普通文件保存携带 `fileTreeRevision` 及 `baselineIndex` 对应的原文，服务端拒绝目录变化和同文件并发修改。Compose／`.env` 专用接口没有版本参数，保存前重新读取并比对该字段，但这不能提供与 Workspace 基线相同的原子冲突保证。保存失败保留草稿；响应不确定时阻止重复保存，需重新读取核对。关闭或重新读取有未保存修改的编辑器时提示放弃或继续编辑。草稿仅在当前编辑器内存中保留，不写入本地文件、UserDefaults 或日志。
+文件页使用紧凑列表、独立搜索、Compose／`.env` 快捷入口和可点击的路径导航；返回上级目录时定位到此前进入的目录项，关闭编辑器后保留浏览位置。管理区域继续保留。长说明收进信息按钮，不常驻文件列表底部。
+
+文本文件全屏打开，点击顶部文件名可搜索并切换项目文件。编辑器默认使用 12 点等宽字体，并跟随系统辅助字号缩放；YAML、`.env`、JSON、TOML／INI、Shell 和常见 `.conf` 配置提供轻量词法高亮，其他文件使用纯文本。高亮只调整显示属性，不格式化内容，不修改换行；关闭智能引号、智能破折号、自动纠错等输入替换。分词在后台计算，过期结果不会覆盖新输入，中文输入法组词期间不重设高亮。语法高亮不代替 Arcane 的内容校验。
+
+普通文件保存携带 `fileTreeRevision` 及 `baselineIndex` 对应的原文，服务端拒绝目录变化和同文件并发修改。Compose／`.env` 专用接口没有版本参数，保存前重新读取并比对该字段，但这不能提供与 Workspace 基线相同的原子冲突保证。保存失败保留草稿；响应不确定时阻止重复保存，需重新读取核对。返回、重新读取或切换文件时，未保存修改提供「保存并继续／放弃修改／继续编辑」；保存失败停留原文件，保存成功后默认继续留在编辑器。草稿仅在当前编辑器内存中保留，不写入本地文件、UserDefaults 或日志。
 
 保存只修改文件，不主动部署或重启容器。项目文件写入与已有容器操作互斥，防止保存和重建同时执行。
 
@@ -94,6 +98,8 @@ swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProto
 /tmp/hako-arcane-loading-tests
 swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
 /tmp/hako-arcane-workspace-tests
+swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
+/tmp/hako-arcane-syntax-tests
 ```
 
 测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝；加载回归测试覆盖会话复用、直接轮询容器、显式刷新环境、旧响应与旧错误隔离、取消后立即重载及容器替换。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。

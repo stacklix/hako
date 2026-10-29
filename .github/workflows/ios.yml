@@ -54,6 +54,8 @@ jobs:
           /tmp/hako-arcane-loading-tests
           swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
           /tmp/hako-arcane-workspace-tests
+          swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
+          /tmp/hako-arcane-syntax-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

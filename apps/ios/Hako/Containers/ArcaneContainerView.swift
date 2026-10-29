@@ -49,6 +49,12 @@ struct ArcaneContainerView: View {
     }
 
     private var content: some View {
+        ScrollViewReader { proxy in
+            detailList { proxy.scrollTo($0, anchor: .top) }
+        }
+    }
+
+    private func detailList(scrollToFile: @escaping (String) -> Void) -> some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 7) {
@@ -71,7 +77,8 @@ struct ArcaneContainerView: View {
             else {
                 ArcaneProjectFilesSection(store: store, environment: environment.id,
                     projectName: details?.project ?? container.project,
-                    workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision)
+                    workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision,
+                    scrollToFile: scrollToFile)
             }
             if let details, !managementProtected {
                 Section {
