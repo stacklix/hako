@@ -107,6 +107,11 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         await store.refresh()
         precondition(probe.count("/environments") == 2 && probe.count("/remote/containers") == 1)
         precondition(store.containers.first?.id == "remote-container" && createdClients == 1)
+        let protectedCaddy = try JSONDecoder().decode(ArcaneContainerDetails.self, from: Data(#"{"id":"caddy-protected","name":"/caddy","state":{"status":"running","running":true}}"#.utf8))
+        store.start(.stop, container: protectedCaddy, environment: store.environment!)
+        precondition(probe.writeCount() == 0 && !store.operationRunning && store.pending == nil,
+                     "Stopping caddy must be rejected before persisting an operation or sending any mutation")
+        precondition(defaults.data(forKey: "arcane.pending-operation") == nil && store.operationMessage?.contains("停止保护") == true)
 
         let files = ArcaneFilesData()
         await files.load(client: client, environment: "remote", name: "no-env", workingDir: nil)

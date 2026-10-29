@@ -1,6 +1,36 @@
 import Foundation
 import Combine
 
+@MainActor final class ArcaneWorkspaceMutationData: ObservableObject {
+    @Published var name: String
+    @Published private(set) var saving = false
+    @Published private(set) var error: String?
+    @Published private(set) var uncertain = false
+    init(name: String) { self.name = name }
+
+    func submit(store: ArcaneStore, session: ArcaneFileMutationSession) async -> Bool {
+        guard !saving, !uncertain else { return false }
+        saving = true; error = nil
+        defer { saving = false }
+        do {
+            let client = try store.client()
+            guard client.connection.id == session.connectionID else { throw ArcaneFailure(message: "连接已改变，请关闭窗口并重新打开当前目录。") }
+            try await store.withFileSave {
+                _ = try await client.mutateWorkspace(session.environment, project: session.project, workspace: session.workspace,
+                    mutation: session.mutation, name: name)
+            }
+            return true
+        } catch {
+            uncertain = (error as? ArcaneFailure)?.outcomeUnknown == true
+            if uncertain { self.error = "操作结果未确认，请关闭窗口并刷新目录核对，不要直接重复提交。" }
+            else if (error as? ArcaneFailure)?.status == 409 {
+                self.error = "目录已改变或存在同名文件、文件夹，输入已保留。请关闭并刷新目录后重试。"
+            } else { self.error = error.localizedDescription }
+            return false
+        }
+    }
+}
+
 @MainActor final class ArcaneFilesData: ObservableObject {
     @Published private(set) var project: ArcaneProjectDocument?
     @Published private(set) var workspace: ArcaneWorkspace?

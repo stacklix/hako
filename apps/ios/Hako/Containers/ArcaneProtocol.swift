@@ -206,6 +206,10 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
         struct Endpoint: Decodable { let ipAddress: String?; let globalIPv6Address: String? }
     }
     var displayName: String { (name ?? String(id.prefix(12))).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+    func blockedReason(for action: ArcaneAction) -> String? {
+        guard action == .stop, displayName.caseInsensitiveCompare("caddy") == .orderedSame else { return nil }
+        return "caddy 已启用停止保护，禁止停止。"
+    }
     var project: String? { composeInfo?.projectName ?? labels?["com.docker.compose.project"] }
     var portsText: String? {
         guard let ports, !ports.isEmpty else { return nil }

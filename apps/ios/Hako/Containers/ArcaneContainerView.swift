@@ -23,6 +23,7 @@ struct ArcaneContainerView: View {
     @State private var exporting = false
     @State private var fileEditor: ArcaneFileEditorSession?
     @State private var fileChanged = false
+    @State private var fileMutation: ArcaneFileMutationSession?
 
     init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer) {
         self.store = store; self.environment = environment; self.container = container
@@ -80,7 +81,7 @@ struct ArcaneContainerView: View {
                 ArcaneProjectFilesSection(store: store, environment: environment.id,
                     projectName: details?.project ?? container.project,
                     workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision,
-                    scrollToFile: scrollToFile, openEditor: { fileEditor = $0 })
+                    scrollToFile: scrollToFile, openEditor: { fileEditor = $0 }, openMutation: { fileMutation = $0 })
             }
             if let details, !managementProtected {
                 Section {
@@ -91,7 +92,7 @@ struct ArcaneContainerView: View {
                             }.buttonStyle(.borderless)
                             Button(role: .destructive) { confirming = .stop } label: {
                                 Text("停止").frame(maxWidth: .infinity, minHeight: 44)
-                            }.buttonStyle(.borderless)
+                            }.buttonStyle(.borderless).disabled(details.blockedReason(for: .stop) != nil)
                         }.disabled(!canAct).arcaneRowSeparators()
                     } else if ["exited", "created"].contains(details.state?.status ?? "") {
                         Button("启动") { confirming = .start }
@@ -108,6 +109,7 @@ struct ArcaneContainerView: View {
                 } header: {
                     Text("管理")
                 } footer: {
+                    if let reason = details.blockedReason(for: .stop) { Text(reason) }
                     Text(details.redeployDisabled == true ? "Arcane 禁止重新部署此容器，请使用服务端对应的管理入口。" : "删除前需先停止容器；删除时保留数据卷。所有操作以 Arcane 实际授权和状态校验为准。")
                 }
             }
@@ -141,6 +143,11 @@ struct ArcaneContainerView: View {
         }) { session in
             ArcaneProjectFileEditor(store: store, environment: session.environment, project: session.project,
                 initialFile: session.initialFile) { fileChanged = true }
+        }
+        .sheet(item: $fileMutation, onDismiss: {
+            if fileChanged { fileChanged = false; revision = UUID() }
+        }) { session in
+            ArcaneWorkspaceMutationView(store: store, session: session) { fileChanged = true }
         }
         .refreshable {
             if tab != "files" { await refreshDetails() }

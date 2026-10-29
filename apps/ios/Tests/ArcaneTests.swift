@@ -71,6 +71,14 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         let emptyPorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"no-ports","ports":[]}"#))
         precondition(emptyPorts.portsText == nil && minimal.portsText == nil)
         precondition(details.portsText == "8080 → 80/tcp")
+        let caddy = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"proxy","name":"/caddy"}"#))
+        precondition(caddy.blockedReason(for: .stop) != nil && details.blockedReason(for: .stop) == nil)
+        for action in [ArcaneAction.start, .restart, .redeploy, .delete] {
+            precondition(caddy.blockedReason(for: action) == nil, "The caddy rule only prevents stopping")
+        }
+        let upperCaddy = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"proxy","name":"/Caddy"}"#))
+        let otherCaddy = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"other","name":"/caddy-test"}"#))
+        precondition(upperCaddy.blockedReason(for: .stop) != nil && otherCaddy.blockedReason(for: .stop) == nil)
         func portDetails(_ bindings: [[String: Any]]) throws -> ArcaneContainerDetails {
             try decoder.decode(ArcaneContainerDetails.self, from: JSONSerialization.data(withJSONObject: ["id": "port-bindings", "ports": bindings]))
         }

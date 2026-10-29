@@ -9,6 +9,7 @@ struct ArcaneProjectFilesSection: View {
     let refreshID: UUID
     var scrollToFile: (String) -> Void = { _ in }
     let openEditor: (ArcaneFileEditorSession) -> Void
+    let openMutation: (ArcaneFileMutationSession) -> Void
     @StateObject private var data = ArcaneFilesData()
     @State private var folder = ""
     @State private var reloadID = UUID()
@@ -52,7 +53,18 @@ struct ArcaneProjectFilesSection: View {
             }
         } header: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("文件")
+                HStack {
+                    Text("文件")
+                    Spacer()
+                    Menu {
+                        Button { presentMutation(.createFile(parent: folder)) } label: { Label("新建文件", systemImage: "doc.badge.plus") }
+                        Button { presentMutation(.createFolder(parent: folder)) } label: { Label("新建文件夹", systemImage: "folder.badge.plus") }
+                    } label: {
+                        Image(systemName: "plus").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }
+                    .disabled(data.project == nil || data.workspace == nil || data.project?.isArchived == true || data.loading || store.operationRunning || store.fileSaveRunning || store.pending != nil)
+                    .accessibilityLabel("在当前目录添加文件或文件夹")
+                }
                 if projectName?.isEmpty == false {
                     ArcaneFileBreadcrumbs(rootName: rootDirectoryName, folder: folder) { navigate($0) }
                 }
@@ -63,13 +75,7 @@ struct ArcaneProjectFilesSection: View {
 
     private func fileRow(_ file: ArcaneProjectFile) -> some View {
         let readOnly = file.entry?.editable == false || (file.kind != .workspace && data.project?.editable(file.kind) == false)
-        return Button {
-            bookmarks[folder] = file.id
-            if file.isDirectory && file.entry?.isSymlink != true { navigate(file.relativePath) }
-            else if let project = data.project {
-                openEditor(ArcaneFileEditorSession(environment: environment, project: project, initialFile: file))
-            }
-        } label: {
+        return Button { open(file) } label: {
             HStack(spacing: 10) {
                 Image(systemName: file.isDirectory ? "folder" : "doc.text").foregroundStyle(.secondary).frame(width: 22)
                 Text(file.name).font(.subheadline).foregroundStyle(.primary)
@@ -86,7 +92,29 @@ struct ArcaneProjectFilesSection: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }.buttonStyle(.plain)
+        .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { gesture in
+            switch gesture {
+            case .first: presentMutation(.rename(file))
+            case .second: open(file)
+            }
+        })
+        .accessibilityAction(named: Text("重命名")) { presentMutation(.rename(file)) }
         .listRowInsets(EdgeInsets()).arcaneRowSeparators()
+    }
+
+    private func open(_ file: ArcaneProjectFile) {
+        bookmarks[folder] = file.id
+        if file.isDirectory && file.entry?.isSymlink != true { navigate(file.relativePath) }
+        else if let project = data.project {
+            openEditor(ArcaneFileEditorSession(environment: environment, project: project, initialFile: file))
+        }
+    }
+
+    private func presentMutation(_ mutation: ArcaneWorkspaceMutation) {
+        guard let connection = store.connection, let project = data.project, let workspace = data.workspace,
+              !data.loading, !store.operationRunning, !store.fileSaveRunning, store.pending == nil else { return }
+        openMutation(ArcaneFileMutationSession(connectionID: connection.id, environment: environment,
+            project: project, workspace: workspace, mutation: mutation))
     }
 
     private func navigate(_ path: String) {

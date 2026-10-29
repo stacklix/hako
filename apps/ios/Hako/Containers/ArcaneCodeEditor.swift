@@ -170,7 +170,7 @@ final class ArcaneCodeEditorView: UIView {
         gutter.textView = textView
         gutter.isAccessibilityElement = false
         gutter.isUserInteractionEnabled = false
-        gutter.backgroundColor = .secondarySystemBackground
+        gutter.backgroundColor = .systemBackground
         for view in [gutter, textView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)

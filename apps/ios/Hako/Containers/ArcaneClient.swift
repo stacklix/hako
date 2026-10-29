@@ -137,15 +137,34 @@ final class ArcaneClient: @unchecked Sendable {
         try ArcaneWorkspacePath.validate(path)
         guard !revision.isEmpty else { throw ArcaneFailure(message: "缺少项目文件版本，请重新读取目录后再保存。") }
         let manifest = ArcaneWorkspaceManifest(fileTreeRevision: revision, fileChanges: [.init(relativePath: path)])
+        return try await updateWorkspace(environment, project: project, manifest: manifest, uploads: [Data(content.utf8), Data(baseline.utf8)])
+    }
+
+    func mutateWorkspace(_ environment: String, project: ArcaneProjectDocument, workspace: ArcaneWorkspace,
+                         mutation: ArcaneWorkspaceMutation, name: String) async throws -> ArcaneWorkspace {
+        _ = try mutation.plan(name: name, project: project, workspace: workspace)
+        guard !workspace.fileTreeRevision.isEmpty else { throw ArcaneFailure(message: "缺少目录版本，请重新读取目录。") }
+        async let document = projectDocument(environment, project: project.id)
+        async let tree = self.workspace(environment, project: project.id)
+        let (currentProject, currentTree) = try await (document, tree)
+        guard currentTree.fileTreeRevision == workspace.fileTreeRevision else {
+            throw ArcaneFailure(message: "目录已被其他操作修改，请重新读取目录后再操作。", status: 409)
+        }
+        let plan = try mutation.plan(name: name, project: currentProject, workspace: currentTree)
+        let manifest = ArcaneWorkspaceManifest(fileTreeRevision: currentTree.fileTreeRevision, fileChanges: [plan.change])
+        return try await updateWorkspace(environment, project: project.id, manifest: manifest, uploads: plan.uploads)
+    }
+
+    private func updateWorkspace(_ environment: String, project: String, manifest: ArcaneWorkspaceManifest, uploads: [Data]) async throws -> ArcaneWorkspace {
         let boundary = "Hako-" + UUID().uuidString
         var body = Data()
         func append(_ text: String) { body.append(Data(text.utf8)) }
         append("--\(boundary)\r\nContent-Disposition: form-data; name=\"manifest\"\r\nContent-Type: application/json\r\n\r\n")
         body.append(try JSONEncoder().encode(manifest))
         append("\r\n")
-        for (index, text) in [content, baseline].enumerated() {
+        for (index, contents) in uploads.enumerated() {
             append("--\(boundary)\r\nContent-Disposition: form-data; name=\"files\"; filename=\"content-\(index).txt\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n")
-            append(text); append("\r\n")
+            body.append(contents); append("\r\n")
         }
         append("--\(boundary)--\r\n")
         var request = try request(["environments", environment, "projects", project, "workspace"], method: "PUT")

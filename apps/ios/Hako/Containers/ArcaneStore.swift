@@ -134,6 +134,7 @@ struct ArcaneContainerChange {
 
     func start(_ action: ArcaneAction, container: ArcaneContainerDetails, environment: ArcaneEnvironment) {
         guard pending == nil, !operationRunning, !fileSaveRunning else { return }
+        if let reason = container.blockedReason(for: action) { operationMessage = reason; return }
         do {
             let client = try client()
             let operation = ArcanePendingOperation(connectionID: client.connection.id, environmentID: environment.id,
