@@ -144,7 +144,7 @@ struct DeviceMetricsView: View {
         }
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             HakoUnderlineTabs(title: "设备详情", options: DetailTab.allCases, selection: $selectedTab) {
                 $0.rawValue
             }
@@ -172,8 +172,6 @@ struct DeviceMetricsView: View {
                 }
                 if let error = state.error {
                     statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
-                } else if !state.loading, state.loaded {
-                    Text("已获取查询结果 · 下拉可刷新").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text("操作由此设备执行，点击按钮后开始。").font(.caption).foregroundStyle(.secondary)
