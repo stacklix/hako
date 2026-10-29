@@ -1,9 +1,13 @@
 import SwiftUI
 
 struct DeviceMonitorView: View {
+    private enum SheetRoute: String, Identifiable {
+        case addAgent, server
+        var id: String { rawValue }
+    }
     @ObservedObject private var client = ConsoleClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var addingAgent = false
+    @State private var sheet: SheetRoute?
     @State private var isVisible = false
 
     var body: some View {
@@ -11,7 +15,7 @@ struct DeviceMonitorView: View {
             if client.serverURL.isEmpty {
                 Section {
                     ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("可在 Hako 设置的“服务器与登录”中先导出本机公钥，再填写服务器地址和账号。"))
-                    NavigationLink("配置服务器") { ServerSettingsView() }
+                    Button("配置服务器") { sheet = .server }
                 }
             } else if client.authenticated {
                 Section("设备") {
@@ -38,9 +42,9 @@ struct DeviceMonitorView: View {
                     }
                 }
                 Section {
-                    Button { addingAgent = true } label: { Label("添加 Agent", systemImage: "plus") }
+                    Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
                         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { ServerSettingsView() } label: {
+                    Button { sheet = .server } label: {
                         Label("服务器与登录", systemImage: "server.rack")
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
@@ -50,25 +54,30 @@ struct DeviceMonitorView: View {
                     Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
                         .foregroundStyle(.secondary)
                     Button("验证并继续") { Task { await refreshDevices() } }
-                    NavigationLink("服务器与登录") { ServerSettingsView() }
+                    Button("服务器与登录") { sheet = .server }
                 }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
                     Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在 Hako 设置的“服务器与登录”中重试。" : "在 Hako 设置的“服务器与登录”中导出本机公钥，手工登记到服务端后登录。")
                         .font(.footnote).foregroundStyle(.secondary)
-                    NavigationLink("服务器与登录") { ServerSettingsView() }
+                    Button("服务器与登录") { sheet = .server }
                 }
             }
             if let message = client.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
         }
         .navigationTitle("设备监控")
         .refreshable { await refreshDevices() }
-        .sheet(isPresented: $addingAgent) { AddAgentSheet() }
+        .sheet(item: $sheet) { route in
+            switch route {
+            case .addAgent: AddAgentSheet()
+            case .server: ServerSettingsView()
+            }
+        }
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }
-        .task(id: "\(isVisible)-\(scenePhase)-\(addingAgent)") {
-            guard isVisible, scenePhase == .active, !addingAgent, !Task.isCancelled else { return }
+        .task(id: "\(isVisible)-\(scenePhase)-\(sheet?.rawValue ?? "none")") {
+            guard isVisible, scenePhase == .active, sheet == nil, !Task.isCancelled else { return }
             await client.restore()
             if client.authenticated { await refreshDevices() }
             while !Task.isCancelled {

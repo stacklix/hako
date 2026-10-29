@@ -7,6 +7,7 @@ struct ConsoleWebLoginView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var client = ConsoleClient.shared
+    @State private var showingServerSettings = false
     @State private var request: ConsoleWebLoginRequest?
     @State private var approved: Bool?
     @State private var busy = false
@@ -16,104 +17,106 @@ struct ConsoleWebLoginView: View {
     @State private var now = Date.now
 
     var body: some View {
-        Group {
-            if !client.authenticated || client.logoutPending {
-                Form {
-                    Section("Hako 服务器登录") {
-                        Text(client.serverURL.isEmpty ? "请先配置 Hako 服务器，并使用已登记的本机密钥登录后批准网页登录。" : "请先验证 Hako 服务器登录，再扫描网页登录二维码。")
-                            .foregroundStyle(.secondary)
-                        NavigationLink("服务器与登录") { ServerSettingsView() }
-                        if client.hasSavedSession || client.logoutPending {
-                            Button(client.logoutPending ? "重试撤销服务端会话" : "验证并继续") {
-                                Task { await client.restore() }
-                            }.disabled(client.busy)
+        SettingsSheet(title: request != nil ? "确认网页登录" : approved != nil ? "网页登录" : "扫描二维码",
+                      isBusy: busy) {
+            Group {
+                if !client.authenticated || client.logoutPending {
+                    Form {
+                        Section("Hako 服务器登录") {
+                            Text(client.serverURL.isEmpty ? "请先配置 Hako 服务器，并使用已登记的本机密钥登录后批准网页登录。" : "请先验证 Hako 服务器登录，再扫描网页登录二维码。")
+                                .foregroundStyle(.secondary)
+                            Button("服务器与登录") { showingServerSettings = true }
+                            if client.hasSavedSession || client.logoutPending {
+                                Button(client.logoutPending ? "重试撤销服务端会话" : "验证并继续") {
+                                    Task { await client.restore() }
+                                }.disabled(client.busy)
+                            }
+                        }
+                        if let message = client.message {
+                            Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
                         }
                     }
-                    if let message = client.message {
-                        Section { Text(message).font(.footnote).foregroundStyle(.secondary) }
-                    }
-                }
-            } else if let request {
-                Form {
-                    Section("网页登录请求") {
-                        LabeledContent("服务器", value: request.origin)
-                        LabeledContent("来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
-                            .textSelection(.enabled)
-                        Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
-                            .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        Text("请核对网页上的六位确认码，确认一致后点击“确认登录”。不要确认他人发送的二维码。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Text(remaining(request)).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Section {
-                        Button("确认登录") { Task { await confirm(request, approve: true) } }
-                            .disabled(busy || expired(request) || !client.authenticated)
-                        Button("拒绝此次登录", role: .destructive) { Task { await confirm(request, approve: false) } }
-                            .disabled(busy || expired(request) || !client.authenticated)
-                        Button("重新扫码") { scanAgain() }.disabled(busy)
-                    }
-                    if busy { ProgressView("正在处理…") }
-                    if let message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
-                }
-            } else if let approved {
-                ContentUnavailableView {
-                    Label(approved ? "已确认登录" : "已拒绝登录", systemImage: approved ? "checkmark.circle" : "xmark.circle")
-                } description: {
-                    Text(approved ? "网页将自动完成登录。" : "此次网页登录请求已拒绝。")
-                } actions: {
-                    Button("完成") { dismiss() }.buttonStyle(.borderedProminent).tint(.blue)
-                }
-            } else {
-                VStack(spacing: 0) {
-                    if busy {
-                        ProgressView("正在读取登录请求…")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if let scannerError {
-                        ContentUnavailableView {
-                            Label("无法扫码", systemImage: "exclamationmark.triangle")
-                        } description: {
-                            Text(scannerError)
-                        } actions: {
-                            Button("重新扫码") { scanAgain() }.buttonStyle(.borderedProminent).tint(.blue)
+                } else if let request {
+                    Form {
+                        Section("网页登录请求") {
+                            LabeledContent("服务器", value: request.origin)
+                            LabeledContent("来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
+                                .textSelection(.enabled)
+                            Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
+                                .frame(maxWidth: .infinity).padding(.vertical, 12)
+                            Text("请核对网页上的六位确认码，确认一致后点击“确认登录”。不要确认他人发送的二维码。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Text(remaining(request)).font(.footnote).foregroundStyle(.secondary)
                         }
-                        .frame(maxHeight: .infinity)
-                    } else {
-                        ConsoleQRScanner(onScan: { payload in
-                            Task { await inspect(payload, scanned: true) }
-                        }, onError: { scannerError = $0 })
-                        .frame(maxHeight: .infinity)
-                        .overlay(alignment: .bottom) {
-                            Text("扫描自己正在使用的 Hako 网页登录二维码")
-                                .font(.callout).foregroundStyle(.white)
-                                .padding().background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
-                                .padding()
+                        Section {
+                            Button("确认登录") { Task { await confirm(request, approve: true) } }
+                                .disabled(busy || expired(request) || !client.authenticated)
+                            Button("拒绝此次登录", role: .destructive) { Task { await confirm(request, approve: false) } }
+                                .disabled(busy || expired(request) || !client.authenticated)
+                            Button("重新扫码") { scanAgain() }.disabled(busy)
                         }
+                        if busy { ProgressView("正在处理…") }
+                        if let message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
                     }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("粘贴登录请求").font(.headline)
-                        Text("也可复制网页上的登录请求，粘贴后进入确认页。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        TextEditor(text: $text).frame(height: 75).font(.caption.monospaced())
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .accessibilityLabel("登录请求")
-                            .overlay { RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.3)) }
-                        Button("解析登录请求") { Task { await inspect(text) } }
-                            .buttonStyle(.borderedProminent).tint(.blue)
-                            .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !client.authenticated)
-                        if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                } else if let approved {
+                    ContentUnavailableView {
+                        Label(approved ? "已确认登录" : "已拒绝登录", systemImage: approved ? "checkmark.circle" : "xmark.circle")
+                    } description: {
+                        Text(approved ? "网页将自动完成登录。" : "此次网页登录请求已拒绝。")
+                    } actions: {
+                        Button("完成") { dismiss() }.buttonStyle(.borderedProminent).tint(.blue)
                     }
-                    .padding().background(.background)
-                    .disabled(busy)
+                } else {
+                    VStack(spacing: 0) {
+                        if busy {
+                            ProgressView("正在读取登录请求…")
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if let scannerError {
+                            ContentUnavailableView {
+                                Label("无法扫码", systemImage: "exclamationmark.triangle")
+                            } description: {
+                                Text(scannerError)
+                            } actions: {
+                                Button("重新扫码") { scanAgain() }.buttonStyle(.borderedProminent).tint(.blue)
+                            }
+                            .frame(maxHeight: .infinity)
+                        } else {
+                            ConsoleQRScanner(onScan: { payload in
+                                Task { await inspect(payload, scanned: true) }
+                            }, onError: { scannerError = $0 })
+                            .frame(maxHeight: .infinity)
+                            .overlay(alignment: .bottom) {
+                                Text("扫描自己正在使用的 Hako 网页登录二维码")
+                                    .font(.callout).foregroundStyle(.white)
+                                    .padding().background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+                                    .padding()
+                            }
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("粘贴登录请求").font(.headline)
+                            Text("也可复制网页上的登录请求，粘贴后进入确认页。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            TextEditor(text: $text).frame(height: 75).font(.caption.monospaced())
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .accessibilityLabel("登录请求")
+                                .overlay { RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.3)) }
+                            Button("解析登录请求") { Task { await inspect(text) } }
+                                .buttonStyle(.borderedProminent).tint(.blue)
+                                .disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !client.authenticated)
+                            if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
+                        }
+                        .padding().background(.background)
+                        .disabled(busy)
+                    }
                 }
             }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await client.restore()
+            }
+            .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
+            .sheet(isPresented: $showingServerSettings) { ServerSettingsView() }
         }
-        .navigationTitle(request != nil ? "确认网页登录" : approved != nil ? "网页登录" : "扫描二维码")
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            await client.restore()
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
     }
     private func scanAgain() {
         request = nil; approved = nil; text = ""; scannerError = nil; message = nil; now = .now

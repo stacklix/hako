@@ -127,28 +127,28 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         hasSavedSession = value != nil && !logoutPending
     }
 
-    func saveServer(_ text: String, username: String) async {
-        await execute {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let components = URLComponents(string: trimmed), components.scheme == "https", let host = components.host, !host.isEmpty,
-                  components.user == nil, components.password == nil, components.query == nil, components.fragment == nil,
-                  components.path.isEmpty || components.path == "/" else {
-                throw HakoError(message: "请输入 HTTPS 服务器根地址，例如 https://hako.example.com。")
-            }
-            var normalized = components
-            normalized.host = host.lowercased(); normalized.path = ""
-            guard let origin = normalized.url?.absoluteString else { throw HakoError(message: "服务器地址无效。") }
-            let account = username.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard account.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil else { throw HakoError(message: "账号应为 1–80 位英文字母、数字、下划线或连字符。") }
-            self.username = account
-            UserDefaults.standard.set(account, forKey: "console.username")
-            self.serverURL = origin
-            UserDefaults.standard.set(origin, forKey: "console.serverURL")
-            self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
-            self.agents = []; self.deviceData = [:]; self.httpChecks = [:]; self.remoteSessions = []
-            self.deviceId = ""; self.publicKeyPEM = ""
-            try await self.restoreInternal()
+    func saveServer(_ text: String, username: String) throws {
+        guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed), components.scheme == "https", let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil, components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else {
+            throw HakoError(message: "请输入 HTTPS 服务器根地址，例如 https://hako.example.com。")
         }
+        var normalized = components
+        normalized.host = host.lowercased(); normalized.path = ""
+        guard let origin = normalized.url?.absoluteString else { throw HakoError(message: "服务器地址无效。") }
+        let account = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard account.range(of: "^[A-Za-z0-9_-]{1,80}$", options: .regularExpression) != nil else { throw HakoError(message: "账号应为 1–80 位英文字母、数字、下划线或连字符。") }
+        guard origin != serverURL || account != self.username else { return }
+        self.username = account
+        UserDefaults.standard.set(account, forKey: "console.username")
+        self.serverURL = origin
+        UserDefaults.standard.set(origin, forKey: "console.serverURL")
+        self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
+        self.agents = []; self.deviceData = [:]; self.httpChecks = [:]; self.remoteSessions = []
+        self.deviceId = ""; self.publicKeyPEM = ""
+        message = "服务器配置已保存。"
     }
 
     func restore() async {

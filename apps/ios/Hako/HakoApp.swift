@@ -48,12 +48,6 @@ struct HomeView: View {
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
-                Section("Hako 服务") {
-                    NavigationLink { ConsoleWebLoginView() } label: {
-                        Label("扫码登录", systemImage: "qrcode.viewfinder")
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                }
             }
             .navigationTitle("Hako")
             .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
@@ -216,23 +210,18 @@ struct SettingsView: View {
             return latest > current
         }
     }
-    @Environment(\.dismiss) private var dismiss
+    private enum SheetRoute: String, Identifiable {
+        case server, scanner, github
+        var id: String { rawValue }
+    }
     @Environment(\.openURL) private var openURL
-    @State private var settings = GitHubSettings.load()
-    @State private var token = ""
-    @State private var savedSettings: GitHubSettings?
-    @State private var savedToken = ""
-    @State private var showDiscardConfirmation = false
+    @State private var sheet: SheetRoute?
     @State private var message: String?
     @State private var latestRelease: Release?
     @State private var latestBuildDateFailed = false
     @State private var checkingForUpdate = false
     @State private var updateCheckID = 0
     @State private var isVisible = false
-    private var hasChanges: Bool {
-        guard let savedSettings else { return false }
-        return settings != savedSettings || token != savedToken
-    }
     private var currentVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
@@ -247,29 +236,21 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Hako 服务") {
-                NavigationLink { ServerSettingsView() } label: {
+                Button { sheet = .server } label: {
                     Label("服务器与登录", systemImage: "server.rack")
                 }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                Button { sheet = .scanner } label: {
+                    Label("扫码登录", systemImage: "qrcode.viewfinder")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
-            Section("GitHub 仓库") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("仓库地址").font(.subheadline).foregroundStyle(.secondary)
-                    TextField("https://github.com/username/repository", text: $settings.repositoryURL)
-                        .keyboardType(.URL)
-                        .accessibilityLabel("仓库地址")
+            Section("GitHub") {
+                Button { sheet = .github } label: {
+                    Label("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("分支").font(.subheadline).foregroundStyle(.secondary)
-                    TextField("master", text: $settings.branch)
-                        .accessibilityLabel("分支")
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Personal Access Token").font(.subheadline).foregroundStyle(.secondary)
-                    SecureField("输入 GitHub Token", text: $token)
-                        .accessibilityLabel("Personal Access Token")
-                }
-            }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                .disabled(savedSettings == nil)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            }
             Section {
                 HStack(spacing: 16) {
                     LabeledContent("当前版本", value: currentVersion)
@@ -311,43 +292,16 @@ struct SettingsView: View {
             } footer: {
                 Text("「安装最新版」直接发起系统安装；「查看下载页面」打开分发页，查看版本信息或下载 IPA。")
             }
-            BuildStatusView(isSettingsVisible: isVisible)
+            BuildStatusView(isSettingsVisible: isVisible && sheet == nil)
         }.navigationTitle("设置")
             .onAppear { isVisible = true }
             .onDisappear { isVisible = false }
-            // Use a guarded back action while editing; prevent the native swipe
-            // from popping this screen and silently losing the draft.
-            .navigationBarBackButtonHidden(hasChanges)
-            .toolbar {
-                if hasChanges {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("返回", systemImage: "chevron.left") {
-                            showDiscardConfirmation = true
-                        }
-                    }
+            .sheet(item: $sheet) { route in
+                switch route {
+                case .server: ServerSettingsView()
+                case .scanner: ConsoleWebLoginView()
+                case .github: GitHubSettingsSheet()
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: save) {
-                        Image(systemName: "checkmark")
-                    }
-                        .accessibilityLabel("保存设置")
-                        .disabled(!hasChanges)
-                }
-            }
-            .confirmationDialog("有尚未保存的修改", isPresented: $showDiscardConfirmation, titleVisibility: .visible) {
-                Button("放弃修改", role: .destructive) { dismiss() }
-                Button("继续编辑", role: .cancel) { }
-            } message: {
-                Text("返回后，本次修改将不会保存。")
-            }
-            .task {
-                guard savedSettings == nil else { return }
-                do {
-                    let storedToken = try TokenStore.read()
-                    token = storedToken
-                    savedToken = storedToken
-                    savedSettings = settings
-                } catch { message = error.localizedDescription }
             }
             .task(id: updateCheckID) { await loadLatestBuildDate() }
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
@@ -396,16 +350,6 @@ struct SettingsView: View {
             if !accepted {
                 message = "无法打开系统安装入口，请在 Safari 打开 https://stacklix.github.io/hako/ 安装最新版本。"
             }
-        }
-    }
-    private func save() {
-        do {
-            try settings.validate()
-            try TokenStore.save(token.trimmingCharacters(in: .whitespacesAndNewlines))
-            try settings.save()
-            dismiss()
-        } catch {
-            message = error.localizedDescription
         }
     }
 }
