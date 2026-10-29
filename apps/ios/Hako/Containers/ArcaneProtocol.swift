@@ -180,10 +180,24 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
     struct HostConfig: Decodable { let restartPolicy: String?; let memory: Int64?; let autoRemove: Bool? }
     struct Port: Decodable {
         let privatePort: Int; let publicPort: Int?; let type: String?
+        let ip: String?
+        var protocolName: String {
+            let value = type?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return value.isEmpty ? "tcp" : value
+        }
+        var mappedPort: Int? { publicPort.flatMap { $0 > 0 ? $0 : nil } }
+        var bindingAddress: String? {
+            let value = ip?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return ["", "0.0.0.0", "::"].contains(value) ? nil : value
+        }
         var text: String {
-            let containerPort = "\(privatePort)/\(type ?? "tcp")"
-            guard let publicPort, publicPort > 0 else { return containerPort }
-            return "\(publicPort) → \(containerPort)"
+            let containerPort = "\(privatePort)/\(protocolName)"
+            guard let mappedPort else { return containerPort }
+            if let address = bindingAddress {
+                let host = address.contains(":") ? "[\(address)]" : address
+                return "\(host):\(mappedPort) → \(containerPort)"
+            }
+            return "\(mappedPort) → \(containerPort)"
         }
     }
     struct Mount: Decodable { let type: String?; let name: String?; let source: String?; let destination: String?; let rw: Bool? }
@@ -195,7 +209,16 @@ struct ArcaneContainerDetails: Decodable, Identifiable {
     var project: String? { composeInfo?.projectName ?? labels?["com.docker.compose.project"] }
     var portsText: String? {
         guard let ports, !ports.isEmpty else { return nil }
-        return ports.map(\.text).joined(separator: "\n")
+        // Arcane enumerates Docker's port map without sorting. Dual-stack
+        // wildcard bindings represent the same mapping in this compact display.
+        let sorted = ports.sorted {
+            if $0.privatePort != $1.privatePort { return $0.privatePort < $1.privatePort }
+            if $0.protocolName != $1.protocolName { return $0.protocolName < $1.protocolName }
+            if $0.mappedPort != $1.mappedPort { return ($0.mappedPort ?? 0) < ($1.mappedPort ?? 0) }
+            return ($0.bindingAddress ?? "") < ($1.bindingAddress ?? "")
+        }
+        var seen = Set<String>()
+        return sorted.map(\.text).filter { seen.insert($0).inserted }.joined(separator: "\n")
     }
 }
 

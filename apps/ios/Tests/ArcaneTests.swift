@@ -66,11 +66,43 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         let details = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"old","name":"/postgres","state":{"running":true,"status":"running","health":{"status":"unhealthy"}},"config":{"env":["PASSWORD=a=b"]},"networkSettings":{"networks":{"default":{"ipAddress":"172.20.0.3"}}},"ports":[{"privatePort":80,"publicPort":8080,"type":"tcp"}],"mounts":null}"#))
         precondition(details.displayName == "postgres" && details.state?.health?.status == "unhealthy" && details.ports?.first?.text == "8080 → 80/tcp")
         let multiplePorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"ports","ports":[{"privatePort":80,"publicPort":0,"type":"tcp"},{"privatePort":443,"type":"tcp"},{"privatePort":53,"publicPort":1053,"type":"udp"}]}"#))
-        precondition(multiplePorts.portsText == "80/tcp\n443/tcp\n1053 → 53/udp",
+        precondition(multiplePorts.portsText == "1053 → 53/udp\n80/tcp\n443/tcp",
                      "Unmapped ports must omit host port zero; all ports share one multiline value")
         let emptyPorts = try decoder.decode(ArcaneContainerDetails.self, from: bytes(#"{"id":"no-ports","ports":[]}"#))
         precondition(emptyPorts.portsText == nil && minimal.portsText == nil)
         precondition(details.portsText == "8080 → 80/tcp")
+        func portDetails(_ bindings: [[String: Any]]) throws -> ArcaneContainerDetails {
+            try decoder.decode(ArcaneContainerDetails.self, from: JSONSerialization.data(withJSONObject: ["id": "port-bindings", "ports": bindings]))
+        }
+        let caddyBindings: [[String: Any]] = [
+            ["privatePort": 443, "publicPort": 443, "type": "udp", "ip": "::"],
+            ["privatePort": 80, "publicPort": 80, "type": "tcp", "ip": "0.0.0.0"],
+            ["privatePort": 2019, "type": "tcp"],
+            ["privatePort": 443, "publicPort": 443, "type": "tcp", "ip": "::"],
+            ["privatePort": 80, "publicPort": 80, "type": "tcp", "ip": "::"],
+            ["privatePort": 443, "publicPort": 443, "type": "udp", "ip": "0.0.0.0"],
+            ["privatePort": 443, "publicPort": 443, "type": "tcp", "ip": "0.0.0.0"]
+        ]
+        let expectedCaddyPorts = "80 → 80/tcp\n443 → 443/tcp\n443 → 443/udp\n2019/tcp"
+        for offset in caddyBindings.indices {
+            let shuffled = Array(caddyBindings.dropFirst(offset)) + Array(caddyBindings.prefix(offset))
+            let forward = try portDetails(shuffled)
+            let reversed = try portDetails(Array(shuffled.reversed()))
+            precondition(forward.portsText == expectedCaddyPorts && reversed.portsText == expectedCaddyPorts,
+                         "Dual-stack mappings must display once, in numeric order regardless of response order")
+        }
+        let distinctBindings = try portDetails([
+            ["privatePort": 80, "publicPort": 8081, "type": "tcp"],
+            ["privatePort": 80, "publicPort": 8080, "type": "TCP"],
+            ["privatePort": 80, "publicPort": 8080],
+            ["privatePort": 80, "publicPort": 8080, "type": "udp"],
+            ["privatePort": 80, "publicPort": 8080, "type": "tcp", "ip": "127.0.0.1"],
+            ["privatePort": 80, "publicPort": 8080, "type": "tcp", "ip": "::1"],
+            ["privatePort": 2019, "publicPort": 0],
+            ["privatePort": 2019, "type": "tcp"]
+        ])
+        precondition(distinctBindings.portsText == "8080 → 80/tcp\n127.0.0.1:8080 → 80/tcp\n[::1]:8080 → 80/tcp\n8081 → 80/tcp\n8080 → 80/udp\n2019/tcp",
+                     "Keep different host ports, protocols and specific bind addresses; normalize default protocol and unmapped zero")
         precondition(ArcaneAction.restart.confirmationTitle == "重启容器？" && ArcaneAction.stop.confirmationTitle == "停止容器？")
         precondition(ArcaneOperationStatus(action: .redeploy, running: true).text == "更新中…")
         precondition(ArcaneOperationStatus(action: .redeploy, running: false).text == "更新结果待确认")
