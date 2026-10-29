@@ -102,8 +102,11 @@ private final class WorkspaceMockProtocol: URLProtocol, @unchecked Sendable {
             let body = String(data: readBody(request), encoding: .utf8)!
             let parts = body.components(separatedBy: "--" + boundary).filter { $0.contains("Content-Disposition:") }
             precondition(parts.count == 3 && parts[0].contains("name=\"manifest\"") && parts[1].contains("name=\"files\""))
-            let manifestText = parts[0].components(separatedBy: "\r\n\r\n")[1].dropLast(2)
-            let manifest = try JSONSerialization.jsonObject(with: bytes(String(manifestText))) as! [String: Any]
+            let manifestText = parts[0].components(separatedBy: "\r\n\r\n")[1]
+            precondition(manifestText.hasSuffix("\r\n"))
+            // CRLF is one Swift Character, but the multipart terminator is two bytes.
+            let manifestData = Data(manifestText.utf8.dropLast(2))
+            let manifest = try JSONSerialization.jsonObject(with: manifestData) as! [String: Any]
             let changes = manifest["fileChanges"] as! [[String: Any]]
             precondition(manifest["fileTreeRevision"] as? String == "r1")
             precondition(changes[0]["relativePath"] as? String == path && changes[0]["operation"] as? String == "update_file")
