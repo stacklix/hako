@@ -10,8 +10,6 @@ struct ArcaneProjectFilesSection: View {
     let openEditor: (ArcaneFileEditorSession) -> Void
     @StateObject private var data = ArcaneFilesData()
     @State private var folder = ""
-    @State private var search = ""
-    @State private var showHelp = false
     @State private var reloadID = UUID()
     @State private var bookmarks: [String: String] = [:]
 
@@ -19,78 +17,46 @@ struct ArcaneProjectFilesSection: View {
         "\(store.connection?.id ?? "")-\(environment)-\(projectName ?? "")-\(workingDir ?? "")-\(refreshID)-\(reloadID)"
     }
     private var entries: [ArcaneProjectFile] {
-        data.files.filter {
-            search.isEmpty ? ArcaneWorkspacePath.parent($0.relativePath) == folder : $0.relativePath.localizedCaseInsensitiveContains(search)
-        }.sorted {
+        data.files.filter { ArcaneWorkspacePath.parent($0.relativePath) == folder }.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
         }
     }
-
-    var body: some View {
-        Group {
-            projectSummary
-            if data.workspace != nil { fileSearch; directory }
+    private var rootDirectoryName: String {
+        let candidates = [data.project?.path, workingDir]
+        guard let path = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
+            return data.project?.name ?? projectName ?? "文件"
         }
+        return path.split(separator: "/").last.map(String.init) ?? "/"
     }
 
-    private var projectSummary: some View {
+    var body: some View {
         Section {
-            // A single concrete row owns loading/help. Attaching these modifiers
-            // to Group distributes them across changing list sections.
-            VStack(alignment: .leading, spacing: 0) {
-                if projectName?.isEmpty != false {
-                    ContentUnavailableView("没有 Compose 项目目录", systemImage: "folder",
-                        description: Text("此容器未关联 Compose 项目。项目文件需要先由 Arcane 收录和管理。"))
-                } else {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(data.project?.name ?? projectName ?? "项目文件").font(.subheadline.weight(.semibold))
-                            if let path = data.project?.path ?? workingDir {
-                                Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                        Button { showHelp = true } label: { Image(systemName: "info.circle").frame(minWidth: 44, minHeight: 44) }
-                            .buttonStyle(.borderless).accessibilityLabel("项目文件说明")
-                    }
-                }
-            }.arcaneRowSeparators()
-                .task(id: context) { await reload() }
-                .sheet(isPresented: $showHelp) { ArcaneProjectFilesHelp() }
+            if projectName?.isEmpty != false {
+                ContentUnavailableView("没有 Compose 项目目录", systemImage: "folder",
+                    description: Text("此容器未关联 Compose 项目。项目文件需要先由 Arcane 收录和管理。"))
+            }
             if data.loading { ProgressView("正在读取项目文件…").arcaneRowSeparators() }
             if let error = data.error {
                 Text(error).font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
                 Button("重新读取目录") { reloadID = UUID() }.arcaneRowSeparators()
             }
-        }.listSectionSpacing(12)
-    }
-
-    private var fileSearch: some View {
-        Section {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索项目文件", text: $search).accessibilityLabel("搜索项目文件")
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.borderless).accessibilityLabel("清除文件搜索")
+            if data.workspace != nil {
+                if data.workspace?.fileTreeTruncated == true {
+                    Text("目录超过 Arcane 的文件数量或深度限制，当前列表未完整返回。")
+                        .font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
                 }
-            }.frame(minHeight: 32).arcaneRowSeparators()
-        }.listSectionSpacing(12)
-    }
-
-    private var directory: some View {
-        Section {
-            if data.workspace?.fileTreeTruncated == true {
-                Text("目录超过 Arcane 的文件数量或深度限制，当前列表未完整返回。")
-                    .font(.footnote).foregroundStyle(.orange).arcaneRowSeparators()
+                if entries.isEmpty { Text("此目录没有文件").foregroundStyle(.secondary).arcaneRowSeparators() }
+                ForEach(entries) { file in fileRow(file).id("arcane-file-" + file.id) }
             }
-            if entries.isEmpty { Text("没有符合条件的文件").foregroundStyle(.secondary).arcaneRowSeparators() }
-            ForEach(entries) { file in fileRow(file).id("arcane-file-" + file.id) }
         } header: {
-            ArcaneFileBreadcrumbs(folder: folder) { navigate($0) }
-                .textCase(nil).id("arcane-file-directory")
+            VStack(alignment: .leading, spacing: 4) {
+                Text("文件")
+                if projectName?.isEmpty == false {
+                    ArcaneFileBreadcrumbs(rootName: rootDirectoryName, folder: folder) { navigate($0) }
+                }
+            }.textCase(nil).id("arcane-file-directory")
+                .task(id: context) { await reload() }
         }
     }
 
@@ -105,10 +71,7 @@ struct ArcaneProjectFilesSection: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: file.isDirectory ? "folder" : "doc.text").foregroundStyle(.secondary).frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(file.name).font(.subheadline).foregroundStyle(.primary)
-                    if !search.isEmpty { Text(file.relativePath).font(.caption2).foregroundStyle(.secondary) }
-                }
+                Text(file.name).font(.subheadline).foregroundStyle(.primary)
                 Spacer(minLength: 4)
                 if readOnly && !file.isDirectory { Image(systemName: "lock").font(.caption2).foregroundStyle(.secondary) }
                 if let entry = file.entry, !entry.isDirectory {
@@ -122,7 +85,7 @@ struct ArcaneProjectFilesSection: View {
     }
 
     private func navigate(_ path: String) {
-        folder = path; search = ""
+        folder = path
         let remembered = bookmarks[path].flatMap { id in entries.first { $0.id == id }?.id }
         let target = remembered.map { "arcane-file-" + $0 } ?? "arcane-file-directory"
         Task { @MainActor in await Task.yield(); scrollToFile(target) }
@@ -137,13 +100,14 @@ struct ArcaneProjectFilesSection: View {
 }
 
 private struct ArcaneFileBreadcrumbs: View {
+    let rootName: String
     let folder: String
     let navigate: (String) -> Void
     private var components: [String] { folder.split(separator: "/").map(String.init) }
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
-                Button("项目目录") { navigate("") }.disabled(folder.isEmpty)
+                Button(rootName) { navigate("") }.disabled(folder.isEmpty)
                 ForEach(Array(components.enumerated()), id: \.offset) { index, name in
                     Image(systemName: "chevron.right").font(.caption2)
                     Button(name) { navigate(components.prefix(index + 1).joined(separator: "/")) }
