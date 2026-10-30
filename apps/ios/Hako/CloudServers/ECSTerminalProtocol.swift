@@ -129,6 +129,32 @@ struct ECSAXTFlow {
     func key(_ key: String)
 }
 
+// A foreground probe must finish even if a suspended/dead socket never reports
+// its pong callback. Late and duplicate callbacks cannot resume it twice.
+enum ECSTerminalPing {
+    static func wait(seconds: UInt64 = 5, send: @Sendable (@escaping @Sendable (Error?) -> Void) -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let pending = ECSTerminalPingCompletion(continuation)
+            let timer = Task {
+                do { try await Task.sleep(nanoseconds: seconds * 1_000_000_000) } catch { return }
+                pending.finish(URLError(.timedOut))
+            }
+            send { error in timer.cancel(); pending.finish(error) }
+        }
+        try Task.checkCancellation()
+    }
+}
+
+private final class ECSTerminalPingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+    func finish(_ error: Error?) {
+        lock.lock(); let saved = continuation; continuation = nil; lock.unlock()
+        if let error { saved?.resume(throwing: error) } else { saved?.resume() }
+    }
+}
+
 // Own output independently of SwiftUI's UIKit view lifetime. Nothing here is
 // persisted or logged, and output replay never sends input back to the server.
 @MainActor final class ECSTerminalDisplay {

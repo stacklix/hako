@@ -15,6 +15,8 @@ import Combine
     private var writer: Task<Void, Never>?
     private var heartbeat: Task<Void, Never>?
     private var deadline: Task<Void, Never>?
+    private var healthCheck: Task<Void, Never>?
+    private var healthID = UUID()
     private var flow = ECSAXTFlow()
     private var generation = UUID()
     private var queued = 0
@@ -106,6 +108,27 @@ import Combine
         do { try enqueue(flow.message(type: 2, payload: ECSAXTFlow.size(columns: columns, rows: rows))) }
         catch { fail(error) }
     }
+    func recoverConnection() {
+        guard connected, let socket else { return }
+        display.focus()
+        guard healthCheck == nil else { return }
+        let ticket = generation, id = UUID(); healthID = id
+        healthCheck = Task { [weak self] in
+            defer { if let self, self.healthID == id { self.healthCheck = nil } }
+            do {
+                try await ECSTerminalPing.wait { callback in socket.sendPing(pongReceiveHandler: callback) }
+                guard !Task.isCancelled, let self, self.generation == ticket, self.healthID == id else { return }
+                HakoLog.record(.cloudServers, "终端连接探测成功，继续原会话")
+                self.display.focus()
+            } catch {
+                guard !Task.isCancelled, let self, self.generation == ticket, self.healthID == id else { return }
+                self.fail(ECSFailure(message: "原终端连接已失效，请重新连接。"))
+            }
+        }
+    }
+    func pauseConnectionCheck() {
+        healthID = UUID(); healthCheck?.cancel(); healthCheck = nil
+    }
     private func enqueue(_ frame: ECSAXTFrame) throws {
         guard let socket else { return }
         let payload = try frame.encode()
@@ -129,6 +152,7 @@ import Combine
         if connecting || connected { HakoLog.record(.cloudServers, "终端已断开") }
         if creating { cleaning = true }
         generation = UUID()
+        pauseConnectionCheck()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         // The in-flight creation task intentionally remains alive for cleanup.
         reader = nil; writer?.cancel(); writer = nil; queued = 0

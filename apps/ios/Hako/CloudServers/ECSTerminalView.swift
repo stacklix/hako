@@ -33,12 +33,18 @@ struct ECSTerminalView: View {
             if !value { data.disconnect() } else { recoverInput() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { recoverInput() }
-            if phase == .inactive, data.connected {
-                HakoLog.record(.cloudServers, "应用暂时失活，保留终端会话")
+            if phase == .active { recoverConnection() }
+            if phase == .inactive {
+                data.pauseConnectionCheck()
+                if data.connected { HakoLog.record(.cloudServers, "应用暂时失活，保留终端会话") }
+            }
+            if phase == .background {
+                data.pauseConnectionCheck()
+                data.display.blur()
+                if data.connected || data.connecting { HakoLog.record(.cloudServers, "应用进入后台，保留终端会话") }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in recoverInput() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in recoverConnection() }
         .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in recoverInput() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in recoverInput() }
     }
@@ -82,6 +88,10 @@ struct ECSTerminalView: View {
     private func recoverInput() {
         guard active, scenePhase == .active, data.connected else { return }
         data.display.focus()
+    }
+    private func recoverConnection() {
+        guard active, scenePhase == .active else { return }
+        data.recoverConnection()
     }
 }
 

@@ -118,6 +118,19 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
 
         await checkTerminalDisplay(prompt: prompt.bytes)
 
+        try await ECSTerminalPing.wait { callback in
+            callback(nil)
+            callback(URLError(.networkConnectionLost))
+        }
+        do {
+            try await ECSTerminalPing.wait(seconds: 0) { _ in }
+            fatalError("Expected a missing pong to time out")
+        } catch let error as URLError { precondition(error.code == .timedOut) }
+        do {
+            try await ECSTerminalPing.wait { callback in callback(URLError(.networkConnectionLost)) }
+            fatalError("Expected a lost socket to fail the probe")
+        } catch let error as URLError { precondition(error.code == .networkConnectionLost) }
+
         let snapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"interfaces":[],"processes":[],"truncated":false}"#.utf8))
         precondition(snapshot.memoryAvailable == nil && snapshot.sockets == nil)
         fails { _ = try ECSSnapshot.decode(Data(#"{"version":2,"time":100}"#.utf8)) }
