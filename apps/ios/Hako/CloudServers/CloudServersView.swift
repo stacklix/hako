@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 struct CloudServersView: View {
     @StateObject private var store = ECSStore()
@@ -10,8 +9,6 @@ struct CloudServersView: View {
     @State private var page = ECSPage.overview
     @State private var settings = false
     @State private var visible = false
-    @State private var networkPage = "流量"
-    @State private var interface = ""
     @State private var group = ECSProcessGroup.all
     @State private var memorySort = false
 
@@ -158,60 +155,7 @@ struct CloudServersView: View {
     }
 
     @ViewBuilder private var network: some View {
-        let sockets = store.network?.sockets
-        Section {
-            Picker("网络视图", selection: $networkPage) {
-                Text("流量").tag("流量")
-                if sockets != nil { Text("监听端口").tag("监听端口"); Text("当前连接").tag("当前连接") }
-            }.pickerStyle(.segmented)
-        }
-        if networkPage == "流量" || sockets == nil {
-            if !store.monitor.isEmpty {
-                Section("实例内网 · 最近 1 小时") {
-                    Chart {
-                        ForEach(store.monitor) { point in
-                            if let value = point.receiveBytesPerSecond { LineMark(x: .value("时间", point.time), y: .value("KiB/s", value / 1024)).foregroundStyle(by: .value("方向", "接收")) }
-                            if let value = point.sendBytesPerSecond { LineMark(x: .value("时间", point.time), y: .value("KiB/s", value / 1024)).foregroundStyle(by: .value("方向", "发送")) }
-                        }
-                    }.chartYAxisLabel("KiB/s").frame(height: 175)
-                    if let last = store.monitor.last {
-                        if let value = last.receiveBytesPerSecond { LabeledContent("平均接收", value: ECSFormat.rate(value)) }
-                        if let value = last.sendBytesPerSecond { LabeledContent("平均发送", value: ECSFormat.rate(value)) }
-                        Text("监控时间：\(last.time.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("1 分钟均值").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if let interfaces = store.network?.interfaces, !interfaces.isEmpty {
-                Section("网卡 · 短时采样") {
-                    let selected = interfaces.first { $0.name == interface } ?? interfaces[0]
-                    Picker("网卡", selection: Binding(get: { selected.name }, set: { interface = $0 })) {
-                        ForEach(interfaces) { Text($0.name).tag($0.name) }
-                    }
-                    if let value = selected.receiveRate { LabeledContent("接收速率", value: ECSFormat.rate(value)) }
-                    if let value = selected.sendRate { LabeledContent("发送速率", value: ECSFormat.rate(value)) }
-                    LabeledContent("累计接收", value: ECSFormat.bytes(selected.receive))
-                    LabeledContent("累计发送", value: ECSFormat.bytes(selected.send))
-                    LabeledContent("接收 / 发送丢包", value: "\(Int64(selected.receiveDrops)) / \(Int64(selected.sendDrops))")
-                    Text("累计来自系统网卡计数，重建网卡或重启可能重置。").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        } else if let sockets {
-            let rows = sockets.filter { $0.listening == (networkPage == "监听端口") }
-            Section("\(networkPage) · \(rows.count)") {
-                ForEach(rows) { row in
-                    NavigationLink { ECSSocketDetails(socket: row) } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack { Text(row.local).font(.system(.subheadline, design: .monospaced)); Spacer(); Text(row.protocolName.uppercased()).font(.caption).foregroundStyle(.secondary) }
-                            if !row.listening { Text("对端 \(row.peer)").font(.caption).foregroundStyle(.secondary) }
-                            Text([row.process, row.pid.map { "PID \($0)" }, row.state].compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if rows.isEmpty { Text("当前快照没有此类记录。").foregroundStyle(.secondary) }
-            }
-        }
+        ECSNetworkSections(snapshot: store.network, monitor: store.monitor)
         if let snapshot = store.network { snapshotFooter(snapshot) }
     }
 
@@ -298,22 +242,6 @@ struct CloudServersView: View {
             Text("快照：\(Date(timeIntervalSince1970: snapshot.time).formatted(date: .abbreviated, time: .standard))").font(.caption).foregroundStyle(.secondary)
             if snapshot.truncated == true { Text("结果较多，本次仅返回部分记录。").font(.caption).foregroundStyle(.orange) }
         }
-    }
-}
-
-private struct ECSSocketDetails: View {
-    let socket: ECSSocket
-    var body: some View {
-        List {
-            Section("连接信息") {
-                LabeledContent("协议", value: socket.protocolName.uppercased())
-                LabeledContent("状态", value: socket.state)
-                LabeledContent("本机", value: socket.local)
-                if !socket.listening { LabeledContent("对端", value: socket.peer) }
-                if let name = socket.process { LabeledContent("进程", value: name) }
-                if let pid = socket.pid { LabeledContent("PID", value: String(pid)) }
-            }
-        }.textSelection(.enabled).navigationTitle(socket.listening ? "监听端口" : "连接详情")
     }
 }
 

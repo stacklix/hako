@@ -94,6 +94,67 @@ class SnapshotTests(unittest.TestCase):
         # Distinct disks with the same size/usage must remain separate.
         self.assertTrue(all(v['total'] == 4096000 and v['used'] == 1638400 for v in values))
 
+    def test_connection_direction_matches_listener_address_and_protocol(self):
+        text = ('tcp LISTEN 0 128 0.0.0.0:443 0.0.0.0:*\n'
+                'tcp LISTEN 0 128 [::]:443 [::]:*\n'
+                'tcp LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\n'
+                'udp UNCONN 0 0 0.0.0.0:9000 0.0.0.0:*\n'
+                'tcp ESTAB 0 0 10.0.0.1:443 192.0.2.1:50000\n'
+                'tcp ESTAB 0 0 [2001:db8::1]:443 [2001:db8::2]:50000\n'
+                'tcp ESTAB 0 0 [::ffff:10.0.0.1]:443 [::ffff:192.0.2.2]:50000\n'
+                'tcp ESTAB 0 0 127.0.0.1:8080 127.0.0.1:50000\n'
+                'tcp ESTAB 0 0 10.0.0.1:8080 192.0.2.1:443\n'
+                'tcp ESTAB 0 0 10.0.0.1:50000 192.0.2.1:443\n'
+                'tcp ESTAB 0 0 10.0.0.1:9000 192.0.2.1:443\n'
+                'tcp ESTAB 0 0 malformed 192.0.2.1:443\n'
+                'udp ESTAB 0 0 10.0.0.1:60000 192.0.2.1:53\n'
+                'tcp SYN-SENT 0 0 10.0.0.1:60001 192.0.2.1:443\n')
+        values = collector.parse_sockets(text)
+        summary = collector.connection_summary(values)
+        self.assertEqual(summary, dict(incoming=4, outgoing=3, unknown=1))
+        self.assertEqual(values[8]['direction'], 'outgoing')  # Loopback listener cannot accept on another IP.
+        self.assertEqual(values[10]['direction'], 'outgoing')  # UDP listener does not imply TCP inbound.
+        self.assertNotIn('direction', values[-1])
+        self.assertNotIn('direction', values[-2])
+        self.assertEqual(collector.socket_endpoint('[fe80::1%eth0]:443'), ('fe80::1%eth0', 443, 6))
+        self.assertIsNone(collector.socket_endpoint('127.0.0.1:*'))
+        self.assertIsNone(collector.socket_endpoint('127.0.0.1:65536'))
+
+    def test_network_counts_survive_truncation_and_prioritize_listeners(self):
+        text = ''.join(f'tcp ESTAB 0 0 10.0.0.1:{30000+n} 192.0.2.1:443\n' for n in range(500))
+        text += ('tcp LISTEN 0 128 0.0.0.0:443 0.0.0.0:*\n'
+                 'tcp LISTEN 0 128 [::]:443 [::]:*\n'
+                 'tcp ESTAB 0 0 10.0.0.1:443 192.0.2.1:50000\n')
+        with patch.object(collector, 'read', return_value=None), patch.object(collector.time, 'sleep'), \
+             patch.object(collector, 'sockets', return_value=(collector.parse_sockets(text), None)):
+            result = json.loads(collector.collect('network'))
+        self.assertTrue(result['truncated'])
+        self.assertEqual(result['socketSummary'], dict(outgoing=500, incoming=1, unknown=0))
+        self.assertEqual(result['totalListeningPorts'], 1)
+        self.assertEqual(result['totalSockets'], 503)
+        self.assertLess(len(result['sockets']), 503)
+        self.assertTrue(all(collector.is_listener(v) for v in result['sockets'][:2]))
+
+    def test_network_missing_ss_does_not_report_zero_connections(self):
+        with patch.object(collector, 'read', return_value=None), patch.object(collector.time, 'sleep'), \
+             patch.object(collector, 'sockets', return_value=(None, 'ss unavailable')):
+            result = json.loads(collector.collect('network'))
+        self.assertIsNone(result['sockets'])
+        self.assertEqual(result['socketError'], 'ss unavailable')
+        self.assertNotIn('socketSummary', result)
+
+    def test_primary_interface_uses_default_route_not_bridge_sort_order(self):
+        routes = ('Iface Destination Gateway Flags RefCnt Use Metric Mask\n'
+                  'eth1 00000000 0100000A 0003 0 0 200 00000000\n'
+                  'eth0 00000000 0100000A 0003 0 0 100 00000000\n'
+                  'docker0 000011AC 00000000 0001 0 0 0 0000FFFF\n')
+        values = [{'name': name} for name in ('docker0', 'eth0', 'eth1', 'lo')]
+        with patch.object(collector, 'read', return_value=routes):
+            self.assertEqual(collector.primary_interface(values), 'eth0')
+        v6 = ' '.join(['0' * 32, '00', '0' * 32, '00', '0' * 32, '00000064', '00000000', '00000000', '00000001', 'eth1'])
+        with patch.object(collector, 'read', side_effect=lambda path: v6 if path.name == 'ipv6_route' else ''):
+            self.assertEqual(collector.primary_interface(values), 'eth1')
+
     def test_disks_keep_overlay_only_when_it_is_the_root(self):
         mounts = ('1 0 0:100 / / rw - overlay overlay rw\n'
                   '2 0 0:101 / /var/lib/containerd/rootfs rw - overlay overlay rw\n')
@@ -126,6 +187,9 @@ class SnapshotTests(unittest.TestCase):
         network = json.loads(collector.collect('network'))
         self.assertTrue(network['interfaces'])
         self.assertTrue(network.get('sockets') is not None or network.get('socketError'))
+        if network.get('sockets') is not None:
+            self.assertTrue(all(network['socketSummary'][key] >= 0 for key in ('outgoing', 'incoming', 'unknown')))
+            self.assertGreaterEqual(network['totalListeningPorts'], 0)
         process = json.loads(collector.collect('process', os.getpid()))['processes'][0]
         self.assertEqual(process['pid'], os.getpid())
         self.assertGreater(process['memory'], 0)

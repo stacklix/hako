@@ -3,6 +3,7 @@
 Uses an existing Python 3 and optional ss. No installation, network access,
 scheduled task, firewall change, or persistent collector is performed.
 """
+import ipaddress
 import json
 import os
 import platform
@@ -164,6 +165,69 @@ def sockets():
         return None, '无法查询连接，请检查系统已有 ss 工具和读取权限。'
 
 
+def socket_endpoint(value):
+    try:
+        host, port = value.rsplit(':', 1)
+        port = int(port)
+        if not 1 <= port <= 65535:
+            return None
+        host = host.strip('[]')
+        if host == '*':
+            return host, port, 0
+        address = ipaddress.ip_address(host)
+        # Preserve the socket family for matching an IPv6 wildcard listener,
+        # while canonicalizing mapped addresses for exact-address comparison.
+        mapped = getattr(address, 'ipv4_mapped', None)
+        return str(mapped or address), port, address.version
+    except (ValueError, AttributeError):
+        return None
+
+
+def is_listener(value):
+    return value['state'] == 'LISTEN' or (value['protocolName'] == 'udp' and value['state'] == 'UNCONN')
+
+
+def connection_summary(values):
+    # This is a snapshot inference, not a record of the original TCP handshake.
+    # Only established TCP sockets are counted; UDP has no accepted sessions.
+    listeners = [socket_endpoint(v['local']) for v in values
+                 if v['protocolName'] == 'tcp' and v['state'] == 'LISTEN']
+    listeners = [v for v in listeners if v]
+    counts = dict(outgoing=0, incoming=0, unknown=0)
+    for value in values:
+        if value['protocolName'] != 'tcp' or value['state'] not in ('ESTAB', 'ESTABLISHED'):
+            continue
+        local = socket_endpoint(value['local'])
+        direction = 'unknown'
+        if local:
+            host, port, family = local
+            accepted = any(p == port and (h == host or h == '*' or
+                (f == family and h in ('0.0.0.0', '::'))) for h, p, f in listeners)
+            direction = 'incoming' if accepted else 'outgoing'
+        value['direction'] = direction
+        counts[direction] += 1
+    return counts
+
+
+def primary_interface(values):
+    names = {v['name'] for v in values}
+    routes = []
+    for line in (read(PROC / 'net' / 'route') or '').splitlines()[1:]:
+        fields = line.split()
+        try:
+            if fields[1] == fields[7] == '00000000' and int(fields[3], 16) & 1 and fields[0] in names:
+                routes.append((int(fields[6]), fields[0]))
+        except (ValueError, IndexError):
+            pass
+    if routes:
+        return min(routes)[1]
+    for line in (read(PROC / 'net' / 'ipv6_route') or '').splitlines():
+        fields = line.split()
+        if len(fields) >= 10 and fields[0] == '0' * 32 and fields[1] == '00' and fields[-1] in names and fields[-1] != 'lo':
+            return fields[-1]
+    return next((v['name'] for v in values if v['name'] != 'lo'), None)
+
+
 def disks():
     candidates = []
     for line in (read(PROC / 'self' / 'mountinfo') or '').splitlines():
@@ -231,8 +295,16 @@ def collect(mode, pid=0):
         time.sleep(1)
         second = interfaces(read(PROC / 'net' / 'dev'))
         result['interfaces'] = network(first, second, time.monotonic() - start)
+        result['primaryInterface'] = primary_interface(result['interfaces'])
+        result['interfaces'].sort(key=lambda v: (v['name'] != result['primaryInterface'], v['name'] == 'lo', v['name']))
         result['sockets'], result['socketError'] = sockets()
         result['totalSockets'] = len(result['sockets'] or [])
+        if result['sockets'] is not None:
+            # Count before bounding output; keep listener rows ahead of sessions.
+            result['socketSummary'] = connection_summary(result['sockets'])
+            result['totalListeningPorts'] = len({(v['protocolName'], socket_endpoint(v['local'])[1])
+                for v in result['sockets'] if is_listener(v) and socket_endpoint(v['local'])})
+            result['sockets'].sort(key=lambda v: (not is_listener(v), v['protocolName'], v['local'], v['peer']))
     elif mode == 'overview':
         mem = number_fields(read(PROC / 'meminfo'))
         result.update(hostname=platform.node()[:200], kernel=platform.release()[:200],

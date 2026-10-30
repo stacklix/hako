@@ -71,7 +71,10 @@ struct ECSSnapshot: Decodable, Sendable {
     let load: [Double]?
     let disks: [ECSDisk]?
     let interfaces: [ECSInterface]?
+    let primaryInterface: String?
     let sockets: [ECSSocket]?
+    let socketSummary: ECSConnectionCounts?
+    let totalListeningPorts: Int?
     let processes: [ECSProcess]?
     let totalProcesses: Int?
     let totalSockets: Int?
@@ -114,7 +117,15 @@ struct ECSSocket: Decodable, Identifiable, Sendable {
     let peer: String
     let pid: Int?
     let process: String?
+    let direction: String?
     var listening: Bool { state == "LISTEN" || (protocolName == "udp" && state == "UNCONN") }
+    var established: Bool { protocolName == "tcp" && ["ESTAB", "ESTABLISHED"].contains(state) }
+}
+
+struct ECSConnectionCounts: Decodable, Sendable {
+    let outgoing: Int
+    let incoming: Int
+    let unknown: Int
 }
 
 enum ECSProcessGroup: String, CaseIterable, Identifiable {
