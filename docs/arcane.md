@@ -106,6 +106,8 @@ Arcane 自身容器依据服务端的 `redeployDisabled` 保护标记隐藏整�
 
 ## 容器操作与终端
 
+终端弹层由容器详情页根视图持有，使用独立会话标识和打开时的容器快照，不依附于列表中的动态 Section。列表刷新或旧渲染视图释放不关闭会话；关闭终端页面时统一断开。页面不显示连接状态或单独的断开按钮，导航栏最右侧提供 Shell 菜单；选择后关闭当前会话并连接所选 Shell，不重放上一次输入。自定义路径在独立表单中校验，确认后才切换。
+
 执行页直接展示展开后的命令，使用跟随当前主题的「执行命令」按钮；连接、Shell 初始化和执行阶段均显示状态。终端连接不以 Ping/Pong 作为输入前置条件。Shell 初始化单独限时 10 秒，超时后不发送实际命令；收到 Arcane 的 Exec 创建／附加错误时直接展示 Shell 启动失败原因。初始化成功后的执行仍受总计 120 秒的期限约束。
 
 详情新增「操作」Tab，原有「管理」区域保留。Caddy（按镜像仓库末段或容器名识别）提供「配置检查」「重载配置」，默认容器内路径为 `/etc/caddy/Caddyfile`，重载前使用包含主机、容器及操作名称的原生 Alert 确认。Caddyfile 格式带 `--adapter caddyfile`，选择原生 JSON 时省略 adapter；重载使用可配置的管理地址，默认 `localhost:2019`。
@@ -120,7 +122,7 @@ Arcane 自身容器依据服务端的 `redeployDisabled` 保护标记隐藏整�
 
 交互终端使用原生 UIKit [SwiftTerm v1.99.2](https://github.com/migueldeicaza/SwiftTerm/tree/v1.99.2)，固定依赖版本，通过 Swift Package Manager 引入。直接在终端光标处输入，支持原生终端控制序列、Unicode、选择复制和粘贴。底部快捷栏提供 Ctrl、Esc、Tab、Ctrl+C、方向键、粘贴和回车。方向键使用当前终端模式的序列，回车发送 CR；输入逐字节传输，保留服务端 Shell 的当前目录、历史与补全行为，`vim`／`top` 等交互程序需容器内存在。窗口与键盘导致的行列变化通过 resize 消息传递。
 
-终端可选择 sh、bash、ash 或自定义绝对路径；切换 Shell 需断开后手动重连。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。断线不自动重连或重放输入，关闭、进入后台和连接配置变化均释放会话；关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
+终端可选择 sh、bash、ash 或自定义绝对路径。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。会话意外结束（包括 Shell 自行退出）弹出原生 Alert，提供「退出」「重新连接」，不自动重连或重放输入。关闭、进入后台和连接配置变化均释放会话；临时 inactive（如系统弹窗）不关闭会话，后台返回时提示重新连接；主动关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
 
 ## 验证
 

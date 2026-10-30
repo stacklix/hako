@@ -6,12 +6,14 @@ struct ArcaneCommandsSection: View {
     @ObservedObject private var library = ArcaneCommandLibrary.shared
     let environment: ArcaneEnvironment
     let details: ArcaneContainerDetails
+    let openTerminal: (ArcaneContainerDetails, String) -> Void
     @State private var editing: ArcaneCommandDefinition?
-    @State private var terminal = false
     @State private var error: String?
     @State private var connectionID: String
-    init(store: ArcaneStore, environment: ArcaneEnvironment, details: ArcaneContainerDetails) {
+    init(store: ArcaneStore, environment: ArcaneEnvironment, details: ArcaneContainerDetails,
+         openTerminal: @escaping (ArcaneContainerDetails, String) -> Void) {
         self.store = store; self.environment = environment; self.details = details
+        self.openTerminal = openTerminal
         _connectionID = State(initialValue: store.connection?.id ?? "")
     }
     private var context: ArcaneCommandContext { ArcaneCommandContext(connection: connectionID, environment: environment.id, details: details) }
@@ -26,7 +28,7 @@ struct ArcaneCommandsSection: View {
                 Section("常见操作") { ForEach(ArcaneCommandDefinition.caddy) { operation($0) } }
             }
             Section("容器终端") {
-                Button { terminal = true } label: { Label("进入终端", systemImage: "terminal") }
+                Button { openTerminal(details, connectionID) } label: { Label("进入终端", systemImage: "terminal") }
                     .disabled(details.state?.status != "running" || store.terminalSessionID != nil || store.operationRunning || store.fileSaveRunning || store.pending != nil)
                     .arcaneRowSeparators()
             }
@@ -67,9 +69,6 @@ struct ArcaneCommandsSection: View {
         }
         .sheet(item: $editing) { definition in
             NavigationStack { ArcaneCommandEditor(library: library, context: context, initial: definition) }
-        }
-        .fullScreenCover(isPresented: $terminal) {
-            ArcaneTerminalScreen(store: store, environment: environment, details: details, connectionID: connectionID)
         }
     }
     private func operation(_ definition: ArcaneCommandDefinition) -> some View {

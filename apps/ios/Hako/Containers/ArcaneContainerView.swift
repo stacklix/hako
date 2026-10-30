@@ -24,6 +24,7 @@ struct ArcaneContainerView: View {
     @State private var fileEditor: ArcaneFileEditorSession?
     @State private var fileChanged = false
     @State private var fileMutation: ArcaneFileMutationSession?
+    @State private var terminalSession: ArcaneTerminalPresentation?
 
     init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer) {
         self.store = store; self.environment = environment; self.container = container
@@ -83,7 +84,9 @@ struct ArcaneContainerView: View {
                     workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision,
                     scrollToFile: scrollToFile, openEditor: { fileEditor = $0 }, openMutation: { fileMutation = $0 })
             } else if let details {
-                ArcaneCommandsSection(store: store, environment: environment, details: details)
+                ArcaneCommandsSection(store: store, environment: environment, details: details) { snapshot, connectionID in
+                    terminalSession = ArcaneTerminalPresentation(details: snapshot, connectionID: connectionID)
+                }
             }
             if let details, !managementProtected {
                 Section {
@@ -141,6 +144,9 @@ struct ArcaneContainerView: View {
         content
         .navigationTitle("容器详情")
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $terminalSession) { session in
+            ArcaneTerminalScreen(store: store, environment: environment, details: session.details, connectionID: session.connectionID)
+        }
         .fullScreenCover(item: $fileEditor, onDismiss: {
             if fileChanged { fileChanged = false; revision = UUID() }
         }) { session in
