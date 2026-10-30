@@ -165,26 +165,36 @@ def sockets():
 
 
 def disks():
-    result, seen = [], set()
+    candidates = []
     for line in (read(PROC / 'self' / 'mountinfo') or '').splitlines():
         fields = line.split()
         try:
             split = fields.index('-')
             filesystem = fields[split + 1]
-            if filesystem not in ('ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'zfs', 'vfat', 'f2fs', 'nfs', 'nfs4', 'overlay'):
-                continue
             mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4])
-            if fields[2] in seen:
+            # Each container overlay has its own synthetic device ID but reports
+            # the backing disk's capacity. Only keep overlay if it is our root FS.
+            if filesystem not in ('ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'zfs', 'vfat', 'f2fs', 'nfs', 'nfs4') and not (filesystem == 'overlay' and mount == '/'):
                 continue
+            candidates.append((fields[2], fields[3], mount, filesystem))
+        except (ValueError, IndexError):
+            continue
+    # Prefer / and filesystem roots over bind mounts, regardless of mount order.
+    candidates.sort(key=lambda item: (item[2] != '/', item[1] != '/', item[2].count('/'), item[2]))
+    result, seen = [], set()
+    for device, root, mount, filesystem in candidates:
+        if device in seen:
+            continue
+        try:
             stat = os.statvfs(mount)
             if stat.f_blocks <= 0:
                 continue
-            seen.add(fields[2])
+            seen.add(device)
             result.append({'mount': mount[:512], 'filesystem': filesystem,
                            'total': stat.f_blocks * stat.f_frsize,
                            'used': (stat.f_blocks - stat.f_bfree) * stat.f_frsize,
                            'available': stat.f_bavail * stat.f_frsize})
-        except (ValueError, IndexError, OSError):
+        except OSError:
             continue
     return result
 

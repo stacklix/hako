@@ -76,6 +76,33 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(values[0]['pid'], 1260)
         self.assertIsNone(values[1]['pid'])
 
+    def test_disks_exclude_container_overlays_and_prefer_real_mounts(self):
+        mounts = ('1 0 252:1 /var/lib/docker /srv/docker-bind rw - ext4 /dev/vda1 rw\n'
+                  '2 0 0:201 / /var/lib/docker/rootfs/overlayfs/one rw - overlay overlay rw\n'
+                  '3 0 0:202 / /var/lib/docker/rootfs/overlayfs/two rw - overlay overlay rw\n'
+                  '4 0 252:2 /shared /srv/data-bind rw - xfs /dev/vdb rw\n'
+                  '5 0 252:2 / /data rw - xfs /dev/vdb rw\n'
+                  '6 0 252:1 / / rw - ext4 /dev/vda1 rw\n'
+                  '7 0 252:15 / /boot/efi rw - vfat /dev/vda15 rw\n'
+                  '8 0 0:30 / /run rw - tmpfs tmpfs rw\n'
+                  '9 0 252:3 / /media/data\\040disk rw - ext4 /dev/vdc rw\n')
+        usage = types.SimpleNamespace(f_blocks=1000, f_bfree=600, f_bavail=550, f_frsize=4096)
+        with patch.object(collector, 'read', return_value=mounts), patch.object(collector.os, 'statvfs', create=True, return_value=usage) as measure:
+            values = collector.disks()
+        self.assertEqual([v['mount'] for v in values], ['/', '/data', '/boot/efi', '/media/data disk'])
+        self.assertEqual(measure.call_count, 4)
+        # Distinct disks with the same size/usage must remain separate.
+        self.assertTrue(all(v['total'] == 4096000 and v['used'] == 1638400 for v in values))
+
+    def test_disks_keep_overlay_only_when_it_is_the_root(self):
+        mounts = ('1 0 0:100 / / rw - overlay overlay rw\n'
+                  '2 0 0:101 / /var/lib/containerd/rootfs rw - overlay overlay rw\n')
+        usage = types.SimpleNamespace(f_blocks=100, f_bfree=60, f_bavail=55, f_frsize=4096)
+        with patch.object(collector, 'read', return_value=mounts), patch.object(collector.os, 'statvfs', create=True, return_value=usage):
+            values = collector.disks()
+        self.assertEqual(len(values), 1)
+        self.assertEqual(values[0]['mount'], '/')
+
     def test_output_budget_retains_total_and_marks_partial(self):
         value = {'version': 1, 'time': 100, 'totalProcesses': 200,
                  'processes': [{'pid': n, 'name': '汉' * 100} for n in range(200)]}

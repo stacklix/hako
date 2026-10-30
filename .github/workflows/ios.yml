@@ -80,6 +80,8 @@ jobs:
           swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Hako/CloudServers/ECSTerminalProtocol.swift Hako/CloudServers/ECSTerminalData.swift
           swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSTerminalProtocol.swift Tests/ECSTests.swift -o /tmp/hako-ecs-tests
           /tmp/hako-ecs-tests
+          swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Tests/ECSLoadingTests.swift -o /tmp/hako-ecs-loading-tests
+          /tmp/hako-ecs-loading-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

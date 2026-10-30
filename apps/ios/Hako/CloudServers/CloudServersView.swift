@@ -60,12 +60,14 @@ struct CloudServersView: View {
             }
         }
         .sheet(isPresented: $settings) { ECSSettingsSheet(store: store) }
-        .onAppear { visible = true; store.load() }
+        .onAppear { visible = true }
         .onDisappear { visible = false }
         .task(id: taskKey) {
+            store.load()
             guard visible, scenePhase == .active, !settings, store.connection != nil, page != .terminal else { return }
             while !Task.isCancelled {
                 await store.refresh(page)
+                guard !Task.isCancelled else { return }
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
@@ -109,7 +111,6 @@ struct CloudServersView: View {
             }
             snapshotFooter(snapshot)
         }
-        if store.overview == nil && store.monitor.isEmpty && !store.busy && store.error == nil { Text("下拉刷新以读取服务器信息。").foregroundStyle(.secondary) }
     }
 
     @ViewBuilder private var network: some View {
