@@ -104,6 +104,15 @@ import Combine
     private var loadedKind: ArcaneProjectFileKind?
     private var readTicket: UUID?
     var dirty: Bool { draft != baseline }
+    var saveBlockReason: String? {
+        if loading { return "正在读取文件，请稍后保存。" }
+        if saving { return "正在保存文件，请稍候。" }
+        if !editable { return readOnlyReason ?? "此文件只读，不能保存。" }
+        if uncertain { return "保存结果尚未确认，请重新读取服务器文件核对后再保存。" }
+        if !dirty { return "文件没有修改。" }
+        return nil
+    }
+    var canSave: Bool { saveBlockReason == nil }
 
     func fail(_ error: Error) { readTicket = nil; self.error = error.localizedDescription; loading = false }
 
@@ -148,7 +157,7 @@ import Combine
     }
 
     func save(store: ArcaneStore, environment: String, project: ArcaneProjectDocument, file: ArcaneProjectFile) async {
-        guard !loading, !saving, editable, dirty, !uncertain else { return }
+        guard canSave else { return }
         saving = true; error = nil; notice = nil
         defer { saving = false }
         do {

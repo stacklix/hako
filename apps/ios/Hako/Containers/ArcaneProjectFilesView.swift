@@ -178,8 +178,7 @@ private struct ArcaneProjectFileDocument: View {
     private enum FileAction { case close, reload }
     private var canEdit: Bool { data.editable && !data.loading && !data.saving }
     private var canSave: Bool {
-        data.editable && data.dirty && !data.loading && !data.saving && !data.uncertain
-            && !store.operationRunning && !store.fileSaveRunning && store.pending == nil
+        data.canSave && store.fileSaveBlockReason == nil
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -218,9 +217,7 @@ private struct ArcaneProjectFileDocument: View {
             Text(file.name).font(.subheadline.weight(.semibold)).lineLimit(1)
         }
         ToolbarItem(placement: .confirmationAction) {
-            Button { Task { await save() } } label: {
-                if data.saving { ProgressView() } else { Text("保存") }
-            }.disabled(!canSave).accessibilityLabel("保存文件")
+            ArcaneFileSaveButton(data: data, store: store) { Task { await save() } }
         }
         ToolbarItem(placement: .bottomBar) { Spacer() }
         ToolbarItem(placement: .bottomBar) {
@@ -234,6 +231,11 @@ private struct ArcaneProjectFileDocument: View {
             if !data.viewable, !data.mimeType.isEmpty { Text(data.mimeType).foregroundStyle(.secondary) }
             if let reason = data.readOnlyReason { Text(reason).foregroundStyle(.secondary) }
             if let error = data.error { Text(error).foregroundStyle(.orange) }
+            if data.dirty, !data.loading, !data.saving,
+               let reason = data.saveBlockReason ?? store.fileSaveBlockReason,
+               reason != data.error, reason != data.readOnlyReason {
+                Text(reason).foregroundStyle(.orange)
+            }
             if data.error != nil {
                 Button("重新读取服务器文件") { request(.reload) }.disabled(data.loading || data.saving)
             }
@@ -266,5 +268,22 @@ private struct ArcaneProjectFileDocument: View {
     private func load() async {
         do { await data.load(client: try store.client(), environment: environment, project: project, file: file) }
         catch { data.fail(error) }
+    }
+}
+
+// A toolbar item is hosted separately from the editor body. Observe both
+// sources here so typing, undo and operation-lock changes update the button.
+private struct ArcaneFileSaveButton: View {
+    @ObservedObject var data: ArcaneFileEditorData
+    @ObservedObject var store: ArcaneStore
+    let save: () -> Void
+
+    var body: some View {
+        Button(action: save) {
+            if data.saving { ProgressView() } else { Text("保存") }
+        }
+        .disabled(!data.canSave || store.fileSaveBlockReason != nil)
+        .accessibilityLabel("保存文件")
+        .accessibilityHint(data.saveBlockReason ?? store.fileSaveBlockReason ?? "将当前修改写入服务器文件")
     }
 }

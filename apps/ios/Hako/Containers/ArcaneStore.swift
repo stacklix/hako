@@ -171,10 +171,16 @@ struct ArcaneContainerChange {
         } catch { operationMessage = error.localizedDescription }
     }
 
+    var fileSaveBlockReason: String? {
+        if operationRunning { return "容器操作正在执行，请等待完成后再保存文件。" }
+        if fileSaveRunning { return "另一项文件操作正在执行，请等待完成后再保存。" }
+        if pending != nil { return "有待核对的容器操作，请返回容器管理核对结果后再保存文件。" }
+        if terminalSessionID != nil { return "容器终端仍在使用，请关闭终端后再保存文件。" }
+        return nil
+    }
+
     func withFileSave(_ action: () async throws -> Void) async throws {
-        guard !operationRunning, !fileSaveRunning, pending == nil, terminalSessionID == nil else {
-            throw ArcaneFailure(message: "请先等待或核对当前操作，再保存文件。")
-        }
+        if let reason = fileSaveBlockReason { throw ArcaneFailure(message: reason) }
         fileSaveRunning = true
         defer { fileSaveRunning = false }
         try await action()

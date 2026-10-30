@@ -17,6 +17,7 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
         requests.append(request.request)
         let automatic = path.hasSuffix("/environments") || path.hasSuffix("/activities") || (path.hasSuffix("/containers") && !holdsContainers)
             || path.hasSuffix("/projects") || path.hasSuffix("/projects/missing-env/compose") || path.hasSuffix("/projects/missing-env/workspace")
+            || path.hasSuffix("/projects/missing-env/workspace/file")
         if !automatic { pending[path, default: []].append(request) }
         lock.unlock()
         guard automatic else { return }
@@ -26,6 +27,8 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
             request.complete(#"{"success":true,"data":{"id":"missing-env","name":"no-env","composeContent":"services: {}","composeFileName":"compose.yaml"}}"#)
         } else if path.hasSuffix("/projects/missing-env/workspace") {
             request.complete(#"{"success":true,"data":{"files":[],"fileTreeRevision":"empty-tree","fileTreeTruncated":false}}"#)
+        } else if path.hasSuffix("/projects/missing-env/workspace/file") {
+            request.complete(#"{"success":true,"data":{"relativePath":"config/server.json","content":"{}\n","mimeType":"application/json","size":3,"editable":true}}"#)
         } else if path.hasSuffix("/environments") {
             request.complete(#"{"success":true,"data":[{"id":"0","name":"Local"},{"id":"remote","name":"Remote"}]}"#)
         } else if path.hasSuffix("/activities") {
@@ -119,6 +122,7 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         let envFile = files.files.first { $0.kind == .env }!
         let editorSession = ArcaneFileEditorSession(environment: "remote", project: files.project!, initialFile: envFile)
         let editor = ArcaneFileEditorData()
+        precondition(!editor.canSave && editor.saveBlockReason != nil)
         await editor.load(client: client, environment: editorSession.environment, project: editorSession.project, file: editorSession.initialFile)
         precondition(!editor.loading && editor.error == nil && editor.viewable && editor.editable && editor.draft.isEmpty && !editor.dirty,
                      "A missing .env must open as an empty editable document on the first load")
@@ -127,6 +131,34 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         await files.load(client: client, environment: "remote", name: "no-env", workingDir: nil)
         precondition(editorSession.initialFile.kind == .env && editor.viewable && editor.error == nil && !editor.loading,
                      "Reloading the directory must not replace the open editor's inputs")
+        precondition(!editor.canSave && store.fileSaveBlockReason == nil)
+        editor.draft = "ENABLED=true\n"
+        precondition(editor.dirty && editor.canSave, "Typing must enable saving without dismissing the keyboard")
+        editor.draft = ""
+        precondition(!editor.dirty && !editor.canSave, "Undo to the original content must disable saving")
+        editor.draft = "ENABLED=true\n"
+        precondition(editor.canSave, "Redo or whole-file paste must enable saving again")
+
+        let workspaceFile = ArcaneProjectFile(relativePath: "config/server.json", kind: .workspace)
+        let workspaceEditor = ArcaneFileEditorData()
+        await workspaceEditor.load(client: client, environment: editorSession.environment, project: editorSession.project, file: workspaceFile)
+        precondition(workspaceEditor.editable && !workspaceEditor.dirty && !workspaceEditor.canSave)
+        let proposed = "{\"accessLogs\": {\"directory\": \"/app/caddy-logs\"}}\n"
+        workspaceEditor.draft = proposed
+        precondition(workspaceEditor.dirty && workspaceEditor.canSave)
+        let terminal = try store.beginTerminalSession()
+        precondition(store.fileSaveBlockReason?.contains("终端") == true)
+        let writesBeforeSave = probe.writeCount()
+        await workspaceEditor.save(store: store, environment: editorSession.environment, project: editorSession.project, file: workspaceFile)
+        precondition(workspaceEditor.error == store.fileSaveBlockReason && workspaceEditor.draft == proposed && workspaceEditor.dirty)
+        precondition(probe.writeCount() == writesBeforeSave, "A blocked save must retain the draft without sending a write")
+        store.endTerminalSession(terminal)
+        precondition(store.fileSaveBlockReason == nil && workspaceEditor.canSave)
+        await workspaceEditor.save(store: store, environment: editorSession.environment, project: editorSession.project, file: workspaceFile)
+        precondition(probe.writeCount() == writesBeforeSave + 1)
+        precondition(workspaceEditor.error == nil && workspaceEditor.notice != nil && workspaceEditor.draft == proposed)
+        precondition(!workspaceEditor.dirty && !workspaceEditor.canSave && !workspaceEditor.saving && store.fileSaveBlockReason == nil,
+                     "Confirmed workspace save must reset the baseline and release the lock")
 
         probe.holdContainers(true)
         let cancelledList = Task { await store.refresh() }
