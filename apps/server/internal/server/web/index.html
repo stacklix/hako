@@ -2,11 +2,11 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script>
 </head>
 <body>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav><a href="#agents">设备代理 <span>Agent</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
+  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav><a href="#agents">设备代理 <span>Agent</span></a><a href="#access-logs">访问日志 <span>Caddy</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header><div><p class="eyebrow">HAKO SERVER</p><h1>管理控制台</h1><p class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -24,6 +24,21 @@
       <div class="refresh-row"><span id="updated" class="muted">正在加载…</span><button id="refresh" class="quiet">刷新状态 ↻</button></div>
       <section id="agents" class="card"><div class="section-heading"><div><p class="eyebrow">AGENTS</p><h2>设备代理</h2></div><button class="primary" id="open-agent">＋ 登记 Agent</button></div><p class="muted">选择 Agent 声明的能力，填写 JSON 参数后发起请求。</p><div id="agent-list" class="device-list"></div></section>
       <p class="page-footer">Agent 公钥修改即时生效。状态每 10 秒刷新，能力仅在手动调用时执行。</p>
+      <section id="access-logs" class="card">
+        <div class="section-heading"><div><p class="eyebrow">CADDY ACCESS LOGS</p><h2>访问日志</h2></div><button id="logs-refresh" class="quiet" type="button">刷新统计 ↻</button></div>
+        <p id="logs-status" class="muted" role="status" aria-live="polite">正在读取扫描状态…</p>
+        <p id="logs-error" class="form-error" role="alert" hidden></p>
+        <div id="logs-content" hidden>
+          <div class="log-filters"><label>时间区间<select id="logs-range"><option value="1">最近 1 小时</option><option value="3">最近 3 小时</option><option value="12">最近 12 小时</option><option value="24" selected>最近 1 天</option><option value="72">最近 3 天</option><option value="168">最近 7 天</option></select></label><label>域名<select id="logs-domain"><option value="">全部域名</option></select></label></div>
+          <p id="logs-window" class="muted"></p>
+          <p class="muted">点击「区间合计」查看整个时间区间的排行，点击小时行查看该小时在区间内的记录。URL 按路径统计，忽略查询参数；Top 10 按请求数降序排列。仅保留最近 7 天统计，过期数据自动清理。</p>
+          <div id="logs-hours" class="log-hours"></div>
+          <div id="logs-detail" hidden>
+            <div class="log-detail-heading"><h3 id="logs-hour-title"></h3><p id="logs-hour-count" class="muted"></p></div>
+            <div id="logs-rankings"></div>
+          </div>
+        </div>
+      </section>
     </div>
   </main>
 </div>

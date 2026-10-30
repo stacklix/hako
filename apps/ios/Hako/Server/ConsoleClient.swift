@@ -329,6 +329,24 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         agents = try JSONDecoder().decode(List.self, from: await authorized("/api/v1/agents")).agents
     }
     private var requestContext: String { serverURL + "\n" + (saved?.tokens.sessionId ?? "") }
+
+    // Read-only access statistics use the same registered identity and token
+    // refresh path as device management. Never reuse a response across accounts.
+    func accessLogs<T: Decodable>(_ type: T.Type, rankings: Bool = false,
+                                  range: ECSAccessRange = .day, domain: String = "",
+                                  from: String? = nil, to: String? = nil, hour: String? = nil) async throws -> T {
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先在“服务器与登录”中登录 Hako 服务器。") }
+        let context = requestContext
+        let path = ECSAccessQuery.path(rankings: rankings, range: range, domain: domain, from: from, to: to, hour: hour)
+        let data: Data
+        do { data = try await authorized(path) }
+        catch let error as ConsoleHTTPError where error.status == 404 || error.status == 405 {
+            throw HakoError(message: "服务端尚不支持 App 访问统计，请先更新 Hako 服务端。")
+        }
+        try Task.checkCancellation()
+        guard context == requestContext, authenticated, !logoutPending else { throw CancellationError() }
+        return try JSONDecoder().decode(type, from: data)
+    }
     func query(_ agent: ConsoleAgent) async {
         guard authenticated, !logoutPending, deviceData[agent.id]?.loading != true else { return }
         if let capabilities = agent.capabilities, !capabilities.contains(where: { $0.name.hasPrefix("query.") }) { return }

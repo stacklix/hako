@@ -31,10 +31,11 @@ func main() {
 }
 
 type fileConfig struct {
-	Username  string                 `json:"username"`
-	MasterKey string                 `json:"masterKey"`
-	Agents    []server.AgentConfig   `json:"agents"`
-	Consoles  []server.ConsoleConfig `json:"consoles"`
+	Username   string                 `json:"username"`
+	MasterKey  string                 `json:"masterKey"`
+	Agents     []server.AgentConfig   `json:"agents"`
+	Consoles   []server.ConsoleConfig `json:"consoles"`
+	AccessLogs server.AccessLogConfig `json:"accessLogs"`
 }
 
 func createConfig(path string) error {
@@ -102,7 +103,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "revoke-consoles" {
 		return server.RevokeConsoles(database, key)
 	}
-	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents})
+	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents, AccessLogs: configuration.AccessLogs})
 	if err != nil {
 		return err
 	}

@@ -21,6 +21,7 @@ jobs:
           cache-dependency-path: apps/server/go.sum
       - run: go vet ./...
       - run: node --check internal/server/web/app.js
+      - run: node --check internal/server/web/access-logs.js
       - run: go test -race ./...
       - run: bash scripts/publish.sh
       - uses: actions/upload-artifact@v7

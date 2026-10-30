@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | iOS | [apps/ios](apps/ios/README.md) | 主应用服务器登录与扫码；使用时间采集与 GitHub 同步；设备监控 Console；Arcane 容器管理；阿里云 ECS 监控与终端 |
 | Windows | [apps/windows](apps/windows/README.md) | WPF 工具箱、设备代理、CPU 与内存监控 |
-| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证与设备请求转发 |
+| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证、设备请求转发与 Caddy 访问日志统计 |
 
 ## 仓库结构
 

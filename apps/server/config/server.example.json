@@ -1,6 +1,11 @@
 {
   "username": "owner",
   "masterKey": "",
+  "accessLogs": {
+    "directory": "",
+    "scanIntervalSeconds": 60,
+    "timezone": "Asia/Shanghai"
+  },
   "agents": [],
   "consoles": [
     {

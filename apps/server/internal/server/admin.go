@@ -22,7 +22,7 @@ type adminSession struct {
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	for path, file := range map[string]string{"/admin/": "index.html", "/admin/app.js": "app.js", "/admin/style.css": "style.css"} {
+	for path, file := range map[string]string{"/admin/": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/style.css": "style.css"} {
 		s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != path {
 				http.NotFound(w, r)
@@ -30,7 +30,7 @@ func (s *Server) adminRoutes() {
 			}
 			adminHeaders(w)
 			data, _ := adminFiles.ReadFile("web/" + file)
-			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[file])
+			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[file])
 			_, _ = w.Write(data)
 		})
 	}
@@ -38,6 +38,9 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
 	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))
+	s.mux.HandleFunc("GET /admin/api/access-logs", s.admin(s.adminAccessLogs))
+	s.mux.HandleFunc("GET /admin/api/access-logs/hour", s.admin(s.adminAccessLogHour))
+	s.mux.HandleFunc("GET /admin/api/access-logs/rankings", s.admin(s.adminAccessLogRankings))
 	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
@@ -111,7 +114,7 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		// Passive polling does not extend an idle administrator's session.
-		if r.Method != http.MethodGet || r.URL.Path != "/admin/api/agents" {
+		if r.Method != http.MethodGet || (r.URL.Path != "/admin/api/agents" && !strings.HasPrefix(r.URL.Path, "/admin/api/access-logs")) {
 			ss.LastUsed = time.Now()
 			s.adminSessions[id] = ss
 		}

@@ -3,6 +3,9 @@ import Charts
 
 struct CloudServersView: View {
     @StateObject private var store = ECSStore()
+    @StateObject private var access = ECSAccessStore()
+    @ObservedObject private var console = ConsoleClient.shared
+    @AppStorage("ecs.access.revision") private var accessRevision = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = ECSPage.overview
     @State private var settings = false
@@ -13,6 +16,7 @@ struct CloudServersView: View {
     @State private var memorySort = false
 
     private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)|\(page.rawValue)" }
+    private var accessTaskKey: String { taskKey + "|\(accessRevision)|\(console.serverURL)|\(console.username)|\(console.authenticated)|\(console.logoutPending)" }
     private var processRows: [ECSProcess] {
         (store.processes?.processes ?? []).filter { group == .all || $0.group == group }.sorted {
             let left = memorySort ? $0.memory : ($0.cpu ?? -1), right = memorySort ? $1.memory : ($1.cpu ?? -1)
@@ -46,7 +50,11 @@ struct CloudServersView: View {
                         case .processes: processes(connection)
                         case .terminal: EmptyView()
                         }
-                    }.refreshable { await store.refresh(page) }
+                    }.refreshable {
+                        async let instance: Void = store.refresh(page)
+                        if page == .overview, let connection = store.connection { await access.refresh(connection: connection, client: console) }
+                        await instance
+                    }
                 }
             } else {
                 ContentUnavailableView("连接你的云服务器", systemImage: "server.rack", description: Text("配置阿里云实例和 RAM 凭据，通过会话管理访问无公网 IP 的 Linux ECS。"))
@@ -72,9 +80,42 @@ struct CloudServersView: View {
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
+        .task(id: accessTaskKey) {
+            guard visible, scenePhase == .active, !settings, page == .overview else { return }
+            store.load()
+            guard let connection = store.connection else { return }
+            if !console.authenticated, !console.serverURL.isEmpty { await console.restore() }
+            guard !Task.isCancelled else { return }
+            while !Task.isCancelled {
+                await access.refresh(connection: connection, client: console)
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
     }
 
     @ViewBuilder private var overview: some View {
+        if let connection = store.connection {
+            Section("网站访问 · 近 24 小时") {
+                NavigationLink { ECSAccessView(connection: connection) } label: {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack { Text("访问统计").font(.headline); Spacer(); Text("查看详情").font(.caption).foregroundStyle(.secondary) }
+                        if let binding = ECSAccessBinding.load(connection), !binding.domains.isEmpty,
+                           binding.matches(origin: console.serverURL, account: console.username) {
+                            if console.authenticated, !console.logoutPending, let summary = access.summary {
+                                if summary.status.enabled {
+                                    let totals = summary.counts(domains: binding.domains)
+                                    ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, notFound: totals.reduce(0) { $0 + $1.notFound })
+                                    ECSAccessFreshness(status: summary.status)
+                                    Text("\(binding.domains.count) 个关联域名").font(.caption).foregroundStyle(.secondary)
+                                } else { Text("服务端尚未启用访问日志统计").font(.subheadline).foregroundStyle(.secondary) }
+                            } else if access.busy { ProgressView("读取访问统计…") }
+                            else { Text(access.error ?? "请先登录 Hako 服务器以读取统计").font(.footnote).foregroundStyle(.secondary) }
+                            if access.summary != nil, let error = access.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                        } else { Text("关联此 ECS 的域名，查看请求量与 404").font(.subheadline).foregroundStyle(.secondary) }
+                    }.padding(.vertical, 4)
+                }
+            }
+        }
         if let latest = store.monitor.last {
             Section("资源使用 · 1 分钟均值") {
                 if let cpu = latest.cpu { LabeledContent("CPU", value: String(format: "%.1f%%", cpu)) }

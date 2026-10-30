@@ -9,6 +9,7 @@ struct ECSSettingsSheet: View {
     @State private var testing = false
     @State private var error: String?
     @State private var result: String?
+    @State private var accessSettings = false
 
     var body: some View {
         SettingsSheet(title: "ECS 连接", hasChanges: loaded && draft != original, isBusy: testing,
@@ -35,6 +36,12 @@ struct ECSSettingsSheet: View {
                     if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
                 } footer: {
                     Text("测试只查询实例信息。终端需启用阿里云会话管理；系统快照通过云助手读取，需要实例已有 Python 3，端口查询使用已有 ss 工具。Hako 不会自动安装软件。")
+                }
+                if let connection = store.connection {
+                    Section("网站访问") {
+                        Button("数据来源与关联域名") { accessSettings = true }
+                    }
+                    .sheet(isPresented: $accessSettings) { ECSAccessSettingsSheet(connection: connection) }
                 }
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()

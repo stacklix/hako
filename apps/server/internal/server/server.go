@@ -36,6 +36,7 @@ type Config struct {
 	TrustedProxies string
 	Agents         []AgentConfig
 	RequestTimeout time.Duration
+	AccessLogs     AccessLogConfig
 }
 
 type bucket struct {
@@ -58,6 +59,7 @@ type Server struct {
 	adminMu        sync.Mutex
 	adminSessions  map[string]adminSession
 	adminLogins    map[string]*adminLoginRequest
+	accessLogs     *accessLogService
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -118,6 +120,10 @@ func New(config Config) (*Server, error) {
 	}
 	s.registry.Store(registry)
 	s.config.Agents, s.config.Consoles = registry.Agents, registry.Consoles
+	if s.accessLogs, err = newAccessLogService(config.Database, config.AccessLogs); err != nil {
+		st.db.Close()
+		return nil, err
+	}
 	s.adminRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"ok": true}) })
 	s.mux.HandleFunc("POST /api/v1/auth/challenge", s.challenge)
@@ -128,6 +134,9 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /api/v1/sessions", s.sessions)
 	s.mux.HandleFunc("DELETE /api/v1/web-sessions/{id}", s.revokeWebSession)
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
+	s.mux.HandleFunc("GET /api/v1/access-logs", s.consoleAccessLogs(s.adminAccessLogs))
+	s.mux.HandleFunc("GET /api/v1/access-logs/rankings", s.consoleAccessLogs(s.adminAccessLogRankings))
+	s.mux.HandleFunc("GET /api/v1/access-logs/hour", s.consoleAccessLogs(s.adminAccessLogHour))
 	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
@@ -142,6 +151,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Close() error {
+	if s.accessLogs != nil {
+		s.accessLogs.close()
+	}
 	s.mu.Lock()
 	for _, c := range s.online {
 		c.close()

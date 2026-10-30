@@ -31,7 +31,9 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Typecheck Console client without signing
         run: |
-          swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Tests/ECSAccessTests.swift -o /tmp/hako-ecs-access-tests
+          /tmp/hako-ecs-access-tests
           swiftc Hako/Server/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
           /tmp/hako-session-restoration-tests
           swiftc Hako/DeviceManagement/ConsoleAgentProtocol.swift Tests/ConsoleAgentProtocolTests.swift -o /tmp/hako-agent-protocol-tests
