@@ -180,14 +180,16 @@ struct CloudServersView: View {
             Section("进程 · \(processRows.count)") {
                 ForEach(processRows) { process in
                     NavigationLink { ECSProcessDetails(initial: process, initialTime: snapshot.time, connection: connection) } label: {
-                        HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(process.name).font(.system(.subheadline, design: .monospaced))
                                 Text("\(process.pid) · \(process.user)").font(.caption).foregroundStyle(.secondary)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                            VStack(alignment: .trailing, spacing: 5) {
-                                if let cpu = process.cpu { Text(String(format: "%.1f%% CPU", cpu)) }
-                                Text(ECSFormat.bytes(process.memory)).foregroundStyle(.secondary)
+                            }
+                            HStack(alignment: .top, spacing: 16) {
+                                Text(process.cpu.map { String(format: "CPU %.1f%%", $0) } ?? "CPU —")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text("内存 \(ECSFormat.bytes(process.memory))").foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }.font(.caption).monospacedDigit()
                         }
                     }

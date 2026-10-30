@@ -7,9 +7,7 @@ import Combine
     @Published private(set) var cleaning = false
     @Published private(set) var error: String?
     @Published var control = false
-    var receive: ((Data) -> Void)?
-    var onReady: (() -> Void)?
-    var keyInput: ((String) -> Void)?
+    let display = ECSTerminalDisplay()
     private var socket: URLSessionWebSocketTask?
     private var client: ECSClient?
     private var sessionID: String?
@@ -30,6 +28,7 @@ import Combine
         do {
             let client = try ECSClient(connection: connection)
             let ticket = UUID(); generation = ticket
+            display.beginSession()
             self.client = client; flow = ECSAXTFlow(); error = nil; connecting = true; creating = true
             // Do not cancel StartTerminalSession mid-flight: if the screen closes,
             // consume its late response and explicitly end the created session.
@@ -61,8 +60,8 @@ import Combine
                         let event = try flow.receive(ECSAXTFrame.decode(bytes))
                         for frame in event.replies { try enqueue(frame) }
                         if event.ready && !connected {
-                            onReady?()
                             connected = true; connecting = false; deadline?.cancel(); deadline = nil
+                            display.focus()
                             HakoLog.record(.cloudServers, "终端已连接")
                             resize(columns: columns, rows: rows)
                             heartbeat = Task {
@@ -73,7 +72,11 @@ import Combine
                                 }
                             }
                         }
-                        if !event.bytes.isEmpty { receive?(event.bytes) }
+                        if !event.bytes.isEmpty { display.append(event.bytes) }
+                        if event.firstOutput {
+                            HakoLog.record(.cloudServers, "终端输出已接入", detail: "首包序号：\(flow.output)；字节数：\(event.bytes.count)")
+                            resize(columns: columns, rows: rows)
+                        }
                         if event.ended { fail(ECSFailure(message: "终端会话已结束，请重新连接。")); return }
                     }
                 } catch {
@@ -131,6 +134,7 @@ import Combine
         reader = nil; writer?.cancel(); writer = nil; queued = 0
         heartbeat?.cancel(); heartbeat = nil; deadline?.cancel(); deadline = nil
         connected = false; connecting = false; control = false
+        display.blur()
         if let client, let id = sessionID {
             cleaning = true
             Task { await end(client, id: id); cleaning = false }

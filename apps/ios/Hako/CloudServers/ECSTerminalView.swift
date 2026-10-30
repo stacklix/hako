@@ -28,7 +28,7 @@ struct ECSTerminalView: View {
             if data.connected {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        Button("Ctrl") { data.control.toggle() }.tint(data.control ? .accentColor : .secondary)
+                        Button("Ctrl") { data.control.toggle(); data.display.focus() }.tint(data.control ? .accentColor : .secondary)
                             .accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
                         ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
                             Button(key) { keyInput(key) }
@@ -56,8 +56,12 @@ struct ECSTerminalView: View {
                     Button("取消连接") { data.disconnect() }.buttonStyle(.bordered)
                 } else {
                     if data.cleaning { ProgressView("正在结束上一次会话…") }
-                    Button(data.error == nil ? "连接" : "重新连接") { data.connect(connection) }
+                    Button { data.connect(connection) } label: {
+                        Text(data.error == nil ? "连接" : "重新连接")
+                            .foregroundStyle(Color(uiColor: .systemBackground))
+                    }
                         .buttonStyle(.borderedProminent).controlSize(.large)
+                        .tint(.primary)
                         .disabled(data.cleaning || !active)
                 }
             }
@@ -72,7 +76,7 @@ struct ECSTerminalView: View {
         .accessibilityElement(children: .contain)
     }
     private func keyInput(_ key: String) {
-        data.keyInput?(key)
+        if data.connected { data.display.key(key) }
     }
 }
 
@@ -81,15 +85,77 @@ private struct ECSNativeTerminal: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = SwiftTerm.TerminalView(frame: .zero, font: .monospacedSystemFont(ofSize: 13, weight: .regular))
-        view.terminalDelegate = context.coordinator
+        let view = ECSNativeTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        let coordinator = context.coordinator
+        view.terminalDelegate = coordinator
         view.inputAccessoryView = nil
-        view.nativeBackgroundColor = .systemBackground; view.nativeForegroundColor = .label; view.caretColor = .label
-        data.receive = { [weak view] bytes in view?.feed(byteArray: Array(bytes)[...]) }
-        data.onReady = { [weak view] in view?.resetToInitialState() }
-        data.keyInput = { [weak view] key in
-            guard let view else { return }
-            view.becomeFirstResponder()
+        applyAppearance(view); coordinator.scheme = colorScheme
+        view.onWindowAttached = { [weak coordinator] in coordinator?.focus() }
+        coordinator.view = view
+        data.display.attach(coordinator)
+        if data.connected { coordinator.focus() }
+        return view
+    }
+    func updateUIView(_ view: SwiftTerm.TerminalView, context: Context) {
+        let coordinator = context.coordinator
+        if view.terminalDelegate == nil { view.terminalDelegate = coordinator }
+        if !data.display.isAttached(coordinator) {
+            coordinator.view = view; data.display.attach(coordinator)
+        }
+        if coordinator.scheme != colorScheme { applyAppearance(view); coordinator.scheme = colorScheme }
+        view.keyboardAppearance = colorScheme == .dark ? .dark : .light
+        if data.connected && !coordinator.wasConnected { coordinator.focus() }
+        if !data.connected { coordinator.blur() }
+        coordinator.wasConnected = data.connected
+    }
+    private func applyAppearance(_ view: SwiftTerm.TerminalView) {
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        view.nativeBackgroundColor = UIColor.systemBackground.resolvedColor(with: traits)
+        view.nativeForegroundColor = UIColor.label.resolvedColor(with: traits)
+        view.caretColor = UIColor.label.resolvedColor(with: traits)
+    }
+    static func dismantleUIView(_ view: SwiftTerm.TerminalView, coordinator: Coordinator) {
+        view.terminalDelegate = nil
+        coordinator.data.display.detach(coordinator)
+        coordinator.blur(); coordinator.view = nil
+        view.updateUiClosed()
+    }
+    @MainActor final class Coordinator: NSObject, TerminalViewDelegate, ECSTerminalRendering {
+        let data: ECSTerminalData
+        weak var view: SwiftTerm.TerminalView?
+        var scheme: ColorScheme?
+        var wasConnected = false
+        private var focusTask: Task<Void, Never>?
+        private var focusID = UUID()
+        init(data: ECSTerminalData) { self.data = data }
+        func reset() { view?.resetToInitialState() }
+        func feed(_ bytes: Data) { view?.feed(byteArray: Array(bytes)[...]) }
+        func focus() {
+            guard data.connected, let view else { return }
+            focusTask?.cancel()
+            let ticket = UUID(); focusID = ticket
+            focusTask = Task { [weak self, weak view] in
+                defer { if let self, self.focusID == ticket { self.focusTask = nil } }
+                // SwiftUI must remove the overlay and restore hit-testing before
+                // UIKit can focus this view. Window attachment may happen later.
+                for _ in 0..<5 {
+                    do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                    guard let self, let view, self.data.connected, self.data.display.isAttached(self), self.focusID == ticket else { return }
+                    if view.window?.isKeyWindow == true, view.bounds.width >= 32, view.bounds.height >= 32, view.isUserInteractionEnabled {
+                        view.layoutIfNeeded()
+                        if view.becomeFirstResponder() { view.reloadInputViews(); return }
+                    }
+                }
+                HakoLog.record(.cloudServers, .warning, "终端键盘焦点未就绪", detail: "请轻点终端内容区重新获取输入焦点。")
+            }
+        }
+        func blur() {
+            focusID = UUID(); focusTask?.cancel(); focusTask = nil
+            view?.resignFirstResponder()
+        }
+        func key(_ key: String) {
+            guard data.connected, let view else { return }
+            focus()
             switch key {
             case "↑": view.sendKeyUp()
             case "↓": view.sendKeyDown()
@@ -103,28 +169,30 @@ private struct ECSNativeTerminal: UIViewRepresentable {
             default: break
             }
         }
-        return view
-    }
-    func updateUIView(_ view: SwiftTerm.TerminalView, context: Context) {
-        view.nativeBackgroundColor = .systemBackground; view.nativeForegroundColor = .label; view.caretColor = .label
-        view.keyboardAppearance = colorScheme == .dark ? .dark : .light
-        if data.connected && !context.coordinator.wasConnected { view.becomeFirstResponder() }
-        if !data.connected { view.resignFirstResponder() }
-        context.coordinator.wasConnected = data.connected
-    }
-    static func dismantleUIView(_ view: SwiftTerm.TerminalView, coordinator: Coordinator) {
-        view.terminalDelegate = nil; coordinator.data.receive = nil; coordinator.data.onReady = nil; coordinator.data.keyInput = nil; coordinator.data.disconnect()
-    }
-    @MainActor final class Coordinator: NSObject, TerminalViewDelegate {
-        let data: ECSTerminalData
-        var wasConnected = false
-        init(data: ECSTerminalData) { self.data = data }
-        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) { self.data.send(Data(data)) }
-        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) { data.resize(columns: newCols, rows: newRows) }
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+            guard self.data.display.isAttached(self), view === source else { return }
+            self.data.send(Data(data))
+        }
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
+            guard data.display.isAttached(self), view === source else { return }
+            data.resize(columns: newCols, rows: newRows)
+        }
         func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) { }
         func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) { }
         func scrolled(source: SwiftTerm.TerminalView, position: Double) { }
         func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) { }
         func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) { }
+    }
+}
+
+private final class ECSNativeTerminalView: SwiftTerm.TerminalView {
+    var onWindowAttached: (() -> Void)?
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { onWindowAttached?() }
+    }
+    override func layoutSubviews() {
+        guard bounds.width >= 32, bounds.height >= 32 else { return }
+        super.layoutSubviews()
     }
 }

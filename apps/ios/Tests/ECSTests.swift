@@ -16,6 +16,41 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() { }
 }
 
+@MainActor private final class ECSMockRenderer: ECSTerminalRendering {
+    var output = Data()
+    var resets = 0
+    var focuses = 0
+    var blurs = 0
+    var keys: [String] = []
+    func reset() { resets += 1; output.removeAll() }
+    func feed(_ bytes: Data) { output.append(bytes) }
+    func focus() { focuses += 1 }
+    func blur() { blurs += 1 }
+    func key(_ key: String) { keys.append(key) }
+}
+
+@MainActor private func checkTerminalDisplay(prompt: Data) {
+    let display = ECSTerminalDisplay(limit: 16)
+    display.append(prompt) // Output can arrive before UIKit is attached.
+    let firstRenderer = ECSMockRenderer()
+    display.attach(firstRenderer)
+    precondition(firstRenderer.output == prompt && firstRenderer.resets == 1)
+    display.append(Data("hello\r\n".utf8))
+    let replacementRenderer = ECSMockRenderer()
+    display.attach(replacementRenderer)
+    display.detach(firstRenderer) // A retiring view must not detach its replacement.
+    display.focus(); display.key("Tab")
+    precondition(replacementRenderer.output == firstRenderer.output && replacementRenderer.focuses == 1)
+    precondition(replacementRenderer.keys == ["Tab"] && firstRenderer.keys.isEmpty)
+    display.beginSession()
+    precondition(display.bytes.isEmpty && replacementRenderer.output.isEmpty && replacementRenderer.resets == 2)
+    display.append(Data(repeating: 65, count: 48))
+    precondition(display.bytes.count == 16 && replacementRenderer.output.count == 48)
+    let lateRenderer = ECSMockRenderer()
+    display.attach(lateRenderer)
+    precondition(lateRenderer.output.count == 16 && lateRenderer.keys.isEmpty)
+}
+
 @main struct ECSTests {
     static func main() async throws {
         func fails(_ action: () throws -> Void) {
@@ -64,6 +99,24 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
         let acknowledged = try flow.receive(ECSAXTFrame(type: 6, channel: "channel", input: 1))
         precondition(acknowledged.replies.isEmpty)
         fails { _ = try flow.receive(ECSAXTFrame(type: 1, channel: "other", output: 3)) }
+
+        // Some agent streams start at output sequence zero. It is a first packet,
+        // not a duplicate; later zero packets must still be suppressed.
+        var zeroFlow = ECSAXTFlow()
+        _ = try zeroFlow.receive(ECSAXTFrame(type: 5, channel: "zero", payload: Data([3])))
+        let prompt = try zeroFlow.receive(ECSAXTFrame(type: 1, channel: "zero", output: 0, payload: Data("root# ".utf8)))
+        precondition(prompt.firstOutput && prompt.ready && String(decoding: prompt.bytes, as: UTF8.self) == "root# ")
+        let repeatedPrompt = try zeroFlow.receive(ECSAXTFrame(type: 1, channel: "zero", output: 0, payload: prompt.bytes))
+        precondition(repeatedPrompt.bytes.isEmpty && !repeatedPrompt.firstOutput)
+        let typed = try zeroFlow.message(type: 0, payload: Data("pwd\r".utf8))
+        precondition(typed.input == 1 && typed.output == 0)
+        let echo = try zeroFlow.receive(ECSAXTFrame(type: 1, channel: "zero", input: 1, output: 1, payload: Data("pwd\r\n/root\r\n".utf8)))
+        precondition(!echo.bytes.isEmpty && !echo.firstOutput && echo.replies.isEmpty)
+        var outputOnly = ECSAXTFlow()
+        let immediate = try outputOnly.receive(ECSAXTFrame(type: 1, channel: "direct", output: 0, payload: prompt.bytes))
+        precondition(immediate.ready && immediate.firstOutput && immediate.bytes == prompt.bytes)
+
+        await checkTerminalDisplay(prompt: prompt.bytes)
 
         let snapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"interfaces":[],"processes":[],"truncated":false}"#.utf8))
         precondition(snapshot.memoryAvailable == nil && snapshot.sockets == nil)

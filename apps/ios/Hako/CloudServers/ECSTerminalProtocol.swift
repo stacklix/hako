@@ -64,11 +64,12 @@ struct ECSAXTFlow {
     private(set) var input: UInt32 = 0
     private(set) var output: UInt32 = 0
     private(set) var ready = false
+    private var receivedOutput = false
     private var waiting: [ECSAXTFrame] = []
     private var waitingBytes = 0
     private var syncing = false
 
-    struct Event { var bytes = Data(); var ready = false; var ended = false; var replies: [ECSAXTFrame] = [] }
+    struct Event { var bytes = Data(); var ready = false; var ended = false; var firstOutput = false; var replies: [ECSAXTFrame] = [] }
     mutating func message(type: UInt32, payload: Data = Data()) throws -> ECSAXTFrame {
         if type == 0 || type == 2 {
             guard input < .max, waiting.count < 2048, waitingBytes + payload.count <= 1_048_576 else {
@@ -90,12 +91,13 @@ struct ECSAXTFlow {
             let confirmed = frame.input
             waitingBytes -= waiting.filter { $0.input <= confirmed }.reduce(0) { $0 + $1.payload.count }
             waiting.removeAll { $0.input <= confirmed }
-            if frame.output <= output { return event }
+            if receivedOutput && frame.output <= output { return event }
             guard output < .max else { throw ECSFailure(message: "终端会话已达到消息上限。") }
-            if frame.output != output + 1 {
+            if frame.output != output + 1 && !(frame.output == 0 && !receivedOutput) {
                 if !syncing { event.replies = [try message(type: 6)]; syncing = true }
                 return event
             }
+            event.firstOutput = !receivedOutput; receivedOutput = true
             syncing = false; output = frame.output; ready = true
             event.bytes = frame.payload; event.ready = true
         case 6:
@@ -117,4 +119,40 @@ struct ECSAXTFlow {
         let cols = UInt16(max(2, min(1000, columns))), lines = UInt16(max(2, min(1000, rows)))
         return Data([UInt8(truncatingIfNeeded: lines), UInt8(lines >> 8), UInt8(truncatingIfNeeded: cols), UInt8(cols >> 8)])
     }
+}
+
+@MainActor protocol ECSTerminalRendering: AnyObject {
+    func reset()
+    func feed(_ bytes: Data)
+    func focus()
+    func blur()
+    func key(_ key: String)
+}
+
+// Own output independently of SwiftUI's UIKit view lifetime. Nothing here is
+// persisted or logged, and output replay never sends input back to the server.
+@MainActor final class ECSTerminalDisplay {
+    private weak var renderer: (any ECSTerminalRendering)?
+    private(set) var bytes = Data()
+    private let limit: Int
+    init(limit: Int = 1_048_576) { self.limit = max(1, limit) }
+    func isAttached(_ renderer: any ECSTerminalRendering) -> Bool { self.renderer === renderer }
+    func attach(_ renderer: any ECSTerminalRendering) {
+        self.renderer = renderer
+        renderer.reset()
+        if !bytes.isEmpty { renderer.feed(bytes) }
+    }
+    func detach(_ renderer: any ECSTerminalRendering) {
+        guard isAttached(renderer) else { return }
+        renderer.blur(); self.renderer = nil
+    }
+    func beginSession() { bytes.removeAll(); renderer?.reset() }
+    func append(_ value: Data) {
+        bytes.append(value)
+        if bytes.count > limit { bytes.removeFirst(bytes.count - limit) }
+        renderer?.feed(value)
+    }
+    func focus() { renderer?.focus() }
+    func blur() { renderer?.blur() }
+    func key(_ key: String) { renderer?.key(key) }
 }
