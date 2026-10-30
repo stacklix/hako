@@ -45,7 +45,8 @@ import SwiftTerm
                         guard generation == ticket else { channel.close(); return }
                     }
                     connected = true; connecting = false
-                    terminal?.resetToInitialState(); terminal?.becomeFirstResponder()
+                    terminal?.resetToInitialState()
+                    if terminal?.window != nil { terminal?.becomeFirstResponder() }
                     resize(columns: columns, rows: rows)
                     while !Task.isCancelled && generation == ticket {
                         let bytes = try await channel.receive()
@@ -117,23 +118,33 @@ private struct ArcaneSwiftTerminal: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = SwiftTerm.TerminalView(frame: .zero, font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        let view = ArcaneNativeTerminal(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         view.terminalDelegate = context.coordinator
         view.inputAccessoryView = nil
-        view.nativeBackgroundColor = .systemBackground; view.nativeForegroundColor = .label
-        view.caretColor = .label
+        applyAppearance(view)
         data.terminal = view
         return view
     }
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
-        uiView.nativeBackgroundColor = .systemBackground; uiView.nativeForegroundColor = .label; uiView.caretColor = .label
+        // A status update must not reset the terminal palette or trigger a
+        // renderer refresh while SwiftUI is laying out the keyboard/menu.
+        if context.coordinator.scheme != colorScheme { applyAppearance(uiView) }
+        context.coordinator.scheme = colorScheme
         uiView.keyboardAppearance = colorScheme == .dark ? .dark : .light
     }
     static func dismantleUIView(_ uiView: SwiftTerm.TerminalView, coordinator: Coordinator) {
         uiView.terminalDelegate = nil; coordinator.data.disconnect(); coordinator.data.terminal = nil
+        uiView.updateUiClosed()
+    }
+    private func applyAppearance(_ view: SwiftTerm.TerminalView) {
+        let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
+        view.nativeBackgroundColor = UIColor.systemBackground.resolvedColor(with: traits)
+        view.nativeForegroundColor = UIColor.label.resolvedColor(with: traits)
+        view.caretColor = UIColor.label.resolvedColor(with: traits)
     }
     @MainActor final class Coordinator: NSObject, TerminalViewDelegate {
         let data: ArcaneTerminalData
+        var scheme: ColorScheme?
         init(data: ArcaneTerminalData) { self.data = data }
         func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) { self.data.send(Data(data)) }
         func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) { data.resize(columns: newCols, rows: newRows) }
@@ -142,6 +153,15 @@ private struct ArcaneSwiftTerminal: UIViewRepresentable {
         func scrolled(source: SwiftTerm.TerminalView, position: Double) { }
         func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) { }
         func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) { }
+    }
+}
+
+// SwiftUI may temporarily propose an empty/tiny rectangle during presentation
+// and keyboard transitions. Do not resize SwiftTerm to a grid with zero cells.
+private final class ArcaneNativeTerminal: SwiftTerm.TerminalView {
+    override func layoutSubviews() {
+        guard bounds.width >= 32, bounds.height >= 32 else { return }
+        super.layoutSubviews()
     }
 }
 
@@ -163,7 +183,7 @@ struct ArcaneTerminalScreen: View {
                 HStack {
                     Picker("Shell", selection: $shell) {
                         Text("/bin/sh").tag("/bin/sh"); Text("/bin/bash").tag("/bin/bash"); Text("/bin/ash").tag("/bin/ash"); Text("自定义").tag("custom")
-                    }.disabled(active)
+                    }.pickerStyle(.menu).disabled(active)
                     Spacer()
                     Text(data.connected ? "已连接" : data.connecting ? "正在连接…" : "已断开")
                         .font(.caption).foregroundStyle(data.connected ? Color.green : .secondary)
@@ -178,6 +198,7 @@ struct ArcaneTerminalScreen: View {
                 if let error = data.error { Text(error).font(.footnote).foregroundStyle(.orange).padding(.horizontal).padding(.vertical, 6) }
                 Divider()
                 ArcaneSwiftTerminal(data: data)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 ScrollView(.horizontal, showsIndicators: false) {

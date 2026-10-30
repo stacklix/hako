@@ -15,6 +15,7 @@ struct ArcaneCommandResult: Identifiable {
     var output = Data()
     var truncated = false
     var sensitiveOutput = false
+    var phase = "正在核对容器状态…"
     var text: String {
         let text = String(decoding: output, as: UTF8.self)
         return text.replacingOccurrences(of: #"\x1B\[[0-?]*[ -/]*[@-~]"#, with: "", options: .regularExpression)
@@ -79,7 +80,9 @@ struct ArcaneCommandResult: Identifiable {
                     throw ArcaneFailure(message: "当前容器不在运行中，请返回并刷新状态。")
                 }
                 let channel = try ArcaneSocketTerminal(client: client, environment: context.environment, container: details.id)
-                let code = try await ArcaneCommandExecutor.run(channel: channel, command: command) { [weak self] bytes in
+                let code = try await ArcaneCommandExecutor.run(channel: channel, command: command, progress: { [weak self] phase in
+                    await self?.setPhase(phase, id: id, key: key)
+                }) { [weak self] bytes in
                     await self?.append(bytes, id: id, key: key)
                 }
                 update(id, key: key) { $0.exitCode = code }
@@ -110,6 +113,9 @@ struct ArcaneCommandResult: Identifiable {
             let available = max(0, 262_144 - result.output.count)
             result.output.append(bytes.prefix(available)); result.truncated = result.truncated || bytes.count > available
         }
+    }
+    private func setPhase(_ phase: String, id: UUID, key: String) {
+        update(id, key: key) { $0.phase = phase }
     }
     private func update(_ id: UUID, key: String, _ mutate: (inout ArcaneCommandResult) -> Void) {
         guard var history = results[key], let index = history.firstIndex(where: { $0.id == id }) else { return }

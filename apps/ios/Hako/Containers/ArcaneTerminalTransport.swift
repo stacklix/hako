@@ -32,23 +32,23 @@ final class ArcaneSocketTerminal: ArcaneTerminalChannel, @unchecked Sendable {
     }
     func open() async throws {
         socket.resume()
-        do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                socket.sendPing { error in
-                    if let error { continuation.resume(throwing: error) }
-                    else { continuation.resume() }
-                }
-            }
-        } catch { throw mapped(error) }
+        // The first send/receive performs the handshake. Do not gate stdin on
+        // a pong: some proxies do not forward control frames promptly.
+        try Task.checkCancellation()
     }
     func receive() async throws -> Data {
         do {
             switch try await socket.receive() {
             case .data(let data): return data
-            case .string(let text): return Data(text.utf8)
+            case .string(let text):
+                if text.hasPrefix("Error creating exec:") || text.hasPrefix("Error attaching to exec:") {
+                    throw ArcaneFailure(message: "无法启动容器终端，所选 Shell 可能不存在或无法执行。\n" + String(text.prefix(2000)))
+                }
+                return Data(text.utf8)
             @unknown default: return Data()
             }
-        } catch { throw mapped(error) }
+        } catch let failure as ArcaneFailure { throw failure }
+        catch { throw mapped(error) }
     }
     func send(_ data: Data) async throws {
         guard data.count <= 1_048_576 else { throw ArcaneFailure(message: "单次终端输入超过 1 MB。") }
@@ -125,9 +125,12 @@ enum ArcaneCommandExecutor {
         return script
     }
     static func run(channel: any ArcaneTerminalChannel, command: String, seconds: UInt64 = 120,
+                    initializationSeconds: UInt64 = 10,
                     token: String = UUID().uuidString.replacingOccurrences(of: "-", with: ""),
+                    progress: @escaping @Sendable (String) async -> Void = { _ in },
                     consume: @escaping @Sendable (Data) async -> Void) async throws -> Int {
         let script = try script(command, token: token)
+        let state = ArcaneExecutionState()
         return try await withTaskCancellationHandler {
             defer { channel.close() }
             return try await withThrowingTaskGroup(of: Int.self) { group in
@@ -135,14 +138,21 @@ enum ArcaneCommandExecutor {
                     var sent = false
                     do {
                         try Task.checkCancellation()
+                        await progress("正在连接终端…")
                         try await channel.open()
+                        await progress("正在初始化 Shell…")
                         try await channel.send(Data("PS1=; PS2=; stty -echo 2>/dev/null && printf '\\036\(token):ready\\037' || { printf '\\036\(token):setup-error\\037'; exit; }\n".utf8))
                         var decoder = ArcaneExecDecoder(token: token)
                         while !Task.isCancelled {
                             let event = try decoder.feed(try await channel.receive())
                             if event.becameReady {
                                 // A failed send is uncertain too: the peer may have received it.
-                                sent = true; try await channel.send(Data(script.utf8))
+                                guard await state.beginSending() else {
+                                    throw ArcaneFailure(message: "Shell 初始化超时，尚未执行命令。")
+                                }
+                                sent = true
+                                await progress("正在执行命令…")
+                                try await channel.send(Data(script.utf8))
                             }
                             if !event.output.isEmpty { await consume(event.output) }
                             if let code = event.exitCode { return code }
@@ -158,9 +168,31 @@ enum ArcaneCommandExecutor {
                     channel.close()
                     throw ArcaneFailure(message: "等待执行结果超时，请核对容器状态和输出，不会自动重新执行。", outcomeUnknown: true)
                 }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: initializationSeconds * 1_000_000_000)
+                    if !(await state.expireInitialization()) { // The execution deadline still applies.
+                        try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                        throw CancellationError()
+                    }
+                    channel.close()
+                    throw ArcaneFailure(message: "Shell 初始化超时，尚未执行命令。请确认容器包含 /bin/sh 和 stty，并检查 Arcane 终端连接。")
+                }
                 defer { group.cancelAll() }
                 return try await group.next()!
             }
         } onCancel: { channel.close() }
+    }
+}
+
+private actor ArcaneExecutionState {
+    private(set) var wasSent = false
+    private var expired = false
+    func beginSending() -> Bool {
+        guard !expired else { return false }
+        wasSent = true; return true
+    }
+    func expireInitialization() -> Bool {
+        guard !wasSent else { return false }
+        expired = true; return true
     }
 }

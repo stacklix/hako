@@ -106,6 +106,12 @@ private actor OutputProbe {
         do { _ = try await ArcaneCommandExecutor.run(channel: idle, command: "true", seconds: 0, token: "token") { _ in }; fatalError("Timeout did not fire") }
         catch let error as ArcaneFailure { precondition(error.outcomeUnknown) }
         precondition(idle.isClosed)
+        let noShell = TestTerminal([], hold: true)
+        do {
+            _ = try await ArcaneCommandExecutor.run(channel: noShell, command: "must-not-run", initializationSeconds: 0, token: "token") { _ in }
+            fatalError("Shell initialization did not time out")
+        } catch let error as ArcaneFailure { precondition(!error.outcomeUnknown) }
+        precondition(noShell.isClosed && noShell.messages.count <= 1, "Initialization failure must not send the actual command")
         let connection = try ArcaneConnection(name: "Test", address: "https://example.com/proxy", apiKey: "private").normalized()
         let request = try ArcaneSocketTerminal.request(connection, environment: "remote", container: "container", shell: "/bin/sh", columns: 120, rows: 40)
         precondition(request.url?.scheme == "wss" && request.url?.path == "/proxy/api/environments/remote/ws/containers/container/terminal")

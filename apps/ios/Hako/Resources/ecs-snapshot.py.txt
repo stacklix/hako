@@ -1,0 +1,242 @@
+"""Read-only, one-shot Linux snapshots invoked through ECS Cloud Assistant.
+
+Uses an existing Python 3 and optional ss. No installation, network access,
+scheduled task, firewall change, or persistent collector is performed.
+"""
+import json
+import os
+import platform
+import pwd
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PROC = Path('/proc')
+SYSTEM_NAMES = {'systemd', 'sshd', 'cron', 'crond', 'dbus-daemon', 'dbus-broker',
+                'systemd-resolve', 'systemd-network', 'systemd-journal', 'aliyun-service'}
+
+
+def read(path):
+    try:
+        return Path(path).read_text(errors='replace')
+    except (OSError, ValueError):
+        return None
+
+
+def number_fields(text):
+    result = {}
+    for line in (text or '').splitlines():
+        key, _, value = line.partition(':')
+        fields = value.split()
+        if fields:
+            try:
+                result[key] = int(fields[0])
+            except ValueError:
+                pass
+    return result
+
+
+def process_stat(text):
+    # comm may contain spaces and parentheses; fields begin after the last ')'.
+    if not text or ')' not in text:
+        return None
+    try:
+        name = text[text.index('(') + 1:text.rindex(')')]
+        fields = text[text.rindex(')') + 2:].split()
+        return {'name': name[:120], 'parent': int(fields[1]), 'flags': int(fields[6]),
+                'ticks': int(fields[11]) + int(fields[12]), 'threads': int(fields[17]),
+                'start': int(fields[19]), 'rss': int(fields[21])}
+    except (ValueError, IndexError):
+        return None
+
+
+def process_samples():
+    result = {}
+    for path in PROC.iterdir():
+        if path.name.isdigit():
+            value = process_stat(read(path / 'stat'))
+            if value:
+                result[int(path.name)] = value
+    return result
+
+
+def classify(stat, uid, cgroup, loginuid):
+    if stat['flags'] & 0x200000:
+        return 'system', '内核线程'
+    if stat['name'] in SYSTEM_NAMES:
+        return 'system', '系统基础服务（按名称推断）'
+    if '/user.slice/' in cgroup or (loginuid is not None and 1000 <= loginuid < 4294967295):
+        return 'user', '用户会话（按启动来源推断）'
+    if 1000 <= uid < 65534:
+        return 'user', '普通用户任务（按 UID 推断）'
+    return 'unknown', '无法可靠确认系统或业务用途'
+
+
+def processes(before, after, elapsed):
+    hz = os.sysconf('SC_CLK_TCK')
+    page = os.sysconf('SC_PAGE_SIZE')
+    uptime = float((read(PROC / 'uptime') or '0').split()[0])
+    result = []
+    for pid, stat in after.items():
+        path = PROC / str(pid)
+        status = number_fields(read(path / 'status'))
+        uid = status.get('Uid')
+        if uid is None:
+            continue
+        try:
+            user = pwd.getpwuid(uid).pw_name[:80]
+        except KeyError:
+            user = str(uid)
+        try:
+            loginuid = int((read(path / 'loginuid') or '').strip())
+        except ValueError:
+            loginuid = None
+        category, source = classify(stat, uid, read(path / 'cgroup') or '', loginuid)
+        prior = before.get(pid)
+        cpu = None
+        if prior and prior['start'] == stat['start'] and elapsed > 0:
+            cpu = round(max(0, stat['ticks'] - prior['ticks']) / hz / elapsed * 100, 2)
+        io = number_fields(read(path / 'io'))
+        try:
+            executable = os.readlink(path / 'exe')[:1024]
+        except OSError:
+            executable = None
+        result.append({'pid': pid, 'parent': stat['parent'], 'name': stat['name'], 'uid': uid,
+                       'user': user, 'category': category, 'source': source, 'cpu': cpu,
+                       'memory': max(0, stat['rss']) * page, 'threads': stat['threads'],
+                       'elapsed': max(0, uptime - stat['start'] / hz), 'executable': executable,
+                       'read': io.get('read_bytes'), 'write': io.get('write_bytes')})
+    return sorted(result, key=lambda p: (-(p['cpu'] or 0), -p['memory'], p['pid']))
+
+
+def interfaces(text):
+    result = {}
+    for line in (text or '').splitlines()[2:]:
+        name, _, values = line.partition(':')
+        fields = values.split()
+        if len(fields) >= 16:
+            result[name.strip()] = {'receive': int(fields[0]), 'send': int(fields[8]),
+                                    'receiveDrops': int(fields[3]), 'sendDrops': int(fields[11])}
+    return result
+
+
+def network(before, after, elapsed):
+    result = []
+    for name, values in after.items():
+        item = dict(values, name=name, receiveRate=None, sendRate=None)
+        if name in before and elapsed > 0:
+            for key in ('receive', 'send'):
+                delta = values[key] - before[name][key]
+                if delta >= 0:
+                    item[key + 'Rate'] = delta / elapsed
+        result.append(item)
+    return sorted(result, key=lambda item: (item['name'] == 'lo', item['name']))
+
+
+def parse_sockets(text):
+    result = []
+    seen = set()
+    for line in text.splitlines():
+        fields = line.split(None, 6)
+        if len(fields) < 6 or fields[0] not in ('tcp', 'udp'):
+            continue
+        match = re.search(r'\("([^"\n]+)",pid=(\d+)', fields[6] if len(fields) > 6 else '')
+        item = {'protocolName': fields[0], 'state': fields[1], 'local': fields[4][:200],
+                'peer': fields[5][:200], 'pid': int(match[2]) if match else None,
+                'process': match[1][:120] if match else None}
+        key = (item['protocolName'], item['state'], item['local'], item['peer'], item['pid'])
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def sockets():
+    try:
+        result = subprocess.run(['ss', '-H', '-n', '-t', '-u', '-a', '-p'],
+                                capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode != 0:
+            return None, '无法查询连接，请检查 ss 工具和系统权限。'
+        return parse_sockets(result.stdout), None
+    except (OSError, subprocess.TimeoutExpired):
+        return None, '无法查询连接，请检查系统已有 ss 工具和读取权限。'
+
+
+def disks():
+    result, seen = [], set()
+    for line in (read(PROC / 'self' / 'mountinfo') or '').splitlines():
+        fields = line.split()
+        try:
+            split = fields.index('-')
+            filesystem = fields[split + 1]
+            if filesystem not in ('ext2', 'ext3', 'ext4', 'xfs', 'btrfs', 'zfs', 'vfat', 'f2fs', 'nfs', 'nfs4', 'overlay'):
+                continue
+            mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), fields[4])
+            if fields[2] in seen:
+                continue
+            stat = os.statvfs(mount)
+            if stat.f_blocks <= 0:
+                continue
+            seen.add(fields[2])
+            result.append({'mount': mount[:512], 'filesystem': filesystem,
+                           'total': stat.f_blocks * stat.f_frsize,
+                           'used': (stat.f_blocks - stat.f_bfree) * stat.f_frsize,
+                           'available': stat.f_bavail * stat.f_frsize})
+        except (ValueError, IndexError, OSError):
+            continue
+    return result
+
+
+def bounded_output(result, limit=20_000):
+    # Cloud Assistant truncates output at 24 KiB; keep UTF-8 comfortably below it.
+    result['truncated'] = False
+    while True:
+        text = json.dumps(result, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+        if len(text.encode()) <= limit:
+            return text
+        candidates = [key for key in ('processes', 'sockets', 'disks', 'interfaces') if result.get(key)]
+        if not candidates:
+            raise ValueError('snapshot too large')
+        key = max(candidates, key=lambda k: len(json.dumps(result[k])))
+        result[key].pop()
+        result['truncated'] = True
+
+
+def collect(mode, pid=0):
+    result = {'version': 1, 'time': time.time()}
+    if mode in ('processes', 'process'):
+        first = process_samples()
+        start = time.monotonic()
+        time.sleep(1)
+        second = process_samples()
+        values = processes(first, second, time.monotonic() - start)
+        result['totalProcesses'] = len(values)
+        result['processes'] = [p for p in values if mode != 'process' or p['pid'] == pid]
+        result['memoryTotal'] = number_fields(read(PROC / 'meminfo')).get('MemTotal', 0) * 1024
+    elif mode == 'network':
+        first = interfaces(read(PROC / 'net' / 'dev'))
+        start = time.monotonic()
+        time.sleep(1)
+        second = interfaces(read(PROC / 'net' / 'dev'))
+        result['interfaces'] = network(first, second, time.monotonic() - start)
+        result['sockets'], result['socketError'] = sockets()
+        result['totalSockets'] = len(result['sockets'] or [])
+    elif mode == 'overview':
+        mem = number_fields(read(PROC / 'meminfo'))
+        result.update(hostname=platform.node()[:200], kernel=platform.release()[:200],
+                      architecture=platform.machine()[:80], disks=disks())
+        result['memoryTotal'] = mem.get('MemTotal', 0) * 1024
+        if 'MemAvailable' in mem:
+            result['memoryAvailable'] = mem['MemAvailable'] * 1024
+        result['uptime'] = float((read(PROC / 'uptime') or '0').split()[0])
+        result['load'] = [float(v) for v in (read(PROC / 'loadavg') or '').split()[:3]]
+    else:
+        raise ValueError('unknown mode')
+    result['time'] = time.time()
+    return bounded_output(result)
+
+
+if __name__ == '__main__':
+    print(collect(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 0))

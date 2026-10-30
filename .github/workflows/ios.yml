@@ -10,7 +10,14 @@ concurrency:
   group: ios-pages-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test Linux ECS snapshots and installation page
+        run: python3 -m unittest discover -s apps/ios/Tests -p 'test_*.py'
   build:
+    needs: snapshot
     if: github.ref_name == github.event.repository.default_branch
     runs-on: macos-26
     defaults:
@@ -64,6 +71,11 @@ jobs:
           /tmp/hako-arcane-command-tests
           swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Hako/Containers/ArcaneCommandsData.swift Tests/ArcaneCommandDataTests.swift -o /tmp/hako-arcane-command-data-tests
           /tmp/hako-arcane-command-data-tests
+      - name: Test ECS API signing, snapshots and terminal protocol
+        run: |
+          swiftc -target arm64-apple-macos14.0 -typecheck Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Hako/CloudServers/ECSTerminalProtocol.swift Hako/CloudServers/ECSTerminalData.swift
+          swiftc -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSTerminalProtocol.swift Tests/ECSTests.swift -o /tmp/hako-ecs-tests
+          /tmp/hako-ecs-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

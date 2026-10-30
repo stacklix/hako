@@ -184,14 +184,24 @@ private struct ArcaneCommandRunView: View {
                 Section("参数") { ForEach(definition.parameters) { parameter in parameterField(parameter).disabled(result?.running == true).arcaneRowSeparators() } }
             }
             Section {
-                DisclosureGroup("将执行的命令") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("将执行的命令").font(.subheadline).foregroundStyle(.secondary)
                     Text((try? definition.resolve(values, preview: true)) ?? definition.template)
                         .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                 }.arcaneRowSeparators()
-                Button(definition.name) {
+                Button {
                     do { _ = try definition.resolve(values); if definition.confirmation { confirming = true } else { run() } }
                     catch { self.error = error.localizedDescription }
-                }.disabled(blocked).arcaneRowSeparators()
+                } label: {
+                    HStack(spacing: 8) {
+                        if result?.running == true { ProgressView() }
+                        else { Image(systemName: "play.fill") }
+                        Text(result?.running == true ? "执行中…" : "执行命令")
+                    }.frame(maxWidth: .infinity).padding(.vertical, 6)
+                }.buttonStyle(.borderedProminent).tint(.primary).disabled(blocked).arcaneRowSeparators()
+                if let result, result.running {
+                    Text(result.phase).font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
+                }
             }
             if let error { Section { Text(error).foregroundStyle(.orange).font(.footnote).arcaneRowSeparators() } }
             if let result {
@@ -243,6 +253,9 @@ private struct ArcaneCommandResultSections: View {
     let result: ArcaneCommandResult
     var body: some View {
         Section {
+            if result.running {
+                HStack(spacing: 10) { ProgressView(); Text(result.phase).font(.subheadline) }.arcaneRowSeparators()
+            }
             LabeledContent(result.name, value: result.status).foregroundStyle(result.uncertain ? Color.orange : result.running ? .secondary : result.exitCode == 0 ? .green : .red).arcaneRowSeparators()
             LabeledContent("容器", value: result.container).arcaneRowSeparators()
             LabeledContent("开始时间") { Text(result.began, style: .time) }.arcaneRowSeparators()

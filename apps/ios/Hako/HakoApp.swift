@@ -33,6 +33,13 @@ struct HomeView: View {
                     }.padding(.vertical, 12)
                 }
                 Section("应用") {
+                    NavigationLink { CloudServersView() } label: {
+                        Label { VStack(alignment: .leading, spacing: 5) {
+                            Text("云服务器").font(.headline)
+                            Text("阿里云 ECS · 监控 · 进程与终端").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "server.rack").foregroundStyle(.primary) }
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { ContainersView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("容器管理").font(.headline)
