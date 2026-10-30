@@ -50,7 +50,9 @@ struct CloudServersView: View {
                         case .processes: processes(connection)
                         case .terminal: EmptyView()
                         }
-                    }.refreshable {
+                    }
+                    .contentMargins(.top, 24, for: .scrollContent)
+                    .refreshable {
                         async let instance: Void = store.refresh(page)
                         if page == .overview, let connection = store.connection { await access.refresh(connection: connection, client: console) }
                         await instance

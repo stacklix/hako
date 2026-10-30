@@ -51,6 +51,8 @@ enum ECSAccessQuery {
     }
 }
 
+enum ECSAccessHealth: Equatable { case disabled, waiting, scanning, healthy, delayed, failed }
+
 struct ECSAccessStatus: Decodable {
     let enabled: Bool
     let timezone: String
@@ -61,11 +63,20 @@ struct ECSAccessStatus: Decodable {
     let error: String?
 
     var scanDate: Date? { ECSAccessDate.parse(lastScan) }
-    func delayed(at now: Date = .now) -> Bool {
-        guard enabled else { return false }
-        guard let scanDate else { return true }
-        return !(error ?? "").isEmpty || now.timeIntervalSince(scanDate) > Double(max(180, scanIntervalSeconds * 3))
+    var scanError: String? {
+        let value = (error ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
+    func health(at now: Date = .now) -> ECSAccessHealth {
+        guard enabled else { return .disabled }
+        // lastScan is the end of an attempt, including failed attempts.
+        // A current timestamp never rules out unreadable or invalid log files.
+        if scanError != nil { return .failed }
+        guard let scanDate else { return scanning ? .scanning : .waiting }
+        if now.timeIntervalSince(scanDate) > Double(max(180, scanIntervalSeconds * 3)) { return .delayed }
+        return .healthy
+    }
+    func delayed(at now: Date = .now) -> Bool { health(at: now) == .delayed }
 }
 
 struct ECSAccessCount: Decodable, Identifiable {

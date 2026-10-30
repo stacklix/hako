@@ -24,6 +24,26 @@ import Foundation
         precondition(!summary.status.delayed(at: ECSAccessDate.parse("2026-10-30T10:01:00Z")!))
         precondition(summary.status.delayed(at: ECSAccessDate.parse("2026-10-30T10:04:00Z")!))
 
+        let now = ECSAccessDate.parse("2026-10-30T10:01:00Z")!
+        func status(lastScan: String? = "2026-10-30T10:00:00Z", error: String? = nil,
+                    scanning: Bool = false, interval: Int = 60, enabled: Bool = true) -> ECSAccessStatus {
+            ECSAccessStatus(enabled: enabled, timezone: "UTC", scanIntervalSeconds: interval,
+                            retentionDays: 7, scanning: scanning, lastScan: lastScan, error: error)
+        }
+        let failed = status(error: "/logs/site.log: permission denied")
+        precondition(failed.health(at: now) == .failed && !failed.delayed(at: now),
+                     "A failed scan with a recent timestamp must report an error, not delay")
+        precondition(failed.scanError == "/logs/site.log: permission denied")
+        precondition(status(lastScan: nil).health(at: now) == .waiting)
+        precondition(status(lastScan: nil, scanning: true).health(at: now) == .scanning)
+        precondition(status(lastScan: nil, error: "cannot open log directory").health(at: now) == .failed)
+        precondition(status(error: " \n ").health(at: now) == .healthy && status(error: " \n ").scanError == nil)
+        precondition(status().health(at: now.addingTimeInterval(120)) == .healthy)
+        precondition(status().health(at: now.addingTimeInterval(121)) == .delayed)
+        precondition(status(interval: 300).health(at: now.addingTimeInterval(240)) == .healthy)
+        precondition(status(interval: 300).health(at: now.addingTimeInterval(900)) == .delayed)
+        precondition(status(error: "old error", enabled: false).health(at: now) == .disabled)
+
         let disabled = try JSONDecoder().decode(ECSAccessSummary.self, from: Data(#"{"status":{"enabled":false,"timezone":"","scanIntervalSeconds":0,"retentionDays":7,"scanning":false},"domains":[],"hours":[],"totals":[]}"#.utf8))
         precondition(!disabled.status.enabled && disabled.buckets(domains: [], daily: false).isEmpty)
         precondition(!disabled.status.delayed())

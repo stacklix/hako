@@ -24,13 +24,21 @@ struct ECSAccessFreshness: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             VStack(alignment: .leading, spacing: 5) {
-                if status.delayed(at: context.date) {
+                switch status.health(at: context.date) {
+                case .failed:
+                    Label("日志扫描异常，统计可能不完整", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                case .delayed:
                     Label("日志扫描延迟，数据可能尚未更新", systemImage: "clock.badge.exclamationmark")
                         .foregroundStyle(.orange)
+                case .scanning: Text("正在首次扫描日志…")
+                case .waiting: Text("等待首次日志扫描")
+                case .disabled: Text("日志统计尚未启用")
+                case .healthy: EmptyView()
                 }
                 if let date = status.scanDate {
-                    Text("最近扫描：\(date.formatted(date: .abbreviated, time: .standard))")
-                } else { Text(status.scanning ? "正在首次扫描日志…" : "尚未完成日志扫描") }
+                    Text("最近扫描结束：\(date.formatted(date: .abbreviated, time: .standard))")
+                }
             }.font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -119,7 +127,16 @@ struct ECSAccessView: View {
         let totals = value.counts(domains: selectedDomains)
         Section(range.label) {
             ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, notFound: totals.reduce(0) { $0 + $1.notFound })
+        }
+        Section("数据状态") {
             ECSAccessFreshness(status: value.status)
+            if let error = value.status.scanError {
+                DisclosureGroup("查看扫描错误") {
+                    Text(error).font(.footnote.monospaced()).textSelection(.enabled)
+                    Text("扫描结束时间也会在失败时更新，不代表所有日志均读取成功。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
         Section(daily ? "请求趋势 · 按天" : "请求趋势 · 按小时") {
             if value.truncated == true {
