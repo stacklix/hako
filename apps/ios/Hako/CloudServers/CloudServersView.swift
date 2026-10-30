@@ -174,10 +174,6 @@ struct CloudServersView: View {
     @ViewBuilder private func processes(_ connection: ECSConnection) -> some View {
         if let snapshot = store.processes {
             Section {
-                Picker("进程分类", selection: $group) { ForEach(ECSProcessGroup.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
-                Picker("排序", selection: $memorySort) { Text("CPU ↓").tag(false); Text("内存 ↓").tag(true) }.pickerStyle(.segmented)
-            }
-            Section("进程 · \(processRows.count)") {
                 ForEach(processRows) { process in
                     NavigationLink { ECSProcessDetails(initial: process, initialTime: snapshot.time, connection: connection) } label: {
                         VStack(alignment: .leading, spacing: 8) {
@@ -195,11 +191,64 @@ struct CloudServersView: View {
                     }
                 }
                 if processRows.isEmpty { Text("本次返回记录中没有此类进程。").foregroundStyle(.secondary) }
-            }
+            } header: { processHeader }
             Section { Text("CPU 按单核 100% 计；内存为 RSS。分类按启动来源推断，无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
             snapshotFooter(snapshot)
         }
     }
+
+    private var processHeader: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("进程").font(.headline).foregroundStyle(.primary)
+                    Text(processRows.count, format: .number).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                }.accessibilityElement(children: .combine)
+                Spacer(minLength: 8)
+                Menu {
+                    Picker("排序方式", selection: $memorySort) {
+                        Text("CPU 从高到低").tag(false)
+                        Text("内存从高到低").tag(true)
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(memorySort ? "内存 ↓" : "CPU ↓").font(.subheadline)
+                        Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(.primary)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("进程排序")
+                .accessibilityValue(memorySort ? "内存从高到低" : "CPU 从高到低")
+            }
+            HStack(spacing: 6) {
+                ForEach(ECSProcessGroup.allCases) { option in
+                    let selected = group == option
+                    Button { group = option } label: {
+                        Text(option.rawValue)
+                            .font(.subheadline).fontWeight(selected ? .semibold : .regular)
+                            .foregroundStyle(selected ? Color.primary : .secondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(selected ? Color(uiColor: .secondarySystemFill) : .clear, in: RoundedRectangle(cornerRadius: 12))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(option.rawValue)进程")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("进程分类")
+        }
+        .textCase(nil)
+        .padding(.bottom, 8)
+    }
+
     private func snapshotFooter(_ snapshot: ECSSnapshot) -> some View {
         Section {
             Text("快照：\(Date(timeIntervalSince1970: snapshot.time).formatted(date: .abbreviated, time: .standard))").font(.caption).foregroundStyle(.secondary)
