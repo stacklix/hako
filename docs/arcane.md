@@ -126,6 +126,8 @@ Arcane 自身容器依据服务端的 `redeployDisabled` 保护标记隐藏整�
 
 终端可选择 sh、bash、ash 或自定义绝对路径。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。会话意外结束（包括 Shell 自行退出）弹出原生 Alert，提供「退出」「重新连接」，不自动重连或重放输入。关闭、进入后台和连接配置变化均释放会话；临时 inactive（如系统弹窗）不关闭会话，后台返回时提示重新连接；主动关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
 
+截图、应用恢复活跃、终端窗口重新成为主窗口后恢复输入焦点，刷新键盘输入视图，并检查当前 WebSocket。检查使用带 5 秒独立截止时间的 Ping，丢失 Pong 时也会结束等待并提示退出或重连；不发送 Shell 命令、不创建新会话。已知断开但未显示错误的页面再次出现时也显示异常提示。
+
 ## 验证
 
 Windows 本机跳过 iOS 编译、归档、签名和安装。可运行现有安装页测试：

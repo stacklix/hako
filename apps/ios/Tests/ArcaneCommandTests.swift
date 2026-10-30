@@ -153,6 +153,18 @@ private actor OutputProbe {
             _ = try await ArcaneShellDiscovery.probe(channel: timedOut, shell: "/bin/sh", seconds: 0)
             fatalError("Expected probe timeout")
         } catch { precondition(timedOut.isClosed) }
+        try await ArcaneTerminalPing.wait { completion in
+            completion(nil)
+            completion(URLError(.networkConnectionLost)) // A late callback must not resume twice.
+        }
+        do {
+            try await ArcaneTerminalPing.wait(seconds: 0) { _ in }
+            fatalError("Missing pong did not time out")
+        } catch let error as URLError { precondition(error.code == .timedOut) }
+        do {
+            try await ArcaneTerminalPing.wait { completion in completion(URLError(.networkConnectionLost)) }
+            fatalError("Disconnected ping was accepted")
+        } catch let error as URLError { precondition(error.code == .networkConnectionLost) }
         let connection = try ArcaneConnection(name: "Test", address: "https://example.com/proxy", apiKey: "private").normalized()
         let request = try ArcaneSocketTerminal.request(connection, environment: "remote", container: "container", shell: "/bin/sh", columns: 120, rows: 40)
         precondition(request.url?.scheme == "wss" && request.url?.path == "/proxy/api/environments/remote/ws/containers/container/terminal")

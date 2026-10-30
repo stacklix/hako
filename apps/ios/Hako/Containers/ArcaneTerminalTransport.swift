@@ -8,7 +8,37 @@ protocol ArcaneTerminalChannel: AnyObject, Sendable {
     func receive() async throws -> Data
     func send(_ data: Data) async throws
     func resize(columns: Int, rows: Int) async throws
+    func checkConnection() async throws
     func close()
+}
+
+extension ArcaneTerminalChannel {
+    func checkConnection() async throws { }
+}
+
+// A missing pong must have a deadline even if Foundation never calls back.
+enum ArcaneTerminalPing {
+    static func wait(seconds: UInt64 = 5, send: @Sendable (@escaping @Sendable (Error?) -> Void) -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let pending = ArcanePingCompletion(continuation)
+            let timer = Task {
+                do { try await Task.sleep(nanoseconds: seconds * 1_000_000_000) } catch { return }
+                pending.finish(URLError(.timedOut))
+            }
+            send { error in timer.cancel(); pending.finish(error) }
+        }
+        try Task.checkCancellation()
+    }
+}
+
+private final class ArcanePingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+    func finish(_ error: Error?) {
+        lock.lock(); let saved = continuation; continuation = nil; lock.unlock()
+        if let error { saved?.resume(throwing: error) } else { saved?.resume() }
+    }
 }
 
 struct ArcaneTerminalClosed: LocalizedError {
@@ -133,6 +163,10 @@ final class ArcaneSocketTerminal: ArcaneTerminalChannel, @unchecked Sendable {
         do { try await socket.send(.string(String(decoding: data, as: UTF8.self))) } catch { throw mapped(error) }
     }
     func close() { socket.cancel(with: .goingAway, reason: nil) }
+    func checkConnection() async throws {
+        do { try await ArcaneTerminalPing.wait { [socket] completion in socket.sendPing(pongReceiveHandler: completion) } }
+        catch { throw mapped(error) }
+    }
     private func mapped(_ error: Error) -> Error {
         if Task.isCancelled { return CancellationError() }
         if socket.closeCode == .normalClosure { return ArcaneTerminalClosed() }

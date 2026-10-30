@@ -21,6 +21,7 @@ struct ArcaneTerminalPresentation: Identifiable {
     private var channel: (any ArcaneTerminalChannel)?
     private var reader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
+    private var healthCheck: Task<Void, Never>?
     private var lease: UUID?
     private weak var store: ArcaneStore?
     private var generation = UUID()
@@ -77,14 +78,35 @@ struct ArcaneTerminalPresentation: Identifiable {
         if !pendingOutput.isEmpty { view.feed(byteArray: Array(pendingOutput)[...]); pendingOutput.removeAll() }
         activate(view)
     }
-    func activate(_ view: SwiftTerm.TerminalView) {
+    func activate(_ view: SwiftTerm.TerminalView, resetFocus: Bool = false) {
         let ticket = generation
         // Reconnect is requested from an Alert. Restore keyboard focus after
         // dismissal, not while UIKit still owns the alert's responder chain.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak view] in
             guard let self, let view, self.generation == ticket, self.connected,
-                  self.terminal === view, view.window != nil else { return }
+                  self.terminal === view, view.window?.isKeyWindow == true else { return }
+            if resetFocus { view.resignFirstResponder() }
             view.becomeFirstResponder()
+            view.reloadInputViews()
+        }
+    }
+    func recoverInput() {
+        guard connected, let channel else {
+            if !connecting { error = "终端会话已中断，请退出或重新连接。" }
+            return
+        }
+        if let terminal { activate(terminal, resetFocus: true) }
+        guard healthCheck == nil else { return }
+        let ticket = generation
+        healthCheck = Task {
+            defer { if generation == ticket { healthCheck = nil } }
+            do { try await channel.checkConnection() }
+            catch {
+                if generation == ticket && !Task.isCancelled {
+                    self.error = "终端连接已失效，请退出或重新连接。"
+                    disconnect()
+                }
+            }
         }
     }
     private func display(_ bytes: Data) {
@@ -92,6 +114,7 @@ struct ArcaneTerminalPresentation: Identifiable {
         else { pendingOutput.append(bytes.prefix(max(0, 1_048_576 - pendingOutput.count))) }
     }
     private func finish() {
+        healthCheck?.cancel(); healthCheck = nil
         channel?.close(); channel = nil; writer?.cancel(); writer = nil; queuedBytes = 0
         reader = nil
         connected = false; connecting = false; control = false
@@ -161,6 +184,7 @@ private struct ArcaneSwiftTerminal: UIViewRepresentable {
         return view
     }
     func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
+        if uiView.terminalDelegate == nil { uiView.terminalDelegate = context.coordinator }
         if data.terminal !== uiView { data.attach(uiView) }
         // A status update must not reset the terminal palette or trigger a
         // renderer refresh while SwiftUI is laying out the keyboard/menu.
@@ -248,8 +272,8 @@ struct ArcaneTerminalScreen: View {
                         ForEach(data.availableShells, id: \.self) { Text($0).tag($0) }
                         Text("自定义…").tag("__custom__")
                     }.pickerStyle(.menu).labelsHidden().disabled(data.connecting).accessibilityLabel("切换 Shell")
-                }.padding(.horizontal).padding(.vertical, 6)
-                Divider()
+                }.padding(.horizontal).padding(.top, 6)
+                Divider().padding(.bottom, 12)
                 ArcaneSwiftTerminal(data: data)
                     .id(data.rendererID)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -289,6 +313,7 @@ struct ArcaneTerminalScreen: View {
             }
         }
         .onDisappear { data.disconnect() }
+        .onAppear { if started && pendingShell == nil { recoverInput() } }
         .onReceive(data.$error) { error in if let error { failure = error } }
         .onChange(of: data.selectedShell) { _, path in shell = path }
         .onChange(of: scenePhase) { _, phase in
@@ -296,13 +321,24 @@ struct ArcaneTerminalScreen: View {
             if phase == .active && backgroundDisconnected {
                 backgroundDisconnected = false
                 failure = "应用进入后台后已关闭终端会话。重新连接将开启新会话，不会重放之前的输入。"
+            } else if phase == .active {
+                recoverInput()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in recoverInput() }
+        .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { notification in
+            if let window = notification.object as? UIWindow, window === data.terminal?.window { recoverInput() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in recoverInput() }
         .onChange(of: store.connection?.id) { _, _ in
             data.disconnect(); failure = "Arcane 连接已变化，请退出后重新进入终端。"
         }
     }
     private func connect(fallback: Bool = true) { data.connect(store: store, environment: environment.id, details: details, shell: shell, connectionID: connectionID, fallback: fallback) }
+    private func recoverInput() {
+        guard started, scenePhase == .active, !editingShell, !confirming, failure == nil, !backgroundDisconnected else { return }
+        data.recoverInput()
+    }
     private func switchShell(_ path: String) {
         data.disconnect(); failure = nil; shell = path; connect(fallback: false)
     }
