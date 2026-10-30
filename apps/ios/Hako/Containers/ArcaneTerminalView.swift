@@ -22,6 +22,7 @@ struct ArcaneTerminalPresentation: Identifiable {
     private var reader: Task<Void, Never>?
     private var writer: Task<Void, Never>?
     private var healthCheck: Task<Void, Never>?
+    private var healthID = UUID()
     private var lease: UUID?
     private weak var store: ArcaneStore?
     private var generation = UUID()
@@ -83,7 +84,8 @@ struct ArcaneTerminalPresentation: Identifiable {
         // Reconnect is requested from an Alert. Restore keyboard focus after
         // dismissal, not while UIKit still owns the alert's responder chain.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak view] in
-            guard let self, let view, self.generation == ticket, self.connected,
+            guard UIApplication.shared.applicationState == .active,
+                  let self, let view, self.generation == ticket, self.connected,
                   self.terminal === view, view.window?.isKeyWindow == true else { return }
             if resetFocus { view.resignFirstResponder() }
             view.becomeFirstResponder()
@@ -97,24 +99,31 @@ struct ArcaneTerminalPresentation: Identifiable {
         }
         if let terminal { activate(terminal, resetFocus: true) }
         guard healthCheck == nil else { return }
-        let ticket = generation
+        let ticket = generation, id = UUID(); healthID = id
         healthCheck = Task {
-            defer { if generation == ticket { healthCheck = nil } }
-            do { try await channel.checkConnection() }
+            defer { if generation == ticket, healthID == id { healthCheck = nil } }
+            do {
+                try await channel.checkConnection()
+                guard !Task.isCancelled, generation == ticket, healthID == id else { return }
+                HakoLog.record(.containers, "容器终端连接探测成功，继续原会话")
+            }
             catch {
-                if generation == ticket && !Task.isCancelled {
+                if generation == ticket && healthID == id && !Task.isCancelled {
                     self.error = "终端连接已失效，请退出或重新连接。"
                     disconnect()
                 }
             }
         }
     }
+    func pauseConnectionCheck() {
+        healthID = UUID(); healthCheck?.cancel(); healthCheck = nil
+    }
     private func display(_ bytes: Data) {
         if let terminal { terminal.feed(byteArray: Array(bytes)[...]) }
         else { pendingOutput.append(bytes.prefix(max(0, 1_048_576 - pendingOutput.count))) }
     }
     private func finish() {
-        healthCheck?.cancel(); healthCheck = nil
+        pauseConnectionCheck()
         channel?.close(); channel = nil; writer?.cancel(); writer = nil; queuedBytes = 0
         reader = nil
         connected = false; connecting = false; control = false
@@ -254,7 +263,6 @@ struct ArcaneTerminalScreen: View {
     @State private var shellError: String?
     @State private var failure: String?
     @State private var started = false
-    @State private var backgroundDisconnected = false
     @State private var pendingShell: String?
     private var active: Bool { data.connected || data.connecting }
     var body: some View {
@@ -317,12 +325,13 @@ struct ArcaneTerminalScreen: View {
         .onReceive(data.$error) { error in if let error { failure = error } }
         .onChange(of: data.selectedShell) { _, path in shell = path }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background && active { backgroundDisconnected = true; data.disconnect() }
-            if phase == .active && backgroundDisconnected {
-                backgroundDisconnected = false
-                failure = "应用进入后台后已关闭终端会话。重新连接将开启新会话，不会重放之前的输入。"
-            } else if phase == .active {
-                recoverInput()
+            if phase == .active { recoverInput() }
+            else {
+                data.pauseConnectionCheck()
+                if phase == .background {
+                    data.terminal?.resignFirstResponder()
+                    if active { HakoLog.record(.containers, "应用进入后台，保留容器终端会话") }
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in recoverInput() }
@@ -336,7 +345,7 @@ struct ArcaneTerminalScreen: View {
     }
     private func connect(fallback: Bool = true) { data.connect(store: store, environment: environment.id, details: details, shell: shell, connectionID: connectionID, fallback: fallback) }
     private func recoverInput() {
-        guard started, scenePhase == .active, !editingShell, !confirming, failure == nil, !backgroundDisconnected else { return }
+        guard started, scenePhase == .active, !editingShell, !confirming, failure == nil else { return }
         data.recoverInput()
     }
     private func switchShell(_ path: String) {

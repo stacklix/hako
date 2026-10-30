@@ -124,7 +124,7 @@ Arcane 自身容器依据服务端的 `redeployDisabled` 保护标记隐藏整�
 
 交互终端使用原生 UIKit [SwiftTerm v1.99.2](https://github.com/migueldeicaza/SwiftTerm/tree/v1.99.2)，固定依赖版本，通过 Swift Package Manager 引入。直接在终端光标处输入，支持原生终端控制序列、Unicode、选择复制和粘贴。底部快捷栏提供 Ctrl、Esc、Tab、Ctrl+C、方向键、粘贴和回车。方向键使用当前终端模式的序列，回车发送 CR；输入逐字节传输，保留服务端 Shell 的当前目录、历史与补全行为，`vim`／`top` 等交互程序需容器内存在。窗口与键盘导致的行列变化通过 resize 消息传递。
 
-终端可选择 sh、bash、ash 或自定义绝对路径。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。会话意外结束（包括 Shell 自行退出）弹出原生 Alert，提供「退出」「重新连接」，不自动重连或重放输入。关闭、进入后台和连接配置变化均释放会话；临时 inactive（如系统弹窗）不关闭会话，后台返回时提示重新连接；主动关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
+终端可选择 sh、bash、ash 或自定义绝对路径。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。会话意外结束（包括 Shell 自行退出）弹出原生 Alert，提供「退出」「重新连接」，不自动重连或重放输入。临时 inactive（如截图预览、系统弹窗）和进入后台均保留原连接，返回前台检测原 WebSocket，仍有效则继续原 Shell，失效才提示重新连接；失活期间取消旧的连接探测，避免后台暂停造成超时误判。iOS 可能挂起后台 App，因此不保证后台连接一直存活。主动关闭页面、切换 Shell 或连接配置变化时释放会话；主动关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
 
 截图、应用恢复活跃、终端窗口重新成为主窗口后恢复输入焦点，刷新键盘输入视图，并检查当前 WebSocket。检查使用带 5 秒独立截止时间的 Ping，丢失 Pong 时也会结束等待并提示退出或重连；不发送 Shell 命令、不创建新会话。已知断开但未显示错误的页面再次出现时也显示异常提示。
 
