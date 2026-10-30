@@ -47,8 +47,7 @@ import Combine
                     deadline = Task {
                         try? await Task.sleep(for: .seconds(25))
                         guard !Task.isCancelled, generation == ticket, !connected else { return }
-                        error = "等待云助手终端就绪超时。"; disconnect()
-                        HakoLog.record(.cloudServers, .error, "等待终端就绪超时")
+                        fail(ECSFailure(message: "等待云助手终端就绪超时。"))
                     }
                     while generation == ticket {
                         let message = try await socket.receive()
@@ -75,7 +74,7 @@ import Combine
                             }
                         }
                         if !event.bytes.isEmpty { receive?(event.bytes) }
-                        if event.ended { disconnect(); return }
+                        if event.ended { fail(ECSFailure(message: "终端会话已结束，请重新连接。")); return }
                     }
                 } catch {
                     if !leased {

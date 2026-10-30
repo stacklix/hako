@@ -12,29 +12,64 @@ struct ECSTerminalView: View {
                 Text(data.connected ? "已连接" : data.connecting ? "正在连接…" : data.cleaning ? "正在结束会话…" : "已断开")
                     .font(.caption).foregroundStyle(data.connected ? Color.green : .secondary)
                 Spacer()
-                Button(data.connected || data.connecting ? "断开" : "连接") {
-                    if data.connected || data.connecting { data.disconnect() }
-                    else { data.connect(connection) }
-                }.disabled(data.cleaning || !active)
+                if data.connected {
+                    Button("断开") { data.disconnect() }.disabled(!active)
+                }
             }.padding(.horizontal, 18).padding(.vertical, 10)
-            if let error = data.error { Text(error).font(.footnote).foregroundStyle(.orange).padding(.horizontal, 18).padding(.bottom, 8) }
             Divider()
-            ECSNativeTerminal(data: data)
+            ZStack {
+                ECSNativeTerminal(data: data)
+                    .allowsHitTesting(data.connected && active)
+                    .accessibilityHidden(!data.connected)
+                if !data.connected { connectionOverlay }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    Button("Ctrl") { data.control.toggle() }.tint(data.control ? .accentColor : .secondary)
-                        .accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
-                    ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
-                        Button(key) { keyInput(key) }
-                    }
-                }.buttonStyle(.bordered).controlSize(.small).padding(10).disabled(!data.connected)
-            }.background(.bar)
+            if data.connected {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button("Ctrl") { data.control.toggle() }.tint(data.control ? .accentColor : .secondary)
+                            .accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
+                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
+                            Button(key) { keyInput(key) }
+                        }
+                    }.buttonStyle(.bordered).controlSize(.small).padding(10)
+                }.background(.bar)
+            }
         }
         .privacySensitive()
         .onDisappear { data.disconnect() }
         .onChange(of: active) { _, value in if !value { data.disconnect() } }
+    }
+    private var connectionOverlay: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                Image(systemName: data.error == nil ? "terminal" : "network.slash")
+                    .font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
+                Text(data.connecting ? "正在连接终端" : data.error == nil ? "终端未连接" : "终端连接已断开")
+                    .font(.headline)
+                if let error = data.error {
+                    Text(error).font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
+                }
+                if data.connecting {
+                    ProgressView("正在建立会话…")
+                    Button("取消连接") { data.disconnect() }.buttonStyle(.bordered)
+                } else {
+                    if data.cleaning { ProgressView("正在结束上一次会话…") }
+                    Button(data.error == nil ? "连接" : "重新连接") { data.connect(connection) }
+                        .buttonStyle(.borderedProminent).controlSize(.large)
+                        .disabled(data.cleaning || !active)
+                }
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 360).padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .defaultScrollAnchor(.center)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
+        .accessibilityElement(children: .contain)
     }
     private func keyInput(_ key: String) {
         data.keyInput?(key)
