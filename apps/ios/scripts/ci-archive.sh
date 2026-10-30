@@ -61,10 +61,12 @@ xcodebuild -version
 mkdir -p build/ci "$DIST"
 # SwiftTerm's build-tool plugin generates its version information. The package
 # is pinned to an exact version in the project; CI has no interactive trust UI.
+# HAKO_SIGN_* is consumed only by the app target. Global signing overrides
+# would also apply the iOS provisioning profile to SwiftPM's macOS build tools.
 xcodebuild -skipPackagePluginValidation -project Hako.xcodeproj -scheme Hako -configuration Release -destination 'generic/platform=iOS' \
   -archivePath build/ci/Hako.xcarchive -derivedDataPath build/ci/DerivedData \
-  CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_IDENTITY="$IDENTITY" \
-  PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
+  HAKO_SIGN_STYLE=Manual HAKO_SIGN_TEAM="$TEAM" HAKO_SIGN_IDENTITY="$IDENTITY" \
+  HAKO_SIGN_PROFILE="$PROFILE_UUID" HAKO_SIGN_FLAGS="--keychain $KEYCHAIN" \
   CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-1}" archive
 xcodebuild -exportArchive -archivePath build/ci/Hako.xcarchive \
   -exportPath "$DIST" -exportOptionsPlist "$SIGNING_DIR/ExportOptions.plist"
