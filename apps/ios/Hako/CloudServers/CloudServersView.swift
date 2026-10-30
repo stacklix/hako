@@ -34,7 +34,9 @@ struct CloudServersView: View {
                 HakoUnderlineTabs(title: "云服务器功能", options: ECSPage.allCases, selection: $page, label: { $0.rawValue })
                     .padding(.horizontal, 18)
                 if page == .terminal {
-                    ECSTerminalView(connection: connection, active: visible && scenePhase == .active && !settings).id(store.revision)
+                    // System overlays can temporarily make the scene inactive.
+                    // Only backgrounding or leaving this screen ends its session.
+                    ECSTerminalView(connection: connection, active: visible && scenePhase != .background && !settings).id(store.revision)
                 } else {
                     List {
                         if let error = store.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }

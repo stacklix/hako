@@ -5,25 +5,15 @@ import SwiftTerm
 struct ECSTerminalView: View {
     let connection: ECSConnection
     let active: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var data = ECSTerminalData()
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(data.connected ? "已连接" : data.connecting ? "正在连接…" : data.cleaning ? "正在结束会话…" : "已断开")
-                    .font(.caption).foregroundStyle(data.connected ? Color.green : .secondary)
-                Spacer()
-                if data.connected {
-                    Button("断开") { data.disconnect() }.disabled(!active)
-                }
-            }.padding(.horizontal, 18).padding(.vertical, 10)
-            Divider()
-            ZStack {
-                ECSNativeTerminal(data: data)
-                    .allowsHitTesting(data.connected && active)
-                    .accessibilityHidden(!data.connected)
-                if !data.connected { connectionOverlay }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        ZStack {
+            ECSNativeTerminal(data: data)
+                .allowsHitTesting(data.connected && active && scenePhase == .active)
+                .accessibilityHidden(!data.connected)
+            if !data.connected { connectionOverlay }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if data.connected {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -39,7 +29,18 @@ struct ECSTerminalView: View {
         }
         .privacySensitive()
         .onDisappear { data.disconnect() }
-        .onChange(of: active) { _, value in if !value { data.disconnect() } }
+        .onChange(of: active) { _, value in
+            if !value { data.disconnect() } else { recoverInput() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { recoverInput() }
+            if phase == .inactive, data.connected {
+                HakoLog.record(.cloudServers, "应用暂时失活，保留终端会话")
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in recoverInput() }
+        .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in recoverInput() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in recoverInput() }
     }
     private var connectionOverlay: some View {
         ScrollView {
@@ -62,7 +63,7 @@ struct ECSTerminalView: View {
                     }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                         .tint(.primary)
-                        .disabled(data.cleaning || !active)
+                        .disabled(data.cleaning || !active || scenePhase != .active)
                 }
             }
             .multilineTextAlignment(.center)
@@ -77,6 +78,10 @@ struct ECSTerminalView: View {
     }
     private func keyInput(_ key: String) {
         if data.connected { data.display.key(key) }
+    }
+    private func recoverInput() {
+        guard active, scenePhase == .active, data.connected else { return }
+        data.display.focus()
     }
 }
 
