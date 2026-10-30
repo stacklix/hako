@@ -15,6 +15,75 @@ struct ArcaneTerminalClosed: LocalizedError {
     var errorDescription: String? { "终端会话已结束。" }
 }
 
+struct ArcaneShellUnavailable: LocalizedError {
+    var errorDescription: String? { "所选 Shell 不存在或无法启动。" }
+}
+
+struct ArcaneShellSession: Sendable {
+    let channel: any ArcaneTerminalChannel
+    let shell: String
+    let available: [String]
+    let output: Data
+}
+
+enum ArcaneShellDiscovery {
+    static let candidates = ["/bin/sh", "/bin/bash", "/bin/ash", "/bin/zsh", "/usr/bin/sh", "/usr/bin/bash", "/usr/bin/ash", "/usr/bin/zsh"]
+    static func cacheKey(_ context: ArcaneCommandContext) -> String { context.stableKey + ".shell" }
+
+    static func connect(preferred: String, fallback: Bool,
+                        factory: @Sendable (String) throws -> any ArcaneTerminalChannel) async throws -> ArcaneShellSession {
+        let paths = [preferred] + (fallback ? candidates.filter { $0 != preferred } : [])
+        for path in paths {
+            try Task.checkCancellation()
+            let channel = try factory(path)
+            do {
+                let result = try await probe(channel: channel, shell: path)
+                return ArcaneShellSession(channel: channel, shell: path, available: result.available, output: result.output)
+            } catch {
+                channel.close()
+                try Task.checkCancellation()
+                // Authentication, network and timeout failures are not evidence
+                // that the image lacks a shell, and must not trigger fallback.
+                guard error is ArcaneShellUnavailable || error is ArcaneTerminalClosed else { throw error }
+            }
+        }
+        throw ArcaneFailure(message: fallback ? "未找到可用 Shell。此容器可能没有安装 Shell，可尝试自定义路径。" : "所选 Shell 不存在或无法启动，请选择其他 Shell。")
+    }
+
+    static func probe(channel: any ArcaneTerminalChannel, shell: String, seconds: UInt64 = 8,
+                      token: String = UUID().uuidString.replacingOccurrences(of: "-", with: "")) async throws -> (available: [String], output: Data) {
+        let paths = [shell] + candidates.filter { $0 != shell }
+        let script = "export TERM=xterm-256color; printf '\\036\(token):shells:'; for p in \(paths.map(ArcaneCommandDefinition.quote).joined(separator: " ")); do if [ -x \"$p\" ]; then printf '%s,' \"$p\"; fi; done; printf '\\037'\r"
+        let marker = Data("\u{1e}\(token):shells:".utf8)
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: (available: [String], output: Data).self) { group in
+                group.addTask {
+                    try await channel.open()
+                    try await channel.send(Data(script.utf8))
+                    var bytes = Data()
+                    while true {
+                        try Task.checkCancellation()
+                        bytes.append(try await channel.receive())
+                        if let start = bytes.range(of: marker), let end = bytes[start.upperBound...].firstIndex(of: 0x1f) {
+                            let found = String(decoding: bytes[start.upperBound..<end], as: UTF8.self).split(separator: ",").map(String.init)
+                            let available = paths.filter { found.contains($0) || $0 == shell }
+                            return (available, Data(bytes[bytes.index(after: end)...]))
+                        }
+                        guard bytes.count <= 65_536 else { throw ArcaneFailure(message: "无法确认 Shell 启动状态，终端初始化输出过长。") }
+                    }
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                    channel.close()
+                    throw ArcaneFailure(message: "Shell 探测超时，请检查终端连接；超时不代表容器没有 Shell。")
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        } onCancel: { channel.close() }
+    }
+}
+
 final class ArcaneSocketTerminal: ArcaneTerminalChannel, @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     deinit { socket.cancel(with: .goingAway, reason: nil) }
@@ -42,12 +111,17 @@ final class ArcaneSocketTerminal: ArcaneTerminalChannel, @unchecked Sendable {
             case .data(let data): return data
             case .string(let text):
                 if text.hasPrefix("Error creating exec:") || text.hasPrefix("Error attaching to exec:") {
+                    let lower = text.lowercased()
+                    if lower.contains("no such file or directory") || lower.contains("executable file not found") || lower.contains("not found in $path") {
+                        throw ArcaneShellUnavailable()
+                    }
                     throw ArcaneFailure(message: "无法启动容器终端，所选 Shell 可能不存在或无法执行。\n" + String(text.prefix(2000)))
                 }
                 return Data(text.utf8)
             @unknown default: return Data()
             }
         } catch let failure as ArcaneFailure { throw failure }
+        catch let failure as ArcaneShellUnavailable { throw failure }
         catch { throw mapped(error) }
     }
     func send(_ data: Data) async throws {

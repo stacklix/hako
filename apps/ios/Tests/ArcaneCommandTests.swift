@@ -9,8 +9,10 @@ private final class TestTerminal: ArcaneTerminalChannel, @unchecked Sendable {
     let hold: Bool
     let openError: Error?
     let failSend: Int?
-    init(_ frames: [Data], hold: Bool = false, openError: Error? = nil, failSend: Int? = nil) {
+    let replyToProbe: [String]?
+    init(_ frames: [Data], hold: Bool = false, openError: Error? = nil, failSend: Int? = nil, replyToProbe: [String]? = nil) {
         self.frames = frames; self.hold = hold; self.openError = openError; self.failSend = failSend
+        self.replyToProbe = replyToProbe
     }
     func open() async throws { if let openError { throw openError } }
     func receive() async throws -> Data {
@@ -22,7 +24,15 @@ private final class TestTerminal: ArcaneTerminalChannel, @unchecked Sendable {
         }
     }
     private func record(_ data: Data) -> Bool {
-        lock.lock(); defer { lock.unlock() }; sent.append(data); return sent.count == failSend
+        lock.lock(); defer { lock.unlock() }; sent.append(data)
+        if let replyToProbe {
+            let text = String(decoding: data, as: UTF8.self)
+            if let start = text.range(of: "\\036"), let end = text.range(of: ":shells:", range: start.upperBound..<text.endIndex) {
+                let token = text[start.upperBound..<end.lowerBound]
+                frames.append(Data("\u{1e}\(token):shells:\(replyToProbe.joined(separator: ",")),\u{1f}$ ".utf8))
+            }
+        }
+        return sent.count == failSend
     }
     func send(_ data: Data) async throws { if record(data) { throw URLError(.networkConnectionLost) } }
     func resize(columns: Int, rows: Int) async throws { }
@@ -112,6 +122,37 @@ private actor OutputProbe {
             fatalError("Shell initialization did not time out")
         } catch let error as ArcaneFailure { precondition(!error.outcomeUnknown) }
         precondition(noShell.isClosed && noShell.messages.count <= 1, "Initialization failure must not send the actual command")
+
+        let shellMissing = TestTerminal([], openError: ArcaneShellUnavailable())
+        let bash = TestTerminal([], replyToProbe: ["/bin/bash", "/bin/zsh", "/untrusted/path"])
+        let discovered = try await ArcaneShellDiscovery.connect(preferred: "/bin/sh", fallback: true) { path in
+            if path == "/bin/sh" { return shellMissing }
+            precondition(path == "/bin/bash")
+            return bash
+        }
+        precondition(discovered.shell == "/bin/bash" && discovered.available == ["/bin/bash", "/bin/zsh"])
+        precondition(discovered.output == data("$ ") && !bash.isClosed && shellMissing.isClosed)
+        discovered.channel.close()
+        let splitProbe = TestTerminal([data("echo '\\036probe:shells:'"), data("\u{1e}pro"), data("be:shells:/bin/sh,/bin/ash,"), data("\u{1f}prompt")])
+        let splitResult = try await ArcaneShellDiscovery.probe(channel: splitProbe, shell: "/bin/sh", token: "probe")
+        precondition(splitResult.available == ["/bin/sh", "/bin/ash"] && splitResult.output == data("prompt"))
+        splitProbe.close()
+        for error in [ArcaneFailure(message: "denied", status: 403), ArcaneFailure(message: "network unavailable")] {
+            let denied = TestTerminal([], openError: error)
+            do {
+                _ = try await ArcaneShellDiscovery.connect(preferred: "/bin/sh", fallback: true) { path in
+                    precondition(path == "/bin/sh", "Network and permission errors must not trigger fallback")
+                    return denied
+                }
+                fatalError("Expected probe failure")
+            } catch let failure as ArcaneFailure { precondition(failure.message == error.message) }
+            precondition(denied.isClosed)
+        }
+        let timedOut = TestTerminal([], hold: true)
+        do {
+            _ = try await ArcaneShellDiscovery.probe(channel: timedOut, shell: "/bin/sh", seconds: 0)
+            fatalError("Expected probe timeout")
+        } catch { precondition(timedOut.isClosed) }
         let connection = try ArcaneConnection(name: "Test", address: "https://example.com/proxy", apiKey: "private").normalized()
         let request = try ArcaneSocketTerminal.request(connection, environment: "remote", container: "container", shell: "/bin/sh", columns: 120, rows: 40)
         precondition(request.url?.scheme == "wss" && request.url?.path == "/proxy/api/environments/remote/ws/containers/container/terminal")
