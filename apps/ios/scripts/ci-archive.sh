@@ -59,7 +59,9 @@ PROFILE_PATH="$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
 cp "$SIGNING_DIR/profile.mobileprovision" "$PROFILE_PATH"
 xcodebuild -version
 mkdir -p build/ci "$DIST"
-xcodebuild -project Hako.xcodeproj -scheme Hako -configuration Release -destination 'generic/platform=iOS' \
+# SwiftTerm's build-tool plugin generates its version information. The package
+# is pinned to an exact version in the project; CI has no interactive trust UI.
+xcodebuild -skipPackagePluginValidation -project Hako.xcodeproj -scheme Hako -configuration Release -destination 'generic/platform=iOS' \
   -archivePath build/ci/Hako.xcarchive -derivedDataPath build/ci/DerivedData \
   CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_IDENTITY="$IDENTITY" \
   PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \

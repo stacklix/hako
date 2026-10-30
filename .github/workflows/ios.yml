@@ -60,6 +60,10 @@ jobs:
           /tmp/hako-arcane-editor-lines-tests
           swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
           /tmp/hako-arcane-host-tests
+          swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Tests/ArcaneCommandTests.swift -o /tmp/hako-arcane-command-tests
+          /tmp/hako-arcane-command-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Hako/Containers/ArcaneCommandsData.swift Tests/ArcaneCommandDataTests.swift -o /tmp/hako-arcane-command-data-tests
+          /tmp/hako-arcane-command-data-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

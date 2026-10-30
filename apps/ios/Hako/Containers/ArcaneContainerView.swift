@@ -46,7 +46,7 @@ struct ArcaneContainerView: View {
     private var statsKey: String { taskKey + "-\(isRunning)-\(revision)" }
     private var logsKey: String { taskKey + "-\(tab)-\(following)-\(revision)" }
     private var managementProtected: Bool { details?.redeployDisabled ?? container.redeployDisabled ?? false }
-    private var canAct: Bool { details != nil && !managementProtected && !loading && !store.operationRunning && !store.fileSaveRunning && store.pending == nil && !checkingUpdate && !exporting }
+    private var canAct: Bool { details != nil && !managementProtected && !loading && !store.operationRunning && !store.fileSaveRunning && store.terminalSessionID == nil && store.pending == nil && !checkingUpdate && !exporting }
     private var operationStatus: ArcaneOperationStatus? {
         store.operationStatus(environmentID: environment.id, containerID: containerID)
     }
@@ -77,11 +77,13 @@ struct ArcaneContainerView: View {
             if let error = error ?? data.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() } }
             if tab == "overview" { overview }
             else if tab == "logs" { logs }
-            else {
+            else if tab == "files" {
                 ArcaneProjectFilesSection(store: store, environment: environment.id,
                     projectName: details?.project ?? container.project,
                     workingDir: details?.composeInfo?.workingDir ?? container.labels?["com.docker.compose.project.working_dir"], refreshID: revision,
                     scrollToFile: scrollToFile, openEditor: { fileEditor = $0 }, openMutation: { fileMutation = $0 })
+            } else if let details {
+                ArcaneCommandsSection(store: store, environment: environment, details: details)
             }
             if let details, !managementProtected {
                 Section {
@@ -117,11 +119,12 @@ struct ArcaneContainerView: View {
     }
 
     private var detailTabs: some View {
-        HakoUnderlineTabs(title: "详情页签", options: ["overview", "logs", "files"], selection: $tab) {
+        HakoUnderlineTabs(title: "详情页签", options: ["overview", "logs", "files", "commands"], selection: $tab) {
             switch $0 {
             case "overview": return "概览"
             case "logs": return "日志"
-            default: return "文件"
+            case "files": return "文件"
+            default: return "操作"
             }
         }
     }

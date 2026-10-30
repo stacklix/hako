@@ -1,6 +1,6 @@
 # Hako iOS
 
-个人 iPhone 模块化工具箱，Bundle ID：`me.stackli.hako`。SwiftUI + SwiftData，最低 iOS 26.4，Xcode 26.4 或更新版本。无第三方依赖。首页包含「使用时间」模块；提供原始 Logo 和方形 App 图标。
+个人 iPhone 模块化工具箱，Bundle ID：`me.stackli.hako`。SwiftUI + SwiftData，最低 iOS 26.4，Xcode 26.4 或更新版本。容器终端使用 SwiftTerm v1.99.2（Swift Package Manager 固定版本）。首页包含「使用时间」模块；提供原始 Logo 和方形 App 图标。
 
 本目录为 Hako 的 iOS 应用，以下命令均从 `apps/ios/` 执行。在仓库根目录先运行 `cd apps/ios`。返回 [仓库说明](../../README.md)。
 

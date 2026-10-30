@@ -6,6 +6,10 @@
 	objectVersion = 71;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A00000000000000000000032 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000031 /* SwiftTerm */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		A00000000000000000000006 /* Hako.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Hako.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -19,6 +23,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00000000000000000000032 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -61,6 +66,7 @@
 			);
 			name = Hako;
 			productName = Hako;
+			packageProductDependencies = (A00000000000000000000031 /* SwiftTerm */,);
 			productReference = A00000000000000000000006 /* Hako.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -83,6 +89,7 @@
 				"zh-Hans",
 			);
 			mainGroup = A00000000000000000000002;
+			packageReferences = (A00000000000000000000030 /* SwiftTerm */,);
 			productRefGroup = A00000000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -111,6 +118,18 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A00000000000000000000030 /* SwiftTerm */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {kind = exactVersion; version = 1.99.2; };
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000031 /* SwiftTerm */ = {isa = XCSwiftPackageProductDependency; package = A00000000000000000000030 /* SwiftTerm */; productName = SwiftTerm; };
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A00000000000000000000020 /* Debug */ = {

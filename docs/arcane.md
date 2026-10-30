@@ -22,6 +22,7 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 | 详情、配置及 CPU／内存／网络监控 | `containers:read` |
 | 主机资源、系统与 Docker 信息 | `system:read`，授予对应环境 |
 | 主机信息中的网络端口 | `containers:list`，授予对应环境 |
+| 容器终端、预设与自定义命令 | `containers:exec`，以及执行前状态核对所需的 `containers:read` |
 | 实时日志、导出 Docker 留存日志 | `containers:logs` |
 | 启动、停止、重启 | `containers:start`、`containers:stop`、`containers:restart` |
 | 检查镜像更新 | `image-updates:check` |
@@ -103,6 +104,22 @@ Arcane 自身容器依据服务端的 `redeployDisabled` 保护标记隐藏整�
 
 同一时间只提交一个操作。提交前保存不含密钥的待确认记录；网络超时、服务端 5xx、已接受但未完成或重建响应缺少新 ID 时保留记录，阻止直接重复提交。不自动重试写操作，活动记录的成功状态也不代替实际请求结果。重启请求保存操作前的服务端启动时间；结果待确认时，以及后续列表刷新后，额外查询容器详情。仅在同一容器当前运行、启动时间确实晚于基线时清除待确认记录，并说明已核对当前状态；旧记录无基线时要求启动时间晚于保存的请求时间。单凭「运行中」、活动记录或列表中缺少容器均不自动判断成功。顶部提示卡片提供「核对状态」「已核对，清除提示」，后者供用户独立核对后手动清除。后台、关闭 App 或网络断开不代表服务端操作取消。
 
+## 容器操作与终端
+
+详情新增「操作」Tab，原有「管理」区域保留。Caddy（按镜像仓库末段或容器名识别）提供「配置检查」「重载配置」，默认容器内路径为 `/etc/caddy/Caddyfile`，重载前使用包含主机、容器及操作名称的原生 Alert 确认。Caddyfile 格式带 `--adapter caddyfile`，选择原生 JSON 时省略 adapter；重载使用可配置的管理地址，默认 `localhost:2019`。
+
+每个容器可新增、编辑、删除自定义操作。模板中的 `{{参数标识}}` 是参数列表的唯一来源，重复标识合并，修改模板自动同步列表；参数本身没有增删或修改标识的控件。名称、类型、默认值、必填和选项仍可设置，同一编辑会话暂时移除再加回的标识保留设置。支持文本、数字、选项、开关和密码，密码默认值与执行值不写入 UserDefaults。模板保存在本机，按连接、环境和 Compose 项目／服务隔离；非 Compose 容器按容器名关联，重建后可继续使用。
+
+参数按 POSIX shell 单个字面量转义；占位符必须在引号外独立使用（或写成 `--option={{value}}`），不支持在带参数模板中使用 here-document 或反引号。单项最多 24 个参数，展开并包装后的单行执行脚本最多 3500 字节。交互式命令应从「进入终端」执行。
+
+命令与交互终端均连接 `GET /api/environments/{env}/ws/containers/{id}/terminal`，API Key 仅在请求头中传递。执行前重新核对容器仍处于运行状态。预设命令在 `/bin/sh` 中执行，先用 `stty -echo` 关闭输入回显，确认初始化后才发送实际命令；容器缺少 sh／stty 时显示错误，不发送实际命令。利用随机控制记录读取退出码，支持分帧、UTF-8 跨帧和非零退出码；不会将连接关闭或输出中的文字当作成功。等待超过 120 秒或发送后断线显示「结果待确认」，不重试；该页面需用户核对后才允许再次执行。
+
+结果同页显示输出、退出码、开始时间及耗时，支持复制。每个容器保留本次 App 运行期间最近 20 次结果，最多显示前 256 KB 输出；记录不跨 App 重启恢复。密码参数操作在完成后显示脱敏输出，其他操作逐步显示输出；API Key 与密码不进入可复制结果。
+
+交互终端使用原生 UIKit [SwiftTerm v1.99.2](https://github.com/migueldeicaza/SwiftTerm/tree/v1.99.2)，固定依赖版本，通过 Swift Package Manager 引入。直接在终端光标处输入，支持原生终端控制序列、Unicode、选择复制和粘贴。底部快捷栏提供 Ctrl、Esc、Tab、Ctrl+C、方向键、粘贴和回车。方向键使用当前终端模式的序列，回车发送 CR；输入逐字节传输，保留服务端 Shell 的当前目录、历史与补全行为，`vim`／`top` 等交互程序需容器内存在。窗口与键盘导致的行列变化通过 resize 消息传递。
+
+终端可选择 sh、bash、ash 或自定义绝对路径；切换 Shell 需断开后手动重连。sh／bash／ash／zsh 会话自动设置 `TERM=xterm-256color`，Arcane 当前没有 Exec 环境变量参数，因此通过一次 Shell 初始化命令设置。断线不自动重连或重放输入，关闭、进入后台和连接配置变化均释放会话；关闭时使用原生 Alert 确认。终端／命令执行期间，与文件写入和容器生命周期操作互斥；每个连接租约有独立标识，旧任务不能释放新会话。第三方许可随 App 打包于 `Resources/SwiftTerm-LICENSE.txt`。SwiftTerm 的构建插件需要 CI 非交互授权，归档脚本使用 `-skipPackagePluginValidation`；版本在 Xcode 工程中固定。
+
 ## 验证
 
 Windows 本机跳过 iOS 编译、归档、签名和安装。可运行现有安装页测试：
@@ -127,6 +144,10 @@ swiftc Hako/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swif
 /tmp/hako-arcane-editor-lines-tests
 swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
 /tmp/hako-arcane-host-tests
+swiftc Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Tests/ArcaneCommandTests.swift -o /tmp/hako-arcane-command-tests
+/tmp/hako-arcane-command-tests
+swiftc -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Hako/Containers/ArcaneCommandsData.swift Tests/ArcaneCommandDataTests.swift -o /tmp/hako-arcane-command-data-tests
+/tmp/hako-arcane-command-data-tests
 ```
 
 测试覆盖配置与路径校验、Key 请求头、双类分页、容器模型、Docker CPU／内存／多接口网络计数、速率与计数重置、日志解码、权限错误、操作超时不重试、重建 ID、删除参数及重定向拒绝；加载回归测试覆盖会话复用、直接轮询容器、显式刷新环境、旧响应与旧错误隔离、取消后立即重载及容器替换。SwiftUI、Keychain、ATS、本地网络权限及真实实例兼容性仍需 iPhone 验收。

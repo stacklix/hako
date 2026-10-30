@@ -21,6 +21,7 @@ struct ArcaneContainerChange {
     @Published private(set) var operationRunning = false
     @Published private(set) var verifyingOperation = false
     @Published private(set) var fileSaveRunning = false
+    @Published private(set) var terminalSessionID: UUID?
     @Published private(set) var activeOperation: ArcanePendingOperation?
     @Published private(set) var operationMessage: String?
     @Published private(set) var operationLogs: [String] = []
@@ -69,7 +70,7 @@ struct ArcaneContainerChange {
     }
 
     func configure(_ value: ArcaneConnection) throws {
-        guard pending == nil, !operationRunning, !fileSaveRunning else { throw ArcaneFailure(message: "请先核对或等待当前操作完成，再修改连接。") }
+        guard pending == nil, !operationRunning, !fileSaveRunning, terminalSessionID == nil else { throw ArcaneFailure(message: "请先关闭终端并等待当前操作完成，再修改连接。") }
         var normalized = try value.normalized()
         if let connection, connection.address != normalized.address || connection.apiKey != normalized.apiKey || connection.allowHTTP != normalized.allowHTTP {
             normalized.id = UUID().uuidString
@@ -133,7 +134,7 @@ struct ArcaneContainerChange {
     }
 
     func start(_ action: ArcaneAction, container: ArcaneContainerDetails, environment: ArcaneEnvironment) {
-        guard pending == nil, !operationRunning, !fileSaveRunning else { return }
+        guard pending == nil, !operationRunning, !fileSaveRunning, terminalSessionID == nil else { return }
         if let reason = container.blockedReason(for: action) { operationMessage = reason; return }
         do {
             let client = try client()
@@ -171,12 +172,23 @@ struct ArcaneContainerChange {
     }
 
     func withFileSave(_ action: () async throws -> Void) async throws {
-        guard !operationRunning, !fileSaveRunning, pending == nil else {
+        guard !operationRunning, !fileSaveRunning, pending == nil, terminalSessionID == nil else {
             throw ArcaneFailure(message: "请先等待或核对当前操作，再保存文件。")
         }
         fileSaveRunning = true
         defer { fileSaveRunning = false }
         try await action()
+    }
+
+    func beginTerminalSession() throws -> UUID {
+        guard !operationRunning, !fileSaveRunning, pending == nil, terminalSessionID == nil else {
+            throw ArcaneFailure(message: "请先关闭其他终端，或等待并核对当前操作。")
+        }
+        let token = UUID(); terminalSessionID = token; return token
+    }
+
+    func endTerminalSession(_ token: UUID) {
+        if terminalSessionID == token { terminalSessionID = nil }
     }
 
     func acknowledgeUnknownOperation() {

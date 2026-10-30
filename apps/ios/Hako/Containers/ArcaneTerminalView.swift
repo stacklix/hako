@@ -1,0 +1,208 @@
+import SwiftUI
+import UIKit
+import SwiftTerm
+
+@MainActor private final class ArcaneTerminalData: ObservableObject {
+    @Published private(set) var connected = false
+    @Published private(set) var connecting = false
+    @Published private(set) var error: String?
+    @Published var control = false
+    weak var terminal: SwiftTerm.TerminalView?
+    private var channel: (any ArcaneTerminalChannel)?
+    private var reader: Task<Void, Never>?
+    private var writer: Task<Void, Never>?
+    private var lease: UUID?
+    private weak var store: ArcaneStore?
+    private var generation = UUID()
+    private var columns = 80
+    private var rows = 24
+    private var queuedBytes = 0
+
+    func connect(store: ArcaneStore, environment: String, details: ArcaneContainerDetails, shell: String, connectionID: String) {
+        guard !connected, !connecting else { return }
+        do {
+            let client = try store.client()
+            guard client.connection.id == connectionID else { throw ArcaneFailure(message: "Arcane 连接已变化，请返回详情页重新进入终端。") }
+            _ = try ArcaneSocketTerminal.request(client.connection, environment: environment, container: details.id, shell: shell, columns: columns, rows: rows)
+            lease = try store.beginTerminalSession(); self.store = store
+            let ticket = UUID(); generation = ticket; connecting = true; error = nil
+            reader = Task {
+                defer { if generation == ticket { finish() } }
+                do {
+                    let fresh = try await client.details(environment, id: details.id)
+                    try Task.checkCancellation()
+                    guard generation == ticket else { return }
+                    guard fresh.id == details.id, fresh.state?.status == "running", fresh.state?.running != false else { throw ArcaneFailure(message: "容器不在运行中，请返回并刷新状态。") }
+                    let channel = try ArcaneSocketTerminal(client: client, environment: environment, container: details.id, shell: shell, columns: columns, rows: rows)
+                    self.channel = channel
+                    try await channel.open(); try Task.checkCancellation()
+                    guard generation == ticket else { channel.close(); return }
+                    // Arcane's exec endpoint doesn't accept Docker Exec Env.
+                    // Advertise the actual emulator through standard POSIX shells.
+                    if ["sh", "bash", "ash", "zsh"].contains(URL(fileURLWithPath: shell).lastPathComponent) {
+                        try await channel.send(Data("export TERM=xterm-256color\r".utf8))
+                        try Task.checkCancellation()
+                        guard generation == ticket else { channel.close(); return }
+                    }
+                    connected = true; connecting = false
+                    terminal?.resetToInitialState(); terminal?.becomeFirstResponder()
+                    resize(columns: columns, rows: rows)
+                    while !Task.isCancelled && generation == ticket {
+                        let bytes = try await channel.receive()
+                        guard generation == ticket, !Task.isCancelled else { return }
+                        terminal?.feed(byteArray: Array(bytes)[...])
+                    }
+                } catch {
+                    if generation == ticket && !Task.isCancelled && !(error is ArcaneTerminalClosed) { self.error = client.redacted(error.localizedDescription) }
+                }
+            }
+        } catch { self.error = error.localizedDescription; finish() }
+    }
+    private func finish() {
+        channel?.close(); channel = nil; writer?.cancel(); writer = nil; queuedBytes = 0
+        reader = nil
+        connected = false; connecting = false; control = false
+        if let lease { store?.endTerminalSession(lease) }; lease = nil
+        terminal?.resignFirstResponder()
+    }
+    func disconnect() {
+        generation = UUID(); reader?.cancel(); reader = nil; finish()
+    }
+    func send(_ bytes: Data) {
+        guard connected, let channel else { return }
+        var data = bytes
+        if control, data.count == 1, let byte = data.first, (64...127).contains(byte) { data = Data([byte & 0x1f]); control = false }
+        guard queuedBytes + data.count <= 1_048_576 else { error = "输入队列已满，请等待发送完成后再粘贴。"; return }
+        queuedBytes += data.count
+        let prior = writer, ticket = generation, payload = data
+        writer = Task {
+            await prior?.value
+            guard !Task.isCancelled, ticket == generation else { return }
+            defer { if ticket == generation { queuedBytes -= payload.count } }
+            do { try await channel.send(payload) }
+            catch { if ticket == generation { self.error = error.localizedDescription; disconnect() } }
+        }
+    }
+    func resize(columns: Int, rows: Int) {
+        self.columns = max(2, min(1000, columns)); self.rows = max(2, min(1000, rows))
+        guard connected, let channel else { return }
+        let prior = writer, ticket = generation, cols = self.columns, lines = self.rows
+        writer = Task {
+            await prior?.value
+            guard !Task.isCancelled, ticket == generation else { return }
+            do { try await channel.resize(columns: cols, rows: lines) }
+            catch { if ticket == generation { self.error = error.localizedDescription; disconnect() } }
+        }
+    }
+    func key(_ name: String) {
+        guard connected, let terminal else { return }
+        terminal.becomeFirstResponder()
+        switch name {
+        case "↑": terminal.sendKeyUp()
+        case "↓": terminal.sendKeyDown()
+        case "←": terminal.sendKeyLeft()
+        case "→": terminal.sendKeyRight()
+        case "Esc": terminal.send(txt: "\u{1b}")
+        case "Tab": terminal.send(txt: "\t")
+        case "Ctrl+C": terminal.send(txt: "\u{03}")
+        case "回车": terminal.send(txt: "\r")
+        case "粘贴": terminal.paste(nil)
+        default: break
+        }
+    }
+}
+
+private struct ArcaneSwiftTerminal: UIViewRepresentable {
+    @ObservedObject var data: ArcaneTerminalData
+    @Environment(\.colorScheme) private var colorScheme
+    func makeCoordinator() -> Coordinator { Coordinator(data: data) }
+    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+        let view = SwiftTerm.TerminalView(frame: .zero, font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        view.terminalDelegate = context.coordinator
+        view.inputAccessoryView = nil
+        view.nativeBackgroundColor = .systemBackground; view.nativeForegroundColor = .label
+        view.caretColor = .label
+        data.terminal = view
+        return view
+    }
+    func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
+        uiView.nativeBackgroundColor = .systemBackground; uiView.nativeForegroundColor = .label; uiView.caretColor = .label
+        uiView.keyboardAppearance = colorScheme == .dark ? .dark : .light
+    }
+    static func dismantleUIView(_ uiView: SwiftTerm.TerminalView, coordinator: Coordinator) {
+        uiView.terminalDelegate = nil; coordinator.data.disconnect(); coordinator.data.terminal = nil
+    }
+    @MainActor final class Coordinator: NSObject, TerminalViewDelegate {
+        let data: ArcaneTerminalData
+        init(data: ArcaneTerminalData) { self.data = data }
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) { self.data.send(Data(data)) }
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) { data.resize(columns: newCols, rows: newRows) }
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) { }
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) { }
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) { }
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) { }
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) { }
+    }
+}
+
+struct ArcaneTerminalScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var store: ArcaneStore
+    let environment: ArcaneEnvironment
+    let details: ArcaneContainerDetails
+    let connectionID: String
+    @StateObject private var data = ArcaneTerminalData()
+    @State private var shell = "/bin/sh"
+    @State private var customShell = "/bin/zsh"
+    @State private var confirming = false
+    private var active: Bool { data.connected || data.connecting }
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Picker("Shell", selection: $shell) {
+                        Text("/bin/sh").tag("/bin/sh"); Text("/bin/bash").tag("/bin/bash"); Text("/bin/ash").tag("/bin/ash"); Text("自定义").tag("custom")
+                    }.disabled(active)
+                    Spacer()
+                    Text(data.connected ? "已连接" : data.connecting ? "正在连接…" : "已断开")
+                        .font(.caption).foregroundStyle(data.connected ? Color.green : .secondary)
+                }.padding(.horizontal)
+                if shell == "custom" {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Shell 路径").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("/bin/zsh", text: $customShell).accessibilityLabel("Shell 路径").disabled(active)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }.padding(.horizontal).padding(.bottom, 8)
+                }
+                if let error = data.error { Text(error).font(.footnote).foregroundStyle(.orange).padding(.horizontal).padding(.vertical, 6) }
+                Divider()
+                ArcaneSwiftTerminal(data: data)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button("Ctrl") { data.control.toggle(); data.terminal?.becomeFirstResponder() }
+                            .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
+                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
+                            Button(key) { data.key(key) }.accessibilityLabel(key == "回车" ? "终端回车" : key)
+                        }
+                    }.buttonStyle(.bordered).controlSize(.small).padding(10).disabled(!data.connected)
+                }.background(.bar)
+            }
+            .navigationTitle(details.displayName + " · 终端").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("关闭") { if active { confirming = true } else { dismiss() } } }
+                ToolbarItem(placement: .confirmationAction) { Button(active ? "断开" : "连接") { if active { data.disconnect() } else { connect() } } }
+            }
+            .alert("退出容器终端？", isPresented: $confirming) {
+                Button("断开并返回") { data.disconnect(); dismiss() }; Button("取消", role: .cancel) { }
+            } message: { Text("将断开 \(environment.displayName) · \(details.displayName) 的终端会话。") }
+        }
+        .privacySensitive().task { connect() }
+        .onDisappear { data.disconnect() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { data.disconnect() } }
+        .onChange(of: store.connection?.id) { _, _ in data.disconnect() }
+    }
+    private func connect() { data.connect(store: store, environment: environment.id, details: details, shell: shell == "custom" ? customShell : shell, connectionID: connectionID) }
+}
