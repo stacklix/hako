@@ -32,7 +32,14 @@ final class ArcaneSocketTerminal: ArcaneTerminalChannel, @unchecked Sendable {
     }
     func open() async throws {
         socket.resume()
-        do { try await socket.sendPing() } catch { throw mapped(error) }
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                socket.sendPing { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
+                }
+            }
+        } catch { throw mapped(error) }
     }
     func receive() async throws -> Data {
         do {
@@ -73,6 +80,7 @@ struct ArcaneExecDecoder {
     let token: String
     private(set) var ready = false
     private var buffer = Data()
+    init(token: String) { self.token = token }
     struct Event { var becameReady = false; var output = Data(); var exitCode: Int? }
     mutating func feed(_ data: Data) throws -> Event {
         buffer.append(data)
