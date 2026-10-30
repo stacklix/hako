@@ -41,7 +41,7 @@ struct ECSSettingsSheet: View {
             .disabled(!loaded || testing)
             .task {
                 do { draft = try ECSKeychain.load() ?? ECSConnection(); original = draft; loaded = true }
-                catch { error = error.localizedDescription; loaded = true }
+                catch { self.error = error.localizedDescription; loaded = true }
             }
             .onChange(of: draft) { _, _ in error = nil; result = nil }
         }
