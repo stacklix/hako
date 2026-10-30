@@ -157,15 +157,18 @@ final class ECSClient: @unchecked Sendable {
         // Log before validation so rejected provider addresses remain inspectable.
         // Never persist the raw signed URL, SessionId or SecurityToken.
         let address = (result["WebSocketUrl"] as? String).map(HakoLog.safeURL) ?? "[未返回 WebSocketUrl]"
-        HakoLog.record(.cloudServers, "阿里云返回终端连接地址", detail: "地址：\(address)\n预期主机：\(connection.region).axt.aliyuncs.com\n允许协议：wss；端口：省略",
+        HakoLog.record(.cloudServers, "阿里云返回终端连接地址", detail: "地址：\(address)\n使用接口返回的原始连接地址；允许协议：wss",
             secrets: [connection.accessKeyID, connection.accessKeySecret, connection.securityToken,
                       result["SecurityToken"] as? String ?? "", result["SessionId"] as? String ?? ""])
         guard let id = result["SessionId"] as? String, !id.isEmpty else { throw ECSFailure(message: "阿里云未返回终端会话 ID。") }
-        guard let text = result["WebSocketUrl"] as? String, let url = URL(string: text), url.scheme == "wss",
-              url.host == "\(connection.region).axt.aliyuncs.com", url.user == nil, url.password == nil, url.port == nil else {
-            HakoLog.record(.cloudServers, .error, "终端连接地址未通过校验", detail: "请在上一条地址日志中核对协议、主机和显式端口。")
+        // StartTerminalSession is the authority for the endpoint. Do not derive a
+        // hostname from RegionId or rewrite the signed URL returned over HTTPS.
+        guard let text = result["WebSocketUrl"] as? String, let url = URL(string: text), url.scheme?.lowercased() == "wss",
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+              url.port.map({ (1...65_535).contains($0) }) ?? true else {
+            HakoLog.record(.cloudServers, .error, "终端连接地址格式无效", detail: "接口需返回包含主机、有效端口且无用户密码的 wss 地址。")
             try? await endTerminal(id)
-            throw ECSFailure(message: "阿里云返回的终端连接地址不受支持。")
+            throw ECSFailure(message: "阿里云返回的终端连接地址格式无效。")
         }
         return (id, url)
     }

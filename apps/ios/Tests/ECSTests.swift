@@ -68,6 +68,7 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
         let snapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"interfaces":[],"processes":[],"truncated":false}"#.utf8))
         precondition(snapshot.memoryAvailable == nil && snapshot.sockets == nil)
         fails { _ = try ECSSnapshot.decode(Data(#"{"version":2,"time":100}"#.utf8)) }
+        connection.region = "cn-chengdu"
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ECSMockURLProtocol.self]
         let client = try ECSClient(connection: connection, session: URLSession(configuration: config))
         ECSMockURLProtocol.handler = { _ in
@@ -83,6 +84,7 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
         ECSMockURLProtocol.handler = { _ in (404, ["Code": "InvalidSessionId.NotFound"]) }
         try await client.endTerminal("ended-session")
         var cleanedRejectedSession = false
+        var returnedAddress = "https://cn-chengdu-axt.aliyuncs.com:443/session?sessionId=s-private-test&token=secret-test-token"
         ECSMockURLProtocol.handler = { request in
             var body = request.httpBody ?? Data()
             if body.isEmpty, let stream = request.httpBodyStream {
@@ -99,14 +101,43 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
                 return (200, [:])
             }
             return (200, ["SessionId": "s-private-test", "SecurityToken": "secret-test-token",
-                "WebSocketUrl": "wss://cn-hangzhou.axt.aliyuncs.com:443/session?sessionId=s-private-test&token=secret-test-token"])
+                "WebSocketUrl": returnedAddress])
         }
-        do { _ = try await client.startTerminal(); fatalError("Expected rejected explicit port") }
+        do { _ = try await client.startTerminal(); fatalError("Expected rejected non-WebSocket scheme") }
         catch { precondition(error is ECSFailure) }
         precondition(cleanedRejectedSession)
         let addressLog = HakoLogStore.shared.snapshot().entries.first { $0.message == "阿里云返回终端连接地址" }
-        precondition(addressLog?.detail.contains("cn-hangzhou.axt.aliyuncs.com:443/session") == true)
+        precondition(addressLog?.detail.contains("cn-chengdu-axt.aliyuncs.com:443/session") == true)
         precondition(addressLog?.detail.contains("s-private-test") == false && addressLog?.detail.contains("secret-test-token") == false)
+        // The API controls host/port/path, including endpoints not derived from
+        // RegionId. Preserve its full URL and signed query rather than rebuilding it.
+        for endpoint in [
+            "wss://cn-chengdu-axt.aliyuncs.com/session",
+            "wss://cn-chengdu.axt.aliyuncs.com/session",
+            "wss://cn-chengdu-axt.aliyuncs.com:443/session",
+            "wss://axt.cn-chengdu.aliyuncs.com:8443/terminal/session",
+            "wss://terminal.example.com/session"
+        ] {
+            returnedAddress = endpoint + "?sessionId=s-private-test&token=secret-test-token%2B%2F%3D&version=1"
+            cleanedRejectedSession = false
+            let lease = try await client.startTerminal()
+            precondition(lease.id == "s-private-test" && lease.url.absoluteString == returnedAddress)
+            precondition(!cleanedRejectedSession)
+            try await client.endTerminal(lease.id)
+        }
+        for rejected in [
+            "/session?token=secret-test-token",
+            "wss:///session",
+            "wss://cn-chengdu-axt.aliyuncs.com:70000/session",
+            "wss://user:password@cn-chengdu-axt.aliyuncs.com/session",
+            "ws://cn-chengdu-axt.aliyuncs.com/session",
+            "https://cn-chengdu-axt.aliyuncs.com/session"
+        ] {
+            returnedAddress = rejected; cleanedRejectedSession = false
+            do { _ = try await client.startTerminal(); fatalError("Expected rejected endpoint") }
+            catch { precondition(error is ECSFailure) }
+            precondition(cleanedRejectedSession)
+        }
         print("ECS signing, response mapping, snapshots and terminal protocol checks passed")
     }
 }
