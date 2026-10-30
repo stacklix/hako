@@ -257,6 +257,8 @@ final class ArcaneClient: @unchecked Sendable {
     }
 
     private func consumeSocket(_ request: URLRequest, consume: @escaping @Sendable (Data) async throws -> Void) async throws {
+        HakoLog.record(.containers, "开始实时连接", detail: HakoLog.safeURL(request.url?.absoluteString ?? ""), secrets: [connection.apiKey])
+        defer { HakoLog.record(.containers, "实时连接结束") }
         let socket = session.webSocketTask(with: request)
         socket.maximumMessageSize = 1_048_576
         try await withTaskCancellationHandler {
@@ -281,6 +283,7 @@ final class ArcaneClient: @unchecked Sendable {
                 throw CancellationError()
             } catch {
                 if Task.isCancelled { throw CancellationError() }
+                HakoLog.record(.containers, .error, "实时连接异常", detail: "HTTP \((socket.response as? HTTPURLResponse)?.statusCode ?? 0)")
                 if let failure = error as? ArcaneFailure { throw failure }
                 let code = (socket.response as? HTTPURLResponse)?.statusCode
                 if let code, code != 101 { throw failure(code, method: "GET") }
@@ -306,20 +309,30 @@ final class ArcaneClient: @unchecked Sendable {
 
     private func send(_ request: URLRequest) async throws -> Data {
         let mutation = request.httpMethod != "GET"
+        let started = Date.now
+        var outcome = "网络或响应异常"
+        var logLevel = HakoLogLevel.error
+        defer {
+            HakoLog.record(.containers, logLevel, "Arcane · \(request.httpMethod ?? "GET")",
+                detail: "\(HakoLog.safeURL(request.url?.absoluteString ?? ""))\n\(outcome)\n耗时：\(Int(Date.now.timeIntervalSince(started) * 1000)) ms",
+                secrets: [connection.apiKey])
+        }
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw ArcaneFailure(message: "Arcane 返回了无效响应。", outcomeUnknown: mutation)
             }
+            outcome = "HTTP \(http.statusCode)"
             guard (200..<300).contains(http.statusCode) else { throw failure(http.statusCode, method: request.httpMethod ?? "GET") }
             if mutation && http.statusCode == 202 {
                 throw ArcaneFailure(message: "Arcane 已接受操作，但尚未确认完成。请刷新状态并核对活动记录。", outcomeUnknown: true)
             }
             guard data.count <= 16 * 1_048_576 else { throw ArcaneFailure(message: "服务端响应过大，请在 Arcane 中检查资源数量。", outcomeUnknown: mutation) }
+            logLevel = .info
             return data
         } catch let error as ArcaneFailure { throw error }
         catch {
-            if Task.isCancelled && !mutation { throw CancellationError() }
+            if Task.isCancelled && !mutation { outcome = "请求已取消"; logLevel = .info; throw CancellationError() }
             if mutation {
                 throw ArcaneFailure(message: "网络请求未能确认完成，操作可能仍在 Arcane 执行。请先刷新状态并核对活动记录，不要直接重复操作。", outcomeUnknown: true)
             }

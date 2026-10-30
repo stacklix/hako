@@ -49,6 +49,14 @@ final class ECSClient: @unchecked Sendable {
     deinit { session.invalidateAndCancel() }
 
     func call(_ action: String, _ parameters: [String: String] = [:]) async throws -> [String: Any] {
+        let started = Date.now
+        var outcome = "网络或响应格式异常"
+        var level = HakoLogLevel.error
+        defer {
+            HakoLog.record(.cloudServers, level, "阿里云 API · \(action)",
+                detail: "\(outcome)\n地域：\(connection.region)\n耗时：\(Int(Date.now.timeIntervalSince(started) * 1000)) ms",
+                secrets: [connection.accessKeyID, connection.accessKeySecret, connection.securityToken])
+        }
         do {
             let (data, response) = try await session.data(for: ECSRPC.request(connection: connection, action: action, parameters: parameters))
             guard let http = response as? HTTPURLResponse, data.count <= 2_097_152,
@@ -58,6 +66,7 @@ final class ECSClient: @unchecked Sendable {
             if !(200...299).contains(http.statusCode) || object["Code"] != nil {
                 // Do not display provider error text: it may echo signed parameters.
                 let code = object["Code"] as? String ?? ""
+                outcome = "HTTP \(http.statusCode) · \(code)"
                 let message: String
                 switch code {
                 case "InvalidAccessKeyId.NotFound", "InvalidAccessKeyId": message = "RAM AccessKey ID 无效。"
@@ -73,8 +82,9 @@ final class ECSClient: @unchecked Sendable {
                 }
                 throw ECSFailure(message: message, code: code)
             }
+            outcome = "HTTP \(http.statusCode) · 成功"; level = .info
             return object
-        } catch is CancellationError { throw CancellationError() }
+        } catch is CancellationError { outcome = "请求已取消"; level = .info; throw CancellationError() }
         catch let failure as ECSFailure { throw failure }
         catch { if Task.isCancelled { throw CancellationError() }; throw ECSFailure(message: "无法连接阿里云，请检查网络后重试。") }
     }
@@ -144,9 +154,16 @@ final class ECSClient: @unchecked Sendable {
     func startTerminal() async throws -> (id: String, url: URL) {
         let result = try await call("StartTerminalSession", ["InstanceId.1": connection.instanceID, "Username": connection.username,
             "ConnectionType": "Internet", "ClientToken": UUID().uuidString])
+        // Log before validation so rejected provider addresses remain inspectable.
+        // Never persist the raw signed URL, SessionId or SecurityToken.
+        let address = (result["WebSocketUrl"] as? String).map(HakoLog.safeURL) ?? "[未返回 WebSocketUrl]"
+        HakoLog.record(.cloudServers, "阿里云返回终端连接地址", detail: "地址：\(address)\n预期主机：\(connection.region).axt.aliyuncs.com\n允许协议：wss；端口：省略",
+            secrets: [connection.accessKeyID, connection.accessKeySecret, connection.securityToken,
+                      result["SecurityToken"] as? String ?? "", result["SessionId"] as? String ?? ""])
         guard let id = result["SessionId"] as? String, !id.isEmpty else { throw ECSFailure(message: "阿里云未返回终端会话 ID。") }
         guard let text = result["WebSocketUrl"] as? String, let url = URL(string: text), url.scheme == "wss",
               url.host == "\(connection.region).axt.aliyuncs.com", url.user == nil, url.password == nil, url.port == nil else {
+            HakoLog.record(.cloudServers, .error, "终端连接地址未通过校验", detail: "请在上一条地址日志中核对协议、主机和显式端口。")
             try? await endTerminal(id)
             throw ECSFailure(message: "阿里云返回的终端连接地址不受支持。")
         }

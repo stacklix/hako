@@ -26,6 +26,7 @@ import Combine
 
     func connect(_ connection: ECSConnection) {
         guard !connecting, !connected, !cleaning else { return }
+        HakoLog.record(.cloudServers, "开始连接终端")
         do {
             let client = try ECSClient(connection: connection)
             let ticket = UUID(); generation = ticket
@@ -47,6 +48,7 @@ import Combine
                         try? await Task.sleep(for: .seconds(25))
                         guard !Task.isCancelled, generation == ticket, !connected else { return }
                         error = "等待云助手终端就绪超时。"; disconnect()
+                        HakoLog.record(.cloudServers, .error, "等待终端就绪超时")
                     }
                     while generation == ticket {
                         let message = try await socket.receive()
@@ -62,6 +64,7 @@ import Combine
                         if event.ready && !connected {
                             onReady?()
                             connected = true; connecting = false; deadline?.cancel(); deadline = nil
+                            HakoLog.record(.cloudServers, "终端已连接")
                             resize(columns: columns, rows: rows)
                             heartbeat = Task {
                                 while !Task.isCancelled {
@@ -117,9 +120,11 @@ import Combine
     }
     private func fail(_ failure: Error) {
         error = (failure as? ECSFailure)?.message ?? "终端连接已断开，请检查网络及云助手状态。"
+        HakoLog.record(.cloudServers, .error, "终端连接失败", detail: error ?? "")
         disconnect()
     }
     func disconnect() {
+        if connecting || connected { HakoLog.record(.cloudServers, "终端已断开") }
         if creating { cleaning = true }
         generation = UUID()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
@@ -135,6 +140,9 @@ import Combine
     }
     private func end(_ client: ECSClient, id: String) async {
         do { try await client.endTerminal(id) }
-        catch { self.error = "本机已断开，云端会话清理失败；请在阿里云控制台核对会话。" }
+        catch {
+            self.error = "本机已断开，云端会话清理失败；请在阿里云控制台核对会话。"
+            HakoLog.record(.cloudServers, .warning, "云端终端会话清理失败")
+        }
     }
 }

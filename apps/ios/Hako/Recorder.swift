@@ -7,6 +7,20 @@ import AppIntents
     private let syncDirectory = "screen-time"
     private var busy = false
     func run(collect: Bool, requestAuthorization: Bool = false) async throws -> String {
+        let operation = collect ? "采集使用时间并同步" : "合并本地与 GitHub 记录"
+        HakoLog.record(.usage, "开始\(operation)")
+        do {
+            let result = try await execute(collect: collect, requestAuthorization: requestAuthorization)
+            HakoLog.record(.usage, "\(operation)完成", detail: result)
+            return result
+        } catch {
+            // Provider error descriptions may contain response data. Record type/code only.
+            HakoLog.record(.usage, error is CancellationError ? .info : .error, "\(operation)\(error is CancellationError ? "已取消" : "失败")",
+                detail: "错误类型：\(String(reflecting: type(of: error)))\n错误代码：\((error as NSError).code)")
+            throw error
+        }
+    }
+    private func execute(collect: Bool, requestAuthorization: Bool) async throws -> String {
         guard !busy else { throw HakoError(message: "另一个记录或同步任务正在运行，请稍后重试。") }
         busy = true; defer { busy = false }
         let context = try Database.context()

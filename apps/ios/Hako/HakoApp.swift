@@ -62,12 +62,18 @@ struct HomeView: View {
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 }
+                Section("工具") {
+                    NavigationLink { HakoLogsView() } label: {
+                        Label("日志", systemImage: "doc.text.magnifyingglass")
+                    }
+                }
             }
             .navigationTitle("Hako")
             .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
         }.tint(.primary)
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
+                HakoLog.record(.hako, "应用进入前台")
                 await ConsoleClient.shared.restore()
             }
     }

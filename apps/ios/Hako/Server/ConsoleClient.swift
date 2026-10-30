@@ -195,6 +195,15 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
 
     private func request(_ path: String, method: String, body: [String: Any]?, token: String?, signed: Bool = true, nonce: String? = nil) async throws -> Data {
         guard let url = URL(string: serverURL + path), url.scheme == "https" else { throw HakoError(message: "请先在 Hako 设置的“服务器与登录”中配置 HTTPS 服务器。") }
+        let started = Date.now
+        let logSource: HakoLogSource = path.hasPrefix("/api/v1/agents") ? .devices : .hako
+        var outcome = "连接或请求准备失败"
+        var logLevel = HakoLogLevel.error
+        defer {
+            HakoLog.record(logSource, logLevel, "Hako 服务 · \(method)",
+                detail: "\(HakoLog.safeURL(url.absoluteString))\n\(outcome)\n耗时：\(Int(Date.now.timeIntervalSince(started) * 1000)) ms",
+                secrets: [token ?? "", nonce ?? ""])
+        }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
@@ -212,16 +221,19 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
             // URLSession uses URLError.cancelled for task cancellation; callers
             // already handle CancellationError silently and retain credentials.
             if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                outcome = "请求已取消"; logLevel = .info
                 throw CancellationError()
             }
             throw error
         }
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw HakoError(message: "服务器响应无效。") }
+        outcome = "HTTP \(http.statusCode)"
         guard (200..<300).contains(http.statusCode) else {
             struct Failure: Decodable { let error: String }
             throw ConsoleHTTPError(status: http.statusCode, code: (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "invalid_response")
         }
+        logLevel = .info
         return data
     }
 

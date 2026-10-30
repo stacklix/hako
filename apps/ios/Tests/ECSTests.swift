@@ -82,6 +82,31 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
         catch { precondition(!error.localizedDescription.contains("testsecret")) }
         ECSMockURLProtocol.handler = { _ in (404, ["Code": "InvalidSessionId.NotFound"]) }
         try await client.endTerminal("ended-session")
+        var cleanedRejectedSession = false
+        ECSMockURLProtocol.handler = { request in
+            var body = request.httpBody ?? Data()
+            if body.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var bytes = [UInt8](repeating: 0, count: 4_096)
+                while true {
+                    let count = stream.read(&bytes, maxLength: bytes.count)
+                    if count <= 0 { break }
+                    body.append(contentsOf: bytes.prefix(count))
+                }
+            }
+            if String(decoding: body, as: UTF8.self).contains("Action=EndTerminalSession") {
+                cleanedRejectedSession = true
+                return (200, [:])
+            }
+            return (200, ["SessionId": "s-private-test", "SecurityToken": "secret-test-token",
+                "WebSocketUrl": "wss://cn-hangzhou.axt.aliyuncs.com:443/session?sessionId=s-private-test&token=secret-test-token"])
+        }
+        do { _ = try await client.startTerminal(); fatalError("Expected rejected explicit port") }
+        catch { precondition(error is ECSFailure) }
+        precondition(cleanedRejectedSession)
+        let addressLog = HakoLogStore.shared.snapshot().entries.first { $0.message == "阿里云返回终端连接地址" }
+        precondition(addressLog?.detail.contains("cn-hangzhou.axt.aliyuncs.com:443/session") == true)
+        precondition(addressLog?.detail.contains("s-private-test") == false && addressLog?.detail.contains("secret-test-token") == false)
         print("ECS signing, response mapping, snapshots and terminal protocol checks passed")
     }
 }
