@@ -71,6 +71,7 @@ struct HomeView: View {
             .navigationTitle("Hako")
             .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
         }.tint(.primary)
+            .toggleStyle(SwitchToggleStyle(tint: .green))
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 HakoLog.record(.hako, "应用进入前台")
