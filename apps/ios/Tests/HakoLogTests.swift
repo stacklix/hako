@@ -2,6 +2,13 @@ import Foundation
 
 @main struct HakoLogTests {
     static func main() throws {
+        // Exercise both public call shapes: an unlabeled middle default argument
+        // cannot be omitted when the following argument is also unlabeled.
+        HakoLog.record(.hako, "default-level regression", detail: "safe detail")
+        HakoLog.record(.hako, .warning, "explicit-level regression")
+        let calls = HakoLogStore.shared.snapshot().entries
+        precondition(calls.contains { $0.message == "default-level regression" && $0.level == .info })
+        precondition(calls.contains { $0.message == "explicit-level regression" && $0.level == .warning })
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("hako-log-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }

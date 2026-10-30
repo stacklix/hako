@@ -87,7 +87,11 @@ final class HakoLogStore: @unchecked Sendable {
 }
 
 enum HakoLog {
-    static func record(_ source: HakoLogSource, _ level: HakoLogLevel = .info, _ message: String,
+    static func record(_ source: HakoLogSource, _ message: String, detail: String = "", secrets: [String] = []) {
+        record(source, .info, message, detail: detail, secrets: secrets)
+    }
+
+    static func record(_ source: HakoLogSource, _ level: HakoLogLevel, _ message: String,
                        detail: String = "", secrets: [String] = []) {
         HakoLogStore.shared.append(source: source, level: level, message: message, detail: detail, secrets: secrets)
     }
