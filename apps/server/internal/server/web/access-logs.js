@@ -36,13 +36,12 @@ function logBreakdown(title, values, firstLabel, leftTitle, leftKey, leftLabel, 
 async function loadLogHour(item) {
   const openSections = new Set(logSelection?.domain === item.domain && logSelection?.hour === item.hour ? Array.from(document.querySelectorAll('#logs-rankings details[open]'), el => el.dataset.key) : []);
   const generation = ++logDetailGeneration; logSelection = item;
-  $('logs-detail').hidden = false; $('logs-hour-title').textContent = `${item.domain} · ${item.hour ? logHourLabel(item.hour) : $('logs-range').selectedOptions[0].textContent + '汇总'}`;
+  $('logs-detail').hidden = false; $('logs-hour-title').textContent = `${item.domain} · ${logHourLabel(item.hour)}`;
   $('logs-hour-count').textContent = '正在加载排行…'; $('logs-rankings').replaceChildren();
   document.querySelectorAll('.log-hour-select').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.domain === item.domain && button.dataset.hour === item.hour)));
   try {
-    const params = new URLSearchParams({...logWindow, domain:item.domain});
-    if (item.hour) params.set('hour', item.hour);
-    const data = await api('access-logs/' + (item.hour ? 'hour' : 'rankings') + '?' + params);
+    const params = new URLSearchParams({...logWindow, domain:item.domain, hour:item.hour});
+    const data = await api('access-logs/hour?' + params);
     if (generation !== logDetailGeneration || !csrf) return;
     $('logs-hour-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 404 ${data.notFound.toLocaleString('zh-CN')} 次`;
     const missingColumns = node('div', undefined, 'log-columns');
@@ -57,7 +56,7 @@ async function loadLogHour(item) {
   } catch (error) { if (generation === logDetailGeneration && csrf) { $('logs-hour-count').textContent = '排行加载失败，请点击该行重试。'; logError(error); } }
 }
 async function refreshAccessLogs() {
-  if (!csrf) return;
+  if (currentPage !== 'access-logs' || !csrf) return;
   const generation = ++logsGeneration;
   // Invalidate an older detail response while filters are changing.
   logDetailGeneration++;
@@ -83,10 +82,11 @@ async function refreshAccessLogs() {
     $('logs-domain').value = selectedDomain;
     $('logs-hours').replaceChildren();
     if (data.truncated) $('logs-hours').append(node('p', '当前仅显示最近 2000 条小时记录，请选择域名缩小范围。', 'muted'));
-    const items = [...data.totals.map(item => ({...item,hour:''})), ...data.hours];
+    // Hour rows already include every request in the selected window; totals would count them again.
+    const items = data.hours;
     if (!items.length) { empty('logs-hours', '所选时间区间和域名暂无访问记录。'); $('logs-detail').hidden = true; logSelection = null; return; }
     $('logs-hours').append(logTable(['域名 / 时间（点击查看）', '访问量', '404'], items.map(item => {
-      const button = node('button', `${item.domain} · ${item.hour ? logHourLabel(item.hour) : '区间合计'}`, 'log-hour-select quiet');
+      const button = node('button', `${item.domain} · ${logHourLabel(item.hour)}`, 'log-hour-select quiet');
       button.type = 'button'; button.dataset.domain = item.domain; button.dataset.hour = item.hour;
       button.addEventListener('click', () => loadLogHour(item));
       return [button, item.visits.toLocaleString('zh-CN'), item.notFound.toLocaleString('zh-CN')];

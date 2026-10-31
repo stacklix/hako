@@ -1,5 +1,15 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const currentPage = window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
+function showPage() {
+  const agents = currentPage === 'agents';
+  $('agents-page').hidden = !agents;
+  $('access-logs').hidden = agents;
+  $('nav-' + currentPage).setAttribute('aria-current', 'page');
+  $('page-title').textContent = agents ? '设备代理' : '访问日志';
+  $('page-description').textContent = agents ? '管理设备、查看在线状态与调用设备能力。' : '查看 Caddy 访问统计、来源与请求排行。';
+  document.title = $('page-title').textContent + ' · Hako 管理控制台';
+}
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
 let qrRequest = null, qrTimer = null, qrCountdown = null, qrGeneration = 0, qrStarting = false;
 let requestAgentId = null;
@@ -50,7 +60,7 @@ function drawAgents() {
   }
 }
 async function refresh() {
-  if (refreshing || !csrf) return;
+  if (currentPage !== 'agents' || refreshing || !csrf) return;
   refreshing = true;
   try {
     agentListing = await api('agents');
@@ -122,4 +132,4 @@ $('request-form').addEventListener('submit', async event => {
   finally { button.disabled = false; }
 });
 setInterval(() => { if (!document.hidden && csrf) refresh().catch(e => notice(e.message)); },10000);
-document.addEventListener('DOMContentLoaded', async () => { try { const result = await api('session'); csrf = result.csrfToken; $('account').textContent = result.username; loggedIn(true); await refresh(); } catch (e) { loggedIn(false); if (e.message !== messages.admin_login_required) notice(e.message); await startQr(); } }, {once:true});
+document.addEventListener('DOMContentLoaded', async () => { showPage(); try { const result = await api('session'); csrf = result.csrfToken; $('account').textContent = result.username; loggedIn(true); await refresh(); } catch (e) { loggedIn(false); if (e.message !== messages.admin_login_required) notice(e.message); await startQr(); } }, {once:true});

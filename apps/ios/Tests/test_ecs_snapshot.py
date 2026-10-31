@@ -4,7 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 # Import the Linux reader on Windows without installing POSIX packages.
@@ -29,6 +29,36 @@ def stat(name='worker (job)', ticks=100, start=1000, rss=10, flags=0):
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_cpu_usage_includes_all_cores_without_double_counting_guests(self):
+        before = collector.cpu_counters('cpu 100 20 30 500 10 5 5 0 40 10\ncpu0 1 1 1 1')
+        after = collector.cpu_counters('cpu 120 20 40 570 10 5 5 0 60 10')
+        self.assertEqual(collector.cpu_usage(before, after), 30)
+        self.assertEqual(collector.cpu_usage(before, before), None)
+        self.assertIsNone(collector.cpu_usage(after, before))
+        self.assertIsNone(collector.cpu_counters('cpu missing'))
+        self.assertIsNone(collector.cpu_usage(None, after))
+        self.assertEqual(collector.cpu_usage([0] * 8, [0, 0, 0, 100, 0, 0, 0, 0]), 0)
+        self.assertEqual(collector.cpu_usage([0] * 8, [100, 0, 0, 0, 0, 0, 0, 0]), 100)
+        self.assertEqual(collector.cpu_usage([0, 0, 0, 0, 10, 0, 0, 0], [20, 0, 0, 80, 5, 0, 0, 0]), 20)
+
+    def test_overview_samples_cpu_and_preserves_weighted_disk_totals_when_truncated(self):
+        stat_reads = iter(['cpu 100 0 0 100 0 0 0 0', 'cpu 120 0 0 180 0 0 0 0'])
+        def read(path):
+            return next(stat_reads) if path.name == 'stat' else {'meminfo': 'MemTotal: 1000 kB\nMemAvailable: 250 kB',
+                'uptime': '10 5', 'loadavg': '0.1 0.2 0.3'}.get(path.name)
+        disks = [{'mount': '/', 'filesystem': 'ext4', 'total': 100, 'used': 90, 'available': 10},
+                 {'mount': '/data', 'filesystem': 'xfs', 'total': 900, 'used': 90, 'available': 810}]
+        with patch.object(collector, 'read', side_effect=read), patch.object(collector.time, 'sleep'), \
+             patch.object(collector, 'disks', return_value=disks):
+            result = json.loads(collector.collect('overview'))
+        self.assertEqual(result['cpuUsagePercent'], 20)
+        self.assertEqual((result['diskTotal'], result['diskUsed']), (1000, 180))
+        self.assertEqual((result['memoryTotal'], result['memoryAvailable']), (1024000, 256000))
+        result['disks'] *= 100
+        bounded = json.loads(collector.bounded_output(result, limit=1000))
+        self.assertTrue(bounded['truncated'])
+        self.assertEqual((bounded['diskTotal'], bounded['diskUsed']), (1000, 180))
+
     def test_stat_handles_parentheses_and_pid_reuse(self):
         parsed = collector.process_stat(stat())
         self.assertEqual(parsed['name'], 'worker (job)')
@@ -153,6 +183,83 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(values[0]['pid'], 1260)
         self.assertIsNone(values[1]['pid'])
 
+    def docker_container(self, name='hako-server', host='0.0.0.0', protocol='tcp', port=8080, private=80):
+        return {'Names': ['/' + name], 'Ports': [{'IP': host, 'PublicPort': port, 'PrivatePort': private, 'Type': protocol}],
+                'NetworkSettings': {'Networks': {'bridge': {'IPAddress': '172.17.0.2', 'GlobalIPv6Address': ''},
+                                                 'extra': {'IPAddress': '172.18.0.2'}}}}
+
+    def proxy_args(self, host='0.0.0.0', protocol='tcp'):
+        return '\0'.join(['/usr/bin/docker-proxy', '-proto', protocol, '-host-ip', host,
+                           '-host-port', '8080', '-container-ip', '172.17.0.2', '-container-port', '80']) + '\0'
+
+    def test_docker_proxy_names_match_protocol_both_addresses_and_ports(self):
+        values = [{'process': 'docker-proxy', 'pid': 42, 'namespace': 'host'},
+                  {'process': 'docker-proxy', 'pid': 42, 'namespace': 'host'},
+                  {'process': 'nginx', 'pid': 7, 'namespace': 'host'}]
+        containers = [self.docker_container(), self.docker_container(name='udp-service', protocol='udp'),
+                      self.docker_container(name='other-ip', host='127.0.0.1'),
+                      self.docker_container(name='other-port', port=8081),
+                      self.docker_container(name='other-target', private=81)]
+        with patch.object(collector, 'read', return_value=self.proxy_args()), \
+             patch.object(collector, 'docker_containers', return_value=containers) as query:
+            collector.label_docker_proxies(values, 'process')
+        self.assertEqual([v['process'] for v in values], ['docker:hako-server', 'docker:hako-server', 'nginx'])
+        self.assertEqual(values[0]['pid'], 42)
+        self.assertEqual(query.call_count, 1)
+
+    def test_docker_proxy_ipv6_and_process_names(self):
+        values = [{'name': 'docker-proxy', 'pid': 42}]
+        args = self.proxy_args(host='::', protocol='udp').replace('-host-ip\0::', '-host-ip=::')
+        with patch.object(collector, 'read', return_value=args), \
+             patch.object(collector, 'docker_containers', return_value=[self.docker_container(host='::', protocol='udp')]):
+            collector.label_docker_proxies(values, 'name')
+        self.assertEqual(values[0]['name'], 'docker:hako-server')
+
+    def test_docker_proxy_failure_ambiguity_and_pid_reuse_keep_original(self):
+        for containers in ([], [self.docker_container(), self.docker_container(name='ambiguous')]):
+            values = [{'process': 'docker-proxy', 'pid': 42}]
+            with patch.object(collector, 'read', return_value=self.proxy_args()), \
+                 patch.object(collector, 'docker_containers', return_value=containers):
+                collector.label_docker_proxies(values, 'process')
+            self.assertEqual(values[0]['process'], 'docker-proxy')
+        with patch.object(collector, 'read', side_effect=[self.proxy_args(), '/usr/bin/another-process\0']), \
+             patch.object(collector, 'docker_containers', return_value=[self.docker_container()]):
+            collector.label_docker_proxies(values, 'process')
+        self.assertEqual(values[0]['process'], 'docker-proxy')
+
+    def test_docker_not_queried_without_readable_host_proxy(self):
+        with patch.object(collector, 'docker_containers') as query, patch.object(collector, 'read', return_value=None):
+            collector.label_docker_proxies([{'name': 'nginx', 'pid': 1}], 'name')
+            collector.label_docker_proxies([{'process': 'docker-proxy', 'pid': 1, 'namespace': 'net:[2]'}], 'process')
+            collector.label_docker_proxies([{'name': 'docker-proxy', 'pid': 1}], 'name')
+        query.assert_not_called()
+
+    def test_docker_api_uses_versioned_read_only_local_requests(self):
+        with patch.object(collector, 'docker_get', side_effect=[{'ApiVersion': '1.51'}, [self.docker_container()]]) as query:
+            self.assertEqual(len(collector.docker_containers()), 1)
+            self.assertEqual([call.args[0] for call in query.call_args_list], ['/version', '/v1.51/containers/json'])
+        with patch.object(collector.socket, 'AF_UNIX', getattr(collector.socket, 'AF_UNIX', 1), create=True), \
+             patch.object(collector.socket, 'socket') as factory:
+            connection = collector.DockerConnection()
+            connection.connect()
+            factory.return_value.connect.assert_called_once_with('/var/run/docker.sock')
+            connection.close()
+        with patch.object(collector, 'DockerConnection') as factory:
+            connection = factory.return_value
+            connection.getresponse.return_value.status = 200
+            connection.getresponse.return_value.read.return_value = b'{"ApiVersion":"1.51"}'
+            self.assertEqual(collector.docker_get('/version'), {'ApiVersion': '1.51'})
+            connection.request.assert_called_once_with('GET', '/version')
+            connection.getresponse.return_value.read.assert_called_once_with(2_097_153)
+            connection.getresponse.return_value.status = 403
+            self.assertIsNone(collector.docker_get('/version'))
+            connection.request.side_effect = PermissionError('denied')
+            self.assertIsNone(collector.docker_get('/version'))
+        with patch.object(collector, 'docker_get', return_value={'ApiVersion': '../../invalid'}) as query:
+            self.assertEqual(collector.docker_containers(), [])
+            self.assertEqual(query.call_count, 1)
+
+
     def test_disks_exclude_container_overlays_and_prefer_real_mounts(self):
         mounts = ('1 0 252:1 /var/lib/docker /srv/docker-bind rw - ext4 /dev/vda1 rw\n'
                   '2 0 0:201 / /var/lib/docker/rootfs/overlayfs/one rw - overlay overlay rw\n'
@@ -203,7 +310,7 @@ class SnapshotTests(unittest.TestCase):
                  'tcp LISTEN 0 128 [::]:443 [::]:*\n'
                  'tcp ESTAB 0 0 10.0.0.1:443 192.0.2.1:50000\n')
         with patch.object(collector, 'read', return_value=None), patch.object(collector.time, 'sleep'), \
-             patch.object(collector, 'sockets', return_value=(collector.parse_sockets(text), None)):
+             patch.object(collector, 'all_sockets', return_value=(collector.parse_sockets(text), None)):
             result = json.loads(collector.collect('network'))
         self.assertTrue(result['truncated'])
         self.assertEqual(result['socketSummary'], dict(outgoing=500, incoming=1, unknown=0))
@@ -214,23 +321,88 @@ class SnapshotTests(unittest.TestCase):
 
     def test_network_missing_ss_does_not_report_zero_connections(self):
         with patch.object(collector, 'read', return_value=None), patch.object(collector.time, 'sleep'), \
-             patch.object(collector, 'sockets', return_value=(None, 'ss unavailable')):
+             patch.object(collector, 'all_sockets', return_value=(None, 'ss unavailable')):
             result = json.loads(collector.collect('network'))
         self.assertIsNone(result['sockets'])
         self.assertEqual(result['socketError'], 'ss unavailable')
         self.assertNotIn('socketSummary', result)
 
-    def test_primary_interface_uses_default_route_not_bridge_sort_order(self):
-        routes = ('Iface Destination Gateway Flags RefCnt Use Metric Mask\n'
-                  'eth1 00000000 0100000A 0003 0 0 200 00000000\n'
-                  'eth0 00000000 0100000A 0003 0 0 100 00000000\n'
-                  'docker0 000011AC 00000000 0001 0 0 0 0000FFFF\n')
-        values = [{'name': name} for name in ('docker0', 'eth0', 'eth1', 'lo')]
-        with patch.object(collector, 'read', return_value=routes):
-            self.assertEqual(collector.primary_interface(values), 'eth0')
-        v6 = ' '.join(['0' * 32, '00', '0' * 32, '00', '0' * 32, '00000064', '00000000', '00000000', '00000001', 'eth1'])
-        with patch.object(collector, 'read', side_effect=lambda path: v6 if path.name == 'ipv6_route' else ''):
-            self.assertEqual(collector.primary_interface(values), 'eth1')
+    def test_network_only_returns_eth0(self):
+        counters = {name: dict(receive=100, send=200, receiveDrops=0, sendDrops=0)
+                    for name in ('docker0', 'lo', 'eth0', 'eth1')}
+        with patch.object(collector, 'interfaces', return_value=counters), patch.object(collector.time, 'sleep'), \
+             patch.object(collector, 'all_sockets', return_value=([], None)):
+            result = json.loads(collector.collect('network'))
+            self.assertEqual([v['name'] for v in result['interfaces']], ['eth0'])
+            self.assertEqual(result['primaryInterface'], 'eth0')
+            del counters['eth0']
+            result = json.loads(collector.collect('network'))
+            self.assertEqual(result['interfaces'], [])
+            self.assertIsNone(result['primaryInterface'])
+
+    def test_scoped_ipv4_and_dual_stack_listener(self):
+        values = collector.parse_sockets(
+            'tcp LISTEN 0 128 [::]:443 [::]:* v6only:0\n'
+            'tcp ESTAB 0 0 10.0.0.1%eth0:443 192.0.2.1:50000\n')
+        self.assertEqual(collector.connection_summary(values)['incoming'], 1)
+        values[0]['v6only'] = True
+        self.assertEqual(collector.connection_summary(values)['incoming'], 0)
+        values[0]['local'] = '0.0.0.0:443'
+        self.assertEqual(collector.connection_summary(values)['incoming'], 1)
+
+    def test_container_connections_and_namespace_isolation(self):
+        host = collector.parse_sockets('tcp ESTAB 0 0 10.0.0.1:443 192.0.2.1:443\n')
+        container = collector.parse_sockets('tcp LISTEN 0 128 *:443 *:*\n'
+            'tcp ESTAB 0 0 172.17.0.2:443 192.0.2.1:50000\n')
+        with patch.object(collector, 'network_namespaces', return_value=([('net:[2]', [42])], False)), \
+             patch.object(collector, 'PROC', PurePosixPath('/proc')), \
+             patch.object(collector.shutil, 'which', return_value='/usr/bin/nsenter'), \
+             patch.object(collector, 'sockets', side_effect=[(host, None), (container, None)]) as query:
+            values, error = collector.all_sockets()
+        self.assertIsNone(error)
+        self.assertIn('--net=/proc/42/ns/net', query.call_args.args[0])
+        self.assertEqual(collector.connection_summary(values), dict(incoming=1, outgoing=1, unknown=0))
+        self.assertEqual(values[-1]['namespace'], 'net:[2]')
+
+    def test_host_ports_exclude_container_listeners_but_keep_incoming_counts(self):
+        host = collector.parse_sockets('tcp LISTEN 0 128 0.0.0.0:443 *:*\n')
+        container = collector.parse_sockets('tcp LISTEN 0 128 *:8080 *:*\n'
+            'udp UNCONN 0 0 *:8081 *:*\n'
+            'tcp ESTAB 0 0 172.17.0.2:8080 192.0.2.1:50000\n')
+        for value in host:
+            value['namespace'] = 'host'
+        for value in container:
+            value['namespace'] = 'net:[2]'
+        with patch.object(collector, 'read', return_value=None), patch.object(collector.time, 'sleep'), \
+             patch.object(collector, 'all_sockets', return_value=(host + container, None)):
+            result = json.loads(collector.collect('network'))
+        self.assertEqual(result['socketSummary'], dict(incoming=1, outgoing=0, unknown=0))
+        self.assertEqual(result['totalListeningPorts'], 1)
+        self.assertEqual(result['totalSockets'], 2)
+        listeners = [v for v in result['sockets'] if collector.is_listener(v)]
+        self.assertEqual([v['local'] for v in listeners], ['0.0.0.0:443'])
+        self.assertEqual(result['sockets'][-1]['direction'], 'incoming')
+
+    def test_unreadable_container_is_partial_not_silent_zero(self):
+        with patch.object(collector, 'network_namespaces', return_value=([('net:[2]', [42])], False)), \
+             patch.object(collector.shutil, 'which', return_value='/usr/bin/nsenter'), \
+             patch.object(collector, 'sockets', side_effect=[([], None), (None, 'permission denied')]):
+            values, error = collector.all_sockets()
+        self.assertEqual(values, [])
+        self.assertIn('连接数可能偏少', error)
+
+    def test_namespace_discovery_deduplicates_host_and_container_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            links = {}
+            for name in ('self', '1', '2', '3', '4'):
+                (proc / name / 'ns').mkdir(parents=True)
+                links[str(proc / name / 'ns' / 'net')] = 'net:[1]' if name in ('self', '1') else 'net:[2]'
+            with patch.object(collector, 'PROC', proc), \
+                 patch.object(collector.os, 'readlink', side_effect=lambda path: links[str(path)]):
+                namespaces, incomplete = collector.network_namespaces()
+        self.assertEqual(namespaces, [('net:[2]', [2, 3, 4])])
+        self.assertFalse(incomplete)
 
     def test_disks_keep_overlay_only_when_it_is_the_root(self):
         mounts = ('1 0 0:100 / / rw - overlay overlay rw\n'
@@ -251,10 +423,15 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(decoded['totalProcesses'], 200)
         self.assertLess(len(decoded['processes']), 200)
 
-    def test_command_fits_cloud_assistant_limit(self):
+    def test_compressed_source_fits_cloud_assistant_limit(self):
         import base64
-        command = ("command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\n"
-                   "python3 - processes 0 4194304 <<'HAKO_ECS_SNAPSHOT'\n" + SCRIPT.read_text(encoding='utf-8') + '\nHAKO_ECS_SNAPSHOT\n')
+        import zlib
+        source = SCRIPT.read_bytes()
+        compressor = zlib.compressobj(wbits=-15)
+        payload = base64.b64encode(compressor.compress(source) + compressor.flush()).decode()
+        self.assertEqual(zlib.decompress(base64.b64decode(payload), -15), source)
+        command = "command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\npython3 - processes 0 4194304 <<'HAKO_ECS_SNAPSHOT'\nimport base64,zlib\n" + \
+            "exec(compile(zlib.decompress(base64.b64decode('" + payload + "'),-15),'hako-ecs-snapshot','exec'))\nHAKO_ECS_SNAPSHOT\n"
         self.assertLess(len(base64.b64encode(command.encode())), 24000)
 
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Requires live Linux /proc')

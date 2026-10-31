@@ -199,7 +199,7 @@ func TestAdminLoginRateLimit(t *testing.T) {
 func TestAdminEmbeddedPagesAndNoSecrets(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
-	for _, path := range []string{"/admin/", "/admin/app.js", "/admin/access-logs.js", "/admin/style.css"} {
+	for _, path := range []string{"/admin/", "/admin/agents", "/admin/access-logs", "/admin/app.js", "/admin/access-logs.js", "/admin/style.css"} {
 		status, data, res := a.request("GET", path, nil, "", "")
 		if status != 200 || len(data) == 0 || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") || res.Header.Get("Cache-Control") != "no-store" {
 			t.Fatal("embedded page or headers missing", path)

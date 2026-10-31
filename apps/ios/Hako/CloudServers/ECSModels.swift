@@ -63,6 +63,9 @@ struct ECSSnapshot: Decodable, Sendable {
     let version: Int
     let time: Double
     let hostname: String?
+    let cpuUsagePercent: Double?
+    let diskTotal: Double?
+    let diskUsed: Double?
     let kernel: String?
     let architecture: String?
     let uptime: Double?
@@ -118,6 +121,43 @@ struct ECSSnapshot: Decodable, Sendable {
     }
 }
 
+struct ECSOverviewUsage {
+    let cpu: Double?
+    let cpuIsSampled: Bool
+    let memory: Double?
+    let memoryUsed: Double?
+    let memoryTotal: Double?
+    let disk: Double?
+    let diskUsed: Double?
+    let diskTotal: Double?
+
+    init(snapshot: ECSSnapshot?, monitor: [ECSMonitorPoint], now: Date = .now) {
+        let sampled = snapshot?.cpuUsagePercent.flatMap(Self.validPercent)
+        let recent = monitor.filter {
+            now.timeIntervalSince($0.time) >= 0 && now.timeIntervalSince($0.time) <= 300 && $0.cpu.flatMap(Self.validPercent) != nil
+        }.max { $0.time < $1.time }
+        cpu = sampled ?? recent?.cpu
+        cpuIsSampled = sampled != nil
+        memoryTotal = snapshot?.memoryTotal
+        if let total = memoryTotal, let available = snapshot?.memoryAvailable,
+           total.isFinite, available.isFinite, available >= 0, available <= total {
+            memoryUsed = total - available
+        } else { memoryUsed = nil }
+        memory = Self.percent(used: memoryUsed, total: memoryTotal)
+        diskTotal = snapshot?.diskTotal
+        diskUsed = snapshot?.diskUsed
+        disk = Self.percent(used: diskUsed, total: diskTotal)
+    }
+
+    private static func validPercent(_ value: Double) -> Double? {
+        value.isFinite && (0...100).contains(value) ? value : nil
+    }
+    private static func percent(used: Double?, total: Double?) -> Double? {
+        guard let used, let total, used.isFinite, total.isFinite, total > 0, used >= 0, used <= total else { return nil }
+        return used / total * 100
+    }
+}
+
 struct ECSDisk: Decodable, Identifiable, Sendable {
     var id: String { mount }
     let mount: String
@@ -139,7 +179,7 @@ struct ECSInterface: Decodable, Identifiable, Sendable {
 }
 
 struct ECSSocket: Decodable, Identifiable, Sendable {
-    var id: String { "\(protocolName)|\(local)|\(peer)|\(state)|\(pid ?? 0)" }
+    var id: String { "\(namespace ?? "host")|\(protocolName)|\(local)|\(peer)|\(state)|\(pid ?? 0)" }
     let protocolName: String
     let state: String
     let local: String
@@ -147,6 +187,7 @@ struct ECSSocket: Decodable, Identifiable, Sendable {
     let pid: Int?
     let process: String?
     let direction: String?
+    let namespace: String?
     var listening: Bool { state == "LISTEN" || (protocolName == "udp" && state == "UNCONN") }
     var established: Bool { protocolName == "tcp" && ["ESTAB", "ESTABLISHED"].contains(state) }
 }

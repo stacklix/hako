@@ -1,27 +1,7 @@
 import Foundation
 
-struct ECSAccessBinding: Codable, Equatable {
-    var origin: String
-    var account: String
-    var domains: [String]
-
-    static func key(_ connection: ECSConnection) -> String {
-        "ecs.access.binding.\(connection.region).\(connection.instanceID)"
-    }
-    static func load(_ connection: ECSConnection) -> Self? {
-        guard let data = UserDefaults.standard.data(forKey: key(connection)) else { return nil }
-        return try? JSONDecoder().decode(Self.self, from: data)
-    }
-    func save(_ connection: ECSConnection) throws {
-        let value = Self(origin: origin, account: account, domains: Array(Set(domains)).sorted())
-        UserDefaults.standard.set(try JSONEncoder().encode(value), forKey: Self.key(connection))
-        UserDefaults.standard.set(UUID().uuidString, forKey: "ecs.access.revision")
-    }
-    func matches(origin: String, account: String) -> Bool { self.origin == origin && self.account == account }
-}
-
 enum ECSAccessRange: Int, CaseIterable, Identifiable {
-    case hour = 1, threeHours = 3, twelveHours = 12, day = 24, threeDays = 72, week = 168
+    case hour = 1, threeHours = 3, sixHours = 6, twelveHours = 12, day = 24, threeDays = 72, week = 168
     var id: Int { rawValue }
     var label: String { rawValue < 24 ? "近 \(rawValue) 小时" : "近 \(rawValue / 24) 天" }
 }

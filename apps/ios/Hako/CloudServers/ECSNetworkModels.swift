@@ -25,7 +25,7 @@ struct ECSListeningPort: Identifiable {
         return names.isEmpty ? "进程信息不可用" : names.joined(separator: "、")
     }
     static func grouped(_ sockets: [ECSSocket]) -> [Self] {
-        let groups = Dictionary(grouping: sockets.filter(\.listening)) {
+        let groups = Dictionary(grouping: sockets.filter { $0.listening && ($0.namespace == nil || $0.namespace == "host") }) {
             $0.protocolName + "|" + (ECSSocketEndpoint($0.local).map { String($0.port) } ?? $0.local)
         }
         return groups.values.map { values in
@@ -41,7 +41,7 @@ struct ECSListeningPort: Identifiable {
 enum ECSConnectionDirection: String, Identifiable {
     case outgoing, incoming
     var id: String { rawValue }
-    var title: String { self == .outgoing ? "主动连接" : "被连接" }
+    var title: String { self == .outgoing ? "主动连接" : "被动连接" }
     func count(_ summary: ECSConnectionCounts?) -> Int? { self == .outgoing ? summary?.outgoing : summary?.incoming }
     func sockets(_ values: [ECSSocket]) -> [ECSSocket] {
         values.filter { $0.established && $0.direction == rawValue }.sorted { $0.id < $1.id }

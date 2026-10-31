@@ -14,10 +14,10 @@ import Combine
         ticket = UUID(); loadedContext = ""; lastHour = nil; summary = nil; rankings = nil; error = nil; busy = false
     }
 
-    func refresh(connection: ECSConnection, client: ConsoleClient, range: ECSAccessRange = .day,
+    func refresh(client: ConsoleClient, range: ECSAccessRange = .day,
                  domain: String = "", hour: String? = nil) async {
         let id = UUID(); ticket = id
-        let context = "\(connection.region)|\(connection.instanceID)|\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)|\(range.rawValue)|\(domain)|\(UserDefaults.standard.string(forKey: "ecs.access.revision") ?? "")"
+        let context = "\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)|\(range.rawValue)|\(domain)"
         let selectionChanged = context == loadedContext && lastHour != hour
         lastHour = hour
         if context != loadedContext { summary = nil; rankings = nil; loadedContext = context }
@@ -25,11 +25,6 @@ import Combine
         error = nil; busy = true
         defer { if ticket == id { busy = false } }
         do {
-            guard let binding = ECSAccessBinding.load(connection), !binding.domains.isEmpty else { return }
-            guard binding.matches(origin: client.serverURL, account: client.username) else {
-                throw HakoError(message: "Hako 服务器或账号已切换，请重新关联访问统计域名。")
-            }
-            guard domain.isEmpty || binding.domains.contains(domain) else { return }
             let value: ECSAccessSummary
             if selectionChanged, let current = summary { value = current }
             else { value = try await client.accessLogs(ECSAccessSummary.self, range: range, domain: domain) }

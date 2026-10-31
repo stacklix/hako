@@ -52,7 +52,7 @@ func parseAccessLogWindow(r *http.Request, now time.Time) (accessLogWindow, erro
 		}
 	}
 	switch w.hours {
-	case 1, 3, 12, 24, 72, 168:
+	case 1, 3, 6, 12, 24, 72, 168:
 	default:
 		return w, fmt.Errorf("invalid range")
 	}

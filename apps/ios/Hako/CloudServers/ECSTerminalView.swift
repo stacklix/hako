@@ -6,10 +6,10 @@ struct ECSTerminalView: View {
     let connection: ECSConnection
     let active: Bool
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var data = ECSTerminalData()
+    @ObservedObject var data: ECSTerminalData
     var body: some View {
         ZStack {
-            ECSNativeTerminal(data: data)
+            ECSNativeTerminal(data: data, active: active && scenePhase == .active)
                 .allowsHitTesting(data.connected && active && scenePhase == .active)
                 .accessibilityHidden(!data.connected)
             if !data.connected { connectionOverlay }
@@ -28,9 +28,9 @@ struct ECSTerminalView: View {
             }
         }
         .privacySensitive()
-        .onDisappear { data.disconnect() }
+        .onDisappear { data.display.blur() }
         .onChange(of: active) { _, value in
-            if !value { data.disconnect() } else { recoverInput() }
+            if !value { data.display.blur() } else { recoverConnection() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { recoverConnection() }
@@ -59,10 +59,10 @@ struct ECSTerminalView: View {
                     Text(error).font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
                 }
                 if data.connecting {
-                    ProgressView("正在建立会话…")
+                    Text("正在建立会话…").foregroundStyle(.secondary)
                     Button("取消连接") { data.disconnect() }.buttonStyle(.bordered)
                 } else {
-                    if data.cleaning { ProgressView("正在结束上一次会话…") }
+                    if data.cleaning { Text("正在结束上一次会话…").foregroundStyle(.secondary) }
                     Button { data.connect(connection) } label: {
                         Text(data.error == nil ? "连接" : "重新连接")
                             .foregroundStyle(Color(uiColor: .systemBackground))
@@ -97,11 +97,13 @@ struct ECSTerminalView: View {
 
 private struct ECSNativeTerminal: UIViewRepresentable {
     @ObservedObject var data: ECSTerminalData
+    let active: Bool
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let view = ECSNativeTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         let coordinator = context.coordinator
+        coordinator.active = active
         view.terminalDelegate = coordinator
         view.inputAccessoryView = nil
         applyAppearance(view); coordinator.scheme = colorScheme
@@ -113,13 +115,16 @@ private struct ECSNativeTerminal: UIViewRepresentable {
     }
     func updateUIView(_ view: SwiftTerm.TerminalView, context: Context) {
         let coordinator = context.coordinator
+        let becameActive = active && !coordinator.active
+        coordinator.active = active
         if view.terminalDelegate == nil { view.terminalDelegate = coordinator }
         if !data.display.isAttached(coordinator) {
             coordinator.view = view; data.display.attach(coordinator)
         }
         if coordinator.scheme != colorScheme { applyAppearance(view); coordinator.scheme = colorScheme }
         view.keyboardAppearance = colorScheme == .dark ? .dark : .light
-        if data.connected && !coordinator.wasConnected { coordinator.focus() }
+        if active && data.connected && (!coordinator.wasConnected || becameActive) { coordinator.focus() }
+        if !active { coordinator.blur() }
         if !data.connected { coordinator.blur() }
         coordinator.wasConnected = data.connected
     }
@@ -140,13 +145,14 @@ private struct ECSNativeTerminal: UIViewRepresentable {
         weak var view: SwiftTerm.TerminalView?
         var scheme: ColorScheme?
         var wasConnected = false
+        var active = false
         private var focusTask: Task<Void, Never>?
         private var focusID = UUID()
         init(data: ECSTerminalData) { self.data = data }
         func reset() { view?.resetToInitialState() }
         func feed(_ bytes: Data) { view?.feed(byteArray: Array(bytes)[...]) }
         func focus() {
-            guard data.connected, let view else { return }
+            guard active, data.connected, let view else { return }
             focusTask?.cancel()
             let ticket = UUID(); focusID = ticket
             focusTask = Task { [weak self, weak view] in
@@ -155,7 +161,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
                 // UIKit can focus this view. Window attachment may happen later.
                 for _ in 0..<5 {
                     do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                    guard let self, let view, self.data.connected, self.data.display.isAttached(self), self.focusID == ticket else { return }
+                    guard let self, let view, self.active, self.data.connected, self.data.display.isAttached(self), self.focusID == ticket else { return }
                     if view.window?.isKeyWindow == true, view.bounds.width >= 32, view.bounds.height >= 32, view.isUserInteractionEnabled {
                         view.layoutIfNeeded()
                         if view.becomeFirstResponder() { view.reloadInputViews(); return }
@@ -169,7 +175,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
             view?.resignFirstResponder()
         }
         func key(_ key: String) {
-            guard data.connected, let view else { return }
+            guard active, data.connected, let view else { return }
             focus()
             switch key {
             case "↑": view.sendKeyUp()

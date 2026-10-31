@@ -15,7 +15,7 @@ import (
 
 func TestAccessLogRangePresets(t *testing.T) {
 	now := time.Date(2026, 10, 30, 14, 37, 25, 0, time.FixedZone("CST", 8*3600))
-	for _, hours := range []int{1, 3, 12, 24, 72, 168} {
+	for _, hours := range []int{1, 3, 6, 12, 24, 72, 168} {
 		request := httptest.NewRequest("GET", fmt.Sprintf("/?rangeHours=%d", hours), nil)
 		window, err := parseAccessLogWindow(request, now)
 		if err != nil || window.hours != hours || !window.to.Equal(now) || !window.from.Equal(now.Add(-time.Duration(hours)*time.Hour)) {
@@ -45,7 +45,7 @@ func TestAccessLogsRollingRangesAndRankings(t *testing.T) {
 	now := time.Now().Add(-10 * time.Second).Truncate(time.Second)
 	var data strings.Builder
 	// Each successive preset adds one older record. The 1-hour boundary shares an hour bucket.
-	for i, age := range []time.Duration{30 * time.Minute, 2 * time.Hour, 6 * time.Hour, 18 * time.Hour, 48 * time.Hour, 120 * time.Hour} {
+	for i, age := range []time.Duration{30 * time.Minute, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 18 * time.Hour, 48 * time.Hour, 120 * time.Hour} {
 		data.WriteString(logTestLine(now.Add(-age), "a.test", fmt.Sprintf("192.0.2.%d", i+1), fmt.Sprintf("UA-%d", i), fmt.Sprintf("/page-%d", i), 404))
 	}
 	data.WriteString(logTestLine(now.Add(-time.Hour-time.Second), "a.test", "192.0.2.99", "excluded", "/before-boundary", 200))
@@ -54,7 +54,7 @@ func TestAccessLogsRollingRangesAndRankings(t *testing.T) {
 	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
 	a.scan()
 	s := &Server{accessLogs: a}
-	for i, hours := range []int{1, 3, 12, 24, 72, 168} {
+	for i, hours := range []int{1, 3, 6, 12, 24, 72, 168} {
 		query := url.Values{"rangeHours": {fmt.Sprint(hours)}, "domain": {"a.test"}, "from": {now.Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339)}, "to": {now.Format(time.RFC3339)}}
 		rec := httptest.NewRecorder()
 		s.adminAccessLogs(rec, httptest.NewRequest("GET", "/?"+query.Encode(), nil))

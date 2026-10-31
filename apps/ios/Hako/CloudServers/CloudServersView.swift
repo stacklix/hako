@@ -3,17 +3,19 @@ import SwiftUI
 struct CloudServersView: View {
     @StateObject private var store = ECSStore()
     @StateObject private var access = ECSAccessStore()
+    @StateObject private var terminal = ECSTerminalData()
     @ObservedObject private var console = ConsoleClient.shared
-    @AppStorage("ecs.access.revision") private var accessRevision = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = ECSPage.overview
     @State private var settings = false
     @State private var visible = false
+    @State private var terminalPrepared = false
     @State private var group = ECSProcessGroup.all
     @State private var memorySort = false
+    @State private var selectedConnection: ECSNetworkConnectionSelection?
 
-    private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)|\(page.rawValue)" }
-    private var accessTaskKey: String { taskKey + "|\(accessRevision)|\(console.serverURL)|\(console.username)|\(console.authenticated)|\(console.logoutPending)" }
+    private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)" }
+    private var accessTaskKey: String { taskKey + "|\(console.serverURL)|\(console.username)|\(console.authenticated)|\(console.logoutPending)" }
     private var processRows: [ECSProcess] {
         (store.processes?.processes ?? []).filter { group == .all || $0.group == group }.sorted {
             let left = memorySort ? $0.memory : ($0.cpu ?? -1), right = memorySort ? $1.memory : ($1.cpu ?? -1)
@@ -34,25 +36,27 @@ struct CloudServersView: View {
                 }.padding(.horizontal, 18).padding(.top, 12)
                 HakoUnderlineTabs(title: "云服务器功能", options: ECSPage.allCases, selection: $page, label: { $0.rawValue })
                     .padding(.horizontal, 18)
-                if page == .terminal {
-                    // App scene changes do not end the screen's terminal session.
-                    ECSTerminalView(connection: connection, active: visible && !settings).id(store.revision)
-                } else {
-                    List {
-                        if let error = store.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }
-                        if store.busy { Section { ProgressView("正在查询…") } }
-                        switch page {
-                        case .overview: overview
-                        case .network: network
-                        case .processes: processes(connection)
-                        case .terminal: EmptyView()
+                ZStack {
+                    ECSTerminalView(connection: connection, active: visible && !settings && page == .terminal, data: terminal)
+                        .opacity(page == .terminal ? 1 : 0)
+                        .allowsHitTesting(page == .terminal)
+                        .accessibilityHidden(page != .terminal)
+                    if page != .terminal {
+                        List {
+                            if let error = store.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }
+                            switch page {
+                            case .overview: overview
+                            case .network: network
+                            case .processes: processes(connection)
+                            case .terminal: EmptyView()
+                            }
                         }
-                    }
-                    .contentMargins(.top, 24, for: .scrollContent)
-                    .refreshable {
-                        async let instance: Void = store.refresh(page)
-                        if page == .overview, let connection = store.connection { await access.refresh(connection: connection, client: console) }
-                        await instance
+                        .contentMargins(.top, 24, for: .scrollContent)
+                        .refreshable {
+                            async let instance: Void = store.refresh(page)
+                            if page == .overview { await access.refresh(client: console) }
+                            await instance
+                        }
                     }
                 }
             } else {
@@ -68,100 +72,109 @@ struct CloudServersView: View {
             }
         }
         .sheet(isPresented: $settings) { ECSSettingsSheet(store: store) }
+        .navigationDestination(item: $selectedConnection) { selection in
+            ECSNetworkConnectionsView(direction: selection.direction, snapshot: selection.snapshot)
+        }
         .onAppear { visible = true }
-        .onDisappear { visible = false }
+        .onDisappear { visible = false; terminalPrepared = false; terminal.disconnect() }
+        .onChange(of: settings) { _, showing in if showing { terminalPrepared = false; terminal.disconnect() } }
+        .onChange(of: store.revision) { _, _ in terminalPrepared = false; terminal.disconnect() }
         .task(id: taskKey) {
             store.load()
-            guard visible, scenePhase == .active, !settings, store.connection != nil, page != .terminal else { return }
+            guard visible, scenePhase == .active, !settings, store.connection != nil else { return }
             while !Task.isCancelled {
-                await store.refresh(page)
+                await store.refreshAll(includeOverview: false)
                 guard !Task.isCancelled else { return }
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
-        .task(id: accessTaskKey) {
-            guard visible, scenePhase == .active, !settings, page == .overview else { return }
+        .task(id: taskKey) {
             store.load()
-            guard let connection = store.connection else { return }
+            guard visible, scenePhase == .active, !settings, store.connection != nil else { return }
+            await store.pollUsage()
+        }
+        .task(id: taskKey) {
+            store.load()
+            guard visible, scenePhase == .active, !settings, !terminalPrepared, let connection = store.connection else { return }
+            while terminal.cleaning {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+            guard !Task.isCancelled else { return }
+            terminalPrepared = true
+            terminal.connect(connection)
+        }
+        .task(id: accessTaskKey) {
+            guard visible, scenePhase == .active, !settings else { return }
+            store.load()
+            guard store.connection != nil else { return }
             if !console.authenticated, !console.serverURL.isEmpty { await console.restore() }
             guard !Task.isCancelled else { return }
             while !Task.isCancelled {
-                await access.refresh(connection: connection, client: console)
+                await access.refresh(client: console)
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
     }
 
     @ViewBuilder private var overview: some View {
-        if let connection = store.connection {
+        let usage = ECSOverviewUsage(snapshot: store.overview, monitor: store.monitor)
+        Section {
+            HStack(alignment: .top, spacing: 12) {
+                ECSUsageGauge(title: "CPU 使用率", percent: usage.cpu, color: .blue,
+                              detail: usage.cpu == nil ? "—" : usage.cpuIsSampled ? "约 1 秒采样" : "1 分钟均值")
+                ECSUsageGauge(title: "内存使用率", percent: usage.memory, color: .purple,
+                              detail: capacity(used: usage.memoryUsed, total: usage.memoryTotal))
+                ECSUsageGauge(title: "磁盘使用率", percent: usage.disk, color: .orange,
+                              detail: capacity(used: usage.diskUsed, total: usage.diskTotal))
+            }.padding(.vertical, 8)
+        }
+        if store.connection != nil {
             Section("网站访问 · 近 24 小时") {
-                NavigationLink { ECSAccessView(connection: connection) } label: {
+                NavigationLink { ECSAccessView() } label: {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack { Text("访问统计").font(.headline); Spacer(); Text("查看详情").font(.caption).foregroundStyle(.secondary) }
-                        if let binding = ECSAccessBinding.load(connection), !binding.domains.isEmpty,
-                           binding.matches(origin: console.serverURL, account: console.username) {
-                            if console.authenticated, !console.logoutPending, let summary = access.summary {
-                                if summary.status.enabled {
-                                    let totals = summary.counts(domains: binding.domains)
-                                    ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, notFound: totals.reduce(0) { $0 + $1.notFound })
-                                    ECSAccessFreshness(status: summary.status)
-                                    Text("\(binding.domains.count) 个关联域名").font(.caption).foregroundStyle(.secondary)
-                                } else { Text("服务端尚未启用访问日志统计").font(.subheadline).foregroundStyle(.secondary) }
-                            } else if access.busy { ProgressView("读取访问统计…") }
-                            else { Text(access.error ?? "请先登录 Hako 服务器以读取统计").font(.footnote).foregroundStyle(.secondary) }
-                            if access.summary != nil, let error = access.error { Text(error).font(.caption).foregroundStyle(.orange) }
-                        } else { Text("关联此 ECS 的域名，查看请求量与 404").font(.subheadline).foregroundStyle(.secondary) }
+                        if console.authenticated, !console.logoutPending, let summary = access.summary {
+                            if summary.status.enabled {
+                                let totals = summary.counts(domains: summary.domains)
+                                ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, notFound: totals.reduce(0) { $0 + $1.notFound })
+                                ECSAccessFreshness(status: summary.status)
+                                Text("全部域名 · \(summary.domains.count) 个").font(.caption).foregroundStyle(.secondary)
+                            } else { Text("服务端尚未启用访问日志统计").font(.subheadline).foregroundStyle(.secondary) }
+                        } else if access.busy || console.authenticated {
+                            HStack { LabeledContent("HTTP 请求", value: "—"); LabeledContent("404", value: "—") }
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        } else { Text(access.error ?? "请先登录 Hako 服务器以读取统计").font(.footnote).foregroundStyle(.secondary) }
+                        if let error = access.error { Text(error).font(.caption).foregroundStyle(.orange) }
                     }.padding(.vertical, 4)
                 }
             }
         }
-        if let latest = store.monitor.last {
-            Section("资源使用 · 1 分钟均值") {
-                if let cpu = latest.cpu { LabeledContent("CPU", value: String(format: "%.1f%%", cpu)) }
-                if let read = latest.readBytesPerSecond { LabeledContent("磁盘读取", value: ECSFormat.rate(read)) }
-                if let write = latest.writeBytesPerSecond { LabeledContent("磁盘写入", value: ECSFormat.rate(write)) }
-                Text(latest.time, format: .dateTime.hour().minute()).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        if let snapshot = store.overview {
-            if let total = snapshot.memoryTotal, let available = snapshot.memoryAvailable, total > 0 {
-                Section("内存") {
-                    LabeledContent("已用 / 总量", value: "\(ECSFormat.bytes(max(0, total - available))) / \(ECSFormat.bytes(total))")
-                    ProgressView(value: min(1, max(0, (total - available) / total)))
-                }
-            }
-            if let disks = snapshot.disks, !disks.isEmpty {
-                Section("磁盘") {
-                    ForEach(disks) { disk in
-                        VStack(alignment: .leading, spacing: 7) {
-                            LabeledContent(disk.mount, value: "\(ECSFormat.bytes(disk.used)) / \(ECSFormat.bytes(disk.total))")
-                            if disk.total > 0 { ProgressView(value: min(1, max(0, disk.used / disk.total))) }
-                            Text(disk.filesystem).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            Section("系统信息") {
-                if let os = store.instance?.os, !os.isEmpty { LabeledContent("操作系统", value: os) }
-                if let kernel = snapshot.kernel { LabeledContent("内核", value: kernel) }
-                if let architecture = snapshot.architecture { LabeledContent("架构", value: architecture) }
-                if let cpu = store.instance?.cpu { LabeledContent("处理器", value: "\(cpu) vCPU") }
-                if let uptime = snapshot.uptime { LabeledContent("运行时长", value: ECSFormat.duration(uptime)) }
-                if let load = snapshot.load, !load.isEmpty { LabeledContent("负载 1 / 5 / 15 分", value: load.map { String(format: "%.2f", $0) }.joined(separator: " / ")) }
-                if let id = store.connection?.instanceID { LabeledContent("实例 ID", value: id) }
-            }
-            snapshotFooter(snapshot)
+        Section("系统信息") {
+            LabeledContent("操作系统", value: store.instance?.os ?? "—")
+            LabeledContent("内核", value: store.overview?.kernel ?? "—")
+            LabeledContent("架构", value: store.overview?.architecture ?? "—")
+            LabeledContent("处理器", value: store.instance?.cpu.map { "\($0) vCPU" } ?? "—")
+            LabeledContent("运行时长", value: store.overview?.uptime.map(ECSFormat.duration) ?? "—")
+            LabeledContent("负载 1 / 5 / 15 分", value: store.overview?.load.map { $0.map { String(format: "%.2f", $0) }.joined(separator: " / ") } ?? "—")
+            LabeledContent("实例 ID", value: store.connection?.instanceID ?? "—")
         }
     }
 
+    private func capacity(used: Double?, total: Double?) -> String {
+        guard let used, let total, used.isFinite, total.isFinite, used >= 0, total > 0, used <= total else { return "—" }
+        return "\(ECSFormat.bytes(used)) / \(ECSFormat.bytes(total))"
+    }
+
     @ViewBuilder private var network: some View {
-        ECSNetworkSections(snapshot: store.network, monitor: store.monitor)
+        ECSNetworkSections(snapshot: store.network, monitor: store.monitor) { direction, snapshot in
+            selectedConnection = ECSNetworkConnectionSelection(direction: direction, snapshot: snapshot)
+        }
         if let snapshot = store.network { snapshotFooter(snapshot) }
     }
 
     @ViewBuilder private func processes(_ connection: ECSConnection) -> some View {
-        if let snapshot = store.processes {
-            Section {
+        Section {
+            if let snapshot = store.processes {
                 ForEach(processRows) { process in
                     NavigationLink { ECSProcessDetails(initial: process, initialTime: snapshot.time, connection: connection) } label: {
                         HStack(alignment: .top, spacing: 16) {
@@ -177,10 +190,19 @@ struct CloudServersView: View {
                     }
                 }
                 if processRows.isEmpty { Text("本次返回记录中没有此类进程。").foregroundStyle(.secondary) }
-            } header: { processHeader }
-            Section { Text("CPU 按单核 100% 计；内存为 RSS。分类按启动来源推断，无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
-            snapshotFooter(snapshot)
-        }
+            } else {
+                HStack {
+                    Text("进程")
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 5) {
+                        Text("CPU —")
+                        Text("内存 —")
+                    }.font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } header: { processHeader }
+        Section { Text("CPU 按单核 100% 计；内存为 RSS。分类按启动来源推断，无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
+        if let snapshot = store.processes { snapshotFooter(snapshot) }
     }
 
     private var processHeader: some View {
@@ -188,7 +210,7 @@ struct CloudServersView: View {
             HStack(spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("进程").font(.headline).foregroundStyle(.primary)
-                    Text(processRows.count, format: .number).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                    Text(store.processes == nil ? "—" : processRows.count.formatted()).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
                 }.accessibilityElement(children: .combine)
                 Spacer(minLength: 8)
                 Menu {
@@ -256,7 +278,6 @@ private struct ECSProcessDetails: View {
     var body: some View {
         List {
             if let error { Section { Text(error).font(.footnote).foregroundStyle(.orange) } }
-            if busy { ProgressView("正在读取进程…") }
             Section("资源") {
                 if let cpu = process.cpu { LabeledContent("CPU · 单核 100%", value: String(format: "%.1f%%", cpu)) }
                 LabeledContent("内存 RSS", value: ECSFormat.bytes(process.memory))

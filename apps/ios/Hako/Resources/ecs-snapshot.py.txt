@@ -1,14 +1,17 @@
 """Read-only, one-shot Linux snapshots invoked through ECS Cloud Assistant.
 
-Uses an existing Python 3 and optional ss. No installation, network access,
+Uses an existing Python 3 and optional ss. No installation, remote network access,
 scheduled task, firewall change, or persistent collector is performed.
 """
 import ipaddress
+import http.client
 import json
 import os
 import platform
 import pwd
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -37,6 +40,31 @@ def number_fields(text):
             except ValueError:
                 pass
     return result
+
+
+def cpu_counters(text):
+    for line in (text or '').splitlines():
+        fields = line.split()
+        if fields and fields[0] == 'cpu':
+            try:
+                # guest and guest_nice are already included in user and nice.
+                values = [int(value) for value in fields[1:9]]
+                return values if len(values) == 8 and all(value >= 0 for value in values) else None
+            except ValueError:
+                return None
+    return None
+
+
+def cpu_usage(before, after):
+    if before is None or after is None:
+        return None
+    deltas = [end - start for start, end in zip(before, after)]
+    # iowait may decrease on Linux; clamp it without hiding resets of other counters.
+    if any(value < 0 for index, value in enumerate(deltas) if index != 4):
+        return None
+    deltas[4] = max(0, deltas[4])
+    total = sum(deltas)
+    return round((total - deltas[3] - deltas[4]) / total * 100, 2) if total > 0 else None
 
 
 def process_stat(text):
@@ -149,6 +177,9 @@ def parse_sockets(text):
         item = {'protocolName': fields[0], 'state': fields[1], 'local': fields[4][:200],
                 'peer': fields[5][:200], 'pid': int(match[2]) if match else None,
                 'process': match[1][:120] if match else None}
+        only = re.search(r'\bv6only:([01])\b', fields[6] if len(fields) > 6 else '')
+        if only:
+            item['v6only'] = only[1] == '1'
         key = (item['protocolName'], item['state'], item['local'], item['peer'], item['pid'])
         if key not in seen:
             seen.add(key)
@@ -156,15 +187,176 @@ def parse_sockets(text):
     return result
 
 
-def sockets():
+def sockets(prefix=None, timeout=5):
     try:
-        result = subprocess.run(['ss', '-H', '-n', '-t', '-u', '-a', '-p'],
-                                capture_output=True, text=True, timeout=5, check=False)
+        result = subprocess.run((prefix or []) + ['ss', '-H', '-n', '-t', '-u', '-a', '-p', '-e', '-O'],
+                                capture_output=True, text=True, timeout=timeout, check=False)
         if result.returncode != 0:
             return None, '无法查询连接，请检查 ss 工具和系统权限。'
         return parse_sockets(result.stdout), None
     except (OSError, subprocess.TimeoutExpired):
         return None, '无法查询连接，请检查系统已有 ss 工具和读取权限。'
+
+
+class DockerConnection(http.client.HTTPConnection):
+    def __init__(self):
+        super().__init__('localhost', timeout=2)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect('/var/run/docker.sock')
+
+
+def docker_get(path):
+    connection = DockerConnection()
+    try:
+        connection.request('GET', path)
+        response = connection.getresponse()
+        if response.status != 200:
+            return None
+        data = response.read(2_097_153)
+        return json.loads(data) if len(data) <= 2_097_152 else None
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    finally:
+        connection.close()
+
+
+def docker_containers():
+    # Local read-only Engine API only: never follow Docker contexts, DOCKER_HOST,
+    # redirects, or TCP endpoints. No credentials or container environment read.
+    version = docker_get('/version')
+    if not isinstance(version, dict) or not re.fullmatch(r'1\.\d+', str(version.get('ApiVersion', ''))):
+        return []
+    values = docker_get('/v' + version['ApiVersion'] + '/containers/json')
+    return values if isinstance(values, list) else []
+
+
+def docker_ip(value):
+    address = ipaddress.ip_address(value)
+    return str(getattr(address, 'ipv4_mapped', None) or address)
+
+
+def docker_proxy_target(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    args = (read(PROC / str(pid) / 'cmdline') or '').rstrip('\0').split('\0')
+    if not args or args[0].rsplit('/', 1)[-1] != 'docker-proxy':
+        return None
+    options = {}
+    wanted = {'proto', 'host-ip', 'host-port', 'container-ip', 'container-port'}
+    index = 1
+    while index < len(args):
+        key, separator, value = args[index].lstrip('-').partition('=')
+        if args[index].startswith('-') and key in wanted:
+            if not separator:
+                index += 1
+                if index >= len(args):
+                    return None
+                value = args[index]
+            if key in options:
+                return None
+            options[key] = value
+        index += 1
+    try:
+        host_port, container_port = int(options['host-port']), int(options['container-port'])
+        if options['proto'] not in ('tcp', 'udp') or not all(1 <= port <= 65535 for port in (host_port, container_port)):
+            return None
+        return (options['proto'], docker_ip(options['host-ip']), host_port,
+                docker_ip(options['container-ip']), container_port)
+    except (KeyError, ValueError):
+        return None
+
+
+def label_docker_proxies(values, name_key):
+    targets = {value.get('pid') for value in values if value.get(name_key) == 'docker-proxy'
+               and value.get('namespace', 'host') == 'host'}
+    if not targets:
+        return
+    targets = {pid: docker_proxy_target(pid) for pid in targets}
+    if not any(targets.values()):
+        return
+    names = {}
+    for container in docker_containers():
+        try:
+            name = container['Names'][0].lstrip('/')
+            if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,249}', name):
+                continue
+            addresses = {docker_ip(network[key])
+                         for network in container['NetworkSettings']['Networks'].values()
+                         for key in ('IPAddress', 'GlobalIPv6Address') if network.get(key)}
+            for port in container.get('Ports', []):
+                if not port.get('PublicPort') or not port.get('IP'):
+                    continue
+                for address in addresses:
+                    target = (port['Type'], docker_ip(port['IP']), int(port['PublicPort']), address, int(port['PrivatePort']))
+                    names.setdefault(target, set()).add(name)
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+            continue
+    resolved = {pid: 'docker:' + next(iter(names[target])) for pid, target in targets.items()
+                if target in names and len(names[target]) == 1}
+    # A proxy may have exited or its PID been reused during the API read.
+    resolved = {pid: name for pid, name in resolved.items() if docker_proxy_target(pid) == targets[pid]}
+    for value in values:
+        pid = value.get('pid')
+        if pid in resolved and value.get(name_key) == 'docker-proxy' and value.get('namespace', 'host') == 'host':
+            value[name_key] = resolved[pid]
+
+
+def network_namespaces():
+    """One representative PID per namespace; host-network containers share self."""
+    candidates = {}
+    incomplete = False
+    try:
+        own = os.readlink(PROC / 'self' / 'ns' / 'net')
+        for path in PROC.iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                name = os.readlink(path / 'ns' / 'net')
+                if name != own:
+                    candidates.setdefault(name, []).append(int(path.name))
+            except FileNotFoundError:
+                pass  # Processes can exit while taking a snapshot.
+            except OSError:
+                incomplete = True
+    except OSError:
+        return [], True
+    return [(name, sorted(pids)) for name, pids in sorted(candidates.items())], incomplete
+
+
+def all_sockets():
+    values, error = sockets()
+    if values is None:
+        return values, error
+    for value in values:
+        value['namespace'] = 'host'
+    namespaces, incomplete = network_namespaces()
+    nsenter = shutil.which('nsenter')
+    deadline = time.monotonic() + 8
+    if len(namespaces) > 32 or (namespaces and not nsenter):
+        incomplete = True
+    for name, pids in namespaces[:32] if nsenter else []:
+        rows = None
+        for pid in pids[:2]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # Pin the target namespace through its /proc file; never enter its
+            # mount namespace or run a container-provided executable.
+            rows, issue = sockets([nsenter, '--net=' + str(PROC / str(pid) / 'ns' / 'net'), '--'],
+                                  timeout=min(2, remaining))
+            if rows is not None:
+                break
+        if rows is None:
+            incomplete = True
+            continue
+        for value in rows:
+            value['namespace'] = name
+        values.extend(rows)
+    warning = '部分网络命名空间无法读取，连接数可能偏少；请检查 Linux 用户权限与 nsenter 工具。' if incomplete else None
+    return values, warning
 
 
 def socket_endpoint(value):
@@ -176,11 +368,14 @@ def socket_endpoint(value):
         host = host.strip('[]')
         if host == '*':
             return host, port, 0
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(host.split('%', 1)[0])
         # Preserve the socket family for matching an IPv6 wildcard listener,
         # while canonicalizing mapped addresses for exact-address comparison.
         mapped = getattr(address, 'ipv4_mapped', None)
-        return str(mapped or address), port, address.version
+        normalized = str(mapped or address)
+        if address.version == 6 and not mapped and '%' in host:
+            normalized += '%' + host.split('%', 1)[1]
+        return normalized, port, address.version
     except (ValueError, AttributeError):
         return None
 
@@ -192,9 +387,9 @@ def is_listener(value):
 def connection_summary(values):
     # This is a snapshot inference, not a record of the original TCP handshake.
     # Only established TCP sockets are counted; UDP has no accepted sessions.
-    listeners = [socket_endpoint(v['local']) for v in values
+    listeners = [(socket_endpoint(v['local']), v) for v in values
                  if v['protocolName'] == 'tcp' and v['state'] == 'LISTEN']
-    listeners = [v for v in listeners if v]
+    listeners = [(endpoint, v) for endpoint, v in listeners if endpoint]
     counts = dict(outgoing=0, incoming=0, unknown=0)
     for value in values:
         if value['protocolName'] != 'tcp' or value['state'] not in ('ESTAB', 'ESTABLISHED'):
@@ -203,31 +398,15 @@ def connection_summary(values):
         direction = 'unknown'
         if local:
             host, port, family = local
-            accepted = any(p == port and (h == host or h == '*' or
-                (f == family and h in ('0.0.0.0', '::'))) for h, p, f in listeners)
+            accepted = any(listener.get('namespace') == value.get('namespace') and p == port and
+                (h == host or (h == '*' and (not listener.get('v6only') or family == 6)) or
+                 (f == family and h in ('0.0.0.0', '::')) or
+                 (h == '::' and family == 4 and listener.get('v6only') is False))
+                for (h, p, f), listener in listeners)
             direction = 'incoming' if accepted else 'outgoing'
         value['direction'] = direction
         counts[direction] += 1
     return counts
-
-
-def primary_interface(values):
-    names = {v['name'] for v in values}
-    routes = []
-    for line in (read(PROC / 'net' / 'route') or '').splitlines()[1:]:
-        fields = line.split()
-        try:
-            if fields[1] == fields[7] == '00000000' and int(fields[3], 16) & 1 and fields[0] in names:
-                routes.append((int(fields[6]), fields[0]))
-        except (ValueError, IndexError):
-            pass
-    if routes:
-        return min(routes)[1]
-    for line in (read(PROC / 'net' / 'ipv6_route') or '').splitlines():
-        fields = line.split()
-        if len(fields) >= 10 and fields[0] == '0' * 32 and fields[1] == '00' and fields[-1] in names and fields[-1] != 'lo':
-            return fields[-1]
-    return next((v['name'] for v in values if v['name'] != 'lo'), None)
 
 
 def disks():
@@ -311,27 +490,38 @@ def collect(mode, pid=0, after_pid=0):
         values = processes(first, second, time.monotonic() - start, details=mode == 'process')
         result['totalProcesses'] = len(values)
         result['processes'] = [p for p in values if (p['pid'] == pid if mode == 'process' else p['pid'] > after_pid)]
+        label_docker_proxies(result['processes'], 'name')
         result['memoryTotal'] = number_fields(read(PROC / 'meminfo')).get('MemTotal', 0) * 1024
     elif mode == 'network':
         first = interfaces(read(PROC / 'net' / 'dev'))
         start = time.monotonic()
         time.sleep(1)
         second = interfaces(read(PROC / 'net' / 'dev'))
-        result['interfaces'] = network(first, second, time.monotonic() - start)
-        result['primaryInterface'] = primary_interface(result['interfaces'])
-        result['interfaces'].sort(key=lambda v: (v['name'] != result['primaryInterface'], v['name'] == 'lo', v['name']))
-        result['sockets'], result['socketError'] = sockets()
+        result['interfaces'] = [v for v in network(first, second, time.monotonic() - start) if v['name'] == 'eth0']
+        result['primaryInterface'] = 'eth0' if result['interfaces'] else None
+        result['sockets'], result['socketError'] = all_sockets()
         result['totalSockets'] = len(result['sockets'] or [])
         if result['sockets'] is not None:
-            # Count before bounding output; keep listener rows ahead of sessions.
+            # Container listeners are needed to classify their accepted sockets,
+            # but are not host listeners and must not appear in the host port list.
             result['socketSummary'] = connection_summary(result['sockets'])
+            result['sockets'] = [v for v in result['sockets']
+                                 if not is_listener(v) or v.get('namespace', 'host') == 'host']
+            label_docker_proxies(result['sockets'], 'process')
+            result['totalSockets'] = len(result['sockets'])
             result['totalListeningPorts'] = len({(v['protocolName'], socket_endpoint(v['local'])[1])
                 for v in result['sockets'] if is_listener(v) and socket_endpoint(v['local'])})
             result['sockets'].sort(key=lambda v: (not is_listener(v), v['protocolName'], v['local'], v['peer']))
     elif mode == 'overview':
+        first = cpu_counters(read(PROC / 'stat'))
+        time.sleep(1)
+        result['cpuUsagePercent'] = cpu_usage(first, cpu_counters(read(PROC / 'stat')))
         mem = number_fields(read(PROC / 'meminfo'))
         result.update(hostname=platform.node()[:200], kernel=platform.release()[:200],
                       architecture=platform.machine()[:80], disks=disks())
+        if result['disks']:
+            result['diskTotal'] = sum(disk['total'] for disk in result['disks'])
+            result['diskUsed'] = sum(disk['used'] for disk in result['disks'])
         result['memoryTotal'] = mem.get('MemTotal', 0) * 1024
         if 'MemAvailable' in mem:
             result['memoryAvailable'] = mem['MemAvailable'] * 1024

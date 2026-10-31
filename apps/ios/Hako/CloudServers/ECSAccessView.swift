@@ -45,65 +45,49 @@ struct ECSAccessFreshness: View {
 }
 
 struct ECSAccessView: View {
-    let connection: ECSConnection
     @StateObject private var store = ECSAccessStore()
     @ObservedObject private var client = ConsoleClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("ecs.access.revision") private var revision = ""
-    @State private var settings = false
     @State private var visible = false
     @State private var range = ECSAccessRange.day
     @State private var domain = ""
     @State private var selectedDate: Date?
     @State private var hour: String?
 
-    private var binding: ECSAccessBinding? { ECSAccessBinding.load(connection) }
-    private var domains: [String] { binding?.domains ?? [] }
+    private var domains: [String] {
+        Array(Set(store.summary?.domains ?? []).union(domain.isEmpty ? [] : [domain])).sorted()
+    }
     private var selectedDomains: [String] { domain.isEmpty ? domains : [domain] }
-    private var validBinding: Bool { binding?.matches(origin: client.serverURL, account: client.username) == true && !domains.isEmpty }
+    private var sourceKey: String { "\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)" }
     private var daily: Bool { range.rawValue >= 72 }
     private var taskKey: String {
-        "\(visible && scenePhase == .active && !settings)|\(revision)|\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)|\(range.rawValue)|\(domain)|\(hour ?? "")"
+        "\(visible && scenePhase == .active)|\(sourceKey)|\(range.rawValue)|\(domain)|\(hour ?? "")"
     }
     var body: some View {
         List {
-            if !validBinding {
-                Section {
-                    ContentUnavailableView("关联访问统计", systemImage: "chart.bar.xaxis", description: Text("从 Hako 服务器选择由此 ECS 承载的域名。"))
-                    Button("选择数据来源与域名") { settings = true }
+            Section {
+                Picker("域名", selection: $domain) {
+                    Text("全部域名").tag("")
+                    ForEach(domains, id: \.self) { Text($0).tag($0) }
                 }
-            } else {
-                Section {
-                    Picker("域名", selection: $domain) {
-                        Text("全部关联域名").tag("")
-                        ForEach(domains, id: \.self) { Text($0).tag($0) }
-                    }
-                    Picker("时间范围", selection: $range) {
-                        ForEach(ECSAccessRange.allCases) { Text($0.label).tag($0) }
-                    }
+                Picker("时间范围", selection: $range) {
+                    ForEach(ECSAccessRange.allCases) { Text($0.label).tag($0) }
                 }
-                if store.busy { ProgressView("读取访问统计…") }
-                if let error = store.error {
-                    Section { Text(error).font(.footnote).foregroundStyle(.orange); Button("重试") { Task { await refresh() } } }
-                }
-                if let value = store.summary {
-                    if value.status.enabled { content(value) }
-                    else { Section { Text("Hako 服务端尚未启用 Caddy 访问日志统计。").foregroundStyle(.secondary) } }
-                }
+            }
+            if store.busy { ProgressView("读取访问统计…") }
+            if let error = store.error {
+                Section { Text(error).font(.footnote).foregroundStyle(.orange); Button("重试") { Task { await refresh() } } }
+            }
+            if client.authenticated, !client.logoutPending, let value = store.summary {
+                if value.status.enabled { content(value) }
+                else { Section { Text("Hako 服务端尚未启用 Caddy 访问日志统计。").foregroundStyle(.secondary) } }
             }
         }
         .navigationTitle("访问统计").navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { settings = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("访问统计来源与域名设置")
-            }
-        }
-        .sheet(isPresented: $settings) { ECSAccessSettingsSheet(connection: connection) }
         .onAppear { visible = true }.onDisappear { visible = false }
         .onChange(of: range) { _, _ in hour = nil; selectedDate = nil }
         .onChange(of: domain) { _, _ in hour = nil; selectedDate = nil }
-        .onChange(of: revision) { _, _ in domain = ""; hour = nil; selectedDate = nil; store.clear() }
+        .onChange(of: sourceKey) { _, _ in domain = ""; hour = nil; selectedDate = nil; store.clear() }
         .onChange(of: selectedDate) { _, date in
             guard !daily, !domain.isEmpty, let date, let value = store.summary else { return }
             hour = value.buckets(domains: selectedDomains, daily: false).min {
@@ -112,8 +96,7 @@ struct ECSAccessView: View {
         }
         .refreshable { await refresh() }
         .task(id: taskKey) {
-            guard visible, scenePhase == .active, !settings else { return }
-            guard validBinding else { store.clear(); return }
+            guard visible, scenePhase == .active else { return }
             if !client.authenticated { await client.restore() }
             guard !Task.isCancelled else { return }
             while !Task.isCancelled {
@@ -144,7 +127,12 @@ struct ECSAccessView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             } else {
                 trendChart(value)
-                HStack { Label("HTTP 请求", systemImage: "square.fill").foregroundStyle(.blue); Label("404", systemImage: "line.diagonal").foregroundStyle(.orange) }.font(.caption)
+                HStack(spacing: 16) {
+                    HStack(spacing: 4) { Image(systemName: "square.fill"); Text("HTTP 请求") }
+                        .foregroundStyle(.blue).accessibilityElement(children: .combine)
+                    HStack(spacing: 4) { Image(systemName: "line.diagonal"); Text("404") }
+                        .foregroundStyle(.orange).accessibilityElement(children: .combine)
+                }.font(.caption)
                 Text(!daily && !domain.isEmpty ? "轻触柱子查看数值；长按拖动可查看其他小时及排行。" : "轻触柱子查看对应时段的数值。")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -165,7 +153,7 @@ struct ECSAccessView: View {
                         }
                     }.buttonStyle(.plain)
                 }
-                if totals.isEmpty { Text("所选关联域名在此时间范围内暂无请求。").foregroundStyle(.secondary) }
+                if totals.isEmpty { Text("此时间范围内暂无请求。").foregroundStyle(.secondary) }
             }
         } else {
             if let date = ECSAccessDate.parse(hour) {
@@ -279,7 +267,7 @@ struct ECSAccessView: View {
         }.padding(.vertical, 3)
     }
     private func refresh() async {
-        await store.refresh(connection: connection, client: client, range: range, domain: domain, hour: hour)
+        await store.refresh(client: client, range: range, domain: domain, hour: hour)
     }
 }
 
