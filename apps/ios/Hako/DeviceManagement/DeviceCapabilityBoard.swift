@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
     let capabilities: [ConsoleAgentCapability]
     let emptyMessage: String
+    let pinnedHeaderNames: Set<String>
     let title: (ConsoleAgentCapability) -> String
     let icon: (ConsoleAgentCapability) -> String
     let summary: (ConsoleAgentCapability) -> String
@@ -22,6 +23,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
     @State private var scrollGeometry = DeviceCardScrollGeometry()
     @State private var measuredContentHeight: CGFloat = 0
     @State private var cardGeometry: [String: DeviceCardFrame] = [:]
+    @State private var headerHeights: [String: CGFloat] = [:]
     @State private var returnBookmark: DeviceCardBookmark?
     @State private var scrollRequest: ScrollRequest?
     @State private var draggedName: String?
@@ -31,6 +33,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
     @State private var lastDragTarget: String?
 
     init(capabilities: [ConsoleAgentCapability], storageKey: String, emptyMessage: String,
+         pinnedHeaderNames: Set<String> = [],
          title: @escaping (ConsoleAgentCapability) -> String,
          icon: @escaping (ConsoleAgentCapability) -> String,
          summary: @escaping (ConsoleAgentCapability) -> String,
@@ -38,6 +41,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
          @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content) {
         self.capabilities = capabilities
         self.emptyMessage = emptyMessage
+        self.pinnedHeaderNames = pinnedHeaderNames
         self.title = title
         self.icon = icon
         self.summary = summary
@@ -96,6 +100,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
                                                 order: orderedNames.firstIndex(of: capability.name) ?? 0)])
                                     }
                                 }
+                                .zIndex(expandedName == capability.name ? 1 : 0)
                         }
                     }
                 }
@@ -163,6 +168,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
 
     private func capabilityCard(_ capability: ConsoleAgentCapability) -> some View {
         let expanded = expandedName == capability.name
+        let headerOffset = pinnedHeaderOffset(for: capability.name)
         return VStack(alignment: .leading, spacing: 0) {
             DeviceCardDragHeader(name: capability.name,
                 accessibilityTitle: title(capability),
@@ -176,6 +182,17 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
                         subtitle: expanded ? capability.name + " · v\(capability.version)" : summary(capability), expanded: expanded)
                         .environment(\.dynamicTypeSize, dynamicTypeSize).environment(\.colorScheme, colorScheme)
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    headerHeights[capability.name] = height
+                }
+                .background {
+                    if headerOffset > 0 { Color(uiColor: .secondarySystemGroupedBackground) }
+                }
+                .overlay(alignment: .bottom) {
+                    if headerOffset > 0 { Divider() }
+                }
+                .offset(y: headerOffset)
+                .zIndex(1)
             if expanded {
                 VStack(alignment: .leading, spacing: 18) {
                     Divider()
@@ -197,6 +214,12 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
         }
         .onDrop(of: [UTType.plainText], delegate: DeviceCardDropTarget(
             accepts: { draggedName != nil }, entered: { moveDraggedCard(to: capability.name) }))
+    }
+
+    private func pinnedHeaderOffset(for name: String) -> CGFloat {
+        guard expandedName == name, pinnedHeaderNames.contains(name) else { return 0 }
+        return DeviceCardStickyHeader.translation(card: frames[name], headerHeight: headerHeights[name] ?? 0,
+                                                 scrollOffset: scrollGeometry.offset)
     }
 
     private func bookmark() -> DeviceCardBookmark { .capture(frames: frames, offset: scrollGeometry.offset) }
@@ -254,7 +277,8 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
 
     private func updateDragLocation(_ point: CGPoint, source: String) {
         guard draggedName == source, let frame = frames[source] else { return }
-        dragPoint = CGPoint(x: frame.minX + point.x, y: frame.minY + point.y - scrollGeometry.offset)
+        dragPoint = CGPoint(x: frame.minX + point.x,
+                            y: frame.minY + pinnedHeaderOffset(for: source) + point.y - scrollGeometry.offset)
         updateDragTarget()
     }
 

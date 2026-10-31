@@ -50,6 +50,19 @@ import CoreGraphics
         precondition(geometry.clamped(-30) == 0 && geometry.clamped(9999) == 1300)
         precondition(DeviceCardScrollGeometry(offset: 0, viewportHeight: 500, contentHeight: 100).maximumOffset == 0)
 
+        // Stay in normal flow before the viewport top, pin at the top, then let
+        // the card's bottom push the header away. Layout and bookmark sizes do not change.
+        let longCard = CGRect(x: 0, y: 180, width: 350, height: 900)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 72, scrollOffset: 100) == 0)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 72, scrollOffset: 180) == 0)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 72, scrollOffset: 400) == 220)
+        precondition(longCard.minY + DeviceCardStickyHeader.translation(card: longCard, headerHeight: 72, scrollOffset: 400) == 400)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 72, scrollOffset: 1100) == 828)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 140, scrollOffset: 1100) == 760)
+        precondition(DeviceCardStickyHeader.translation(card: longCard, headerHeight: 0, scrollOffset: 400) == 0)
+        precondition(DeviceCardStickyHeader.translation(card: nil, headerHeight: 72, scrollOffset: 400) == 0)
+        precondition(DeviceCardStickyHeader.translation(card: CGRect(x: 0, y: 0, width: 350, height: 50), headerHeight: 72, scrollOffset: 400) == 0)
+
         let collapsed = ["left": CGRect(x: 0, y: 180, width: 169, height: 120),
                          "right": CGRect(x: 181, y: 180, width: 169, height: 120),
                          "next": CGRect(x: 0, y: 312, width: 169, height: 120)]
@@ -61,6 +74,6 @@ import CoreGraphics
         precondition(bookmark.restoredOffset(frames: moved, geometry: geometry) == 310)
         moved.removeValue(forKey: "left")
         precondition(bookmark.restoredOffset(frames: moved, geometry: geometry) == 210)
-        print("PASS: device/group order persistence, manifest changes, 1–64 card layouts, expansion fitting and scroll bookmark restoration")
+        print("PASS: device/group order persistence, manifest changes, 1–64 card layouts, sticky header boundaries, expansion fitting and scroll bookmark restoration")
     }
 }

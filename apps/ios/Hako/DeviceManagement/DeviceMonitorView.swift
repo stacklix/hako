@@ -135,6 +135,7 @@ struct DeviceMetricsView: View {
             DeviceCapabilityBoard(capabilities: visibleCapabilities, storageKey: orderKey,
                 emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" :
                     selectedTab == .query ? "此设备暂无查询能力。" : "此设备暂无操作能力。",
+                pinnedHeaderNames: ["query.network.listeners"],
                 title: capabilityTitle, icon: capabilityIcon, summary: capabilitySummary) {
                 deviceOverview
             } content: { capability in

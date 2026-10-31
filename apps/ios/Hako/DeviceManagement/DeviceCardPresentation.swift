@@ -51,6 +51,16 @@ struct DeviceCardScrollGeometry: Equatable {
     }
 }
 
+enum DeviceCardStickyHeader {
+    // Translate only the header: the card's height and scroll bookmarks stay
+    // unchanged. The card's bottom pushes the header out as the card leaves.
+    static func translation(card: CGRect?, headerHeight: CGFloat, scrollOffset: CGFloat) -> CGFloat {
+        guard let card, card.minY.isFinite, card.height.isFinite,
+              headerHeight.isFinite, headerHeight > 0, scrollOffset.isFinite else { return 0 }
+        return min(max(0, scrollOffset - card.minY), max(0, card.height - headerHeight))
+    }
+}
+
 struct DeviceCardBookmark {
     let name: String?
     let relativeY: CGFloat
