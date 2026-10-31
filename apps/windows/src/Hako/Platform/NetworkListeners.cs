@@ -46,7 +46,9 @@ public sealed class NetworkListeners
             { warnings.Add($"{protocol} IPv{(family == 2 ? 4 : 6)} 端口读取失败，结果可能不完整。"); }
         }
         if (succeeded == 0) throw new AgentActionException("sample_failed", "无法读取本机监听端口。");
-        var snapshot = Merge(endpoints, ReadProcess, DateTimeOffset.UtcNow, token);
+        var processSnapshot = ProcessSnapshot.Capture(token);
+        var snapshot = Merge(endpoints, pid => processSnapshot is not null && processSnapshot.TryGetValue(pid, out var process)
+            ? process : ReadProcess(pid), DateTimeOffset.UtcNow, token);
         if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.ProcessName is null || process.StartedAt is null))
             warnings.Add("部分进程信息不可读取（权限受限或进程已退出），名称或运行时长暂不可用。");
         snapshot = snapshot with { Warnings = warnings.ToArray() };

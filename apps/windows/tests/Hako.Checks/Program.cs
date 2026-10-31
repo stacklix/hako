@@ -13,6 +13,11 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "network-listeners")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(await new NetworkListeners().ReadAsync(CancellationToken.None), AgentConnection.Json));
+                return 0;
+            }
             if (args.Length == 3 && args[0] == "codex-usage")
             {
                 await using var usage = new CodexUsage(args[1], args[2]);

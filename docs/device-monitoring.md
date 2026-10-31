@@ -80,6 +80,8 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 `startedAt` 为进程启动时间（UTC），`uptimeSeconds` 为采集时该进程存活的整秒数，不代表端口监听时长；刷新查询时重新采集。进程退出、权限不足时，能读取的字段继续保留，不可读的 `processName`、`startedAt`、`uptimeSeconds` 为 null，并在 `warnings` 中提示；不会仅因读不到某个进程而丢弃整个列表。部分协议或地址族读取失败时返回其余结果及提示，全部读取失败为 `sample_failed`；结果超过 48 KiB 返回 `result_too_large`，不静默截断。空 `ports` 表示采集未发现端口，须同时查看 `warnings` 是否存在部分采集失败。
 
+进程名和启动时间优先使用 `NtQuerySystemInformation(SystemProcessInformation)` 的同一份系统进程快照，避免逐个打开系统服务进程时被权限拒绝。原生接口动态加载，检查返回链表、名称及时间边界；不可用或布局无效时回退逐进程读取。该接口布局参考 [.NET 的进程快照结构](https://github.com/dotnet/runtime/blob/main/src/libraries/Common/src/Interop/Windows/NtDll/Interop.SYSTEM_PROCESS_INFORMATION.cs)，兼容性边界见 [Windows 原生接口说明](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation)。不使用当前时间或 Agent 启动时间代替未知的进程启动时间。
+
 iOS 设备详情新增「监听端口」查询卡片，端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP；Windows 本地设备监控刷新后也显示相同的分组详情。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
 
 ### URL 检测

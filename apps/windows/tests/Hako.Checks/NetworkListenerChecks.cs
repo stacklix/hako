@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +16,7 @@ internal static class NetworkListenerChecks
     public static async Task RunAsync()
     {
         var now = DateTimeOffset.Parse("2026-10-31T12:00:00Z");
+        CheckProcessSnapshot();
         var reads = 0;
         var merged = NetworkListeners.Merge([
             new("TCP", 8080, "0.0.0.0", 10), new("TCP", 8080, "::", 10),
@@ -75,5 +78,56 @@ internal static class NetworkListenerChecks
         if (!json.TryGetProperty("collectedAt", out _) || !json.TryGetProperty("ports", out _) || !json.TryGetProperty("warnings", out _))
             throw new Exception("Listener JSON contract is invalid");
         Console.WriteLine("PASS: real IPv4/IPv6 TCP/UDP listener tables, IP/owner merge, process uptime, unavailable metadata, query params and cancellation");
+    }
+
+    private static void CheckProcessSnapshot()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var real = ProcessSnapshot.Capture(CancellationToken.None)
+            ?? throw new Exception("System process snapshot unavailable on Windows");
+        using var self = Process.GetCurrentProcess();
+        if (!real.TryGetValue(self.Id, out var current) || current.Name != self.ProcessName || current.StartedAt is not { } started
+            || Math.Abs((started.UtcDateTime - self.StartTime.ToUniversalTime()).TotalMilliseconds) > 1)
+            throw new Exception("System snapshot creation time does not match the current process");
+        if (!real.TryGetValue(4, out var system) || system.StartedAt is not { } systemStart || systemStart > now)
+            throw new Exception("System process creation time must be readable without opening the protected process");
+
+        var headerSize = Marshal.SizeOf<ProcessSnapshot.Header>();
+        var stride = (headerSize + 48 + 7) & ~7;
+        var memory = Marshal.AllocHGlobal(stride * 2);
+        try
+        {
+            var name = "worker.测试.exe";
+            var nameBytes = System.Text.Encoding.Unicode.GetBytes(name);
+            var first = new ProcessSnapshot.Header { NextEntryOffset = (uint)stride, ProcessId = new IntPtr(10),
+                CreateTime = now.AddSeconds(-90061).UtcDateTime.ToFileTimeUtc(),
+                ImageName = new() { Length = (ushort)nameBytes.Length, MaximumLength = (ushort)nameBytes.Length,
+                    Buffer = IntPtr.Add(memory, headerSize) } };
+            Marshal.Copy(nameBytes, 0, first.ImageName.Buffer, nameBytes.Length);
+            Marshal.StructureToPtr(first, memory, false);
+            Marshal.StructureToPtr(new ProcessSnapshot.Header { ProcessId = new IntPtr(11) }, IntPtr.Add(memory, stride), false);
+            var parsed = ProcessSnapshot.Parse(memory, stride * 2, CancellationToken.None);
+            if (parsed.Count != 2 || parsed[10].Name != "worker.测试" || parsed[10].StartedAt != now.AddSeconds(-90061)
+                || parsed[11].StartedAt != null || parsed[11].Name != null)
+                throw new Exception("Process snapshot lost Unicode names, creation times or nullable metadata");
+            void RejectMalformed()
+            {
+                try { ProcessSnapshot.Parse(memory, stride * 2, CancellationToken.None); throw new Exception("Malformed native process snapshot accepted"); }
+                catch (InvalidDataException) { }
+            }
+            first.NextEntryOffset = 1;
+            Marshal.StructureToPtr(first, memory, false);
+            RejectMalformed();
+            first.NextEntryOffset = (uint)stride;
+            first.ImageName.Buffer = IntPtr.Add(memory, stride * 2 - 2);
+            Marshal.StructureToPtr(first, memory, false);
+            RejectMalformed();
+            first.ImageName.Length = 0;
+            first.CreateTime = long.MaxValue;
+            Marshal.StructureToPtr(first, memory, false);
+            RejectMalformed();
+        }
+        finally { Marshal.FreeHGlobal(memory); }
+        Console.WriteLine("PASS: native process creation times including protected System PID 4; Unicode, nullable metadata and malformed native buffer checks");
     }
 }
