@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | 查询：提供数据 | `query.` | `query.system.metrics` |
 | Codex 本机统计 | `query.` | `query.codex.usage` |
+| 本机监听端口 | `query.` | `query.network.listeners` |
 | 操作：按需执行 | `action.` | `action.network.http.check` |
 | 内置聚合查询 | `query.all` | 获取全部已声明查询能力的数据 |
 

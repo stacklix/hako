@@ -68,8 +68,9 @@ internal static class CapabilityChecks
         var data = (QueryData)(await real.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
         if (samples != 1)
             throw new Exception($"query.all must sample system metrics once; observed {samples}, error={data.Data["query.system.metrics"].Error?.Code}");
-        if (data.Data.Count != 2 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics)
-            throw new Exception("query.all did not return both queries with system metrics");
+        if (data.Data.Count != 3 || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics
+            || data.Data["query.network.listeners"].Result?.Deserialize<ListenerSnapshot>(AgentConnection.Json) is not ListenerSnapshot)
+            throw new Exception("query.all did not return all three queries with system metrics and listeners");
         var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
         if (usage is not { Available: true, Days.Count: 7 })
             throw new Exception($"query.all did not return seven Codex usage days; error={data.Data["query.codex.usage"].Error?.Code}");
@@ -81,7 +82,7 @@ internal static class CapabilityChecks
         var nullResult = JsonSerializer.SerializeToElement(new CapabilityData(1, JsonSerializer.SerializeToElement<object?>(null)), AgentConnection.Json);
         if (nullResult.GetProperty("result").ValueKind != JsonValueKind.Null || nullResult.TryGetProperty("error", out _))
             throw new Exception("Null query result was lost");
-        foreach (var method in new[] { "query.all", "query.system.metrics", "query.codex.usage", "action.network.http.check" })
+        foreach (var method in new[] { "query.all", "query.system.metrics", "query.codex.usage", "query.network.listeners", "action.network.http.check" })
         {
             try { await real.InvokeAsync(method, 2, empty.RootElement, CancellationToken.None); throw new Exception("Unsupported version accepted"); }
             catch (AgentActionException e) when (e.Code == "unsupported_method") { }

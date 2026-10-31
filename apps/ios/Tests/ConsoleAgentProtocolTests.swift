@@ -12,6 +12,15 @@ import Foundation
         precondition(empty.capabilities?.isEmpty == true)
         let manifest = try agent("[{\"name\":\"query.system.metrics\",\"version\":1},{\"name\":\"action.network.http.check\",\"version\":1}]")
         precondition(manifest.capabilities?.count == 2)
+        let listenerJSON = #"{"collectedAt":"2026-10-31T12:00:00Z","ports":[{"protocol":"TCP","port":8080,"processes":[{"processId":10,"processName":"hako","startedAt":"2026-10-30T10:58:59Z","uptimeSeconds":90061,"addresses":["0.0.0.0","::"]},{"processId":11,"addresses":["127.0.0.2"]}]}],"warnings":[]}"#
+        let listeners = try decoder.decode(ConsoleListenerSnapshot.self, from: Data(listenerJSON.utf8))
+        precondition(listeners.isValid && listeners.ports.count == 1 && listeners.ports[0].processes.count == 2)
+        precondition(listeners.ports[0].processes[0].formattedUptime == "1 天 1 小时 1 分 1 秒")
+        precondition(listeners.ports[0].processes[1].formattedUptime == "暂不可用")
+        let invalidListeners = try decoder.decode(ConsoleListenerSnapshot.self, from: Data(listenerJSON.replacingOccurrences(of: "90061", with: "-1").utf8))
+        precondition(!invalidListeners.isValid)
+        let badPort = try decoder.decode(ConsoleListenerSnapshot.self, from: Data(listenerJSON.replacingOccurrences(of: "8080", with: "65536").utf8))
+        precondition(!badPort.isValid)
         var days: [[String: Any]] = (22...28).map { day in
             ["date": "2026-10-\(day)", "requestCount": 2, "inputTokens": 100, "cachedInputTokens": 40,
              "outputTokens": 10, "reasoningOutputTokens": 3, "totalTokens": 110, "breakdownAvailable": true]

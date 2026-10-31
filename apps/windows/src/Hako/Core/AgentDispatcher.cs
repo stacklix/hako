@@ -52,6 +52,12 @@ public sealed class AgentDispatcher
                 if (parameters.EnumerateObject().Any())
                     throw new AgentActionException("invalid_params", "query.codex.usage 不接受参数。");
                 return await codex.ReadAsync(token);
+            }),
+            ["query.network.listeners"] = new(1, async (parameters, token) =>
+            {
+                if (parameters.EnumerateObject().Any())
+                    throw new AgentActionException("invalid_params", "query.network.listeners 不接受参数。");
+                return await new NetworkListeners().ReadAsync(token);
             })
         };
         var probe = connectivity ?? new HttpConnectivity();

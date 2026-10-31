@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,7 +79,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
-	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"action.network.http.check","version":1}]`)) {
+	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"query.network.listeners","version":1},{"name":"action.network.http.check","version":1}]`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
@@ -90,6 +91,45 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.network.listeners", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	var listeners struct {
+		Result struct {
+			CollectedAt string
+			Ports       []struct {
+				Protocol  string
+				Port      int
+				Processes []struct {
+					ProcessID     int `json:"processId"`
+					ProcessName   string
+					StartedAt     string
+					UptimeSeconds *int64
+					Addresses     []string
+				}
+			}
+		}
+	}
+	if status != 200 || json.Unmarshal(data, &listeners) != nil {
+		t.Fatal("Windows listener query failed", status, string(data))
+	}
+	if _, err := time.Parse(time.RFC3339Nano, listeners.Result.CollectedAt); err != nil {
+		t.Fatal("Windows listener collection timestamp invalid", err)
+	}
+	foundListener := false
+	for _, port := range listeners.Result.Ports {
+		if port.Protocol != "TCP" || port.Port != plain.Listener.Addr().(*net.TCPAddr).Port {
+			continue
+		}
+		for _, process := range port.Processes {
+			if process.ProcessID == os.Getpid() && process.ProcessName != "" && process.UptimeSeconds != nil && *process.UptimeSeconds >= 0 && len(process.Addresses) > 0 {
+				if _, err := time.Parse(time.RFC3339Nano, process.StartedAt); err == nil {
+					foundListener = true
+				}
+			}
+		}
+	}
+	if !foundListener {
+		t.Fatal("Windows listener query did not preserve the local server port, process and uptime")
+	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.codex.usage", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 	var usage struct {
 		Result struct {
@@ -166,7 +206,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		}
 		Capabilities []agentCapability
 	}
-	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 2 || len(aggregate.Capabilities) != 3 {
+	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 3 || len(aggregate.Capabilities) != 4 || aggregate.Result.Data["query.network.listeners"].Version != 1 {
 		t.Fatal("real aggregate query failed", status, string(data))
 	}
 	select {

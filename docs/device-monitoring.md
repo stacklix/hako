@@ -68,6 +68,20 @@ Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/a
 
 Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收发字节计数器，逐网卡求差后按实际经过时间计算 B/s，再汇总物理网卡；包含局域网流量，不等同于互联网测速。排除回环、隧道、过滤与非物理接口，避免虚拟网络层重复计数。正常空闲返回 0；无法读取、没有符合条件的网卡、网卡增减或计数器重置时，`available: false`、两个速率为 null，并通过 `message` 说明，CPU 与内存继续显示。只在本地或远程请求采样时读取，不后台累积或保存流量，不提供今日累计流量。无需新增服务端路由或命令版本。iOS 对缺少该字段的 Agent 提示更新；网络字段格式错误时仅提示网络数据异常，不丢弃有效的 CPU / 内存数据。
 
+### 监听端口
+
+`query.network.listeners` v1 参数为 `{}`，支持单独调用及 `query.all`，由 Windows Agent 按需读取 TCP LISTEN 和 UDP 绑定端口（IPv4 / IPv6），不统计已连接或出站 TCP 连接。服务端沿用通用转发，不存历史，不需要新增路由。
+
+```json
+{"collectedAt":"2026-10-31T08:00:00Z","ports":[{"protocol":"TCP","port":8000,"processes":[{"processId":1234,"processName":"python","startedAt":"2026-10-30T08:00:00Z","uptimeSeconds":86400,"addresses":["0.0.0.0","::"]}]}],"warnings":[]}
+```
+
+以 `(protocol, port)` 合并端口，按端口号、协议排序；每项按 PID 保留所有进程，各进程的 `addresses` 去重，包含通配地址、具体 IP 及 IPv6 scope ID。同端口不同 IP 不生成重复端口项，TCP / UDP 同号端口独立展示，避免误把不同协议当成同一监听。
+
+`startedAt` 为进程启动时间（UTC），`uptimeSeconds` 为采集时该进程存活的整秒数，不代表端口监听时长；刷新查询时重新采集。进程退出、权限不足时，能读取的字段继续保留，不可读的 `processName`、`startedAt`、`uptimeSeconds` 为 null，并在 `warnings` 中提示；不会仅因读不到某个进程而丢弃整个列表。部分协议或地址族读取失败时返回其余结果及提示，全部读取失败为 `sample_failed`；结果超过 48 KiB 返回 `result_too_large`，不静默截断。空 `ports` 表示采集未发现端口，须同时查看 `warnings` 是否存在部分采集失败。
+
+iOS 设备详情新增「监听端口」查询卡片，端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP；Windows 本地设备监控刷新后也显示相同的分组详情。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
+
 ### URL 检测
 
 `action.network.http.check` v1 只接受 `url` 字符串，最长 2048 字符，必须是完整 HTTP/S 地址，不允许 URL 用户名密码或额外参数。允许本机、局域网、端口、路径及查询参数。Agent 使用当前运行环境网络及代理发起 GET，5 秒总超时，收到响应头后结束，不读取正文、不跟随重定向、不携带 Cookie 或系统登录凭据，正常校验 TLS 证书。URL 及结果只转发，不保存为服务器历史。

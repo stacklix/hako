@@ -28,6 +28,7 @@ internal static class Program
                 return 0;
             }
             NetworkTrafficChecks.Run();
+            await NetworkListenerChecks.RunAsync();
             byte[] secret = RandomNumberGenerator.GetBytes(64);
             var encrypted = DataProtection.Protect(secret);
             if (CryptographicOperations.FixedTimeEquals(secret, encrypted) || !CryptographicOperations.FixedTimeEquals(secret, DataProtection.Unprotect(encrypted)))
@@ -55,8 +56,10 @@ internal static class Program
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
-            if (dispatcher.Capabilities.Count != 3 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
-                || dispatcher.Capabilities[1] != new AgentCapability("query.codex.usage", 1) || dispatcher.Capabilities[2] != new AgentCapability("action.network.http.check", 1))
+            if (dispatcher.Capabilities.Count != 4 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
+                || dispatcher.Capabilities[1] != new AgentCapability("query.codex.usage", 1)
+                || dispatcher.Capabilities[2] != new AgentCapability("query.network.listeners", 1)
+                || dispatcher.Capabilities[3] != new AgentCapability("action.network.http.check", 1))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");

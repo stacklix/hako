@@ -12,6 +12,47 @@ struct ConsoleAgentCapability: Decodable, Identifiable {
     let version: Int
     var id: String { name }
 }
+struct ConsoleListenerSnapshot: Decodable {
+    let collectedAt: String
+    let ports: [ConsoleListenerPort]
+    let warnings: [String]
+    var isValid: Bool {
+        Set(ports.map(\.id)).count == ports.count && ports.allSatisfy(\.isValid)
+    }
+}
+struct ConsoleListenerPort: Decodable, Identifiable {
+    let `protocol`: String
+    let port: Int
+    let processes: [ConsoleListenerProcess]
+    var id: String { "\(`protocol`):\(port)" }
+    var isValid: Bool {
+        ["TCP", "UDP"].contains(`protocol`) && (0...65535).contains(port) && !processes.isEmpty
+            && Set(processes.map(\.processId)).count == processes.count && processes.allSatisfy(\.isValid)
+    }
+}
+struct ConsoleListenerProcess: Decodable, Identifiable {
+    let processId: Int
+    let processName: String?
+    let startedAt: String?
+    let uptimeSeconds: Int64?
+    let addresses: [String]
+    var id: Int { processId }
+    var displayName: String { processName ?? "进程名称暂不可用" }
+    var isValid: Bool {
+        processId >= 0 && (uptimeSeconds == nil || uptimeSeconds! >= 0)
+            && !addresses.isEmpty && addresses.allSatisfy { !$0.isEmpty }
+            && Set(addresses).count == addresses.count
+    }
+    var formattedUptime: String {
+        guard let seconds = uptimeSeconds else { return "暂不可用" }
+        let days = seconds / 86400
+        let hours = seconds % 86400 / 3600
+        let minutes = seconds % 3600 / 60
+        let rest = seconds % 60
+        return days > 0 ? "\(days) 天 \(hours) 小时 \(minutes) 分 \(rest) 秒" :
+            hours > 0 ? "\(hours) 小时 \(minutes) 分 \(rest) 秒" : "\(minutes) 分 \(rest) 秒"
+    }
+}
 struct ConsoleCodexUsage: Decodable {
     let available: Bool
     let collectedAt: String

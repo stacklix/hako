@@ -202,6 +202,7 @@ struct DeviceMetricsView: View {
         switch (capability.name, capability.version) {
         case ("query.system.metrics", 1): return "cpu"
         case ("query.codex.usage", 1): return "terminal"
+        case ("query.network.listeners", 1): return "network"
         case ("action.network.http.check", 1): return "network"
         default: return capability.name.hasPrefix("query.") ? "curlybraces" : "slider.horizontal.3"
         }
@@ -222,6 +223,10 @@ struct DeviceMetricsView: View {
                 let sessions = value.runningSessions.map { "\($0) 个会话处理中" } ?? "会话状态暂不可用"
                 return sessions + (value.available ? "" : " · 历史数据")
             }
+            if capability.version == 1, capability.name == "query.network.listeners" {
+                guard let value = listeners(for: capability) else { return "监听端口格式无效" }
+                return "\(value.ports.count) 个端口" + (value.warnings.isEmpty ? "" : " · 有采集提示")
+            }
             return "只读数据 · v\(capability.version)"
         }
         if capability.name == "action.network.http.check", capability.version == 1 {
@@ -235,6 +240,7 @@ struct DeviceMetricsView: View {
         switch (capability.name, capability.version) {
         case ("query.system.metrics", 1): metricsContent(capability)
         case ("query.codex.usage", 1): codexContent(capability)
+        case ("query.network.listeners", 1): listenersContent(capability)
         case ("action.network.http.check", 1): httpContent
         default:
             if capability.name.hasPrefix("query.") {
@@ -251,6 +257,7 @@ struct DeviceMetricsView: View {
         switch (capability.name, capability.version) {
         case ("query.system.metrics", 1): return "系统指标"
         case ("query.codex.usage", 1): return "Codex 活动"
+        case ("query.network.listeners", 1): return "监听端口"
         case ("action.network.http.check", 1): return "URL 连通性检测"
         default: return capability.name + " · v\(capability.version)"
         }
@@ -262,6 +269,54 @@ struct DeviceMetricsView: View {
         } else if state.loaded {
             Text("未返回数据").foregroundStyle(.secondary)
         } else { Text("等待查询数据").foregroundStyle(.secondary) }
+    }
+    private func listeners(for capability: ConsoleAgentCapability) -> ConsoleListenerSnapshot? {
+        guard let entry = state.entries[capability.name], entry.version == capability.version,
+              entry.error == nil, let value = entry.result?.decode(ConsoleListenerSnapshot.self), value.isValid else { return nil }
+        return value
+    }
+    @ViewBuilder private func listenersContent(_ capability: ConsoleAgentCapability) -> some View {
+        queryStatus(capability)
+        if let snapshot = listeners(for: capability) {
+            Text("同协议同端口的 IPv4 / IPv6 地址已合并，展开端口查看进程和监听 IP。UDP 显示绑定端口。")
+                .font(.caption).foregroundStyle(.secondary)
+            if snapshot.ports.isEmpty { Text("暂无监听端口").font(.footnote).foregroundStyle(.secondary) }
+            ForEach(snapshot.ports) { port in
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(port.processes) { process in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(process.displayName).font(.subheadline.weight(.semibold)).textSelection(.enabled)
+                                LabeledContent("PID", value: "\(process.processId)")
+                                LabeledContent("启动时间", value: process.startedAt.map(sampleTime) ?? "暂不可用")
+                                LabeledContent("运行时长", value: process.formattedUptime)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("监听 IP").foregroundStyle(.secondary)
+                                    Text(process.addresses.joined(separator: "\n")).font(.footnote.monospaced()).textSelection(.enabled)
+                                }
+                            }.font(.footnote)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }.padding(.top, 10)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("\(port.protocol) \(port.port)").font(.subheadline.weight(.semibold)).monospacedDigit()
+                        Text(port.processes.map(\.displayName).joined(separator: "、"))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Divider()
+            }
+            ForEach(Array(snapshot.warnings.enumerated()), id: \.offset) { _, warning in
+                Text(warning).font(.footnote).foregroundStyle(.orange)
+            }
+            Text("采集于 \(sampleTime(snapshot.collectedAt)) · 运行时长为采集时的进程存活时间。")
+                .font(.caption2).foregroundStyle(.secondary)
+        } else if let entry = state.entries[capability.name], entry.result != nil, entry.error == nil, entry.version == 1 {
+            Text("设备返回的监听端口格式无效。").font(.footnote).foregroundStyle(.red)
+        }
     }
     private func metricsContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
