@@ -17,12 +17,14 @@ internal static class NetworkListenerChecks
     {
         var now = DateTimeOffset.Parse("2026-10-31T12:00:00Z");
         CheckProcessSnapshot();
+        CheckProcessOrigin();
         var reads = 0;
         var merged = NetworkListeners.Merge([
             new("TCP", 8080, "0.0.0.0", 10), new("TCP", 8080, "::", 10),
             new("TCP", 8080, "::", 10), new("TCP", 8080, "127.0.0.2", 11),
             new("UDP", 8080, "fe80::1%3", 10), new("TCP", 80, "127.0.0.1", 12)
-        ], pid => { reads++; return pid == 11 ? new(null, null, 3) : new("test", now.AddSeconds(-90061), pid == 10 ? 0 : null); }, now);
+        ], pid => { reads++; return pid == 11 ? new(null, null, 0, @"C:\Apps\worker.exe")
+            : pid == 10 ? new("svchost", now.AddSeconds(-90061), 0) : new(null, now.AddSeconds(-90061)); }, now);
         var tcp = merged.Ports.Single(port => port.Protocol == "TCP" && port.Port == 8080);
         if (merged.Ports.Length != 3 || merged.Ports[0].Port != 80 || tcp.Processes.Length != 2 || reads != 3
             || !tcp.Processes[0].Addresses.SequenceEqual(new[] { "0.0.0.0", "::" })
@@ -74,7 +76,7 @@ internal static class NetworkListenerChecks
         using var self = Process.GetCurrentProcess();
         if (!owner.Addresses.SequenceEqual(new[] { "127.0.0.1", "127.0.0.2", "::1" })
             || owner.ProcessName != self.ProcessName || owner.UptimeSeconds is not >= 0 || owner.StartedAt == null
-            || owner.Category != (self.SessionId == 0 ? "system" : "user")
+            || owner.Category != "user"
             || Math.Abs((DateTimeOffset.Parse(owner.StartedAt).UtcDateTime - self.StartTime.ToUniversalTime()).TotalSeconds) > 1)
             throw new Exception("Real TCP listener IP merge / PID / process start time failed");
         var udpOwner = snapshot.Ports.Single(item => item.Protocol == "UDP" && item.Port == udpPort)
@@ -120,7 +122,7 @@ internal static class NetworkListenerChecks
             Marshal.StructureToPtr(new ProcessSnapshot.Header { ProcessId = new IntPtr(11) }, IntPtr.Add(memory, stride), false);
             var parsed = ProcessSnapshot.Parse(memory, stride * 2, CancellationToken.None);
             if (parsed.Count != 2 || parsed[10].Name != "worker.测试" || parsed[10].StartedAt != now.AddSeconds(-90061)
-                || parsed[10].Category != "user" || parsed[11].Category != "system"
+                || parsed[10].Category != "user" || parsed[11].Category != null
                 || parsed[11].StartedAt != null || parsed[11].Name != null)
                 throw new Exception("Process snapshot lost Unicode names, creation times or nullable metadata");
             void RejectMalformed()
@@ -146,5 +148,33 @@ internal static class NetworkListenerChecks
         }
         finally { Marshal.FreeHGlobal(memory); }
         Console.WriteLine("PASS: native process creation times including protected System PID 4; Unicode, nullable metadata and malformed native buffer checks");
+    }
+
+    private static void CheckProcessOrigin()
+    {
+        foreach (var (name, path, expected) in new (string?, string?, string?)[]
+        {
+            ("pythonw", null, "user"), ("verge-mihomo", null, "user"), ("verge-service", null, "user"),
+            ("clash-verge", @"C:\Program Files\Clash Verge\clash-verge.exe", "user"),
+            ("svchost", null, "system"), ("System", null, "system"),
+            ("svchost", @"C:\Apps\svchost.exe", "user"),
+            ("spoolsv", @"C:\Windows\System32\spoolsv.exe", "system"),
+            ("spoolsv", @"\\?\C:\WINDOWS\System32\spoolsv.exe", "system"),
+            ("worker", @"c:\windows\SysWOW64\worker.exe", "system"),
+            ("python", @"C:\Windows.old\python.exe", "user"),
+            ("python", @"C:\Windows\..\Tools\python.exe", "user"),
+            (null, null, null)
+        })
+        {
+            if (ProcessOrigin.Classify(name, path, @"C:\Windows") != expected)
+                throw new Exception($"Process origin classification failed for {name} / {path}");
+        }
+        if (new NetworkListeners.ProcessInfo("pythonw", null, 0).Category != "user"
+            || new NetworkListeners.ProcessInfo("verge-mihomo", null, 0).Category != "user")
+            throw new Exception("Third-party programs must remain User when running as a service in Session 0");
+        var currentPath = ProcessOrigin.ReadExecutablePath(Environment.ProcessId);
+        if (string.IsNullOrWhiteSpace(currentPath) || ProcessOrigin.Classify("Hako.Checks", currentPath) != "user")
+            throw new Exception("Actual executable image path could not be read/classified");
+        Console.WriteLine("PASS: Windows binary origin, third-party service Session 0, Python/Verge, unreadable paths and directory boundaries");
     }
 }

@@ -283,7 +283,7 @@ struct DeviceMetricsView: View {
             HakoUnderlineTabs(title: "监听端口分类", options: ConsoleListenerGroup.allCases, selection: $listenerTab) {
                 "\($0.rawValue) (\(snapshot.ports(in: $0).count))"
             }
-            Text("系统服务会话归入系统，其他会话归入用户。")
+            Text("Windows 自带程序归系统，第三方程序及其后台服务归用户。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("同协议同端口的 IPv4 / IPv6 地址已合并，展开端口查看进程和监听 IP。UDP 显示绑定端口。")
                 .font(.caption).foregroundStyle(.secondary)

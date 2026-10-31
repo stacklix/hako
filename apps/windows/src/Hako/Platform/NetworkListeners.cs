@@ -28,9 +28,9 @@ public sealed record ListenerSnapshot(string CollectedAt, ListenerPort[] Ports, 
 public sealed class NetworkListeners
 {
     public sealed record Endpoint(string Protocol, int Port, string Address, int ProcessId);
-    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt, int? SessionId = null)
+    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt, int? SessionId = null, string? ExecutablePath = null)
     {
-        public string? Category => SessionId switch { 0 => "system", > 0 => "user", _ => null };
+        public string? Category => ProcessOrigin.Classify(Name, ExecutablePath);
     }
 
     [DllImport("iphlpapi.dll")]
@@ -57,8 +57,11 @@ public sealed class NetworkListeners
         }
         if (succeeded == 0) throw new AgentActionException("sample_failed", "无法读取本机监听端口。");
         var processSnapshot = ProcessSnapshot.Capture(token);
-        var snapshot = Merge(endpoints, pid => processSnapshot is not null && processSnapshot.TryGetValue(pid, out var process)
-            ? process : ReadProcess(pid), DateTimeOffset.UtcNow, token);
+        var snapshot = Merge(endpoints, pid =>
+        {
+            var process = processSnapshot is not null && processSnapshot.TryGetValue(pid, out var metadata) ? metadata : ReadProcess(pid);
+            return process with { ExecutablePath = ProcessOrigin.ReadExecutablePath(pid) };
+        }, DateTimeOffset.UtcNow, token);
         if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.ProcessName is null || process.StartedAt is null))
             warnings.Add("部分进程信息不可读取（权限受限或进程已退出），名称或运行时长暂不可用。");
         if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.Category is null))

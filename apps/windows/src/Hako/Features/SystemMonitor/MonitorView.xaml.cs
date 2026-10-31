@@ -44,7 +44,7 @@ public partial class MonitorView : UserControl, IDisposable
             SystemListenerEmpty.Text = systemPorts.Length == 0 ? "暂无系统监听端口" : "";
             UserListenerEmpty.Text = userPorts.Length == 0 ? "暂无用户监听端口" : "";
             ListenerStatus.Text = $"{listeners.Ports.Length} 个端口 · {DateTimeOffset.Parse(listeners.CollectedAt).ToLocalTime():HH:mm:ss} 采集\n" +
-                "系统服务会话归入系统，其他会话归入用户。\n" +
+                "Windows 自带程序归系统，第三方程序及其后台服务归用户。\n" +
                 "同协议同端口合并 IP；UDP 显示绑定端口；运行时长为采集时的进程存活时间。" +
                 (listeners.Warnings.Length == 0 ? "" : "\n" + string.Join("\n", listeners.Warnings));
         }

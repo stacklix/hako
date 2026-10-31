@@ -82,7 +82,7 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 进程名和启动时间优先使用 `NtQuerySystemInformation(SystemProcessInformation)` 的同一份系统进程快照，避免逐个打开系统服务进程时被权限拒绝。原生接口动态加载，检查返回链表、名称及时间边界；不可用或布局无效时回退逐进程读取。该接口布局参考 [.NET 的进程快照结构](https://github.com/dotnet/runtime/blob/main/src/libraries/Common/src/Interop/Windows/NtDll/Interop.SYSTEM_PROCESS_INFORMATION.cs)，兼容性边界见 [Windows 原生接口说明](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation)。不使用当前时间或 Agent 启动时间代替未知的进程启动时间。
 
-进程增加可选 `category` 字段（`system` / `user` / null），沿用 v1：系统快照中的 Session 0 归为系统服务会话，其余会话归为用户，不以进程名称、安装路径或是否以管理员运行判定。此分类是会话来源，不等同于账户所属关系，例如在服务会话运行的自建程序也归系统。会话不可读取时为 null；新客户端兼容旧 Agent，缺失分类的进程暂列用户并明确提示。会话依据见 [Microsoft 的 Session 0 隔离说明](https://techcommunity.microsoft.com/blog/askperf/application-compatibility---session-0-isolation/372361/)。
+进程增加可选 `category` 字段（`system` / `user` / null），沿用 v1，按程序来源分类：使用 [QueryFullProcessImageName](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) 尝试读取可执行文件路径，规范化后位于 Windows 目录内的程序归系统，其他目录的程序归用户；比较完整目录边界，`Windows.old` 等相似前缀不算 Windows 目录。路径不可读取时，仅已知 Windows 核心进程名（如 System、svchost、lsass）归系统，其他有名称的程序归用户。名称及路径均不可读时为 null，暂列用户并提示。Session 0、SYSTEM 账户或管理员权限不再作为系统分类依据，因此 Python 自建服务、Clash Verge 及其后台服务均归用户。分类仅用于展示推断，不传输完整程序路径；新客户端兼容旧 Agent，缺失分类的进程暂列用户并明确提示。
 
 iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均按「用户 / 系统」排列两个 Tab，默认打开用户，显示各自端口数及空列表提示；同一端口含不同分类的进程时，每个 Tab 保留该分类的进程及地址，不修改完整采集数据。端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
 
