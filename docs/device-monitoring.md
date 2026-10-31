@@ -84,7 +84,7 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 进程增加可选 `category` 字段（`system` / `user` / null），沿用 v1：系统快照中的 Session 0 归为系统服务会话，其余会话归为用户，不以进程名称、安装路径或是否以管理员运行判定。此分类是会话来源，不等同于账户所属关系，例如在服务会话运行的自建程序也归系统。会话不可读取时为 null；新客户端兼容旧 Agent，缺失分类的进程暂列用户并明确提示。会话依据见 [Microsoft 的 Session 0 隔离说明](https://techcommunity.microsoft.com/blog/askperf/application-compatibility---session-0-isolation/372361/)。
 
-iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均提供「系统 / 用户」两个 Tab，显示各自端口数及空列表提示；同一端口含不同分类的进程时，每个 Tab 保留该分类的进程及地址，不修改完整采集数据。端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
+iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均按「用户 / 系统」排列两个 Tab，默认打开用户，显示各自端口数及空列表提示；同一端口含不同分类的进程时，每个 Tab 保留该分类的进程及地址，不修改完整采集数据。端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
 
 ### URL 检测
 
@@ -102,7 +102,7 @@ iOS 设备列表将“服务器与登录”配置收纳在右上角的 `slider.h
 
 长按卡片标题区域即可拖动排序，没有排序按钮或编辑模式；拖至屏幕上下边缘时可继续滚动。顺序按服务器、账号、设备及查询 / 操作分组分别保存在本机，成功放下后保存，取消拖动恢复原顺序。能力临时消失时保留排序记录，新增能力追加到末尾，顺序不影响查询协议或 Agent 能力清单。辅助功能支持“向前移动 / 向后移动”操作。展开前保存可见卡片及其相对位置，展开后仅在卡片显示不完整时自动滚至合适位置；收起后等待布局更新，再恢复原浏览位置。用户主动滚动时取消尚未执行的自动定位，遵循减少动态效果设置。
 
-展开「监听端口」后，标题栏滚至内容区顶部时吸附在固定的「查询 / 操作」页签下方，并可随时点击收起；向回滚动恢复原位置，整张卡片滚出时由卡片底部将标题栏推出。使用原有标题栏和手势，不复制辅助功能按钮，不改变卡片布局高度和滚动位置书签；吸附状态下拖动排序的坐标也包含标题栏位移。系统 / 用户筛选和端口详情继续在标题栏下方滚动。
+展开「监听端口」后，标题栏滚至内容区顶部时吸附在固定的「查询 / 操作」页签下方，并可随时点击收起；向回滚动恢复原位置，整张卡片滚出时由卡片底部将标题栏推出。使用原有标题栏和手势，不复制辅助功能按钮，不改变卡片布局高度和滚动位置书签；吸附状态下拖动排序的坐标也包含标题栏位移。用户 / 系统筛选和端口详情继续在标题栏下方滚动。
 
 系统指标将 CPU、内存并列显示，下方显示实时下行 / 上行速度及物理网卡统计范围；Codex 在卡片内切换处理中会话和最近 7 天用量，用量图同时以双轴分组柱状图展示调用数与 Token，点击日期突出两组柱子并悬浮显示当天完整数字，统计说明默认折叠。查询与操作各有独立加载、错误及结果；查询刷新失败在页顶提示并保留旧数据，操作错误在对应卡片内提示。已声明但缺失数据明确显示“未返回数据”。未知查询或版本以可横向滚动的只读 JSON 显示，未知操作显示暂不支持，不推测参数。查询已知为空时跳过自动刷新。URL 检测只由用户点击按钮执行。
 

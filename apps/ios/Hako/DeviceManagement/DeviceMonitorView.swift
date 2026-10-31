@@ -118,7 +118,7 @@ struct DeviceMetricsView: View {
     @State private var targetURL = ""
     @State private var selectedTab: DetailTab = .query
     @State private var codexTab: CodexTab = .sessions
-    @State private var listenerTab: ConsoleListenerGroup = .system
+    @State private var listenerTab: ConsoleListenerGroup = .user
     @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }

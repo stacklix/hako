@@ -23,16 +23,16 @@
   <TextBlock Text="监听端口" FontSize="18" FontWeight="SemiBold" Margin="0,12,0,8"/>
   <TextBlock x:Name="ListenerStatus" Text="刷新后查看 TCP 监听及 UDP 绑定端口" Foreground="#526175" TextWrapping="Wrap" Margin="0,0,0,12"/>
   <TabControl>
-   <TabItem x:Name="SystemListenerTab" Header="系统">
-    <StackPanel Margin="8">
-     <TextBlock x:Name="SystemListenerEmpty" Text="刷新后查看系统监听端口" Foreground="#526175" Margin="0,0,0,8"/>
-     <ItemsControl x:Name="ListenerPorts" ItemTemplate="{StaticResource ListenerPortTemplate}"/>
-    </StackPanel>
-   </TabItem>
    <TabItem x:Name="UserListenerTab" Header="用户">
     <StackPanel Margin="8">
      <TextBlock x:Name="UserListenerEmpty" Text="刷新后查看用户监听端口" Foreground="#526175" Margin="0,0,0,8"/>
      <ItemsControl x:Name="UserListenerPorts" ItemTemplate="{StaticResource ListenerPortTemplate}"/>
+    </StackPanel>
+   </TabItem>
+   <TabItem x:Name="SystemListenerTab" Header="系统">
+    <StackPanel Margin="8">
+     <TextBlock x:Name="SystemListenerEmpty" Text="刷新后查看系统监听端口" Foreground="#526175" Margin="0,0,0,8"/>
+     <ItemsControl x:Name="ListenerPorts" ItemTemplate="{StaticResource ListenerPortTemplate}"/>
     </StackPanel>
    </TabItem>
   </TabControl>

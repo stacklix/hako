@@ -27,7 +27,7 @@ struct ConsoleListenerSnapshot: Decodable {
         }
     }
 }
-enum ConsoleListenerGroup: String, CaseIterable { case system = "系统", user = "用户" }
+enum ConsoleListenerGroup: String, CaseIterable { case user = "用户", system = "系统" }
 struct ConsoleListenerPort: Decodable, Identifiable {
     let `protocol`: String
     let port: Int
