@@ -84,6 +84,8 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 进程增加可选 `category` 字段（`system` / `user` / null），沿用 v1，按程序来源分类：使用 [QueryFullProcessImageName](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) 尝试读取可执行文件路径，规范化后位于 Windows 目录内的程序归系统，其他目录的程序归用户；比较完整目录边界，`Windows.old` 等相似前缀不算 Windows 目录。路径不可读取时，仅已知 Windows 核心进程名（如 System、svchost、lsass）归系统，其他有名称的程序归用户。名称及路径均不可读时为 null，暂列用户并提示。Session 0、SYSTEM 账户或管理员权限不再作为系统分类依据，因此 Python 自建服务、Clash Verge 及其后台服务均归用户。分类仅用于展示推断，不传输完整程序路径；新客户端兼容旧 Agent，缺失分类的进程暂列用户并明确提示。
 
+Python / pythonw 进程增加可选 `launch` 对象，沿用 v1，例如 `{"kind":"script","target":"C:\\Apps\\serve-debug.py"}` 或 `{"kind":"module","target":"http.server"}`。Agent 按需读取进程启动命令，按 Windows 命令行引号规则解析，只返回脚本入口路径或 `-m` 模块名称；忽略解释器选项及脚本的其他参数，不传输完整命令、环境变量或 `-c` 代码。脚本路径保留启动时传入的绝对或相对形式，不用 Agent 的工作目录猜测绝对路径。`kind` 还可为 `inline`、`stdin`、`interactive`、`unavailable`，这几项不包含 target。启动信息读取被权限拒绝、进程已退出或接口不可用时明确返回 unavailable，不根据端口猜测脚本；其他语言的进程不返回 launch。旧客户端忽略新增字段，新客户端仍兼容旧 Agent。列表展示 `python · 脚本名` 或 `python · -m 模块`，展开可复制脚本路径或模块名称。
+
 iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均按「用户 / 系统」排列两个 Tab，默认打开用户，显示各自端口数及空列表提示；同一端口含不同分类的进程时，每个 Tab 保留该分类的进程及地址，不修改完整采集数据。端口默认收起，展开可查看每个 PID 的进程名、启动时间、运行时长及监听 IP。网页沿用通用能力清单与 JSON 展示。Windows 原生表格式依据 [GetExtendedTcpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable) 与 [GetExtendedUdpTable](https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable)。
 
 ### URL 检测

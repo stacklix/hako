@@ -14,7 +14,12 @@ using Hako.Core;
 namespace Hako.Platform;
 
 public sealed record ListenerProcess(int ProcessId, string? ProcessName, string? StartedAt, long? UptimeSeconds,
-    string[] Addresses, string? Category = null);
+    string[] Addresses, string? Category = null,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] ProcessLaunch? Launch = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string DisplayName => (ProcessName ?? $"PID {ProcessId}") + (Launch is not null ? " · " + Launch.Summary : "");
+}
 public sealed record ListenerPort(string Protocol, int Port, ListenerProcess[] Processes);
 public sealed record ListenerSnapshot(string CollectedAt, ListenerPort[] Ports, string[] Warnings)
 {
@@ -28,7 +33,7 @@ public sealed record ListenerSnapshot(string CollectedAt, ListenerPort[] Ports, 
 public sealed class NetworkListeners
 {
     public sealed record Endpoint(string Protocol, int Port, string Address, int ProcessId);
-    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt, int? SessionId = null, string? ExecutablePath = null)
+    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt, int? SessionId = null, string? ExecutablePath = null, ProcessLaunch? Launch = null)
     {
         public string? Category => ProcessOrigin.Classify(Name, ExecutablePath);
     }
@@ -60,7 +65,7 @@ public sealed class NetworkListeners
         var snapshot = Merge(endpoints, pid =>
         {
             var process = processSnapshot is not null && processSnapshot.TryGetValue(pid, out var metadata) ? metadata : ReadProcess(pid);
-            return process with { ExecutablePath = ProcessOrigin.ReadExecutablePath(pid) };
+            return process with { ExecutablePath = ProcessOrigin.ReadExecutablePath(pid), Launch = PythonProcessLaunch.Read(pid, process.Name) };
         }, DateTimeOffset.UtcNow, token);
         if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.ProcessName is null || process.StartedAt is null))
             warnings.Add("部分进程信息不可读取（权限受限或进程已退出），名称或运行时长暂不可用。");
@@ -87,7 +92,7 @@ public sealed class NetworkListeners
                     var started = process.StartedAt is { } start && start <= collectedAt ? start : (DateTimeOffset?)null;
                     return new ListenerProcess(owner.Key, process.Name, started?.ToString("O", CultureInfo.InvariantCulture),
                         started is { } at ? (long)(collectedAt - at).TotalSeconds : null,
-                        owner.Select(endpoint => endpoint.Address).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(), process.Category);
+                        owner.Select(endpoint => endpoint.Address).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(), process.Category, process.Launch);
                 }).ToArray())).ToArray();
         return new(collectedAt.ToString("O", CultureInfo.InvariantCulture), ports, []);
     }

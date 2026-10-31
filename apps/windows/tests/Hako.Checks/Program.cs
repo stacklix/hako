@@ -13,6 +13,12 @@ internal static class Program
     {
         try
         {
+            if (args.Length > 0 && Path.GetFileName(args[0]) == "hako-launch-fixture.py")
+            {
+                Console.WriteLine("ready");
+                await Task.Delay(TimeSpan.FromSeconds(30));
+                return 0;
+            }
             if (args.Length == 1 && args[0] == "network-listeners")
             {
                 Console.WriteLine(JsonSerializer.Serialize(await new NetworkListeners().ReadAsync(CancellationToken.None), AgentConnection.Json));
@@ -34,6 +40,7 @@ internal static class Program
             }
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();
+            await PythonProcessLaunchChecks.RunAsync();
             byte[] secret = RandomNumberGenerator.GetBytes(64);
             var encrypted = DataProtection.Protect(secret);
             if (CryptographicOperations.FixedTimeEquals(secret, encrypted) || !CryptographicOperations.FixedTimeEquals(secret, DataProtection.Unprotect(encrypted)))

@@ -54,9 +54,10 @@ public partial class MonitorView : UserControl, IDisposable
     }
     private static object[] PortRows(ListenerPort[] ports) => ports.Select(port => (object)new
     {
-        Title = $"{port.Protocol} {port.Port} · " + string.Join("、", port.Processes.Select(process => process.ProcessName ?? $"PID {process.ProcessId}")),
+        Title = $"{port.Protocol} {port.Port} · " + string.Join("、", port.Processes.Select(process => process.DisplayName)),
         Detail = string.Join("\n\n", port.Processes.Select(process =>
             $"进程：{process.ProcessName ?? "暂不可用"} · PID {process.ProcessId}\n" +
+            (process.Launch is { } launch ? $"启动项：{launch.Summary}\n" + (launch.Target is { } target ? $"{(launch.Kind == "script" ? "脚本路径" : "模块名称")}：{target}\n" : "") : "") +
             (process.Category is null ? "分类暂不可用\n" : "") +
             $"启动时间：{(process.StartedAt is { } at ? DateTimeOffset.Parse(at).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "暂不可用")}\n" +
             $"运行时长：{(process.UptimeSeconds is { } seconds ? FormatUptime(seconds) : "暂不可用")}\n" +

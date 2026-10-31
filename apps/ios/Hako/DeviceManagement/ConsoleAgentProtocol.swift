@@ -45,11 +45,15 @@ struct ConsoleListenerProcess: Decodable, Identifiable {
     let uptimeSeconds: Int64?
     let addresses: [String]
     let category: String?
+    let launch: ConsoleProcessLaunch?
     var id: Int { processId }
-    var displayName: String { processName ?? "进程名称暂不可用" }
+    var displayName: String {
+        (processName ?? "进程名称暂不可用") + (launch.map { " · " + $0.summary } ?? "")
+    }
     var group: ConsoleListenerGroup { category == "system" ? .system : .user }
     var isValid: Bool {
         processId >= 0 && (uptimeSeconds == nil || uptimeSeconds! >= 0)
+            && (launch == nil || launch!.isValid)
             && (category == nil || ["system", "user"].contains(category!))
             && !addresses.isEmpty && addresses.allSatisfy { !$0.isEmpty }
             && Set(addresses).count == addresses.count
@@ -62,6 +66,34 @@ struct ConsoleListenerProcess: Decodable, Identifiable {
         let rest = seconds % 60
         return days > 0 ? "\(days) 天 \(hours) 小时 \(minutes) 分 \(rest) 秒" :
             hours > 0 ? "\(hours) 小时 \(minutes) 分 \(rest) 秒" : "\(minutes) 分 \(rest) 秒"
+    }
+}
+struct ConsoleProcessLaunch: Decodable {
+    let kind: String
+    let target: String?
+    var isValid: Bool {
+        switch kind {
+        case "script", "module": return target.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 2048 } ?? false
+        case "inline", "stdin", "interactive", "unavailable": return target == nil
+        default: return false
+        }
+    }
+    var summary: String {
+        switch kind {
+        case "script": return target?.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last.map(String.init) ?? "Python 脚本"
+        case "module": return "-m " + (target ?? "")
+        case "inline": return "-c 代码"
+        case "stdin": return "标准输入"
+        case "interactive": return "交互解释器"
+        default: return "启动信息暂不可用"
+        }
+    }
+    var title: String {
+        switch kind {
+        case "script": return "Python 脚本"
+        case "module": return "Python 模块"
+        default: return summary
+        }
     }
 }
 struct ConsoleCodexUsage: Decodable {

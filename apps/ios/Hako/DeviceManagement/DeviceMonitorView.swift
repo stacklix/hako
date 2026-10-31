@@ -301,6 +301,20 @@ struct DeviceMetricsView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(process.displayName).font(.subheadline.weight(.semibold)).textSelection(.enabled)
                                 LabeledContent("PID", value: "\(process.processId)")
+                                if let launch = process.launch {
+                                    LabeledContent("启动方式", value: launch.title)
+                                    if let target = launch.target {
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(launch.kind == "script" ? "脚本路径" : "模块名称").foregroundStyle(.secondary)
+                                            Text(target).font(.footnote.monospaced()).textSelection(.enabled)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    if launch.kind == "unavailable" {
+                                        Text("无法读取启动信息，可能是权限受限或进程已退出。")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                                 if process.category == nil { Text("分类暂不可用").foregroundStyle(.orange) }
                                 LabeledContent("启动时间", value: process.startedAt.map(sampleTime) ?? "暂不可用")
                                 LabeledContent("运行时长", value: process.formattedUptime)
