@@ -4,20 +4,18 @@ import Charts
 struct ECSNetworkSections: View {
     let snapshot: ECSSnapshot?
     let monitor: [ECSMonitorPoint]
-    @State private var interface = ""
+    let onSelectConnection: (ECSConnectionDirection, ECSSnapshot) -> Void
+    @State private var listenersExpanded = false
 
     private var selectedInterface: ECSInterface? {
-        let values = snapshot?.interfaces ?? []
-        return values.first { $0.name == interface }
-            ?? values.first { $0.name == snapshot?.primaryInterface }
-            ?? values.first { $0.name != "lo" } ?? values.first
+        snapshot?.interfaces?.first { $0.name == "eth0" }
     }
     var body: some View {
         Group {
             summary
-            if let sockets = snapshot?.sockets { listeners(sockets) }
-            if !monitor.isEmpty { trend }
-            if let selected = selectedInterface { interfaceDetails(selected) }
+            trend
+            listeners(snapshot?.sockets ?? [])
+            interfaceDetails
         }
     }
 
@@ -29,25 +27,23 @@ struct ECSNetworkSections: View {
                 ECSNetworkMetric(title: "上行", value: up.value, unit: up.unit)
                 ECSNetworkMetric(title: "下行", value: down.value, unit: down.unit)
                 ForEach([ECSConnectionDirection.outgoing, .incoming]) { direction in
-                    NavigationLink {
-                        if let snapshot { ECSNetworkConnectionsView(direction: direction, snapshot: snapshot) }
+                    Button {
+                        if let snapshot { onSelectConnection(direction, snapshot) }
                     } label: {
                         ECSNetworkMetric(title: direction.title,
                             value: direction.count(snapshot?.socketSummary).map { $0.formatted() } ?? "—", unit: "个")
                     }
                     .buttonStyle(.plain)
-                    .disabled(snapshot?.socketSummary == nil)
-                    .accessibilityHint("查看\(direction.title)的 TCP 连接")
+                    .disabled(snapshot == nil)
+                    .accessibilityLabel(direction.title)
+                    .accessibilityValue(direction.count(snapshot?.socketSummary).map { "\($0) 个" } ?? "暂无数据")
+                    .accessibilityHint("打开\(direction.title)详情")
                 }
             }.padding(.vertical, 6)
-            if let values = snapshot?.interfaces, let selected = selectedInterface {
-                Picker("流量网卡", selection: Binding(get: { selected.name }, set: { interface = $0 })) {
-                    ForEach(values) { Text($0.name).tag($0.name) }
-                }
-            }
+            LabeledContent("流量网卡", value: "eth0")
         } header: { Text("网络概况") } footer: {
             VStack(alignment: .leading, spacing: 5) {
-                Text("流量为所选网卡约 1 秒采样；连接数为主机 TCP 已建立连接，按当前监听地址与端口推断，不随网卡切换。点连接数查看详情。")
+                Text("流量为 eth0 约 1 秒采样；连接数为采样时仍保持的 TCP 连接，包含可读取的容器网络、本机内部及代理连接，不是累计网站请求数。点连接数查看详情。")
                 if let unknown = snapshot?.socketSummary?.unknown, unknown > 0 {
                     Text("另有 \(unknown) 个连接无法区分方向。").foregroundStyle(.orange)
                 }
@@ -58,30 +54,38 @@ struct ECSNetworkSections: View {
     private func listeners(_ sockets: [ECSSocket]) -> some View {
         let ports = ECSListeningPort.grouped(sockets)
         return Section {
-            ForEach(ports) { port in
-                NavigationLink { ECSListeningPortDetails(port: port) } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(port.name).font(.system(.headline, design: .monospaced))
-                            Spacer()
-                            Text(port.protocolName.uppercased()).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(port.processes).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }.padding(.vertical, 3)
+            DisclosureGroup(isExpanded: $listenersExpanded) {
+                ForEach(ports) { port in
+                    NavigationLink { ECSListeningPortDetails(port: port) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(port.name).font(.system(.headline, design: .monospaced))
+                                Spacer()
+                                Text(port.protocolName.uppercased()).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(port.processes).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }.padding(.vertical, 3)
+                    }
+                }
+                if snapshot?.sockets == nil { Text("—").foregroundStyle(.secondary) }
+                else if ports.isEmpty { Text("当前没有监听端口。").foregroundStyle(.secondary) }
+                if let total = snapshot?.totalListeningPorts, ports.count < total {
+                    Text("共 \(total) 个监听端口，本次返回 \(ports.count) 个，详情地址也可能不完整。")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if snapshot?.truncated == true {
+                    Text("快照结果已截断，端口的监听地址可能不完整。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } label: {
+                HStack {
+                    Text("监听端口")
+                    Spacer()
+                    Text(snapshot?.sockets == nil ? "—" : "\(snapshot?.totalListeningPorts ?? ports.count)")
+                        .foregroundStyle(.secondary).monospacedDigit()
                 }
             }
-            if ports.isEmpty { Text("当前没有监听端口。").foregroundStyle(.secondary) }
-            if let total = snapshot?.totalListeningPorts, ports.count < total {
-                Text("共 \(total) 个监听端口，本次返回 \(ports.count) 个，详情地址也可能不完整。")
-                    .font(.caption).foregroundStyle(.orange)
-            } else if snapshot?.truncated == true {
-                Text("快照结果已截断，端口的监听地址可能不完整。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("监听端口 · \(snapshot?.totalListeningPorts ?? ports.count)")
         } footer: {
-            Text("按协议与端口合并 IPv4 / IPv6；点击端口查看监听 IP 和进程。UDP 展示已绑定的端口。")
+            Text("仅显示主机网络的监听端口，不包含容器内部端口。点击查看监听 IP 和进程；监听不代表公网可达。UDP 展示已绑定的端口。")
         }
     }
 
@@ -99,6 +103,7 @@ struct ECSNetworkSections: View {
                     }
                 }
             }.chartYAxisLabel("KiB/s").frame(height: 175)
+                .overlay { if monitor.isEmpty { Text("—").foregroundStyle(.secondary) } }
             if let last = monitor.last {
                 Text("监控时间：\(last.time.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption).foregroundStyle(.secondary)
@@ -108,17 +113,18 @@ struct ECSNetworkSections: View {
         }
     }
 
-    private func interfaceDetails(_ selected: ECSInterface) -> some View {
-        Section("网卡 · \(selected.name)") {
+    private var interfaceDetails: some View {
+        Section("网卡 · eth0") {
             DisclosureGroup("累计流量与丢包") {
-                LabeledContent("累计上行", value: ECSFormat.bytes(selected.send))
-                LabeledContent("累计下行", value: ECSFormat.bytes(selected.receive))
-                LabeledContent("接收 / 发送丢包", value: "\(Int64(selected.receiveDrops)) / \(Int64(selected.sendDrops))")
+                LabeledContent("累计上行", value: selectedInterface.map { ECSFormat.bytes($0.send) } ?? "—")
+                LabeledContent("累计下行", value: selectedInterface.map { ECSFormat.bytes($0.receive) } ?? "—")
+                LabeledContent("接收 / 发送丢包", value: selectedInterface.map { "\(Int64($0.receiveDrops)) / \(Int64($0.sendDrops))" } ?? "—")
                 Text("来自系统网卡计数，重建网卡或重启可能重置。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
+
 }
 
 private struct ECSNetworkMetric: View {
@@ -152,6 +158,7 @@ private struct ECSListeningPortDetails: View {
                         if let endpoint = ECSSocketEndpoint(socket.local) {
                             LabeledContent(endpoint.family, value: endpoint.address)
                         } else { Text(socket.local).font(.body.monospaced()) }
+                        if let namespace = socket.namespace { Text(namespace == "host" ? "主机网络" : "容器 / 独立网络 · " + namespace).font(.caption).foregroundStyle(.secondary) }
                         if let name = socket.process { Text(name).font(.subheadline) }
                         if let pid = socket.pid { Text("PID \(pid)").font(.caption).foregroundStyle(.secondary) }
                     }
@@ -161,7 +168,15 @@ private struct ECSListeningPortDetails: View {
     }
 }
 
-private struct ECSNetworkConnectionsView: View {
+struct ECSNetworkConnectionSelection: Hashable {
+    private let id = UUID()
+    let direction: ECSConnectionDirection
+    let snapshot: ECSSnapshot
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+struct ECSNetworkConnectionsView: View {
     let direction: ECSConnectionDirection
     let snapshot: ECSSnapshot
     private var rows: [ECSSocket] { direction.sockets(snapshot.sockets ?? []) }
@@ -169,7 +184,8 @@ private struct ECSNetworkConnectionsView: View {
         List {
             Section {
                 LabeledContent("已建立 TCP 连接", value: direction.count(snapshot.socketSummary)?.formatted() ?? "—")
-                Text("按快照中的本机监听地址与端口推断方向，监听已关闭或复用源端口时可能无法准确区分。")
+                if let error = snapshot.socketError { Text(error).font(.footnote).foregroundStyle(.orange) }
+                Text("按各网络命名空间的监听地址与端口推断方向；监听已关闭或复用源端口时可能误判。代理两侧分别计数，不代表独立访客数。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Text("快照：\(Date(timeIntervalSince1970: snapshot.time).formatted(date: .abbreviated, time: .standard))")
                     .font(.caption).foregroundStyle(.secondary)
@@ -204,6 +220,7 @@ private struct ECSNetworkSocketDetails: View {
                 LabeledContent("状态", value: socket.state)
                 LabeledContent("本机", value: socket.local)
                 LabeledContent("对端", value: socket.peer)
+                if let namespace = socket.namespace { LabeledContent("网络命名空间", value: namespace == "host" ? "主机" : namespace) }
                 if let name = socket.process { LabeledContent("进程", value: name) }
                 if let pid = socket.pid { LabeledContent("PID", value: String(pid)) }
             }

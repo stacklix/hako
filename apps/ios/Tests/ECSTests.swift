@@ -131,9 +131,43 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
             fatalError("Expected a lost socket to fail the probe")
         } catch let error as URLError { precondition(error.code == .networkConnectionLost) }
 
+        let probe = "import json,sys\nprint(json.dumps({'mode':sys.argv[1],'pid':sys.argv[2],'text':'容器'}))"
+        let command = try ECSRPC.snapshotCommand(source: probe, mode: "process", pid: 42)
+        let probeProcess = Process(), probeOutput = Pipe()
+        probeProcess.executableURL = URL(fileURLWithPath: "/bin/sh")
+        probeProcess.arguments = ["-c", command]; probeProcess.standardOutput = probeOutput
+        try probeProcess.run()
+        let probeBytes = probeOutput.fileHandleForReading.readDataToEndOfFile()
+        probeProcess.waitUntilExit()
+        let probeValue = try JSONSerialization.jsonObject(with: probeBytes) as! [String: String]
+        precondition(probeProcess.terminationStatus == 0 && probeValue == ["mode": "process", "pid": "42", "text": "容器"])
+        fails { _ = try ECSRPC.snapshotCommand(source: probe, mode: "network; exit 1") }
+        fails { _ = try ECSRPC.snapshotCommand(source: probe, mode: "process", pid: -1) }
+        let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Hako/Resources/ecs-snapshot.py.txt")
+        let bundledCommand = try ECSRPC.snapshotCommand(source: String(contentsOf: sourceURL, encoding: .utf8), mode: "network")
+        precondition(Data(bundledCommand.utf8).base64EncodedString().count < 24_000)
+
         let snapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"interfaces":[],"processes":[],"truncated":false}"#.utf8))
         precondition(snapshot.memoryAvailable == nil && snapshot.sockets == nil)
         fails { _ = try ECSSnapshot.decode(Data(#"{"version":2,"time":100}"#.utf8)) }
+        let usageSnapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"cpuUsagePercent":25,"memoryTotal":1000,"memoryAvailable":250,"diskTotal":1000,"diskUsed":180}"#.utf8))
+        let now = Date(timeIntervalSince1970: 1000)
+        func monitorPoint(age: Double, cpu: Double?) -> ECSMonitorPoint {
+            ECSMonitorPoint(time: now.addingTimeInterval(-age), cpu: cpu, receiveBytesPerSecond: nil,
+                sendBytesPerSecond: nil, readBytesPerSecond: nil, writeBytesPerSecond: nil)
+        }
+        let monitoring = [monitorPoint(age: 120, cpu: 10), monitorPoint(age: 60, cpu: 0), monitorPoint(age: 0, cpu: nil)]
+        let usage = ECSOverviewUsage(snapshot: usageSnapshot, monitor: monitoring, now: now)
+        precondition(usage.cpu == 25 && usage.cpuIsSampled && usage.memory == 75 && usage.disk == 18)
+        let fallback = ECSOverviewUsage(snapshot: snapshot, monitor: monitoring, now: now)
+        precondition(fallback.cpu == 0 && !fallback.cpuIsSampled && fallback.memory == nil && fallback.disk == nil)
+        let missing = ECSOverviewUsage(snapshot: nil, monitor: [monitorPoint(age: 301, cpu: 90), monitorPoint(age: 0, cpu: .nan)], now: now)
+        precondition(missing.cpu == nil)
+        let invalidSnapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"memoryTotal":100,"memoryAvailable":200,"diskTotal":0,"diskUsed":10}"#.utf8))
+        let invalidUsage = ECSOverviewUsage(snapshot: invalidSnapshot, monitor: [], now: now)
+        precondition(invalidUsage.memory == nil && invalidUsage.disk == nil)
+
         connection.region = "cn-chengdu"
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ECSMockURLProtocol.self]
         let client = try ECSClient(connection: connection, session: URLSession(configuration: config))

@@ -23,9 +23,9 @@ extension ECSClient: ECSReading { }
     private(set) var loaded = false
     private let readConnection: () throws -> ECSConnection?
     private let clientFactory: (ECSConnection) throws -> any ECSReading
-    private var refreshTask: Task<Void, Never>?
-    private var refreshPage: ECSPage?
-    private var refreshID: UUID?
+    private var requests: [String: Task<Void, Never>] = [:]
+    private var requestIDs: [String: UUID] = [:]
+    private var issues: [String: String] = [:]
 
     init(connection: ECSConnection? = nil,
          readConnection: @escaping () throws -> ECSConnection? = { try ECSKeychain.load() },
@@ -42,75 +42,97 @@ extension ECSClient: ECSReading { }
     func configure(_ value: ECSConnection) throws {
         let value = try value.validated()
         try ECSKeychain.save(value)
-        refreshTask?.cancel(); refreshTask = nil; refreshID = nil; refreshPage = nil
+        requests.values.forEach { $0.cancel() }; requests = [:]; requestIDs = [:]; issues = [:]
         revision = UUID(); connection = value; instance = nil; monitor = []
         overview = nil; network = nil; processes = nil; busy = false; error = nil; loaded = true
     }
+    func refreshAll(includeOverview: Bool = true) async {
+        await refreshResources(["instance", "monitor", "network", "processes"] + (includeOverview ? ["overview"] : []))
+    }
+
+    func pollUsage(interval: Duration = .seconds(3)) async {
+        let clock = ContinuousClock()
+        while !Task.isCancelled {
+            let next = clock.now.advanced(by: interval)
+            await refreshResources(["overview"])
+            // Include request time in the interval and never overlap slow samples.
+            do { try await clock.sleep(until: next) } catch { return }
+        }
+    }
+
     func refresh(_ page: ECSPage) async {
-        guard !Task.isCancelled, page != .terminal else { return }
+        switch page {
+        case .overview: await refreshResources(["instance", "monitor", "overview"])
+        case .network: await refreshResources(["monitor", "network"])
+        case .processes: await refreshResources(["processes"])
+        case .terminal: break
+        }
+    }
+
+    private func refreshResources(_ resources: [String]) async {
+        guard !Task.isCancelled else { return }
         load()
         guard let connection else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for resource in resources {
+                group.addTask { await self.refreshResource(resource, connection: connection) }
+            }
+        }
+    }
+
+    private func refreshResource(_ resource: String, connection: ECSConnection) async {
+        guard !Task.isCancelled else { return }
         let task: Task<Void, Never>
-        if let current = refreshTask, !current.isCancelled, refreshPage == page {
+        if let current = requests[resource], !current.isCancelled {
             task = current
         } else {
-            let previous = refreshTask
-            previous?.cancel()
+            let previous = requests[resource]
             let id = UUID(), ticket = revision
-            refreshID = id; refreshPage = page; busy = true; error = nil
+            requestIDs[resource] = id; busy = true
             task = Task { [weak self] in
-                // Finish cancelling the old page before querying the new page.
-                // A busy old request must never make the new page sleep for 30s.
                 await previous?.value
                 guard let self else { return }
                 defer {
-                    if self.refreshID == id {
-                        self.refreshTask = nil; self.refreshID = nil; self.refreshPage = nil; self.busy = false
+                    if self.requestIDs[resource] == id {
+                        self.requests[resource] = nil; self.requestIDs[resource] = nil
+                        self.busy = !self.requests.isEmpty
                     }
                 }
-                guard !Task.isCancelled, self.revision == ticket, self.refreshID == id else { return }
-                await self.fetch(page, connection: connection, ticket: ticket, id: id)
+                guard !Task.isCancelled, self.revision == ticket else { return }
+                do {
+                    let client = try self.clientFactory(connection)
+                    var issue: String?
+                    switch resource {
+                    case "instance":
+                        let value = try await client.instance()
+                        try Task.checkCancellation(); guard self.revision == ticket else { return }
+                        self.instance = value
+                    case "monitor":
+                        let value = try await client.monitor()
+                        try Task.checkCancellation(); guard self.revision == ticket else { return }
+                        self.monitor = value
+                    default:
+                        let value = try await client.snapshot(mode: resource, pid: nil)
+                        try Task.checkCancellation(); guard self.revision == ticket else { return }
+                        switch resource {
+                        case "overview": self.overview = value
+                        case "network": self.network = value
+                        case "processes": self.processes = value
+                        default: break
+                        }
+                        issue = value.socketError
+                    }
+                    self.issues[resource] = issue
+                } catch is CancellationError { return }
+                catch {
+                    guard self.revision == ticket, !Task.isCancelled else { return }
+                    self.issues[resource] = error.localizedDescription
+                }
+                self.error = self.issues.isEmpty ? nil : Set(self.issues.values).sorted().joined(separator: "\n")
             }
-            refreshTask = task
+            requests[resource] = task
         }
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-    }
-
-    private func fetch(_ page: ECSPage, connection: ECSConnection, ticket: UUID, id: UUID) async {
-        do {
-            let client = try clientFactory(connection)
-            var issues: [String] = []
-            if page == .overview || instance == nil {
-                do {
-                    let value = try await client.instance()
-                    try Task.checkCancellation(); guard ticket == revision, refreshID == id else { return }
-                    instance = value
-                } catch is CancellationError { throw CancellationError() }
-                catch { issues.append(error.localizedDescription) }
-            }
-            if page == .overview || page == .network {
-                try Task.checkCancellation()
-                do {
-                    let values = try await client.monitor()
-                    try Task.checkCancellation(); guard ticket == revision, refreshID == id else { return }
-                    monitor = values
-                } catch is CancellationError { throw CancellationError() }
-                catch { issues.append(error.localizedDescription) }
-            }
-            try Task.checkCancellation()
-            do {
-                let mode: String
-                switch page { case .overview: mode = "overview"; case .network: mode = "network"; case .processes: mode = "processes"; case .terminal: return }
-                let value = try await client.snapshot(mode: mode, pid: nil)
-                try Task.checkCancellation(); guard ticket == revision, refreshID == id else { return }
-                switch page { case .overview: overview = value; case .network: network = value; case .processes: processes = value; case .terminal: break }
-                if let socketError = value.socketError { issues.append(socketError) }
-            } catch is CancellationError { throw CancellationError() }
-            catch { issues.append(error.localizedDescription) }
-            guard ticket == revision, refreshID == id else { return }
-            error = issues.isEmpty ? nil : Array(Set(issues)).sorted().joined(separator: "\n")
-        } catch is CancellationError { }
-        catch { if ticket == revision, refreshID == id { self.error = error.localizedDescription } }
     }
 }
 

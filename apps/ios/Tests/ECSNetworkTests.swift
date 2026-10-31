@@ -37,6 +37,22 @@ import Foundation
                      "The headline must use complete pre-truncation counts")
         precondition(snapshot.primaryInterface == "eth0" && snapshot.socketSummary?.unknown == 3)
 
+        let isolated = try JSONDecoder().decode([ECSSocket].self, from: Data(#"""
+        [{"protocolName":"tcp","state":"ESTAB","local":"10.0.0.1:443","peer":"192.0.2.1:50000","direction":"incoming","namespace":"host"},
+         {"protocolName":"tcp","state":"ESTAB","local":"10.0.0.1:443","peer":"192.0.2.1:50000","direction":"incoming","namespace":"net:[2]"}]
+        """#.utf8))
+        precondition(Set(isolated.map(\.id)).count == 2, "Namespace-local socket addresses must retain distinct row identities")
+
+        let listeners = try JSONDecoder().decode([ECSSocket].self, from: Data(#"""
+        [{"protocolName":"tcp","state":"LISTEN","local":"*:8080","peer":"*:*","namespace":"net:[1]","process":"headscale"},
+         {"protocolName":"tcp","state":"LISTEN","local":"*:8080","peer":"*:*","namespace":"net:[2]","process":"hako-server"},
+         {"protocolName":"tcp","state":"LISTEN","local":"0.0.0.0:443","peer":"*:*","namespace":"host","process":"proxy"},
+         {"protocolName":"tcp","state":"LISTEN","local":"*:443","peer":"*:*","namespace":"net:[3]","process":"container"}]
+        """#.utf8))
+        let hostPorts = ECSListeningPort.grouped(listeners)
+        precondition(hostPorts.count == 1 && hostPorts[0].port == 443 && hostPorts[0].processes == "proxy")
+        precondition(hostPorts[0].sockets.count == 1)
+
         let legacy = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"sockets":[]}"#.utf8))
         precondition(legacy.socketSummary == nil && legacy.primaryInterface == nil)
         precondition(ECSConnectionDirection.incoming.count(legacy.socketSummary) == nil)

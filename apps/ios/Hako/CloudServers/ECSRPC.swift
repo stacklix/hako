@@ -13,6 +13,27 @@ enum ECSRPC {
         let text = method + "&%2F&" + encode(canonical(parameters))
         return Data(HMAC<Insecure.SHA1>.authenticationCode(for: Data(text.utf8), using: SymmetricKey(data: Data((secret + "&").utf8)))).base64EncodedString()
     }
+    static func snapshotCommand(source: String, mode: String, pid: Int? = nil) throws -> String {
+        guard ["overview", "network", "processes", "process"].contains(mode),
+              mode != "process" || pid.map({ $0 > 0 }) == true else {
+            throw ECSFailure(message: "系统查询参数无效。")
+        }
+        // Foundation's zlib compression emits raw DEFLATE (Python wbits=-15).
+        let compressed = try (Data(source.utf8) as NSData).compressed(using: .zlib) as Data
+        let command = """
+        command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }
+        python3 - \(mode) \(pid ?? 0) <<'HAKO_ECS_SNAPSHOT'
+        import base64,zlib
+        exec(compile(zlib.decompress(base64.b64decode('\(compressed.base64EncodedString())'),-15),'hako-ecs-snapshot','exec'))
+        HAKO_ECS_SNAPSHOT
+
+        """
+        guard Data(command.utf8).base64EncodedString().utf8.count < 24_000 else {
+            throw ECSFailure(message: "系统查询脚本超过云助手长度限制。")
+        }
+        return command
+    }
+
     static func request(connection: ECSConnection, action: String, parameters: [String: String], now: Date = .now, nonce: String = UUID().uuidString) -> URLRequest {
         var values = parameters
         let formatter = ISO8601DateFormatter()
@@ -122,7 +143,7 @@ final class ECSClient: @unchecked Sendable {
             throw ECSFailure(message: "无法读取系统查询资源。")
         }
         let source = try String(contentsOf: url, encoding: .utf8)
-        let command = "command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\npython3 - \(mode) \(pid ?? 0) <<'HAKO_ECS_SNAPSHOT'\n" + source + "\nHAKO_ECS_SNAPSHOT\n"
+        let command = try ECSRPC.snapshotCommand(source: source, mode: mode, pid: pid)
         let reply = try await call("RunCommand", ["InstanceId.1": connection.instanceID, "Type": "RunShellScript", "CommandContent": Data(command.utf8).base64EncodedString(),
             "ContentEncoding": "Base64", "KeepCommand": "false", "Timeout": "45", "TerminationMode": "ProcessTree",
             "Username": connection.username, "ClientToken": UUID().uuidString])
