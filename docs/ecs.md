@@ -37,6 +37,8 @@ RAM 身份至少需要以下实际使用的操作权限，授权范围与条件�
 
 进入云服务器、关闭连接设置或返回前台时，实例信息、基础监控及概览 / 网络 / 进程快照按资源独立并行加载，终端会话同时准备。页面先渲染分组、筛选和 `—` 占位，后台加载不显示转圈动画；某个请求缓慢或失败不会阻塞其他数据出现。切换 Tab 使用已加载数据，不取消其他页查询。页面可见、App 活跃且未打开设置时，三个仪表盘共用的概览快照独立每 3 秒刷新（包含请求耗时；慢请求完成前不叠加新请求），其余数据每轮完成后约 30 秒刷新，访问统计独立每 60 秒刷新；支持下拉刷新当前页。相同资源的进行中请求合并，退出页面、打开设置或后台时取消数据查询。各资源独立保留错误，查询失败保留旧数据及快照时间，新配置保存后清空旧实例数据。
 
+进程筛选包含「全部 / 系统 / 用户 / 云服务 / 未分类」。Docker 容器按 cgroup v1 / v2 的完整容器 ID 或 `docker-<ID>.scope` 识别，包含 root、host-network 和 rootless 容器，容器身份优先于进程名称及 UID，归入「用户」。已匹配到本机容器的 Docker 端口代理也归入「用户」；未能确认映射时保留原分类。主机上的 `dockerd`、`containerd` 和 `containerd-shim` 属于「系统」，不会仅凭路径包含 docker 就当作容器。阿里云云助手、云安全中心及云监控按已知进程名称或服务单元归入「云服务」，兼容 Linux 进程名的 15 字节截断；不使用任意 aliyun 子串匹配。详情展示具体分类依据；列表仍只返回原有六个精简字段，识别不依赖新增详情查询。
+
 采集脚本以 raw DEFLATE 压缩后通过 Base64 传输，由实例已有 Python 3 标准库解压执行；发送前校验编码后的完整命令小于 24,000 字节。
 
 云助手命令设置 `KeepCommand=false`、45 秒执行超时、`TerminationMode=ProcessTree`，不创建定时任务；取消和等待超时会尝试停止整个查询进程树。每次返回结果预算 20,000 字节，低于云助手 24 KiB 截断阈值。进程列表按 PID 游标自动分批读取，全部批次成功后才更新页面，再对完整返回列表进行 CPU / 内存排序和分类；后续批次失败或取消时保留旧列表，不把部分结果当作完整清单。分批期间进程可能启动或退出，各批次独立采样，快照时间为首批采样时间；无法读取基本信息或采样期间已退出的进程会跳过。不在实例上缓存列表或创建常驻采集器。网络等其他快照结果过多时仍缩短记录并标记部分结果。单个进程详情独立查询。
@@ -72,5 +74,7 @@ macOS CI 在归档前对 ECS 非 UI 源码进行类型检查，并运行 `ECSTes
 Windows 不运行 iOS 编译、签名或安装；上述脚本测试不代表已经通过真机与真实 ECS 验证。真机还需验证输入法、粘贴、方向键、终端 resize、切换页面 / 前后台清理、权限不足、STS 过期及实际 RAM 策略。没有真实阿里云凭据时不尝试连接用户实例。
 
 网络依据：[Linux 网络命名空间](https://man7.org/linux/man-pages/man7/network_namespaces.7.html)、[nsenter](https://man7.org/linux/man-pages/man1/nsenter.1.html)、[IPv6 双栈行为](https://man7.org/linux/man-pages/man2/IPV6_V6ONLY.2const.html)。
+
+进程分类依据：[Docker cgroup 路径](https://docs.docker.com/engine/containers/runmetrics/)、[云助手进程与目录](https://help.aliyun.com/en/ecs/user-guide/overview-10)、[云安全中心进程](https://www.alibabacloud.com/help/en/security-center/security-center-agent-processes)、[云监控进程](https://www.alibabacloud.com/help/en/cms/cloudmonitor-1-0/user-guide/common-operations)。
 
 官方依据：[云助手](https://help.aliyun.com/zh/ecs/user-guide/overview-10)、[RunCommand](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-runcommand)、[基础监控](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-describeinstancemonitordata)、[终端会话](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-startterminalsession)、[AXT 官方参考](https://github.com/aliyun/cloud-assistant-starter/tree/master/src/main/resources/static/components/session)。

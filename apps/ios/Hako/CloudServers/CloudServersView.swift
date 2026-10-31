@@ -201,7 +201,7 @@ struct CloudServersView: View {
                 }
             }
         } header: { processHeader }
-        Section { Text("CPU 按单核 100% 计；内存为 RSS。分类按启动来源推断，无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
+        Section { Text("CPU 按单核 100% 计；内存为 RSS。容器进程归入用户，阿里云服务单独分组；无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
         if let snapshot = store.processes { snapshotFooter(snapshot) }
     }
 

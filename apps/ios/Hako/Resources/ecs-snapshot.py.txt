@@ -19,7 +19,18 @@ from pathlib import Path
 
 PROC = Path('/proc')
 SYSTEM_NAMES = {'systemd', 'sshd', 'cron', 'crond', 'dbus-daemon', 'dbus-broker',
-                'systemd-resolve', 'systemd-network', 'systemd-journal', 'aliyun-service'}
+                'systemd-resolve', 'systemd-network', 'systemd-journal',
+                'dockerd', 'containerd', 'containerd-shim'}
+CLOUD_NAMES = {'aliyun-service', 'aliyun_assist', 'assist_daemon', 'acs-plugin-manager',
+               'aliyun_assist_update', 'aliyun_installer', 'AliYunDun', 'AliYunDunMonitor',
+               'AliYunDunUpdate', 'AliSecCheck', 'AliSecureCheckAdvanced', 'AliDetect',
+               'AliHips', 'AliNet', 'AliSecGuard', 'AliWebGuard', 'argusagent',
+               'CmsGoAgent.linux-amd64', 'CmsGoAgent.linux-386'}
+# /proc/<pid>/stat comm is commonly limited to 15 bytes.
+CLOUD_NAMES = {value for name in CLOUD_NAMES for value in (name.lower(), name.lower()[:15])}
+CLOUD_UNITS = {'aliyun.service', 'aliyun-service.service', 'aliyun-assist.service',
+               'assistdaemon.service', 'assist-daemon.service', 'aegis.service',
+               'argusagent.service', 'cloudmonitor.service'}
 
 
 def read(path):
@@ -94,6 +105,18 @@ def process_samples(pid=0):
 def classify(stat, uid, cgroup, loginuid):
     if stat['flags'] & 0x200000:
         return 'system', '内核线程'
+    paths = []
+    for line in cgroup.splitlines():
+        fields = line.split(':', 2)
+        if len(fields) == 3 and fields[2].startswith('/'):
+            paths.append(fields[2])
+    # Match container IDs, not the host docker.service or a similarly named app.
+    if any(re.search(r'/(?:docker/[0-9a-f]{64}|docker-[0-9a-f]{64}\.scope)(?:/|$)', path) for path in paths):
+        return 'user', 'Docker 容器进程（按 cgroup 推断）'
+    if stat['name'].lower() in CLOUD_NAMES:
+        return 'cloud', '阿里云服务（按已知进程名称推断）'
+    if any(unit.lower() in CLOUD_UNITS for path in paths for unit in path.split('/')):
+        return 'cloud', '阿里云服务（按服务单元推断）'
     if stat['name'] in SYSTEM_NAMES:
         return 'system', '系统基础服务（按名称推断）'
     if '/user.slice/' in cgroup or (loginuid is not None and 1000 <= loginuid < 4294967295):
@@ -302,6 +325,10 @@ def label_docker_proxies(values, name_key):
         pid = value.get('pid')
         if pid in resolved and value.get(name_key) == 'docker-proxy' and value.get('namespace', 'host') == 'host':
             value[name_key] = resolved[pid]
+            if name_key == 'name':
+                value['category'] = 'user'
+                if 'source' in value:
+                    value['source'] = 'Docker 容器端口代理（按本机容器映射确认）'
 
 
 def network_namespaces():

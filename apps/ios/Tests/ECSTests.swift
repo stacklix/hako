@@ -75,6 +75,13 @@ private func checkProcessPages() async throws {
     let listRow = complete.processes!.first!
     precondition(listRow.cpu == nil && listRow.parent == nil && listRow.uid == nil && listRow.source == nil)
     precondition(listRow.threads == nil && listRow.elapsed == nil && listRow.executable == nil && listRow.read == nil)
+    for (category, expected) in [("user", ECSProcessGroup.user), ("cloud", .cloud),
+                                 ("system", .system), ("unknown", .unknown), ("future-category", .unknown)] {
+        let object: [String: Any] = ["pid": 42, "name": "worker", "user": "root", "category": category, "memory": 4096]
+        let process = try JSONDecoder().decode(ECSProcess.self, from: JSONSerialization.data(withJSONObject: object))
+        precondition(process.group == expected)
+    }
+    precondition(ECSProcessGroup.allCases.contains(.cloud) && ECSProcessGroup.cloud.rawValue == "云服务")
     let empty = try await ECSSnapshot.processList { _ in try page([]) }
     precondition(empty.processes?.isEmpty == true && empty.totalProcesses == 0)
 

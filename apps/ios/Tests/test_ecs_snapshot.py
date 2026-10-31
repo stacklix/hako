@@ -95,6 +95,78 @@ class SnapshotTests(unittest.TestCase):
         kernel = collector.process_stat(stat(name='kworker', flags=0x200000))
         self.assertEqual(collector.classify(kernel, 0, '', None)[0], 'system')
 
+    def test_docker_containers_are_user_processes_in_both_cgroup_versions(self):
+        identity = 'a1' * 32
+        groups = ['11:memory:/docker/' + identity,
+                  '0::/system.slice/docker-' + identity + '.scope',
+                  '0::/user.slice/user-1000.slice/user@1000.service/app.slice/docker-' + identity + '.scope/child',
+                  '8:cpu:/unrelated\n7:memory:/docker/' + identity + '/child']
+        for cgroup in groups:
+            for name in ('nginx', 'systemd', 'sshd', 'AliYunDun'):
+                with self.subTest(cgroup=cgroup, name=name):
+                    group, source = collector.classify(collector.process_stat(stat(name=name)), 0, cgroup, None)
+                    self.assertEqual(group, 'user')
+                    self.assertIn('Docker', source)
+
+    def test_host_docker_services_and_similar_paths_are_not_containers(self):
+        identity = 'b2' * 32
+        for name in ('dockerd', 'containerd', 'containerd-shim'):
+            self.assertEqual(collector.classify(collector.process_stat(stat(name=name)), 0,
+                             '0::/system.slice/docker.service', None)[0], 'system')
+        worker = collector.process_stat(stat(name='my-business'))
+        for cgroup in ('0::/system.slice/docker.service', '0::/docker/not-a-container',
+                       '0::/docker/' + identity + '-backup', '0::/mydocker/' + identity,
+                       '0::/system.slice/docker-' + identity + '.scope-backup', 'invalid/docker/' + identity):
+            with self.subTest(cgroup=cgroup):
+                self.assertEqual(collector.classify(worker, 0, cgroup, None)[0], 'unknown')
+
+    def test_aliyun_services_have_their_own_group_with_truncated_names(self):
+        names = ('aliyun-service', 'assist_daemon', 'acs-plugin-manager', 'aliyun_assist_update',
+                 'AliYunDun', 'AliYunDunMonitor', 'AliYunDunUpdate', 'AliSecCheck',
+                 'AliSecureCheckAdvanced', 'argusagent', 'CmsGoAgent.linux-amd64')
+        for name in names:
+            for comm in (name, name[:15]):
+                with self.subTest(name=comm):
+                    group, source = collector.classify(collector.process_stat(stat(name=comm)), 0, '', None)
+                    self.assertEqual(group, 'cloud')
+                    self.assertIn('阿里云', source)
+        worker = collector.process_stat(stat(name='agent-worker'))
+        for unit in ('aliyun.service', 'aegis.service', 'argusagent.service', 'AssistDaemon.service'):
+            group, source = collector.classify(worker, 0, '0::/system.slice/' + unit + '/child', None)
+            self.assertEqual(group, 'cloud')
+            self.assertIn('服务单元', source)
+
+    def test_cloud_matching_does_not_use_arbitrary_aliyun_substrings(self):
+        for name in ('aliyun-business', 'my-aliyun-agent', 'AliYunDunBackup', 'argusagent-app'):
+            self.assertEqual(collector.classify(collector.process_stat(stat(name=name)), 0, '', None)[0], 'unknown')
+        worker = collector.process_stat(stat(name='worker'))
+        for cgroup in ('0::/system.slice/my-aliyun.service', '0::/aegis.service-backup',
+                       'aliyun.service:cpu:/system.slice/custom.service'):
+            self.assertEqual(collector.classify(worker, 0, cgroup, None)[0], 'unknown')
+        kernel = collector.process_stat(stat(name='worker', flags=0x200000))
+        self.assertEqual(collector.classify(kernel, 0, '0::/system.slice/aliyun.service', None)[0], 'system')
+
+    def test_list_and_details_agree_on_root_container_and_cloud_categories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            (proc / '42').mkdir()
+            (proc / '42' / 'status').write_text('Uid:\t0\n')
+            (proc / 'uptime').write_text('200 100')
+            for name, cgroup, expected in (
+                ('sshd', '0::/system.slice/docker-' + 'a' * 64 + '.scope', 'user'),
+                ('AliYunDun', '', 'cloud'), ('worker', '0::/system.slice/aliyun.service', 'cloud'),
+                ('dockerd', '0::/system.slice/docker.service', 'system'), ('business', '', 'unknown')):
+                (proc / '42' / 'cgroup').write_text(cgroup)
+                samples = {42: collector.process_stat(stat(name=name))}
+                with patch.object(collector, 'PROC', proc), \
+                     patch.object(collector.os, 'sysconf', create=True, side_effect=lambda key: 100 if key == 'SC_CLK_TCK' else 4096):
+                    compact = collector.processes(samples, samples, 1, details=False)[0]
+                    detail = collector.processes(samples, samples, 1, details=True)[0]
+                self.assertEqual(compact['category'], expected)
+                self.assertEqual(detail['category'], expected)
+                self.assertNotIn('source', compact)
+                self.assertTrue(detail['source'])
+
     def test_process_list_reads_and_returns_only_list_fields(self):
         def read_list_field(path):
             name = Path(path).name
@@ -208,24 +280,31 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(query.call_count, 1)
 
     def test_docker_proxy_ipv6_and_process_names(self):
-        values = [{'name': 'docker-proxy', 'pid': 42}]
+        values = [{'name': 'docker-proxy', 'pid': 42, 'category': 'unknown', 'source': '未分类'},
+                  {'name': 'docker-proxy', 'pid': 42, 'category': 'system'}]
         args = self.proxy_args(host='::', protocol='udp').replace('-host-ip\0::', '-host-ip=::')
         with patch.object(collector, 'read', return_value=args), \
              patch.object(collector, 'docker_containers', return_value=[self.docker_container(host='::', protocol='udp')]):
             collector.label_docker_proxies(values, 'name')
         self.assertEqual(values[0]['name'], 'docker:hako-server')
+        self.assertTrue(all(value['category'] == 'user' for value in values))
+        self.assertIn('容器端口代理', values[0]['source'])
+        self.assertNotIn('source', values[1])
 
     def test_docker_proxy_failure_ambiguity_and_pid_reuse_keep_original(self):
         for containers in ([], [self.docker_container(), self.docker_container(name='ambiguous')]):
-            values = [{'process': 'docker-proxy', 'pid': 42}]
+            values = [{'name': 'docker-proxy', 'pid': 42, 'category': 'unknown'}]
             with patch.object(collector, 'read', return_value=self.proxy_args()), \
                  patch.object(collector, 'docker_containers', return_value=containers):
-                collector.label_docker_proxies(values, 'process')
-            self.assertEqual(values[0]['process'], 'docker-proxy')
+                collector.label_docker_proxies(values, 'name')
+            self.assertEqual(values[0]['name'], 'docker-proxy')
+            self.assertEqual(values[0]['category'], 'unknown')
+        values = [{'name': 'docker-proxy', 'pid': 42, 'category': 'unknown'}]
         with patch.object(collector, 'read', side_effect=[self.proxy_args(), '/usr/bin/another-process\0']), \
              patch.object(collector, 'docker_containers', return_value=[self.docker_container()]):
-            collector.label_docker_proxies(values, 'process')
-        self.assertEqual(values[0]['process'], 'docker-proxy')
+            collector.label_docker_proxies(values, 'name')
+        self.assertEqual(values[0]['name'], 'docker-proxy')
+        self.assertEqual(values[0]['category'], 'unknown')
 
     def test_docker_not_queried_without_readable_host_proxy(self):
         with patch.object(collector, 'docker_containers') as query, patch.object(collector, 'read', return_value=None):

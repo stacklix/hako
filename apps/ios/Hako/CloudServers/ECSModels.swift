@@ -199,7 +199,7 @@ struct ECSConnectionCounts: Decodable, Sendable {
 }
 
 enum ECSProcessGroup: String, CaseIterable, Identifiable {
-    case all = "全部", system = "系统", user = "用户", unknown = "未分类"
+    case all = "全部", system = "系统", user = "用户", cloud = "云服务", unknown = "未分类"
     var id: String { rawValue }
 }
 
@@ -220,6 +220,6 @@ struct ECSProcess: Decodable, Identifiable, Sendable {
     let read: Double?
     let write: Double?
     var group: ECSProcessGroup {
-        switch category { case "system": return .system; case "user": return .user; default: return .unknown }
+        switch category { case "system": return .system; case "user": return .user; case "cloud": return .cloud; default: return .unknown }
     }
 }
