@@ -28,6 +28,8 @@ internal static class ProcessSnapshot
         public UnicodeString ImageName;
         public int BasePriority;
         public IntPtr ProcessId;
+        public IntPtr InheritedFromProcessId;
+        public uint HandleCount, SessionId;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -102,7 +104,8 @@ internal static class ProcessSnapshot
                     try { started = new DateTimeOffset(DateTime.FromFileTimeUtc(header.CreateTime)); }
                     catch (ArgumentOutOfRangeException) { throw new InvalidDataException("进程快照时间无效。"); }
                 }
-                if (!processes.TryAdd((int)pid, new(name, started))) throw new InvalidDataException("进程快照 PID 重复。");
+                if (header.SessionId > int.MaxValue) throw new InvalidDataException("进程快照会话无效。");
+                if (!processes.TryAdd((int)pid, new(name, started, (int)header.SessionId))) throw new InvalidDataException("进程快照 PID 重复。");
             }
             if (header.NextEntryOffset == 0) break;
             offset += (int)header.NextEntryOffset;

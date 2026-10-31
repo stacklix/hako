@@ -118,6 +118,7 @@ struct DeviceMetricsView: View {
     @State private var targetURL = ""
     @State private var selectedTab: DetailTab = .query
     @State private var codexTab: CodexTab = .sessions
+    @State private var listenerTab: ConsoleListenerGroup = .system
     @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
@@ -278,16 +279,28 @@ struct DeviceMetricsView: View {
     @ViewBuilder private func listenersContent(_ capability: ConsoleAgentCapability) -> some View {
         queryStatus(capability)
         if let snapshot = listeners(for: capability) {
+            HakoUnderlineTabs(title: "监听端口分类", options: ConsoleListenerGroup.allCases, selection: $listenerTab) {
+                "\($0.rawValue) (\(snapshot.ports(in: $0).count))"
+            }
+            Text("系统服务会话归入系统，其他会话归入用户。")
+                .font(.caption).foregroundStyle(.secondary)
             Text("同协议同端口的 IPv4 / IPv6 地址已合并，展开端口查看进程和监听 IP。UDP 显示绑定端口。")
                 .font(.caption).foregroundStyle(.secondary)
-            if snapshot.ports.isEmpty { Text("暂无监听端口").font(.footnote).foregroundStyle(.secondary) }
-            ForEach(snapshot.ports) { port in
+            if snapshot.hasUnclassifiedProcesses {
+                Text("部分进程未提供分类，暂列于用户页签；旧版 Agent 请更新后刷新。")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            if snapshot.ports(in: listenerTab).isEmpty {
+                Text("暂无\(listenerTab.rawValue)监听端口").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(snapshot.ports(in: listenerTab)) { port in
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(port.processes) { process in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(process.displayName).font(.subheadline.weight(.semibold)).textSelection(.enabled)
                                 LabeledContent("PID", value: "\(process.processId)")
+                                if process.category == nil { Text("分类暂不可用").foregroundStyle(.orange) }
                                 LabeledContent("启动时间", value: process.startedAt.map(sampleTime) ?? "暂不可用")
                                 LabeledContent("运行时长", value: process.formattedUptime)
                                 VStack(alignment: .leading, spacing: 5) {

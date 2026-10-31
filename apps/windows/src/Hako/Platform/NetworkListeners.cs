@@ -14,14 +14,24 @@ using Hako.Core;
 namespace Hako.Platform;
 
 public sealed record ListenerProcess(int ProcessId, string? ProcessName, string? StartedAt, long? UptimeSeconds,
-    string[] Addresses);
+    string[] Addresses, string? Category = null);
 public sealed record ListenerPort(string Protocol, int Port, ListenerProcess[] Processes);
-public sealed record ListenerSnapshot(string CollectedAt, ListenerPort[] Ports, string[] Warnings);
+public sealed record ListenerSnapshot(string CollectedAt, ListenerPort[] Ports, string[] Warnings)
+{
+    // Unknown/exited owners stay visible under User with a classification notice.
+    public ListenerPort[] PortsForCategory(string category) => Ports
+        .Select(port => port with { Processes = port.Processes.Where(process =>
+            (process.Category == "system" ? "system" : "user") == category).ToArray() })
+        .Where(port => port.Processes.Length > 0).ToArray();
+}
 
 public sealed class NetworkListeners
 {
     public sealed record Endpoint(string Protocol, int Port, string Address, int ProcessId);
-    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt);
+    public sealed record ProcessInfo(string? Name, DateTimeOffset? StartedAt, int? SessionId = null)
+    {
+        public string? Category => SessionId switch { 0 => "system", > 0 => "user", _ => null };
+    }
 
     [DllImport("iphlpapi.dll")]
     private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, [MarshalAs(UnmanagedType.Bool)] bool order,
@@ -51,6 +61,8 @@ public sealed class NetworkListeners
             ? process : ReadProcess(pid), DateTimeOffset.UtcNow, token);
         if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.ProcessName is null || process.StartedAt is null))
             warnings.Add("部分进程信息不可读取（权限受限或进程已退出），名称或运行时长暂不可用。");
+        if (snapshot.Ports.SelectMany(port => port.Processes).Any(process => process.Category is null))
+            warnings.Add("部分进程分类暂不可用，已暂列于用户页签。");
         snapshot = snapshot with { Warnings = warnings.ToArray() };
         // Never silently truncate ports or exceed the WebSocket message budget.
         if (JsonSerializer.SerializeToUtf8Bytes(snapshot, AgentConnection.Json).Length > 48 * 1024)
@@ -72,7 +84,7 @@ public sealed class NetworkListeners
                     var started = process.StartedAt is { } start && start <= collectedAt ? start : (DateTimeOffset?)null;
                     return new ListenerProcess(owner.Key, process.Name, started?.ToString("O", CultureInfo.InvariantCulture),
                         started is { } at ? (long)(collectedAt - at).TotalSeconds : null,
-                        owner.Select(endpoint => endpoint.Address).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray());
+                        owner.Select(endpoint => endpoint.Address).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(), process.Category);
                 }).ToArray())).ToArray();
         return new(collectedAt.ToString("O", CultureInfo.InvariantCulture), ports, []);
     }
@@ -81,6 +93,7 @@ public sealed class NetworkListeners
     {
         string? name = null;
         DateTimeOffset? started = null;
+        int? sessionId = null;
         try
         {
             using var process = Process.GetProcessById(pid);
@@ -89,9 +102,11 @@ public sealed class NetworkListeners
             catch (Exception e) when (e is Win32Exception or InvalidOperationException or NotSupportedException) { }
             try { started = new DateTimeOffset(process.StartTime.ToUniversalTime()); }
             catch (Exception e) when (e is Win32Exception or InvalidOperationException or NotSupportedException) { }
+            try { sessionId = process.SessionId; }
+            catch (Exception e) when (e is Win32Exception or InvalidOperationException or NotSupportedException) { }
         }
         catch (Exception e) when (e is ArgumentException or Win32Exception or InvalidOperationException) { }
-        return new(name, started);
+        return new(name, started, sessionId);
     }
 
     private static Endpoint[] ReadTable(string protocol, uint family, CancellationToken token)

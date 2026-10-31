@@ -19,7 +19,15 @@ struct ConsoleListenerSnapshot: Decodable {
     var isValid: Bool {
         Set(ports.map(\.id)).count == ports.count && ports.allSatisfy(\.isValid)
     }
+    var hasUnclassifiedProcesses: Bool { ports.contains { $0.processes.contains { $0.category == nil } } }
+    func ports(in group: ConsoleListenerGroup) -> [ConsoleListenerPort] {
+        ports.compactMap { port in
+            let processes = port.processes.filter { $0.group == group }
+            return processes.isEmpty ? nil : ConsoleListenerPort(protocol: port.protocol, port: port.port, processes: processes)
+        }
+    }
 }
+enum ConsoleListenerGroup: String, CaseIterable { case system = "系统", user = "用户" }
 struct ConsoleListenerPort: Decodable, Identifiable {
     let `protocol`: String
     let port: Int
@@ -36,10 +44,13 @@ struct ConsoleListenerProcess: Decodable, Identifiable {
     let startedAt: String?
     let uptimeSeconds: Int64?
     let addresses: [String]
+    let category: String?
     var id: Int { processId }
     var displayName: String { processName ?? "进程名称暂不可用" }
+    var group: ConsoleListenerGroup { category == "system" ? .system : .user }
     var isValid: Bool {
         processId >= 0 && (uptimeSeconds == nil || uptimeSeconds! >= 0)
+            && (category == nil || ["system", "user"].contains(category!))
             && !addresses.isEmpty && addresses.allSatisfy { !$0.isEmpty }
             && Set(addresses).count == addresses.count
     }

@@ -101,6 +101,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 				Processes []struct {
 					ProcessID     int `json:"processId"`
 					ProcessName   string
+					Category      string
 					StartedAt     string
 					UptimeSeconds *int64
 					Addresses     []string
@@ -120,7 +121,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 			continue
 		}
 		for _, process := range port.Processes {
-			if process.ProcessID == os.Getpid() && process.ProcessName != "" && process.UptimeSeconds != nil && *process.UptimeSeconds >= 0 && len(process.Addresses) > 0 {
+			if process.ProcessID == os.Getpid() && process.ProcessName != "" && process.UptimeSeconds != nil && *process.UptimeSeconds >= 0 && len(process.Addresses) > 0 && (process.Category == "system" || process.Category == "user") {
 				if _, err := time.Parse(time.RFC3339Nano, process.StartedAt); err == nil {
 					foundListener = true
 				}

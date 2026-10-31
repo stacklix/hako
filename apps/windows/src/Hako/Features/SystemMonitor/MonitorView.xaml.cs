@@ -35,16 +35,16 @@ public partial class MonitorView : UserControl, IDisposable
             { SampleTime.Text = "系统指标采样失败：" + error.Message; }
             ListenerStatus.Text = "正在读取监听端口…";
             var listeners = await new NetworkListeners().ReadAsync(lifetime.Token);
-            ListenerPorts.ItemsSource = listeners.Ports.Select(port => new
-            {
-                Title = $"{port.Protocol} {port.Port} · " + string.Join("、", port.Processes.Select(process => process.ProcessName ?? $"PID {process.ProcessId}")),
-                Detail = string.Join("\n\n", port.Processes.Select(process =>
-                    $"进程：{process.ProcessName ?? "暂不可用"} · PID {process.ProcessId}\n" +
-                    $"启动时间：{(process.StartedAt is { } at ? DateTimeOffset.Parse(at).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "暂不可用")}\n" +
-                    $"运行时长：{(process.UptimeSeconds is { } seconds ? FormatUptime(seconds) : "暂不可用")}\n" +
-                    "监听 IP：" + string.Join("、", process.Addresses)))
-            }).ToArray();
+            var systemPorts = listeners.PortsForCategory("system");
+            var userPorts = listeners.PortsForCategory("user");
+            ListenerPorts.ItemsSource = PortRows(systemPorts);
+            UserListenerPorts.ItemsSource = PortRows(userPorts);
+            SystemListenerTab.Header = $"系统 ({systemPorts.Length})";
+            UserListenerTab.Header = $"用户 ({userPorts.Length})";
+            SystemListenerEmpty.Text = systemPorts.Length == 0 ? "暂无系统监听端口" : "";
+            UserListenerEmpty.Text = userPorts.Length == 0 ? "暂无用户监听端口" : "";
             ListenerStatus.Text = $"{listeners.Ports.Length} 个端口 · {DateTimeOffset.Parse(listeners.CollectedAt).ToLocalTime():HH:mm:ss} 采集\n" +
+                "系统服务会话归入系统，其他会话归入用户。\n" +
                 "同协议同端口合并 IP；UDP 显示绑定端口；运行时长为采集时的进程存活时间。" +
                 (listeners.Warnings.Length == 0 ? "" : "\n" + string.Join("\n", listeners.Warnings));
         }
@@ -52,6 +52,16 @@ public partial class MonitorView : UserControl, IDisposable
         catch (Exception error) { ListenerStatus.Text = "刷新失败（保留上次结果）：" + error.Message; }
         finally { Refresh.IsEnabled = true; }
     }
+    private static object[] PortRows(ListenerPort[] ports) => ports.Select(port => (object)new
+    {
+        Title = $"{port.Protocol} {port.Port} · " + string.Join("、", port.Processes.Select(process => process.ProcessName ?? $"PID {process.ProcessId}")),
+        Detail = string.Join("\n\n", port.Processes.Select(process =>
+            $"进程：{process.ProcessName ?? "暂不可用"} · PID {process.ProcessId}\n" +
+            (process.Category is null ? "分类暂不可用\n" : "") +
+            $"启动时间：{(process.StartedAt is { } at ? DateTimeOffset.Parse(at).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "暂不可用")}\n" +
+            $"运行时长：{(process.UptimeSeconds is { } seconds ? FormatUptime(seconds) : "暂不可用")}\n" +
+            "监听 IP：" + string.Join("、", process.Addresses)))
+    }).ToArray();
     private static string FormatUptime(long seconds)
     {
         var time = TimeSpan.FromSeconds(seconds);

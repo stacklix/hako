@@ -22,7 +22,7 @@ internal static class NetworkListenerChecks
             new("TCP", 8080, "0.0.0.0", 10), new("TCP", 8080, "::", 10),
             new("TCP", 8080, "::", 10), new("TCP", 8080, "127.0.0.2", 11),
             new("UDP", 8080, "fe80::1%3", 10), new("TCP", 80, "127.0.0.1", 12)
-        ], pid => { reads++; return pid == 11 ? new(null, null) : new("test", now.AddSeconds(-90061)); }, now);
+        ], pid => { reads++; return pid == 11 ? new(null, null, 3) : new("test", now.AddSeconds(-90061), pid == 10 ? 0 : null); }, now);
         var tcp = merged.Ports.Single(port => port.Protocol == "TCP" && port.Port == 8080);
         if (merged.Ports.Length != 3 || merged.Ports[0].Port != 80 || tcp.Processes.Length != 2 || reads != 3
             || !tcp.Processes[0].Addresses.SequenceEqual(new[] { "0.0.0.0", "::" })
@@ -30,6 +30,16 @@ internal static class NetworkListenerChecks
             || tcp.Processes[1].StartedAt != null || tcp.Processes[1].UptimeSeconds != null
             || merged.Ports.Single(port => port.Protocol == "UDP").Processes[0].Addresses[0] != "fe80::1%3")
             throw new Exception("Listener merge lost addresses, owners, protocols or process timing");
+        var systemPorts = merged.PortsForCategory("system");
+        var userPorts = merged.PortsForCategory("user");
+        if (systemPorts.Length != 2 || userPorts.Length != 2
+            || systemPorts.Any(port => port.Processes.Any(process => process.Category != "system"))
+            || userPorts.Any(port => port.Processes.Any(process => process.Category == "system"))
+            || systemPorts.Single(port => port.Protocol == "TCP").Processes.Single().ProcessId != 10
+            || userPorts.Single(port => port.Port == 8080).Processes.Single().ProcessId != 11
+            || userPorts.Single(port => port.Port == 80).Processes.Single().Category != null
+            || tcp.Processes.Length != 2)
+            throw new Exception("System/User filtering must split mixed owners, retain unknown owners and preserve the original merged snapshot");
         var future = NetworkListeners.Merge([new("TCP", 80, "::", 1)], _ => new("reused", now.AddSeconds(1)), now);
         if (future.Ports[0].Processes[0].UptimeSeconds != null || future.Ports[0].Processes[0].StartedAt != null)
             throw new Exception("Future/reused process start time must be unavailable");
@@ -64,6 +74,7 @@ internal static class NetworkListenerChecks
         using var self = Process.GetCurrentProcess();
         if (!owner.Addresses.SequenceEqual(new[] { "127.0.0.1", "127.0.0.2", "::1" })
             || owner.ProcessName != self.ProcessName || owner.UptimeSeconds is not >= 0 || owner.StartedAt == null
+            || owner.Category != (self.SessionId == 0 ? "system" : "user")
             || Math.Abs((DateTimeOffset.Parse(owner.StartedAt).UtcDateTime - self.StartTime.ToUniversalTime()).TotalSeconds) > 1)
             throw new Exception("Real TCP listener IP merge / PID / process start time failed");
         var udpOwner = snapshot.Ports.Single(item => item.Protocol == "UDP" && item.Port == udpPort)
@@ -87,9 +98,10 @@ internal static class NetworkListenerChecks
             ?? throw new Exception("System process snapshot unavailable on Windows");
         using var self = Process.GetCurrentProcess();
         if (!real.TryGetValue(self.Id, out var current) || current.Name != self.ProcessName || current.StartedAt is not { } started
+            || current.SessionId != self.SessionId
             || Math.Abs((started.UtcDateTime - self.StartTime.ToUniversalTime()).TotalMilliseconds) > 1)
             throw new Exception("System snapshot creation time does not match the current process");
-        if (!real.TryGetValue(4, out var system) || system.StartedAt is not { } systemStart || systemStart > now)
+        if (!real.TryGetValue(4, out var system) || system.StartedAt is not { } systemStart || systemStart > now || system.Category != "system")
             throw new Exception("System process creation time must be readable without opening the protected process");
 
         var headerSize = Marshal.SizeOf<ProcessSnapshot.Header>();
@@ -99,7 +111,7 @@ internal static class NetworkListenerChecks
         {
             var name = "worker.测试.exe";
             var nameBytes = System.Text.Encoding.Unicode.GetBytes(name);
-            var first = new ProcessSnapshot.Header { NextEntryOffset = (uint)stride, ProcessId = new IntPtr(10),
+            var first = new ProcessSnapshot.Header { NextEntryOffset = (uint)stride, ProcessId = new IntPtr(10), SessionId = 17,
                 CreateTime = now.AddSeconds(-90061).UtcDateTime.ToFileTimeUtc(),
                 ImageName = new() { Length = (ushort)nameBytes.Length, MaximumLength = (ushort)nameBytes.Length,
                     Buffer = IntPtr.Add(memory, headerSize) } };
@@ -108,6 +120,7 @@ internal static class NetworkListenerChecks
             Marshal.StructureToPtr(new ProcessSnapshot.Header { ProcessId = new IntPtr(11) }, IntPtr.Add(memory, stride), false);
             var parsed = ProcessSnapshot.Parse(memory, stride * 2, CancellationToken.None);
             if (parsed.Count != 2 || parsed[10].Name != "worker.测试" || parsed[10].StartedAt != now.AddSeconds(-90061)
+                || parsed[10].Category != "user" || parsed[11].Category != "system"
                 || parsed[11].StartedAt != null || parsed[11].Name != null)
                 throw new Exception("Process snapshot lost Unicode names, creation times or nullable metadata");
             void RejectMalformed()
@@ -124,6 +137,10 @@ internal static class NetworkListenerChecks
             RejectMalformed();
             first.ImageName.Length = 0;
             first.CreateTime = long.MaxValue;
+            Marshal.StructureToPtr(first, memory, false);
+            RejectMalformed();
+            first.CreateTime = 0;
+            first.SessionId = uint.MaxValue;
             Marshal.StructureToPtr(first, memory, false);
             RejectMalformed();
         }
