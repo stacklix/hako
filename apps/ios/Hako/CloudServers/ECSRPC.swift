@@ -122,7 +122,17 @@ final class ECSClient: @unchecked Sendable {
             throw ECSFailure(message: "无法读取系统查询资源。")
         }
         let source = try String(contentsOf: url, encoding: .utf8)
-        let command = "command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\npython3 - \(mode) \(pid ?? 0) <<'HAKO_ECS_SNAPSHOT'\n" + source + "\nHAKO_ECS_SNAPSHOT\n"
+        if mode == "processes" {
+            return try await ECSSnapshot.processList { cursor in
+                try await self.snapshotPage(mode: mode, pid: pid, after: cursor, source: source)
+            }
+        }
+        return try await snapshotPage(mode: mode, pid: pid, after: 0, source: source)
+    }
+
+    private func snapshotPage(mode: String, pid: Int?, after: Int, source: String) async throws -> ECSSnapshot {
+        try Task.checkCancellation()
+        let command = "command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\npython3 - \(mode) \(pid ?? 0) \(after) <<'HAKO_ECS_SNAPSHOT'\n" + source + "\nHAKO_ECS_SNAPSHOT\n"
         let reply = try await call("RunCommand", ["InstanceId.1": connection.instanceID, "Type": "RunShellScript", "CommandContent": Data(command.utf8).base64EncodedString(),
             "ContentEncoding": "Base64", "KeepCommand": "false", "Timeout": "45", "TerminationMode": "ProcessTree",
             "Username": connection.username, "ClientToken": UUID().uuidString])

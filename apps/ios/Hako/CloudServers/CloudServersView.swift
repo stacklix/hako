@@ -164,16 +164,14 @@ struct CloudServersView: View {
             Section {
                 ForEach(processRows) { process in
                     NavigationLink { ECSProcessDetails(initial: process, initialTime: snapshot.time, connection: connection) } label: {
-                        VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top, spacing: 16) {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(process.name).font(.system(.subheadline, design: .monospaced))
                                 Text("\(process.pid) · \(process.user)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            HStack(alignment: .top, spacing: 16) {
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(alignment: .trailing, spacing: 5) {
                                 Text(process.cpu.map { String(format: "CPU %.1f%%", $0) } ?? "CPU —")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 Text("内存 \(ECSFormat.bytes(process.memory))").foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }.font(.caption).monospacedDigit()
                         }
                     }
@@ -266,12 +264,13 @@ private struct ECSProcessDetails: View {
                 if let write = process.write { LabeledContent("累计磁盘写入", value: ECSFormat.bytes(write)) }
             }
             Section("进程") {
-                LabeledContent("PID / 父进程", value: "\(process.pid) / \(process.parent)")
-                LabeledContent("所属用户", value: "\(process.user) · UID \(process.uid)")
-                LabeledContent("线程数", value: String(process.threads))
-                LabeledContent("运行时长", value: ECSFormat.duration(process.elapsed))
+                LabeledContent("PID", value: String(process.pid))
+                if let parent = process.parent { LabeledContent("父进程", value: String(parent)) }
+                LabeledContent("所属用户", value: process.uid.map { "\(process.user) · UID \($0)" } ?? process.user)
+                if let threads = process.threads { LabeledContent("线程数", value: String(threads)) }
+                if let elapsed = process.elapsed { LabeledContent("运行时长", value: ECSFormat.duration(elapsed)) }
                 LabeledContent("分类", value: process.group.rawValue)
-                Text(process.source).font(.caption).foregroundStyle(.secondary)
+                if let source = process.source { Text(source).font(.caption).foregroundStyle(.secondary) }
                 if let executable = process.executable { LabeledContent("可执行文件", value: executable) }
             }
             Section { Text("快照：\(Date(timeIntervalSince1970: updated ?? initialTime).formatted(date: .abbreviated, time: .standard))").font(.caption).foregroundStyle(.secondary) }

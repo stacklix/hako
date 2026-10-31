@@ -143,22 +143,10 @@ struct ECSAccessView: View {
                 Text("小时记录过多，趋势暂不展示。请选择单个域名或缩短时间范围；汇总数字仍为完整统计。")
                     .font(.footnote).foregroundStyle(.secondary)
             } else {
-                Chart {
-                    ForEach(value.buckets(domains: selectedDomains, daily: daily)) { point in
-                        BarMark(x: .value("时间", point.time), y: .value("请求", point.visits))
-                            .foregroundStyle(Color.accentColor.opacity(0.65))
-                        LineMark(x: .value("时间", point.time), y: .value("404", point.notFound))
-                            .foregroundStyle(.orange)
-                    }
-                    if let date = ECSAccessDate.parse(hour) { RuleMark(x: .value("所选小时", date)).foregroundStyle(.secondary) }
-                }
-                .chartXSelection(value: Binding(get: { !daily && !domain.isEmpty ? selectedDate : nil }, set: {
-                    if !daily && !domain.isEmpty { selectedDate = $0 }
-                }))
-                .environment(\.timeZone, TimeZone(identifier: value.status.timezone) ?? .current)
-                .frame(height: 180)
-                HStack { Label("HTTP 请求", systemImage: "square.fill").foregroundStyle(Color.accentColor); Label("404", systemImage: "line.diagonal").foregroundStyle(.orange) }.font(.caption)
-                if !daily && !domain.isEmpty { Text("轻触或拖动图表，查看该小时排行。").font(.caption).foregroundStyle(.secondary) }
+                trendChart(value)
+                HStack { Label("HTTP 请求", systemImage: "square.fill").foregroundStyle(.blue); Label("404", systemImage: "line.diagonal").foregroundStyle(.orange) }.font(.caption)
+                Text(!daily && !domain.isEmpty ? "轻触柱子查看数值；长按拖动可查看其他小时及排行。" : "轻触柱子查看对应时段的数值。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Text("时区：\(value.status.timezone) · 按日志请求计数，包含爬虫。最多保留 7 天。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -188,6 +176,72 @@ struct ECSAccessView: View {
                 }
             }
             if let ranks = store.rankings { rankings(ranks) }
+        }
+    }
+
+    private func trendChart(_ value: ECSAccessSummary) -> some View {
+        let points = value.buckets(domains: selectedDomains, daily: daily)
+        let selectedPoint = selectedDate.flatMap { date in
+            points.min { abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date)) }
+        }
+        return Chart {
+            ForEach(points) { point in
+                BarMark(x: .value("时间", point.time), y: .value("请求", point.visits))
+                    .foregroundStyle(.blue)
+                    .opacity(selectedPoint == nil || selectedPoint?.time == point.time ? 1 : 0.35)
+                    .accessibilityLabel(Text(point.time, format: daily ? .dateTime.year().month().day() : .dateTime.month().day().hour()))
+                    .accessibilityValue("HTTP 请求 \(point.visits.formatted())，404 \(point.notFound.formatted())")
+                LineMark(x: .value("时间", point.time), y: .value("404", point.notFound))
+                    .foregroundStyle(.orange)
+            }
+            if let point = selectedPoint {
+                RuleMark(x: .value("所选时段", point.time))
+                    .foregroundStyle(Color.secondary.opacity(0.4))
+                    .annotation(position: .top, spacing: 4,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(point.time, format: daily ? .dateTime.year().month().day() : .dateTime.month().day().hour())
+                                .foregroundStyle(.secondary)
+                            Text("HTTP 请求 \(point.visits.formatted())").foregroundStyle(.blue)
+                            Text("404 \(point.notFound.formatted())").foregroundStyle(.orange)
+                        }
+                        .font(.caption).monospacedDigit()
+                        .padding(8)
+                        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.secondary.opacity(0.2), lineWidth: 0.5)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    .zIndex(1)
+            }
+        }
+        .chartXSelection(value: Binding(get: { selectedDate }, set: { date in
+            guard let date else { return }
+            selectedDate = points.min {
+                abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date))
+            }?.time
+        }))
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                        guard let anchor = proxy.plotFrame else { return }
+                        let plot = geometry[anchor]
+                        guard plot.contains(tap.location),
+                              let date = proxy.value(atX: tap.location.x - plot.minX, as: Date.self) else { return }
+                        selectedDate = points.min {
+                            abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date))
+                        }?.time
+                    })
+                    .accessibilityHidden(true)
+            }
+        }
+        .environment(\.timeZone, TimeZone(identifier: value.status.timezone) ?? .current)
+        .frame(height: 180)
+        .onChange(of: points.map(\.time)) { _, dates in
+            if let selectedDate, !dates.contains(selectedDate) { self.selectedDate = nil }
         }
     }
 

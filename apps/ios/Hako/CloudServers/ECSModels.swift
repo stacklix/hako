@@ -75,8 +75,9 @@ struct ECSSnapshot: Decodable, Sendable {
     let sockets: [ECSSocket]?
     let socketSummary: ECSConnectionCounts?
     let totalListeningPorts: Int?
-    let processes: [ECSProcess]?
-    let totalProcesses: Int?
+    var processes: [ECSProcess]?
+    var totalProcesses: Int?
+    var nextProcessPID: Int?
     let totalSockets: Int?
     let truncated: Bool?
     let socketError: String?
@@ -86,6 +87,34 @@ struct ECSSnapshot: Decodable, Sendable {
         let value = try JSONDecoder().decode(Self.self, from: data)
         guard value.version == 1, value.time.isFinite, value.time > 0 else { throw ECSFailure(message: "系统快照格式不受支持。") }
         return value
+    }
+
+    static func processList(readPage: (Int) async throws -> Self) async throws -> Self {
+        try Task.checkCancellation()
+        var result = try await readPage(0)
+        var page = result
+        var rows: [ECSProcess] = []
+        var cursor = 0
+        while true {
+            try Task.checkCancellation()
+            guard page.truncated != true, let processes = page.processes else {
+                throw ECSFailure(message: "进程列表返回不完整，请刷新重试。")
+            }
+            var last = cursor
+            for process in processes {
+                guard process.pid > last else { throw ECSFailure(message: "进程列表分页顺序无效，请刷新重试。") }
+                last = process.pid
+            }
+            rows.append(contentsOf: processes)
+            guard let next = page.nextProcessPID else { break }
+            guard next > cursor, next == last else { throw ECSFailure(message: "进程列表分页游标无效，请刷新重试。") }
+            cursor = next
+            page = try await readPage(cursor)
+        }
+        result.processes = rows
+        result.totalProcesses = rows.count
+        result.nextProcessPID = nil
+        return result
     }
 }
 
@@ -136,16 +165,16 @@ enum ECSProcessGroup: String, CaseIterable, Identifiable {
 struct ECSProcess: Decodable, Identifiable, Sendable {
     var id: Int { pid }
     let pid: Int
-    let parent: Int
+    let parent: Int?
     let name: String
     let user: String
-    let uid: Int
+    let uid: Int?
     let category: String
-    let source: String
+    let source: String?
     let cpu: Double?
     let memory: Double
-    let threads: Int
-    let elapsed: Double
+    let threads: Int?
+    let elapsed: Double?
     let executable: String?
     let read: Double?
     let write: Double?

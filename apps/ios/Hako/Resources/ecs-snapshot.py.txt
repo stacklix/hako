@@ -53,9 +53,9 @@ def process_stat(text):
         return None
 
 
-def process_samples():
+def process_samples(pid=0):
     result = {}
-    for path in PROC.iterdir():
+    for path in ([PROC / str(pid)] if pid else PROC.iterdir()):
         if path.name.isdigit():
             value = process_stat(read(path / 'stat'))
             if value:
@@ -75,10 +75,10 @@ def classify(stat, uid, cgroup, loginuid):
     return 'unknown', '无法可靠确认系统或业务用途'
 
 
-def processes(before, after, elapsed):
+def processes(before, after, elapsed, details=True):
     hz = os.sysconf('SC_CLK_TCK')
     page = os.sysconf('SC_PAGE_SIZE')
-    uptime = float((read(PROC / 'uptime') or '0').split()[0])
+    uptime = float((read(PROC / 'uptime') or '0').split()[0]) if details else 0
     result = []
     for pid, stat in after.items():
         path = PROC / str(pid)
@@ -99,16 +99,18 @@ def processes(before, after, elapsed):
         cpu = None
         if prior and prior['start'] == stat['start'] and elapsed > 0:
             cpu = round(max(0, stat['ticks'] - prior['ticks']) / hz / elapsed * 100, 2)
-        io = number_fields(read(path / 'io'))
-        try:
-            executable = os.readlink(path / 'exe')[:1024]
-        except OSError:
-            executable = None
-        result.append({'pid': pid, 'parent': stat['parent'], 'name': stat['name'], 'uid': uid,
-                       'user': user, 'category': category, 'source': source, 'cpu': cpu,
-                       'memory': max(0, stat['rss']) * page, 'threads': stat['threads'],
-                       'elapsed': max(0, uptime - stat['start'] / hz), 'executable': executable,
-                       'read': io.get('read_bytes'), 'write': io.get('write_bytes')})
+        item = {'pid': pid, 'name': stat['name'], 'user': user, 'category': category,
+                'cpu': cpu, 'memory': max(0, stat['rss']) * page}
+        if details:
+            io = number_fields(read(path / 'io'))
+            try:
+                executable = os.readlink(path / 'exe')[:1024]
+            except OSError:
+                executable = None
+            item.update(parent=stat['parent'], uid=uid, source=source, threads=stat['threads'],
+                        elapsed=max(0, uptime - stat['start'] / hz), executable=executable,
+                        read=io.get('read_bytes'), write=io.get('write_bytes'))
+        result.append(item)
     return sorted(result, key=lambda p: (-(p['cpu'] or 0), -p['memory'], p['pid']))
 
 
@@ -263,11 +265,31 @@ def disks():
     return result
 
 
-def bounded_output(result, limit=20_000):
+def bounded_output(result, limit=20_000, process_page=False):
     # Cloud Assistant truncates output at 24 KiB; keep UTF-8 comfortably below it.
+    def encode():
+        return json.dumps(result, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
     result['truncated'] = False
+    if process_page:
+        values = sorted(result['processes'], key=lambda p: p['pid'])
+        low, high = 0, len(values)
+        while low < high:
+            count = (low + high + 1) // 2
+            result['processes'] = values[:count]
+            result['nextProcessPID'] = values[count - 1]['pid'] if count < len(values) else None
+            if len(encode().encode()) <= limit:
+                low = count
+            else:
+                high = count - 1
+        if values and not low:
+            raise ValueError('process row too large')
+        result['processes'] = values[:low]
+        result['nextProcessPID'] = values[low - 1]['pid'] if low < len(values) else None
+        if len(encode().encode()) > limit:
+            raise ValueError('snapshot too large')
+        return encode()
     while True:
-        text = json.dumps(result, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+        text = encode()
         if len(text.encode()) <= limit:
             return text
         candidates = [key for key in ('processes', 'sockets', 'disks', 'interfaces') if result.get(key)]
@@ -278,16 +300,17 @@ def bounded_output(result, limit=20_000):
         result['truncated'] = True
 
 
-def collect(mode, pid=0):
+def collect(mode, pid=0, after_pid=0):
     result = {'version': 1, 'time': time.time()}
     if mode in ('processes', 'process'):
-        first = process_samples()
+        target = pid if mode == 'process' else 0
+        first = process_samples(target)
         start = time.monotonic()
         time.sleep(1)
-        second = process_samples()
-        values = processes(first, second, time.monotonic() - start)
+        second = process_samples(target)
+        values = processes(first, second, time.monotonic() - start, details=mode == 'process')
         result['totalProcesses'] = len(values)
-        result['processes'] = [p for p in values if mode != 'process' or p['pid'] == pid]
+        result['processes'] = [p for p in values if (p['pid'] == pid if mode == 'process' else p['pid'] > after_pid)]
         result['memoryTotal'] = number_fields(read(PROC / 'meminfo')).get('MemTotal', 0) * 1024
     elif mode == 'network':
         first = interfaces(read(PROC / 'net' / 'dev'))
@@ -317,8 +340,9 @@ def collect(mode, pid=0):
     else:
         raise ValueError('unknown mode')
     result['time'] = time.time()
-    return bounded_output(result)
+    return bounded_output(result, process_page=mode == 'processes')
 
 
 if __name__ == '__main__':
-    print(collect(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 0))
+    print(collect(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 0,
+                  int(sys.argv[3]) if len(sys.argv) > 3 else 0))

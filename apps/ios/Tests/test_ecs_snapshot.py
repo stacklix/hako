@@ -49,6 +49,14 @@ class SnapshotTests(unittest.TestCase):
                 self.assertIsNone(value['read'])  # Missing permission is not zero.
                 reused = collector.processes({42: parsed}, {42: collector.process_stat(stat(ticks=999, start=2000))}, 1)[0]
                 self.assertIsNone(reused['cpu'])
+                with patch.object(collector, 'process_samples', return_value={42: parsed}) as samples, \
+                     patch.object(collector.time, 'sleep'):
+                    detail = json.loads(collector.collect('process', 42))['processes'][0]
+                self.assertEqual(samples.call_count, 2)
+                self.assertTrue(all(args.args == (42,) for args in samples.call_args_list))
+                self.assertEqual((detail['pid'], detail['parent'], detail['threads']), (42, 1, 4))
+                self.assertIn('elapsed', detail)
+                self.assertIn('executable', detail)
 
     def test_classification_does_not_equate_root_with_system(self):
         job = collector.process_stat(stat(name='my-business'))
@@ -56,6 +64,75 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(collector.classify(job, 0, '', 1000)[0], 'user')
         kernel = collector.process_stat(stat(name='kworker', flags=0x200000))
         self.assertEqual(collector.classify(kernel, 0, '', None)[0], 'system')
+
+    def test_process_list_reads_and_returns_only_list_fields(self):
+        def read_list_field(path):
+            name = Path(path).name
+            values = {'status': 'Uid:\t1001\n', 'cgroup': '0::/user.slice/user-1001.slice\n',
+                      'loginuid': '1001', 'meminfo': 'MemTotal: 1024 kB\n'}
+            if name not in values:
+                self.fail('List queried a detail field: ' + str(path))
+            return values[name]
+
+        before = {42: collector.process_stat(stat())}
+        after = {42: collector.process_stat(stat(ticks=150))}
+        with patch.object(collector, 'read', side_effect=read_list_field), \
+             patch.object(collector.os, 'sysconf', create=True, side_effect=lambda key: 100 if key == 'SC_CLK_TCK' else 4096), \
+             patch.object(collector.os, 'readlink', side_effect=AssertionError('List queried executable')):
+            row = collector.processes(before, after, 1, details=False)[0]
+            for cursor, expected in ((0, [42]), (42, [])):
+                with patch.object(collector, 'process_samples', side_effect=[before, after]), \
+                     patch.object(collector.time, 'sleep'):
+                    result = json.loads(collector.collect('processes', after_pid=cursor))
+                self.assertEqual([p['pid'] for p in result['processes']], expected)
+                if expected:
+                    self.assertEqual(set(result['processes'][0]), set(row))
+        self.assertEqual(set(row), {'pid', 'name', 'user', 'category', 'cpu', 'memory'})
+        self.assertEqual((row['pid'], row['category'], row['cpu'], row['memory']), (42, 'user', 50, 40960))
+
+    def test_detail_sampling_only_reads_requested_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid in (42, 43):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / 'stat').write_text(stat())
+            with patch.object(collector, 'PROC', proc):
+                self.assertEqual(set(collector.process_samples(42)), {42})
+                self.assertEqual(collector.process_samples(99), {})
+                self.assertEqual(set(collector.process_samples()), {42, 43})
+
+    def test_process_pages_preserve_all_rows_within_output_budget(self):
+        rows = [dict(pid=pid, name='工作进程' * 30, user='业务用户' * 20, category='user',
+                     cpu=None if pid % 2 else pid / 100, memory=pid * 4096)
+                for pid in range(1, 601)]
+        cursor, collected, pages = 0, [], 0
+        while True:
+            value = {'version': 1, 'time': 100, 'totalProcesses': len(rows),
+                     'processes': [row for row in reversed(rows) if row['pid'] > cursor]}
+            output = collector.bounded_output(value, process_page=True)
+            page = json.loads(output)
+            self.assertLessEqual(len(output.encode()), 20000)
+            self.assertFalse(page['truncated'])
+            self.assertEqual(page['totalProcesses'], len(rows))
+            collected.extend(page['processes'])
+            pages += 1
+            if page['nextProcessPID'] is None:
+                break
+            self.assertGreater(page['nextProcessPID'], cursor)
+            self.assertEqual(page['nextProcessPID'], page['processes'][-1]['pid'])
+            cursor = page['nextProcessPID']
+            self.assertLess(pages, len(rows))
+        self.assertGreater(pages, 1)
+        self.assertEqual(collected, rows)
+        self.assertEqual(max(collected, key=lambda row: row['memory'])['pid'], 600)
+
+    def test_process_pages_handle_empty_result_and_oversized_row(self):
+        result = json.loads(collector.bounded_output({'version': 1, 'time': 100, 'processes': []}, process_page=True))
+        self.assertEqual(result['processes'], [])
+        self.assertIsNone(result['nextProcessPID'])
+        self.assertFalse(result['truncated'])
+        with self.assertRaises(ValueError):
+            collector.bounded_output({'processes': [{'pid': 1, 'name': 'x' * 21000}]}, process_page=True)
 
     def test_rates_handle_reset_and_new_interface(self):
         first = {'eth0': dict(receive=100, send=200, receiveDrops=0, sendDrops=1)}
@@ -176,7 +253,8 @@ class SnapshotTests(unittest.TestCase):
 
     def test_command_fits_cloud_assistant_limit(self):
         import base64
-        command = "python3 - overview 0 <<'HAKO_ECS_SNAPSHOT'\n" + SCRIPT.read_text(encoding='utf-8') + '\nHAKO_ECS_SNAPSHOT\n'
+        command = ("command -v python3 >/dev/null 2>&1 || { printf 'HAKO_PYTHON_MISSING'; exit 127; }\n"
+                   "python3 - processes 0 4194304 <<'HAKO_ECS_SNAPSHOT'\n" + SCRIPT.read_text(encoding='utf-8') + '\nHAKO_ECS_SNAPSHOT\n')
         self.assertLess(len(base64.b64encode(command.encode())), 24000)
 
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Requires live Linux /proc')

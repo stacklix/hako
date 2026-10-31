@@ -51,6 +51,62 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
     precondition(lateRenderer.output.count == 16 && lateRenderer.keys.isEmpty)
 }
 
+private func checkProcessPages() async throws {
+    func page(_ pids: [Int], next: Int? = nil, truncated: Bool = false) throws -> ECSSnapshot {
+        var object: [String: Any] = ["version": 1, "time": 100, "truncated": truncated,
+            "processes": pids.map { ["pid": $0, "name": "worker", "user": "root", "category": "unknown",
+                                    "cpu": NSNull(), "memory": $0 * 4096] as [String: Any] }]
+        if let next { object["nextProcessPID"] = next }
+        return try ECSSnapshot.decode(JSONSerialization.data(withJSONObject: object))
+    }
+    var cursors: [Int] = []
+    let complete = try await ECSSnapshot.processList { cursor in
+        cursors.append(cursor)
+        switch cursor {
+        case 0: return try page([10, 20], next: 20)
+        case 20: return try page([30], next: 30)
+        case 30: return try page([40, 50])
+        default: fatalError("Unexpected process cursor")
+        }
+    }
+    precondition(cursors == [0, 20, 30])
+    precondition(complete.processes?.map(\.pid) == [10, 20, 30, 40, 50])
+    precondition(complete.totalProcesses == 5 && complete.nextProcessPID == nil && complete.truncated == false)
+    let listRow = complete.processes!.first!
+    precondition(listRow.cpu == nil && listRow.parent == nil && listRow.uid == nil && listRow.source == nil)
+    precondition(listRow.threads == nil && listRow.elapsed == nil && listRow.executable == nil && listRow.read == nil)
+    let empty = try await ECSSnapshot.processList { _ in try page([]) }
+    precondition(empty.processes?.isEmpty == true && empty.totalProcesses == 0)
+
+    for malformed in [try page([20, 10]), try page([10, 10]), try page([10], next: 9),
+                      try page([], next: 10), try page([10], truncated: true)] {
+        do {
+            _ = try await ECSSnapshot.processList { _ in malformed }
+            fatalError("Invalid process page must not be published")
+        } catch { precondition(error is ECSFailure) }
+    }
+    do {
+        _ = try await ECSSnapshot.processList { cursor in
+            if cursor == 0 { return try page([10], next: 10) }
+            return try page([10])
+        }
+        fatalError("Duplicate PID across pages must be rejected")
+    } catch { precondition(error is ECSFailure) }
+    do {
+        _ = try await ECSSnapshot.processList { cursor in
+            if cursor == 0 { return try page([10], next: 10) }
+            throw ECSFailure(message: "page failed")
+        }
+        fatalError("A failed later page must fail the entire refresh")
+    } catch { precondition(error.localizedDescription == "page failed") }
+    let cancelled = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        return try await ECSSnapshot.processList { _ in fatalError("Cancelled refresh must not start a page") }
+    }
+    do { _ = try await cancelled.value; fatalError("Expected cancelled process list") }
+    catch { precondition(error is CancellationError) }
+}
+
 @main struct ECSTests {
     static func main() async throws {
         func fails(_ action: () throws -> Void) {
@@ -134,6 +190,7 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
         let snapshot = try ECSSnapshot.decode(Data(#"{"version":1,"time":100,"interfaces":[],"processes":[],"truncated":false}"#.utf8))
         precondition(snapshot.memoryAvailable == nil && snapshot.sockets == nil)
         fails { _ = try ECSSnapshot.decode(Data(#"{"version":2,"time":100}"#.utf8)) }
+        try await checkProcessPages()
         connection.region = "cn-chengdu"
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ECSMockURLProtocol.self]
         let client = try ECSClient(connection: connection, session: URLSession(configuration: config))
