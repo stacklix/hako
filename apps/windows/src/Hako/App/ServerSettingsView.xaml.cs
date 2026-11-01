@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Hako.Core;
+using Hako.Platform;
 using Microsoft.Win32;
 
 namespace Hako.Shell;
@@ -14,8 +15,37 @@ public partial class ServerSettingsView : UserControl
     private readonly Func<AgentSettings, Task> apply;
     private readonly Func<Task> clear;
     private readonly Func<string, Task> saveKey;
+    private readonly AgentStartup startup;
+    private bool loadingStartup = true;
     private string privateKey = "";
-    public ServerSettingsView(Func<AgentSettings, Task> apply, Func<Task> clear, Func<string, Task> saveKey) { InitializeComponent(); this.apply = apply; this.clear = clear; this.saveKey = saveKey; }
+    public ServerSettingsView(Func<AgentSettings, Task> apply, Func<Task> clear, Func<string, Task> saveKey, AgentStartup startup)
+    {
+        this.startup = startup;
+        InitializeComponent(); this.apply = apply; this.clear = clear; this.saveKey = saveKey;
+        Loaded += (_, _) => RefreshStartup();
+    }
+    private void RefreshStartup()
+    {
+        loadingStartup = true;
+        try
+        {
+            var enabled = startup.IsEnabled;
+            StartupToggle.IsChecked = enabled;
+            StartupMessage.Text = enabled ? "已启用自动启动。" : "未启用自动启动。";
+        }
+        catch (Exception error) { StartupToggle.IsChecked = false; StartupMessage.Text = "读取自动启动设置失败：" + error.Message; }
+        finally { loadingStartup = false; }
+    }
+    private void StartupChanged(object sender, RoutedEventArgs e)
+    {
+        if (loadingStartup) return;
+        try { startup.SetEnabled(StartupToggle.IsChecked == true); RefreshStartup(); }
+        catch (Exception error)
+        {
+            RefreshStartup();
+            StartupMessage.Text = "自动启动设置失败：" + error.Message;
+        }
+    }
     public void Load(AgentSettings settings) { ServerUrl.Text = settings.Url; Username.Text = settings.Username; privateKey = settings.PrivateKey; UpdateKey(); }
     private void UpdateKey()
     {

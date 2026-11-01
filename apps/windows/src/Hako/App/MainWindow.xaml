@@ -1,7 +1,7 @@
 <Window x:Class="Hako.Shell.MainWindow"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Hako" Width="940" Height="650" MinWidth="740" MinHeight="520" Background="#F7F8FA">
+ Title="Hako" Icon="/Assets/Hako.ico" Width="940" Height="650" MinWidth="740" MinHeight="520" Background="#F7F8FA">
  <Grid>
   <Grid.ColumnDefinitions><ColumnDefinition Width="190"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
   <Border Background="#17202B" Padding="20">

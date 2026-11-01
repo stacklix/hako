@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Hako.ico</ApplicationIcon>
     <AssemblyName>Hako</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Hako.ico"/>
+  </ItemGroup>
 </Project>

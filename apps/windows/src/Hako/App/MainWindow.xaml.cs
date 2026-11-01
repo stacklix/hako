@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly MonitorView monitor;
     private readonly ServerSettingsView settings;
     private readonly Forms.NotifyIcon tray;
+    private readonly System.Drawing.Icon trayIcon;
     private bool exiting;
 
     public MainWindow(AgentRuntime runtime, Func<Task> exit)
@@ -23,14 +24,17 @@ public partial class MainWindow : Window
         this.runtime = runtime;
         InitializeComponent();
         monitor = new MonitorView(runtime.Metrics);
-        settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync);
+        settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync, AgentStartup.ForCurrentProcess(runtime.Store.DirectoryPath));
         runtime.StatusChanged += StatusChanged;
         runtime.MetricsReceived += MetricsReceived;
         runtime.SettingsChanged += SettingsChanged;
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("打开 Hako", null, (_, _) => Dispatcher.Invoke(ShowWindow));
         menu.Items.Add("退出", null, async (_, _) => await Dispatcher.InvokeAsync(exit).Task.Unwrap());
-        tray = new Forms.NotifyIcon { Icon = System.Drawing.SystemIcons.Application, Text = "Hako · 设备代理", ContextMenuStrip = menu, Visible = true };
+        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Hako.ico")).Stream)
+        using (var icon = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize))
+            trayIcon = (System.Drawing.Icon)icon.Clone();
+        tray = new Forms.NotifyIcon { Icon = trayIcon, Text = "Hako · 设备代理", ContextMenuStrip = menu, Visible = true };
         tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowWindow);
         Closing += OnClosing;
         Loaded += (_, _) =>
@@ -61,7 +65,7 @@ public partial class MainWindow : Window
     public void DisposeForExit()
     {
         exiting = true; runtime.StatusChanged -= StatusChanged; runtime.MetricsReceived -= MetricsReceived; runtime.SettingsChanged -= SettingsChanged;
-        monitor.Dispose(); tray.Dispose();
+        monitor.Dispose(); tray.Dispose(); trayIcon.Dispose();
     }
     private void HomeClick(object sender, RoutedEventArgs e) => Home();
     private void MonitorClick(object sender, RoutedEventArgs e) => Page.Content = monitor;

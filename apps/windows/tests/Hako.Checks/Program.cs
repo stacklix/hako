@@ -38,6 +38,7 @@ internal static class Program
                 await Task.Delay(TimeSpan.FromSeconds(30));
                 return 0;
             }
+            StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();
             await PythonProcessLaunchChecks.RunAsync();

@@ -13,7 +13,11 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 导出为标准 SPKI PEM 公钥文件，默认名 `desktop.public.pem`。生成或导入新密钥需确认替换，并断开旧连接；更新服务端登记的公钥后重新连接。生成或导入密钥只保存密钥，URL 和账号的编辑内容仍通过「保存并连接」保存。
 
-关闭窗口后保留系统托盘和长连接，通过托盘“退出”结束进程。首版不安装 Windows Service、不自动配置开机启动。
+关闭窗口后保留系统托盘和长连接，通过托盘“退出”结束进程。不安装 Windows Service，默认不启用自启动。
+
+「服务器设置 → 启动设置」提供「登录 Windows 后自动启动」开关，切换后立即生效，无需保存服务器配置或管理员权限。开启后在当前用户的启动文件夹创建 `Hako Agent.lnk`，登录后在托盘后台运行并自动连接；关闭仅删除对应快捷方式，不退出当前 Agent。开关进入设置页时读取快捷方式的目标与参数，设置失败恢复实际状态并显示错误。独立 `--data-dir` 配置使用各自的启动项，互不影响。移动 EXE 后，在新位置重新开启以更新快捷方式。
+
+EXE、窗口与系统托盘统一使用由 iOS `AppIcon.appiconset/icon.png` 转换的 Hako 图标（`src/Hako/Assets/Hako.ico`，包含 16–256 像素尺寸）。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
 
 Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
 

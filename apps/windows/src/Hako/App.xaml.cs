@@ -60,6 +60,7 @@ public partial class App : Application
             runtime.ShowRequested += () => Dispatcher.InvokeAsync(ShowMainWindow);
             await runtime.InitializeAsync(autoConnect: true);
             pipe = new AgentPipeServer(invocation.Profile, runtime, () => Dispatcher.InvokeAsync(async () => await ExitHostedAsync()));
+            window = new MainWindow(runtime, () => ExitHostedAsync());
             if (!invocation.Background) ShowMainWindow();
         }
         catch (Exception error)
