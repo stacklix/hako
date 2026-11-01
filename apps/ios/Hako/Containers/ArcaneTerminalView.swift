@@ -161,6 +161,7 @@ struct ArcaneTerminalPresentation: Identifiable {
     }
     func key(_ name: String) {
         guard connected, let terminal else { return }
+        (terminal as? HakoTerminalView)?.showKeyboard()
         terminal.becomeFirstResponder()
         switch name {
         case "↑": terminal.sendKeyUp()
@@ -182,7 +183,7 @@ private struct ArcaneSwiftTerminal: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = ArcaneNativeTerminal(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        let view = HakoTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         view.terminalDelegate = context.coordinator
         view.inputAccessoryView = nil
         applyAppearance(view)
@@ -234,20 +235,6 @@ private struct ArcaneSwiftTerminal: UIViewRepresentable {
     }
 }
 
-// SwiftUI may temporarily propose an empty/tiny rectangle during presentation
-// and keyboard transitions. Do not resize SwiftTerm to a grid with zero cells.
-private final class ArcaneNativeTerminal: SwiftTerm.TerminalView {
-    var onWindowAttached: (() -> Void)?
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { onWindowAttached?() }
-    }
-    override func layoutSubviews() {
-        guard bounds.width >= 32, bounds.height >= 32 else { return }
-        super.layoutSubviews()
-    }
-}
-
 struct ArcaneTerminalScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -289,10 +276,10 @@ struct ArcaneTerminalScreen: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        Button("Ctrl") { data.control.toggle(); data.terminal?.becomeFirstResponder() }
+                        Button("Ctrl") { data.control.toggle(); (data.terminal as? HakoTerminalView)?.showKeyboard() }
                             .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
-                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
-                            Button(key) { data.key(key) }.accessibilityLabel(key == "回车" ? "终端回车" : key)
+                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
+                            Button(key) { data.key(key) }.accessibilityLabel(key)
                         }
                     }.buttonStyle(.bordered).controlSize(.small).padding(10).disabled(!data.connected)
                 }.background(.bar)
@@ -376,5 +363,63 @@ struct ArcaneTerminalScreen: View {
                 }
             }
         }
+    }
+}
+
+// Shared keyboard gestures for cloud-server and container terminals.
+final class HakoTerminalView: SwiftTerm.TerminalView {
+    var onWindowAttached: (() -> Void)?
+    private(set) var keyboardDismissedByUser = false
+    private var configuredKeyboardGestures = false
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if !configuredKeyboardGestures {
+            configuredKeyboardGestures = true
+            // Reuse SwiftTerm's single tap recognizer so its double tap and
+            // long press selection gestures retain their existing precedence.
+            if let tap = gestureRecognizers?.compactMap({ $0 as? UITapGestureRecognizer })
+                .first(where: { $0.numberOfTapsRequired == 1 && $0.numberOfTouchesRequired == 1 }) {
+                tap.removeTarget(self, action: NSSelectorFromString("singleTap:"))
+                tap.addTarget(self, action: #selector(toggleKeyboard(_:)))
+            }
+            panGestureRecognizer.addTarget(self, action: #selector(dismissKeyboardOnScroll(_:)))
+            keyboardDismissMode = .onDrag
+        }
+        if window != nil { onWindowAttached?() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        // Connection checks and delayed focus retries must respect a deliberate
+        // dismissal until the user taps the terminal or a shortcut key again.
+        guard !keyboardDismissedByUser else { return false }
+        return super.becomeFirstResponder()
+    }
+
+    func showKeyboard() {
+        keyboardDismissedByUser = false
+        _ = becomeFirstResponder()
+    }
+
+    private func hideKeyboard() {
+        keyboardDismissedByUser = true
+        _ = resignFirstResponder()
+    }
+
+    @objc private func toggleKeyboard(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        if isFirstResponder { hideKeyboard() } else { showKeyboard() }
+    }
+
+    @objc private func dismissKeyboardOnScroll(_ gesture: UIPanGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let velocity = gesture.velocity(in: self)
+        if abs(velocity.y) > abs(velocity.x) { hideKeyboard() }
+    }
+
+    override func layoutSubviews() {
+        // Keyboard transitions can temporarily propose an empty terminal grid.
+        guard bounds.width >= 32, bounds.height >= 32 else { return }
+        super.layoutSubviews()
     }
 }

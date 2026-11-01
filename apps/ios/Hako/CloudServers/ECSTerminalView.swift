@@ -18,9 +18,9 @@ struct ECSTerminalView: View {
             if data.connected {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        Button("Ctrl") { data.control.toggle(); data.display.focus() }.tint(data.control ? .accentColor : .secondary)
+                        Button("Ctrl") { data.control.toggle(); data.display.key("Ctrl") }.tint(data.control ? .accentColor : .secondary)
                             .accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
-                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴", "回车"], id: \.self) { key in
+                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
                             Button(key) { keyInput(key) }
                         }
                     }.buttonStyle(.bordered).controlSize(.small).padding(10)
@@ -101,7 +101,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = ECSNativeTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        let view = HakoTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         let coordinator = context.coordinator
         coordinator.active = active
         view.terminalDelegate = coordinator
@@ -153,6 +153,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
         func feed(_ bytes: Data) { view?.feed(byteArray: Array(bytes)[...]) }
         func focus() {
             guard active, data.connected, let view else { return }
+            guard (view as? HakoTerminalView)?.keyboardDismissedByUser != true else { return }
             focusTask?.cancel()
             let ticket = UUID(); focusID = ticket
             focusTask = Task { [weak self, weak view] in
@@ -162,6 +163,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
                 for _ in 0..<5 {
                     do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
                     guard let self, let view, self.active, self.data.connected, self.data.display.isAttached(self), self.focusID == ticket else { return }
+                    guard (view as? HakoTerminalView)?.keyboardDismissedByUser != true else { return }
                     if view.window?.isKeyWindow == true, view.bounds.width >= 32, view.bounds.height >= 32, view.isUserInteractionEnabled {
                         view.layoutIfNeeded()
                         if view.becomeFirstResponder() { view.reloadInputViews(); return }
@@ -176,6 +178,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
         }
         func key(_ key: String) {
             guard active, data.connected, let view else { return }
+            (view as? HakoTerminalView)?.showKeyboard()
             focus()
             switch key {
             case "↑": view.sendKeyUp()
@@ -203,17 +206,5 @@ private struct ECSNativeTerminal: UIViewRepresentable {
         func scrolled(source: SwiftTerm.TerminalView, position: Double) { }
         func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) { }
         func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) { }
-    }
-}
-
-private final class ECSNativeTerminalView: SwiftTerm.TerminalView {
-    var onWindowAttached: (() -> Void)?
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { onWindowAttached?() }
-    }
-    override func layoutSubviews() {
-        guard bounds.width >= 32, bounds.height >= 32 else { return }
-        super.layoutSubviews()
     }
 }

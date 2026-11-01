@@ -55,7 +55,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}) {
   return {document, calls, timers, context};
 }
 
-test('access logs show domain totals and request whole-range rankings without an hour filter', async () => {
+test('access logs show rankings without a duplicate domain table or an hour filter', async () => {
   const from = '2026-11-01T00:00:00Z', to = '2026-11-02T00:00:00Z';
   const {document, calls} = await openPage('/admin/access-logs', {
     status: {enabled: true, timezone: 'Asia/Shanghai', scanIntervalSeconds: 60, retentionDays: 7},
@@ -71,10 +71,11 @@ test('access logs show domain totals and request whole-range rankings without an
   assert.equal(request.searchParams.get('to'), to);
   assert.equal(request.searchParams.has('hour'), false);
   function text(node) { return [node.textContent || '', ...node.children.map(text)].join(' '); }
-  const rows = text(document.getElementById('logs-domains'));
-  assert.match(rows, /a\.test/);
-  assert.match(rows, /12/);
-  assert.doesNotMatch(rows, /777|2026-11-01/);
+  assert.equal(document.getElementById('logs-domain-title').textContent, 'a.test');
+  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 404 2 次/);
+  assert.equal(text(document.getElementById('logs-empty')).trim(), '');
+  const html = readFileSync(new URL('../internal/server/web/index.html', `file://${__filename}`), 'utf8');
+  assert.doesNotMatch(html, /logs-domains|点击查看排行/);
   assert.equal(document.getElementById('logs-detail').hidden, false);
 });
 

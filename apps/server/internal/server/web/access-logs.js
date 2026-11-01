@@ -2,7 +2,7 @@
 let logsGeneration = 0, logDetailGeneration = 0, logSelection = null, logWindow = null;
 function resetAccessLogs() {
   logsGeneration++; logDetailGeneration++; logSelection = null; logWindow = null;
-  $('logs-domains').replaceChildren(); $('logs-rankings').replaceChildren();
+  $('logs-empty').replaceChildren(); $('logs-rankings').replaceChildren();
   $('logs-content').hidden = true; $('logs-detail').hidden = true; $('logs-error').hidden = true;
 }
 function logError(error) { $('logs-error').textContent = error.message; $('logs-error').hidden = false; }
@@ -38,7 +38,6 @@ async function loadLogDomain(item) {
   const generation = ++logDetailGeneration; logSelection = item;
   $('logs-detail').hidden = false; $('logs-domain-title').textContent = item.domain;
   $('logs-domain-count').textContent = '正在加载排行…'; $('logs-rankings').replaceChildren();
-  document.querySelectorAll('.log-domain-select').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.domain === item.domain)));
   try {
     const params = new URLSearchParams({...logWindow, domain:item.domain});
     const data = await api('access-logs/rankings?' + params);
@@ -53,7 +52,7 @@ async function loadLogDomain(item) {
       missingColumns
     );
     document.querySelectorAll('#logs-rankings details').forEach(el => { el.open = openSections.has(el.dataset.key); });
-  } catch (error) { if (generation === logDetailGeneration && csrf) { $('logs-domain-count').textContent = '排行加载失败，请点击该域名重试。'; logError(error); } }
+  } catch (error) { if (generation === logDetailGeneration && csrf) { $('logs-domain-count').textContent = '排行加载失败，请刷新统计重试。'; logError(error); } }
 }
 async function refreshAccessLogs() {
   if (currentPage !== 'access-logs' || !csrf) return;
@@ -80,18 +79,12 @@ async function refreshAccessLogs() {
     data.domains.forEach(domain => { const option = node('option', domain); option.value = domain; $('logs-domain').append(option); });
     if (selectedDomain && !data.domains.includes(selectedDomain)) { const option = node('option', selectedDomain); option.value = selectedDomain; $('logs-domain').append(option); }
     $('logs-domain').value = selectedDomain;
-    $('logs-domains').replaceChildren();
+    $('logs-empty').replaceChildren();
     const items = data.totals;
-    if (!items.length) { empty('logs-domains', '所选时间区间和域名暂无访问记录。'); $('logs-detail').hidden = true; logSelection = null; return; }
-    $('logs-domains').append(logTable(['域名（点击查看排行）', '访问量', '404'], items.map(item => {
-      const button = node('button', item.domain, 'log-domain-select quiet');
-      button.type = 'button'; button.dataset.domain = item.domain;
-      button.addEventListener('click', () => loadLogDomain(item));
-      return [button, item.visits.toLocaleString('zh-CN'), item.notFound.toLocaleString('zh-CN')];
-    })));
+    if (!items.length) { empty('logs-empty', '所选时间区间和域名暂无访问记录。'); $('logs-detail').hidden = true; logSelection = null; return; }
     const selected = items.find(item => item.domain === logSelection?.domain) || items[0];
     await loadLogDomain(selected);
-  } catch (error) { if (generation === logsGeneration && csrf) { $('logs-domains').replaceChildren(); $('logs-detail').hidden = true; logError(error); } }
+  } catch (error) { if (generation === logsGeneration && csrf) { $('logs-empty').replaceChildren(); $('logs-detail').hidden = true; logError(error); } }
   finally { if (generation === logsGeneration) $('logs-refresh').disabled = false; }
 }
 $('logs-refresh').addEventListener('click', refreshAccessLogs);
