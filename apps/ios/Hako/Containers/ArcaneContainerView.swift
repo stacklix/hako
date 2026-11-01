@@ -88,7 +88,7 @@ struct ArcaneContainerView: View {
                     terminalSession = ArcaneTerminalPresentation(details: snapshot, connectionID: connectionID)
                 }
             }
-            if let details, !managementProtected {
+            if tab == "commands", let details, !managementProtected {
                 Section {
                     if details.state?.status == "running" {
                         HStack(spacing: 16) {
