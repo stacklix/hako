@@ -35,6 +35,13 @@ import Foundation
         appRequest.applicationOrigin = "http://unsafe.example.com"
         do { try appRequest.validate(origin: origin, requestId: id); fatalError("Unsafe application origin accepted") }
         catch ConsoleWebLoginError.invalidRequest { }
+        for target in ["http://192.168.0.2:8001", "http://10.0.0.2", "http://172.16.0.1:3000", "http://172.31.255.254", "http://169.254.1.2", "http://localhost:8001", "http://nas.local:8001", "http://127.0.0.1", "http://[::1]:8001", "http://[fd12::2]:8001", "http://[fe80::1]", "http://[::ffff:192.168.0.2]:8001"] {
+            appRequest.applicationOrigin = target
+            try appRequest.validate(origin: origin, requestId: id, applicationRequest: true)
+        }
+        for target in ["http://8.8.8.8", "http://172.32.0.1", "http://[2001:4860::1]", "http://0.0.0.0", "http://192.168.0.2/path", "http://user@192.168.0.2", "http://192.168.0.2?", "http://192.168.0.2#", "http://192.168.0.2:0", "http://192.168.0.2:65536", "ftp://192.168.0.2"] {
+            precondition(!ConsoleWebLoginRequest.validApplicationOrigin(target), "Invalid application origin accepted")
+        }
         var fields: [String: String] = ["id": id, "origin": origin, "confirmationCode": "123456", "browser": "Chrome",
                                       "requestedAt": "", "expiresAt": future, "nonce": id, "clientIP": "2001:db8::12"]
         let withIP = try JSONDecoder().decode(ConsoleWebLoginRequest.self, from: JSONSerialization.data(withJSONObject: fields))

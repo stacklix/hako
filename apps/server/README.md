@@ -35,7 +35,7 @@ GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性
 
 ```text
 docker-compose.yaml
-.env.example                 # 复制为 .env，填写实际 HTTPS 地址
+.env.example                 # 复制为 .env，填写实际应用地址（HTTPS 或局域网 HTTP）
 config/server.example.json   # 配置格式示例；实际 server.json 由 init 生成
 ```
 
@@ -161,7 +161,7 @@ iOS「设置 → 服务器与登录 → 已登录设备」统一显示 Console �
 
 ## 第三方应用（iLinker）扫码登录
 
-先用已登录 Hako Console 扫码进入 Web 后台，在「应用管理 → 创建应用」填写应用名称和实际 HTTPS 地址。服务端自动生成应用 ID 和随机 32 字节 SK，并展示可直接粘贴到 iLinker 的配置：
+先用已登录 Hako Console 扫码进入 Web 后台，在「应用管理 → 创建应用」填写应用名称和实际应用地址（HTTPS 或局域网 HTTP）。服务端自动生成应用 ID 和随机 32 字节 SK，并展示可直接粘贴到 iLinker 的配置：
 
 ```dotenv
 HAKO_URL=https://hako.example.com
@@ -254,3 +254,5 @@ Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序
 协议见 [设备监控协议](../../docs/device-monitoring.md)。返回 [仓库说明](../../README.md)。
 
 命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
+
+局域网 iLinker 可登记 `http://192.168.0.2:8001`（含端口）。HTTP 应用地址支持私有 IPv4、IPv6 ULA、回环、链路本地地址、localhost / .localhost 和 .local 主机；公网应用仍使用 HTTPS，地址不带路径、查询或片段。手机端需同步更新地址校验。该地址仅用于手机确认展示，Hako 不请求该地址；应用 SK 和手机认证仍发送到 HTTPS Hako 服务。

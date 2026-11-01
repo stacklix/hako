@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,13 +25,39 @@ type AuthClientConfig struct {
 func validateAuthClients(clients []AuthClientConfig) error {
 	seen := map[string]bool{}
 	for _, c := range clients {
-		u, err := url.Parse(c.Origin)
-		if !identifier.MatchString(c.ID) || seen[c.ID] || strings.TrimSpace(c.Name) == "" || len(c.Name) > 80 || !validLoginID(c.SecretHash) || err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(c.Name, "\r\n") {
-			return fmt.Errorf("invalid authClients configuration (unique id, name, HTTPS origin and SHA256 base64url secretHash required)")
+		if !identifier.MatchString(c.ID) || seen[c.ID] || strings.TrimSpace(c.Name) == "" || len(c.Name) > 80 || !validLoginID(c.SecretHash) || !validApplicationOrigin(c.Origin) || strings.ContainsAny(c.Name, "\r\n") {
+			return fmt.Errorf("invalid application details (HTTPS or local HTTP origin required)")
 		}
 		seen[c.ID] = true
 	}
 	return nil
+}
+
+// Application origins are displayed on the phone; they are never fetched by Hako.
+// Backend credentials and Console proofs still travel to the HTTPS Hako origin.
+func validApplicationOrigin(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(value, "?#\\") || strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || (strings.HasSuffix(host, ".local") && len(host) > len(".local")) {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
 }
 
 func (s *Server) authClient(id string) (AuthClientConfig, bool) {

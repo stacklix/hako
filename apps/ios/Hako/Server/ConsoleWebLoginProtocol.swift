@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum ConsoleWebLoginError: LocalizedError {
     case invalidRequest, serverMismatch, expired
@@ -64,8 +69,29 @@ struct ConsoleWebLoginRequest: Decodable, Identifiable {
         if isApplication {
             guard let application, !application.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   ["bind", "login"].contains(purpose ?? ""), let target = applicationOrigin,
-                  let url = URLComponents(string: target), url.scheme == "https", url.host?.isEmpty == false,
-                  url.user == nil, url.password == nil, url.path.isEmpty, url.query == nil, url.fragment == nil else { throw ConsoleWebLoginError.invalidRequest }
+                  Self.validApplicationOrigin(target) else { throw ConsoleWebLoginError.invalidRequest }
         } else if !(applicationOrigin ?? "").isEmpty || !(purpose ?? "").isEmpty { throw ConsoleWebLoginError.invalidRequest }
+    }
+
+    static func validApplicationOrigin(_ target: String) -> Bool {
+        guard let url = URLComponents(string: target), let rawHost = url.host, !rawHost.isEmpty,
+              url.user == nil, url.password == nil, url.path.isEmpty, url.query == nil, url.fragment == nil,
+              !target.contains("\\"), !target.hasSuffix(":"), url.port == nil || (1...65535).contains(url.port!) else { return false }
+        if url.scheme == "https" { return true }
+        guard url.scheme == "http" else { return false }
+        let host = rawHost.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host.hasSuffix(".localhost") || (host.hasSuffix(".local") && host.count > 6) { return true }
+        func localIPv4(_ bytes: [UInt8]) -> Bool {
+            bytes[0] == 10 || bytes[0] == 127 || (bytes[0] == 172 && (16...31).contains(bytes[1])) || (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254)
+        }
+        var ipv4 = in_addr()
+        if host.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 { return withUnsafeBytes(of: ipv4) { localIPv4(Array($0)) } }
+        var ipv6 = in6_addr()
+        guard host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 else { return false }
+        return withUnsafeBytes(of: ipv6) { raw in
+            let b = Array(raw)
+            if b.prefix(10).allSatisfy({ $0 == 0 }) && b[10] == 255 && b[11] == 255 { return localIPv4(Array(b.suffix(4))) }
+            return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) || (b.prefix(15).allSatisfy({ $0 == 0 }) && b[15] == 1)
+        }
     }
 }

@@ -1,5 +1,5 @@
 'use strict';
-Object.assign(messages, { invalid_application_details:'请填写应用名称和有效的 HTTPS 根地址。', too_many_applications:'最多支持 64 个应用。', application_not_found:'应用已不存在，请刷新列表。' });
+Object.assign(messages, { invalid_application_details:'请填写应用名称和有效的根地址：支持 HTTPS 或局域网 HTTP，不含路径、查询或片段。', too_many_applications:'最多支持 64 个应用。', application_not_found:'应用已不存在，请刷新列表。' });
 let applicationsRefreshing = false;
 function resetApplications() {
   $('application-dialog').close(); $('application-secret-dialog').close();
