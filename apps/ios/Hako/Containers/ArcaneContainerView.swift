@@ -87,6 +87,14 @@ struct ArcaneContainerView: View {
                 ArcaneCommandsSection(store: store, environment: environment, details: details) { snapshot, connectionID in
                     terminalSession = ArcaneTerminalPresentation(details: snapshot, connectionID: connectionID)
                 }
+                Section("镜像更新") {
+                    Button {
+                        Task { await checkUpdate() }
+                    } label: {
+                        HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
+                    }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
+                    LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
+                }
             }
             if tab == "commands", let details, !managementProtected {
                 Section {
@@ -230,11 +238,22 @@ struct ArcaneContainerView: View {
                 }
                 if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
                 if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
-                Button {
-                    Task { await checkUpdate() }
-                } label: {
-                    HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
-                }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
+                if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
+                    Button {
+                        store.start(.redeploy, container: details, environment: environment)
+                    } label: {
+                        HStack {
+                            Label(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启", systemImage: "arrow.down.circle")
+                            Spacer()
+                            if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
+                        }
+                    }
+                    .disabled(!canAct)
+                    .accessibilityHint("拉取最新镜像并重新部署，服务会短暂中断")
+                    .arcaneRowSeparators()
+                    Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
+                        .font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
+                }
             }
             Section("配置") {
                 DisclosureGroup("挂载与存储（\(details.mounts?.count ?? 0)）") {
