@@ -18,7 +18,7 @@ const messages = {admin_login_required:'管理登录已到期，请重新扫码�
 function notice(text, success = false) { $('notice').textContent = text; $('notice').className = success ? 'success' : ''; $('notice').hidden = !text; }
 Object.assign(messages, {invalid_log_filter:'请选择有效的时间区间、域名和整点小时。',access_logs_disabled:'访问日志统计尚未启用，请在服务器配置日志目录。'});
 function stopQr() { qrGeneration++; clearTimeout(qrTimer); clearInterval(qrCountdown); qrRequest = null; $('copy-login').disabled = true; }
-function loggedIn(yes) { $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
+function loggedIn(yes) { document.body.classList.toggle('is-authenticated', yes); if (yes) showPage(); else document.title = 'Hako · 你的日常，收进一个盒子'; $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;

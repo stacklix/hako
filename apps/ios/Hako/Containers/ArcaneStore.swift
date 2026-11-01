@@ -17,6 +17,10 @@ struct ArcaneContainerChange {
     @Published private(set) var loading = false
     @Published private(set) var error: String?
     @Published private(set) var updatedAt: Date?
+    @Published private(set) var checkingUpdates = false
+    @Published private(set) var updateCheckProgress = ""
+    @Published private(set) var updateCheckMessage: String?
+    @Published private(set) var updateCheckFailed = false
     @Published private(set) var pending: ArcanePendingOperation?
     @Published private(set) var operationRunning = false
     @Published private(set) var verifyingOperation = false
@@ -32,11 +36,17 @@ struct ArcaneContainerChange {
     private var verificationTask: Task<Void, Never>?
     private var verificationTicket: UUID?
     private var cachedClient: ArcaneClient?
+    private var updateCheckTask: Task<Void, Never>?
+    private var updateCheckTicket: UUID?
     private let defaults: UserDefaults
     private let clientFactory: (ArcaneConnection) throws -> ArcaneClient
     private static let pendingKey = "arcane.pending-operation"
     var environment: ArcaneEnvironment? { environments.first { $0.id == environmentID } }
     var environmentName: String { environment?.displayName ?? environmentID }
+    var canCheckUpdates: Bool {
+        connection != nil && !environmentID.isEmpty && updatedAt != nil && !checkingUpdates && !operationRunning
+            && !fileSaveRunning && pending == nil && containers.contains { $0.image?.isEmpty == false }
+    }
 
     func operationStatus(environmentID: String, containerID: String) -> ArcaneOperationStatus? {
         guard let operation = activeOperation ?? pending,
@@ -76,6 +86,7 @@ struct ArcaneContainerChange {
             normalized.id = UUID().uuidString
         }
         try ArcaneKeychain.save(normalized)
+        cancelUpdateCheck()
         connection = normalized
         cachedClient = nil
         configurationLoaded = true
@@ -94,6 +105,7 @@ struct ArcaneContainerChange {
 
     func selectEnvironment(_ id: String) {
         guard id != environmentID, environments.contains(where: { $0.id == id }) else { return }
+        cancelUpdateCheck()
         environmentID = id
         containers = []; updatedAt = nil; error = nil
         refreshTicket = nil; loading = false
@@ -101,6 +113,7 @@ struct ArcaneContainerChange {
     }
 
     func refresh(forceEnvironments: Bool = false) async {
+        guard !checkingUpdates else { return }
         loadConfiguration()
         guard let connection else { return }
         let ticket = UUID()
@@ -133,11 +146,80 @@ struct ArcaneContainerChange {
         catch { if self.connection?.id == connection.id && refreshTicket == ticket { self.error = error.localizedDescription } }
     }
 
+    func checkUpdates() {
+        guard canCheckUpdates else { return }
+        do {
+            let client = try client()
+            let connectionID = client.connection.id
+            let environmentID = self.environmentID
+            let snapshot = containers.filter { $0.image?.isEmpty == false }
+            let groups = Dictionary(grouping: snapshot, by: { $0.image! })
+            let images = groups.keys.sorted()
+            let skipped = containers.count - snapshot.count
+            let ticket = UUID()
+            updateCheckTicket = ticket
+            checkingUpdates = true; updateCheckProgress = "0/\(images.count)"
+            updateCheckMessage = nil; updateCheckFailed = false
+            // Reject a list response started before this check, so it cannot replace fresh badges.
+            refreshTicket = nil; loading = false
+            updateCheckTask = Task {
+                var completed = 0, failed = 0, updates = 0
+                var firstError: String?
+                defer {
+                    if updateCheckTicket == ticket { checkingUpdates = false; updateCheckTask = nil }
+                }
+                for image in images {
+                    guard !Task.isCancelled, updateCheckTicket == ticket,
+                          connection?.id == connectionID, self.environmentID == environmentID else { return }
+                    var stop = false
+                    do {
+                        let info = try await client.checkImageUpdates(environmentID, image: image)
+                        try Task.checkCancellation()
+                        guard updateCheckTicket == ticket, connection?.id == connectionID,
+                              self.environmentID == environmentID else { return }
+                        let results = groups[image, default: []].map { info.forContainer($0.id) }
+                        updates += results.filter { $0.hasUpdate == true && $0.error?.isEmpty != false }.count
+                        if let problem = results.first(where: { $0.error?.isEmpty == false || $0.hasUpdate == nil }) {
+                            failed += 1
+                            let message = problem.error.flatMap { $0.isEmpty ? nil : $0 } ?? "Arcane 未返回可确认的更新状态。"
+                            firstError = firstError ?? client.redacted(message)
+                        }
+                        for index in containers.indices where containers[index].image == image {
+                            containers[index].updateInfo = info
+                        }
+                    } catch {
+                        guard !Task.isCancelled, updateCheckTicket == ticket,
+                              connection?.id == connectionID, self.environmentID == environmentID else { return }
+                        failed += 1
+                        firstError = firstError ?? client.redacted(error.localizedDescription)
+                        stop = [401, 403].contains((error as? ArcaneFailure)?.status ?? 0)
+                    }
+                    completed += 1
+                    updateCheckProgress = "\(completed)/\(images.count)"
+                    if stop { break }
+                }
+                let prefix = completed == images.count ? "已检查 \(completed) 个镜像" : "检查中止（\(completed)/\(images.count) 个镜像）"
+                updateCheckFailed = failed > 0 || skipped > 0
+                updateCheckMessage = prefix + "，\(updates) 个容器有更新。"
+                    + (failed > 0 ? "\(failed) 个镜像检查失败。\(firstError ?? "")" : "")
+                    + (skipped > 0 ? "\(skipped) 个容器缺少镜像信息，已跳过。" : "")
+            }
+        } catch { updateCheckFailed = true; updateCheckMessage = error.localizedDescription }
+    }
+
+    func cancelUpdateCheck() {
+        updateCheckTicket = nil
+        updateCheckTask?.cancel(); updateCheckTask = nil
+        checkingUpdates = false; updateCheckProgress = ""
+        updateCheckMessage = nil; updateCheckFailed = false
+    }
+
     func start(_ action: ArcaneAction, container: ArcaneContainerDetails, environment: ArcaneEnvironment) {
         guard pending == nil, !operationRunning, !fileSaveRunning, terminalSessionID == nil else { return }
         if let reason = container.blockedReason(for: action) { operationMessage = reason; return }
         do {
             let client = try client()
+            cancelUpdateCheck()
             let operation = ArcanePendingOperation(connectionID: client.connection.id, environmentID: environment.id,
                 environmentName: environment.displayName, containerID: container.id, containerName: container.displayName,
                 action: action, previousStartedAt: container.state?.startedAt)

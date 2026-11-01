@@ -3,39 +3,51 @@ const {test} = require('node:test');
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
 
-async function openPage(pathname) {
+async function openPage(pathname, logs = {status: {enabled: false}}) {
   const elements = new Map(), calls = [], timers = [];
   let ready;
-  function element() {
-    return {hidden: false, value: '', attributes: {}, addEventListener() {},
-      setAttribute(name, value) { this.attributes[name] = value; },
-      replaceChildren() {}, close() {}};
+  class TestNode {
+    constructor() { this.hidden = false; this.value = ''; this.attributes = {}; this.children = []; this.dataset = {}; }
+    addEventListener() {}
+    setAttribute(name, value) { this.attributes[name] = value; }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    get firstChild() { return this.children[0]; }
+    close() {}
   }
+  function element() { return new TestNode(); }
   const document = {
     hidden: false,
+    body: {classList: {toggle() {}}},
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, element());
       return elements.get(id);
     },
     createElement: element,
+    createTextNode(text) { const result = element(); result.textContent = text; return result; },
+    querySelectorAll() { return []; },
     addEventListener(event, callback) { if (event === 'DOMContentLoaded') ready = callback; }
   };
   document.getElementById('logs-range').value = '24';
   const context = vm.createContext({document, window: {location: {pathname}},
-    AbortSignal, URLSearchParams, clearTimeout() {}, clearInterval() {},
+    AbortSignal, URLSearchParams, Node: TestNode, clearTimeout() {}, clearInterval() {},
     setInterval(callback) { timers.push(callback); },
     fetch: async url => {
       calls.push(url);
       const responses = {
         '/admin/api/session': {csrfToken: 'test', username: 'Admin'},
         '/admin/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
-        '/admin/api/access-logs?rangeHours=24': {status: {enabled: false}}
+        '/admin/api/applications': {applications: []},
+        '/admin/api/access-logs?rangeHours=24': logs
       };
+      if (url.startsWith('/admin/api/access-logs/rankings?')) {
+        return {ok: true, json: async () => ({visits: 12, notFound: 2, topURLs: [], topClients: [], notFoundPages: [], notFoundIPs: [], notFoundUserAgents: []})};
+      }
       assert.ok(url in responses, `unexpected request: ${url}`);
       return {ok: true, json: async () => responses[url]};
     }
   });
-  for (const file of ['app.js', 'access-logs.js']) {
+  for (const file of ['app.js', 'access-logs.js', 'applications.js']) {
     vm.runInContext(readFileSync(new URL(`../internal/server/web/${file}`, `file://${__filename}`), 'utf8'), context);
   }
   await ready();
@@ -43,24 +55,53 @@ async function openPage(pathname) {
   return {document, calls, timers, context};
 }
 
+test('access logs show domain totals and request whole-range rankings without an hour filter', async () => {
+  const from = '2026-11-01T00:00:00Z', to = '2026-11-02T00:00:00Z';
+  const {document, calls} = await openPage('/admin/access-logs', {
+    status: {enabled: true, timezone: 'Asia/Shanghai', scanIntervalSeconds: 60, retentionDays: 7},
+    rangeHours: 24, from, to, domains: ['a.test'],
+    totals: [{domain: 'a.test', visits: 12, notFound: 2}],
+    hours: [{domain: 'a.test', hour: from, visits: 777, notFound: 0}]
+  });
+  assert.equal(calls.length, 3);
+  const request = new URL(calls[2], 'https://hako.test');
+  assert.equal(request.pathname, '/admin/api/access-logs/rankings');
+  assert.equal(request.searchParams.get('domain'), 'a.test');
+  assert.equal(request.searchParams.get('from'), from);
+  assert.equal(request.searchParams.get('to'), to);
+  assert.equal(request.searchParams.has('hour'), false);
+  function text(node) { return [node.textContent || '', ...node.children.map(text)].join(' '); }
+  const rows = text(document.getElementById('logs-domains'));
+  assert.match(rows, /a\.test/);
+  assert.match(rows, /12/);
+  assert.doesNotMatch(rows, /777|2026-11-01/);
+  assert.equal(document.getElementById('logs-detail').hidden, false);
+});
+
 for (const [path, page, title] of [
   ['/admin/', 'agents', '设备代理'],
   ['/admin/agents', 'agents', '设备代理'],
-  ['/admin/access-logs', 'access-logs', '访问日志']
+  ['/admin/access-logs', 'access-logs', '访问日志'],
+  ['/admin/applications', 'applications', '应用管理']
 ]) {
-  test(`${path} opens only its page and polls only its data`, async () => {
+  test(`${path} opens only its page and refreshes only its data`, async () => {
     const {document, calls, timers, context} = await openPage(path);
     const get = id => document.getElementById(id);
     assert.equal(get('dashboard').hidden, false);
     assert.equal(get('agents-page').hidden, page !== 'agents');
     assert.equal(get('access-logs').hidden, page !== 'access-logs');
+    assert.equal(get('applications-page').hidden, page !== 'applications');
     assert.equal(get(`nav-${page}`).attributes['aria-current'], 'page');
     assert.equal(get('page-title').textContent, title);
     assert.equal(document.title, `${title} · Hako 管理控制台`);
-    const endpoint = page === 'agents' ? '/admin/api/agents' : '/admin/api/access-logs?rangeHours=24';
+    const endpoint = page === 'agents' ? '/admin/api/agents' : page === 'applications' ? '/admin/api/applications' : '/admin/api/access-logs?rangeHours=24';
     assert.deepEqual(calls, ['/admin/api/session', endpoint]);
     timers.forEach(callback => callback());
     await new Promise(setImmediate);
+    if (page === 'applications') {
+      assert.deepEqual(calls, ['/admin/api/session', endpoint], 'application credentials are refreshed on demand');
+      await context.refreshApplications();
+    }
     assert.deepEqual(calls, ['/admin/api/session', endpoint, endpoint]);
     context.loggedIn(false);
     assert.equal(get('dashboard').hidden, true);

@@ -17,7 +17,7 @@ async function refreshApplications() {
   try {
     const result = await api('applications');
     $('application-list').replaceChildren();
-    if (!result.applications.length) { empty('application-list', '还没有应用。创建后，将生成的配置复制到 iLinker。'); return; }
+    if (!result.applications.length) { empty('application-list', '还没有应用。创建后，将生成的配置复制到对应应用。'); return; }
     for (const app of result.applications) {
       const row = node('div', undefined, 'device'), info = node('div'), title = node('div', app.name, 'device-title');
       title.append(node('span', app.enabled ? '已启用' : '已停用', 'badge' + (app.enabled ? ' online' : '')));
@@ -31,7 +31,7 @@ async function refreshApplications() {
         if (!confirm('为「' + app.name + '」生成新 SK？旧 SK、待登录请求和已签发的 Hako 授权将失效，请同步更新应用配置。')) return;
         const result = await api('applications/' + encodeURIComponent(app.id) + '/rotate', 'POST', {});
         if (!csrf) return;
-        showApplicationSecret(result); notice('SK 已轮换，请更新 iLinker 配置并重启。', true);
+        showApplicationSecret(result); notice('SK 已轮换，请更新对应应用的配置并重启该应用。', true);
       }, 'danger'));
       row.append(info, buttons); $('application-list').append(row);
     }
@@ -44,7 +44,7 @@ $('application-close').addEventListener('click', () => $('application-dialog').c
 $('application-secret-close').addEventListener('click', () => $('application-secret-dialog').close());
 $('application-secret-dialog').addEventListener('close', () => { $('application-configuration').value = ''; $('application-secret-title').textContent = ''; });
 $('application-secret-copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('application-configuration').value); notice('配置已复制，请保存到 iLinker 部署环境。', true); }
+  try { await navigator.clipboard.writeText($('application-configuration').value); notice('配置已复制，请保存到对应应用的部署环境。', true); }
   catch { $('application-configuration').focus(); $('application-configuration').select(); notice('无法自动复制，请手动复制已选中的配置。'); }
 });
 $('application-form').addEventListener('submit', async event => {

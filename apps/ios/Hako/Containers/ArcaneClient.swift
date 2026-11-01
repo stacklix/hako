@@ -189,9 +189,13 @@ final class ArcaneClient: @unchecked Sendable {
     }
 
     func checkUpdate(_ environment: String, image: String, containerID: String) async throws -> ArcaneContainerUpdate {
-        let update = try await read(["environments", environment, "image-updates", "check"],
-            query: [URLQueryItem(name: "imageRef", value: image)], as: ArcaneUpdateInfo.self)
+        let update = try await checkImageUpdates(environment, image: image)
         return update.forContainer(containerID)
+    }
+
+    func checkImageUpdates(_ environment: String, image: String) async throws -> ArcaneUpdateInfo {
+        try await read(["environments", environment, "image-updates", "check"],
+            query: [URLQueryItem(name: "imageRef", value: image)], as: ArcaneUpdateInfo.self)
     }
 
     func perform(_ action: ArcaneAction, environment: String, id: String) async throws -> String? {

@@ -2,23 +2,42 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script>
 </head>
 <body>
+<nav class="landing-nav" aria-label="首页导航"><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a href="#hako-features">探索 Hako</a><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
+  <aside><a class="brand" href="/admin/"><span class="mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
-    <header><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
+    <header class="dashboard-header"><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <section id="login-panel" class="card login">
-      <div class="section-heading"><div><p class="eyebrow">WELCOME BACK</p><h2>登录管理控制台</h2></div><span class="pill">单用户</span></div>
-      <p class="muted">打开 Hako iOS「设置 → 扫码登录」，扫码后核对确认码并批准。服务器配置及登录管理位于「设置 → 服务器与登录」。</p>
-      <div class="qr-box"><img id="login-qr" alt="使用已登记的 Console 扫码登录" width="260" height="260" hidden><p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p></div>
-      <p class="qr-caption">确认码 <strong id="qr-code">— — — — — —</strong></p>
-      <p id="qr-expiry" class="muted"></p><button id="refresh-qr" class="primary" type="button">刷新二维码 <span>↻</span></button>
-      <details class="qr-copy"><summary>无法使用摄像头？</summary><p class="help">复制登录请求，在 Console 的扫码登录页中粘贴解析。</p><button id="copy-login" class="quiet" type="button" disabled>复制登录请求</button></details>
-      <p class="help">二维码 90 秒有效。请只扫描自己正在使用的浏览器上的二维码。Console 公钥由服务器配置文件手工登记，所有 Console 都是管理员。管理会话闲置 30 分钟或登录 12 小时后到期。</p>
-    </section>
+    <div class="landing-grid">
+      <section class="landing-intro" aria-labelledby="landing-title">
+        <p class="landing-eyebrow"><span></span> A PERSONAL SPACE FOR YOUR TOOLS</p>
+        <h1 id="landing-title">你的日常，<br>收进<span>一个盒子。</span></h1>
+        <p class="landing-description">设备、服务和应用，在同一处相遇。<br>用 Hako 把分散的工具连接起来，<br class="desktop-break">让每一次查看与操作，都有一个熟悉的入口。</p>
+        <a class="landing-explore" href="#hako-features">看看盒子里有什么 <span aria-hidden="true">↓</span></a>
+        <div class="tool-scene" aria-label="Hako 连接手机、设备和应用的示意图">
+          <div class="scene-orbit"></div><div class="scene-line"></div>
+          <div class="scene-device scene-phone"><span class="scene-icon" aria-hidden="true">↗</span><div><strong>在手机上确认</strong><small>Hako · iOS</small></div><span class="scene-status"></span></div>
+          <div class="scene-center"><span><img class="hako-logo" src="/admin/hako-logo.svg" alt="Hako"></span><small>让工具彼此连接</small></div>
+          <div class="scene-device scene-agent"><span class="scene-icon" aria-hidden="true">⌘</span><div><strong>你的设备</strong><small>设备监控与远程调用</small></div></div>
+          <div class="scene-device scene-app"><span class="scene-icon" aria-hidden="true">▦</span><div><strong>你的应用</strong><small>扫码授权，轻松进入</small></div><span aria-hidden="true">↗</span></div>
+          <span class="scene-caption">YOUR DEVICES. YOUR SPACE.</span>
+        </div>
+      </section>
+      <section id="login-panel" class="card login">
+        <div class="login-heading"><span class="login-symbol" aria-hidden="true"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span class="login-private"><span></span> 你的专属空间</span></div>
+        <p class="landing-eyebrow login-eyebrow">WELCOME TO HAKO</p>
+        <h2>从一次扫码开始。</h2><p class="login-description">打开 Hako，确认是你，即可进入工作空间。</p>
+        <div class="qr-box"><img id="login-qr" alt="使用 Hako 手机客户端扫码登录" width="220" height="220" hidden><p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p></div>
+        <div class="qr-confirmation"><span>核对手机上的确认码</span><strong id="qr-code">— — — — — —</strong></div>
+        <div class="qr-actions"><p id="qr-expiry"></p><button id="refresh-qr" class="quiet" type="button">刷新二维码 <span aria-hidden="true">↻</span></button></div>
+        <div class="login-instructions"><span>1</span> 打开 Hako <i>→</i> 设置 <i>→</i> 扫码登录</div>
+        <details class="qr-copy"><summary>无法扫码？试试复制登录请求 <span aria-hidden="true">＋</span></summary><p class="help">在手机扫码页粘贴登录请求，核对确认码后批准。请先在手机上登录当前 Hako 服务器。</p><button id="copy-login" class="quiet" type="button" disabled>复制登录请求</button></details>
+        <p class="login-footnote">只确认你正在使用的浏览器。每次登录，都由你掌握。</p>
+      </section>
+    </div>
     <div id="dashboard" hidden>
       <div id="agents-page" hidden>
       <div class="stats"><div class="card"><p>在线设备</p><strong id="online-count">—</strong><span class="muted">长连接已建立</span></div><div class="card"><p>设备代理</p><strong id="agent-count">—</strong><span class="muted">已登记设备</span></div></div>
@@ -28,7 +47,7 @@
       </div>
       <section id="applications-page" class="card" hidden>
         <div class="section-heading"><div><p class="eyebrow">APPLICATIONS</p><h2>应用管理</h2></div><div class="device-actions"><button id="applications-refresh" class="quiet" type="button">刷新</button><button id="application-create" class="primary" type="button">＋ 创建应用</button></div></div>
-        <p class="muted">先创建应用，再将应用 ID 和 SK 配置到 iLinker。SK 仅在创建或轮换时显示一次。</p>
+        <p class="muted">先创建应用，再将应用 ID 和 SK 配置到对应应用。SK 仅在创建或轮换时显示一次。</p>
         <div id="application-list" class="device-list"></div>
       </section>
       <section id="access-logs" class="card" hidden>
@@ -38,20 +57,29 @@
         <div id="logs-content" hidden>
           <div class="log-filters"><label>时间区间<select id="logs-range"><option value="1">最近 1 小时</option><option value="3">最近 3 小时</option><option value="6">最近 6 小时</option><option value="12">最近 12 小时</option><option value="24" selected>最近 1 天</option><option value="72">最近 3 天</option><option value="168">最近 7 天</option></select></label><label>域名<select id="logs-domain"><option value="">全部域名</option></select></label></div>
           <p id="logs-window" class="muted"></p>
-          <p class="muted">访问数据按域名归入对应的小时，点击小时行查看该小时在所选时间区间内的排行。URL 按路径统计，忽略查询参数；Top 10 按请求数降序排列。仅保留最近 7 天统计，过期数据自动清理。</p>
-          <div id="logs-hours" class="log-hours"></div>
+          <p class="muted">访问数据按域名汇总，点击域名查看所选时间区间内的排行。URL 按路径统计，忽略查询参数；Top 10 按请求数降序排列。仅保留最近 7 天统计，过期数据自动清理。</p>
+          <div id="logs-domains" class="log-domains"></div>
           <div id="logs-detail" hidden>
-            <div class="log-detail-heading"><h3 id="logs-hour-title"></h3><p id="logs-hour-count" class="muted"></p></div>
+            <div class="log-detail-heading"><h3 id="logs-domain-title"></h3><p id="logs-domain-count" class="muted"></p></div>
             <div id="logs-rankings"></div>
           </div>
         </div>
       </section>
     </div>
+    <section id="hako-features" class="landing-features" aria-labelledby="features-title">
+      <div class="features-heading"><p class="landing-eyebrow">SMALL TOOLS. ONE HOME.</p><h2 id="features-title">各有所长，也能在一起。</h2><p>从连接自己的设备，到管理服务和应用。</p></div>
+      <div class="feature-grid">
+        <article><div class="feature-top"><span>01 / CONNECT</span><span aria-hidden="true">⌘</span></div><h3>设备，就在手边。</h3><p>查看设备在线状态、读取运行指标，<br>在同一处调用设备提供的能力。</p><span class="feature-tag">设备代理 · Agent</span></article>
+        <article><div class="feature-top"><span>02 / OBSERVE</span><span aria-hidden="true">↗</span></div><h3>让访问，有迹可循。</h3><p>按时间与域名查看服务访问情况，<br>从来源和请求排行中了解变化。</p><span class="feature-tag">访问日志 · Caddy</span></article>
+        <article><div class="feature-top"><span>03 / AUTHORIZE</span><span aria-hidden="true">▦</span></div><h3>确认一次，安心进入。</h3><p>为自己的应用接入 Hako 扫码登录，<br>在手机上核对，并随时撤销授权。</p><span class="feature-tag">应用管理 · Apps</span></article>
+      </div>
+    </section>
+    <footer class="landing-footer"><a class="landing-brand" href="#"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako.</span></a><span>你的日常，收进一个盒子。</span><a href="#login-panel">回到登录 <span aria-hidden="true">↑</span></a></footer>
   </main>
 </div>
 <dialog id="register-dialog"><form id="register-form"><div class="section-heading"><h2 id="register-title">登记设备</h2><button type="button" id="close-register" class="quiet" aria-label="关闭">✕</button></div><label>设备名称<input name="name" required maxlength="100" placeholder="例如：我的设备"></label><label>公钥 PEM<textarea name="publicKeyPem" rows="7" required placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label><label class="file-label">或从公钥文件读取<input id="public-key-file" type="file" accept=".pem,.pub,.txt"></label><p id="key-hint" class="muted"></p><div id="register-error" class="form-error" role="alert" hidden></div><button type="submit" class="primary">登记公钥</button></form></dialog>
 <dialog id="key-dialog"><div class="section-heading"><h2>设备公钥</h2><button id="close-key" class="quiet" aria-label="关闭">✕</button></div><p id="key-name"></p><pre id="key-pem"></pre><button id="download-key" class="primary">下载公钥 PEM</button></dialog>
 <dialog id="request-dialog"><form id="request-form"><div class="section-heading"><h2>调用设备能力</h2><button type="button" id="close-request" class="quiet" aria-label="关闭">✕</button></div><p id="request-agent"></p><label>能力<select id="request-method" required></select></label><label>参数（JSON 对象）<textarea id="request-params" rows="5" required spellcheck="false">{}</textarea></label><p class="muted">填写该能力需要的 JSON 参数，无参数时使用 {}。请求超时后，请先确认结果再决定是否重试。</p><div id="request-error" class="form-error" role="alert" hidden></div><button id="execute-request" type="submit" class="primary">执行</button><pre id="request-result" aria-live="polite"></pre></form></dialog>
-<dialog id="application-dialog"><form id="application-form"><div class="section-heading"><h2>创建应用</h2><button type="button" id="application-close" class="quiet" aria-label="关闭">✕</button></div><label>应用名称<input id="application-name" required maxlength="80" value="iLinker" placeholder="例如：iLinker"></label><label>应用地址<input id="application-origin" type="url" required placeholder="http://192.168.0.2:8001 或 https://notify.example.com"></label><p class="muted">扫码确认时会向手机展示此名称与地址，支持 HTTPS，以及局域网 IP、localhost、.local 主机的 HTTP 地址（可带端口）。</p><p id="application-error" class="form-error" role="alert" hidden></p><button id="application-submit" type="submit" class="primary">创建应用并生成 SK</button></form></dialog>
-<dialog id="application-secret-dialog"><div class="section-heading"><h2>应用凭证</h2><button type="button" id="application-secret-close" class="quiet" aria-label="关闭">✕</button></div><p id="application-secret-title"></p><p class="muted">SK 仅显示这一次。请保存到 iLinker 的部署环境中；关闭后无法再次查看，可轮换生成新 SK。不要提交到仓库或发送到聊天。</p><label>iLinker 配置（包含 SK）<textarea id="application-configuration" readonly rows="5" spellcheck="false"></textarea></label><button type="button" id="application-secret-copy" class="primary">复制配置</button></dialog>
+<dialog id="application-dialog"><form id="application-form"><div class="section-heading"><h2>创建应用</h2><button type="button" id="application-close" class="quiet" aria-label="关闭">✕</button></div><label>应用名称<input id="application-name" required maxlength="80" placeholder="例如：通知服务"></label><label>应用地址<input id="application-origin" type="url" required placeholder="http://192.168.0.2:8001 或 https://notify.example.com"></label><p class="muted">扫码确认时会向手机展示此名称与地址，支持 HTTPS，以及局域网 IP、localhost、.local 主机的 HTTP 地址（可带端口）。</p><p id="application-error" class="form-error" role="alert" hidden></p><button id="application-submit" type="submit" class="primary">创建应用并生成 SK</button></form></dialog>
+<dialog id="application-secret-dialog"><div class="section-heading"><h2>应用凭证</h2><button type="button" id="application-secret-close" class="quiet" aria-label="关闭">✕</button></div><p id="application-secret-title"></p><p class="muted">SK 仅显示这一次。请保存到对应应用的部署环境中；关闭后无法再次查看，可轮换生成新 SK。不要提交到仓库或发送到聊天。</p><label>应用配置（包含 SK）<textarea id="application-configuration" readonly rows="5" spellcheck="false"></textarea></label><button type="button" id="application-secret-copy" class="primary">复制配置</button></dialog>
 </body></html>

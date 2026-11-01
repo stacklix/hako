@@ -24,7 +24,7 @@ type adminSession struct {
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css"} {
+	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/hako-logo.svg": "hako-logo.svg"} {
 		s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != path {
 				http.NotFound(w, r)
@@ -32,7 +32,7 @@ func (s *Server) adminRoutes() {
 			}
 			adminHeaders(w)
 			data, _ := adminFiles.ReadFile("web/" + file)
-			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "applications.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[file])
+			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "applications.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8", "hako-logo.svg": "image/svg+xml"}[file])
 			_, _ = w.Write(data)
 		})
 	}

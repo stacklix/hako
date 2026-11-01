@@ -213,11 +213,16 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         let deleted = try await client.perform(.delete, environment: "0", id: "old")
         precondition(deleted == nil)
         ArcaneMockProtocol.respond { request in
+            precondition(request.httpMethod == "GET" && request.url!.path.hasSuffix("/0/image-updates/check"))
             precondition(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "registry.example.com/team/app:latest")
-            return (200, bytes(#"{"success":true,"data":{"hasUpdate":true,"containerUpdates":{"old":{"hasUpdate":false,"latestVersion":"policy-version"}}}}"#))
+            return (200, bytes(#"{"success":true,"data":{"hasUpdate":true,"containerUpdates":{"old":{"hasUpdate":false,"latestVersion":"policy-version"},"other":{"hasUpdate":true}}}}"#))
         }
         let update = try await client.checkUpdate("0", image: "registry.example.com/team/app:latest", containerID: "old")
         precondition(update.hasUpdate == false && update.latestVersion == "policy-version")
+        let imageUpdates = try await client.checkImageUpdates("0", image: "registry.example.com/team/app:latest")
+        precondition(imageUpdates.forContainer("old").hasUpdate == false && imageUpdates.forContainer("other").hasUpdate == true,
+                     "Checking a shared image must retain each container's update policy")
+        precondition(imageUpdates.forContainer("fallback").hasUpdate == true)
         precondition(client.redacted("example test-key output") == "example [已隐藏] output")
 
         let delegate = ArcaneSessionDelegate()

@@ -128,7 +128,7 @@ struct ArcaneContainer: Decodable, Identifiable {
     let state: String?
     let status: String?
     let labels: [String: String]?
-    let updateInfo: ArcaneUpdateInfo?
+    var updateInfo: ArcaneUpdateInfo?
     let resourceSample: ArcaneResourceSample?
     let redeployDisabled: Bool?
     var name: String { (names?.first ?? String(id.prefix(12))).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }

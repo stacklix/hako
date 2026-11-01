@@ -5,6 +5,13 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
     private var requests: [URLRequest] = []
     private var pending: [String: [ArcaneLoadingProtocol]] = [:]
     private var holdsContainers = false
+    private var containersBody: String?
+    private var pendingUpdates: [ArcaneLoadingProtocol] = []
+
+    func setContainersBody(_ body: String?) {
+        lock.lock(); defer { lock.unlock() }
+        containersBody = body
+    }
 
     func holdContainers(_ value: Bool) {
         lock.lock(); defer { lock.unlock() }
@@ -15,10 +22,12 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
         let path = request.request.url!.path
         lock.lock()
         requests.append(request.request)
+        if path.hasSuffix("/image-updates/check") { pendingUpdates.append(request) }
         let automatic = path.hasSuffix("/environments") || path.hasSuffix("/activities") || (path.hasSuffix("/containers") && !holdsContainers)
             || path.hasSuffix("/projects") || path.hasSuffix("/projects/missing-env/compose") || path.hasSuffix("/projects/missing-env/workspace")
             || path.hasSuffix("/projects/missing-env/workspace/file")
         if !automatic { pending[path, default: []].append(request) }
+        let listBody = containersBody
         lock.unlock()
         guard automatic else { return }
         if path.hasSuffix("/projects") {
@@ -35,7 +44,7 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
             request.complete(#"{"success":true,"data":[]}"#)
         } else if path.hasSuffix("/containers") {
             let environment = path.contains("/remote/") ? "remote" : "0"
-            request.complete("{\"success\":true,\"data\":[{\"id\":\"\(environment)-container\",\"state\":\"running\"}]}")
+            request.complete(listBody ?? "{\"success\":true,\"data\":[{\"id\":\"\(environment)-container\",\"state\":\"running\"}]}")
         }
     }
 
@@ -47,6 +56,20 @@ private final class ArcaneLoadingProbe: @unchecked Sendable {
     func writeCount() -> Int {
         lock.lock(); defer { lock.unlock() }
         return requests.filter { $0.httpMethod != "GET" }.count
+    }
+
+    func checkedImages() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return requests.filter { $0.url!.path.hasSuffix("/image-updates/check") }.compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "imageRef" })?.value
+        }
+    }
+
+    func completeUpdate(index: Int, body: String, status: Int = 200) {
+        lock.lock()
+        let request = pendingUpdates[index]
+        lock.unlock()
+        request.complete(body, status: status)
     }
 
     func complete(_ suffix: String, index: Int = 0, id: String, status: Int = 200, list: Bool = false, startedAt: String? = nil) {
@@ -262,7 +285,55 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
         precondition(store.pending == nil && defaults.data(forKey: "arcane.pending-operation") == nil)
         precondition(store.operationStatus(environmentID: "remote", containerID: restartTarget.id) == nil)
         precondition(probe.writeCount() == writesBeforeVerification, "Verification must only read status; never repeat the restart")
+
+        probe.setContainersBody(#"{"success":true,"data":[{"id":"a-one","image":"registry.test/a:latest"},{"id":"a-two","image":"registry.test/a:latest"},{"id":"b","image":"registry.test/b:latest"}]}"#)
+        store.selectEnvironment("0")
+        await store.refresh()
+        precondition(store.canCheckUpdates)
+        let writesBeforeCheck = probe.writeCount()
+        store.checkUpdates()
+        store.checkUpdates()
+        try await waitFor("/image-updates/check")
+        precondition(store.checkingUpdates && !store.canCheckUpdates && store.updateCheckProgress == "0/2")
+        precondition(probe.checkedImages() == ["registry.test/a:latest"], "Repeated taps must not start duplicate checks")
+        probe.completeUpdate(index: 0, body: #"{"success":true,"data":{"hasUpdate":true,"containerUpdates":{"a-one":{"hasUpdate":false},"a-two":{"hasUpdate":true}}}}"#)
+        try await waitFor("/image-updates/check", count: 2)
+        precondition(store.updateCheckProgress == "1/2")
+        precondition(store.containers.first { $0.id == "a-one" }?.update?.hasUpdate == false)
+        precondition(store.containers.first { $0.id == "a-two" }?.update?.hasUpdate == true)
+        probe.completeUpdate(index: 1, body: #"{"success":true,"data":{"hasUpdate":false}}"#)
+        try await waitForUpdateCheck(store)
+        precondition(!store.updateCheckFailed && store.updateCheckMessage?.contains("1 个容器有更新") == true)
+        precondition(probe.checkedImages() == ["registry.test/a:latest", "registry.test/b:latest"])
+        precondition(probe.writeCount() == writesBeforeCheck, "Image checks must never pull, redeploy or mutate containers")
+
+        store.checkUpdates()
+        try await waitFor("/image-updates/check", count: 3)
+        store.selectEnvironment("remote")
+        await store.refresh()
+        store.checkUpdates()
+        try await waitFor("/image-updates/check", count: 4)
+        try await Task.sleep(for: .milliseconds(30))
+        precondition(store.checkingUpdates && store.updateCheckProgress == "0/2" && store.updateCheckMessage == nil,
+                     "A cancelled old environment check must not clear a newer check's state")
+        precondition(store.containers.allSatisfy { $0.update == nil })
+        probe.completeUpdate(index: 3, body: #"{"success":true,"data":{"hasUpdate":false}}"#)
+        try await waitFor("/image-updates/check", count: 5)
+        probe.completeUpdate(index: 4, body: #"{"success":true,"data":{"hasUpdate":false}}"#)
+        try await waitForUpdateCheck(store)
+
+        store.checkUpdates()
+        try await waitFor("/image-updates/check", count: 6)
+        probe.completeUpdate(index: 5, body: #"{"success":false,"error":"denied"}"#, status: 403)
+        try await waitForUpdateCheck(store)
+        precondition(store.updateCheckFailed && store.updateCheckMessage?.contains("检查中止") == true)
+        precondition(probe.checkedImages().count == 6, "Permission failures must stop remaining image checks")
+        precondition(store.containers.allSatisfy { $0.update?.hasUpdate == false }, "Failed requests must retain the last known update state")
+        probe.setContainersBody(#"{"success":true,"data":[{"id":"missing-image"}]}"#)
+        await store.refresh()
+        precondition(!store.canCheckUpdates)
         print("PASS: Arcane session reuse, polling, missing .env first load without writes, editor snapshots, cancellation, stale response isolation and scoped operation lifecycle status")
+        print("PASS: batch image checks, deduplication, per-container policies, progress, no container mutations, environment cancellation and permission failures")
     }
 
     private static func waitFor(_ suffix: String, count: Int = 1) async throws {
@@ -287,5 +358,13 @@ private final class ArcaneLoadingProtocol: URLProtocol, @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(10))
         }
         fatalError("Restart verification did not finish")
+    }
+
+    private static func waitForUpdateCheck(_ store: ArcaneStore) async throws {
+        for _ in 0..<500 {
+            if !store.checkingUpdates { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        fatalError("Image update check did not finish")
     }
 }

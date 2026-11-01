@@ -2,11 +2,11 @@
 let logsGeneration = 0, logDetailGeneration = 0, logSelection = null, logWindow = null;
 function resetAccessLogs() {
   logsGeneration++; logDetailGeneration++; logSelection = null; logWindow = null;
-  $('logs-hours').replaceChildren(); $('logs-rankings').replaceChildren();
+  $('logs-domains').replaceChildren(); $('logs-rankings').replaceChildren();
   $('logs-content').hidden = true; $('logs-detail').hidden = true; $('logs-error').hidden = true;
 }
 function logError(error) { $('logs-error').textContent = error.message; $('logs-error').hidden = false; }
-function logHourLabel(hour) {
+function logTimeLabel(hour) {
   // Keep the server's configured wall clock and explicit offset, independent of browser timezone.
   return hour.replace('T', ' ').replace(':00:00', ':00');
 }
@@ -33,17 +33,17 @@ function logBreakdown(title, values, firstLabel, leftTitle, leftKey, leftLabel, 
     details.append(summary, columns); section.append(details);
   }); return section;
 }
-async function loadLogHour(item) {
-  const openSections = new Set(logSelection?.domain === item.domain && logSelection?.hour === item.hour ? Array.from(document.querySelectorAll('#logs-rankings details[open]'), el => el.dataset.key) : []);
+async function loadLogDomain(item) {
+  const openSections = new Set(logSelection?.domain === item.domain ? Array.from(document.querySelectorAll('#logs-rankings details[open]'), el => el.dataset.key) : []);
   const generation = ++logDetailGeneration; logSelection = item;
-  $('logs-detail').hidden = false; $('logs-hour-title').textContent = `${item.domain} · ${logHourLabel(item.hour)}`;
-  $('logs-hour-count').textContent = '正在加载排行…'; $('logs-rankings').replaceChildren();
-  document.querySelectorAll('.log-hour-select').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.domain === item.domain && button.dataset.hour === item.hour)));
+  $('logs-detail').hidden = false; $('logs-domain-title').textContent = item.domain;
+  $('logs-domain-count').textContent = '正在加载排行…'; $('logs-rankings').replaceChildren();
+  document.querySelectorAll('.log-domain-select').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.domain === item.domain)));
   try {
-    const params = new URLSearchParams({...logWindow, domain:item.domain, hour:item.hour});
-    const data = await api('access-logs/hour?' + params);
+    const params = new URLSearchParams({...logWindow, domain:item.domain});
+    const data = await api('access-logs/rankings?' + params);
     if (generation !== logDetailGeneration || !csrf) return;
-    $('logs-hour-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 404 ${data.notFound.toLocaleString('zh-CN')} 次`;
+    $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 404 ${data.notFound.toLocaleString('zh-CN')} 次`;
     const missingColumns = node('div', undefined, 'log-columns');
     missingColumns.append(logRanking('404 来源 IP · Top 10', data.notFoundIPs, 'IP'), logRanking('404 User Agent · Top 10', data.notFoundUserAgents, 'User Agent'));
     $('logs-rankings').append(
@@ -53,7 +53,7 @@ async function loadLogHour(item) {
       missingColumns
     );
     document.querySelectorAll('#logs-rankings details').forEach(el => { el.open = openSections.has(el.dataset.key); });
-  } catch (error) { if (generation === logDetailGeneration && csrf) { $('logs-hour-count').textContent = '排行加载失败，请点击该行重试。'; logError(error); } }
+  } catch (error) { if (generation === logDetailGeneration && csrf) { $('logs-domain-count').textContent = '排行加载失败，请点击该域名重试。'; logError(error); } }
 }
 async function refreshAccessLogs() {
   if (currentPage !== 'access-logs' || !csrf) return;
@@ -73,27 +73,25 @@ async function refreshAccessLogs() {
     if (status.error) logError(new Error('日志扫描异常：' + status.error));
     logWindow = {rangeHours:String(data.rangeHours), from:data.from, to:data.to};
     $('logs-range').value = String(data.rangeHours);
-    $('logs-window').textContent = `查询区间 ${logHourLabel(data.from)} — ${logHourLabel(data.to)}`;
+    $('logs-window').textContent = `查询区间 ${logTimeLabel(data.from)} — ${logTimeLabel(data.to)}`;
     const selectedDomain = $('logs-domain').value;
     $('logs-domain').replaceChildren(node('option', '全部域名'));
     $('logs-domain').firstChild.value = '';
     data.domains.forEach(domain => { const option = node('option', domain); option.value = domain; $('logs-domain').append(option); });
     if (selectedDomain && !data.domains.includes(selectedDomain)) { const option = node('option', selectedDomain); option.value = selectedDomain; $('logs-domain').append(option); }
     $('logs-domain').value = selectedDomain;
-    $('logs-hours').replaceChildren();
-    if (data.truncated) $('logs-hours').append(node('p', '当前仅显示最近 2000 条小时记录，请选择域名缩小范围。', 'muted'));
-    // Hour rows already include every request in the selected window; totals would count them again.
-    const items = data.hours;
-    if (!items.length) { empty('logs-hours', '所选时间区间和域名暂无访问记录。'); $('logs-detail').hidden = true; logSelection = null; return; }
-    $('logs-hours').append(logTable(['域名 / 时间（点击查看）', '访问量', '404'], items.map(item => {
-      const button = node('button', `${item.domain} · ${logHourLabel(item.hour)}`, 'log-hour-select quiet');
-      button.type = 'button'; button.dataset.domain = item.domain; button.dataset.hour = item.hour;
-      button.addEventListener('click', () => loadLogHour(item));
+    $('logs-domains').replaceChildren();
+    const items = data.totals;
+    if (!items.length) { empty('logs-domains', '所选时间区间和域名暂无访问记录。'); $('logs-detail').hidden = true; logSelection = null; return; }
+    $('logs-domains').append(logTable(['域名（点击查看排行）', '访问量', '404'], items.map(item => {
+      const button = node('button', item.domain, 'log-domain-select quiet');
+      button.type = 'button'; button.dataset.domain = item.domain;
+      button.addEventListener('click', () => loadLogDomain(item));
       return [button, item.visits.toLocaleString('zh-CN'), item.notFound.toLocaleString('zh-CN')];
     })));
-    const selected = items.find(item => item.domain === logSelection?.domain && item.hour === logSelection?.hour) || items[0];
-    await loadLogHour(selected);
-  } catch (error) { if (generation === logsGeneration && csrf) { $('logs-hours').replaceChildren(); $('logs-detail').hidden = true; logError(error); } }
+    const selected = items.find(item => item.domain === logSelection?.domain) || items[0];
+    await loadLogDomain(selected);
+  } catch (error) { if (generation === logsGeneration && csrf) { $('logs-domains').replaceChildren(); $('logs-detail').hidden = true; logError(error); } }
   finally { if (generation === logsGeneration) $('logs-refresh').disabled = false; }
 }
 $('logs-refresh').addEventListener('click', refreshAccessLogs);

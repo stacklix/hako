@@ -9,6 +9,7 @@ struct ContainersView: View {
     @State private var filter = ContainerFilter.all
     @State private var groupByProject = false
     @State private var environmentRevision = UUID()
+    @State private var autoCheckPending = true
     @ScaledMetric(relativeTo: .subheadline) private var filterRowHeight = 44
 
     private enum ContainerFilter: String, CaseIterable, Identifiable {
@@ -33,7 +34,7 @@ struct ContainersView: View {
         }
     }
     private var pollKey: String {
-        "\(visible && scenePhase == .active && !showingSettings)-\(store.connection?.id ?? "")-\(environmentRevision)"
+        "\(visible && scenePhase == .active && !showingSettings && !store.checkingUpdates)-\(store.connection?.id ?? "")-\(environmentRevision)"
     }
     private var projects: [String] {
         Array(Set(filtered.map { $0.project ?? "独立容器" })).sorted()
@@ -85,12 +86,26 @@ struct ContainersView: View {
         }
         .refreshable { await store.refresh(forceEnvironments: true) }
         .sheet(isPresented: $showingSettings) { ArcaneSettingsSheet(store: store) }
-        .onAppear { visible = true; store.loadConfiguration() }
-        .onDisappear { visible = false }
+        .onAppear { visible = true; autoCheckPending = true; store.loadConfiguration() }
+        .onDisappear { visible = false; store.cancelUpdateCheck() }
+        .onChange(of: store.connection?.id) { _, _ in autoCheckPending = true }
+        .onChange(of: showingSettings) { _, showing in
+            if showing { store.cancelUpdateCheck() }
+            else { autoCheckPending = true }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { autoCheckPending = true }
+            else { store.cancelUpdateCheck() }
+        }
         .task(id: pollKey) {
-            guard visible, scenePhase == .active, !showingSettings else { return }
+            guard visible, scenePhase == .active, !showingSettings, !store.checkingUpdates else { return }
             while !Task.isCancelled {
                 await store.refresh()
+                guard !Task.isCancelled else { return }
+                if autoCheckPending && store.error == nil && store.canCheckUpdates {
+                    autoCheckPending = false
+                    store.checkUpdates()
+                }
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
             }
         }
@@ -159,10 +174,24 @@ struct ContainersView: View {
     }
 
     private var containerListHeader: some View {
-        HStack {
-            Text("容器")
-            Spacer(minLength: 8)
-            composeCheckbox
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("容器")
+                Spacer(minLength: 8)
+                composeCheckbox
+            }
+            if store.checkingUpdates {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("正在检查镜像更新 \(store.updateCheckProgress)")
+                }.font(.footnote).padding(.bottom, 8)
+            }
+            if let message = store.updateCheckMessage {
+                Text(message).font(.footnote)
+                    .foregroundStyle(store.updateCheckFailed ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 8)
+            }
         }
         .font(.caption).foregroundStyle(.secondary)
         .frame(minHeight: 36)
@@ -202,6 +231,7 @@ struct ContainersView: View {
                 Picker("选择服务器", selection: Binding(get: { store.environmentID }, set: {
                     guard $0 != store.environmentID else { return }
                     store.selectEnvironment($0)
+                    autoCheckPending = true
                     environmentRevision = UUID()
                 })) {
                     ForEach(store.environments) { environment in
