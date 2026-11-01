@@ -39,8 +39,13 @@ struct ConsoleWebLoginView: View {
                 } else if let request {
                     Form {
                         Section("网页登录请求") {
+                            if request.isApplication {
+                                LabeledContent("应用", value: request.application ?? "")
+                                LabeledContent("应用地址", value: request.applicationOrigin ?? "").textSelection(.enabled)
+                                LabeledContent("操作", value: request.purpose == "bind" ? "绑定已有管理员账号" : "登录应用")
+                            }
                             LabeledContent("服务器", value: request.origin)
-                            LabeledContent("来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
+                            LabeledContent(request.isApplication ? "来源 IP（应用报告）" : "来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
                                 .textSelection(.enabled)
                             Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)

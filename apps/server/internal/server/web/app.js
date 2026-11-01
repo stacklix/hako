@@ -1,13 +1,14 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const currentPage = window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
+const currentPage = window.location.pathname === '/admin/applications' ? 'applications' : window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
 function showPage() {
   const agents = currentPage === 'agents';
   $('agents-page').hidden = !agents;
-  $('access-logs').hidden = agents;
+  $('access-logs').hidden = currentPage !== 'access-logs';
+  $('applications-page').hidden = currentPage !== 'applications';
   $('nav-' + currentPage).setAttribute('aria-current', 'page');
-  $('page-title').textContent = agents ? '设备代理' : '访问日志';
-  $('page-description').textContent = agents ? '管理设备、查看在线状态与调用设备能力。' : '查看 Caddy 访问统计、来源与请求排行。';
+  $('page-title').textContent = agents ? '设备代理' : currentPage === 'applications' ? '应用管理' : '访问日志';
+  $('page-description').textContent = agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
   document.title = $('page-title').textContent + ' · Hako 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
@@ -17,7 +18,7 @@ const messages = {admin_login_required:'管理登录已到期，请重新扫码�
 function notice(text, success = false) { $('notice').textContent = text; $('notice').className = success ? 'success' : ''; $('notice').hidden = !text; }
 Object.assign(messages, {invalid_log_filter:'请选择有效的时间区间、域名和整点小时。',access_logs_disabled:'访问日志统计尚未启用，请在服务器配置日志目录。'});
 function stopQr() { qrGeneration++; clearTimeout(qrTimer); clearInterval(qrCountdown); qrRequest = null; $('copy-login').disabled = true; }
-function loggedIn(yes) { $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); } else { csrf = ''; resetAccessLogs(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
+function loggedIn(yes) { $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;

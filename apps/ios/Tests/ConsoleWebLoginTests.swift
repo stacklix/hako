@@ -11,7 +11,9 @@ import Foundation
         let parsed = try ConsoleWebLoginPayload(valid, origin: origin)
         precondition(parsed.requestId == id)
         precondition(!ConsoleWebLoginPayload.validID(id + "\n"))
-        for invalid in [valid + "&request=" + id, valid + "&other=1", valid + "#fragment", valid.replacingOccurrences(of: "v=1", with: "v=2"),
+        let appPayload = try ConsoleWebLoginPayload(valid.replacingOccurrences(of: "v=1", with: "v=2"), origin: origin)
+        precondition(appPayload.isApplication)
+        for invalid in [valid + "&request=" + id, valid + "&other=1", valid + "#fragment", valid.replacingOccurrences(of: "v=1", with: "v=3"),
                         valid.replacingOccurrences(of: "web-login?", with: "admin-login?"),
                         valid.replacingOccurrences(of: "hako://", with: "https://"), valid.replacingOccurrences(of: "hako://", with: "hako://user@"), valid.replacingOccurrences(of: "web-login?", with: "web-login/path?"),
                         valid.replacingOccurrences(of: "request=" + id, with: "request=../bad")] {
@@ -25,6 +27,14 @@ import Foundation
         let future = ISO8601DateFormatter().string(from: .now.addingTimeInterval(80))
         let request = ConsoleWebLoginRequest(id: id, origin: origin, confirmationCode: "123456", browser: "Safari", requestedAt: "", expiresAt: future, nonce: id)
         try request.validate(origin: origin, requestId: id)
+        do { try request.validate(origin: origin, requestId: id, applicationRequest: true); fatalError("Missing application details accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
+        var appRequest = request
+        appRequest.application = "iLinker"; appRequest.applicationOrigin = "https://notify.example.com"; appRequest.purpose = "login"
+        try appRequest.validate(origin: origin, requestId: id, applicationRequest: true)
+        appRequest.applicationOrigin = "http://unsafe.example.com"
+        do { try appRequest.validate(origin: origin, requestId: id); fatalError("Unsafe application origin accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
         var fields: [String: String] = ["id": id, "origin": origin, "confirmationCode": "123456", "browser": "Chrome",
                                       "requestedAt": "", "expiresAt": future, "nonce": id, "clientIP": "2001:db8::12"]
         let withIP = try JSONDecoder().decode(ConsoleWebLoginRequest.self, from: JSONSerialization.data(withJSONObject: fields))

@@ -37,14 +37,16 @@ type loginChallenge struct {
 }
 
 type state struct {
-	Registry   *Registry                 `json:"registry,omitempty"`
-	Sessions   map[string]*session       `json:"sessions"`
-	Challenges map[string]loginChallenge `json:"challenges"`
-	Proofs     map[string]int64          `json:"proofs"`
+	Subject     string                      `json:"subject,omitempty"`
+	AuthClients map[string]AuthClientConfig `json:"authClients"`
+	Registry    *Registry                   `json:"registry,omitempty"`
+	Sessions    map[string]*session         `json:"sessions"`
+	Challenges  map[string]loginChallenge   `json:"challenges"`
+	Proofs      map[string]int64            `json:"proofs"`
 }
 
 func emptyState() state {
-	return state{Sessions: map[string]*session{}, Challenges: map[string]loginChallenge{}, Proofs: map[string]int64{}}
+	return state{Sessions: map[string]*session{}, Challenges: map[string]loginChallenge{}, Proofs: map[string]int64{}, AuthClients: map[string]AuthClientConfig{}}
 }
 
 // One encrypted, transactional state document is sufficient for a single-owner service.

@@ -15,11 +15,13 @@ struct ConsoleSession: Codable {
 }
 
 struct ConsoleRemoteSession: Decodable, Identifiable {
-    enum Kind: String, Decodable { case console, web }
+    enum Kind: String, Decodable { case console, web, application }
     let id: String
     let type: Kind
     let deviceId: String?
     let browser: String?
+    var application: String? = nil
+    var origin: String? = nil
     let createdAt: String
     let lastUsedAt: String?
     let current: Bool
@@ -311,7 +313,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         let data = try await authorized("/api/v1/auth/web-login/requests/\(parsed.requestId)")
         let result = try JSONDecoder().decode(ConsoleWebLoginRequest.self, from: data)
         guard serverURL == origin else { throw ConsoleWebLoginError.serverMismatch }
-        try result.validate(origin: origin, requestId: parsed.requestId)
+        try result.validate(origin: origin, requestId: parsed.requestId, applicationRequest: parsed.isApplication)
         return result
     }
 
@@ -403,7 +405,7 @@ private final class ConsoleTransportDelegate: NSObject, URLSessionTaskDelegate, 
         }
     }
     func revokeWebSession(_ session: ConsoleRemoteSession) async {
-        guard session.type == .web else { return }
+        guard session.type != .console else { return }
         await execute {
             _ = try await self.authorized("/api/v1/web-sessions/" + session.id, method: "DELETE")
             self.remoteSessions.removeAll { $0.id == session.id }

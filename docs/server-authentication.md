@@ -22,7 +22,32 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 
 网页会话使用独立 Cookie 与 CSRF，HTTPS 启用 Secure 与 `__Host-`；修改请求验证 origin。闲置 30 分钟、登录 12 小时或服务重启后过期，轮询不续期。每次访问还检查批准它的 Console 会话有效，Console 退出或撤销使关联网页会话失效。
 
-`/admin/api/` 保留 `session`、`logout`、`agents` 资源及通用能力调用；网页只展示 Agent，不展示管理客户端列表、数量、公钥或 Console 登录会话，`GET /admin/api/agents` 只返回 `agents,updatedAt`，不返回账号、`consoles` 或手机会话列表，账号由 `/admin/api/session` 返回；网页不能撤销手机会话，服务端不提供 `DELETE /admin/api/sessions/{id}` 路由。Console 会话管理仅接受 Console 的 DPoP 认证；Console 公钥只能在服务端配置文件修改。Agent 删除立即断开连接，完成挑战后的设备也会在注册在线前再次检查信任。手工移除 Console 并重启会清理其会话和登录挑战，重新添加不恢复旧会话。部署见 [服务端说明](../apps/server/README.md)。
+`/admin/api/` 保留 `session`、`logout`、`agents` 资源及通用能力调用；网页展示 Agent、访问日志及第三方应用，不展示管理客户端列表、数量、公钥或 Console 登录会话，`GET /admin/api/agents` 只返回 `agents,updatedAt`，不返回账号、`consoles` 或手机会话列表，账号由 `/admin/api/session` 返回；网页不能撤销手机会话，服务端不提供 `DELETE /admin/api/sessions/{id}` 路由。Console 会话管理仅接受 Console 的 DPoP 认证；Console 公钥只能在服务端配置文件修改。Agent 删除立即断开连接，完成挑战后的设备也会在注册在线前再次检查信任。手工移除 Console 并重启会清理其会话和登录挑战，重新添加不恢复旧会话。部署见 [服务端说明](../apps/server/README.md)。
+
+## 第三方应用扫码登录
+
+可信管理员登录 `/admin/applications` 创建应用，填写名称与实际 HTTPS 根地址。服务器自动生成唯一应用 ID 和随机 32 字节 Base64url SK，仅创建 / 轮换响应返回原始 SK 和可复制的 `HAKO_URL / HAKO_CLIENT_ID / HAKO_CLIENT_SECRET` 配置。应用记录、启用状态和 `base64url(SHA256(SK))`（无填充）持久保存在现有加密数据库，不使用 `server.json` 管理应用，不保存原始 SK；重启不丢失。
+
+管理接口为 `GET/POST /admin/api/applications`、`PATCH /admin/api/applications/{id}`（正文 `enabled`）、`POST /admin/api/applications/{id}/rotate`（正文 `{}`），全部要求原生 Hako 管理 Cookie，写请求还要求 CSRF 和同源。列表仅返回 `id,name,origin,enabled,createdAt`，不返回 SK 或其哈希。最多 64 个应用。停用 / 轮换立即清除该应用的待授权请求及授权会话；每次请求和授权还绑定创建时的密钥哈希，防止并发轮换恢复旧授权。重新启用不恢复旧授权。轮换后应用更新 SK 并重启；SK 遗失只能轮换，不能查看旧值。
+
+应用后端使用 HTTPS，携带 `Authorization: Bearer <clientSecret>` 和 `X-Hako-Client: <id>`。服务端常量时间校验密钥摘要，按客户端隔离请求和授权会话；带浏览器 Origin / Sec-Fetch-Site 的调用拒绝。应用凭证不能调用 Console 批准接口，不能获得 Hako 管理后台会话。禁止将应用密钥、私有兑换凭据或手机令牌放入二维码。
+
+| 应用后端接口 | 用途 |
+| --- | --- |
+| `POST /api/v1/app-login/requests` | 正文 `purpose`（`bind` / `login`）、`userAgent`、`clientIP`，创建 90 秒请求 |
+| `GET /api/v1/app-login/requests/{id}` | 查询 pending / scanned / approved / denied |
+| `DELETE /api/v1/app-login/requests/{id}` | 取消请求 |
+| `POST /api/v1/app-login/requests/{id}/complete` | 正文 `{}`，一次性兑换身份和登录授权 |
+| `GET /api/v1/app-login/session` | 校验当前应用授权，并更新其活动时间 |
+| `DELETE /api/v1/app-login/session` | 应用退出时撤销当前授权 |
+
+创建响应为 `id,redeemToken,confirmationCode,qrPayload,expiresAt,pollIntervalMs`。后续请求操作还必须携带 `X-Hako-Request: <redeemToken>`；这个私有凭据只留在应用后端，公开请求 ID 不可替代。二维码采用 `hako://web-login?v=2&server=<Hako origin>&request=<id>`。v1 继续用于 Hako 自身后台；旧手机端拒绝 v2，防止未展示应用详情就批准。
+
+手机继续使用 `/api/v1/auth/web-login/requests/{id}` 与带 nonce 的 DPoP 批准 / 拒绝。第三方详情额外包含 `application,applicationOrigin,purpose`，均取服务端登记或已验证请求；来源 IP 由应用后端报告，手机明确标注这一点。手机校验 v2 必须含有效 HTTPS 应用地址及用途，并显示应用、地址、绑定或登录操作和六位确认码。Hako 后台的浏览器 Cookie 接口不能领取第三方请求。
+
+兑换响应含 `issuer,subject,username,clientId,purpose`。`subject` 是加密数据库内持久化的随机账号 ID，用户名变化和 Console 换钥均不改变它；应用必须按 `(issuer,subject)` 绑定已有账号，不按用户名匹配。`bind` 不颁发会话；`login` 额外返回 `sessionToken,expiresAt`。应用将 sessionToken 加密保存在后端，校验 / 退出时通过 `X-Hako-Session` 携带，不可作为 Hako admin Cookie 使用。批准方退出 / 撤销、应用移除和 Hako 重启使授权失效。最长 12 小时、闲置 30 分钟；应用需定期校验并在失败时停止使用授权。
+
+Console 的会话列表新增 `type=application`，含 `application,origin,browser,createdAt,lastUsedAt` 和独立会话管理 ID，不返回 sessionToken。使用现有 `DELETE /api/v1/web-sessions/{id}` 可单独撤销，手机也提供移除操作。应用自行签发本地 Cookie，必须将其有效性与该授权关联；iLinker 至多缓存成功校验 60 秒，密码登录独立保留。配置示例和密钥生成步骤见 iLinker README 的 Hako 接入说明。
 
 ## Console 认证与会话
 

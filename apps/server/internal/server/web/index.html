@@ -2,11 +2,11 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script>
 </head>
 <body>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
+  <aside><a class="brand" href="/admin/"><span class="mark">H</span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -26,6 +26,11 @@
       <section id="agents" class="card"><div class="section-heading"><div><p class="eyebrow">AGENTS</p><h2>设备代理</h2></div><button class="primary" id="open-agent">＋ 登记 Agent</button></div><p class="muted">选择 Agent 声明的能力，填写 JSON 参数后发起请求。</p><div id="agent-list" class="device-list"></div></section>
       <p class="page-footer">Agent 公钥修改即时生效。状态每 10 秒刷新，能力仅在手动调用时执行。</p>
       </div>
+      <section id="applications-page" class="card" hidden>
+        <div class="section-heading"><div><p class="eyebrow">APPLICATIONS</p><h2>应用管理</h2></div><div class="device-actions"><button id="applications-refresh" class="quiet" type="button">刷新</button><button id="application-create" class="primary" type="button">＋ 创建应用</button></div></div>
+        <p class="muted">先创建应用，再将应用 ID 和 SK 配置到 iLinker。SK 仅在创建或轮换时显示一次。</p>
+        <div id="application-list" class="device-list"></div>
+      </section>
       <section id="access-logs" class="card" hidden>
         <div class="section-heading"><div><p class="eyebrow">CADDY ACCESS LOGS</p><h2>访问日志</h2></div><button id="logs-refresh" class="quiet" type="button">刷新统计 ↻</button></div>
         <p id="logs-status" class="muted" role="status" aria-live="polite">正在读取扫描状态…</p>
@@ -47,4 +52,6 @@
 <dialog id="register-dialog"><form id="register-form"><div class="section-heading"><h2 id="register-title">登记设备</h2><button type="button" id="close-register" class="quiet" aria-label="关闭">✕</button></div><label>设备名称<input name="name" required maxlength="100" placeholder="例如：我的设备"></label><label>公钥 PEM<textarea name="publicKeyPem" rows="7" required placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label><label class="file-label">或从公钥文件读取<input id="public-key-file" type="file" accept=".pem,.pub,.txt"></label><p id="key-hint" class="muted"></p><div id="register-error" class="form-error" role="alert" hidden></div><button type="submit" class="primary">登记公钥</button></form></dialog>
 <dialog id="key-dialog"><div class="section-heading"><h2>设备公钥</h2><button id="close-key" class="quiet" aria-label="关闭">✕</button></div><p id="key-name"></p><pre id="key-pem"></pre><button id="download-key" class="primary">下载公钥 PEM</button></dialog>
 <dialog id="request-dialog"><form id="request-form"><div class="section-heading"><h2>调用设备能力</h2><button type="button" id="close-request" class="quiet" aria-label="关闭">✕</button></div><p id="request-agent"></p><label>能力<select id="request-method" required></select></label><label>参数（JSON 对象）<textarea id="request-params" rows="5" required spellcheck="false">{}</textarea></label><p class="muted">填写该能力需要的 JSON 参数，无参数时使用 {}。请求超时后，请先确认结果再决定是否重试。</p><div id="request-error" class="form-error" role="alert" hidden></div><button id="execute-request" type="submit" class="primary">执行</button><pre id="request-result" aria-live="polite"></pre></form></dialog>
+<dialog id="application-dialog"><form id="application-form"><div class="section-heading"><h2>创建应用</h2><button type="button" id="application-close" class="quiet" aria-label="关闭">✕</button></div><label>应用名称<input id="application-name" required maxlength="80" value="iLinker" placeholder="例如：iLinker"></label><label>应用 HTTPS 地址<input id="application-origin" type="url" required placeholder="https://notify.example.com"></label><p class="muted">扫码确认时会向手机展示此名称与地址，请填写实际使用的应用地址。</p><p id="application-error" class="form-error" role="alert" hidden></p><button id="application-submit" type="submit" class="primary">创建应用并生成 SK</button></form></dialog>
+<dialog id="application-secret-dialog"><div class="section-heading"><h2>应用凭证</h2><button type="button" id="application-secret-close" class="quiet" aria-label="关闭">✕</button></div><p id="application-secret-title"></p><p class="muted">SK 仅显示这一次。请保存到 iLinker 的部署环境中；关闭后无法再次查看，可轮换生成新 SK。不要提交到仓库或发送到聊天。</p><label>iLinker 配置（包含 SK）<textarea id="application-configuration" readonly rows="5" spellcheck="false"></textarea></label><button type="button" id="application-secret-copy" class="primary">复制配置</button></dialog>
 </body></html>

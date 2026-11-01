@@ -92,6 +92,12 @@ func New(config Config) (*Server, error) {
 	s.trustedProxies = proxies
 	var registry *Registry
 	if err := st.update(func(value *state) error {
+		if value.Subject == "" {
+			value.Subject = randomToken()
+		}
+		if value.AuthClients == nil {
+			value.AuthClients = map[string]AuthClientConfig{}
+		}
 		var err error
 		agents := config.Agents
 		if value.Registry != nil {
@@ -125,6 +131,7 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	s.adminRoutes()
+	s.appLoginRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"ok": true}) })
 	s.mux.HandleFunc("POST /api/v1/auth/challenge", s.challenge)
 	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
@@ -374,13 +381,15 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionSummary struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	DeviceID   string `json:"deviceId,omitempty"`
-	Browser    string `json:"browser,omitempty"`
-	CreatedAt  string `json:"createdAt"`
-	LastUsedAt string `json:"lastUsedAt,omitempty"`
-	Current    bool   `json:"current"`
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	DeviceID    string `json:"deviceId,omitempty"`
+	Browser     string `json:"browser,omitempty"`
+	Application string `json:"application,omitempty"`
+	Origin      string `json:"origin,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+	LastUsedAt  string `json:"lastUsedAt,omitempty"`
+	Current     bool   `json:"current"`
 }
 
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +409,15 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 			delete(s.adminSessions, key)
 			continue
 		}
-		items = append(items, sessionSummary{ID: ss.ID, Type: "web", Browser: ss.Browser, CreatedAt: ss.Created.UTC().Format(time.RFC3339), LastUsedAt: ss.LastUsed.UTC().Format(time.RFC3339)})
+		kind := "web"
+		if ss.ClientID != "" {
+			if c, ok := s.authClient(ss.ClientID); !ok || c.SecretHash != ss.ClientKeyHash {
+				delete(s.adminSessions, key)
+				continue
+			}
+			kind = "application"
+		}
+		items = append(items, sessionSummary{ID: ss.ID, Type: kind, Application: ss.ClientName, Origin: ss.ClientOrigin, Browser: ss.Browser, CreatedAt: ss.Created.UTC().Format(time.RFC3339), LastUsedAt: ss.LastUsed.UTC().Format(time.RFC3339)})
 	}
 	s.adminMu.Unlock()
 	sort.Slice(items, func(i, j int) bool {

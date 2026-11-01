@@ -14,15 +14,17 @@ import (
 var adminFiles embed.FS
 
 type adminSession struct {
-	ID, Browser                      string
-	CSRF                             string
-	Created, LastUsed                time.Time
-	ApproverSessionID, ApproverThumb string
+	ClientID, ClientName, ClientOrigin string
+	ClientKeyHash                      string
+	ID, Browser                        string
+	CSRF                               string
+	Created, LastUsed                  time.Time
+	ApproverSessionID, ApproverThumb   string
 }
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/style.css": "style.css"} {
+	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css"} {
 		s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != path {
 				http.NotFound(w, r)
@@ -30,11 +32,12 @@ func (s *Server) adminRoutes() {
 			}
 			adminHeaders(w)
 			data, _ := adminFiles.ReadFile("web/" + file)
-			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[file])
+			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "applications.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[file])
 			_, _ = w.Write(data)
 		})
 	}
 	s.qrLoginRoutes()
+	s.applicationManagementRoutes()
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
 	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))
@@ -101,7 +104,7 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 		s.adminMu.Lock()
 		id := digest(cookie.Value)
 		ss, ok := s.adminSessions[id]
-		if !ok || adminExpired(ss, time.Now()) || !s.validAdminApprover(ss.ApproverSessionID, ss.ApproverThumb) {
+		if !ok || ss.ClientID != "" || adminExpired(ss, time.Now()) || !s.validAdminApprover(ss.ApproverSessionID, ss.ApproverThumb) {
 			delete(s.adminSessions, id)
 			s.adminMu.Unlock()
 			s.adminCookie(w, "", -1)

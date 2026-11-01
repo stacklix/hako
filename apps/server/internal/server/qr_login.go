@@ -16,10 +16,12 @@ import (
 const adminLoginLifetime = 90 * time.Second
 
 type adminLoginRequest struct {
-	BrowserHash, Code, Nonce, Browser, Status, ClientIP string
-	Created, Expires                                    time.Time
-	ApproverSessionID, ApproverThumb                    string
-	QR                                                  []byte
+	ClientID, ClientName, ClientOrigin, Purpose, RedeemHash string
+	ClientKeyHash                                           string
+	BrowserHash, Code, Nonce, Browser, Status, ClientIP     string
+	Created, Expires                                        time.Time
+	ApproverSessionID, ApproverThumb                        string
+	QR                                                      []byte
 }
 
 func (s *Server) qrLoginRoutes() {
@@ -143,7 +145,7 @@ func (s *Server) browserLogin(w http.ResponseWriter, r *http.Request) *adminLogi
 		return nil
 	}
 	req := s.adminLogins[digest(id)]
-	if req == nil || !equal(req.BrowserHash, digest(cookie.Value)) {
+	if req == nil || req.ClientID != "" || !equal(req.BrowserHash, digest(cookie.Value)) {
 		reject(w, 404, "login_request_not_found")
 		return nil
 	}
@@ -218,7 +220,13 @@ func (s *Server) completeAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cleanupAdminLogins(time.Now())
-	if len(s.adminSessions) >= 32 {
+	adminCount := 0
+	for _, ss := range s.adminSessions {
+		if ss.ClientID == "" {
+			adminCount++
+		}
+	}
+	if adminCount >= 32 {
 		reject(w, 429, "too_many_admin_sessions")
 		return
 	}
@@ -276,8 +284,12 @@ func (s *Server) inspectAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 409, "login_request_finished")
 		return
 	}
+	if !s.validApplicationRequest(req) {
+		reject(w, 410, "login_request_expired")
+		return
+	}
 	req.Status = "scanned"
-	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "clientIP": req.ClientIP, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce})
+	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "clientIP": req.ClientIP, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce, "application": req.ClientName, "applicationOrigin": req.ClientOrigin, "purpose": req.Purpose})
 }
 
 func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +317,10 @@ func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Status != "scanned" {
 		reject(w, 409, "login_request_finished")
+		return
+	}
+	if !s.validApplicationRequest(req) {
+		reject(w, 410, "login_request_expired")
 		return
 	}
 	if err != nil || !equal(p.Nonce, req.Nonce) || !equal(body.ConfirmationCode, req.Code) {
