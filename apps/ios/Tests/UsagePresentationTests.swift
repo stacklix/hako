@@ -71,6 +71,12 @@ import Foundation
         precondition(UsageChartRange.zoom(range, full: full, magnification: .nan, anchor: 0.5) == range)
         let short = date(0)...date(0.5)
         precondition(UsageChartRange.zoom(short, full: short, magnification: 10, anchor: 0.5) == short)
+        precondition(UsageChartRange.canPan(horizontal: 100, vertical: 10, zoomed: true))
+        precondition(UsageChartRange.canPan(horizontal: -100, vertical: 10, zoomed: true))
+        precondition(!UsageChartRange.canPan(horizontal: 10, vertical: 100, zoomed: true))
+        precondition(!UsageChartRange.canPan(horizontal: 10, vertical: -100, zoomed: true))
+        precondition(!UsageChartRange.canPan(horizontal: 100, vertical: 10, zoomed: false))
+        precondition(!UsageChartRange.canPan(horizontal: 0, vertical: 0, zoomed: true))
         print("Usage presentation tests passed: monthly and daily totals, 7/30/90/180-day averages, cross-year history, missing and zero days, window boundaries and sparse calendar availability")
     }
 }

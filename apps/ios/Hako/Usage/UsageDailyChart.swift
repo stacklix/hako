@@ -9,9 +9,8 @@ struct UsageDailyChart: View {
     @State private var selectedDay: String?
     @State private var cachedPoints: [UsageDailyValue] = []
     @State private var visibleRange: ClosedRange<Date>?
-    @GestureState private var pinchOrigin: ClosedRange<Date>?
-    @GestureState private var panOrigin: ClosedRange<Date>?
-    @GestureState private var scrubbing = false
+    @State private var pinchOrigin: ClosedRange<Date>?
+    @State private var panOrigin: ClosedRange<Date>?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var series: [UsageDailySeries] {
         movingAverages ? [.week, .month, .quarter, .halfYear] : [.daily]
@@ -71,6 +70,8 @@ struct UsageDailyChart: View {
         cachedPoints = points
         selectedDay = nil
         visibleRange = nil
+        pinchOrigin = nil
+        panOrigin = nil
     }
 
     private func chart(_ data: [UsageDailyValue]) -> some View {
@@ -113,68 +114,42 @@ struct UsageDailyChart: View {
         }
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                Rectangle().fill(.clear).contentShape(Rectangle())
-                    .gesture(
-                        LongPressGesture(minimumDuration: 0.2, maximumDistance: 12)
-                            .sequenced(before: DragGesture(minimumDistance: 0))
-                            .exclusively(before: SpatialTapGesture())
-                            .updating($scrubbing) { event, active, _ in
-                                if case .first(.second(true, _)) = event { active = true }
-                            }
-                            .onChanged { event in
-                                guard case .first(.second(true, let drag?)) = event,
-                                      let anchor = proxy.plotFrame else { return }
-                                let frame = geometry[anchor]
-                                guard frame.contains(drag.startLocation) else { return }
-                                select(at: drag.location, proxy: proxy, frame: frame, data: data, toggle: false)
-                            }
-                            .onEnded { event in
-                                guard let anchor = proxy.plotFrame else { return }
-                                let frame = geometry[anchor]
-                                switch event {
-                                case .first(.second(true, let drag?)):
-                                    guard frame.contains(drag.startLocation) else { return }
-                                    select(at: drag.location, proxy: proxy, frame: frame, data: data, toggle: false)
-                                case .second(let tap):
-                                    guard frame.contains(tap.location) else { selectedDay = nil; return }
-                                    select(at: tap.location, proxy: proxy, frame: frame, data: data, toggle: true)
-                                default: break
-                                }
-                            }
-                    )
-                    .simultaneousGesture(
-                        MagnifyGesture()
-                            .updating($pinchOrigin) { _, origin, _ in
-                                if origin == nil { origin = visibleRange ?? domain(data) }
-                            }
-                            .onChanged { event in
-                                guard let anchor = proxy.plotFrame else { return }
-                                let frame = geometry[anchor]
-                                guard frame.width > 0 else { return }
-                                let fraction = (event.startAnchor.x * geometry.size.width - frame.minX) / frame.width
-                                visibleRange = UsageChartRange.zoom(pinchOrigin ?? visibleRange ?? domain(data), full: domain(data),
-                                                                   magnification: event.magnification, anchor: fraction)
+                if let anchor = proxy.plotFrame {
+                    let frame = geometry[anchor]
+                    UsageChartInteraction(
+                        canPan: visibleRange.map { $0.upperBound.timeIntervalSince($0.lowerBound) < domain(data).upperBound.timeIntervalSince(domain(data).lowerBound) - 1 } ?? false,
+                        select: { point, toggle in
+                            select(at: CGPoint(x: point.x + frame.minX, y: point.y + frame.minY),
+                                   proxy: proxy, frame: frame, data: data, toggle: toggle)
+                        },
+                        zoom: { scale, fraction, phase in
+                            switch phase {
+                            case .began:
+                                pinchOrigin = visibleRange ?? domain(data)
+                                panOrigin = nil
+                            case .changed:
+                                guard let origin = pinchOrigin else { return }
+                                visibleRange = UsageChartRange.zoom(origin, full: domain(data), magnification: scale, anchor: fraction)
                                 selectedDay = nil
+                            case .ended, .cancelled, .failed: pinchOrigin = nil
+                            default: break
                             }
-                    )
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 12)
-                            .updating($panOrigin) { event, origin, _ in
-                                guard !scrubbing, pinchOrigin == nil,
-                                      abs(event.translation.width) > abs(event.translation.height) else { return }
-                                if origin == nil { origin = visibleRange ?? domain(data) }
-                            }
-                            .onChanged { event in
-                                guard !scrubbing, pinchOrigin == nil, visibleRange != nil,
-                                      abs(event.translation.width) > abs(event.translation.height),
-                                      let anchor = proxy.plotFrame else { return }
-                                let frame = geometry[anchor]
-                                guard frame.contains(event.startLocation), frame.width > 0 else { return }
-                                visibleRange = UsageChartRange.pan(panOrigin ?? visibleRange ?? domain(data), full: domain(data),
-                                                                  fraction: -event.translation.width / frame.width)
+                        },
+                        pan: { fraction, phase in
+                            switch phase {
+                            case .began: panOrigin = visibleRange ?? domain(data)
+                            case .changed:
+                                guard pinchOrigin == nil, let origin = panOrigin else { return }
+                                visibleRange = UsageChartRange.pan(origin, full: domain(data), fraction: fraction)
                                 selectedDay = nil
+                            case .ended, .cancelled, .failed: panOrigin = nil
+                            default: break
                             }
+                        }
                     )
+                    .frame(width: max(0, frame.width), height: max(0, frame.height))
+                    .position(x: frame.midX, y: frame.midY)
+                }
             }
         }
         .frame(height: dynamicTypeSize.isAccessibilitySize ? 250 : 180)

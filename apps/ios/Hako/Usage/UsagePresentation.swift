@@ -131,6 +131,9 @@ enum UsageDates {
 }
 
 enum UsageChartRange {
+    static func canPan(horizontal: Double, vertical: Double, zoomed: Bool) -> Bool {
+        zoomed && horizontal.isFinite && vertical.isFinite && abs(horizontal) > abs(vertical)
+    }
     static func clamped(_ range: ClosedRange<Date>, to full: ClosedRange<Date>) -> ClosedRange<Date> {
         let fullSpan = full.upperBound.timeIntervalSince(full.lowerBound)
         let span = min(fullSpan, max(min(86_400, fullSpan), range.upperBound.timeIntervalSince(range.lowerBound)))
