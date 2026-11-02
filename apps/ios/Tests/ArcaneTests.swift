@@ -225,7 +225,13 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(imageUpdates.forContainer("fallback").hasUpdate == true)
         precondition(client.redacted("example test-key output") == "example [已隐藏] output")
 
-        let delegate = ArcaneSessionDelegate()
+        let isolated = HTTPTransport.makeSession(requestTimeout: 30, resourceTimeout: 960)
+        precondition(isolated.configuration.httpShouldSetCookies == false)
+        precondition(isolated.configuration.httpCookieStorage == nil && isolated.configuration.urlCredentialStorage == nil)
+        precondition(isolated.configuration.urlCache == nil && isolated.configuration.requestCachePolicy == .reloadIgnoringLocalCacheData)
+        precondition(isolated.configuration.timeoutIntervalForRequest == 30 && isolated.configuration.timeoutIntervalForResource == 960)
+        isolated.invalidateAndCancel()
+        let delegate = NoRedirectDelegate()
         var refused = false
         let redirectTask = session.dataTask(with: URL(string: "https://arcane.example.com")!)
         delegate.urlSession(session, task: redirectTask, willPerformHTTPRedirection: HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil, headerFields: nil)!, newRequest: URLRequest(url: URL(string: "https://other.example.com")!)) { refused = $0 == nil }

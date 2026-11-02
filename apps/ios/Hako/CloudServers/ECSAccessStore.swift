@@ -14,10 +14,10 @@ import Combine
         ticket = UUID(); loadedContext = ""; lastHour = nil; summary = nil; rankings = nil; error = nil; busy = false
     }
 
-    func refresh(client: ConsoleClient, range: ECSAccessRange = .day,
+    func refresh(client: ECSAccessAPI, range: ECSAccessRange = .day,
                  domain: String = "", hour: String? = nil) async {
         let id = UUID(); ticket = id
-        let context = "\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)|\(range.rawValue)|\(domain)"
+        let context = "\(client.requestContext)|\(range.rawValue)|\(domain)"
         let selectionChanged = context == loadedContext && lastHour != hour
         lastHour = hour
         if context != loadedContext { summary = nil; rankings = nil; loadedContext = context }

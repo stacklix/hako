@@ -113,11 +113,6 @@ struct AppUsage: Codable, Hashable {
     }
 }
 
-@MainActor enum Database {
-    static let shared: Result<ModelContainer, Error> = Result { try ModelContainer(for: DailyUsage.self) }
-    static func context() throws -> ModelContext { ModelContext(try shared.get()) }
-}
-
 struct UsageDay {
     let interval: DateInterval
     let key: String

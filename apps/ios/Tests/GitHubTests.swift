@@ -27,7 +27,7 @@ final class MockProtocol: URLProtocol {
         }
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MockProtocol.self]
         let settings = GitHubSettings(repositoryURL: "https://github.com/owner/repo.git", branch: "data/main")
-        let client = GitHubClient(settings: settings, token: "test-token", session: URLSession(configuration: config))
+        let client = UsageGitHub(repository: GitHubService(settings: settings, tokenProvider: { "test-token" }, session: URLSession(configuration: config)))
         func row(_ day: String, _ seconds: String = "120") -> [String] {
             [day, "Asia/Shanghai", seconds] + Array(repeating: "", count: 10)
         }
@@ -169,7 +169,7 @@ final class MockProtocol: URLProtocol {
         // Discover remote-only years while ignoring files from other formats and subdirectories.
         MockProtocol.handler = { req in
             let payload = try body(req)
-            precondition((payload["query"] as! String).contains("query HakoYears"))
+            precondition((payload["query"] as! String).contains("query HakoDirectory"))
             let variables = payload["variables"] as! [String: String]
             precondition(variables["ref"] == "refs/heads/data/main" && variables["path"] == "data/screen-time")
             return try directory([
@@ -205,7 +205,7 @@ final class MockProtocol: URLProtocol {
         MockProtocol.handler = { req in
             let payload = try body(req), variables = payload["variables"] as! [String: Any]
             let query = payload["query"] as! String
-            if query.contains("query HakoYears") {
+            if query.contains("query HakoDirectory") {
                 return try directory(remoteFiles.keys.map { ["name": $0 + ".csv", "type": "blob"] })
             }
             if query.contains("query HakoSnapshot") {

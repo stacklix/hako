@@ -3,49 +3,15 @@ import CryptoKit
 import Security
 
 enum ConsoleKeychain {
-    static func query(_ account: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "me.stackli.hako.console",
-         kSecAttrAccount as String: account]
-    }
-    static func read(_ account: String) throws -> Data? {
-        var q = query(account)
-        q[kSecReturnData as String] = true
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw HakoError(message: "无法读取设备凭据（\(status)），请解锁手机后重试。")
-        }
-        return data
-    }
+    private static let storage = SecureStorage.namespace("me.stackli.hako.console")
+    static func read(_ account: String) throws -> Data? { try storage.read(account: account) }
     static func save(_ account: String, data: Data) throws {
-        let attributes: [String: Any] = [kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        var status = SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(query(account).merging(attributes) { _, new in new } as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw HakoError(message: "无法保存设备凭据（\(status)）。") }
+        try storage.save(data, account: account, accessibility: .whenUnlocked)
     }
-    static func delete(_ account: String) throws {
-        let status = SecItemDelete(query(account) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw HakoError(message: "无法清除设备凭据（\(status)）。") }
-    }
+    static func delete(_ account: String) throws { try storage.delete(account: account) }
     static func clearRetiredIdentityEntries() throws {
-        var q = query("")
-        q.removeValue(forKey: kSecAttrAccount as String)
-        q[kSecReturnAttributes as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitAll
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        if status == errSecItemNotFound { return }
-        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
-            throw HakoError(message: "无法清理旧设备凭据（\(status)）。")
-        }
-        for item in items {
-            guard let account = item[kSecAttrAccount as String], let name = account as? String,
-                  name != ConsoleIdentity.deviceAccount,
+        for name in try storage.accounts() {
+            guard name != ConsoleIdentity.deviceAccount,
                   name.hasPrefix("identity.") || name.hasPrefix("session.") else { continue }
             try delete(name)
         }

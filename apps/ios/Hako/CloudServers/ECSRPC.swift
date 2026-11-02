@@ -52,23 +52,17 @@ enum ECSRPC {
     }
 }
 
-private final class ECSNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
 final class ECSClient: @unchecked Sendable {
     let connection: ECSConnection
     let session: URLSession
+    private let ownsSession: Bool
 
     init(connection: ECSConnection, session: URLSession? = nil) throws {
         self.connection = try connection.validated()
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        config.urlCache = nil
-        self.session = session ?? URLSession(configuration: config, delegate: ECSNoRedirect(), delegateQueue: nil)
+        ownsSession = session == nil
+        self.session = session ?? HTTPTransport.makeSession()
     }
-    deinit { session.invalidateAndCancel() }
+    deinit { if ownsSession { session.invalidateAndCancel() } }
 
     func call(_ action: String, _ parameters: [String: String] = [:]) async throws -> [String: Any] {
         let started = Date.now

@@ -5,7 +5,7 @@ struct DeviceMonitorView: View {
         case addAgent, server
         var id: String { rawValue }
     }
-    @ObservedObject private var client = ConsoleClient.shared
+    @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: SheetRoute?
     @State private var isVisible = false
@@ -113,7 +113,7 @@ struct DeviceMetricsView: View {
     private enum DetailTab: String, CaseIterable { case query = "查询", action = "操作" }
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
-    @ObservedObject private var client = ConsoleClient.shared
+    @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var targetURL = ""
     @State private var selectedTab: DetailTab = .query

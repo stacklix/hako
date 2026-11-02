@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct AddAgentSheet: View {
-    @ObservedObject private var client = ConsoleClient.shared
+    @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var publicKeyPEM = ""

@@ -61,9 +61,19 @@
 
 本地运动数据及操作日志按仓库和分支隔离，采用原子写入；损坏数据不会被空记录覆盖。进入详情、编辑后返回运动列表不会重复触发入口同步。
 
-代码边界：主应用 `GitHubSettings.swift`、`GitHubTokenStore.swift`、`GitHub.swift` 管理通用配置、凭据和传输，`CSV.swift` 只做通用编解码。`Sports/` 独立负责运动数据、校验、合并、统计、持久化与界面；屏幕时间特有的 CSV 合并和 GitHub 适配位于 `Usage/`。两个子应用不互相引用业务代码。
+代码边界：主应用只负责应用入口、导航注册、全局设置与通用服务。`AppServices.gitHub()` 向子应用提供 `GitHubRepositoryAccess` 接口：读取目录快照、读取指定快照的文本文件及其最后提交时间、基于预期 HEAD 批量提交文件，并报告并发更新。`GitHubService.swift` 内部管理配置、Token、GraphQL 请求与响应、路径校验和提交签名验证；这些实现及凭据不向子应用暴露。子应用通过接口注入访问 GitHub，不读取主应用的配置或 Token，不创建网络客户端、不构造 GraphQL 请求、不扩展具体传输类。`CSV.swift` 只做通用编解码。
+
+`Sports/` 独立负责运动数据、校验、合并、统计、持久化与界面；`Usage/` 独立负责屏幕时间页面、数据模型、数据库、采集、快捷指令、CSV 合并和 GitHub 业务适配。年度文件命名、模块目录和冲突策略均由子应用决定，主应用服务不识别运动或屏幕时间业务类型。使用时间的数据库仅进入该子应用时初始化，损坏或打不开不会阻塞首页和其他子应用。模型类及默认数据库位置保持不变，以保留已有记录。两个子应用不互相引用业务代码。
+
+主应用通过 `AuthenticatedServerAccess` 提供登录状态、会话上下文、变更通知及已认证请求，`ConsoleClient` 仅实现身份与会话管理。设备监控的 `DeviceMonitorClient`、ECS 访问统计的 `ECSAccessAPI` 均注入该接口，不引用或扩展主应用具体客户端。业务路径、参数、解析和错误翻译留在各自子应用。缓存按服务器、账号和会话隔离，切换身份后的旧请求结果被丢弃。日志来源由调用方传入，主应用不解析子应用 URL。
+
+主应用的 `SecureStorage` 提供按 service 命名空间隔离的 `SecretStorage` 接口，统一负责 Keychain 读写、删除和账号枚举。原有 service/account、JSON 格式和可访问策略保持不变：GitHub Token 使用首次解锁后可访问，其余凭据使用解锁时可访问，均仅限本机。子应用保留自身凭据模型、校验、编码和错误提示，可注入内存存储验证业务，无需访问真实 Keychain。
+
+`HTTPTransport` 统一创建无 Cookie、缓存和自动凭据存储的临时网络会话，并拒绝重定向，避免凭据被转发。Arcane 保留较长操作超时；主应用服务器、GitHub 和 ECS 共用同一基础策略。阿里云签名、Arcane API 与终端协议仍由各子应用实现。客户端只负责释放自己创建的会话，不关闭外部注入的会话。`Tests/test_subapp_boundaries.py` 检查上述依赖边界及 CI 源文件路径；`CredentialStorageTests.swift` 验证凭据适配器的校验、规范化和失败时保留数据。
 
 运动核心和模拟 GitHub 测试分别位于 `Tests/SportsTests.swift`、`Tests/SportsGitHubTests.swift`，已接入 iOS CI；两项测试仅依赖主应用通用层和运动模块，不依赖屏幕时间的数据模型。
+
+`Tests/SportsRepositoryTests.swift` 仅链接主应用接口和运动业务代码，使用内存假服务测试，无需链接 GitHub 配置、Token 存储或具体网络实现；架构检查会阻止子应用重新直接访问凭据或具体传输类。
 
 ## 首先确认 Apple 的数据访问授权
 
@@ -138,9 +148,9 @@ xcodebuild -project Hako.xcodeproj -scheme Hako -sdk iphoneos -configuration Deb
 在 Apple Silicon Mac 上运行核心和模拟网络测试（无真实 GitHub 写入）：
 
 ```sh
-swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
 /tmp/hako-core-tests
-swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHub.swift Hako/Usage/UsageCSV.swift Hako/Usage/UsageGitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageCSV.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
 /tmp/hako-github-tests
 swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
 /tmp/hako-device-card-tests

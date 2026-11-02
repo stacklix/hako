@@ -22,7 +22,7 @@ private final class SportsMockProtocol: URLProtocol {
     static func main() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [SportsMockProtocol.self]
-        let client = GitHubClient(settings: GitHubSettings(repositoryURL: "https://github.com/owner/repo", branch: "master"), token: "test-token", session: URLSession(configuration: config))
+        let client = SportsGitHub(repository: GitHubService(settings: GitHubSettings(repositoryURL: "https://github.com/owner/repo", branch: "master"), tokenProvider: { "test-token" }, session: URLSession(configuration: config)))
         let record = SportsRecord(id: UUID(), date: "20260101", type: "Swimming", distance: 1.05, duration: 69)
         func json(_ object: [String: Any]) throws -> (Int, Data) { (200, try JSONSerialization.data(withJSONObject: object)) }
         func body(_ request: URLRequest) throws -> [String: Any] {
@@ -44,7 +44,7 @@ private final class SportsMockProtocol: URLProtocol {
         SportsMockProtocol.handler = { request in
             calls += 1
             let payload = try body(request), vars = payload["variables"] as! [String: Any]
-            if (payload["query"] as! String).contains("HakoYears") {
+            if (payload["query"] as! String).contains("HakoDirectory") {
                 precondition(vars["path"] as? String == "data/sports")
                 precondition(vars["ref"] as? String == "refs/heads/master")
                 return try json(["data": ["repository": ["ref": ["target": ["oid": "pinned-head", "file": ["object": ["entries": [["name": "2026.csv", "type": "blob"], ["name": "ignore.txt", "type": "blob"]]]]]]]]])
@@ -54,7 +54,7 @@ private final class SportsMockProtocol: URLProtocol {
             let path = vars["path"] as! String
             let file: Any = path.contains("2026") ? ["object": ["text": SportsCSV.encode([record]), "isBinary": false, "isTruncated": false]] : NSNull()
             // Also return history for a remotely deleted annual file.
-            return try json(["data": ["repository": ["object": ["file": file, "history": ["nodes": [["committedDate": "2026-01-02T03:04:05Z"]]]]]]])
+            return try json(["data": ["repository": ["object": ["oid": "pinned-head", "file": file, "history": ["nodes": [["committedDate": "2026-01-02T03:04:05Z"]]]]]]])
         }
         let remote = try await client.sportsPull(localYears: ["2025"])
         precondition(calls == 3 && remote.records == [record])

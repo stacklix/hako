@@ -4,7 +4,7 @@ struct CloudServersView: View {
     @StateObject private var store = ECSStore()
     @StateObject private var access = ECSAccessStore()
     @StateObject private var terminal = ECSTerminalData()
-    @ObservedObject private var console = ConsoleClient.shared
+    @ObservedObject private var console = ECSAccessAPI.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = ECSPage.overview
     @State private var settings = false
@@ -15,7 +15,7 @@ struct CloudServersView: View {
     @State private var selectedConnection: ECSNetworkConnectionSelection?
 
     private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)" }
-    private var accessTaskKey: String { taskKey + "|\(console.serverURL)|\(console.username)|\(console.authenticated)|\(console.logoutPending)" }
+    private var accessTaskKey: String { taskKey + "|\(console.requestContext)" }
     private var processRows: [ECSProcess] {
         (store.processes?.processes ?? []).filter { group == .all || $0.group == group }.sorted {
             let left = memorySort ? $0.memory : ($0.cpu ?? -1), right = memorySort ? $1.memory : ($1.cpu ?? -1)

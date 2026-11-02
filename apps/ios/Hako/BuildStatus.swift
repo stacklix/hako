@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 struct BuildStatusClient {
-    var session: URLSession = .shared
+    var session: URLSession = HTTPTransport.shared
     let token: String
 
     struct Run: Decodable {

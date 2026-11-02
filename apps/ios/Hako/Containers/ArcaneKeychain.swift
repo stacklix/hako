@@ -1,33 +1,23 @@
 import Foundation
-import Security
 
+// The child owns its schema and validation; the host owns secure persistence.
 enum ArcaneKeychain {
-    private static let query: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "me.stackli.hako.arcane",
-        kSecAttrAccount as String: "connection"
-    ]
+    private static let storage: any SecretStorage = SecureStorage.namespace("me.stackli.hako.arcane")
 
-    static func load() throws -> ArcaneConnection? {
-        var lookup = query
-        lookup[kSecReturnData as String] = true
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(lookup as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw ArcaneFailure(message: "无法读取 Arcane 凭据（\(status)），请解锁手机后重试。")
+    static func load(storage: any SecretStorage = Self.storage) throws -> ArcaneConnection? {
+        let data: Data?
+        do { data = try storage.read(account: "connection") }
+        catch let error as SecretStorageError {
+            throw ArcaneFailure(message: "无法读取 Arcane 凭据（\(error.status)），请解锁手机后重试。")
         }
-        return try JSONDecoder().decode(ArcaneConnection.self, from: data)
+        return try data.map { try JSONDecoder().decode(ArcaneConnection.self, from: $0) }
     }
 
-    static func save(_ connection: ArcaneConnection) throws {
-        let normalized = try connection.normalized()
-        let attributes: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(normalized),
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+    static func save(_ value: ArcaneConnection, storage: any SecretStorage = Self.storage) throws {
+        let data = try JSONEncoder().encode(value.normalized())
+        do { try storage.save(data, account: "connection", accessibility: .whenUnlocked) }
+        catch let error as SecretStorageError {
+            throw ArcaneFailure(message: "无法保存 Arcane 连接（\(error.status)），原配置已保留。")
         }
-        guard status == errSecSuccess else { throw ArcaneFailure(message: "无法保存 Arcane 连接（\(status)），原配置已保留。") }
     }
 }

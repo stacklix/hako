@@ -1,28 +1,23 @@
 import Foundation
-import Security
 
+// The child owns its schema and validation; the host owns secure persistence.
 enum ECSKeychain {
-    private static let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "me.stackli.hako.ecs", kSecAttrAccount as String: "connection"]
+    private static let storage: any SecretStorage = SecureStorage.namespace("me.stackli.hako.ecs")
 
-    static func load() throws -> ECSConnection? {
-        var lookup = query
-        lookup[kSecReturnData as String] = true
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(lookup as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
-            throw ECSFailure(message: "无法读取 ECS 凭据（\(status)），请解锁手机后重试。")
+    static func load(storage: any SecretStorage = Self.storage) throws -> ECSConnection? {
+        let data: Data?
+        do { data = try storage.read(account: "connection") }
+        catch let error as SecretStorageError {
+            throw ECSFailure(message: "无法读取 ECS 凭据（\(error.status)），请解锁手机后重试。")
         }
-        return try JSONDecoder().decode(ECSConnection.self, from: data)
+        return try data.map { try JSONDecoder().decode(ECSConnection.self, from: $0) }
     }
 
-    static func save(_ value: ECSConnection) throws {
-        let connection = try value.validated()
-        let attributes: [String: Any] = [kSecValueData as String: try JSONEncoder().encode(connection),
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
-        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound { status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil) }
-        guard status == errSecSuccess else { throw ECSFailure(message: "无法保存 ECS 连接（\(status)），原配置已保留。") }
+    static func save(_ value: ECSConnection, storage: any SecretStorage = Self.storage) throws {
+        let data = try JSONEncoder().encode(value.validated())
+        do { try storage.save(data, account: "connection", accessibility: .whenUnlocked) }
+        catch let error as SecretStorageError {
+            throw ECSFailure(message: "无法保存 ECS 连接（\(error.status)），原配置已保留。")
+        }
     }
 }

@@ -8,13 +8,11 @@ import CryptoKit
     @Published private(set) var message: String?
     private let file: URL
     private var storageReady = false
-    let settings: GitHubSettings
+    private let github: SportsGitHub
 
-    init(settings: GitHubSettings = .load(), directory: URL? = nil) {
-        self.settings = settings
-        let scope = settings.repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            .replacingOccurrences(of: #"\.git/?$"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "|" + settings.branch
+    init(repository: any GitHubRepositoryAccess = AppServices.gitHub(), directory: URL? = nil) {
+        self.github = SportsGitHub(repository: repository)
+        let scope = repository.storageScope
         let name = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
         let root = directory ?? URL.applicationSupportDirectory.appendingPathComponent("Hako/Sports", isDirectory: true)
         file = root.appendingPathComponent(name + ".json")
@@ -56,16 +54,12 @@ import CryptoKit
     }
 
     // Called on entry only. Local edits remain pending until the next entry.
-    func synchronize(client: GitHubClient? = nil) async {
+    func synchronize() async {
         guard !syncing, storageReady else { return }
         syncing = true
         message = nil
         defer { syncing = false }
         do {
-            try settings.validate()
-            let github: GitHubClient
-            if let client { github = client }
-            else { github = GitHubClient(settings: settings, token: try TokenStore.read()) }
             for attempt in 0..<3 {
                 try Task.checkCancellation()
                 let years = Set(state.records.map(\.year)).union(state.operations.flatMap(\.years))

@@ -46,7 +46,7 @@ struct ECSAccessFreshness: View {
 
 struct ECSAccessView: View {
     @StateObject private var store = ECSAccessStore()
-    @ObservedObject private var client = ConsoleClient.shared
+    @ObservedObject private var client = ECSAccessAPI.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var visible = false
     @State private var range = ECSAccessRange.day
@@ -58,7 +58,7 @@ struct ECSAccessView: View {
         Array(Set(store.summary?.domains ?? []).union(domain.isEmpty ? [] : [domain])).sorted()
     }
     private var selectedDomains: [String] { domain.isEmpty ? domains : [domain] }
-    private var sourceKey: String { "\(client.serverURL)|\(client.username)|\(client.authenticated)|\(client.logoutPending)" }
+    private var sourceKey: String { "\(client.requestContext)" }
     private var daily: Bool { range.rawValue >= 72 }
     private var taskKey: String {
         "\(visible && scenePhase == .active)|\(sourceKey)|\(range.rawValue)|\(domain)|\(hour ?? "")"

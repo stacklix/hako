@@ -3,15 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// Never forward an API key to a redirected host (including a login portal).
-final class ArcaneSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
 final class ArcaneClient: @unchecked Sendable {
     let connection: ArcaneConnection
     let session: URLSession
@@ -20,16 +11,7 @@ final class ArcaneClient: @unchecked Sendable {
     init(connection: ArcaneConnection, session: URLSession? = nil) throws {
         self.connection = try connection.normalized()
         ownsSession = session == nil
-        if let session { self.session = session }
-        else {
-            let config = URLSessionConfiguration.ephemeral
-            config.httpCookieStorage = nil
-            config.urlCache = nil
-            config.urlCredentialStorage = nil
-            config.timeoutIntervalForRequest = 30
-            config.timeoutIntervalForResource = 960
-            self.session = URLSession(configuration: config, delegate: ArcaneSessionDelegate(), delegateQueue: nil)
-        }
+        self.session = session ?? HTTPTransport.makeSession(requestTimeout: 30, resourceTimeout: 960)
     }
     deinit { if ownsSession { session.invalidateAndCancel() } }
 

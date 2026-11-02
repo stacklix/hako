@@ -23,7 +23,7 @@ import AppIntents
     private func execute(collect: Bool, requestAuthorization: Bool) async throws -> String {
         guard !busy else { throw HakoError(message: "另一个记录或同步任务正在运行，请稍后重试。") }
         busy = true; defer { busy = false }
-        let context = try Database.context()
+        let context = try UsageDatabase.context()
         var backfill = UsageBackfill.Result()
         if collect {
             try await ScreenTime.prepareAuthorization(requestAuthorization: requestAuthorization)
@@ -32,7 +32,7 @@ import AppIntents
             }
         }
         if !collect {
-            let client = GitHubClient(settings: .load(), token: try TokenStore.read())
+            let client = UsageGitHub(repository: AppServices.gitHub())
             let result = try await UsageSync.merge(context: context, client: client, directory: syncDirectory)
             let summary = "合并完成：共 \(result.days) 天。本地新增 \(result.inserted) 天，GitHub 新增 \(result.githubInserted) 天，本地更新 \(result.updated) 天。"
             return result.days == 0 ? summary + "双方均没有记录，请先获取app使用时间。" : summary
@@ -41,7 +41,7 @@ import AppIntents
         guard !all.isEmpty else {
             throw HakoError(message: backfill.failures.isEmpty ? "还没有本地记录，请先补齐最近7天。" : backfill.failures.joined(separator: "\n"))
         }
-        let client = GitHubClient(settings: .load(), token: try TokenStore.read())
+        let client = UsageGitHub(repository: AppServices.gitHub())
         let grouped = Dictionary(grouping: all) { String($0.day.prefix(4)) }
         for year in grouped.keys.sorted() {
             let records = grouped[year]!

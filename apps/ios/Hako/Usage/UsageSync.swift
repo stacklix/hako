@@ -9,7 +9,7 @@ import SwiftData
         var days = 0
     }
 
-    static func merge(context: ModelContext, client: GitHubClient, directory: String) async throws -> Result {
+    static func merge(context: ModelContext, client: UsageGitHub, directory: String) async throws -> Result {
         let local = try context.fetch(FetchDescriptor<DailyUsage>())
         let grouped = Dictionary(grouping: local) { String($0.day.prefix(4)) }
         let remoteYears = try await client.years(directory: directory)

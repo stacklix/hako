@@ -1,0 +1,41 @@
+import Foundation
+import Combine
+
+@MainActor final class ECSAccessAPI: ObservableObject {
+    static let shared = ECSAccessAPI()
+    private let authentication: any AuthenticatedServerAccess
+    private var subscription: AnyCancellable?
+    init(authentication: (any AuthenticatedServerAccess)? = nil) {
+        let authentication = authentication ?? AuthenticatedServerService.shared
+        self.authentication = authentication
+        subscription = authentication.changes.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+    var serverURL: String { authentication.serverURL }
+    var username: String { authentication.username }
+    var authenticated: Bool { authentication.authenticated }
+    var logoutPending: Bool { authentication.logoutPending }
+    var requestContext: String { authentication.requestContext }
+    func restore() async { await authentication.restore() }
+
+    // Read-only access statistics use the same registered identity and token
+    // refresh path as device management. Never reuse a response across accounts.
+    func accessLogs<T: Decodable>(_ type: T.Type, rankings: Bool = false,
+                                  range: ECSAccessRange = .day, domain: String = "",
+                                  from: String? = nil, to: String? = nil, hour: String? = nil) async throws -> T {
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先在“服务器与登录”中登录 Hako 服务器。") }
+        let context = requestContext
+        let path = ECSAccessQuery.path(rankings: rankings, range: range, domain: domain, from: from, to: to, hour: hour)
+        let data: Data
+        do { data = try await authentication.send(path, method: "GET", body: nil, logSource: .cloudServers) }
+        catch let error as ServerHTTPError where error.status == 404 || error.status == 405 {
+            guard context == requestContext else { throw CancellationError() }
+            throw HakoError(message: "服务端尚不支持 App 访问统计，请先更新 Hako 服务端。")
+        } catch {
+            guard context == requestContext else { throw CancellationError() }
+            throw error
+        }
+        try Task.checkCancellation()
+        guard context == requestContext, authenticated, !logoutPending else { throw CancellationError() }
+        return try JSONDecoder().decode(type, from: data)
+    }
+}
