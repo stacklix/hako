@@ -106,9 +106,10 @@ struct ECSAccessRecordsView: View {
             guard ticket == id else { return }
             if append { rows += result.rows } else { rows = result.rows }
             var fixedQuery = URLComponents(string: "?" + query)
-            fixedQuery?.queryItems = fixedQuery?.queryItems?.map {
+            let fixedItems = fixedQuery?.queryItems?.map {
                 URLQueryItem(name: $0.name, value: $0.name == "from" ? result.from : $0.name == "to" ? result.to : $0.value)
             }
+            fixedQuery?.queryItems = fixedItems
             submittedQuery = fixedQuery?.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B") ?? query
             page = result
         } catch is CancellationError { }
