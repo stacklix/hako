@@ -8,6 +8,7 @@ import CryptoKit
     @Published private(set) var message: String?
     private let file: URL
     private var storageReady = false
+    private var pulledSuccessfully = false
     private let github: SportsGitHub
 
     init(repository: any GitHubRepositoryAccess = AppServices.gitHub(), directory: URL? = nil) {
@@ -41,9 +42,16 @@ import CryptoKit
 
     func save(_ record: SportsRecord) throws {
         guard !syncing else { throw SportsError(message: "正在自动同步，请完成后再编辑。") }
+        guard pulledSuccessfully else { throw SportsError(message: "尚未成功拉取 GitHub 最新记录，请联网后重试保存。") }
         var value = state
         try value.save(record)
         try persist(value)
+    }
+
+    func saveAfterPull(_ record: SportsRecord) async throws {
+        try record.validate()
+        if !pulledSuccessfully { await synchronize() }
+        try save(record)
     }
 
     func delete(_ id: UUID) throws {
@@ -53,7 +61,8 @@ import CryptoKit
         try persist(value)
     }
 
-    // Called on entry only. Local edits remain pending until the next entry.
+    // Pull on entry, or retry before saving if entry pull failed.
+    // Local edits remain pending until the next entry.
     func synchronize() async {
         guard !syncing, storageReady else { return }
         syncing = true
@@ -68,6 +77,7 @@ import CryptoKit
                 let files = SportsMerge.files(local: merged, remote: remote)
                 // Keep a successful pull even when the subsequent upload fails.
                 try persist(merged)
+                pulledSuccessfully = true
                 if try await github.sportsCommit(files: files, head: remote.head) {
                     var confirmed = merged
                     confirmed.operations = []

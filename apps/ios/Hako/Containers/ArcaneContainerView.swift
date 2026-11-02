@@ -120,15 +120,17 @@ struct ArcaneContainerView: View {
                         } else {
                             Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary)
                         }
+                        Divider()
                         Button { confirming = .redeploy } label: {
                             Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
-                                .frame(maxWidth: .infinity)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .buttonStyle(ArcaneActionButtonStyle())
                         .disabled(!canAct || details.redeployDisabled == true)
+                        Divider()
                         Button(role: .destructive) { confirming = .delete } label: {
                             Label("删除容器", systemImage: "trash")
-                                .frame(maxWidth: .infinity)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                             .buttonStyle(ArcaneActionButtonStyle(destructive: true))
                             .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
@@ -347,7 +349,7 @@ struct ArcaneContainerView: View {
                 Button {
                     Task { await checkUpdate() }
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         if checkingUpdate { ProgressView() }
                         else { Image(systemName: "arrow.clockwise") }
                         Text(checkingUpdate ? "检查中…" : "检查更新")
@@ -357,7 +359,7 @@ struct ArcaneContainerView: View {
                 .disabled(checkingUpdate || store.operationRunning)
                 if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
                     Button { confirming = .redeploy } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
                             else { Image(systemName: "arrow.down.circle") }
                             Text(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启")

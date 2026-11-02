@@ -124,7 +124,7 @@ struct SportsView: View {
                     .foregroundStyle(SportsStyle.card)
                     .background(SportsStyle.text, in: RoundedRectangle(cornerRadius: 10))
             }
-            .buttonStyle(.plain).disabled(store.syncing)
+            .buttonStyle(.plain)
         }
     }
 
@@ -321,6 +321,7 @@ private struct SportsEditor: View {
     @State private var distance: String
     @State private var duration: String
     @State private var error: String?
+    @State private var saving = false
 
     private static var today: Date {
         let local = SportsRecord.formatter()
@@ -369,13 +370,13 @@ private struct SportsEditor: View {
                         Text("无距离的运动填 0；同一天可以记录多次运动。")
                             .font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
                         Button(action: save) {
-                            Text(record == nil ? "保存记录" : "保存修改")
+                            Text(saving ? "正在准备保存…" : store.syncing ? "等待同步完成…" : record == nil ? "保存记录" : "保存修改")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(SportsStyle.card).frame(maxWidth: .infinity, minHeight: 48)
                                 .background(SportsStyle.text, in: RoundedRectangle(cornerRadius: 10))
-                        }.buttonStyle(.plain).disabled(store.syncing)
+                        }.buttonStyle(.plain).disabled(store.syncing || saving)
                     }.sportsPanel(padding: 18)
-                    Text("先保存在本地，下次进入时自动同步。")
+                    Text("成功拉取 GitHub 最新记录后保存在本地，下次进入时自动同步。")
                         .font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
                 }.padding(20)
             }
@@ -386,8 +387,9 @@ private struct SportsEditor: View {
             .navigationTitle(record == nil ? "记录一次运动" : "编辑运动记录")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(saving) }
             }
+            .interactiveDismissDisabled(saving)
             .alert("无法保存记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好") { error = nil }
             } message: { Text(error ?? "") }
@@ -412,10 +414,16 @@ private struct SportsEditor: View {
         guard let distance = Double(distance.replacingOccurrences(of: ",", with: ".")), let duration = Int(duration) else {
             error = "请输入有效距离和正整数分钟时长。"; return
         }
-        do {
-            try store.save(SportsRecord(id: record?.id ?? UUID(), date: SportsRecord.formatter().string(from: date),
-                                        type: type, distance: distance, duration: duration))
-            dismiss()
-        } catch { self.error = error.localizedDescription }
+        guard !saving else { return }
+        let value = SportsRecord(id: record?.id ?? UUID(), date: SportsRecord.formatter().string(from: date),
+                                 type: type, distance: distance, duration: duration)
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                try await store.saveAfterPull(value)
+                dismiss()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }

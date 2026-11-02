@@ -1,5 +1,14 @@
 import SwiftUI
 
+private struct ArcaneActionLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            configuration.title
+        }
+    }
+}
+
 /// Color distinguishes actions from read-only content without adding visual weight.
 struct ArcaneActionButtonStyle: ButtonStyle {
     var destructive = false
@@ -8,6 +17,7 @@ struct ArcaneActionButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         let color: Color = isEnabled ? (destructive ? .red : .blue) : .secondary
         configuration.label
+            .labelStyle(ArcaneActionLabelStyle())
             .font(.subheadline.weight(.medium))
             .imageScale(.small)
             .padding(.horizontal, 14)
