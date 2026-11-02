@@ -22,6 +22,35 @@ struct ECSAccessRecords: Decodable {
     let hasMore: Bool
 }
 
+struct ECSAccessRecordFilter: Equatable {
+    enum Continuation { case ip, path }
+    var domain = ""
+    var ip = ""
+    var path = ""
+    var status = ""
+    var from = Date().addingTimeInterval(-86400)
+    var to = Date()
+
+    func query(offset: Int = 0) throws -> String {
+        try ECSAccessRecordsQuery.build(domain: domain, ip: ip, path: path, status: status, from: from, to: to) + "&offset=\(offset)"
+    }
+
+    func fixedWindow(_ result: ECSAccessRecords) -> Self {
+        var filter = self
+        filter.from = ECSAccessDate.parse(result.from) ?? from
+        filter.to = ECSAccessDate.parse(result.to) ?? to
+        return filter
+    }
+
+    func continuing(_ record: ECSAccessRecord, by kind: Continuation) -> Self {
+        var filter = self
+        filter.ip = kind == .ip ? record.ip : ""
+        filter.path = kind == .path ? record.path : ""
+        filter.status = ""
+        return filter
+    }
+}
+
 enum ECSAccessRecordsQuery {
     struct ValidationError: LocalizedError {
         let message: String

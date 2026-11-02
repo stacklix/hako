@@ -10,6 +10,17 @@ import Foundation
         precondition(recordItems.first { $0.name == "status" }?.value == "404")
         let records = try JSONDecoder().decode(ECSAccessRecords.self, from: Data(#"{"from":"2026-11-02T00:00:00Z","to":"2026-11-02T01:00:00Z","timezone":"UTC","totalRows":1,"requests":2,"offset":0,"limit":200,"hasMore":false,"rows":[{"time":"2026-11-02T00:00:00Z","domain":"a.test","status":404,"ip":"192.0.2.1","path":"/missing","userAgent":"UA","count":2}]}"#.utf8))
         precondition(records.rows[0].status == 404 && records.requests == 2 && records.totalRows == 1)
+        let filter = ECSAccessRecordFilter(domain: "a.test", ip: "old-ip", path: "/old", status: "403",
+                                           from: Date(timeIntervalSince1970: 1), to: Date(timeIntervalSince1970: 2))
+        let frozen = filter.fixedWindow(records)
+        let byIP = frozen.continuing(records.rows[0], by: .ip)
+        precondition(byIP.domain == filter.domain && byIP.ip == "192.0.2.1" && byIP.path.isEmpty && byIP.status.isEmpty)
+        let byPath = frozen.continuing(records.rows[0], by: .path)
+        precondition(byPath.domain == filter.domain && byPath.path == "/missing" && byPath.ip.isEmpty && byPath.status.isEmpty)
+        precondition(byPath.from == ECSAccessDate.parse(records.from) && byPath.to == ECSAccessDate.parse(records.to))
+        let pageItems = URLComponents(string: "?" + (try byPath.query(offset: 200)))!.queryItems!
+        precondition(pageItems.first { $0.name == "offset" }?.value == "200")
+
         for badStatus in ["4xx", "99", "600"] {
             precondition((try? ECSAccessRecordsQuery.build(domain: "", ip: "", path: "", status: badStatus, from: .now, to: .now)) == nil)
         }

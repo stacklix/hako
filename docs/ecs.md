@@ -80,4 +80,7 @@ Windows 不运行 iOS 编译、签名或安装；上述脚本测试不代表已�
 官方依据：[云助手](https://help.aliyun.com/zh/ecs/user-guide/overview-10)、[RunCommand](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-runcommand)、[基础监控](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-describeinstancemonitordata)、[终端会话](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-startterminalsession)、[AXT 官方参考](https://github.com/aliyun/cloud-assistant-starter/tree/master/src/main/resources/static/components/session)。
 
 
-访问统计顶部新增「按 IP / 路径 / 状态码查询记录」入口，默认带入当前域名和查询时间，选中小时后带入与当前窗口交集的小时范围。可以自定义起止时间，并组合精确查询 IP、路径和状态码，留空不限。结果按时间倒序展示实际状态码、域名、IP、URL 路径、User-Agent 和请求次数，每页 200 条，可持续加载全部匹配记录，无 Top 10 限制。结果限最近 7 天已入库的秒级聚合数据，不是原始日志全文；同一秒及其他维度完全相同的请求合并为一行计数。
+访问统计顶部新增「查询访问记录」入口，默认带入当前域名和查询时间，选中小时后带入与当前窗口交集的小时范围。可以自定义起止时间，并组合精确查询 IP、路径和状态码，留空不限。结果按时间倒序展示实际状态码、域名、IP、URL 路径、User-Agent 和请求次数，每页 200 条，可持续加载全部匹配记录，无 Top 10 限制。结果限最近 7 天已入库的秒级聚合数据，不是原始日志全文；同一秒及其他维度完全相同的请求合并为一行计数。
+
+
+访问记录查询按确认原型使用「查询访问记录 → 查询结果 → 记录详情」三段流程。查询范围包含域名、近 1 小时／近 24 小时／自定义时间；筛选条件支持 IP、路径和状态码组合，常用状态码菜单以外可输入任意 100–599 状态码。结果页显示请求总次数、记录数、固定时间范围和筛选标签；每条记录直接显示时间、次数、状态码、路径、IP 和域名。点击记录查看完整 UA 等信息，再按同一 IP 或同一路径继续查询时沿用域名和服务器实际返回的时间窗口，清除其他筛选条件。返回结果保留已加载记录，右上角「筛选」返回查询表单；分页失败保留已加载内容并可重试，账号切换会清空结果。

@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-@MainActor final class ECSAccessAPI: ObservableObject {
+@MainActor final class ECSAccessAPI: ObservableObject, ECSAccessRecordsReading {
     static let shared = ECSAccessAPI()
     private let authentication: any AuthenticatedServerAccess
     private var subscription: AnyCancellable?
