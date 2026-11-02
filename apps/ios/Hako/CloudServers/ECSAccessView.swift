@@ -8,10 +8,10 @@ struct ECSAccessMetrics: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 20) {
                 metric("HTTP 请求", value: visits.formatted())
-                metric("2xx", value: (visits - nonSuccess).formatted())
-                metric("非 2xx", value: nonSuccess.formatted())
+                metric("正常响应", value: (visits - nonSuccess).formatted())
+                metric("异常响应", value: nonSuccess.formatted())
             }
-            Text("非 2xx 占比 \(String(format: "%.1f%%", visits > 0 ? Double(nonSuccess) / Double(visits) * 100 : 0))")
+            Text("异常响应占比 \(String(format: "%.1f%%", visits > 0 ? Double(nonSuccess) / Double(visits) * 100 : 0))")
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(.vertical, 5)
     }
@@ -136,15 +136,15 @@ struct ECSAccessView: View {
             } else {
                 trendChart(value)
                 HStack(spacing: 16) {
-                    HStack(spacing: 4) { Image(systemName: "square.fill"); Text("2xx") }
+                    HStack(spacing: 4) { Image(systemName: "square.fill"); Text("正常响应") }
                         .foregroundStyle(.blue).accessibilityElement(children: .combine)
-                    HStack(spacing: 4) { Image(systemName: "line.diagonal"); Text("非 2xx") }
+                    HStack(spacing: 4) { Image(systemName: "line.diagonal"); Text("异常响应") }
                         .foregroundStyle(.orange).accessibilityElement(children: .combine)
                 }.font(.caption)
                 Text(!daily && !domain.isEmpty ? "轻触柱子查看数值；长按拖动可查看其他小时及排行。" : "轻触柱子查看对应时段的数值。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("时区：\(value.status.timezone) · 按日志请求计数，包含爬虫。最多保留 7 天。")
+            Text("时区：\(value.status.timezone) · 按日志请求计数，包含爬虫。最多保留 7 天。正常响应：101、200–299、304；其余为异常响应。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         if domain.isEmpty {
@@ -154,7 +154,7 @@ struct ECSAccessView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(row.domain).foregroundStyle(.primary)
-                                Text("2xx \(row.success.formatted()) · 非 2xx \(row.nonSuccess.formatted()) · \(String(format: "%.1f%%", row.nonSuccessRate))").font(.caption).foregroundStyle(.secondary)
+                                Text("正常响应 \(row.success.formatted()) · 异常响应 \(row.nonSuccess.formatted()) · \(String(format: "%.1f%%", row.nonSuccessRate))").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer(); Text(row.visits.formatted()).monospacedDigit().foregroundStyle(.primary)
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
@@ -182,15 +182,15 @@ struct ECSAccessView: View {
         }
         return Chart {
             ForEach(points) { point in
-                BarMark(x: .value("时间", point.time), y: .value("2xx", point.success))
+                BarMark(x: .value("时间", point.time), y: .value("正常响应", point.success))
                     .foregroundStyle(.blue)
                     .opacity(selectedPoint == nil || selectedPoint?.time == point.time ? 1 : 0.35)
                     .accessibilityLabel(Text(point.time, format: daily ? .dateTime.year().month().day() : .dateTime.month().day().hour()))
-                    .accessibilityValue("2xx \(point.success.formatted())，非 2xx \(point.nonSuccess.formatted())")
+                    .accessibilityValue("正常响应 \(point.success.formatted())，异常响应 \(point.nonSuccess.formatted())")
             }
             // Draw the complete line series above every bar, including later buckets.
             ForEach(points) { point in
-                LineMark(x: .value("时间", point.time), y: .value("非 2xx", point.nonSuccess))
+                LineMark(x: .value("时间", point.time), y: .value("异常响应", point.nonSuccess))
                     .foregroundStyle(.orange)
                     .zIndex(1)
             }
@@ -202,8 +202,8 @@ struct ECSAccessView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(point.time, format: daily ? .dateTime.year().month().day() : .dateTime.month().day().hour())
                                 .foregroundStyle(.secondary)
-                            Text("2xx \(point.success.formatted())").foregroundStyle(.blue)
-                            Text("非 2xx \(point.nonSuccess.formatted())").foregroundStyle(.orange)
+                            Text("正常响应 \(point.success.formatted())").foregroundStyle(.blue)
+                            Text("异常响应 \(point.nonSuccess.formatted())").foregroundStyle(.orange)
                         }
                         .font(.caption).monospacedDigit()
                         .padding(8)
@@ -246,14 +246,14 @@ struct ECSAccessView: View {
     }
 
     @ViewBuilder private func rankings(_ ranks: ECSAccessRankings) -> some View {
-        Section("2xx URL · Top 10") {
+        Section("正常响应 URL · Top 10") {
             ForEach(ranks.successURLs) { row in rankRow(row.value, row.count) }
             if ranks.successURLs.isEmpty { emptyRank }
         }
-        Section("非 2xx URL · Top 10") {
+        Section("异常响应 URL · Top 10") {
             ForEach(ranks.nonSuccessPages) { row in
                 NavigationLink {
-                    ECSAccessRankDetails(title: "非 2xx URL", value: row.value, count: row.count,
+                    ECSAccessRankDetails(title: "异常响应 URL", value: row.value, count: row.count,
                                          domain: ranks.domain, from: ranks.from, to: ranks.to, hour: ranks.hour,
                                          relatedTitle: "来源 IP", related: row.ips, agents: row.userAgents)
                 } label: { rankRow(row.value, row.count) }
@@ -269,7 +269,7 @@ struct ECSAccessView: View {
                 NavigationLink {
                     ECSAccessRankDetails(title: "来源 IP", value: row.value, count: row.count,
                                          domain: ranks.domain, from: ranks.from, to: ranks.to, hour: ranks.hour,
-                                         relatedTitle: "2xx URL", related: row.successURLs, agents: row.userAgents,
+                                         relatedTitle: "正常响应 URL", related: row.successURLs, agents: row.userAgents,
                                          nonSuccessURLs: row.nonSuccessURLs)
                 } label: { rankRow(row.value, row.count) }
             }
@@ -312,7 +312,7 @@ private struct ECSAccessRankDetails: View {
                 if let date = ECSAccessDate.parse(hour) { Text("仅查看 \(date.formatted()) 起的一个小时").font(.caption).foregroundStyle(.secondary) }
             }
             rows(relatedTitle + " · Top 10", related)
-            if let nonSuccessURLs { rows("非 2xx URL · Top 10", nonSuccessURLs) }
+            if let nonSuccessURLs { rows("异常响应 URL · Top 10", nonSuccessURLs) }
             rows("User-Agent · Top 10", agents)
         }.navigationTitle(title).textSelection(.enabled)
     }

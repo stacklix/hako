@@ -139,7 +139,7 @@ struct ECSAccessStatus: Decodable {
     func delayed(at now: Date = .now) -> Bool { health(at: now) == .delayed }
 }
 
-// The server returns explicit 2xx and non-2xx counts and rankings.
+// The server returns normal (101, 200–299, 304) and abnormal response counts and rankings.
 struct ECSAccessCount: Decodable, Identifiable {
     let domain: String
     let hour: String?

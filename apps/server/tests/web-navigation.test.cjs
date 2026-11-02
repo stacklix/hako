@@ -76,10 +76,10 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   assert.equal(request.searchParams.has('hour'), false);
   function text(node) { return [node.textContent || '', ...node.children.map(text)].join(' '); }
   assert.equal(document.getElementById('logs-domain-title').textContent, 'a.test');
-  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 2xx 10 次 · 非 2xx 2 次/);
+  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 正常响应 10 次 · 异常响应 2 次/);
   const rankings = text(document.getElementById('logs-rankings'));
-  assert.match(rankings, /2xx URL · Top 10/);
-  assert.match(rankings, /非 2xx URL · Top 10/);
+  assert.match(rankings, /正常响应 URL · Top 10/);
+  assert.match(rankings, /异常响应 URL · Top 10/);
   assert.doesNotMatch(rankings, /4xx/);
   assert.match(rankings, /\/domain-success/);
   assert.match(rankings, /\/ok/);

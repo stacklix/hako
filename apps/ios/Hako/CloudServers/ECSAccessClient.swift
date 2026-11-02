@@ -46,7 +46,7 @@ import Combine
         guard context == requestContext, authenticated, !logoutPending else { throw CancellationError() }
         do { return try JSONDecoder().decode(type, from: data) }
         catch DecodingError.keyNotFound(let key, _) where ["success", "nonSuccess", "successURLs", "nonSuccessPages", "nonSuccessURLs"].contains(key.stringValue) {
-            throw HakoError(message: "服务端尚不支持 2xx／非 2xx 统计，请先更新 Hako 服务端。")
+            throw HakoError(message: "服务端尚不支持正常响应／异常响应统计，请先更新 Hako 服务端。")
         }
     }
 }

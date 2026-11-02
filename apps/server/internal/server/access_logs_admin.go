@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Partition every valid HTTP response into 2xx and non-2xx.
+// Normal responses are 101, 200–299 and 304; every other valid status is abnormal.
 type accessHour struct {
 	Domain     string `json:"domain"`
 	Hour       string `json:"hour"`
@@ -128,7 +128,7 @@ func (s *Server) adminAccessLogs(w http.ResponseWriter, r *http.Request) {
 		predicate += " AND domain=?"
 		args = append(args, domain)
 	}
-	query := `SELECT domain,hour,SUM(count),SUM(CASE WHEN (status<200 OR status>=300) THEN count ELSE 0 END) FROM access_counts WHERE ` + predicate + " GROUP BY domain,hour ORDER BY hour DESC,domain LIMIT 2001"
+	query := `SELECT domain,hour,SUM(count),SUM(CASE WHEN (status NOT IN (101,304) AND (status<200 OR status>=300)) THEN count ELSE 0 END) FROM access_counts WHERE ` + predicate + " GROUP BY domain,hour ORDER BY hour DESC,domain LIMIT 2001"
 	rows, err = tx.QueryContext(ctx, query, args...)
 	hours := []accessHour{}
 	if err == nil {
@@ -156,7 +156,7 @@ func (s *Server) adminAccessLogs(w http.ResponseWriter, r *http.Request) {
 		hours = hours[:2000]
 	}
 	totals := []accessHour{}
-	rows, err = tx.QueryContext(ctx, `SELECT domain,SUM(count),SUM(CASE WHEN (status<200 OR status>=300) THEN count ELSE 0 END) FROM access_counts WHERE `+predicate+" GROUP BY domain ORDER BY domain", args...)
+	rows, err = tx.QueryContext(ctx, `SELECT domain,SUM(count),SUM(CASE WHEN (status NOT IN (101,304) AND (status<200 OR status>=300)) THEN count ELSE 0 END) FROM access_counts WHERE `+predicate+" GROUP BY domain ORDER BY domain", args...)
 	if err == nil {
 		for rows.Next() {
 			var v accessHour
@@ -243,8 +243,8 @@ func (s *Server) adminAccessLogDetails(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(count),0),COALESCE(SUM(CASE WHEN (status<200 OR status>=300) THEN count ELSE 0 END),0) FROM access_counts WHERE `+where, args...).Scan(&visits, &nonSuccess)
-	// Keep every nested ranking within the selected domain/hour and its IP or non-2xx page.
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(count),0),COALESCE(SUM(CASE WHEN (status NOT IN (101,304) AND (status<200 OR status>=300)) THEN count ELSE 0 END),0) FROM access_counts WHERE `+where, args...).Scan(&visits, &nonSuccess)
+	// Keep every nested ranking within the selected domain/hour and its IP or abnormal-response page.
 	rank := func(column, predicate string, params ...any) []accessRank {
 		if err != nil {
 			return []accessRank{}
@@ -260,19 +260,19 @@ func (s *Server) adminAccessLogDetails(w http.ResponseWriter, r *http.Request, r
 			accessRank:     ip,
 			UserAgents:     rank("ua", where+" AND ip=?", params...),
 			URLs:           rank("url", where+" AND ip=?", params...),
-			SuccessURLs:    rank("url", where+" AND ip=? AND status>=200 AND status<300", params...),
-			NonSuccessURLs: rank("url", where+" AND ip=? AND (status<200 OR status>=300)", params...),
+			SuccessURLs:    rank("url", where+" AND ip=? AND (status IN (101,304) OR (status>=200 AND status<300))", params...),
+			NonSuccessURLs: rank("url", where+" AND ip=? AND (status NOT IN (101,304) AND (status<200 OR status>=300))", params...),
 		})
 	}
 	urls := rank("url", where, args...)
-	successURLs := rank("url", where+" AND status>=200 AND status<300", args...)
+	successURLs := rank("url", where+" AND (status IN (101,304) OR (status>=200 AND status<300))", args...)
 	missing := []accessPage{}
-	for _, page := range rank("url", where+" AND (status<200 OR status>=300)", args...) {
+	for _, page := range rank("url", where+" AND (status NOT IN (101,304) AND (status<200 OR status>=300))", args...) {
 		params := append(append([]any{}, args...), page.Value)
-		missing = append(missing, accessPage{page, rank("ip", where+" AND (status<200 OR status>=300) AND url=?", params...), rank("ua", where+" AND (status<200 OR status>=300) AND url=?", params...)})
+		missing = append(missing, accessPage{page, rank("ip", where+" AND (status NOT IN (101,304) AND (status<200 OR status>=300)) AND url=?", params...), rank("ua", where+" AND (status NOT IN (101,304) AND (status<200 OR status>=300)) AND url=?", params...)})
 	}
-	nonSuccessIPs := rank("ip", where+" AND (status<200 OR status>=300)", args...)
-	nonSuccessUserAgents := rank("ua", where+" AND (status<200 OR status>=300)", args...)
+	nonSuccessIPs := rank("ip", where+" AND (status NOT IN (101,304) AND (status<200 OR status>=300))", args...)
+	nonSuccessUserAgents := rank("ua", where+" AND (status NOT IN (101,304) AND (status<200 OR status>=300))", args...)
 	if err != nil {
 		reject(w, 503, "storage_unavailable")
 		return
