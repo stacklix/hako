@@ -24,6 +24,8 @@ struct UsageView: View {
     @State private var year = Calendar(identifier: .gregorian).component(.year, from: .now)
     @State private var busy = false
     @State private var collecting = false
+    @State private var collectionQueued = false
+    @State private var mergedSuccessfully = false
     @State private var entered = false
     @State private var message: String?
     @State private var syncedAt: Date?
@@ -39,6 +41,7 @@ struct UsageView: View {
     }
     private var selectedRecord: DailyUsage? { records.first { $0.day == activeDay } }
     private var syncStatus: String {
+        if collectionQueued { return "正在合并 · 随后采集同步" }
         if busy { return collecting ? "正在采集并同步…" : "正在自动合并…" }
         if message != nil { return "自动同步失败" }
         if let syncedAt { return "已自动同步 " + syncedAt.formatted(date: .omitted, time: .shortened) }
@@ -114,7 +117,7 @@ struct UsageView: View {
                     .foregroundStyle(UsageStyle.card)
                     .background(UsageStyle.text, in: RoundedRectangle(cornerRadius: 10))
             }
-            .buttonStyle(.plain).disabled(busy)
+            .buttonStyle(.plain)
             .accessibilityLabel("获取 app 使用时间并同步")
             .accessibilityHint("采集最近七个完整自然日，不含今天，并同步到 GitHub。")
         }
@@ -259,12 +262,27 @@ struct UsageView: View {
             .usagePanel()
     }
     private func execute(collect: Bool) {
-        guard !busy else { return }
+        if busy {
+            // One tap during entry merge schedules collection; repeated taps coalesce.
+            if collect && !collecting { collectionQueued = true }
+            return
+        }
         busy = true; collecting = collect; message = nil
         Task {
-            defer { busy = false }
+            defer {
+                busy = false
+                if collectionQueued {
+                    collectionQueued = false
+                    execute(collect: true)
+                }
+            }
             do {
+                if collect && !mergedSuccessfully {
+                    _ = try await Recorder.shared.run(collect: false)
+                    mergedSuccessfully = true
+                }
                 _ = try await Recorder.shared.run(collect: collect, requestAuthorization: collect)
+                if !collect { mergedSuccessfully = true }
                 syncedAt = .now
             } catch { message = "同步失败：\(error.localizedDescription)\n本地记录已保留，下次进入时自动重试。" }
         }
@@ -274,6 +292,7 @@ struct UsageView: View {
 private struct UsageAppTitle: View {
     let app: AppUsage
     let installed: Application?
+    @ScaledMetric(relativeTo: .body) private var iconSize = 28.0
     var body: some View {
         let name = [installed?.localizedDisplayName, app.name]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -281,8 +300,23 @@ private struct UsageAppTitle: View {
         let token = installed?.token ?? app.applicationTokenData.flatMap {
             try? JSONDecoder().decode(ApplicationToken.self, from: $0)
         }
-        if let name { Text(name) }
-        else if let token { Label(token).labelStyle(.titleOnly) }
-        else { Text(app.bundleID) }
+        HStack(spacing: 8) {
+            Group {
+                if let token {
+                    Label(token).labelStyle(.iconOnly)
+                } else {
+                    Image(systemName: "app.fill")
+                        .font(.system(size: iconSize * 0.65))
+                        .foregroundStyle(UsageStyle.muted)
+                }
+            }
+            .frame(width: iconSize, height: iconSize)
+            .background(UsageStyle.background, in: RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .accessibilityHidden(true)
+            if let name { Text(name) }
+            else if let token { Label(token).labelStyle(.titleOnly) }
+            else { Text(app.bundleID) }
+        }
     }
 }
