@@ -28,17 +28,16 @@ struct ArcaneCommandsSection: View {
                 Section("常见操作") { ForEach(ArcaneCommandDefinition.caddy) { operation($0) } }
             }
             Section("容器终端") {
-                VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 16) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("交互式终端").font(.subheadline.weight(.semibold))
                         Text("进入当前容器的 Shell").font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer(minLength: 0)
                     Button { openTerminal(details, connectionID) } label: {
-                        Label("进入终端", systemImage: "terminal")
-                            .frame(maxWidth: .infinity, minHeight: 30)
+                        Label("打开", systemImage: "terminal")
                     }
-                    .buttonStyle(.bordered).tint(.primary)
-                    .buttonBorderShape(.roundedRectangle(radius: 10))
+                    .buttonStyle(ArcaneActionButtonStyle())
                     .disabled(details.state?.status != "running" || store.terminalSessionID != nil || store.operationRunning || store.fileSaveRunning || store.pending != nil)
                 }.arcaneRowSeparators()
             }
@@ -55,10 +54,9 @@ struct ArcaneCommandsSection: View {
                 if customs.isEmpty { Text("尚未添加自定义操作").foregroundStyle(.secondary).arcaneRowSeparators() }
                 Button { editing = ArcaneCommandDefinition() } label: {
                     Label("添加自定义操作", systemImage: "plus")
-                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered).tint(.primary)
-                .buttonBorderShape(.roundedRectangle(radius: 10))
+                .buttonStyle(ArcaneActionButtonStyle())
                 .accessibilityLabel("添加容器操作")
                 .arcaneRowSeparators()
             } header: {
