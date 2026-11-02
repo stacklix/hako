@@ -19,6 +19,7 @@ struct ArcaneContainerView: View {
     @State private var tab = "overview"
     @State private var revision = UUID()
     @State private var confirming: ArcaneAction?
+    @State private var confirmingImageUpdate = false
     @State private var exportedLog: URL?
     @State private var exporting = false
     @State private var fileEditor: ArcaneFileEditorSession?
@@ -64,7 +65,12 @@ struct ArcaneContainerView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(details?.displayName ?? container.name).font(.title2.bold())
                     Label(environment.displayName, systemImage: "server.rack").font(.caption).foregroundStyle(.secondary)
-                    statusBadge
+                    HStack(spacing: 12) {
+                        statusBadge
+                        if update?.hasUpdate == true, update?.error?.isEmpty != false {
+                            updateBadge
+                        }
+                    }
                     if let operationStatus { ArcaneOperationBadge(status: operationStatus) }
                 }.padding(.vertical, 6).arcaneRowSeparators()
             }.listSectionSpacing(12)
@@ -138,7 +144,33 @@ struct ArcaneContainerView: View {
         let title = isAbnormal ? "\(text) · 不健康或异常" : text
         let icon = isAbnormal ? "exclamationmark.circle.fill" : isRunning ? "circle.fill" : "stop.circle"
         let color: Color = isAbnormal ? .red : isRunning ? .green : .gray
-        return Label(title, systemImage: icon).font(.caption).foregroundStyle(color)
+        return HStack(spacing: 2) {
+            Image(systemName: icon)
+            Text(title)
+        }.font(.caption).foregroundStyle(color)
+            .accessibilityElement(children: .combine)
+    }
+
+    private var updateBadge: some View {
+        Button { confirmingImageUpdate = true } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down.circle")
+                Text("有更新")
+            }.font(.caption).foregroundStyle(.orange)
+        }
+        .buttonStyle(.borderless)
+        .disabled(!canAct)
+        .accessibilityLabel("有更新，更新并重启容器")
+        .alert("更新并重启？", isPresented: $confirmingImageUpdate) {
+            Button("更新并重启") {
+                guard canAct, let details, update?.hasUpdate == true,
+                      update?.error?.isEmpty != false else { return }
+                store.start(.redeploy, container: details, environment: environment)
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(verbatim: confirmationMessage(.redeploy))
+        }
     }
 
     var body: some View {
