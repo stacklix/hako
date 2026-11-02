@@ -87,14 +87,7 @@ struct ArcaneContainerView: View {
                 ArcaneCommandsSection(store: store, environment: environment, details: details) { snapshot, connectionID in
                     terminalSession = ArcaneTerminalPresentation(details: snapshot, connectionID: connectionID)
                 }
-                Section("镜像更新") {
-                    Button {
-                        Task { await checkUpdate() }
-                    } label: {
-                        HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
-                    }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
-                    LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
-                }
+                imageUpdateSection(details)
             }
             if tab == "commands", let details, !managementProtected {
                 Section {
@@ -216,6 +209,7 @@ struct ArcaneContainerView: View {
             }
             Section("容器信息") {
                 LabeledContent("镜像", value: details.image ?? "未知").arcaneRowSeparators()
+                imageVersionRows
                 LabeledContent("容器 ID", value: String(details.id.prefix(12))).arcaneRowSeparators()
                 if let project = details.project { LabeledContent("Compose 项目", value: project).arcaneRowSeparators() }
                 if let policy = details.hostConfig?.restartPolicy { LabeledContent("重启策略", value: policy).arcaneRowSeparators() }
@@ -229,32 +223,6 @@ struct ArcaneContainerView: View {
                     }.arcaneRowSeparators()
                 }
             }.font(.subheadline).textSelection(.enabled)
-            Section("镜像更新") {
-                LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
-                if let current = update?.currentVersion, !current.isEmpty { LabeledContent("当前版本", value: current).arcaneRowSeparators() }
-                if let latest = update?.latestVersion, !latest.isEmpty { LabeledContent("可用版本", value: latest).arcaneRowSeparators() }
-                if let digest = update?.latestDigest, !digest.isEmpty {
-                    LabeledContent("可用摘要", value: String(digest.prefix(24)) + "…").arcaneRowSeparators()
-                }
-                if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
-                if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
-                if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
-                    Button {
-                        store.start(.redeploy, container: details, environment: environment)
-                    } label: {
-                        HStack {
-                            Label(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启", systemImage: "arrow.down.circle")
-                            Spacer()
-                            if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
-                        }
-                    }
-                    .disabled(!canAct)
-                    .accessibilityHint("拉取最新镜像并重新部署，服务会短暂中断")
-                    .arcaneRowSeparators()
-                    Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
-                        .font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
-                }
-            }
             Section("配置") {
                 DisclosureGroup("挂载与存储（\(details.mounts?.count ?? 0)）") {
                     ForEach(Array((details.mounts ?? []).enumerated()), id: \.offset) { _, mount in
@@ -286,6 +254,7 @@ struct ArcaneContainerView: View {
         } else {
             Section("容器信息") {
                 LabeledContent("镜像", value: container.image ?? "未知").arcaneRowSeparators()
+                imageVersionRows
                 LabeledContent("容器 ID", value: String(containerID.prefix(12))).arcaneRowSeparators()
                 if let project = container.project { LabeledContent("Compose 项目", value: project).arcaneRowSeparators() }
                 Text(data.error == nil ? "正在读取完整配置…" : "完整配置读取失败，请下拉重试。")
@@ -293,6 +262,52 @@ struct ArcaneContainerView: View {
             }.font(.subheadline).textSelection(.enabled)
         }
     }
+
+    private var imageVersionRows: some View {
+        Group {
+            LabeledContent("版本号", value: update?.currentVersion.flatMap { $0.isEmpty ? nil : $0 } ?? "未知").arcaneRowSeparators()
+            LabeledContent("摘要") {
+                Text(update?.currentDigest.flatMap { $0.isEmpty ? nil : $0 } ?? "未知")
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }.arcaneRowSeparators()
+        }
+    }
+
+    private func imageUpdateSection(_ details: ArcaneContainerDetails) -> some View {
+        Section("镜像更新") {
+            Button {
+                Task { await checkUpdate() }
+            } label: {
+                HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
+            }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
+            LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
+            if let current = update?.currentVersion, !current.isEmpty { LabeledContent("当前版本", value: current).arcaneRowSeparators() }
+            if let latest = update?.latestVersion, !latest.isEmpty { LabeledContent("可用版本", value: latest).arcaneRowSeparators() }
+            if let digest = update?.latestDigest, !digest.isEmpty {
+                LabeledContent("可用摘要", value: String(digest.prefix(24)) + "…").arcaneRowSeparators()
+            }
+            if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
+            if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
+            if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
+                Button {
+                    store.start(.redeploy, container: details, environment: environment)
+                } label: {
+                    HStack {
+                        Label(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启", systemImage: "arrow.down.circle")
+                        Spacer()
+                        if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
+                    }
+                }
+                .disabled(!canAct)
+                .accessibilityHint("拉取最新镜像并重新部署，服务会短暂中断")
+                .arcaneRowSeparators()
+                Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
+                    .font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
+            }
+        }
+    }
+
 
     private var resourceSection: some View {
         Section("资源") {

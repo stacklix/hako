@@ -180,18 +180,6 @@ struct ContainersView: View {
                 Spacer(minLength: 8)
                 composeCheckbox
             }
-            if store.checkingUpdates {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("正在检查镜像更新 \(store.updateCheckProgress)")
-                }.font(.footnote).padding(.bottom, 8)
-            }
-            if let message = store.updateCheckMessage {
-                Text(message).font(.footnote)
-                    .foregroundStyle(store.updateCheckFailed ? Color.orange : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 8)
-            }
         }
         .font(.caption).foregroundStyle(.secondary)
         .frame(minHeight: 36)
