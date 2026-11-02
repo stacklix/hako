@@ -174,9 +174,7 @@ private struct ArcaneProjectFileDocument: View {
     @StateObject private var data = ArcaneFileEditorData()
     @State private var pending: FileAction?
     @State private var readID = UUID()
-    @State private var pasteError: String?
     private enum FileAction { case close, reload }
-    private var canEdit: Bool { data.editable && !data.loading && !data.saving }
     private var canSave: Bool {
         data.canSave && store.fileSaveBlockReason == nil
     }
@@ -201,9 +199,6 @@ private struct ArcaneProjectFileDocument: View {
         } message: { _ in
             Text(data.uncertain ? "保存结果尚未确认。请重新读取服务器文件核对，或放弃当前草稿。" : "保存后继续，或放弃当前文件的修改。")
         }
-        .alert("无法覆盖粘贴", isPresented: Binding(get: { pasteError != nil }, set: { if !$0 { pasteError = nil } })) {
-            Button("好", role: .cancel) { pasteError = nil }
-        } message: { Text(pasteError ?? "") }
         .task(id: readID) { await load() }
         .interactiveDismissDisabled(data.dirty || data.saving || data.uncertain)
     }
@@ -219,11 +214,6 @@ private struct ArcaneProjectFileDocument: View {
         ToolbarItem(placement: .confirmationAction) {
             ArcaneFileSaveButton(data: data, store: store) { Task { await save() } }
         }
-        ToolbarItem(placement: .bottomBar) { Spacer() }
-        ToolbarItem(placement: .bottomBar) {
-            Button { pasteOverFile() } label: { Text("覆盖粘贴") }
-                .disabled(!canEdit).accessibilityHint("用剪贴板文本替换整个文件的草稿，点击保存后写入服务器")
-        }.sharedBackgroundVisibility(.visible)
     }
     private var messages: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -241,14 +231,6 @@ private struct ArcaneProjectFileDocument: View {
             }
             if let notice = data.notice { Text(notice).foregroundStyle(.green) }
         }.font(.footnote).padding(.horizontal, 16).padding(.vertical, 8)
-    }
-    private func pasteOverFile() {
-        guard canEdit else { return }
-        guard let contents = UIPasteboard.general.string else {
-            pasteError = "剪贴板中没有可读取的文本，文件内容未改变。"
-            return
-        }
-        data.draft = contents
     }
     private func request(_ action: FileAction) {
         if data.dirty || data.uncertain { pending = action } else { perform(action) }

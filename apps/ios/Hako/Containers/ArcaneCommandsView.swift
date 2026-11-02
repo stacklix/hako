@@ -204,11 +204,11 @@ private struct ArcaneCommandRunView: View {
                     catch { self.error = error.localizedDescription }
                 } label: {
                     HStack(spacing: 8) {
-                        if result?.running == true { ProgressView() }
+                        if result?.running == true { ProgressView().tint(.blue) }
                         else { Image(systemName: "play.fill") }
                         Text(result?.running == true ? "执行中…" : "执行命令")
-                    }.frame(maxWidth: .infinity).padding(.vertical, 6)
-                }.buttonStyle(.borderedProminent).tint(.primary).disabled(blocked).arcaneRowSeparators()
+                    }.frame(maxWidth: .infinity)
+                }.buttonStyle(ArcaneActionButtonStyle()).disabled(blocked).arcaneRowSeparators()
                 if let result, result.running {
                     Text(result.phase).font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
                 }

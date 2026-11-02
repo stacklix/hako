@@ -274,15 +274,13 @@ struct ArcaneTerminalScreen: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        Button("Ctrl") { data.control.toggle(); (data.terminal as? HakoTerminalView)?.showKeyboard() }
-                            .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
-                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
-                            Button(key) { data.key(key) }.accessibilityLabel(key)
-                        }
-                    }.buttonStyle(.bordered).controlSize(.small).padding(10).disabled(!data.connected)
-                }.background(.bar)
+                ArcaneShortcutBar {
+                    Button("Ctrl") { data.control.toggle(); (data.terminal as? HakoTerminalView)?.showKeyboard() }
+                        .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
+                    ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
+                        Button(key) { data.key(key) }.accessibilityLabel(key)
+                    }
+                }.disabled(!data.connected)
             }
             .navigationTitle(details.displayName + " · 终端").navigationBarTitleDisplayMode(.inline)
             .toolbar {
