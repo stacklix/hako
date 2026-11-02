@@ -1,11 +1,30 @@
 import SwiftUI
 import UIKit
 
-struct ArcaneCodeEditor: UIViewRepresentable {
+struct ArcaneCodeEditor: View {
     @Binding var text: String
     let filename: String
     let editable: Bool
     let saving: Bool
+    @StateObject private var keyboard = ArcaneEditorKeyboardState()
+
+    var body: some View {
+        ArcaneCodeEditorTextView(text: $text, filename: filename, editable: editable, saving: saving, keyboard: keyboard)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if keyboard.focused {
+                    ArcaneEditorKeyboardKeys(state: keyboard, editingEnabled: editable && !saving)
+                }
+            }
+    }
+}
+
+private struct ArcaneCodeEditorTextView: UIViewRepresentable {
+    @Binding var text: String
+    let filename: String
+    let editable: Bool
+    let saving: Bool
+
+    let keyboard: ArcaneEditorKeyboardState
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -29,7 +48,7 @@ struct ArcaneCodeEditor: UIViewRepresentable {
         view.keyboardDismissMode = .onDrag
         view.alwaysBounceVertical = true
         view.allowsEditingTextAttributes = false
-        view.inputAccessoryView = ArcaneEditorKeyboardBar(textView: view)
+        keyboard.textView = view
         let dismissTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.dismissKeyboardOnTap))
         dismissTap.cancelsTouchesInView = false
         dismissTap.delegate = context.coordinator
@@ -47,7 +66,6 @@ struct ArcaneCodeEditor: UIViewRepresentable {
         defer { coordinator.applying = false }
         view.isEditable = editable && !saving
         view.isSelectable = !saving
-        (view.inputAccessoryView as? ArcaneEditorKeyboardBar)?.setEditingEnabled(editable && !saving)
         view.accessibilityLabel = "文件内容：\(filename)"
         if changedFont, view.markedTextRange == nil { view.font = Self.font }
         if view.text != text {
@@ -83,12 +101,12 @@ struct ArcaneCodeEditor: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
-        var parent: ArcaneCodeEditor
+        var parent: ArcaneCodeEditorTextView
         var work: Task<Void, Never>?
         var highlightedText: String?
         var applying = false
         weak var editor: ArcaneCodeEditorView?
-        init(_ parent: ArcaneCodeEditor) { self.parent = parent }
+        init(_ parent: ArcaneCodeEditorTextView) { self.parent = parent }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             // Only consume dismissal taps while editing; a tap with the keyboard hidden still focuses normally.
@@ -103,6 +121,9 @@ struct ArcaneCodeEditor: UIViewRepresentable {
             // Run after UIKit's caret gesture so it cannot immediately reopen the keyboard.
             DispatchQueue.main.async { [weak view] in _ = view?.resignFirstResponder() }
         }
+
+        func textViewDidBeginEditing(_ view: UITextView) { parent.keyboard.focused = true }
+        func textViewDidEndEditing(_ view: UITextView) { parent.keyboard.focused = false }
 
         func textViewDidChange(_ view: UITextView) {
             guard !applying else { return }
@@ -146,14 +167,14 @@ struct ArcaneCodeEditor: UIViewRepresentable {
             let range = NSRange(location: 0, length: storage.length)
             // Attribute-only edits preserve the text, selection and UIKit undo history.
             storage.beginEditing()
-            storage.addAttributes([.font: ArcaneCodeEditor.font, .foregroundColor: UIColor.label], range: range)
+            storage.addAttributes([.font: ArcaneCodeEditorTextView.font, .foregroundColor: UIColor.label], range: range)
             for token in tokens {
                 storage.addAttribute(.foregroundColor, value: color(token.kind), range: token.range)
             }
             storage.endEditing()
             view.selectedRange = selection
             view.setContentOffset(offset, animated: false)
-            view.typingAttributes = [.font: ArcaneCodeEditor.font, .foregroundColor: UIColor.label]
+            view.typingAttributes = [.font: ArcaneCodeEditorTextView.font, .foregroundColor: UIColor.label]
             editor?.redrawLineNumbers()
         }
 
@@ -170,7 +191,7 @@ struct ArcaneCodeEditor: UIViewRepresentable {
     }
 }
 
-// Shared by the editor accessory and terminal so system button styling stays identical.
+// Shared by the editor and terminal, both placed in a zero-spacing bottom safe-area inset.
 struct ArcaneShortcutBar<Content: View>: View {
     private let content: () -> Content
 
@@ -180,14 +201,43 @@ struct ArcaneShortcutBar<Content: View>: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) { content() }
                 .buttonStyle(.bordered).controlSize(.small).tint(.primary).padding(10)
-        }.background(.bar)
+                .background(ArcaneShortcutScrollAxisLock())
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.bar)
+    }
+}
+
+// Apply to the closest scroll view inside the shortcut bar, never the editor's scroll view.
+private struct ArcaneShortcutScrollAxisLock: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) { view.lockAxis() }
+
+    final class Probe: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            lockAxis()
+        }
+        func lockAxis() {
+            DispatchQueue.main.async { [weak self] in
+                var ancestor = self?.superview
+                while let view = ancestor {
+                    if let scroll = view as? UIScrollView {
+                        scroll.alwaysBounceVertical = false
+                        scroll.isDirectionalLockEnabled = true
+                        return
+                    }
+                    ancestor = view.superview
+                }
+            }
+        }
     }
 }
 
 private final class ArcaneEditorKeyboardState: ObservableObject {
     weak var textView: UITextView?
-    @Published var editingEnabled = true
-    init(textView: UITextView) { self.textView = textView }
+    @Published var focused = false
 
     func perform(_ action: String) {
         guard let view = textView else { return }
@@ -195,7 +245,7 @@ private final class ArcaneEditorKeyboardState: ObservableObject {
             UIPasteboard.general.string = view.text ?? ""
             return
         }
-        guard editingEnabled, view.isEditable else { return }
+        guard view.isEditable else { return }
         switch action {
         case "Tab":
             view.unmarkText()
@@ -219,6 +269,7 @@ private final class ArcaneEditorKeyboardState: ObservableObject {
 
 private struct ArcaneEditorKeyboardKeys: View {
     @ObservedObject var state: ArcaneEditorKeyboardState
+    let editingEnabled: Bool
     private let keys = ["Tab", "撤销", "重做", "粘贴", "覆盖粘贴", "复制全部"]
     var body: some View {
         ArcaneShortcutBar {
@@ -226,37 +277,9 @@ private struct ArcaneEditorKeyboardKeys: View {
                 Button(key) { state.perform(key) }
                     .accessibilityLabel(key == "Tab" ? "插入制表符" : key)
                     .accessibilityHint(key == "覆盖粘贴" ? "用剪贴板文本替换全部文件内容，可撤销" : "")
-                    .disabled(key != "复制全部" && !state.editingEnabled)
+                    .disabled(key != "复制全部" && !editingEnabled)
             }
         }
-    }
-}
-
-private final class ArcaneEditorKeyboardBar: UIInputView {
-    private let state: ArcaneEditorKeyboardState
-    private let host: UIHostingController<ArcaneEditorKeyboardKeys>
-
-    init(textView: UITextView) {
-        let state = ArcaneEditorKeyboardState(textView: textView)
-        self.state = state
-        host = UIHostingController(rootView: ArcaneEditorKeyboardKeys(state: state))
-        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 52), inputViewStyle: .keyboard)
-        allowsSelfSizing = true
-        host.sizingOptions = .intrinsicContentSize
-        host.view.backgroundColor = .clear
-        host.view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(host.view)
-        NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func setEditingEnabled(_ enabled: Bool) {
-        if state.editingEnabled != enabled { state.editingEnabled = enabled }
     }
 }
 
@@ -303,7 +326,7 @@ final class ArcaneCodeEditorView: UIView {
     }
 
     func updateGutterFont() {
-        let font = ArcaneCodeEditor.font
+        let font = ArcaneCodeEditorTextView.font
         gutter.font = font
         let digits = String(gutter.lines.starts.count).count
         let width = ceil((String(repeating: "8", count: digits) as NSString).size(withAttributes: [.font: font]).width) + 16
@@ -317,7 +340,7 @@ final class ArcaneCodeEditorView: UIView {
 private final class ArcaneLineNumberGutter: UIView {
     weak var textView: UITextView?
     var lines = ArcaneEditorLines("")
-    var font = ArcaneCodeEditor.font
+    var font = ArcaneCodeEditorTextView.font
 
     override func draw(_ rect: CGRect) {
         guard let textView else { return }
