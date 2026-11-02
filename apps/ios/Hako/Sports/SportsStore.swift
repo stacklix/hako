@@ -26,7 +26,7 @@ import CryptoKit
         } catch { message = "本地运动数据无法读取，已停止同步以保留原文件：\(error.localizedDescription)" }
     }
 
-    var records: [SportsRecord] { state.records.sorted { $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date > $1.date } }
+    var records: [SportsRecord] { state.records.sorted { $0.date == $1.date ? $0.id.uuidString < $1.id.uuidString : $0.date < $1.date } }
     var pendingCount: Int { state.operations.count }
     func isPending(_ id: UUID) -> Bool { state.operations.contains { $0.recordID == id } }
 

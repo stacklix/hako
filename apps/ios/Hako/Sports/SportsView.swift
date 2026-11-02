@@ -170,7 +170,7 @@ struct SportsView: View {
                         .font(.caption).foregroundStyle(SportsStyle.muted).frame(minHeight: 44)
                 }.buttonStyle(.plain)
             }
-            recordList(Array(records.prefix(3)))
+            recordList(Array(records.suffix(3).reversed()))
         }.sportsPanel()
     }
 
