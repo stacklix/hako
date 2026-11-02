@@ -47,6 +47,24 @@
 
 日志存储 / 脱敏 / 并发与保留上限测试位于 `Tests/HakoLogTests.swift`，阿里云拒绝地址仍记录日志并清理会话的回归测试位于 `Tests/ECSTests.swift`；均接入 GitHub Actions 的 Swift 验证步骤。
 
+## 运动记录
+
+主页的「运动记录」是独立子应用，支持手动新增、查看详情、编辑和确认删除。同一天可有多条记录，日期显示为 `yyyyMMdd`；类型使用英文，预设为 `Swimming`、`Biking`、`Hiking`、`Walking`，从 GitHub 导入的其他英文类型也会保留。距离单位为 km，时长为正整数分钟，无距离运动填 0。
+
+概览展示运动次数、距离、时长、天数，以及每月次数和时长图。趋势页展示次数、时长、距离的月度及年内累计图，均按类型区分；图表可选择月份查看数值。记录列表按年和月筛选。
+
+运动模块沿用主应用的 GitHub 仓库、分支与 Token，不设置独立配置或手动同步按钮。数据按年保存至 `data/sports/<年份>.csv`，表头为 `id,date,type,distance_km,duration_minutes`。`id` 为 UUID，编辑日期或类型不改变 ID；页面不显示内部 ID。新模块不预填演示记录。
+
+每次从 Hako 主页进入运动模块，自动拉取所有年度记录，以远端快照为基础；本地新增、修改和删除操作的时间晚于对应年度 CSV 最后提交时间时保留，否则以 GitHub 为准（相同时间也以 GitHub 为准）。删除通过本地操作日志保留标记，不能因拉取而无条件恢复。跨年编辑同时比较涉及文件的提交时间，并在一次提交中更新两个年度文件。仓库其他文件的提交不影响判断。
+
+合并后自动上传保留的本地变更，无变更时只刷新。保存和删除先持久化在本地，下一次进入模块时同步。GitHub 分支发生并发变动时，重新读取并按相同规则合并，最多尝试三次；网络请求结果不确定时不自动重复提交。同步失败显示页面内错误，保留本地数据和待同步操作；上传失败仍保留已成功读取的远端数据。已确认成功的提交才清除操作日志。未配置 GitHub 时仍可记录运动，之后配置好主应用 GitHub 再进入即可同步。
+
+本地运动数据及操作日志按仓库和分支隔离，采用原子写入；损坏数据不会被空记录覆盖。进入详情、编辑后返回运动列表不会重复触发入口同步。
+
+代码边界：主应用 `GitHubSettings.swift`、`GitHubTokenStore.swift`、`GitHub.swift` 管理通用配置、凭据和传输，`CSV.swift` 只做通用编解码。`Sports/` 独立负责运动数据、校验、合并、统计、持久化与界面；屏幕时间特有的 CSV 合并和 GitHub 适配位于 `Usage/`。两个子应用不互相引用业务代码。
+
+运动核心和模拟 GitHub 测试分别位于 `Tests/SportsTests.swift`、`Tests/SportsGitHubTests.swift`，已接入 iOS CI；两项测试仅依赖主应用通用层和运动模块，不依赖屏幕时间的数据模型。
+
 ## 首先确认 Apple 的数据访问授权
 
 普通 `DeviceActivityReport` 被沙箱限制，不能把敏感使用时间写出报表扩展。此项目使用 iOS 26.4 的 `DeviceActivityData.activityData(filteredBy:using:)` 官方导出 API。
@@ -120,9 +138,9 @@ xcodebuild -project Hako.xcodeproj -scheme Hako -sdk iphoneos -configuration Deb
 在 Apple Silicon Mac 上运行核心和模拟网络测试（无真实 GitHub 写入）：
 
 ```sh
-swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
 /tmp/hako-core-tests
-swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHub.swift Hako/Usage/UsageCSV.swift Hako/Usage/UsageGitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
 /tmp/hako-github-tests
 swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
 /tmp/hako-device-card-tests

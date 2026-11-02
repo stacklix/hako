@@ -113,11 +113,6 @@ struct AppUsage: Codable, Hashable {
     }
 }
 
-struct HakoError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
-}
-
 @MainActor enum Database {
     static let shared: Result<ModelContainer, Error> = Result { try ModelContainer(for: DailyUsage.self) }
     static func context() throws -> ModelContext { ModelContext(try shared.get()) }

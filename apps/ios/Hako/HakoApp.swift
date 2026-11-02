@@ -54,6 +54,13 @@ struct HomeView: View {
                         }.padding(.vertical, 8) } icon: { Image(systemName: "desktopcomputer").foregroundStyle(.primary) }
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                    NavigationLink { SportsView() } label: {
+                        Label { VStack(alignment: .leading, spacing: 5) {
+                            Text("运动记录").font(.headline)
+                            Text("运动趋势 · 每次记录 · GitHub 归档").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "figure.run").foregroundStyle(.primary) }
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { UsageView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("使用时间").font(.headline)

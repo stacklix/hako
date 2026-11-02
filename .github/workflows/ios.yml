@@ -31,7 +31,7 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Typecheck Console client without signing
         run: |
-          swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Models.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/Models.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
           swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Tests/ECSAccessTests.swift -o /tmp/hako-ecs-access-tests
           /tmp/hako-ecs-access-tests
           swiftc Hako/Server/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
@@ -42,14 +42,20 @@ jobs:
           /tmp/hako-agent-registration-tests
           swiftc Hako/Server/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
-          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
+          swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests
       - name: Test usage storage and GitHub merge
         run: |
-          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+          swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
           /tmp/hako-core-tests
-          swiftc -target arm64-apple-macos14.0 Hako/Models.swift Hako/CSV.swift Hako/GitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+          swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Models.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHub.swift Hako/Usage/UsageGitHub.swift Hako/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
           /tmp/hako-github-tests
+      - name: Test sports records, timestamps and annual GitHub synchronization
+        run: |
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Tests/SportsTests.swift -o /tmp/hako-sports-tests
+          /tmp/hako-sports-tests
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Hako/GitHubSettings.swift Hako/GitHub.swift Hako/Sports/SportsGitHub.swift Tests/SportsGitHubTests.swift -o /tmp/hako-sports-github-tests
+          /tmp/hako-sports-github-tests
       - name: Test device card ordering, layout and scroll restoration
         run: |
           swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
