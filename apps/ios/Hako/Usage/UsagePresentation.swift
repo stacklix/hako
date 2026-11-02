@@ -129,3 +129,28 @@ enum UsageDates {
         return "\(minutes / 60)小时 \(minutes % 60)分"
     }
 }
+
+enum UsageChartRange {
+    static func clamped(_ range: ClosedRange<Date>, to full: ClosedRange<Date>) -> ClosedRange<Date> {
+        let fullSpan = full.upperBound.timeIntervalSince(full.lowerBound)
+        let span = min(fullSpan, max(min(86_400, fullSpan), range.upperBound.timeIntervalSince(range.lowerBound)))
+        let start = min(max(range.lowerBound, full.lowerBound), full.upperBound.addingTimeInterval(-span))
+        return start...start.addingTimeInterval(span)
+    }
+    static func zoom(_ range: ClosedRange<Date>, full: ClosedRange<Date>, magnification: Double, anchor: Double) -> ClosedRange<Date> {
+        guard magnification.isFinite, magnification > 0, anchor.isFinite else { return range }
+        let span = range.upperBound.timeIntervalSince(range.lowerBound)
+        let fullSpan = full.upperBound.timeIntervalSince(full.lowerBound)
+        let newSpan = min(fullSpan, max(min(86_400, fullSpan), span / magnification))
+        let fraction = min(max(anchor, 0), 1)
+        let pivot = range.lowerBound.addingTimeInterval(span * fraction)
+        let start = pivot.addingTimeInterval(-newSpan * fraction)
+        return clamped(start...start.addingTimeInterval(newSpan), to: full)
+    }
+    static func pan(_ range: ClosedRange<Date>, full: ClosedRange<Date>, fraction: Double) -> ClosedRange<Date> {
+        guard fraction.isFinite else { return range }
+        let offset = range.upperBound.timeIntervalSince(range.lowerBound) * fraction
+        guard offset.isFinite else { return range }
+        return clamped(range.lowerBound.addingTimeInterval(offset)...range.upperBound.addingTimeInterval(offset), to: full)
+    }
+}

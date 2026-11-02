@@ -7,6 +7,11 @@ struct UsageDailyChart: View {
     let year: Int
     let movingAverages: Bool
     @State private var selectedDay: String?
+    @State private var cachedPoints: [UsageDailyValue] = []
+    @State private var visibleRange: ClosedRange<Date>?
+    @GestureState private var pinchOrigin: ClosedRange<Date>?
+    @GestureState private var panOrigin: ClosedRange<Date>?
+    @GestureState private var scrubbing = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var series: [UsageDailySeries] {
         movingAverages ? [.week, .month, .quarter, .halfYear] : [.daily]
@@ -21,7 +26,7 @@ struct UsageDailyChart: View {
         return first.addingTimeInterval(-43_200)...last.addingTimeInterval(43_200)
     }
     var body: some View {
-        let data = points
+        let data = cachedPoints
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(title).font(.system(size: 16, weight: .semibold))
@@ -33,11 +38,21 @@ struct UsageDailyChart: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 chart(data)
+                if let visibleRange {
+                    HStack {
+                        Text(visibleRange.lowerBound..<visibleRange.upperBound, format: .interval.day().month())
+                            .font(.system(size: 11)).foregroundStyle(UsageStyle.muted)
+                        Spacer()
+                        Button("还原范围") { self.visibleRange = nil; selectedDay = nil }
+                            .font(.caption).foregroundStyle(.blue).frame(minHeight: 44).buttonStyle(.plain)
+                    }
+                    .environment(\.timeZone, UsageDates.calendar.timeZone)
+                }
                 if movingAverages { legend }
                 if let selectedDay {
                     selection(data.filter { $0.day == selectedDay }, day: selectedDay)
                 } else {
-                    Text("点击日期查看具体时长").font(.system(size: 11)).foregroundStyle(UsageStyle.muted)
+                    Text("双指缩放 · 左右滑动平移 · 按住查看数据").font(.system(size: 11)).foregroundStyle(UsageStyle.muted)
                 }
                 if movingAverages {
                     Text("按最近 7 / 30 / 90 / 180 个自然日内已有记录取均值，含当天；缺失日期不计为 0，记录不足时按已有天数计算。")
@@ -46,8 +61,16 @@ struct UsageDailyChart: View {
             }
         }
         .usagePanel()
-        .onChange(of: year) { _, _ in selectedDay = nil }
-        .onChange(of: values) { _, _ in selectedDay = nil }
+        .onAppear { cachedPoints = points }
+        .onChange(of: year) { _, _ in refresh() }
+        .onChange(of: values) { _, _ in refresh() }
+        .onChange(of: movingAverages) { _, _ in refresh() }
+    }
+
+    private func refresh() {
+        cachedPoints = points
+        selectedDay = nil
+        visibleRange = nil
     }
 
     private func chart(_ data: [UsageDailyValue]) -> some View {
@@ -73,7 +96,8 @@ struct UsageDailyChart: View {
             }
         }
         .chartForegroundStyleScale(domain: series.map(\.rawValue), range: series.map { UsageStyle.color($0) })
-        .chartLegend(.hidden).chartXScale(domain: domain(data))
+        .chartLegend(.hidden).chartXScale(domain: visibleRange ?? domain(data))
+        .chartPlotStyle { plot in plot.clipped() }
         .chartYScale(domain: .automatic(includesZero: true))
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
@@ -90,23 +114,92 @@ struct UsageDailyChart: View {
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 Rectangle().fill(.clear).contentShape(Rectangle())
-                    .gesture(SpatialTapGesture().onEnded { event in
-                        guard let anchor = proxy.plotFrame else { return }
-                        let frame = geometry[anchor]
-                        guard frame.contains(event.location),
-                              let date = proxy.value(atX: event.location.x - frame.minX, as: Date.self),
-                              let point = data.min(by: { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }) else {
-                            selectedDay = nil; return
-                        }
-                        selectedDay = selectedDay == point.day ? nil : point.day
-                    })
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.2, maximumDistance: 12)
+                            .sequenced(before: DragGesture(minimumDistance: 0))
+                            .exclusively(before: SpatialTapGesture())
+                            .updating($scrubbing) { event, active, _ in
+                                if case .first(.second(true, _)) = event { active = true }
+                            }
+                            .onChanged { event in
+                                guard case .first(.second(true, let drag?)) = event,
+                                      let anchor = proxy.plotFrame else { return }
+                                let frame = geometry[anchor]
+                                guard frame.contains(drag.startLocation) else { return }
+                                select(at: drag.location, proxy: proxy, frame: frame, data: data, toggle: false)
+                            }
+                            .onEnded { event in
+                                guard let anchor = proxy.plotFrame else { return }
+                                let frame = geometry[anchor]
+                                switch event {
+                                case .first(.second(true, let drag?)):
+                                    guard frame.contains(drag.startLocation) else { return }
+                                    select(at: drag.location, proxy: proxy, frame: frame, data: data, toggle: false)
+                                case .second(let tap):
+                                    guard frame.contains(tap.location) else { selectedDay = nil; return }
+                                    select(at: tap.location, proxy: proxy, frame: frame, data: data, toggle: true)
+                                default: break
+                                }
+                            }
+                    )
+                    .simultaneousGesture(
+                        MagnifyGesture()
+                            .updating($pinchOrigin) { _, origin, _ in
+                                if origin == nil { origin = visibleRange ?? domain(data) }
+                            }
+                            .onChanged { event in
+                                guard let anchor = proxy.plotFrame else { return }
+                                let frame = geometry[anchor]
+                                guard frame.width > 0 else { return }
+                                let fraction = (event.startAnchor.x * geometry.size.width - frame.minX) / frame.width
+                                visibleRange = UsageChartRange.zoom(pinchOrigin ?? visibleRange ?? domain(data), full: domain(data),
+                                                                   magnification: event.magnification, anchor: fraction)
+                                selectedDay = nil
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 12)
+                            .updating($panOrigin) { event, origin, _ in
+                                guard !scrubbing, pinchOrigin == nil,
+                                      abs(event.translation.width) > abs(event.translation.height) else { return }
+                                if origin == nil { origin = visibleRange ?? domain(data) }
+                            }
+                            .onChanged { event in
+                                guard !scrubbing, pinchOrigin == nil, visibleRange != nil,
+                                      abs(event.translation.width) > abs(event.translation.height),
+                                      let anchor = proxy.plotFrame else { return }
+                                let frame = geometry[anchor]
+                                guard frame.contains(event.startLocation), frame.width > 0 else { return }
+                                visibleRange = UsageChartRange.pan(panOrigin ?? visibleRange ?? domain(data), full: domain(data),
+                                                                  fraction: -event.translation.width / frame.width)
+                                selectedDay = nil
+                            }
+                    )
             }
         }
         .frame(height: dynamicTypeSize.isAccessibilitySize ? 250 : 180)
         .environment(\.calendar, UsageDates.calendar)
         .environment(\.timeZone, UsageDates.calendar.timeZone)
         .accessibilityLabel("\(year) 年\(title)，单位小时")
-        .accessibilityHint("点击日期，在图表下方查看每日时长或各条均线的具体数值。")
+        .accessibilityHint("双指缩放日期范围，放大后左右滑动平移。点击或按住左右滑动，在图表下方查看数据，松手保留选择。")
+        .accessibilityAction(named: Text("放大日期范围")) {
+            visibleRange = UsageChartRange.zoom(visibleRange ?? domain(data), full: domain(data), magnification: 2, anchor: 0.5)
+            selectedDay = nil
+        }
+        .accessibilityAction(named: Text("缩小日期范围")) {
+            visibleRange = UsageChartRange.zoom(visibleRange ?? domain(data), full: domain(data), magnification: 0.5, anchor: 0.5)
+            selectedDay = nil
+        }
+    }
+
+    private func select(at location: CGPoint, proxy: ChartProxy, frame: CGRect, data: [UsageDailyValue], toggle: Bool) {
+        // Clamp horizontal movement to the chart edges, keeping the first/last day selected.
+        let x = min(max(location.x - frame.minX, 0), frame.width)
+        let range = visibleRange ?? domain(data)
+        guard let date = proxy.value(atX: x, as: Date.self),
+              let point = data.filter({ range.contains($0.date) })
+                .min(by: { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }) else { return }
+        selectedDay = toggle && selectedDay == point.day ? nil : point.day
     }
 
     private var legend: some View {

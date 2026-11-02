@@ -56,6 +56,21 @@ import Foundation
         precondition(UsageStatistics.days([], year: 2026, series: .halfYear).isEmpty)
         let leap = [UsageDayValue(day: "2024-02-29", seconds: 3600), UsageDayValue(day: "2024-03-06", seconds: 10800)]
         precondition(UsageStatistics.days(leap, year: 2024, series: .week).last?.hours == 2)
+        let day = 86_400.0
+        func date(_ dayIndex: Double) -> Date { Date(timeIntervalSince1970: dayIndex * day) }
+        let full = date(0)...date(100)
+        let range = date(20)...date(40)
+        let zoomed = UsageChartRange.zoom(range, full: full, magnification: 2, anchor: 0.25)
+        precondition(zoomed == date(22.5)...date(32.5))
+        precondition(UsageChartRange.zoom(range, full: full, magnification: 0.01, anchor: 0.5) == full)
+        let minimum = UsageChartRange.zoom(range, full: full, magnification: 1e9, anchor: 0.5)
+        precondition(minimum.upperBound.timeIntervalSince(minimum.lowerBound) == day)
+        precondition(UsageChartRange.pan(range, full: full, fraction: 0.5) == date(30)...date(50))
+        precondition(UsageChartRange.pan(range, full: full, fraction: -1000) == date(0)...date(20))
+        precondition(UsageChartRange.pan(range, full: full, fraction: 1000) == date(80)...date(100))
+        precondition(UsageChartRange.zoom(range, full: full, magnification: .nan, anchor: 0.5) == range)
+        let short = date(0)...date(0.5)
+        precondition(UsageChartRange.zoom(short, full: short, magnification: 10, anchor: 0.5) == short)
         print("Usage presentation tests passed: monthly and daily totals, 7/30/90/180-day averages, cross-year history, missing and zero days, window boundaries and sparse calendar availability")
     }
 }
