@@ -172,7 +172,42 @@ struct SportsPoint: Identifiable {
     let value: Double
 }
 
+struct SportsPeriodPoint: Identifiable {
+    var id: String { "\(type)|\(period)" }
+    let type: String
+    // Categorical coordinates keep a real band width for both months and years.
+    let period: String
+    let value: Double
+}
+
+struct SportsChartData {
+    let periods: [String]
+    let points: [SportsPeriodPoint]
+
+    func values(in period: String) -> [SportsPeriodPoint] { points.filter { $0.period == period } }
+}
+
 enum SportsStatistics {
+    static func chart(_ records: [SportsRecord], metric: SportsMetric, cumulative: Bool,
+                      year: Int?, months: Int = 12) -> SportsChartData {
+        let selected = records.filter { year == nil || $0.year == String(year!) }
+        let periods = year == nil
+            ? Set(selected.map(\.year)).sorted()
+            : (1...min(12, max(1, months))).map { "\($0)月" }
+        let grouped = Dictionary(grouping: selected) { record in
+            year == nil ? record.year : "\(record.month)月"
+        }
+        let points = Set(selected.map(\.type)).sorted().flatMap { type -> [SportsPeriodPoint] in
+            var total = 0.0
+            return periods.map { period in
+                let value = (grouped[period] ?? []).filter { $0.type == type }.reduce(0) { $0 + metric.value($1) }
+                total = cumulative ? total + value : value
+                return SportsPeriodPoint(type: type, period: period, value: total)
+            }
+        }
+        return SportsChartData(periods: periods, points: points)
+    }
+
     static func points(_ records: [SportsRecord], metric: SportsMetric, cumulative: Bool, months: Int = 12) -> [SportsPoint] {
         let types = Set(records.map(\.type)).sorted()
         return types.flatMap { type -> [SportsPoint] in

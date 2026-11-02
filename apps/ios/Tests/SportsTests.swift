@@ -102,6 +102,29 @@ import Foundation
         let hours = SportsStatistics.points([original], metric: .duration, cumulative: true)
         precondition(abs(hours.last!.value - 1.15) < 0.00001)
         precondition(SportsStatistics.points([original], metric: .distance, cumulative: false).last!.value == 0)
+
+        // The chart's actual model uses categorical periods so each bar has a band.
+        let july = SportsRecord(id: UUID(), date: "20260701", type: "Swimming", distance: 1.05, duration: 69)
+        let lastYear = SportsRecord(id: UUID(), date: "20250701", type: "Swimming", distance: 2, duration: 120)
+        let chartRecords = [july, lastYear, another]
+        let monthly = SportsStatistics.chart(chartRecords, metric: .count, cumulative: false, year: 2026)
+        precondition(monthly.periods.count == 12 && monthly.periods[6] == "7月")
+        precondition(monthly.values(in: "7月").reduce(0) { $0 + $1.value } == 1)
+        precondition(monthly.values(in: "2月").allSatisfy { $0.value == 0 })
+        precondition(Set(monthly.points.map(\.id)).count == monthly.points.count)
+        let annual = SportsStatistics.chart(chartRecords, metric: .count, cumulative: false, year: nil)
+        precondition(annual.periods == ["2025", "2026"])
+        precondition(annual.values(in: "2025").reduce(0) { $0 + $1.value } == 1)
+        precondition(annual.values(in: "2026").reduce(0) { $0 + $1.value } == 2)
+        precondition(annual.points.reduce(0) { $0 + $1.value } == Double(chartRecords.count))
+        let allHours = SportsStatistics.chart(chartRecords, metric: .duration, cumulative: true, year: nil)
+        precondition(abs(allHours.values(in: "2026").reduce(0) { $0 + $1.value } - Double(69 + 120 + 32) / 60) < 0.00001)
+        let yearHours = SportsStatistics.chart(chartRecords, metric: .duration, cumulative: true, year: 2026)
+        precondition(abs(yearHours.values(in: "7月").reduce(0) { $0 + $1.value } - Double(69 + 32) / 60) < 0.00001)
+        let allDistance = SportsStatistics.chart(chartRecords, metric: .distance, cumulative: false, year: nil)
+        precondition(abs(allDistance.points.reduce(0) { $0 + $1.value } - 7.61) < 0.00001)
+        let noData = SportsStatistics.chart([], metric: .count, cumulative: false, year: nil)
+        precondition(noData.periods.isEmpty && noData.points.isEmpty)
         print("Sports tests passed: CSV, IDs, timestamps, tombstones, cross-year moves, persistence and charts")
     }
 }

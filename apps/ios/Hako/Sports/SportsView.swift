@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 import UIKit
 
 struct SportsView: View {
@@ -8,6 +7,7 @@ struct SportsView: View {
     @State private var tab = Tab.overview
     @State private var year = Calendar(identifier: .gregorian).component(.year, from: .now)
     @State private var month = 0
+    @State private var overall = false
     @State private var adding = false
     @State private var entered = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -15,10 +15,19 @@ struct SportsView: View {
     private var years: [Int] {
         Set(store.records.compactMap { Int($0.year) } + [year, Calendar(identifier: .gregorian).component(.year, from: .now)]).sorted(by: >)
     }
-    private var records: [SportsRecord] { store.records.filter { $0.year == String(year) } }
+    private var isOverall: Bool { overall && tab != .records }
+    private var scopeYear: Int? { isOverall ? nil : year }
+    private var scopeLabel: String { isOverall ? "总体" : String(year) + " 年" }
+    private var yearSelection: Binding<Int> {
+        Binding(get: { isOverall ? 0 : year }, set: { value in
+            if value == 0 { overall = true }
+            else { year = value; overall = false }
+        })
+    }
+    private var records: [SportsRecord] { store.records.filter { isOverall || $0.year == String(year) } }
     private var filtered: [SportsRecord] { records.filter { month == 0 || $0.month == month } }
     private var period: String {
-        switch tab { case .overview: "年度概览"; case .trends: "六项年度趋势"; case .records: "按月回顾" }
+        switch tab { case .overview: isOverall ? "全部年份概览" : "年度概览"; case .trends: isOverall ? "跨年汇总与累计" : "六项年度趋势"; case .records: "按月回顾" }
     }
     private var syncStatus: String {
         if store.syncing { return "正在自动同步…" }
@@ -35,11 +44,12 @@ struct SportsView: View {
                 tabs
                 HStack {
                     Menu {
-                        Picker("年份", selection: $year) {
+                        Picker("统计范围", selection: yearSelection) {
+                            if tab != .records { Text("总体 · 全部年份").tag(0) }
                             ForEach(years, id: \.self) { Text(String($0) + " 年").tag($0) }
                         }
-                    } label: { filterLabel(String(year) + " 年") }
-                    .accessibilityLabel("年份，\(year) 年")
+                    } label: { filterLabel(scopeLabel) }
+                    .accessibilityLabel("统计范围，" + scopeLabel)
                     Spacer()
                     Text(period).font(.caption).foregroundStyle(SportsStyle.muted)
                 }
@@ -53,13 +63,14 @@ struct SportsView: View {
                 switch tab {
                 case .overview: overview
                 case .trends:
-                    Text("按运动类型统计每月次数、时长与距离；累计值从所选年份的 1 月起计算。")
+                    summaryMetrics
+                    Text(isOverall ? "按年份汇总运动次数、时长与距离；累计值从最早记录年份起计算。" : "按运动类型统计每月次数、时长与距离；累计值从所选年份的 1 月起计算。")
                         .font(.caption).foregroundStyle(SportsStyle.muted).lineSpacing(4)
                     // Wide layouts match the prototype's two columns; phones keep one readable chart per row.
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: 12)], spacing: 12) {
                         ForEach(SportsMetric.allCases) { metric in
-                            SportsChart(records: records, metric: metric, cumulative: false, year: year)
-                            SportsChart(records: records, metric: metric, cumulative: true, year: year)
+                            SportsChart(records: records, metric: metric, cumulative: false, year: scopeYear)
+                            SportsChart(records: records, metric: metric, cumulative: true, year: scopeYear)
                         }
                     }
                 case .records:
@@ -85,6 +96,8 @@ struct SportsView: View {
         .background(SportsStyle.background)
         .foregroundStyle(SportsStyle.text)
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(SportsStyle.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .sheet(isPresented: $adding) { SportsEditor(store: store) }
         .task {
             guard !entered else { return }
@@ -145,15 +158,9 @@ struct SportsView: View {
     }
 
     @ViewBuilder private var overview: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 18) { metrics }
-                .sportsPanel()
-        } else {
-            HStack(spacing: 0) { metrics }.padding(.vertical, 17).padding(.horizontal, 4)
-                .background(SportsStyle.card, in: RoundedRectangle(cornerRadius: 14))
-        }
-        SportsChart(records: records, metric: .count, cumulative: false, year: year)
-        SportsChart(records: records, metric: .duration, cumulative: false, year: year)
+        summaryMetrics
+        SportsChart(records: records, metric: .count, cumulative: false, year: scopeYear)
+        SportsChart(records: records, metric: .duration, cumulative: false, year: scopeYear)
         VStack(spacing: 6) {
             HStack {
                 Text("最近运动").font(.system(size: 16, weight: .semibold))
@@ -165,6 +172,16 @@ struct SportsView: View {
             }
             recordList(Array(records.prefix(3)))
         }.sportsPanel()
+    }
+
+    @ViewBuilder private var summaryMetrics: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 18) { metrics }
+                .sportsPanel()
+        } else {
+            HStack(spacing: 0) { metrics }.padding(.vertical, 17).padding(.horizontal, 4)
+                .background(SportsStyle.card, in: RoundedRectangle(cornerRadius: 14))
+        }
     }
 
     @ViewBuilder private var metrics: some View {
@@ -233,108 +250,6 @@ private struct SportsTypeIcon: View {
             .foregroundStyle(SportsStyle.color(type)).frame(width: size, height: size)
             .background(SportsStyle.color(type).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
             .accessibilityHidden(true)
-    }
-}
-
-private struct SportsChart: View {
-    let records: [SportsRecord]
-    let metric: SportsMetric
-    let cumulative: Bool
-    let year: Int
-    @State private var selectedMonth: Int?
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    private var types: [String] { SportsStyle.types(in: records) }
-    private var months: Int {
-        let calendar = Calendar(identifier: .gregorian)
-        return year == calendar.component(.year, from: .now) ? calendar.component(.month, from: .now) : 12
-    }
-    private var title: String { (cumulative ? "累计" : "每月") + metric.title }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(title).font(.system(size: 16, weight: .semibold))
-                Spacer(minLength: 8)
-                Text(metric.unit).font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
-            }
-            if records.isEmpty {
-                Text("本年度暂无数据").font(.caption).foregroundStyle(SportsStyle.muted)
-                    .frame(maxWidth: .infinity, minHeight: 150)
-            } else {
-                renderedChart
-                legend
-                if let selectedMonth, (1...months).contains(selectedMonth) {
-                    Text("\(selectedMonth) 月：" + points.filter { $0.month == selectedMonth }.map {
-                        "\($0.type) \(String(format: metric == .count ? "%.0f" : "%.1f", $0.value)) \(metric.unit)"
-                    }.joined(separator: " · "))
-                    .font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
-                }
-            }
-        }
-        .sportsPanel()
-    }
-
-    private var points: [SportsPoint] {
-        let values = SportsStatistics.points(records, metric: metric, cumulative: cumulative, months: months)
-        return values.sorted { left, right in
-            if left.month != right.month { return left.month < right.month }
-            return (types.firstIndex(of: left.type) ?? 0) < (types.firstIndex(of: right.type) ?? 0)
-        }
-    }
-
-    private var renderedChart: some View {
-        Chart {
-            ForEach(points) { point in
-            if cumulative {
-                LineMark(x: .value("月份", point.month), y: .value(metric.unit, point.value))
-                    .foregroundStyle(by: .value("运动类型", point.type))
-                    .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
-                PointMark(x: .value("月份", point.month), y: .value(metric.unit, point.value))
-                    .foregroundStyle(by: .value("运动类型", point.type)).symbolSize(16)
-            } else {
-                BarMark(x: .value("月份", point.month), y: .value(metric.unit, point.value), width: .ratio(0.56))
-                    .foregroundStyle(by: .value("运动类型", point.type)).cornerRadius(1)
-            }
-            }
-            if let selectedMonth, (1...months).contains(selectedMonth) {
-                RuleMark(x: .value("月份", selectedMonth)).foregroundStyle(SportsStyle.muted.opacity(0.3))
-            }
-        }
-        .chartForegroundStyleScale(domain: types, range: types.map { SportsStyle.color($0) })
-        .chartLegend(.hidden)
-        .chartXScale(domain: 0.5...12.5)
-        .chartYScale(domain: .automatic(includesZero: true))
-        .chartXAxis {
-            AxisMarks(values: [1, 4, 7, 10, 12]) { value in
-                AxisValueLabel { if let month = value.as(Int.self) { Text("\(month)月").font(.system(size: 10)).foregroundStyle(SportsStyle.muted).fixedSize() } }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.7)).foregroundStyle(SportsStyle.line)
-                AxisValueLabel().font(.system(size: 10)).foregroundStyle(SportsStyle.muted)
-            }
-        }
-        .chartXSelection(value: $selectedMonth)
-        .frame(height: dynamicTypeSize.isAccessibilitySize ? 230 : 150)
-        .accessibilityLabel("\(year) 年\(title)，单位\(metric.unit)")
-    }
-
-
-    private var legend: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { legendItems }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 105), alignment: .leading)], alignment: .leading, spacing: 8) { legendItems }
-        }
-    }
-    @ViewBuilder private var legendItems: some View {
-        ForEach(types, id: \.self) { type in
-            HStack(spacing: 5) {
-                RoundedRectangle(cornerRadius: 2).fill(SportsStyle.color(type)).frame(width: 7, height: 7)
-                Text(type).font(.system(size: 10)).foregroundStyle(SportsStyle.muted).fixedSize()
-            }
-        }
     }
 }
 
