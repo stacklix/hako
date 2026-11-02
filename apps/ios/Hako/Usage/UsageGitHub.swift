@@ -4,7 +4,15 @@ struct UsageGitHub {
     let repository: any GitHubRepositoryAccess
     struct PushResult { let rows: [[String]]; let inserted: Int }
 
+    private func validate(directory: String) throws {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        guard !directory.isEmpty, directory.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw HakoError(message: "模块目录名称无效，请使用文字、数字、连字符或下划线。")
+        }
+    }
+
     func years(directory: String) async throws -> [String] {
+        try validate(directory: directory)
         let index = try await repository.listFiles(in: "data/\(directory)")
         return index.entries.compactMap { entry in
             guard entry.kind == "blob", entry.name.range(of: #"^[0-9]{4}\.csv$"#, options: .regularExpression) != nil else { return nil }
@@ -14,6 +22,7 @@ struct UsageGitHub {
 
     @discardableResult
     func push(directory: String, year: String, rows: [[String]]) async throws -> PushResult {
+        try validate(directory: directory)
         guard year.range(of: #"^[0-9]{4}$"#, options: .regularExpression) != nil else { throw HakoError(message: "年度文件名称无效。") }
         _ = try rows.map { try DailyUsage.fromCSV($0, year: year) }
         let path = "data/\(directory)/\(year).csv"

@@ -140,8 +140,9 @@ final class MockProtocol: URLProtocol {
         precondition(calls == 2)
 
         MockProtocol.handler = { _ in fatalError("Invalid directory must not issue a request") }
-        for directory in ["", ".", "..", "../other", "one/two", "one\\two"] {
+        for directory in ["", ".", "..", "../other", "one/two", "one\\two", "one two", "one\ntwo"] {
             do { try await client.push(directory: directory, year: "2026", rows: [row("2026-10-14")]); fatalError("Accepted invalid directory") } catch is HakoError { }
+            do { _ = try await client.years(directory: directory); fatalError("Accepted invalid directory listing") } catch is HakoError { }
         }
         for response: [String: Any] in [
             ["errors": [["type": "FORBIDDEN", "message": "Denied"]]],
