@@ -115,7 +115,7 @@ struct ArcaneContainerView: View {
                                 Label("启动", systemImage: "play.fill")
                                     .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(ArcaneActionButtonStyle(prominent: true))
+                            .buttonStyle(ArcaneActionButtonStyle())
                             .disabled(!canAct)
                         } else {
                             Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary)
@@ -363,7 +363,7 @@ struct ArcaneContainerView: View {
                             Text(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启")
                         }.frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(ArcaneActionButtonStyle(prominent: true))
+                    .buttonStyle(ArcaneActionButtonStyle())
                     .disabled(!canAct)
                     .accessibilityHint("确认后拉取最新镜像并重新部署，服务会短暂中断")
                     Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")

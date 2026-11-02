@@ -1,26 +1,20 @@
 import SwiftUI
 
-/// Explicit outlines keep actions distinct without the heavy system tinted fill.
+/// Color distinguishes actions from read-only content without adding visual weight.
 struct ArcaneActionButtonStyle: ButtonStyle {
     var destructive = false
-    var prominent = false
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let color: Color = destructive ? .red : .primary
+        let color: Color = isEnabled ? (destructive ? .red : .blue) : .secondary
         configuration.label
             .font(.subheadline.weight(.medium))
             .imageScale(.small)
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
-            .foregroundStyle(prominent ? Color(uiColor: .systemBackground) : color)
-            .background(prominent ? color : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(color.opacity(destructive ? 0.25 : 0.16), lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
-            .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.35)
+            .foregroundStyle(color)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.5 : 1)
     }
 }
 
