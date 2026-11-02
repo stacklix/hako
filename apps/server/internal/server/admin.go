@@ -44,6 +44,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/access-logs", s.admin(s.adminAccessLogs))
 	s.mux.HandleFunc("GET /admin/api/access-logs/hour", s.admin(s.adminAccessLogHour))
 	s.mux.HandleFunc("GET /admin/api/access-logs/rankings", s.admin(s.adminAccessLogRankings))
+	s.mux.HandleFunc("GET /admin/api/access-logs/records", s.admin(s.adminAccessLogRecords))
 	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
 	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))

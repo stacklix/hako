@@ -1,6 +1,7 @@
 'use strict';
 let logsGeneration = 0, logDetailGeneration = 0, logSelection = null, logWindow = null;
 function resetAccessLogs() {
+  resetLogRecords();
   logsGeneration++; logDetailGeneration++; logSelection = null; logWindow = null;
   $('logs-empty').replaceChildren(); $('logs-rankings').replaceChildren();
   $('logs-content').hidden = true; $('logs-detail').hidden = true; $('logs-error').hidden = true;
@@ -93,3 +94,56 @@ $('logs-refresh').addEventListener('click', refreshAccessLogs);
 $('logs-range').addEventListener('change', () => { logSelection = null; refreshAccessLogs(); });
 $('logs-domain').addEventListener('change', () => { logSelection = null; refreshAccessLogs(); });
 setInterval(() => { if (!document.hidden && csrf) refreshAccessLogs(); }, 60000);
+
+let recordsGeneration = 0, recordsQuery = null, recordsOffset = 0, recordsRows = [], recordsBusy = false;
+function resetLogRecords() {
+  recordsGeneration++; recordsQuery = null; recordsOffset = 0; recordsRows = []; recordsBusy = false;
+  $('logs-query-results').replaceChildren(); $('logs-query-summary').textContent = '';
+  $('logs-query-error').hidden = true; $('logs-query-more').hidden = true;
+  $('logs-query-submit').disabled = false;
+}
+function localLogDate(date) { return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
+$('logs-query-from').value = localLogDate(new Date(Date.now() - 86400000));
+$('logs-query-to').value = localLogDate(new Date());
+async function queryLogRecords(more = false) {
+  if (!csrf || recordsBusy) return;
+  const generation = ++recordsGeneration;
+  $('logs-query-error').hidden = true;
+  try {
+    if (!more) {
+      const from = new Date($('logs-query-from').value), to = new Date($('logs-query-to').value);
+      if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to || to - from > 604800000) throw new Error('请选择有效起止时间，范围最多 7 天。');
+      recordsQuery = {rangeHours: '168', from: from.toISOString(), to: to.toISOString()};
+      for (const key of ['domain', 'ip', 'path', 'status']) {
+        const value = $('logs-query-' + key).value;
+        if (value) recordsQuery[key] = key === 'path' ? value : value.trim();
+      }
+      recordsOffset = 0; recordsRows = []; $('logs-query-results').replaceChildren();
+      $('logs-query-summary').textContent = ''; $('logs-query-more').hidden = true;
+    }
+    if (!recordsQuery) return;
+    recordsBusy = true; $('logs-query-submit').disabled = true; $('logs-query-more').disabled = true;
+    const params = new URLSearchParams({...recordsQuery, offset: String(recordsOffset)});
+    const data = await api('access-logs/records?' + params);
+    if (generation !== recordsGeneration || !csrf) return;
+    // Use the server's clipped, fixed window for every following page.
+    recordsQuery.from = data.from; recordsQuery.to = data.to;
+    recordsRows.push(...data.rows); recordsOffset += data.rows.length;
+    const criteria = ['domain', 'ip', 'path', 'status'].filter(key => recordsQuery[key]).map(key => `${key}=${recordsQuery[key]}`).join(' · ');
+    $('logs-query-summary').textContent = `${criteria || '全部记录'} · ${data.from} — ${data.to} · ${data.timezone} · ${data.requests.toLocaleString('zh-CN')} 次请求 · 已显示 ${recordsRows.length}/${data.totalRows} 条记录`;
+    const results = $('logs-query-results'); results.replaceChildren();
+    if (!recordsRows.length) results.append(node('p', '此范围内没有匹配记录。', 'empty'));
+    else {
+      const wrapper = node('div', undefined, 'log-records-scroll');
+      wrapper.append(logTable(['时间', '域名', '状态码', '来源 IP', '路径', 'User Agent', '请求数'], recordsRows.map(row => [row.time, row.domain, row.status, row.ip, row.path, row.userAgent, row.count.toLocaleString('zh-CN')])));
+      results.append(wrapper);
+    }
+    $('logs-query-more').hidden = !data.hasMore;
+  } catch (error) {
+    if (generation === recordsGeneration && csrf) { $('logs-query-error').textContent = error.message; $('logs-query-error').hidden = false; }
+  } finally {
+    if (generation === recordsGeneration) { recordsBusy = false; $('logs-query-submit').disabled = false; $('logs-query-more').disabled = false; }
+  }
+}
+$('logs-query-form').addEventListener('submit', event => { event.preventDefault(); queryLogRecords(); });
+$('logs-query-more').addEventListener('click', () => queryLogRecords(true));

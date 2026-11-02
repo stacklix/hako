@@ -78,3 +78,6 @@ Windows 不运行 iOS 编译、签名或安装；上述脚本测试不代表已�
 进程分类依据：[Docker cgroup 路径](https://docs.docker.com/engine/containers/runmetrics/)、[云助手进程与目录](https://help.aliyun.com/en/ecs/user-guide/overview-10)、[云安全中心进程](https://www.alibabacloud.com/help/en/security-center/security-center-agent-processes)、[云监控进程](https://www.alibabacloud.com/help/en/cms/cloudmonitor-1-0/user-guide/common-operations)。
 
 官方依据：[云助手](https://help.aliyun.com/zh/ecs/user-guide/overview-10)、[RunCommand](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-runcommand)、[基础监控](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-describeinstancemonitordata)、[终端会话](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-startterminalsession)、[AXT 官方参考](https://github.com/aliyun/cloud-assistant-starter/tree/master/src/main/resources/static/components/session)。
+
+
+访问统计顶部新增「按 IP / 路径 / 状态码查询记录」入口，默认带入当前域名和查询时间，选中小时后带入与当前窗口交集的小时范围。可以自定义起止时间，并组合精确查询 IP、路径和状态码，留空不限。结果按时间倒序展示实际状态码、域名、IP、URL 路径、User-Agent 和请求次数，每页 200 条，可持续加载全部匹配记录，无 Top 10 限制。结果限最近 7 天已入库的秒级聚合数据，不是原始日志全文；同一秒及其他维度完全相同的请求合并为一行计数。

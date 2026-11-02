@@ -58,6 +58,25 @@
           <div class="log-filters"><label>时间区间<select id="logs-range"><option value="1">最近 1 小时</option><option value="3">最近 3 小时</option><option value="6">最近 6 小时</option><option value="12">最近 12 小时</option><option value="24" selected>最近 1 天</option><option value="72">最近 3 天</option><option value="168">最近 7 天</option></select></label><label>域名<select id="logs-domain"><option value="">全部域名</option></select></label></div>
           <p id="logs-window" class="muted"></p>
           <p class="muted">通过上方下拉框选择域名，查看所选时间区间内的访问量和排行。URL 按路径统计，忽略查询参数；Top 10 按请求数降序排列。仅保留最近 7 天统计，过期数据自动清理。</p>
+          <details class="log-breakdown">
+            <summary>按 IP / 路径 / 状态码查询全部记录</summary>
+            <form id="logs-query-form">
+              <div class="log-filters">
+                <label>域名（精确匹配）<input id="logs-query-domain" placeholder="留空查询全部域名" maxlength="512"></label>
+                <label>来源 IP（精确匹配）<input id="logs-query-ip" placeholder="留空不限" maxlength="64"></label>
+                <label>URL 路径（精确匹配）<input id="logs-query-path" placeholder="例如：/wordpress/，不含查询参数"></label>
+                <label>状态码（精确匹配）<input id="logs-query-status" type="number" min="100" max="599" step="1" placeholder="例如：404，留空不限"></label>
+                <label>开始时间（本机时区）<input id="logs-query-from" type="datetime-local" step="1" required></label>
+                <label>结束时间（本机时区）<input id="logs-query-to" type="datetime-local" step="1" required></label>
+              </div>
+              <p class="muted">条件可组合，查询最近 7 天已入库数据，不限 Top 10。相同秒、域名、状态码、IP、路径和 UA 的请求合并显示次数，不包含原始请求参数。</p>
+              <button id="logs-query-submit" type="submit" class="primary">查询全部匹配记录</button>
+            </form>
+            <p id="logs-query-error" class="form-error" role="alert" hidden></p>
+            <p id="logs-query-summary" class="muted" role="status" aria-live="polite"></p>
+            <div id="logs-query-results"></div>
+            <button id="logs-query-more" type="button" class="quiet" hidden>加载更多（每页 200 条）</button>
+          </details>
           <div id="logs-empty"></div>
           <div id="logs-detail" hidden>
             <div class="log-detail-heading"><h3 id="logs-domain-title"></h3><p id="logs-domain-count" class="muted"></p></div>

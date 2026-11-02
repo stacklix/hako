@@ -61,3 +61,4 @@ body:not(.is-authenticated) .login{width:100%;max-width:none;margin:0;padding:28
 .landing-nav .landing-brand{padding:0}.landing-nav .landing-brand>span:last-child{font-size:30px;opacity:1}.landing-nav .landing-brand .brand-dot{font-size:inherit;opacity:1}.login-description{font-size:12px}.qr-confirmation>span{font-size:11px}.login .qr-box p,.login .qr-actions #qr-expiry,.login .qr-actions button{font-size:11px}.login-instructions{font-size:11px}.login .qr-copy{font-size:11px}.login-footnote{font-size:10px}.feature-grid p{font-size:12px}.feature-tag{font-size:10px}
 
 @media(max-width:760px){.landing-nav .landing-brand>span:last-child{display:inline-block;font-size:26px}.landing-nav{gap:10px}.landing-grid>*{min-width:0}}
+.log-records-scroll{overflow-x:auto}.log-records-scroll .log-table{min-width:1000px}.log-records-scroll .log-table th:last-child,.log-records-scroll .log-table td:last-child{width:65px}

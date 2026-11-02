@@ -1,5 +1,56 @@
 import Foundation
 
+struct ECSAccessRecord: Decodable {
+    let time: String
+    let domain: String
+    let status: Int
+    let ip: String
+    let path: String
+    let userAgent: String
+    let count: Int64
+}
+
+struct ECSAccessRecords: Decodable {
+    let from: String
+    let to: String
+    let timezone: String
+    let rows: [ECSAccessRecord]
+    let totalRows: Int64
+    let requests: Int64
+    let offset: Int
+    let limit: Int
+    let hasMore: Bool
+}
+
+enum ECSAccessRecordsQuery {
+    struct ValidationError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+    static func build(domain: String, ip: String, path: String, status: String, from: Date, to: Date) throws -> String {
+        guard from <= to, to.timeIntervalSince(from) <= 7 * 24 * 3600 else {
+            throw ValidationError(message: "结束时间须不早于开始时间，查询范围最多 7 天。")
+        }
+        let status = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !status.isEmpty, Int(status).map({ (100...599).contains($0) }) != true {
+            throw ValidationError(message: "状态码请输入 100–599 的整数，留空查询全部。")
+        }
+        if !path.isEmpty, !path.hasPrefix("/") || path.contains("?") || path.contains("#") {
+            throw ValidationError(message: "路径须以 / 开头，不包含查询参数或 fragment。")
+        }
+        let formatter = ISO8601DateFormatter()
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "rangeHours", value: "168"),
+                            URLQueryItem(name: "from", value: formatter.string(from: from)),
+                            URLQueryItem(name: "to", value: formatter.string(from: to))]
+        for (name, value) in [("domain", domain.trimmingCharacters(in: .whitespacesAndNewlines)),
+                              ("ip", ip.trimmingCharacters(in: .whitespacesAndNewlines)), ("path", path), ("status", status)] where !value.isEmpty {
+            query.queryItems?.append(URLQueryItem(name: name, value: value))
+        }
+        return (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
+    }
+}
+
 enum ECSAccessRange: Int, CaseIterable, Identifiable {
     case hour = 1, threeHours = 3, sixHours = 6, twelveHours = 12, day = 24, threeDays = 72, week = 168
     var id: Int { rawValue }

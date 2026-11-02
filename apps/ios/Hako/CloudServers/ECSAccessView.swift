@@ -73,6 +73,9 @@ struct ECSAccessView: View {
                 Picker("时间范围", selection: $range) {
                     ForEach(ECSAccessRange.allCases) { Text($0.label).tag($0) }
                 }
+                NavigationLink("按 IP / 路径 / 状态码查询记录") {
+                    ECSAccessRecordsView(domain: domain, from: store.summary?.from, to: store.summary?.to, hour: hour)
+                }
             }
             if store.busy { ProgressView("读取访问统计…") }
             if let error = store.error {

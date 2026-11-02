@@ -22,9 +22,17 @@ import Combine
     func accessLogs<T: Decodable>(_ type: T.Type, rankings: Bool = false,
                                   range: ECSAccessRange = .day, domain: String = "",
                                   from: String? = nil, to: String? = nil, hour: String? = nil) async throws -> T {
+        let path = ECSAccessQuery.path(rankings: rankings, range: range, domain: domain, from: from, to: to, hour: hour)
+        return try await read(type, path: path)
+    }
+
+    func accessRecords(query: String) async throws -> ECSAccessRecords {
+        try await read(ECSAccessRecords.self, path: "/api/v1/access-logs/records?" + query)
+    }
+
+    private func read<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先在“服务器与登录”中登录 Hako 服务器。") }
         let context = requestContext
-        let path = ECSAccessQuery.path(rankings: rankings, range: range, domain: domain, from: from, to: to, hour: hour)
         let data: Data
         do { data = try await authentication.send(path, method: "GET", body: nil, logSource: .cloudServers) }
         catch let error as ServerHTTPError where error.status == 404 || error.status == 405 {

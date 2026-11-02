@@ -3,7 +3,7 @@ const {test} = require('node:test');
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
 
-async function openPage(pathname, logs = {status: {enabled: false}}) {
+async function openPage(pathname, logs = {status: {enabled: false}}, recordPages = []) {
   const elements = new Map(), calls = [], timers = [];
   let ready;
   class TestNode {
@@ -34,6 +34,10 @@ async function openPage(pathname, logs = {status: {enabled: false}}) {
     setInterval(callback) { timers.push(callback); },
     fetch: async url => {
       calls.push(url);
+      if (url.startsWith('/admin/api/access-logs/records?')) {
+        assert.ok(recordPages.length, 'unexpected records request');
+        return {ok: true, json: async () => recordPages.shift()};
+      }
       const responses = {
         '/admin/api/session': {csrfToken: 'test', username: 'Admin'},
         '/admin/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
@@ -84,6 +88,35 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   const html = readFileSync(new URL('../internal/server/web/index.html', `file://${__filename}`), 'utf8');
   assert.doesNotMatch(html, /logs-domains|点击查看排行/);
   assert.equal(document.getElementById('logs-detail').hidden, false);
+});
+
+test('record queries combine filters and load every page with a fixed window', async () => {
+  const from = '2026-11-02T00:00:00Z', to = '2026-11-02T01:00:00Z';
+  const row = {time: from, domain: 'a.test', ip: '192.0.2.1', path: '/a+b', status: 404, userAgent: 'UA', count: 2};
+  const {document, calls, context} = await openPage('/admin/access-logs', undefined, [
+    {from, to, timezone: 'UTC', requests: 3, totalRows: 2, rows: [row], hasMore: true},
+    {from, to, timezone: 'UTC', requests: 3, totalRows: 2, rows: [{...row, time: to, count: 1}], hasMore: false}
+  ]);
+  for (const [key, value] of Object.entries({domain: 'a.test', ip: '192.0.2.1', path: '/a+b', status: '404', from: '2026-11-02T08:00:00', to: '2026-11-02T09:00:00'})) {
+    document.getElementById('logs-query-' + key).value = value;
+  }
+  await vm.runInContext('queryLogRecords()', context);
+  assert.equal(document.getElementById('logs-query-more').hidden, false);
+  document.getElementById('logs-query-status').value = '200';
+  await vm.runInContext('queryLogRecords(true)', context);
+  const queries = calls.filter(url => url.includes('/records?')).map(url => new URL(url, 'https://hako.test').searchParams);
+  assert.equal(queries.length, 2);
+  assert.equal(queries[0].get('path'), '/a+b');
+  assert.equal(queries[0].get('ip'), '192.0.2.1');
+  assert.equal(queries[1].get('status'), '404');
+  assert.equal(queries[1].get('offset'), '1');
+  assert.equal(queries[1].get('from'), from);
+  assert.equal(queries[1].get('to'), to);
+  assert.match(document.getElementById('logs-query-summary').textContent, /已显示 2\/2 条记录/);
+  assert.equal(document.getElementById('logs-query-more').hidden, true);
+  vm.runInContext('resetAccessLogs()', context);
+  assert.equal(document.getElementById('logs-query-results').children.length, 0);
+  assert.equal(document.getElementById('logs-query-summary').textContent, '');
 });
 
 for (const [path, page, title] of [

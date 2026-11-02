@@ -143,6 +143,7 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
 	s.mux.HandleFunc("GET /api/v1/access-logs", s.consoleAccessLogs(s.adminAccessLogs))
 	s.mux.HandleFunc("GET /api/v1/access-logs/rankings", s.consoleAccessLogs(s.adminAccessLogRankings))
+	s.mux.HandleFunc("GET /api/v1/access-logs/records", s.consoleAccessLogs(s.adminAccessLogRecords))
 	s.mux.HandleFunc("GET /api/v1/access-logs/hour", s.consoleAccessLogs(s.adminAccessLogHour))
 	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)

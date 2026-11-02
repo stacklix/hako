@@ -2,6 +2,18 @@ import Foundation
 
 @main struct ECSAccessTests {
     static func main() throws {
+        let recordQuery = try ECSAccessRecordsQuery.build(domain: "a.test", ip: "2001:db8::1", path: "/a+b", status: "404",
+            from: Date(timeIntervalSince1970: 1793577600), to: Date(timeIntervalSince1970: 1793581200))
+        let recordItems = URLComponents(string: "?" + recordQuery)!.queryItems!
+        precondition(recordItems.first { $0.name == "path" }?.value == "/a+b")
+        precondition(recordQuery.contains("%2B"))
+        precondition(recordItems.first { $0.name == "status" }?.value == "404")
+        let records = try JSONDecoder().decode(ECSAccessRecords.self, from: Data(#"{"from":"2026-11-02T00:00:00Z","to":"2026-11-02T01:00:00Z","timezone":"UTC","totalRows":1,"requests":2,"offset":0,"limit":200,"hasMore":false,"rows":[{"time":"2026-11-02T00:00:00Z","domain":"a.test","status":404,"ip":"192.0.2.1","path":"/missing","userAgent":"UA","count":2}]}"#.utf8))
+        precondition(records.rows[0].status == 404 && records.requests == 2 && records.totalRows == 1)
+        for badStatus in ["4xx", "99", "600"] {
+            precondition((try? ECSAccessRecordsQuery.build(domain: "", ip: "", path: "", status: badStatus, from: .now, to: .now)) == nil)
+        }
+
         let data = Data(#"""
         {"status":{"enabled":true,"timezone":"Asia/Shanghai","scanIntervalSeconds":60,"retentionDays":7,"scanning":false,"lastScan":"2026-10-30T10:00:00.123Z"},
          "rangeHours":3,"from":"2026-10-30T16:30:00+08:00","to":"2026-10-30T19:30:00+08:00","domains":["a.test","b.test","foreign.test"],"truncated":false,

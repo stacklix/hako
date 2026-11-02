@@ -13,7 +13,7 @@ import (
 
 func TestConsoleAccessLogsRequireRegisteredSession(t *testing.T) {
 	f := newFixture(t, true)
-	for _, path := range []string{"/api/v1/access-logs", "/api/v1/access-logs/rankings", "/api/v1/access-logs/hour"} {
+	for _, path := range []string{"/api/v1/access-logs", "/api/v1/access-logs/rankings", "/api/v1/access-logs/hour", "/api/v1/access-logs/records"} {
 		for _, token := range []string{"", "invalid.token"} {
 			status, _ := f.call("GET", path, nil, token)
 			if status != http.StatusUnauthorized {
@@ -57,7 +57,7 @@ func TestConsoleAccessLogsReuseExactAdminQueries(t *testing.T) {
 		suffix  string
 		handler http.HandlerFunc
 	}{
-		{"", f.s.adminAccessLogs}, {"/rankings", f.s.adminAccessLogRankings}, {"/hour", f.s.adminAccessLogHour},
+		{"", f.s.adminAccessLogs}, {"/rankings", f.s.adminAccessLogRankings}, {"/records", f.s.adminAccessLogRecords}, {"/hour", f.s.adminAccessLogHour},
 	} {
 		query := q.Encode()
 		if item.suffix == "/hour" {
