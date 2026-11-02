@@ -274,11 +274,11 @@ func TestAccessLogsAdminRankingsAndAuthentication(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.adminAccessLogHour(rec, httptest.NewRequest("GET", "/admin/api/access-logs/hour?"+query.Encode(), nil))
 	var detail struct {
-		Visits, NotFound                int64
-		TopClients                      []accessClient
-		TopURLs                         []accessRank
-		NotFoundPages                   []accessPage
-		NotFoundIPs, NotFoundUserAgents []accessRank
+		Visits, NonSuccess                  int64
+		TopClients                          []accessClient
+		TopURLs                             []accessRank
+		NonSuccessPages                     []accessPage
+		NonSuccessIPs, NonSuccessUserAgents []accessRank
 	}
 	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &detail) != nil {
 		t.Fatal(rec.Code, rec.Body.String())
@@ -286,17 +286,17 @@ func TestAccessLogsAdminRankingsAndAuthentication(t *testing.T) {
 	if !bytes.Equal(bytes.TrimSpace(data), bytes.TrimSpace(rec.Body.Bytes())) {
 		t.Fatal("authenticated route and handler disagree")
 	}
-	if detail.Visits != 83 || detail.NotFound != 78 || len(detail.TopClients) != 10 || detail.TopClients[0].Value != "192.0.2.12" || detail.TopClients[0].Count != 17 {
+	if detail.Visits != 83 || detail.NonSuccess != 78 || len(detail.TopClients) != 10 || detail.TopClients[0].Value != "192.0.2.12" || detail.TopClients[0].Count != 17 {
 		t.Fatalf("incorrect hour totals/rankings: %+v", detail)
 	}
-	if detail.TopClients[0].UserAgents[0].Value != "Browser/11" || detail.TopClients[0].URLs[0].Value != "/missing/11" || len(detail.NotFoundPages) != 10 || detail.NotFoundPages[0].IPs[0].Value != "192.0.2.12" || detail.NotFoundPages[0].UserAgents[0].Value != "Browser/11" {
+	if detail.TopClients[0].UserAgents[0].Value != "Browser/11" || detail.TopClients[0].URLs[0].Value != "/missing/11" || len(detail.NonSuccessPages) != 10 || detail.NonSuccessPages[0].IPs[0].Value != "192.0.2.12" || detail.NonSuccessPages[0].UserAgents[0].Value != "Browser/11" {
 		t.Fatalf("incorrect nested rankings: %+v", detail)
 	}
 	if bytes.Contains(rec.Body.Bytes(), []byte("private")) || bytes.Contains(rec.Body.Bytes(), []byte("OtherDomain")) || bytes.Contains(rec.Body.Bytes(), []byte("OtherHour")) {
 		t.Fatal("filter isolation failed", rec.Body.String())
 	}
-	if detail.NotFoundIPs[0].Count != 12 || detail.NotFoundUserAgents[0].Count != 12 {
-		t.Fatal("404 rankings include successful visits")
+	if detail.NonSuccessIPs[0].Count != 12 || detail.NonSuccessUserAgents[0].Count != 12 {
+		t.Fatal("non-2xx rankings include successful visits")
 	}
 	for _, path := range []string{"?date=bad", "?date=2026-02-31"} {
 		rec = httptest.NewRecorder()

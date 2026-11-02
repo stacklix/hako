@@ -136,12 +136,12 @@ struct CloudServersView: View {
                         if console.authenticated, !console.logoutPending, let summary = access.summary {
                             if summary.status.enabled {
                                 let totals = summary.counts(domains: summary.domains)
-                                ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, notFound: totals.reduce(0) { $0 + $1.notFound })
+                                ECSAccessMetrics(visits: totals.reduce(0) { $0 + $1.visits }, nonSuccess: totals.reduce(0) { $0 + $1.nonSuccess })
                                 ECSAccessFreshness(status: summary.status)
                                 Text("全部域名 · \(summary.domains.count) 个").font(.caption).foregroundStyle(.secondary)
                             } else { Text("服务端尚未启用访问日志统计").font(.subheadline).foregroundStyle(.secondary) }
                         } else if access.busy || console.authenticated {
-                            HStack { LabeledContent("HTTP 请求", value: "—"); LabeledContent("4xx", value: "—") }
+                            HStack { LabeledContent("HTTP 请求", value: "—"); LabeledContent("2xx", value: "—"); LabeledContent("非 2xx", value: "—") }
                                 .font(.subheadline).foregroundStyle(.secondary)
                         } else { Text(access.error ?? "请先登录 Hako 服务器以读取统计").font(.footnote).foregroundStyle(.secondary) }
                         if let error = access.error { Text(error).font(.caption).foregroundStyle(.orange) }

@@ -45,7 +45,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
         '/admin/api/access-logs?rangeHours=24': logs
       };
       if (url.startsWith('/admin/api/access-logs/rankings?')) {
-        return {ok: true, json: async () => ({visits: 12, notFound: 2, topURLs: [], non4xxURLs: [{value: '/domain-non4xx', count: 10}], topClients: [{value: '192.0.2.1', count: 12, userAgents: [], urls: [{value: '/legacy-combined', count: 12}], non4xxURLs: [{value: '/ok', count: 10}], clientErrorURLs: [{value: '/missing', count: 2}]}], notFoundPages: [], notFoundIPs: [], notFoundUserAgents: []})};
+        return {ok: true, json: async () => ({visits: 12, success: 10, nonSuccess: 2, topURLs: [], successURLs: [{value: '/domain-success', count: 10}], topClients: [{value: '192.0.2.1', count: 12, userAgents: [], urls: [{value: '/legacy-combined', count: 12}], successURLs: [{value: '/ok', count: 10}], nonSuccessURLs: [{value: '/missing', count: 2}]}], nonSuccessPages: [], nonSuccessIPs: [], nonSuccessUserAgents: []})};
       }
       assert.ok(url in responses, `unexpected request: ${url}`);
       return {ok: true, json: async () => responses[url]};
@@ -64,8 +64,8 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   const {document, calls} = await openPage('/admin/access-logs', {
     status: {enabled: true, timezone: 'Asia/Shanghai', scanIntervalSeconds: 60, retentionDays: 7},
     rangeHours: 24, from, to, domains: ['a.test'],
-    totals: [{domain: 'a.test', visits: 12, notFound: 2}],
-    hours: [{domain: 'a.test', hour: from, visits: 777, notFound: 0}]
+    totals: [{domain: 'a.test', visits: 12, success: 10, nonSuccess: 2}],
+    hours: [{domain: 'a.test', hour: from, visits: 777, success: 777, nonSuccess: 0}]
   });
   assert.equal(calls.length, 3);
   const request = new URL(calls[2], 'https://hako.test');
@@ -76,11 +76,12 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   assert.equal(request.searchParams.has('hour'), false);
   function text(node) { return [node.textContent || '', ...node.children.map(text)].join(' '); }
   assert.equal(document.getElementById('logs-domain-title').textContent, 'a.test');
-  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 4xx 2 次/);
+  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 2xx 10 次 · 非 2xx 2 次/);
   const rankings = text(document.getElementById('logs-rankings'));
-  assert.match(rankings, /非 4xx URL · Top 10/);
-  assert.match(rankings, /4xx URL · Top 10/);
-  assert.match(rankings, /\/domain-non4xx/);
+  assert.match(rankings, /2xx URL · Top 10/);
+  assert.match(rankings, /非 2xx URL · Top 10/);
+  assert.doesNotMatch(rankings, /4xx/);
+  assert.match(rankings, /\/domain-success/);
   assert.match(rankings, /\/ok/);
   assert.match(rankings, /\/missing/);
   assert.doesNotMatch(rankings, /legacy-combined/);

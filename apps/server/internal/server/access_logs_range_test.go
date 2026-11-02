@@ -69,7 +69,7 @@ func TestAccessLogsRollingRangesAndRankings(t *testing.T) {
 		if hours == 1 {
 			want = 2
 		}
-		if list.RangeHours != hours || list.Totals[0].Visits != want || list.Totals[0].NotFound != int64(i+1) {
+		if list.RangeHours != hours || list.Totals[0].Visits != want || list.Totals[0].NonSuccess != int64(i+1) {
 			t.Fatalf("wrong %dh total: %s", hours, rec.Body.String())
 		}
 		var sum int64
@@ -82,12 +82,12 @@ func TestAccessLogsRollingRangesAndRankings(t *testing.T) {
 		rec = httptest.NewRecorder()
 		s.adminAccessLogRankings(rec, httptest.NewRequest("GET", "/?"+query.Encode(), nil))
 		var rank struct {
-			Visits, NotFound int64
-			TopClients       []accessClient
-			TopURLs          []accessRank
-			Hour             string
+			Visits, NonSuccess int64
+			TopClients         []accessClient
+			TopURLs            []accessRank
+			Hour               string
 		}
-		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &rank) != nil || rank.Visits != want || rank.NotFound != int64(i+1) || rank.Hour != "" {
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &rank) != nil || rank.Visits != want || rank.NonSuccess != int64(i+1) || rank.Hour != "" {
 			t.Fatal("incorrect range rankings", rec.Code, rec.Body.String())
 		}
 		if strings.Contains(rec.Body.String(), "foreign") || (hours == 1 && strings.Contains(rec.Body.String(), "before-boundary")) {

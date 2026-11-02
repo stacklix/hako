@@ -44,14 +44,15 @@ async function loadLogDomain(item) {
     const params = new URLSearchParams({...logWindow, domain:item.domain});
     const data = await api('access-logs/rankings?' + params);
     if (generation !== logDetailGeneration || !csrf) return;
-    $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 4xx ${data.notFound.toLocaleString('zh-CN')} 次`;
+    if (!Number.isFinite(data.success) || !Number.isFinite(data.nonSuccess)) throw new Error('服务端尚不支持 2xx／非 2xx 统计，请先更新 Hako 服务端。');
+    $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 2xx ${data.success.toLocaleString('zh-CN')} 次 · 非 2xx ${data.nonSuccess.toLocaleString('zh-CN')} 次`;
     const missingColumns = node('div', undefined, 'log-columns');
-    missingColumns.append(logRanking('4xx 来源 IP · Top 10', data.notFoundIPs, 'IP'), logRanking('4xx User Agent · Top 10', data.notFoundUserAgents, 'User Agent'));
+    missingColumns.append(logRanking('非 2xx 来源 IP · Top 10', data.nonSuccessIPs, 'IP'), logRanking('非 2xx User Agent · Top 10', data.nonSuccessUserAgents, 'User Agent'));
     $('logs-rankings').append(
       logRanking('访问 URL · Top 10', data.topURLs, 'URL 路径'),
-      logRanking('非 4xx URL · Top 10', data.non4xxURLs, 'URL 路径'),
-      logBreakdown('来源客户端 IP · Top 10', data.topClients, 'IP', '非 4xx URL · Top 10', 'non4xxURLs', 'URL 路径', '4xx URL · Top 10', 'clientErrorURLs', 'URL 路径', '该 IP 的 User Agent · Top 10', 'userAgents', 'User Agent'),
-      logBreakdown('4xx 页面 · Top 10', data.notFoundPages, '4xx 页面', '该页面的来源 IP · Top 10', 'ips', 'IP', '该页面的 User Agent · Top 10', 'userAgents', 'User Agent'),
+      logRanking('2xx URL · Top 10', data.successURLs, 'URL 路径'),
+      logBreakdown('来源客户端 IP · Top 10', data.topClients, 'IP', '2xx URL · Top 10', 'successURLs', 'URL 路径', '非 2xx URL · Top 10', 'nonSuccessURLs', 'URL 路径', '该 IP 的 User Agent · Top 10', 'userAgents', 'User Agent'),
+      logBreakdown('非 2xx URL · Top 10', data.nonSuccessPages, '非 2xx URL', '该页面的来源 IP · Top 10', 'ips', 'IP', '该页面的 User Agent · Top 10', 'userAgents', 'User Agent'),
       missingColumns
     );
     document.querySelectorAll('#logs-rankings details').forEach(el => { el.open = openSections.has(el.dataset.key); });

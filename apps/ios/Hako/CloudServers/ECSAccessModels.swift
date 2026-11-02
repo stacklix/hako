@@ -139,20 +139,22 @@ struct ECSAccessStatus: Decodable {
     func delayed(at now: Date = .now) -> Bool { health(at: now) == .delayed }
 }
 
-// The server retains legacy notFound wire names for HTTP 4xx counts/rankings.
+// The server returns explicit 2xx and non-2xx counts and rankings.
 struct ECSAccessCount: Decodable, Identifiable {
     let domain: String
     let hour: String?
     let visits: Int64
-    let notFound: Int64
+    let success: Int64
+    let nonSuccess: Int64
     var id: String { domain + (hour ?? "") }
-    var missingRate: Double { visits > 0 ? Double(notFound) / Double(visits) * 100 : 0 }
+    var nonSuccessRate: Double { visits > 0 ? Double(nonSuccess) / Double(visits) * 100 : 0 }
 }
 
 struct ECSAccessBucket: Identifiable {
     let time: Date
     var visits: Int64 = 0
-    var notFound: Int64 = 0
+    var nonSuccess: Int64 = 0
+    var success: Int64 { visits - nonSuccess }
     // Hourly points can be drilled into with the server's original timezone.
     var hour: String?
     var id: Date { time }
@@ -194,7 +196,7 @@ struct ECSAccessSummary: Decodable {
             guard let hour = row.hour, let time = formatter.date(from: hour), values[floor(time)] != nil else { continue }
             let key = floor(time)
             values[key]!.visits += row.visits
-            values[key]!.notFound += row.notFound
+            values[key]!.nonSuccess += row.nonSuccess
             if !daily { values[key]!.hour = row.hour }
         }
         return values.values.sorted { $0.time < $1.time }
@@ -211,11 +213,11 @@ struct ECSAccessClient: Decodable, Identifiable {
     let count: Int64
     let userAgents: [ECSAccessRank]
     let urls: [ECSAccessRank]
-    let non4xxURLs: [ECSAccessRank]
-    let clientErrorURLs: [ECSAccessRank]
+    let successURLs: [ECSAccessRank]
+    let nonSuccessURLs: [ECSAccessRank]
     var id: String { value }
 }
-struct ECSAccessMissingPage: Decodable, Identifiable {
+struct ECSAccessPage: Decodable, Identifiable {
     let value: String
     let count: Int64
     let ips: [ECSAccessRank]
@@ -228,11 +230,12 @@ struct ECSAccessRankings: Decodable {
     let from: String
     let to: String
     let visits: Int64
-    let notFound: Int64
+    let success: Int64
+    let nonSuccess: Int64
     let topClients: [ECSAccessClient]
     let topURLs: [ECSAccessRank]
-    let non4xxURLs: [ECSAccessRank]
-    let notFoundPages: [ECSAccessMissingPage]
-    let notFoundIPs: [ECSAccessRank]
-    let notFoundUserAgents: [ECSAccessRank]
+    let successURLs: [ECSAccessRank]
+    let nonSuccessPages: [ECSAccessPage]
+    let nonSuccessIPs: [ECSAccessRank]
+    let nonSuccessUserAgents: [ECSAccessRank]
 }
