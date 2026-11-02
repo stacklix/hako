@@ -45,7 +45,11 @@ struct SportsChart: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
             } else {
                 renderedChart
-                legend
+                if selectedPeriod != nil {
+                    selectionDetails
+                } else {
+                    legend
+                }
             }
         }
         .sportsPanel()
@@ -63,23 +67,22 @@ struct SportsChart: View {
                         .foregroundStyle(by: .value("运动类型", point.type))
                         .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                     PointMark(x: .value("统计周期", point.period), y: .value(metric.unit, point.value))
-                        .foregroundStyle(by: .value("运动类型", point.type)).symbolSize(16)
+                        .foregroundStyle(by: .value("运动类型", point.type))
+                        .symbolSize(point.period == selectedPeriod ? 32 : 16)
+                        .opacity(selectedPeriod == nil || point.period == selectedPeriod ? 1 : 0.3)
                 } else {
                     // Periods are categorical bands, rather than continuous integer coordinates.
                     // A proportional width on the old continuous scale collapsed the bars to zero.
                     BarMark(x: .value("统计周期", point.period), y: .value(metric.unit, point.value),
                             width: .ratio(0.56), stacking: .standard)
                         .foregroundStyle(by: .value("运动类型", point.type)).cornerRadius(1)
+                        .opacity(selectedPeriod == nil || point.period == selectedPeriod ? 1 : 0.3)
                 }
             }
             if let selectedPeriod, categories.contains(selectedPeriod) {
                 RuleMark(x: .value("统计周期", selectedPeriod))
                     .foregroundStyle(SportsStyle.muted.opacity(0.3))
                     .zIndex(-1)
-                    .annotation(position: .top, spacing: 4,
-                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                        selectionPopover
-                    }
             }
         }
         .chartForegroundStyleScale(domain: types, range: types.map { SportsStyle.color($0) })
@@ -118,32 +121,41 @@ struct SportsChart: View {
         }
         .frame(height: dynamicTypeSize.isAccessibilitySize ? 230 : 160)
         .accessibilityLabel((year.map { "\($0) 年" } ?? "全部年份") + title + "，单位" + metric.unit)
-        .accessibilityHint("点击图表显示该周期的合计及各运动类型数据，再次点击可收起。")
+        .accessibilityHint("点击图表，在图表下方显示该周期的合计及各运动类型数据，再次点击可收起。")
     }
 
-    private var selectionPopover: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(selectionTitle).font(.system(size: 12, weight: .semibold))
+    private var selectionDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(cumulative ? "累计合计" : "合计")
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(selectionTitle).font(.system(size: 13, weight: .semibold))
+                    Text((cumulative ? "累计合计 " : "合计 ") + valueLabel(selectedValues.reduce(0) { $0 + $1.value }))
+                        .font(.system(size: 12)).monospacedDigit().foregroundStyle(SportsStyle.muted)
+                }
                 Spacer()
-                Text(valueLabel(selectedValues.reduce(0) { $0 + $1.value })).monospacedDigit()
-            }.font(.system(size: 11, weight: .semibold))
-            ForEach(types, id: \.self) { type in
-                HStack(spacing: 5) {
-                    Circle().fill(SportsStyle.color(type)).frame(width: 6, height: 6)
-                    Text(type)
-                    Spacer(minLength: 8)
-                    Text(valueLabel(selectedValues.first { $0.type == type }?.value ?? 0)).monospacedDigit()
-                }.font(.system(size: 11))
+                Button { selectedPeriod = nil } label: {
+                    Label("收起", systemImage: "chevron.up")
+                        .font(.system(size: 11)).frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain).foregroundStyle(SportsStyle.muted)
+                .accessibilityLabel("收起所选周期的数据")
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), alignment: .leading)], alignment: .leading, spacing: 12) {
+                ForEach(types, id: \.self) { type in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 5) {
+                            Circle().fill(SportsStyle.color(type)).frame(width: 6, height: 6)
+                            Text(type).font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
+                        }
+                        Text(valueLabel(selectedValues.first { $0.type == type }?.value ?? 0))
+                            .font(.system(size: 12, weight: .medium)).monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
+                }
             }
         }
-        .foregroundStyle(SportsStyle.text).padding(10).frame(width: 185)
-        .background(SportsStyle.card, in: RoundedRectangle(cornerRadius: 10))
-        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(SportsStyle.line) }
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-        .allowsHitTesting(false)
-        .accessibilityElement(children: .combine)
+        .foregroundStyle(SportsStyle.text).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(SportsStyle.background, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func valueLabel(_ value: Double) -> String {
