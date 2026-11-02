@@ -58,10 +58,13 @@ import Foundation
 
         let ranks = try JSONDecoder().decode(ECSAccessRankings.self, from: Data(#"""
         {"domain":"a.test","hour":"","from":"2026-10-30T00:00:00Z","to":"2026-10-30T01:00:00Z","visits":4,"notFound":2,
-         "topClients":[{"value":"192.0.2.1","count":4,"userAgents":[{"value":"bot","count":4}],"urls":[{"value":"/","count":4}]}],
-         "topURLs":[{"value":"/","count":4}],"notFoundPages":[{"value":"/missing","count":2,"ips":[{"value":"192.0.2.1","count":2}],"userAgents":[{"value":"bot","count":2}]}],"notFoundIPs":[],"notFoundUserAgents":[]}
+         "topClients":[{"value":"192.0.2.1","count":4,"userAgents":[{"value":"bot","count":4}],"urls":[{"value":"/","count":4}],"non4xxURLs":[{"value":"/","count":2}],"clientErrorURLs":[{"value":"/missing","count":2}]}],
+         "topURLs":[{"value":"/","count":4}],"non4xxURLs":[{"value":"/","count":2}],"notFoundPages":[{"value":"/missing","count":2,"ips":[{"value":"192.0.2.1","count":2}],"userAgents":[{"value":"bot","count":2}]}],"notFoundIPs":[],"notFoundUserAgents":[]}
         """#.utf8))
         precondition(ranks.topClients[0].userAgents[0].value == "bot")
+        precondition(ranks.topClients[0].non4xxURLs[0].count == 2)
+        precondition(ranks.non4xxURLs[0].count == 2)
+        precondition(ranks.topClients[0].clientErrorURLs[0].value == "/missing")
         precondition(ranks.notFoundPages[0].ips[0].count == 2 && ranks.topURLs[0].count == 4)
         let allCounts = summary.counts(domains: summary.domains)
         precondition(allCounts.count == 3 && allCounts.reduce(0) { $0 + $1.visits } == 1030)

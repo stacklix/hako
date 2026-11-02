@@ -59,6 +59,7 @@ struct ECSAccessStatus: Decodable {
     func delayed(at now: Date = .now) -> Bool { health(at: now) == .delayed }
 }
 
+// The server retains legacy notFound wire names for HTTP 4xx counts/rankings.
 struct ECSAccessCount: Decodable, Identifiable {
     let domain: String
     let hour: String?
@@ -130,6 +131,8 @@ struct ECSAccessClient: Decodable, Identifiable {
     let count: Int64
     let userAgents: [ECSAccessRank]
     let urls: [ECSAccessRank]
+    let non4xxURLs: [ECSAccessRank]
+    let clientErrorURLs: [ECSAccessRank]
     var id: String { value }
 }
 struct ECSAccessMissingPage: Decodable, Identifiable {
@@ -148,6 +151,7 @@ struct ECSAccessRankings: Decodable {
     let notFound: Int64
     let topClients: [ECSAccessClient]
     let topURLs: [ECSAccessRank]
+    let non4xxURLs: [ECSAccessRank]
     let notFoundPages: [ECSAccessMissingPage]
     let notFoundIPs: [ECSAccessRank]
     let notFoundUserAgents: [ECSAccessRank]

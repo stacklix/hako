@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// Legacy notFound JSON fields now represent all HTTP 4xx responses (400–499).
+// Keep the wire names stable for existing clients.
 type accessHour struct {
 	Domain   string `json:"domain"`
 	Hour     string `json:"hour"`
@@ -23,8 +25,10 @@ type accessRank struct {
 
 type accessClient struct {
 	accessRank
-	UserAgents []accessRank `json:"userAgents"`
-	URLs       []accessRank `json:"urls"`
+	UserAgents      []accessRank `json:"userAgents"`
+	URLs            []accessRank `json:"urls"`
+	Non4xxURLs      []accessRank `json:"non4xxURLs"`
+	ClientErrorURLs []accessRank `json:"clientErrorURLs"`
 }
 
 type accessPage struct {
@@ -124,7 +128,7 @@ func (s *Server) adminAccessLogs(w http.ResponseWriter, r *http.Request) {
 		predicate += " AND domain=?"
 		args = append(args, domain)
 	}
-	query := `SELECT domain,hour,SUM(count),SUM(CASE WHEN status=404 THEN count ELSE 0 END) FROM access_counts WHERE ` + predicate + " GROUP BY domain,hour ORDER BY hour DESC,domain LIMIT 2001"
+	query := `SELECT domain,hour,SUM(count),SUM(CASE WHEN status>=400 AND status<500 THEN count ELSE 0 END) FROM access_counts WHERE ` + predicate + " GROUP BY domain,hour ORDER BY hour DESC,domain LIMIT 2001"
 	rows, err = tx.QueryContext(ctx, query, args...)
 	hours := []accessHour{}
 	if err == nil {
@@ -151,7 +155,7 @@ func (s *Server) adminAccessLogs(w http.ResponseWriter, r *http.Request) {
 		hours = hours[:2000]
 	}
 	totals := []accessHour{}
-	rows, err = tx.QueryContext(ctx, `SELECT domain,SUM(count),SUM(CASE WHEN status=404 THEN count ELSE 0 END) FROM access_counts WHERE `+predicate+" GROUP BY domain ORDER BY domain", args...)
+	rows, err = tx.QueryContext(ctx, `SELECT domain,SUM(count),SUM(CASE WHEN status>=400 AND status<500 THEN count ELSE 0 END) FROM access_counts WHERE `+predicate+" GROUP BY domain ORDER BY domain", args...)
 	if err == nil {
 		for rows.Next() {
 			var v accessHour
@@ -237,8 +241,8 @@ func (s *Server) adminAccessLogDetails(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(count),0),COALESCE(SUM(CASE WHEN status=404 THEN count ELSE 0 END),0) FROM access_counts WHERE `+where, args...).Scan(&visits, &notFound)
-	// Keep every nested ranking within the selected domain/hour and its IP or 404 page.
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(count),0),COALESCE(SUM(CASE WHEN status>=400 AND status<500 THEN count ELSE 0 END),0) FROM access_counts WHERE `+where, args...).Scan(&visits, &notFound)
+	// Keep every nested ranking within the selected domain/hour and its IP or 4xx page.
 	rank := func(column, predicate string, params ...any) []accessRank {
 		if err != nil {
 			return []accessRank{}
@@ -250,16 +254,23 @@ func (s *Server) adminAccessLogDetails(w http.ResponseWriter, r *http.Request, r
 	clients := []accessClient{}
 	for _, ip := range rank("ip", where, args...) {
 		params := append(append([]any{}, args...), ip.Value)
-		clients = append(clients, accessClient{ip, rank("ua", where+" AND ip=?", params...), rank("url", where+" AND ip=?", params...)})
+		clients = append(clients, accessClient{
+			accessRank:      ip,
+			UserAgents:      rank("ua", where+" AND ip=?", params...),
+			URLs:            rank("url", where+" AND ip=?", params...),
+			Non4xxURLs:      rank("url", where+" AND ip=? AND (status<400 OR status>=500)", params...),
+			ClientErrorURLs: rank("url", where+" AND ip=? AND status>=400 AND status<500", params...),
+		})
 	}
 	urls := rank("url", where, args...)
+	non4xxURLs := rank("url", where+" AND (status<400 OR status>=500)", args...)
 	missing := []accessPage{}
-	for _, page := range rank("url", where+" AND status=404", args...) {
+	for _, page := range rank("url", where+" AND status>=400 AND status<500", args...) {
 		params := append(append([]any{}, args...), page.Value)
-		missing = append(missing, accessPage{page, rank("ip", where+" AND status=404 AND url=?", params...), rank("ua", where+" AND status=404 AND url=?", params...)})
+		missing = append(missing, accessPage{page, rank("ip", where+" AND status>=400 AND status<500 AND url=?", params...), rank("ua", where+" AND status>=400 AND status<500 AND url=?", params...)})
 	}
-	ips404 := rank("ip", where+" AND status=404", args...)
-	ua404 := rank("ua", where+" AND status=404", args...)
+	ips4xx := rank("ip", where+" AND status>=400 AND status<500", args...)
+	ua4xx := rank("ua", where+" AND status>=400 AND status<500", args...)
 	if err != nil {
 		reject(w, 503, "storage_unavailable")
 		return
@@ -267,5 +278,5 @@ func (s *Server) adminAccessLogDetails(w http.ResponseWriter, r *http.Request, r
 	if !hour.IsZero() {
 		hourText = hour.In(a.location).Format(time.RFC3339)
 	}
-	respond(w, 200, map[string]any{"domain": domain, "hour": hourText, "from": window.from.In(a.location).Format(time.RFC3339), "to": window.to.In(a.location).Format(time.RFC3339), "visits": visits, "notFound": notFound, "topClients": clients, "topURLs": urls, "notFoundPages": missing, "notFoundIPs": ips404, "notFoundUserAgents": ua404})
+	respond(w, 200, map[string]any{"domain": domain, "hour": hourText, "from": window.from.In(a.location).Format(time.RFC3339), "to": window.to.In(a.location).Format(time.RFC3339), "visits": visits, "notFound": notFound, "topClients": clients, "topURLs": urls, "non4xxURLs": non4xxURLs, "notFoundPages": missing, "notFoundIPs": ips4xx, "notFoundUserAgents": ua4xx})
 }

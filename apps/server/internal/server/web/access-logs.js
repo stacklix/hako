@@ -21,7 +21,7 @@ function logRanking(title, values, label) {
   if (!values.length) { box.append(node('p', '暂无数据', 'empty')); return box; }
   box.append(logTable([label, '请求数'], values.map(v => [v.value, v.count.toLocaleString('zh-CN')]))); return box;
 }
-function logBreakdown(title, values, firstLabel, leftTitle, leftKey, leftLabel, rightTitle, rightKey, rightLabel) {
+function logBreakdown(title, values, firstLabel, leftTitle, leftKey, leftLabel, rightTitle, rightKey, rightLabel, extraTitle, extraKey, extraLabel) {
   const section = node('section', undefined, 'log-breakdown'); section.append(node('h3', title));
   if (!values.length) { section.append(node('p', '暂无数据', 'empty')); return section; }
   values.forEach((item, index) => {
@@ -30,6 +30,7 @@ function logBreakdown(title, values, firstLabel, leftTitle, leftKey, leftLabel, 
     summary.append(node('span', `${index + 1}. ${item.value}`, 'log-value'), node('span', `${item.count.toLocaleString('zh-CN')} 次`, 'pill'));
     summary.setAttribute('aria-label', `${firstLabel} ${item.value}，${item.count} 次，展开查看排行`);
     columns.append(logRanking(leftTitle, item[leftKey], leftLabel), logRanking(rightTitle, item[rightKey], rightLabel));
+    if (extraKey) columns.append(logRanking(extraTitle, item[extraKey], extraLabel));
     details.append(summary, columns); section.append(details);
   }); return section;
 }
@@ -42,13 +43,14 @@ async function loadLogDomain(item) {
     const params = new URLSearchParams({...logWindow, domain:item.domain});
     const data = await api('access-logs/rankings?' + params);
     if (generation !== logDetailGeneration || !csrf) return;
-    $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 404 ${data.notFound.toLocaleString('zh-CN')} 次`;
+    $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 4xx ${data.notFound.toLocaleString('zh-CN')} 次`;
     const missingColumns = node('div', undefined, 'log-columns');
-    missingColumns.append(logRanking('404 来源 IP · Top 10', data.notFoundIPs, 'IP'), logRanking('404 User Agent · Top 10', data.notFoundUserAgents, 'User Agent'));
+    missingColumns.append(logRanking('4xx 来源 IP · Top 10', data.notFoundIPs, 'IP'), logRanking('4xx User Agent · Top 10', data.notFoundUserAgents, 'User Agent'));
     $('logs-rankings').append(
       logRanking('访问 URL · Top 10', data.topURLs, 'URL 路径'),
-      logBreakdown('来源客户端 IP · Top 10', data.topClients, 'IP', '该 IP 的 User Agent · Top 10', 'userAgents', 'User Agent', '该 IP 的访问 URL · Top 10', 'urls', 'URL 路径'),
-      logBreakdown('404 页面 · Top 10', data.notFoundPages, '404 页面', '该页面的来源 IP · Top 10', 'ips', 'IP', '该页面的 User Agent · Top 10', 'userAgents', 'User Agent'),
+      logRanking('非 4xx URL · Top 10', data.non4xxURLs, 'URL 路径'),
+      logBreakdown('来源客户端 IP · Top 10', data.topClients, 'IP', '非 4xx URL · Top 10', 'non4xxURLs', 'URL 路径', '4xx URL · Top 10', 'clientErrorURLs', 'URL 路径', '该 IP 的 User Agent · Top 10', 'userAgents', 'User Agent'),
+      logBreakdown('4xx 页面 · Top 10', data.notFoundPages, '4xx 页面', '该页面的来源 IP · Top 10', 'ips', 'IP', '该页面的 User Agent · Top 10', 'userAgents', 'User Agent'),
       missingColumns
     );
     document.querySelectorAll('#logs-rankings details').forEach(el => { el.open = openSections.has(el.dataset.key); });

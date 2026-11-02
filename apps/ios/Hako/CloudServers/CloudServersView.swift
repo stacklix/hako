@@ -141,7 +141,7 @@ struct CloudServersView: View {
                                 Text("全部域名 · \(summary.domains.count) 个").font(.caption).foregroundStyle(.secondary)
                             } else { Text("服务端尚未启用访问日志统计").font(.subheadline).foregroundStyle(.secondary) }
                         } else if access.busy || console.authenticated {
-                            HStack { LabeledContent("HTTP 请求", value: "—"); LabeledContent("404", value: "—") }
+                            HStack { LabeledContent("HTTP 请求", value: "—"); LabeledContent("4xx", value: "—") }
                                 .font(.subheadline).foregroundStyle(.secondary)
                         } else { Text(access.error ?? "请先登录 Hako 服务器以读取统计").font(.footnote).foregroundStyle(.secondary) }
                         if let error = access.error { Text(error).font(.caption).foregroundStyle(.orange) }

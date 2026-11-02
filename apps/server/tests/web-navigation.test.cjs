@@ -41,7 +41,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}) {
         '/admin/api/access-logs?rangeHours=24': logs
       };
       if (url.startsWith('/admin/api/access-logs/rankings?')) {
-        return {ok: true, json: async () => ({visits: 12, notFound: 2, topURLs: [], topClients: [], notFoundPages: [], notFoundIPs: [], notFoundUserAgents: []})};
+        return {ok: true, json: async () => ({visits: 12, notFound: 2, topURLs: [], non4xxURLs: [{value: '/domain-non4xx', count: 10}], topClients: [{value: '192.0.2.1', count: 12, userAgents: [], urls: [{value: '/legacy-combined', count: 12}], non4xxURLs: [{value: '/ok', count: 10}], clientErrorURLs: [{value: '/missing', count: 2}]}], notFoundPages: [], notFoundIPs: [], notFoundUserAgents: []})};
       }
       assert.ok(url in responses, `unexpected request: ${url}`);
       return {ok: true, json: async () => responses[url]};
@@ -72,7 +72,14 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   assert.equal(request.searchParams.has('hour'), false);
   function text(node) { return [node.textContent || '', ...node.children.map(text)].join(' '); }
   assert.equal(document.getElementById('logs-domain-title').textContent, 'a.test');
-  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 404 2 次/);
+  assert.match(document.getElementById('logs-domain-count').textContent, /访问量 12 次 · 4xx 2 次/);
+  const rankings = text(document.getElementById('logs-rankings'));
+  assert.match(rankings, /非 4xx URL · Top 10/);
+  assert.match(rankings, /4xx URL · Top 10/);
+  assert.match(rankings, /\/domain-non4xx/);
+  assert.match(rankings, /\/ok/);
+  assert.match(rankings, /\/missing/);
+  assert.doesNotMatch(rankings, /legacy-combined/);
   assert.equal(text(document.getElementById('logs-empty')).trim(), '');
   const html = readFileSync(new URL('../internal/server/web/index.html', `file://${__filename}`), 'utf8');
   assert.doesNotMatch(html, /logs-domains|点击查看排行/);
