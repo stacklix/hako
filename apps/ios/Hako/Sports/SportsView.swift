@@ -32,7 +32,7 @@ struct SportsView: View {
     private var syncStatus: String {
         if store.syncing { return "正在自动同步…" }
         if store.message != nil { return "自动同步失败" }
-        if store.pendingCount > 0 { return "\(store.pendingCount) 项待同步 · 下次进入自动处理" }
+        if store.pendingCount > 0 { return "\(store.pendingCount) 项待同步" }
         if let time = store.state.syncedAt { return "已自动同步 " + time.formatted(date: .omitted, time: .shortened) }
         return "GitHub · 进入时自动拉取"
     }
@@ -289,7 +289,7 @@ private struct SportsDetail: View {
                         .font(.system(size: 14)).frame(maxWidth: .infinity, minHeight: 48)
                         .background(SportsStyle.card, in: RoundedRectangle(cornerRadius: 10))
                         .disabled(store.syncing)
-                    Text("编辑和删除先保存在本地，下次进入时自动同步。")
+                    Text("编辑和删除保存在本地后立即同步到 GitHub。")
                         .font(.system(size: 11)).foregroundStyle(SportsStyle.muted).multilineTextAlignment(.center)
                 } else { ContentUnavailableView("记录已不存在", systemImage: "figure.run") }
             }.padding(20)
@@ -305,7 +305,7 @@ private struct SportsDetail: View {
                 do { try store.delete(id); dismiss() } catch { self.error = error.localizedDescription }
             }
             Button("取消", role: .cancel) { }
-        } message: { Text("删除后从列表和图表移除，下次进入时同步删除操作。") }
+        } message: { Text("删除后从列表和图表移除，并立即同步到 GitHub。") }
         .alert("无法删除记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好") { error = nil }
         } message: { Text(error ?? "") }
@@ -376,7 +376,7 @@ private struct SportsEditor: View {
                                 .background(SportsStyle.text, in: RoundedRectangle(cornerRadius: 10))
                         }.buttonStyle(.plain).disabled(store.syncing || saving)
                     }.sportsPanel(padding: 18)
-                    Text("成功拉取 GitHub 最新记录后保存在本地，下次进入时自动同步。")
+                    Text("成功拉取 GitHub 最新记录后保存在本地，并立即同步到 GitHub。")
                         .font(.system(size: 11)).foregroundStyle(SportsStyle.muted)
                 }.padding(20)
             }

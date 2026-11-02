@@ -97,45 +97,49 @@ struct ArcaneContainerView: View {
             }
             if tab == "commands", let details, !managementProtected {
                 Section {
-                    VStack(spacing: 12) {
-                        if details.state?.status == "running" {
-                            HStack(spacing: 12) {
-                                Button { confirming = .restart } label: {
-                                    Label("重启", systemImage: "arrow.clockwise")
-                                        .frame(maxWidth: .infinity)
-                                }.buttonStyle(ArcaneActionButtonStyle())
-                                Button(role: .destructive) { confirming = .stop } label: {
-                                    Label("停止", systemImage: "stop")
-                                        .frame(maxWidth: .infinity)
-                                }.buttonStyle(ArcaneActionButtonStyle(destructive: true)).disabled(details.blockedReason(for: .stop) != nil)
-                            }
-                            .disabled(!canAct)
-                        } else if ["exited", "created"].contains(details.state?.status ?? "") {
-                            Button { confirming = .start } label: {
-                                Label("启动", systemImage: "play.fill")
+                    if details.state?.status == "running" {
+                        HStack(spacing: 12) {
+                            Button { confirming = .restart } label: {
+                                Label("重启", systemImage: "arrow.clockwise")
                                     .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(ArcaneActionButtonStyle())
-                            .disabled(!canAct)
-                        } else {
-                            Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary)
+                            }.buttonStyle(ArcaneActionButtonStyle())
+                            Button(role: .destructive) { confirming = .stop } label: {
+                                Label("停止", systemImage: "stop")
+                                    .frame(maxWidth: .infinity)
+                            }.buttonStyle(ArcaneActionButtonStyle(destructive: true)).disabled(details.blockedReason(for: .stop) != nil)
                         }
-                        Divider()
-                        Button { confirming = .redeploy } label: {
-                            Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        .disabled(!canAct)
+                        .arcaneRowSeparators()
+                        .listRowSeparator(.visible, edges: .bottom)
+                    } else if ["exited", "created"].contains(details.state?.status ?? "") {
+                        Button { confirming = .start } label: {
+                            Label("启动", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(ArcaneActionButtonStyle())
-                        .disabled(!canAct || details.redeployDisabled == true)
-                        Divider()
-                        Button(role: .destructive) { confirming = .delete } label: {
-                            Label("删除容器", systemImage: "trash")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                            .buttonStyle(ArcaneActionButtonStyle(destructive: true))
-                            .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
-
-                    }.padding(.vertical, 4).arcaneRowSeparators()
+                        .disabled(!canAct)
+                        .arcaneRowSeparators()
+                        .listRowSeparator(.visible, edges: .bottom)
+                    } else {
+                        Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary)
+                            .arcaneRowSeparators()
+                            .listRowSeparator(.visible, edges: .bottom)
+                    }
+                    Button { confirming = .redeploy } label: {
+                        Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(ArcaneActionButtonStyle())
+                    .disabled(!canAct || details.redeployDisabled == true)
+                    .arcaneRowSeparators()
+                    .listRowSeparator(.visible, edges: .bottom)
+                    Button(role: .destructive) { confirming = .delete } label: {
+                        Label("删除容器", systemImage: "trash")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                        .buttonStyle(ArcaneActionButtonStyle(destructive: true))
+                        .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
+                        .arcaneRowSeparators()
                 } header: {
                     Text("管理")
                 } footer: {

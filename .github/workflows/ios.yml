@@ -51,6 +51,8 @@ jobs:
           /tmp/hako-credential-tests
       - name: Test usage storage and GitHub merge
         run: |
+          swiftc Hako/Usage/UsagePresentation.swift Tests/UsagePresentationTests.swift -o /tmp/hako-usage-presentation-tests
+          /tmp/hako-usage-presentation-tests
           swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
           /tmp/hako-core-tests
           swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests

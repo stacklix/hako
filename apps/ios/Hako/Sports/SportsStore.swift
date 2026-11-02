@@ -46,6 +46,7 @@ import CryptoKit
         var value = state
         try value.save(record)
         try persist(value)
+        Task { await synchronize() }
     }
 
     func saveAfterPull(_ record: SportsRecord) async throws {
@@ -59,10 +60,11 @@ import CryptoKit
         var value = state
         value.delete(id)
         try persist(value)
+        Task { await synchronize() }
     }
 
-    // Pull on entry, or retry before saving if entry pull failed.
-    // Local edits remain pending until the next entry.
+    // Pull on entry and immediately synchronize each persisted mutation.
+    // Failed mutations remain pending for a later retry.
     func synchronize() async {
         guard !syncing, storageReady else { return }
         syncing = true
