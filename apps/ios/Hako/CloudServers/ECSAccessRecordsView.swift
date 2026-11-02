@@ -125,7 +125,7 @@ struct ECSAccessRecordsView: View {
                     field("HTTP 状态码（100–599）", text: $draft.status, prompt: "例如 429").keyboardType(.numberPad)
                 }
             }
-            note("按完整 IP、路径和状态码精确匹配。路径不包含 ? 后的参数。")
+            note("IP 和状态码精确匹配。路径忽略末尾 /，不包含 ? 后的参数。")
             if let validationError {
                 Text(validationError).font(.footnote).foregroundStyle(.orange).padding(.top, 12)
             }

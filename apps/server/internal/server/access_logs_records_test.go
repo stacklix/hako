@@ -85,3 +85,59 @@ func TestAccessLogRecordsFiltersAndPagination(t *testing.T) {
 		}
 	}
 }
+
+func TestAccessLogRecordsTrailingSlashEquivalence(t *testing.T) {
+	dir := t.TempDir()
+	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
+	s := &Server{accessLogs: a}
+	now := time.Now().Add(-time.Minute).Truncate(time.Second)
+	var data strings.Builder
+	for _, path := range []string{"/blog", "/blog/", "/blog//", "/blog/post", "/blogger", "/"} {
+		status := 200
+		if path == "/blog/" {
+			status = 404
+		}
+		data.WriteString(logTestLine(now, "a.test", "192.0.2.1", "UA", path, status))
+	}
+	data.WriteString(logTestLine(now, "b.test", "192.0.2.1", "foreign", "/blog/", 404))
+	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
+	a.scan()
+	type result struct {
+		Rows                []accessRecord
+		TotalRows, Requests int64
+		HasMore             bool
+	}
+	read := func(path, status string, offset int) result {
+		t.Helper()
+		q := url.Values{"domain": {"a.test"}, "ip": {"192.0.2.1"}, "path": {path}, "status": {status}, "offset": {fmt.Sprint(offset)}, "limit": {"1"},
+			"from": {now.Add(-time.Second).Format(time.RFC3339)}, "to": {now.Add(time.Second).Format(time.RFC3339)}}
+		rec := httptest.NewRecorder()
+		s.adminAccessLogRecords(rec, httptest.NewRequest("GET", "/?"+q.Encode(), nil))
+		var value result
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &value) != nil {
+			t.Fatal(rec.Code, rec.Body.String())
+		}
+		return value
+	}
+	for _, path := range []string{"/blog", "/blog/", "/blog//"} {
+		seen := map[string]bool{}
+		for offset := 0; offset < 3; offset++ {
+			page := read(path, "", offset)
+			if page.TotalRows != 3 || page.Requests != 3 || len(page.Rows) != 1 || page.HasMore != (offset < 2) {
+				t.Fatalf("%s: %+v", path, page)
+			}
+			seen[page.Rows[0].Path] = true
+		}
+		if !seen["/blog"] || !seen["/blog/"] || !seen["/blog//"] {
+			t.Fatal("original paths must remain distinct in results", seen)
+		}
+		filtered := read(path, "404", 0)
+		if filtered.TotalRows != 1 || filtered.Rows[0].Path != "/blog/" {
+			t.Fatal("status filter failed", filtered)
+		}
+	}
+	root := read("/", "", 0)
+	if root.TotalRows != 1 || root.Rows[0].Path != "/" {
+		t.Fatal("root path matched non-root paths", root)
+	}
+}

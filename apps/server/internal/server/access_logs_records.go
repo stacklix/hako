@@ -53,6 +53,13 @@ func (s *Server) adminAccessLogRecords(w http.ResponseWriter, r *http.Request) {
 			value = ip.String()
 		}
 		if value != "" {
+			if filter.key == "path" {
+				// Search both slash variants without rewriting stored paths or
+				// matching child paths such as /blog/post.
+				where += " AND rtrim(url,'/')=?"
+				args = append(args, strings.TrimRight(value, "/"))
+				continue
+			}
 			where += " AND " + filter.column + "=?"
 			args = append(args, value)
 		}

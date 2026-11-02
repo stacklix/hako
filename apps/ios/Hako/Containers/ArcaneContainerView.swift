@@ -67,11 +67,15 @@ struct ArcaneContainerView: View {
                     Label(environment.displayName, systemImage: "server.rack").font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 12) {
                         statusBadge
-                        if update?.hasUpdate == true, update?.error?.isEmpty != false {
+                        if let operationStatus, operationStatus.action == .redeploy {
+                            ArcaneOperationBadge(status: operationStatus)
+                        } else if update?.hasUpdate == true, update?.error?.isEmpty != false {
                             updateBadge
                         }
                     }
-                    if let operationStatus { ArcaneOperationBadge(status: operationStatus) }
+                    if let operationStatus, operationStatus.action != .redeploy {
+                        ArcaneOperationBadge(status: operationStatus)
+                    }
                 }.padding(.vertical, 6).arcaneRowSeparators()
             }.listSectionSpacing(12)
             Section {

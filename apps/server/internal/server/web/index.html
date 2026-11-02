@@ -64,7 +64,7 @@
               <div class="log-filters">
                 <label>域名（精确匹配）<input id="logs-query-domain" placeholder="留空查询全部域名" maxlength="512"></label>
                 <label>来源 IP（精确匹配）<input id="logs-query-ip" placeholder="留空不限" maxlength="64"></label>
-                <label>URL 路径（精确匹配）<input id="logs-query-path" placeholder="例如：/wordpress/，不含查询参数"></label>
+                <label>URL 路径（忽略末尾 /）<input id="logs-query-path" placeholder="例如：/wordpress，不含查询参数"></label>
                 <label>状态码（精确匹配）<input id="logs-query-status" type="number" min="100" max="599" step="1" placeholder="例如：404，留空不限"></label>
                 <label>开始时间（本机时区）<input id="logs-query-from" type="datetime-local" step="1" required></label>
                 <label>结束时间（本机时区）<input id="logs-query-to" type="datetime-local" step="1" required></label>
