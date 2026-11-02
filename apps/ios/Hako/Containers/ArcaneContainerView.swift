@@ -354,17 +354,19 @@ struct ArcaneContainerView: View {
             if let time = update?.checkTime { Text("上次检查 \(formattedCheckTime(time))").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
             if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
             VStack(alignment: .leading, spacing: 12) {
-                Button {
-                    Task { await checkUpdate() }
-                } label: {
-                    HStack(spacing: 6) {
-                        if checkingUpdate { ProgressView() }
-                        else { Image(systemName: "arrow.clockwise") }
-                        Text(checkingUpdate ? "检查中…" : "检查更新")
-                    }.frame(maxWidth: .infinity)
+                if update?.hasUpdate != true || update?.error?.isEmpty == false {
+                    Button {
+                        Task { await checkUpdate() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if checkingUpdate { ProgressView() }
+                            else { Image(systemName: "arrow.clockwise") }
+                            Text(checkingUpdate ? "检查中…" : "检查更新")
+                        }.frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(ArcaneActionButtonStyle())
+                    .disabled(checkingUpdate || store.operationRunning)
                 }
-                .buttonStyle(ArcaneActionButtonStyle())
-                .disabled(checkingUpdate || store.operationRunning)
                 if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
                     Button { confirming = .redeploy } label: {
                         HStack(spacing: 6) {

@@ -86,16 +86,14 @@ struct ContainersView: View {
         }
         .refreshable { await store.refresh(forceEnvironments: true) }
         .sheet(isPresented: $showingSettings) { ArcaneSettingsSheet(store: store) }
-        .onAppear { visible = true; autoCheckPending = true; store.loadConfiguration() }
-        .onDisappear { visible = false; store.cancelUpdateCheck() }
+        .onAppear { visible = true; autoCheckPending = !store.checkingUpdates; store.loadConfiguration() }
+        .onDisappear { visible = false }
         .onChange(of: store.connection?.id) { _, _ in autoCheckPending = true }
         .onChange(of: showingSettings) { _, showing in
-            if showing { store.cancelUpdateCheck() }
-            else { autoCheckPending = true }
+            if !showing { autoCheckPending = !store.checkingUpdates }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { autoCheckPending = true }
-            else { store.cancelUpdateCheck() }
+            if phase == .active { autoCheckPending = !store.checkingUpdates }
         }
         .task(id: pollKey) {
             guard visible, scenePhase == .active, !showingSettings, !store.checkingUpdates else { return }
