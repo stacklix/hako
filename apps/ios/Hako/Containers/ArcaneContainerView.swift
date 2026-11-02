@@ -100,22 +100,40 @@ struct ArcaneContainerView: View {
                     if details.state?.status == "running" {
                         HStack(spacing: 16) {
                             Button { confirming = .restart } label: {
-                                Text("重启").frame(maxWidth: .infinity, minHeight: 44)
-                            }.buttonStyle(.borderless)
+                                Label("重启", systemImage: "arrow.clockwise")
+                                    .frame(maxWidth: .infinity, minHeight: 30)
+                            }.buttonStyle(.bordered).tint(.primary)
                             Button(role: .destructive) { confirming = .stop } label: {
-                                Text("停止").frame(maxWidth: .infinity, minHeight: 44)
-                            }.buttonStyle(.borderless).disabled(details.blockedReason(for: .stop) != nil)
-                        }.disabled(!canAct).arcaneRowSeparators()
+                                Label("停止", systemImage: "stop")
+                                    .frame(maxWidth: .infinity, minHeight: 30)
+                            }.buttonStyle(.bordered).tint(.red).disabled(details.blockedReason(for: .stop) != nil)
+                        }
+                        .buttonBorderShape(.roundedRectangle(radius: 10))
+                        .disabled(!canAct).arcaneRowSeparators()
                     } else if ["exited", "created"].contains(details.state?.status ?? "") {
-                        Button("启动") { confirming = .start }
-                            .buttonStyle(.borderless).disabled(!canAct).arcaneRowSeparators()
+                        Button { confirming = .start } label: {
+                            Label("启动", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity, minHeight: 30)
+                        }
+                        .buttonStyle(.borderedProminent).tint(.primary)
+                        .buttonBorderShape(.roundedRectangle(radius: 10))
+                        .disabled(!canAct).arcaneRowSeparators()
                     } else {
                         Text("请在 Arcane 中处理当前容器状态。").foregroundStyle(.secondary).arcaneRowSeparators()
                     }
                     Button { confirming = .redeploy } label: {
                         Label("拉取镜像并重新部署", systemImage: "arrow.triangle.2.circlepath")
-                    }.disabled(!canAct || details.redeployDisabled == true).arcaneRowSeparators()
-                    Button("删除容器", role: .destructive) { confirming = .delete }
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.bordered).tint(.primary)
+                    .buttonBorderShape(.roundedRectangle(radius: 10))
+                    .disabled(!canAct || details.redeployDisabled == true).arcaneRowSeparators()
+                    Button(role: .destructive) { confirming = .delete } label: {
+                        Label("删除容器", systemImage: "trash")
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                        .buttonStyle(.bordered).tint(.red)
+                        .buttonBorderShape(.roundedRectangle(radius: 10))
                         .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
                         .arcaneRowSeparators()
                 } header: {
@@ -308,11 +326,6 @@ struct ArcaneContainerView: View {
 
     private func imageUpdateSection(_ details: ArcaneContainerDetails) -> some View {
         Section("镜像更新") {
-            Button {
-                Task { await checkUpdate() }
-            } label: {
-                HStack { Text("检查更新"); Spacer(); if checkingUpdate { ProgressView() } }
-            }.disabled(checkingUpdate || store.operationRunning).arcaneRowSeparators()
             LabeledContent("更新状态", value: update?.text ?? "尚未检查").arcaneRowSeparators()
             if let current = update?.currentVersion, !current.isEmpty { LabeledContent("当前版本", value: current).arcaneRowSeparators() }
             if let latest = update?.latestVersion, !latest.isEmpty { LabeledContent("可用版本", value: latest).arcaneRowSeparators() }
@@ -321,22 +334,35 @@ struct ArcaneContainerView: View {
             }
             if let time = update?.checkTime { Text("检查时间：\(time)").font(.caption).foregroundStyle(.secondary).arcaneRowSeparators() }
             if update?.error?.isEmpty == false { Text("镜像检查失败，请在 Arcane 中核对镜像仓库凭据及更新策略。").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() }
-            if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
+            VStack(alignment: .leading, spacing: 12) {
                 Button {
-                    store.start(.redeploy, container: details, environment: environment)
+                    Task { await checkUpdate() }
                 } label: {
-                    HStack {
-                        Label(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启", systemImage: "arrow.down.circle")
-                        Spacer()
-                        if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
-                    }
+                    HStack(spacing: 8) {
+                        if checkingUpdate { ProgressView() }
+                        else { Image(systemName: "arrow.clockwise") }
+                        Text(checkingUpdate ? "检查中…" : "检查更新")
+                    }.frame(maxWidth: .infinity, minHeight: 30)
                 }
-                .disabled(!canAct)
-                .accessibilityHint("拉取最新镜像并重新部署，服务会短暂中断")
-                .arcaneRowSeparators()
-                Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
-                    .font(.footnote).foregroundStyle(.secondary).arcaneRowSeparators()
+                .buttonStyle(.bordered).tint(.primary)
+                .disabled(checkingUpdate || store.operationRunning)
+                if update?.hasUpdate == true, update?.error?.isEmpty != false, !managementProtected {
+                    Button { confirming = .redeploy } label: {
+                        HStack(spacing: 8) {
+                            if operationStatus?.action == .redeploy, store.operationRunning { ProgressView() }
+                            else { Image(systemName: "arrow.down.circle") }
+                            Text(operationStatus?.action == .redeploy && store.operationRunning ? "更新中…" : "更新并重启")
+                        }.frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.primary)
+                    .disabled(!canAct)
+                    .accessibilityHint("确认后拉取最新镜像并重新部署，服务会短暂中断")
+                    Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
+            .buttonBorderShape(.roundedRectangle(radius: 10))
+            .arcaneRowSeparators()
         }
     }
 

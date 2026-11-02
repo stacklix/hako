@@ -28,9 +28,19 @@ struct ArcaneCommandsSection: View {
                 Section("常见操作") { ForEach(ArcaneCommandDefinition.caddy) { operation($0) } }
             }
             Section("容器终端") {
-                Button { openTerminal(details, connectionID) } label: { Label("进入终端", systemImage: "terminal") }
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("交互式终端").font(.subheadline.weight(.semibold))
+                        Text("进入当前容器的 Shell").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button { openTerminal(details, connectionID) } label: {
+                        Label("进入终端", systemImage: "terminal")
+                            .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.bordered).tint(.primary)
+                    .buttonBorderShape(.roundedRectangle(radius: 10))
                     .disabled(details.state?.status != "running" || store.terminalSessionID != nil || store.operationRunning || store.fileSaveRunning || store.pending != nil)
-                    .arcaneRowSeparators()
+                }.arcaneRowSeparators()
             }
             Section {
                 ForEach(customs) { definition in
@@ -43,13 +53,16 @@ struct ArcaneCommandsSection: View {
                         }
                 }
                 if customs.isEmpty { Text("尚未添加自定义操作").foregroundStyle(.secondary).arcaneRowSeparators() }
-            } header: {
-                HStack {
-                    Text("我的操作")
-                    Spacer()
-                    Button { editing = ArcaneCommandDefinition() } label: { Image(systemName: "plus").frame(minWidth: 44, minHeight: 44) }
-                        .accessibilityLabel("添加容器操作")
+                Button { editing = ArcaneCommandDefinition() } label: {
+                    Label("添加自定义操作", systemImage: "plus")
+                        .frame(maxWidth: .infinity, minHeight: 30)
                 }
+                .buttonStyle(.bordered).tint(.primary)
+                .buttonBorderShape(.roundedRectangle(radius: 10))
+                .accessibilityLabel("添加容器操作")
+                .arcaneRowSeparators()
+            } header: {
+                Text("我的操作")
             }
             if let history = library.results[context.stableKey], !history.isEmpty {
                 Section("最近执行") {
