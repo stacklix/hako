@@ -378,8 +378,6 @@ struct ArcaneContainerView: View {
                     .buttonStyle(ArcaneActionButtonStyle())
                     .disabled(!canAct)
                     .accessibilityHint("确认后拉取最新镜像并重新部署，服务会短暂中断")
-                    Text(details.project == nil ? "更新会拉取最新镜像并重建容器，服务会短暂中断。" : "更新会依据 Compose 项目配置重新部署此服务，关联副本也可能重建，服务会短暂中断。")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .arcaneRowSeparators()

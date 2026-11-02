@@ -26,17 +26,14 @@ struct ArcaneCodeEditor: UIViewRepresentable {
         view.smartDashesType = .no
         view.smartInsertDeleteType = .no
         view.spellCheckingType = .no
-        view.keyboardDismissMode = .interactive
+        view.keyboardDismissMode = .onDrag
         view.alwaysBounceVertical = true
         view.allowsEditingTextAttributes = false
-        let toolbar = UIToolbar()
-        toolbar.items = [
-            UIBarButtonItem(systemItem: .flexibleSpace),
-            UIBarButtonItem(title: "收起键盘", style: .done,
-                target: view, action: #selector(UIResponder.resignFirstResponder))
-        ]
-        toolbar.sizeToFit()
-        view.inputAccessoryView = toolbar
+        view.inputAccessoryView = ArcaneEditorKeyboardBar(textView: view)
+        let dismissTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.dismissKeyboardOnTap))
+        dismissTap.cancelsTouchesInView = false
+        dismissTap.delegate = context.coordinator
+        editor.addGestureRecognizer(dismissTap)
         return editor
     }
 
@@ -50,6 +47,7 @@ struct ArcaneCodeEditor: UIViewRepresentable {
         defer { coordinator.applying = false }
         view.isEditable = editable && !saving
         view.isSelectable = !saving
+        (view.inputAccessoryView as? ArcaneEditorKeyboardBar)?.setEditingEnabled(editable && !saving)
         view.accessibilityLabel = "文件内容：\(filename)"
         if changedFont, view.markedTextRange == nil { view.font = Self.font }
         if view.text != text {
@@ -84,13 +82,27 @@ struct ArcaneCodeEditor: UIViewRepresentable {
         editor.textView.delegate = nil
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: ArcaneCodeEditor
         var work: Task<Void, Never>?
         var highlightedText: String?
         var applying = false
         weak var editor: ArcaneCodeEditorView?
         init(_ parent: ArcaneCodeEditor) { self.parent = parent }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            // Only consume dismissal taps while editing; a tap with the keyboard hidden still focuses normally.
+            editor?.textView.isFirstResponder == true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+
+        @objc func dismissKeyboardOnTap() {
+            guard let view = editor?.textView else { return }
+            // Run after UIKit's caret gesture so it cannot immediately reopen the keyboard.
+            DispatchQueue.main.async { [weak view] in _ = view?.resignFirstResponder() }
+        }
 
         func textViewDidChange(_ view: UITextView) {
             guard !applying else { return }
@@ -155,6 +167,92 @@ struct ArcaneCodeEditor: UIViewRepresentable {
             case .variable: return .systemTeal
             }
         }
+    }
+}
+
+// Keep the editing shortcuts above the keyboard, with the terminal's scrollable key style.
+private final class ArcaneEditorKeyboardBar: UIInputView {
+    private var editingButtons: [UIButton] = []
+
+    init(textView: UITextView) {
+        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 56), inputViewStyle: .keyboard)
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        let keys = UIStackView()
+        keys.axis = .horizontal
+        keys.spacing = 8
+        keys.alignment = .center
+        let tab = key("Tab", label: "插入制表符") { [weak textView] in
+            guard let textView, textView.isEditable else { return }
+            textView.unmarkText()
+            textView.insertText("\t")
+            textView.scrollRangeToVisible(textView.selectedRange)
+        }
+        editingButtons.append(tab)
+        keys.addArrangedSubview(tab)
+        let actions: [(String, String, () -> Void)] = [
+            ("撤销", "撤销编辑", { [weak textView] in textView?.undoManager?.undo() }),
+            ("重做", "重做编辑", { [weak textView] in textView?.undoManager?.redo() }),
+            ("粘贴", "粘贴文本", { [weak textView] in textView?.paste(nil) }),
+            ("覆盖粘贴", "用剪贴板文本替换全部文件内容", { [weak textView] in
+                // Read first: an unavailable or non-text clipboard must not erase the draft.
+                guard let textView, let replacement = UIPasteboard.general.string else { return }
+                textView.unmarkText()
+                textView.selectedRange = NSRange(location: 0, length: textView.textStorage.length)
+                // Use the normal text-input path so binding, highlighting and undo stay in sync.
+                textView.insertText(replacement)
+                textView.selectedRange = NSRange(location: 0, length: 0)
+                textView.scrollRangeToVisible(textView.selectedRange)
+            })
+        ]
+        for (title, label, action) in actions {
+            let button = key(title, label: label) { [weak textView] in
+                guard textView?.isEditable == true else { return }
+                action()
+            }
+            editingButtons.append(button)
+            keys.addArrangedSubview(button)
+        }
+        let copyAll = key("复制全部", label: "复制全部文件内容") { [weak textView] in
+            guard let textView else { return }
+            UIPasteboard.general.string = textView.text ?? ""
+        }
+        keys.addArrangedSubview(copyAll)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scroll)
+        keys.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(keys)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 10),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            keys.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            keys.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            keys.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            keys.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            keys.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func setEditingEnabled(_ enabled: Bool) {
+        for button in editingButtons { button.isEnabled = enabled }
+    }
+
+    private func key(_ title: String, label: String, action: @escaping () -> Void) -> UIButton {
+        var configuration = UIButton.Configuration.tinted()
+        configuration.title = title
+        configuration.baseForegroundColor = .label
+        configuration.baseBackgroundColor = .secondarySystemFill
+        configuration.cornerStyle = .medium
+        configuration.buttonSize = .small
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in action() })
+        button.accessibilityLabel = label
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        return button
     }
 }
 
