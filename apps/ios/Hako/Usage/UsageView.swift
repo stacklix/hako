@@ -68,6 +68,8 @@ struct UsageView: View {
                     else { emptyState }
                 case .trends:
                     summary
+                    UsageDailyChart(values: records.map { UsageDayValue(day: $0.day, seconds: $0.totalSeconds) }, year: year, movingAverages: false)
+                    UsageDailyChart(values: records.map { UsageDayValue(day: $0.day, seconds: $0.totalSeconds) }, year: year, movingAverages: true)
                     Text("按月份统计总使用时长、日均时长与累计时长；日均值按有记录的天数计算。")
                         .font(.caption).foregroundStyle(UsageStyle.muted).lineSpacing(4)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 290), spacing: 12)], spacing: 12) {

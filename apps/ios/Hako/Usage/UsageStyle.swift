@@ -9,6 +9,14 @@ enum UsageStyle {
     static let muted = adaptive(0x76777d, 0xaaaab0)
     static let line = adaptive(0xe9e9ee, 0x38383c)
     static let series = adaptive(0x478d80, 0x78b8aa)
+    static func color(_ series: UsageDailySeries) -> Color {
+        switch series {
+        case .daily, .week: self.series
+        case .month: adaptive(0x5b88bf, 0x8aaedb)
+        case .quarter: adaptive(0xbf9651, 0xd3b27b)
+        case .halfYear: adaptive(0x9472b1, 0xbfa0d8)
+        }
+    }
     private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
             let value = traits.userInterfaceStyle == .dark ? dark : light

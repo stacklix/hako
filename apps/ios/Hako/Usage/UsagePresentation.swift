@@ -25,7 +25,54 @@ struct UsageMonthValue: Identifiable, Equatable {
     var period: String { "\(month)月" }
 }
 
+enum UsageDailySeries: String, CaseIterable {
+    case daily = "每日时长", week = "7日均线", month = "30日均线", quarter = "90日均线", halfYear = "180日均线"
+    var window: Int? {
+        switch self {
+        case .daily: nil
+        case .week: 7
+        case .month: 30
+        case .quarter: 90
+        case .halfYear: 180
+        }
+    }
+}
+
+struct UsageDailyValue: Identifiable, Equatable {
+    let day: String
+    let date: Date
+    let hours: Double
+    let series: UsageDailySeries
+    var id: String { series.rawValue + day }
+}
+
 enum UsageStatistics {
+    // Windows include the displayed date. Missing dates don't count as zero-use days.
+    // Keep previous-year history in the input so January averages remain continuous.
+    static func days(_ values: [UsageDayValue], year: Int, series: UsageDailySeries) -> [UsageDailyValue] {
+        let formatter = UsageDates.formatter()
+        let history = values.compactMap { value -> (value: UsageDayValue, date: Date)? in
+            formatter.date(from: value.day).map { (value, $0) }
+        }.sorted { $0.date < $1.date }
+        var left = 0
+        var sum = 0.0
+        var result: [UsageDailyValue] = []
+        for (index, entry) in history.enumerated() {
+            sum += entry.value.seconds
+            if let window = series.window {
+                let cutoff = UsageDates.calendar.date(byAdding: .day, value: -(window - 1), to: entry.date)!
+                while left < index && history[left].date < cutoff {
+                    sum -= history[left].value.seconds
+                    left += 1
+                }
+            }
+            guard entry.value.year == year else { continue }
+            let seconds = series.window == nil ? entry.value.seconds : sum / Double(index - left + 1)
+            result.append(UsageDailyValue(day: entry.value.day, date: entry.date, hours: seconds / 3600, series: series))
+        }
+        return result
+    }
+
     static func months(_ values: [UsageDayValue], year: Int, metric: UsageChartMetric) -> [UsageMonthValue] {
         let selected = values.filter { $0.year == year }
         var accumulated = 0.0
