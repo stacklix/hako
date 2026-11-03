@@ -16,11 +16,17 @@ struct HeadplaneConnection: Codable, Equatable, Sendable {
     var address = ""
     var apiKey = ""
     var allowHTTP = false
+    var infoSecret: String? = nil
 
     func normalized() throws -> Self {
         var result = self
         result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         result.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let infoSecret = infoSecret?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard infoSecret.unicodeScalars.allSatisfy({ (32...126).contains($0.value) }) else {
+            throw HeadplaneFailure(message: "版本查询密钥无效，请检查是否包含换行或特殊字符。")
+        }
+        result.infoSecret = infoSecret.isEmpty ? nil : infoSecret
         guard !result.name.isEmpty, !result.apiKey.isEmpty,
               result.apiKey.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else {
             throw HeadplaneFailure(message: "请填写实例名称和有效的 API Key。")
@@ -43,11 +49,16 @@ struct HeadplaneConnection: Codable, Equatable, Sendable {
 
     func request(_ resource: HeadplaneResource, data: Bool = true, method: String = "GET") throws -> URLRequest {
         let c = try normalized()
+        if case .machine(let id) = resource {
+            guard !id.isEmpty, id.utf8.allSatisfy({ (48...57).contains($0) }) else {
+                throw HeadplaneFailure(message: "设备编号无效，请重新打开设备详情。")
+            }
+        }
         var url = URL(string: c.address)!
         for component in resource.path.split(separator: "/") { url.appendPathComponent(String(component)) }
-        if data { url = url.appendingPathExtension("data") }
+        if data && !resource.plainJSON { url = url.appendingPathExtension("data") }
         var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-        if data && method == "GET" { parts.queryItems = [URLQueryItem(name: "_routes", value: resource.routeID)] }
+        if data && !resource.plainJSON && method == "GET" { parts.queryItems = [URLQueryItem(name: "_routes", value: resource.routeID)] }
         var request = URLRequest(url: parts.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.httpMethod = method
         request.setValue("text/x-script, application/json", forHTTPHeaderField: "Accept")
@@ -62,16 +73,27 @@ struct HeadplaneConnection: Codable, Equatable, Sendable {
     }
 }
 
-enum HeadplaneResource: String, Hashable, Sendable {
+enum HeadplaneResource: Hashable, Sendable {
     case login, machines, policy, dns, keys, agent
+    case health, serverInfo, settings, serverCapabilities
+    case machine(String)
+    var plainJSON: Bool { self == .health || self == .serverInfo }
     var path: String {
         switch self { case .login: return "login"; case .machines: return "machines"; case .policy: return "acls"
-        case .dns: return "dns"; case .keys: return "settings/auth-keys"; case .agent: return "settings/agent" }
+        case .dns: return "dns"; case .keys: return "settings/auth-keys"; case .agent: return "settings/agent"
+        case .machine(let id): return "machines/" + id
+        case .health: return "healthz"
+        case .serverInfo: return "api/info"
+        case .settings, .serverCapabilities: return "settings" }
     }
     var routeID: String {
         switch self {
         case .login: return "routes/auth/login/page"
         case .agent: return "routes/settings/agent"
+        case .machine: return "routes/machines/machine"
+        case .serverCapabilities: return "layout/app"
+        case .health: return "routes/util/healthz"
+        case .serverInfo: return "routes/util/info"
         default: return "routes/" + path + "/overview"
         }
     }
@@ -173,6 +195,108 @@ struct HeadplaneMachines: Sendable {
         users = try people.map(HeadplaneUser.init)
         guard Set(nodes.map(\.id)).count == nodes.count, Set(users.map(\.id)).count == users.count else { throw HeadplaneFailure.incompatible }
         writable = value["writable"].flag; preAuth = value["preAuth"].flag
+    }
+}
+
+struct HeadplaneMachineDetail: Sendable {
+    let node: HeadplaneNode
+    let hostname: String
+    let nodeKey: String
+    let createdAt: String
+    let domain: String
+    let host: HeadplaneHostInfo?
+    let agent: HeadplaneMachineAgent?
+    let isAgent: Bool
+
+    init(_ value: HeadplaneJSON, nodeID: String) throws {
+        node = try HeadplaneNode(value["node"])
+        guard node.id == nodeID else { throw HeadplaneFailure.incompatible }
+        hostname = value["node"]["name"].text
+        nodeKey = value["node"]["nodeKey"].text
+        createdAt = value["node"]["createdAt"].text
+        let magic = value["magic"].text.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        domain = magic.isEmpty ? "" : node.name + "." + magic
+        // stats is the detail loader's Agent lookup; hostInfo is its populated-node projection.
+        let stats = value["stats"].object.isEmpty ? value["node"]["hostInfo"] : value["stats"]
+        host = stats.object.isEmpty ? nil : HeadplaneHostInfo(stats)
+        agent = value["agent"].object.isEmpty ? nil : HeadplaneMachineAgent(value["agent"])
+        isAgent = (!nodeKey.isEmpty && value["agent"]["nodeKey"].text == nodeKey) || stats["HeadplaneAgent"].flag
+    }
+}
+
+struct HeadplaneMachineAgent: Sendable {
+    let syncedAt: String
+    let nodeCount: Int?
+    init(_ value: HeadplaneJSON) {
+        syncedAt = value["syncedAt"].text
+        nodeCount = value["nodeCount"].int.flatMap { $0 >= 0 ? $0 : nil }
+    }
+}
+
+struct HeadplaneHostInfo: Sendable {
+    let raw: HeadplaneJSON
+    init(_ value: HeadplaneJSON) { raw = value }
+    var system: String { [raw["OS"].text, raw["OSVersion"].text].filter { !$0.isEmpty }.joined(separator: " ") }
+    var distribution: String { ["Distro", "DistroVersion", "DistroCodeName"].map { raw[$0].text }.filter { !$0.isEmpty }.joined(separator: " ") }
+    var version: String { raw["IPNVersion"].text }
+    var architecture: String { raw["Machine"].text.isEmpty ? raw["GoArch"].text : raw["Machine"].text }
+    var endpoints: [String] { raw["Endpoints"].strings }
+    var derpRegion: Int? { [raw["HomeDERP"].int, raw["NetInfo"]["PreferredDERP"].int].compactMap { $0 }.first { $0 > 0 } }
+    // Go optional booleans may be absent or encoded as strings. Unknown is never "No".
+    static func booleanText(_ value: HeadplaneJSON) -> String {
+        switch value {
+        case .bool(true), .string("true"): return "是"
+        case .bool(false), .string("false"): return "否"
+        default: return "未提供"
+        }
+    }
+    func connectivity(_ field: String) -> String { Self.booleanText(raw["NetInfo"][field]) }
+}
+
+struct HeadplaneHealth: Sendable {
+    let healthy: Bool
+    init(_ value: HeadplaneJSON) throws {
+        guard ["OK", "ERROR"].contains(value["status"].text) else { throw HeadplaneFailure.incompatible }
+        healthy = value["status"].text == "OK"
+    }
+}
+
+struct HeadplaneServerInfo: Sendable {
+    let healthy: Bool
+    let headplaneVersion: String
+    let headscaleVersion: String
+    let runtimeVersions: [String: String]
+    init(_ value: HeadplaneJSON) throws {
+        guard ["healthy", "unhealthy"].contains(value["status"].text),
+              let headplane = value["headplane_version"].string, !headplane.isEmpty,
+              let headscale = value["headscale_canonical_version"].string, !headscale.isEmpty else { throw HeadplaneFailure.incompatible }
+        healthy = value["status"].text == "healthy"
+        headplaneVersion = headplane
+        headscaleVersion = headscale == "unknown" ? "未获取到" : headscale
+        runtimeVersions = ["node", "v8", "uv", "zlib", "openssl", "libc"].reduce(into: [:]) { result, key in
+            if let version = value["internal_versions"][key].string, !version.isEmpty { result[key] = version }
+        }
+    }
+}
+
+struct HeadplaneServerSettings: Sendable {
+    let configWritable: Bool
+    let hasOIDCConfig: Bool
+    init(_ value: HeadplaneJSON) throws {
+        guard case .bool(let writable) = value["config"], case .bool(let oidc) = value["hasOidcConfig"] else { throw HeadplaneFailure.incompatible }
+        configWritable = writable; hasOIDCConfig = oidc
+    }
+}
+
+struct HeadplaneServerCapabilities: Sendable {
+    let configReadable: Bool
+    let access: [String: Bool]
+    init(_ value: HeadplaneJSON) throws {
+        guard case .bool(let readable) = value["configAvailable"] else { throw HeadplaneFailure.incompatible }
+        configReadable = readable
+        access = value["access"].object.reduce(into: [:]) { result, item in
+            if case .bool(let allowed) = item.value { result[item.key] = allowed }
+        }
     }
 }
 

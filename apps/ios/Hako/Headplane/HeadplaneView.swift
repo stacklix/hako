@@ -2,10 +2,10 @@ import SwiftUI
 
 enum HeadplanePage: String, CaseIterable { case devices = "设备", network = "网络", policy = "访问控制", more = "更多" }
 enum HeadplaneScreen: Identifiable {
-    case settings, device(String), users, keys, createKey, dns, agent, policy
+    case settings, device(String), users, keys, createKey, dns, agent, policy, diagnostics
     var id: String {
         switch self { case .device(let id): return "device:" + id; case .settings: return "settings"; case .users: return "users"
-        case .keys: return "keys"; case .createKey: return "createKey"; case .dns: return "dns"; case .agent: return "agent"; case .policy: return "policy" }
+        case .keys: return "keys"; case .createKey: return "createKey"; case .dns: return "dns"; case .agent: return "agent"; case .policy: return "policy"; case .diagnostics: return "diagnostics" }
     }
 }
 
@@ -68,6 +68,7 @@ struct HeadplaneView: View {
             case .createKey: HeadplaneCreateKeyView(store: store, revision: store.revision)
             case .dns: HeadplaneDNSView(store: store)
             case .agent: HeadplaneAgentView(store: store)
+            case .diagnostics: HeadplaneDiagnosticsView(store: store, revision: store.revision)
             case .policy:
                 if let policy = store.policy { HeadplanePolicyEditor(store: store, original: policy.text, revision: store.revision) }
             }
@@ -271,6 +272,7 @@ struct HeadplaneView: View {
             menu("用户", subtitle: store.machines.map { "\($0.users.count) 位 Headscale 用户" } ?? "查看网络用户", symbol: "person.2") { screen = .users }
             menu("接入密钥", subtitle: "生成设备入网凭据", symbol: "key.horizontal") { screen = .keys }
             section("服务")
+            menu("服务器状态与能力", subtitle: "健康检查 · 版本 · 配置状态", symbol: "heart.text.clipboard") { screen = .diagnostics }
             menu("Agent 状态", subtitle: "设备信息同步状态", symbol: "waveform.path.ecg") { screen = .agent }
             menu("连接设置", subtitle: "\(store.connection?.name ?? "") · API Key 登录", symbol: "slider.horizontal.3") { screen = .settings }
             VStack(alignment: .leading, spacing: 10) {

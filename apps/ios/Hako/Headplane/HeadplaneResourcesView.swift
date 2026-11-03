@@ -1,5 +1,81 @@
 import SwiftUI
 
+struct HeadplaneDiagnosticsView: View {
+    @ObservedObject var store: HeadplaneStore
+    let revision: UUID
+    private let resources: [HeadplaneResource] = [.health, .serverInfo, .settings, .serverCapabilities]
+    private var checking: Bool { resources.contains { store.loading.contains($0) } }
+    private func yesNo(_ value: Bool?) -> String { value.map { $0 ? "是" : "否" } ?? "未提供" }
+    var body: some View {
+        HeadplaneSheet(title: "服务器状态与能力") {
+            if revision != store.revision {
+                Text("连接已改变，请关闭后重新检查。").foregroundStyle(HeadplaneStyle.muted)
+            } else {
+                if checking { ProgressView("正在检查服务器…") }
+                Text("健康检查").font(.headline)
+                if let health = store.health {
+                    HeadplaneBadge(text: health.healthy ? "服务正常" : "Headscale 健康检查异常", good: health.healthy)
+                    Text(health.healthy ? "Headplane 可访问，Headscale 健康检查通过。" : "Headplane 已响应，但 Headscale 健康检查未通过。请检查后端服务及连接配置。")
+                        .font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+                } else if !store.loading.contains(.health) {
+                    Text("健康状态未知").foregroundStyle(HeadplaneStyle.muted)
+                }
+                HeadplaneErrorText(message: store.errors[.health])
+                if let date = store.updated[.health] {
+                    Text("检查于 \(date.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(HeadplaneStyle.muted)
+                }
+
+                Text("版本信息").font(.headline)
+                if store.connection?.infoSecret == nil {
+                    Text("尚未设置版本查询密钥。请在连接设置填写服务端的 server.info_secret 后查询。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+                } else if let info = store.serverInfo {
+                    HeadplaneFact(title: "Headplane", value: info.headplaneVersion)
+                    HeadplaneFact(title: "Headscale", value: info.headscaleVersion)
+                    if !info.healthy { Text("版本接口报告 Headscale 不健康，Headscale 版本可能无法获取。").font(.footnote).foregroundStyle(HeadplaneStyle.orange) }
+                    if !info.runtimeVersions.isEmpty {
+                        DisclosureGroup("运行环境版本") {
+                            VStack(spacing: 12) {
+                                ForEach(info.runtimeVersions.keys.sorted(), id: \.self) { key in
+                                    HeadplaneFact(title: key == "node" ? "Node.js" : key, value: info.runtimeVersions[key] ?? "")
+                                }
+                            }.padding(.top, 12)
+                        }.font(.subheadline)
+                    }
+                }
+                HeadplaneErrorText(message: store.errors[.serverInfo])
+
+                Text("服务器配置能力").font(.headline)
+                HeadplaneFact(title: "Headscale 配置可读", value: yesNo(store.serverCapabilities?.configReadable))
+                HeadplaneErrorText(message: store.errors[.serverCapabilities])
+                HeadplaneFact(title: "Headscale 配置可写", value: yesNo(store.serverSettings?.configWritable))
+                HeadplaneFact(title: "Headscale OIDC 已配置", value: yesNo(store.serverSettings?.hasOIDCConfig))
+                HeadplaneErrorText(message: store.errors[.settings])
+                if store.serverCapabilities?.configReadable == false {
+                    Text("Headplane 无法读取 Headscale 配置。请检查 headscale.config_path、文件挂载与读取权限；DNS 页面依赖这份配置。").font(.footnote).foregroundStyle(HeadplaneStyle.orange)
+                } else if store.serverSettings?.configWritable == false {
+                    Text("配置不可写；具体可执行的操作还取决于账号权限。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+                }
+                if let capabilities = store.serverCapabilities {
+                    DisclosureGroup("当前账号查看权限") {
+                        VStack(spacing: 12) {
+                            HeadplaneFact(title: "设备", value: yesNo(capabilities.access["machines"]))
+                            HeadplaneFact(title: "DNS", value: yesNo(capabilities.access["dns"]))
+                            HeadplaneFact(title: "访问策略", value: yesNo(capabilities.access["policy"]))
+                            HeadplaneFact(title: "用户", value: yesNo(capabilities.access["users"]))
+                            HeadplaneFact(title: "设置", value: yesNo(capabilities.access["settings"]))
+                        }.padding(.top, 12)
+                    }.font(.subheadline)
+                }
+                Button("重新检查") { Task { await refresh() } }.buttonStyle(HeadplaneButtonStyle()).disabled(checking)
+            }
+        }.task { await refresh() }
+    }
+    private func refresh() async {
+        guard revision == store.revision else { return }
+        await store.refreshDiagnostics()
+    }
+}
+
 struct HeadplaneUsersView: View {
     @ObservedObject var store: HeadplaneStore
     var body: some View {

@@ -63,6 +63,7 @@ actor HeadplaneClient: HeadplaneAccess {
     }
 
     func read(_ resource: HeadplaneResource) async throws -> HeadplaneJSON {
+        if resource.plainJSON { return try await readJSON(resource) }
         do { return try await call(resource, fields: nil) }
         catch let failure as HeadplaneFailure where failure.status == 401 {
             cookies = []
@@ -71,7 +72,47 @@ actor HeadplaneClient: HeadplaneAccess {
     }
 
     func submit(_ resource: HeadplaneResource, fields: [String: String]) async throws -> HeadplaneJSON {
-        try await call(resource, fields: fields)
+        guard !resource.plainJSON else { throw HeadplaneFailure(message: "服务器诊断接口仅支持读取。") }
+        return try await call(resource, fields: fields)
+    }
+
+    private func readJSON(_ resource: HeadplaneResource) async throws -> HeadplaneJSON {
+        try Task.checkCancellation()
+        var request = try connection.request(resource)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if resource == .serverInfo {
+            guard let secret = connection.infoSecret, !secret.isEmpty else {
+                throw HeadplaneFailure(message: "请在连接设置中填写版本查询密钥（server.info_secret）。")
+            }
+            request.setValue("Bearer " + secret, forHTTPHeaderField: "Authorization")
+        }
+        // These endpoints do not use the API Key login or its session Cookie.
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            throw HeadplaneFailure(message: "无法连接 Headplane，服务器健康状态未知。")
+        }
+        guard let http = response as? HTTPURLResponse else { throw HeadplaneFailure.incompatible }
+        HakoLog.record(.headplane, "Headplane 诊断完成", detail: "GET \(resource.path) · \(http.statusCode)")
+        if [301, 302, 303, 307, 308].contains(http.statusCode) {
+            throw HeadplaneFailure(message: "诊断接口返回重定向，请核对 Headplane 管理地址。", status: http.statusCode)
+        }
+        if resource == .serverInfo, [401, 403].contains(http.statusCode) {
+            throw HeadplaneFailure(message: "版本查询被拒绝（HTTP \(http.statusCode)）。请确认服务端已配置 server.info_secret，且与此处填写的密钥一致。", status: http.statusCode)
+        }
+        guard http.statusCode == 200 || (resource == .health && http.statusCode == 500) else {
+            throw HeadplaneFailure(message: "无法读取服务器诊断信息（HTTP \(http.statusCode)），请核对管理地址、版本及反向代理设置。", status: http.statusCode)
+        }
+        guard data.count <= 1024 * 1024, let value = try? JSONDecoder().decode(HeadplaneJSON.self, from: data), !value.object.isEmpty else {
+            throw HeadplaneFailure(message: "诊断接口响应无法识别（HTTP \(http.statusCode)），请核对管理地址及反向代理设置。", status: http.statusCode)
+        }
+        if resource == .health {
+            guard (http.statusCode == 200 && value["status"].string == "OK") || (http.statusCode == 500 && value["status"].string == "ERROR") else {
+                throw HeadplaneFailure(message: "健康检查返回未知结果（HTTP \(http.statusCode)），请查看服务端日志。", status: http.statusCode)
+            }
+        }
+        return value
     }
 
     private func call(_ resource: HeadplaneResource, fields: [String: String]?) async throws -> HeadplaneJSON {
@@ -145,6 +186,8 @@ actor HeadplaneClient: HeadplaneAccess {
         return value
     }
     private func sanitized(_ message: String) -> String {
-        String(message.replacingOccurrences(of: connection.apiKey, with: "[已隐藏]").prefix(500))
+        var result = message.replacingOccurrences(of: connection.apiKey, with: "[已隐藏]")
+        if let secret = connection.infoSecret, !secret.isEmpty { result = result.replacingOccurrences(of: secret, with: "[已隐藏]") }
+        return String(result.prefix(500))
     }
 }

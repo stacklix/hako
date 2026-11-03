@@ -53,10 +53,16 @@ private actor ControlledAccess: HeadplaneAccess {
     var pauseNext = false
     var incompleteKeys = false
     var continuation: CheckedContinuation<HeadplaneJSON, Error>?
+    var details: [String: HeadplaneJSON] = [:]
+    var detailFailure: HeadplaneFailure?
     init() throws { machineData = try payload("machines", .machines); policyData = try payload("policy", .policy) }
     func read(_ resource: HeadplaneResource) async throws -> HeadplaneJSON {
         if pauseNext { pauseNext = false; return try await withCheckedThrowingContinuation { continuation = $0 } }
         if readFailure { throw HeadplaneFailure(message: "Offline") }
+        if case .machine(let id) = resource {
+            if let detailFailure { throw detailFailure }
+            return try details[id] ?? payload(id == "2" ? "machineDetail" : "machineNoAgent", resource)
+        }
         if resource == .keys {
             var keys = try payload("keys", .keys).object
             keys["missing"] = .array(incompleteKeys ? [.object(["user": .string("unavailable")])] : [])
@@ -74,7 +80,9 @@ private actor ControlledAccess: HeadplaneAccess {
     }
     func waiting() -> Bool { continuation != nil }
     func incomplete(_ value: Bool) { incompleteKeys = value }
-    func release() { continuation?.resume(returning: machineData); continuation = nil }
+    func release(_ data: HeadplaneJSON? = nil) { continuation?.resume(returning: data ?? machineData); continuation = nil }
+    func setDetail(_ data: HeadplaneJSON, id: String) { details[id] = data }
+    func failDetail(_ status: Int?) { detailFailure = status.map { HeadplaneFailure(message: "Detail unavailable", status: $0) } }
 }
 
 private final class MemorySecrets: SecretStorage {
@@ -143,6 +151,19 @@ private final class MemorySecrets: SecretStorage {
         storage.value = Data("corrupt".utf8)
         rejects { _ = try HeadplaneCredentials.load(storage: storage) }
         precondition(storage.value == Data("corrupt".utf8))
+        let legacy = Data(#"{"name":"Homelab","address":"https://headplane.example.test/admin","apiKey":"test-key","allowHTTP":false}"#.utf8)
+        let legacyConnection = try JSONDecoder().decode(HeadplaneConnection.self, from: legacy)
+        precondition(legacyConnection.infoSecret == nil)
+        var diagnostic = connection
+        diagnostic.infoSecret = " test-only-info-secret "
+        let normalizedDiagnostic = try diagnostic.normalized()
+        precondition(normalizedDiagnostic.infoSecret == "test-only-info-secret")
+        storage.fail = false
+        try HeadplaneCredentials.save(diagnostic, storage: storage)
+        let reloadedDiagnostic = try HeadplaneCredentials.load(storage: storage)
+        precondition(reloadedDiagnostic?.infoSecret == "test-only-info-secret")
+        diagnostic.infoSecret = "bad\nheader"
+        rejects { _ = try diagnostic.normalized() }
         print("PASS URL, form encoding and isolated credential storage")
     }
 
@@ -160,6 +181,36 @@ private final class MemorySecrets: SecretStorage {
         precondition(missing.nodeCountText == "未提供" && missing.status == "等待同步", "Missing v0.8.2 nodeCount must not be invented or read from another field")
         rejects { _ = try HeadplaneAgentStatus(.object([:])) }
         print("PASS Agent v0.8.2 node count, zero/missing values, synchronization errors and approval states")
+    }
+
+    static func machineDetails() throws {
+        let data = try payload("machineDetail", .machine("2"))
+        let detail = try HeadplaneMachineDetail(data, nodeID: "2")
+        precondition(detail.node.id == "2" && detail.node.name == "detail-router" && detail.hostname == "router-os")
+        precondition(detail.domain == "detail-router.tail.example.test" && detail.createdAt == "2026-01-01T00:00:00Z")
+        precondition(detail.isAgent && detail.agent?.nodeCount == 0 && detail.agent?.syncedAt == "2026-11-04T00:00:00Z")
+        precondition(detail.host?.system == "linux 6.12.0" && detail.host?.distribution == "debian 13")
+        precondition(detail.host?.version == "1.90.0-test" && detail.host?.architecture == "aarch64")
+        precondition(detail.host?.endpoints.count == 2 && detail.host?.derpRegion == 3)
+        precondition(detail.host?.connectivity("WorkingIPv6") == "否" && detail.host?.connectivity("WorkingUDP") == "是")
+        precondition(detail.host?.connectivity("UPnP") == "否" && detail.host?.connectivity("PCP") == "未提供")
+        precondition(HeadplaneHostInfo.booleanText(.string("")) == "未提供")
+        let fallback = HeadplaneHostInfo(.object(["HomeDERP": .number(0), "NetInfo": .object(["PreferredDERP": .number(5)])]))
+        precondition(fallback.derpRegion == 5)
+        var partial = data.object
+        partial["stats"] = .null; partial["agent"] = .object([:])
+        let fallbackDetail = try HeadplaneMachineDetail(.object(partial), nodeID: "2")
+        precondition(fallbackDetail.host?.system == "linux 6.12.0" && fallbackDetail.agent == nil && !fallbackDetail.isAgent)
+        let absent = try HeadplaneMachineDetail(payload("machineNoAgent", .machine("3")), nodeID: "3")
+        precondition(absent.host == nil && absent.agent == nil && !absent.isAgent && absent.domain.isEmpty)
+        rejects { _ = try HeadplaneMachineDetail(data, nodeID: "3") }
+        rejects { _ = try HeadplaneMachineDetail(.object([:]), nodeID: "2") }
+        for id in ["", "../login", "2/3", "2?x=1", "2%2F3", "２"] {
+            rejects { _ = try connection.request(.machine(id)) }
+        }
+        let request = try connection.request(.machine("18446744073709551615"))
+        precondition(request.url?.path == "/admin/machines/18446744073709551615.data")
+        print("PASS independent device detail fields, optional Agent data and safe device URLs")
     }
 
     static func networking() async throws {
@@ -217,6 +268,19 @@ private final class MemorySecrets: SecretStorage {
         let taggedKey = try HeadplaneKey(.object(["id": .string("1"), "aclTags": .array([.string("tag:server")])]), user: .null)
         let untaggedKey = try HeadplaneKey(.object(["id": .string("2")]), user: .null)
         precondition(taggedKey.tags == ["tag:server"] && untaggedKey.tags.isEmpty)
+        let machineDetail = try fixture("machineDetail")
+        WireProtocol.respond { request in
+            precondition(request.httpMethod == "GET" && request.url!.path == "/admin/machines/2.data")
+            precondition(request.url!.query == "_routes=routes/machines/machine")
+            precondition(request.value(forHTTPHeaderField: "Cookie") == "headplane=session")
+            return (200, [:], machineDetail)
+        }
+        let detail = try HeadplaneMachineDetail(await client.read(.machine("2")), nodeID: "2")
+        precondition(detail.node.name == "detail-router", "Details must use the independent loader, not the list")
+        let missingDetail = try fixture("machineMissing")
+        WireProtocol.respond { _ in (404, [:], missingDetail) }
+        do { _ = try await client.read(.machine("2")); preconditionFailure() }
+        catch let e as HeadplaneFailure { precondition(e.status == 404) }
         let agentError = try fixture("agentError")
         WireProtocol.respond { _ in (200, [:], agentError) }
         let store = await HeadplaneStore(client: client)
@@ -286,8 +350,131 @@ private final class MemorySecrets: SecretStorage {
         print("PASS stale reads, conflict detection and uncertain-write recovery")
     }
 
+    @MainActor static func diagnostics() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [WireProtocol.self]; config.httpCookieStorage = nil; config.urlCache = nil
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        var diagnosticConnection = connection
+        diagnosticConnection.address = "https://headplane.example.test/custom/admin"
+        diagnosticConnection.infoSecret = "test-only-info-secret"
+        let client = try HeadplaneClient(connection: diagnosticConnection, session: session)
+        let store = HeadplaneStore(client: client)
+        var requests = 0
+        WireProtocol.respond { request in
+            requests += 1
+            precondition(request.url!.path == "/custom/admin/healthz" && request.url!.query == nil)
+            precondition(request.value(forHTTPHeaderField: "Cookie") == nil && request.value(forHTTPHeaderField: "Authorization") == nil)
+            precondition(request.value(forHTTPHeaderField: "Accept") == "application/json")
+            return (200, [:], Data(#"{"status":"OK"}"#.utf8))
+        }
+        await store.refresh(.health)
+        precondition(store.health?.healthy == true && requests == 1)
+        WireProtocol.respond { _ in (500, [:], Data(#"{"status":"ERROR"}"#.utf8)) }
+        await store.refresh(.health)
+        precondition(store.health?.healthy == false && store.errors[.health] == nil, "An explicit unhealthy response is a valid health result")
+        WireProtocol.respond { _ in throw URLError(.timedOut) }
+        await store.refresh(.health)
+        precondition(store.health == nil && store.updated[.health] == nil && store.errors[.health] != nil)
+        for (status, body) in [(200, "<html>Login</html>"), (500, "{}"), (200, #"{"status":"ERROR"}"#), (404, "{}")] {
+            WireProtocol.respond { _ in (status, [:], Data(body.utf8)) }
+            await store.refresh(.health)
+            precondition(store.health == nil && store.errors[.health] != nil, "Unknown responses must not be reported healthy or unhealthy")
+        }
+        WireProtocol.respond { request in
+            precondition(request.url!.path == "/custom/admin/api/info" && request.url!.query == nil)
+            precondition(request.value(forHTTPHeaderField: "Cookie") == nil)
+            precondition(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-only-info-secret")
+            return (200, [:], Data(#"{"status":"healthy","headplane_version":"0.8.2","headscale_canonical_version":"0.29.2","internal_versions":{"node":"25.9.0","openssl":"3.5","unexpected":"ignore"}}"#.utf8))
+        }
+        await store.refresh(.serverInfo)
+        precondition(store.serverInfo?.headplaneVersion == "0.8.2" && store.serverInfo?.headscaleVersion == "0.29.2")
+        precondition(store.serverInfo?.runtimeVersions.count == 2)
+        requests = 0
+        WireProtocol.respond { _ in requests += 1; return (403, [:], Data()) }
+        await store.refresh(.serverInfo)
+        precondition(store.serverInfo == nil && requests == 1 && store.errors[.serverInfo]?.contains("403") == true, "Info auth failures must not retry API Key login")
+        let noSecretClient = try HeadplaneClient(connection: connection, session: session)
+        do { _ = try await noSecretClient.read(.serverInfo); preconditionFailure() }
+        catch let failure as HeadplaneFailure { precondition(failure.message.contains("info_secret")) }
+        precondition(requests == 1, "Missing info secret must not send the API Key as a substitute")
+        let unhealthyInfo = try JSONDecoder().decode(HeadplaneJSON.self, from: Data(#"{"status":"unhealthy","headplane_version":"0.8.2","headscale_canonical_version":"unknown"}"#.utf8))
+        let info = try HeadplaneServerInfo(unhealthyInfo)
+        precondition(!info.healthy && info.headscaleVersion == "未获取到")
+        rejects { _ = try HeadplaneServerInfo(.object([:])) }
+        requests = 0
+        WireProtocol.respond { _ in requests += 1; return (302, ["Location": "https://other.example.test/api/info"], Data()) }
+        do { _ = try await client.read(.serverInfo); preconditionFailure() }
+        catch let failure as HeadplaneFailure { precondition(failure.status == 302 && requests == 1) }
+        let settings = try fixture("serverSettings"), capabilities = try fixture("serverCapabilities")
+        WireProtocol.respond { request in
+            precondition(request.value(forHTTPHeaderField: "Authorization") == nil)
+            if request.url!.path == "/custom/admin/login" {
+                precondition(!WireProtocol.body(request).contains("info-secret"))
+                return (302, ["Location": "/custom/admin/machines", "Set-Cookie": "headplane=session; Path=/custom/admin; Secure; HttpOnly"], Data())
+            }
+            precondition(request.url!.path == "/custom/admin/settings.data")
+            precondition(request.value(forHTTPHeaderField: "Cookie") == "headplane=session")
+            if request.url!.query == "_routes=layout/app" { return (200, [:], capabilities) }
+            precondition(request.url!.query == "_routes=routes/settings/overview")
+            return (200, [:], settings)
+        }
+        await store.refresh(.settings); await store.refresh(.serverCapabilities)
+        precondition(store.serverSettings?.configWritable == false && store.serverSettings?.hasOIDCConfig == true)
+        precondition(store.serverCapabilities?.configReadable == true && store.serverCapabilities?.access["users"] == false)
+        precondition(store.serverCapabilities?.access["unknown"] == nil)
+        WireProtocol.respond { _ in throw URLError(.notConnectedToInternet) }
+        await store.refresh(.settings); await store.refresh(.serverCapabilities)
+        precondition(store.serverSettings == nil && store.serverCapabilities == nil)
+        let errorBody = try JSONEncoder().encode(HeadplaneJSON.object(["routes/settings/overview": .object(["error": .object(["message": .string("bad test-only-info-secret and " + connection.apiKey)])])]))
+        WireProtocol.respond { _ in (500, [:], errorBody) }
+        do { _ = try await client.read(.settings); preconditionFailure() }
+        catch let failure as HeadplaneFailure { precondition(!failure.message.contains("test-only-info-secret") && !failure.message.contains(connection.apiKey)) }
+        print("PASS server health, isolated info-secret authentication, capability checks and stale-result clearing")
+    }
+
+    @MainActor static func detailStoreBehavior() async throws {
+        let remote = try ControlledAccess(), store = HeadplaneStore(client: remote)
+        async let first: Void = store.refresh(.machine("2"))
+        async let second: Void = store.refresh(.machine("3"))
+        _ = await (first, second)
+        precondition(store.machines == nil && store.machineDetails.count == 2, "Each detail loads independently of the list")
+        precondition(store.machineDetails["2"]?.node.name == "detail-router" && store.machineDetails["3"]?.node.name == "macbook")
+        await remote.failDetail(500); await store.refresh(.machine("2"))
+        precondition(store.machineDetails["2"] != nil && store.errors[.machine("2")] != nil, "Transient failures retain explicitly stale detail")
+        await remote.failDetail(nil)
+        let old = try payload("machineDetail", .machine("2"))
+        var renamed = old.object, renamedNode = old["node"].object
+        renamedNode["givenName"] = .string("renamed-router"); renamed["node"] = .object(renamedNode)
+        await remote.configure(pause: true)
+        let oldRead = Task { await store.refresh(.machine("2")) }
+        for _ in 0..<10_000 { if await remote.waiting() { break }; await Task.yield() }
+        let waiting = await remote.waiting(); precondition(waiting)
+        await remote.setDetail(.object(renamed), id: "2")
+        _ = try await store.mutate(.machines, revision: store.revision, fields: ["action_id": "rename", "node_id": "2", "name": "renamed-router"])
+        precondition(store.machineDetails["2"]?.node.name == "renamed-router", "Successful edits reread the independent detail")
+        await remote.release(old); await oldRead.value
+        precondition(store.machineDetails["2"]?.node.name == "renamed-router", "Old detail reads cannot overwrite a post-mutation refresh")
+        await remote.configure(failure: true)
+        do { _ = try await store.mutate(.machines, revision: store.revision, fields: ["action_id": "expire", "node_id": "2"]); preconditionFailure() } catch {}
+        precondition(store.machineDetails["2"] == nil && store.pending == .machines)
+        await store.refresh(.machine("2"))
+        precondition(store.pending == .machines, "Reading a detail cannot confirm an uncertain list mutation")
+        await remote.configure(); await store.refresh(.machines)
+        precondition(store.pending == nil)
+        await remote.failDetail(404); await store.refresh(.machine("2"))
+        precondition(store.machineDetails["2"] == nil && store.values[.machine("2")] == nil && store.updated[.machine("2")] == nil)
+        precondition(store.machineDetails["3"] != nil && store.errors[.machine("2")]?.contains("404") == true)
+        await remote.failDetail(403); await store.refresh(.machine("3"))
+        precondition(store.machineDetails["3"] == nil && store.errors[.machine("3")]?.contains("403") == true)
+        await remote.failDetail(nil); await store.refresh(.machine("2"))
+        _ = try await store.mutate(.machines, revision: store.revision, fields: ["action_id": "delete", "node_id": "2"])
+        precondition(store.machineDetails["2"] == nil, "Deleted details must not remain cached")
+        print("PASS detail isolation, stale refresh recovery, mutation read-back and deleted/forbidden devices")
+    }
+
     static func main() async throws {
-        try decoding(); try configuration(); try agentStatus(); try await networking(); try await storeBehavior()
+        try decoding(); try configuration(); try agentStatus(); try machineDetails(); try await networking(); try await storeBehavior(); try await detailStoreBehavior(); try await diagnostics()
         print("Headplane tests passed")
     }
 }

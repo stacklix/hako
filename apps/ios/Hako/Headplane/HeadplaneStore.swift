@@ -17,8 +17,13 @@ enum HeadplaneCredentials {
     @Published private(set) var connection: HeadplaneConnection?
     @Published private(set) var revision = UUID()
     @Published private(set) var machines: HeadplaneMachines?
+    @Published private(set) var machineDetails: [String: HeadplaneMachineDetail] = [:]
     @Published private(set) var policy: HeadplanePolicy?
     @Published private(set) var agent: HeadplaneAgentStatus?
+    @Published private(set) var health: HeadplaneHealth?
+    @Published private(set) var serverInfo: HeadplaneServerInfo?
+    @Published private(set) var serverSettings: HeadplaneServerSettings?
+    @Published private(set) var serverCapabilities: HeadplaneServerCapabilities?
     @Published private(set) var keys: [HeadplaneKey] = []
     @Published private(set) var values: [HeadplaneResource: HeadplaneJSON] = [:]
     @Published private(set) var errors: [HeadplaneResource: String] = [:]
@@ -57,7 +62,8 @@ enum HeadplaneCredentials {
         try HeadplaneCredentials.remove(); clear(); connection = nil; client = nil
     }
     private func clear() {
-        revision = UUID(); machines = nil; policy = nil; agent = nil; keys = []; values = [:]; errors = [:]
+        revision = UUID(); machines = nil; machineDetails = [:]; policy = nil; agent = nil; keys = []; values = [:]; errors = [:]
+        health = nil; serverInfo = nil; serverSettings = nil; serverCapabilities = nil
         updated = [:]; loading = []; reads = [:]; message = nil; pending = nil
     }
     func refresh(_ resource: HeadplaneResource) async {
@@ -69,7 +75,17 @@ enum HeadplaneCredentials {
             try Task.checkCancellation()
             guard ticket == revision, reads[resource] == readID else { return }
             switch resource {
-            case .machines: machines = try HeadplaneMachines(data)
+            case .machines:
+                let parsed = try HeadplaneMachines(data)
+                machines = parsed
+                let ids = Set(parsed.nodes.map(\.id))
+                for known in Array(reads.keys) {
+                    if case .machine(let id) = known, !ids.contains(id) {
+                        invalidateMachineDetail(id)
+                        errors[known] = "设备已从列表中移除，请刷新确认。"
+                    }
+                }
+            case .machine(let id): machineDetails[id] = try HeadplaneMachineDetail(data, nodeID: id)
             case .policy: policy = try HeadplanePolicy(data)
             case .keys:
                 guard let groups = data["keys"].array else { throw HeadplaneFailure.incompatible }
@@ -82,6 +98,10 @@ enum HeadplaneCredentials {
                 keys = result
             case .dns: guard data["baseDomain"].string != nil else { throw HeadplaneFailure.incompatible }
             case .agent: agent = try HeadplaneAgentStatus(data)
+            case .health: health = try HeadplaneHealth(data)
+            case .serverInfo: serverInfo = try HeadplaneServerInfo(data)
+            case .settings: serverSettings = try HeadplaneServerSettings(data)
+            case .serverCapabilities: serverCapabilities = try HeadplaneServerCapabilities(data)
             case .login: break
             }
             values[resource] = data; updated[resource] = .now; errors[resource] = nil
@@ -92,8 +112,40 @@ enum HeadplaneCredentials {
             if pending == resource { pending = nil; message = "已重新读取远端状态，请核对后再操作。" }
         } catch {
             guard ticket == revision, reads[resource] == readID, !Task.isCancelled else { return }
-            errors[resource] = error.localizedDescription
+            // A failed new diagnosis must not leave an old green status or capability visible.
+            switch resource {
+            case .health: health = nil
+            case .serverInfo: serverInfo = nil
+            case .settings: serverSettings = nil
+            case .serverCapabilities: serverCapabilities = nil
+            default: break
+            }
+            if [.health, .serverInfo, .settings, .serverCapabilities].contains(resource) {
+                values[resource] = nil; updated[resource] = nil
+            }
+            if case .machine(let id) = resource, let status = (error as? HeadplaneFailure)?.status, [403, 404].contains(status) {
+                machineDetails[id] = nil; values[resource] = nil; updated[resource] = nil
+                errors[resource] = status == 404 ? "设备详情不存在或设备已被移除（HTTP 404）。" : "没有读取此设备详情的权限（HTTP 403）。"
+            } else {
+                errors[resource] = error.localizedDescription
+            }
         }
+    }
+
+    func refreshDiagnostics() async {
+        async let health: Void = refresh(.health)
+        async let settings: Void = refresh(.settings)
+        async let capabilities: Void = refresh(.serverCapabilities)
+        if connection?.infoSecret != nil { await refresh(.serverInfo) }
+        _ = await (health, settings, capabilities)
+    }
+
+    @discardableResult private func invalidateMachineDetail(_ id: String) -> Bool {
+        let resource = HeadplaneResource.machine(id)
+        guard reads[resource] != nil else { return false }
+        reads[resource] = UUID(); loading.remove(resource)
+        machineDetails[id] = nil; values[resource] = nil; updated[resource] = nil; errors[resource] = nil
+        return true
     }
 
     func mutate(_ resource: HeadplaneResource, revision expected: UUID, fields: [String: String], originalPolicy: String? = nil) async throws -> HeadplaneJSON {
@@ -110,13 +162,19 @@ enum HeadplaneCredentials {
             guard expected == revision else { throw HeadplaneFailure(message: "连接已改变，请核对原实例的操作结果。") }
             // Invalidate a pre-mutation poll so it cannot overwrite the confirmed new state.
             reads[resource] = UUID(); loading.remove(resource)
+            let nodeID = resource == .machines ? fields["node_id"] : nil
+            let refreshDetail = nodeID.map { invalidateMachineDetail($0) } ?? false
             pending = resource
             await refresh(resource)
+            if refreshDetail, let nodeID, fields["action_id"] != "delete", expected == revision {
+                await refresh(.machine(nodeID))
+            }
             message = pending == nil ? nil : "请求已完成，但状态回查失败。请刷新核对。"
             return result
         } catch {
             if (error as? HeadplaneFailure)?.outcomeUnknown == true {
                 reads[resource] = UUID(); loading.remove(resource)
+                if resource == .machines, let id = fields["node_id"] { invalidateMachineDetail(id) }
                 pending = resource
             }
             throw error
