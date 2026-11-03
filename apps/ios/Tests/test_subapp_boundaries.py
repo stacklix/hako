@@ -76,11 +76,19 @@ class SubappBoundariesTests(unittest.TestCase):
             self.assertNotIn("SecItem", source)
 
     def test_credential_network_policy_is_owned_by_host(self):
-        for name in ("Containers/ArcaneClient.swift", "CloudServers/ECSRPC.swift", "Server/ConsoleClient.swift"):
+        for name in ("Containers/ArcaneClient.swift", "CloudServers/ECSRPC.swift", "Server/ConsoleClient.swift", "Headplane/HeadplaneClient.swift"):
             source = (APP / name).read_text(encoding="utf-8")
             self.assertIn("HTTPTransport.makeSession", source)
             self.assertNotIn("URLSessionConfiguration", source)
             self.assertNotIn("willPerformHTTPRedirection", source)
+
+    def test_headplane_is_independent_of_other_subapps(self):
+        for path in (APP / "Headplane").glob("*.swift"):
+            self.assertIsNone(re.search(r"\b(ConsoleClient|ArcaneClient|QinglongClient|GitHubService|ECSStore|SecItemCopyMatching)\b", path.read_text(encoding="utf-8")), path.name)
+        store = (APP / "Headplane/HeadplaneStore.swift").read_text(encoding="utf-8")
+        self.assertIn('SecureStorage.namespace("me.stackli.hako.headplane")', store)
+        self.assertIn("any HeadplaneAccess", store)
+        self.assertIn("any SecretStorage", store)
 
 
 if __name__ == "__main__":
