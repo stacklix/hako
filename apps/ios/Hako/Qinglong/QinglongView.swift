@@ -57,7 +57,7 @@ struct QinglongView: View {
         }
         .background(QinglongStyle.background).foregroundStyle(QinglongStyle.text).tint(QinglongStyle.text)
         .safeAreaInset(edge: .bottom, spacing: 0) { QinglongTabBar(selection: tab) { tab = $0 } }
-        .overlay(alignment: .bottom) { toast.padding(.horizontal, 20).padding(.bottom, 72) }
+        .overlay(alignment: .bottom) { failureToast.padding(.horizontal, 20).padding(.bottom, 72) }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -93,10 +93,10 @@ struct QinglongView: View {
             }
         }
         .onAppear { store.load() }
-        .task(id: "\(store.busy):\(store.message ?? "")") {
-            guard let message = store.message, !store.busy else { return }
+        .task(id: store.operationError) {
+            guard let error = store.operationError else { return }
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            if store.message == message { store.message = nil }
+            if store.operationError == error { store.operationError = nil }
         }
     }
     private var header: some View {
@@ -112,15 +112,18 @@ struct QinglongView: View {
             Spacer(minLength: 0)
         }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 14)
     }
-    @ViewBuilder private var toast: some View {
-        if store.busy || store.message != nil {
+    @ViewBuilder private var failureToast: some View {
+        if let error = store.operationError, !store.busy {
             HStack(spacing: 10) {
-                if store.busy { ProgressView().tint(Color(uiColor: .systemBackground)) }
-                Text(store.busy ? "正在处理…" : store.message ?? "").font(.caption).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "exclamationmark.circle").foregroundStyle(QinglongStyle.failure)
+                Text(error).font(.caption).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                if !store.busy { Button { store.message = nil } label: { Image(systemName: "xmark").frame(width: 28, height: 32) }.buttonStyle(.plain).accessibilityLabel("关闭操作提示") }
+                Button { store.operationError = nil } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 32)
+                }.buttonStyle(.plain).accessibilityLabel("关闭失败提示")
             }.padding(.horizontal, 16).padding(.vertical, 10)
-                .foregroundStyle(Color(uiColor: .systemBackground)).background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
+                .foregroundStyle(Color(uiColor: .systemBackground))
+                .background(Color.primary, in: RoundedRectangle(cornerRadius: 12))
         }
     }
     private var more: some View {

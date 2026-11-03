@@ -29,6 +29,7 @@ enum QinglongCredentials {
     @Published private(set) var outcomesComplete = false
     private var outcomeSignatures: [String: String] = [:]
     @Published var message: String?
+    @Published var operationError: String?
     @Published var configurationError: String?
     @Published private(set) var revision = UUID()
     private var api: QinglongClient?
@@ -56,6 +57,7 @@ enum QinglongCredentials {
         self.configuration = configuration; api = next; loaded = true; configurationError = nil
         refreshes.invalidate()
         revision = UUID(); items = [:]; errors = [:]; loading = []; updated = [:]; message = nil
+        operationError = nil
         outcomes = [:]; outcomeSignatures = [:]; outcomesComplete = false
     }
 
@@ -122,6 +124,7 @@ enum QinglongCredentials {
     @discardableResult func perform(_ resource: QinglongResource, success: String,
                                     operation: (QinglongClient) async throws -> Void) async -> Bool {
         guard !busy else { return false }
+        operationError = nil
         busy = true
         let ticket = revision
         defer { busy = false }
@@ -134,6 +137,7 @@ enum QinglongCredentials {
         } catch {
             guard ticket == revision else { return false }
             message = error.localizedDescription
+            operationError = message
             return false
         }
     }
@@ -152,13 +156,13 @@ enum QinglongCredentials {
     func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async -> QinglongEnvironmentSaveResult? {
         var result: QinglongEnvironmentSaveResult?
         let success = await perform(.envs, success: "已保存。") { result = try await $0.saveEnvironment(item, fields: fields, enabled: enabled) }
-        if let error = result?.stateError { message = error }
+        if let error = result?.stateError { message = error; operationError = error }
         return success ? result : nil
     }
     func saveTask(_ item: QinglongItem?, fields: [String: String], enabled: Bool?) async -> QinglongTaskSaveResult? {
         var result: QinglongTaskSaveResult?
         let success = await perform(.tasks, success: "任务已保存。") { result = try await $0.saveTask(item, fields: fields, enabled: enabled) }
-        if let error = result?.stateError { message = error }
+        if let error = result?.stateError { message = error; operationError = error }
         return success ? result : nil
     }
     func saveRecord(_ resource: QinglongResource, item: QinglongItem?, fields: [String: String]) async -> Bool {
