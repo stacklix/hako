@@ -135,7 +135,7 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         }
         let tree = try json(#"[{"title":"repo","type":"directory","children":[{"title":"demo.py","parent":"repo","key":"repo/demo.py","type":"file"}]}]"#)
         let files = try QinglongParsing.items(tree, resource: .scripts)
-        precondition(files.count == 1 && files[0].filename == "demo.py" && files[0].directory == "repo")
+        precondition(files.count == 2 && files[0].isDirectory && files[1].filename == "demo.py" && files[1].directory == "repo")
         let dependencies = try QinglongParsing.items(try json(#"[{"id":1,"name":"axios","type":0,"status":1},{"id":2,"name":"lxml","type":1,"status":2},{"id":3,"name":"curl","type":2,"status":5},{"id":4,"name":"future","type":99,"status":99}]"#), resource: .dependencies)
         precondition(dependencies[0].dependencyStatus == .installed && dependencies[0].subtitle == "Node.js")
         precondition(dependencies[1].dependencyStatus == .installFailed && dependencies[1].subtitle == "Python")
@@ -215,8 +215,10 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
             if let body = QinglongMockProtocol.body(request) { let payload = try json(String(decoding: body, as: UTF8.self)); precondition(payload["filename"].text == "demo.py" && payload["content"].text == ""); bodyChecked = true }
             return (200, #"{"code":200}"#)
         }
-        try await client.saveFile(files[0], content: "")
+        try await client.saveFile(files[1], content: "")
         precondition(bodyChecked, "Empty file content must be sent explicitly")
+        try await scriptBrowser(client)
+        try await directoryCreation(client)
         let failure = QinglongOutcome(raw: try json(#"{"status":1,"exit_code":1,"started_at":1793670000}"#))
         let success = QinglongOutcome(raw: try json(#"{"status":1,"exit_code":0}"#))
         let unknown = QinglongOutcome(raw: try json(#"{"status":1}"#))
@@ -259,6 +261,69 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         QinglongMockProtocol.respond { _ in (200, #"{"code":200,"data":[]}"#) }
         let missingID = try await client.saveEnvironment(nil, fields: fields, enabled: false)
         precondition(missingID.item == nil && missingID.stateError != nil, "Never invent an ID or repeat creation after an incomplete save response")
+        let taskFields = ["name": "edited", "command": "task demo.js", "schedule": "0 2 * * *"]
+        let oldTask = QinglongItem(resource: .tasks, raw: try json(#"{"id":51,"name":"old","command":"old.js","schedule":"0 1 * * *","isDisabled":0,"labels":["keep"],"extra_schedules":[{"schedule":"0 3 * * *"}],"work_dir":"repo"}"#))
+        var taskRequests = [String]()
+        QinglongMockProtocol.respond { request in
+            taskRequests.append(request.httpMethod! + " " + request.url!.path)
+            let body = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            if request.url!.path.hasSuffix("crons/disable") {
+                precondition(body == .array([.number(51)]))
+            } else {
+                precondition(request.httpMethod == "PUT" && body["id"].int == 51 && body["command"].text == "task demo.js")
+                precondition(body["labels"].array?.first?.text == "keep" && body["extra_schedules"].array?.first?["schedule"].text == "0 3 * * *" && body["work_dir"].text == "repo")
+                precondition(body["isDisabled"] == .null && body["status"] == .null, "State must use its separate endpoint")
+            }
+            return (200, #"{"code":200,"data":{"id":51,"isDisabled":0}}"#)
+        }
+        let taskSaved = try await client.saveTask(oldTask, fields: taskFields, enabled: false)
+        precondition(taskSaved.stateError == nil && taskRequests == ["PUT /panel/open/crons", "PUT /panel/open/crons/disable"])
+        taskRequests = []
+        _ = try await client.saveTask(oldTask, fields: taskFields, enabled: nil)
+        precondition(taskRequests == ["PUT /panel/open/crons"], "Unchanged automatic execution must not trigger extra scheduler mutations")
+        taskRequests = []
+        var denyState = true
+        QinglongMockProtocol.respond { request in
+            taskRequests.append(request.httpMethod! + " " + request.url!.path)
+            if request.url!.path.hasSuffix("crons/disable") { return (denyState ? 403 : 200, denyState ? #"{"code":403}"# : #"{"code":200}"#) }
+            return (200, #"{"code":200,"data":{"id":52,"isDisabled":0}}"#)
+        }
+        let taskPartial = try await client.saveTask(nil, fields: taskFields, enabled: false)
+        precondition(taskPartial.item?.numberID == 52 && taskPartial.stateError != nil)
+        denyState = false
+        _ = try await client.saveTask(taskPartial.item, fields: taskFields, enabled: false)
+        precondition(taskRequests == ["POST /panel/open/crons", "PUT /panel/open/crons/disable", "PUT /panel/open/crons", "PUT /panel/open/crons/disable"], "Retry a partially saved task by ID, never create it twice")
+        var uncertainCreates = 0
+        QinglongMockProtocol.respond { request in
+            precondition(request.httpMethod == "POST"); uncertainCreates += 1
+            throw URLError(.timedOut)
+        }
+        let uncertainTask = try await client.saveTask(nil, fields: taskFields, enabled: false)
+        precondition(uncertainTask.item == nil && uncertainTask.stateError != nil && uncertainCreates == 1, "An uncertain create must block retries until the list is checked")
+        var incompleteCreates = 0
+        QinglongMockProtocol.respond { request in
+            precondition(request.httpMethod == "POST"); incompleteCreates += 1
+            return (200, #"{"code":200,"data":{}}"#)
+        }
+        let incompleteTask = try await client.saveTask(nil, fields: taskFields, enabled: false)
+        precondition(incompleteTask.item == nil && incompleteTask.stateError != nil && incompleteCreates == 1)
+        QinglongMockProtocol.respond { request in
+            precondition(request.httpMethod == "POST")
+            let body = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            precondition(body["name"] == .null && body["command"].text == "task demo.js", "An empty optional name must be omitted from create, as required by the server schema")
+            return (200, #"{"code":200,"data":{"id":53}}"#)
+        }
+        _ = try await client.saveTask(nil, fields: taskFields.merging(["name":""]) { _, new in new }, enabled: nil)
+        var rejectedSaves = 0
+        QinglongMockProtocol.respond { _ in rejectedSaves += 1; return (403, #"{"code":403}"#) }
+        do { _ = try await client.saveTask(oldTask, fields: taskFields, enabled: false); fatalError("Rejected task save accepted") }
+        catch is QinglongFailure {}
+        precondition(rejectedSaves == 1, "Never change automatic execution if content save fails")
+        precondition(QinglongPermissionResult(error: QinglongFailure(message: "denied", status: 403)) == .denied("denied"))
+        precondition(QinglongPermissionResult(error: QinglongFailure(message: "expired", status: 401)) == .failed("expired"), "Authentication failure is not a module permission denial")
+        precondition(QinglongPermissionResult(error: QinglongFailure(message: "unsupported", status: 404)) == .failed("unsupported"))
+        if case .failed = QinglongPermissionResult(error: URLError(.timedOut)) {} else { fatalError("Network failure must not imply permission denial") }
+        precondition(!QinglongPermissionResult.pending.completed && !QinglongPermissionResult.checking.completed && QinglongPermissionResult.readable.completed)
         for (schedule, description) in [("0 2 * * *", "每天 02:00"), ("0 0 3 * * 0", "每周日 03:00"), ("*/5 * * * *", "每 5 分钟"), ("30 0 2 * * *", "自定义计划"), ("0 25 * * *", "自定义计划")] {
             precondition(QinglongItem(resource: .tasks, raw: .fields(["schedule": schedule])).scheduleDescription == description)
         }
@@ -273,6 +338,123 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         let firstLog = try await client.log(list[0])
         let updatedLog = try await client.log(list[0])
         precondition(firstLog == "[开始] 执行任务" && updatedLog.hasSuffix("退出码 0") && logReads == 2)
-        print("Qinglong tests passed, including schedule descriptions and refreshed execution logs.")
+        print("Qinglong tests passed, including script directories and mutations, partial task saves, permission classification and refreshed execution logs.")
+    }
+
+    static func scriptBrowser(_ client: QinglongClient) async throws {
+        func json(_ value: String) throws -> QinglongJSON { try JSONDecoder().decode(QinglongJSON.self, from: Data(value.utf8)) }
+        let fixture = #"[{"title":"repo","type":"directory","children":[{"title":"empty","type":"directory","children":[]},{"title":"demo.py","type":"file"}]},{"title":"target","type":"directory","children":[]},{"title":"demo.py","type":"file","children":[]}]"#
+        let entries = try QinglongParsing.items(try json(fixture), resource: .scripts)
+        precondition(entries.count == 5)
+        let roots = QinglongScriptTree.children(entries, directory: "")
+        precondition(roots.map(\.filePath) == ["repo", "target", "demo.py"] && !roots.last!.isDirectory, "Directories sort first; file children metadata must not change its type")
+        precondition(QinglongScriptTree.children(entries, directory: "repo").map(\.filePath) == ["repo/empty", "repo/demo.py"])
+        precondition(QinglongScriptTree.children(entries, directory: "repo/empty").isEmpty, "Empty folders must remain navigable")
+        let inferred = try QinglongParsing.items(try json(#"[{"key":"one/two/file.js","title":"file.js","type":"file"}]"#), resource: .scripts)
+        precondition(Set(inferred.map(\.filePath)) == ["one", "one/two", "one/two/file.js"])
+        let source = entries.first { $0.filePath == "repo/demo.py" }!, folder = roots[0]
+        let moved = try QinglongScriptTree.destination(for: source, name: source.filename, directory: "target", entries: entries)
+        precondition(moved == "target/demo.py")
+        for (item, name, directory) in [(folder, "repo", "repo/empty"), (folder, "repo", "repo"), (source, "demo.py", ""), (source, "../bad", "target"), (source, "test.py", "missing"), (source, "demo.py", "repo")] {
+            do { _ = try QinglongScriptTree.destination(for: item, name: name, directory: directory, entries: entries); fatalError("Invalid destination accepted") } catch is QinglongFailure {}
+        }
+        for path in ["/absolute", "../escape", "repo//child", "repo/", "repo/./child", "repo\\child", "bad\nname", String(repeating: "字", count: 86)] {
+            do { try QinglongScriptTree.path(path, allowsRoot: false); fatalError("Unsafe script path accepted") } catch is QinglongFailure {}
+        }
+        for text in [#"[{"key":"../bad","title":"bad"}]"#, #"[{"key":"repo/file.py","title":"other.py"}]"#, #"[{"title":"same"},{"title":"same"}]"#, #"[{"title":"one","type":"file"},{"key":"one/child","title":"child"}]"#] {
+            do { _ = try QinglongParsing.items(try json(text), resource: .scripts); fatalError("Invalid tree accepted") } catch is QinglongFailure {}
+        }
+        var requests = [String]()
+        var expectedSource = "repo/demo.py", expectedTarget = "target/demo.py", expectedType = "file"
+        var rejectRead = false, uncertainWrite = false
+        QinglongMockProtocol.respond { request in
+            let method = request.httpMethod!, path = request.url!.path
+            requests.append(method + " " + path)
+            if method == "GET" {
+                precondition(path.hasSuffix("/scripts"), "Preflight reads the tree, never script contents")
+                return rejectRead ? (403, #"{"code":403}"#) : (200, "{\"code\":200,\"data\":" + fixture + "}")
+            }
+            if uncertainWrite { throw URLError(.timedOut) }
+            let body = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            if method == "PUT" {
+                precondition(path.hasSuffix("/scripts/rename") && body["filename"].text == expectedSource && body["path"].text == "" && body["newFilename"].text == expectedTarget)
+                precondition(body["content"] == .null, "Moving must not rewrite contents or lose directory children")
+            } else {
+                precondition(method == "DELETE" && path.hasSuffix("/scripts"))
+                precondition(body["filename"].text == "repo" && body["path"].text == "" && body["type"].text == expectedType)
+            }
+            return (200, #"{"code":200}"#)
+        }
+        try await client.relocateScript(source, name: source.filename, directory: "target")
+        precondition(requests.count == 2 && requests.last == "PUT /panel/open/scripts/rename")
+        requests = []; expectedTarget = "repo/renamed.py"
+        try await client.relocateScript(source, name: "renamed.py", directory: "repo")
+        precondition(requests.count == 2)
+        requests = []; expectedSource = "repo"; expectedTarget = "target/repo"
+        try await client.relocateScript(folder, name: "repo", directory: "target")
+        precondition(requests.count == 2, "Whole folder moves use one mutation")
+        requests = []
+        do { try await client.relocateScript(source, name: "demo.py", directory: ""); fatalError("Overwrite accepted") } catch is QinglongFailure {}
+        precondition(requests.count == 1 && requests[0].hasPrefix("GET"), "A fresh collision must prevent the mutation")
+        requests = []; rejectRead = true
+        do { try await client.relocateScript(source, name: "next.py", directory: "repo"); fatalError("Failed preflight accepted") } catch is QinglongFailure {}
+        precondition(requests.count == 1)
+        requests = []; rejectRead = false; uncertainWrite = true
+        do { try await client.relocateScript(source, name: "next.py", directory: "repo"); fatalError("Uncertain write accepted") }
+        catch let failure as QinglongFailure { precondition(failure.outcomeUnknown) }
+        precondition(requests.count == 2, "An uncertain rename or move must never retry")
+        requests = []; uncertainWrite = false; expectedType = "directory"
+        try await client.delete(folder)
+        precondition(requests == ["GET /panel/open/scripts", "DELETE /panel/open/scripts"])
+        requests = []
+        let stale = QinglongItem(resource: .scripts, raw: .fields(["title":"gone.py", "type":"file"]))
+        do { try await client.delete(stale); fatalError("Stale deletion accepted") } catch is QinglongFailure {}
+        precondition(requests.count == 1, "Deleting a vanished item must not send DELETE")
+    }
+
+    static func directoryCreation(_ client: QinglongClient) async throws {
+        func json(_ value: String) throws -> QinglongJSON { try JSONDecoder().decode(QinglongJSON.self, from: Data(value.utf8)) }
+        let fixture = #"[{"title":"repo","type":"directory","children":[{"title":"existing","type":"directory","children":[]},{"title":"script.py","type":"file"}]}]"#
+        var requests = [String](), expectedName = "new-folder", expectedDirectory = ""
+        var rejectRead = false, rejectWrite = false, uncertainWrite = false
+        QinglongMockProtocol.respond { request in
+            let method = request.httpMethod!
+            requests.append(method)
+            precondition(request.url!.path == "/panel/open/scripts")
+            if method == "GET" {
+                return rejectRead ? (403, #"{"code":403}"#) : (200, "{\"code\":200,\"data\":" + fixture + "}")
+            }
+            precondition(method == "POST")
+            let body = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            precondition(body == .fields(["filename": expectedName, "path": expectedDirectory, "directory": expectedName]), "Directory creation must supply the required filename and directory branch, never script content")
+            if uncertainWrite { throw URLError(.timedOut) }
+            return rejectWrite ? (403, #"{"code":403}"#) : (200, #"{"code":200}"#)
+        }
+        try await client.createScriptDirectory(name: expectedName, directory: expectedDirectory)
+        precondition(requests == ["GET", "POST"], "Root directory creation needs one write after checking current entries")
+        requests = []; expectedName = "中文 子目录"; expectedDirectory = "repo"
+        try await client.createScriptDirectory(name: expectedName, directory: expectedDirectory)
+        precondition(requests == ["GET", "POST"], "Nested paths, Unicode and spaces must be sent as JSON fields")
+        for (name, directory) in [("repo", ""), ("existing", "repo"), ("script.py", "repo"), ("new", "gone"), ("new", "repo/script.py")] {
+            requests = []
+            do { try await client.createScriptDirectory(name: name, directory: directory); fatalError("Collision or missing parent accepted") } catch is QinglongFailure {}
+            precondition(requests == ["GET"], "Conflicts with either files or folders must prevent mkdir")
+        }
+        for (name, directory) in [("", ""), ("..", ""), ("one/two", ""), ("bad\\name", ""), ("bad\nname", ""), ("new", "/absolute"), ("new", "../escape"), (String(repeating: "字", count: 86), "")] {
+            requests = []
+            do { try await client.createScriptDirectory(name: name, directory: directory); fatalError("Unsafe directory accepted") } catch is QinglongFailure {}
+            precondition(requests.isEmpty, "Invalid paths must fail before any request")
+        }
+        requests = []; rejectRead = true
+        do { try await client.createScriptDirectory(name: expectedName, directory: expectedDirectory); fatalError("Failed preflight accepted") } catch is QinglongFailure {}
+        precondition(requests == ["GET"])
+        requests = []; rejectRead = false; rejectWrite = true
+        do { try await client.createScriptDirectory(name: expectedName, directory: expectedDirectory); fatalError("Denied mkdir accepted") }
+        catch let failure as QinglongFailure { precondition(failure.status == 403 && !failure.outcomeUnknown) }
+        precondition(requests == ["GET", "POST"])
+        requests = []; rejectWrite = false; uncertainWrite = true
+        do { try await client.createScriptDirectory(name: expectedName, directory: expectedDirectory); fatalError("Uncertain mkdir accepted") }
+        catch let failure as QinglongFailure { precondition(failure.outcomeUnknown) }
+        precondition(requests == ["GET", "POST"], "An uncertain directory creation must never retry")
     }
 }

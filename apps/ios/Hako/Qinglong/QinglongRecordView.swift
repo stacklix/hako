@@ -140,25 +140,22 @@ struct QinglongRecordEditor: View {
         self.store = store; self.resource = resource; self.item = item; revision = store.revision
         var fields = [String: String]()
         for key in ["name", "command", "schedule", "value", "remarks", "url", "alias", "branch", "whitelist", "blacklist"] { fields[key] = item?.raw[key].text ?? "" }
-        if item == nil && resource != .envs { fields["schedule"] = "0 2 * * *" }
+        if item == nil && resource == .subscriptions { fields["schedule"] = "0 2 * * *" }
         _fields = State(initialValue: fields)
         _enabled = State(initialValue: !(item?.disabled ?? false))
         _persistedItem = State(initialValue: item)
     }
     @State private var action: String?
     var body: some View {
+        Group {
+            if resource == .tasks { QinglongTaskEditor(store: store, item: item) }
+            else { recordForm }
+        }
+    }
+    private var recordForm: some View {
         QinglongSheet("\(item == nil ? "新建" : "编辑")\(resource == .envs ? "变量" : resource == .subscriptions ? "订阅" : "任务")", disabled: store.busy, saveDisabled: saveBlocked, save: { Task { await save() } }) {
             Section {
-            field(resource == .envs ? "变量名" : resource == .subscriptions ? "订阅名称" : "任务名称", "name")
-            if resource == .tasks {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("执行命令").font(.subheadline).foregroundStyle(.secondary)
-                    TextEditor(text: Binding(get: { fields["command"] ?? "" }, set: { fields["command"] = $0 }))
-                        .frame(minHeight: 86).scrollContentBackground(.hidden)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("执行命令")
-                }
-                field("Cron 表达式", "schedule")
-            }
+            field(resource == .envs ? "变量名" : "订阅名称", "name")
             if resource == .envs { field("变量值", "value"); field("备注", "remarks") }
             if resource == .subscriptions {
                 field("仓库地址", "url"); field("别名", "alias")
@@ -167,7 +164,6 @@ struct QinglongRecordEditor: View {
             }
             }
             if resource == .envs { Section { Toggle("启用此变量", isOn: $enabled).font(.subheadline) } }
-            if resource == .tasks { Text("按面板时区执行。").font(.caption).foregroundStyle(.secondary) }
             if let error { QinglongNotice(text: error, error: true) }
             if let item = persistedItem {
                 if resource != .envs { Button(item.disabled ? "启用" : "禁用") { action = item.disabled ? "enable" : "disable" }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy) }
@@ -188,7 +184,6 @@ struct QinglongRecordEditor: View {
         guard revision == store.revision else { error = "连接已改变，请关闭后重新编辑。"; return }
         var payload: [String: String]
         switch resource {
-        case .tasks: payload = fields.filter { ["name", "command", "schedule"].contains($0.key) }
         case .envs: payload = fields.filter { ["name", "value", "remarks"].contains($0.key) }
         case .subscriptions:
             payload = fields.filter { ["name", "url", "alias", "branch", "whitelist", "blacklist"].contains($0.key) }
@@ -196,7 +191,7 @@ struct QinglongRecordEditor: View {
             if item == nil { payload["type"] = "public-repo"; payload["schedule_type"] = "crontab" }
         default: return
         }
-        let required = resource == .tasks ? ["command", "schedule"] : resource == .envs ? ["name", "value"] : ["url", "alias"]
+        let required = resource == .envs ? ["name", "value"] : ["url", "alias"]
         guard required.allSatisfy({ !(payload[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             error = "请填写所有必填内容。"; return
         }
@@ -209,6 +204,113 @@ struct QinglongRecordEditor: View {
         }
         else if await store.saveRecord(resource, item: item, fields: payload) { dismiss() }
         else { error = store.message }
+    }
+}
+
+private struct QinglongTaskEditor: View {
+    @ObservedObject var store: QinglongStore
+    let item: QinglongItem?
+    @Environment(\.dismiss) private var dismiss
+    @State private var fields: [String: String]
+    @State private var baseline: [String: String]
+    @State private var enabled: Bool
+    @State private var confirmedEnabled: Bool
+    @State private var persistedItem: QinglongItem?
+    @State private var statePending = false
+    @State private var saveBlocked = false
+    @State private var error: String?
+    @State private var deleting = false
+    @State private var discarding = false
+    @State private var revision: UUID
+    init(store: QinglongStore, item: QinglongItem?) {
+        self.store = store; self.item = item
+        let fields = ["name": item?.raw["name"].text ?? "", "command": item?.raw["command"].text ?? "", "schedule": item?.raw["schedule"].text ?? "0 2 * * *"]
+        _fields = State(initialValue: fields); _baseline = State(initialValue: fields)
+        _enabled = State(initialValue: !(item?.disabled ?? false))
+        _confirmedEnabled = State(initialValue: !(item?.disabled ?? false))
+        _persistedItem = State(initialValue: item); _revision = State(initialValue: store.revision)
+    }
+    private var changed: Bool { fields != baseline || enabled != confirmedEnabled || statePending }
+    private var connectionChanged: Bool { revision != store.revision }
+    private var valid: Bool { ["command", "schedule"].allSatisfy { !(fields[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+    var body: some View {
+        QinglongSheet(item == nil ? "新建任务" : "编辑任务", disabled: store.busy,
+                      saveDisabled: !valid || saveBlocked || connectionChanged, usesForm: false,
+                      close: requestClose, save: { Task { await save() } }) {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionTitle("任务信息")
+                    VStack(spacing: 0) {
+                        field("任务名称", key: "name")
+                        separator
+                        field("执行命令", key: "command", multiline: true)
+                    }.qinglongCard(padding: 0, cornerRadius: 16)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionTitle("执行计划")
+                    VStack(spacing: 0) {
+                        field("Cron 表达式", key: "schedule")
+                        separator
+                        Toggle(isOn: $enabled) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("自动执行").font(.subheadline)
+                                Text("关闭后仍可手动运行").font(.caption).foregroundStyle(QinglongStyle.muted)
+                            }
+                        }.toggleStyle(.switch).tint(.green).padding(16)
+                    }.qinglongCard(padding: 0, cornerRadius: 16)
+                    Text("按青龙面板时区执行，修改在保存后生效。").font(.caption).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3)
+                }
+                if connectionChanged { QinglongNotice(text: "连接已改变，请关闭后重新编辑。", error: true) }
+                else if let error { QinglongNotice(text: error, error: true) }
+                if persistedItem != nil {
+                    Button(role: .destructive) { deleting = true } label: {
+                        Label("删除任务", systemImage: "trash").font(.subheadline)
+                            .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).foregroundStyle(QinglongStyle.failure)
+                }
+            }.disabled(store.busy || connectionChanged)
+        }
+        .interactiveDismissDisabled(store.busy || changed)
+        .alert("放弃未保存的修改？", isPresented: $discarding) {
+            Button("继续编辑", role: .cancel) {}
+            Button("放弃修改", role: .destructive) { dismiss() }
+        } message: { Text("当前修改尚未保存。") }
+        .confirmationDialog("删除任务？此操作无法撤销。", isPresented: $deleting, titleVisibility: .visible) {
+            Button("删除任务", role: .destructive) {
+                Task {
+                    guard !connectionChanged, !store.busy, let saved = persistedItem else { return }
+                    if await store.delete(saved) { dismiss() } else { error = store.message }
+                }
+            }
+        }
+    }
+    private var separator: some View { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
+    private func sectionTitle(_ title: String) -> some View { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3) }
+    private func field(_ title: String, key: String, multiline: Bool = false) -> some View {
+        let binding = Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 })
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.subheadline).foregroundStyle(.secondary)
+            if multiline {
+                TextField("", text: binding, axis: .vertical).lineLimit(3...12)
+                    .font(.system(.footnote, design: .monospaced)).frame(minHeight: 72, alignment: .topLeading)
+                    .accessibilityLabel(title)
+            } else {
+                TextField("", text: binding).font(key == "schedule" ? .system(.body, design: .monospaced) : .body)
+                    .accessibilityLabel(title)
+            }
+        }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(16)
+    }
+    private func requestClose() { if changed { discarding = true } else { dismiss() } }
+    private func save() async {
+        guard valid, !store.busy, !saveBlocked, !connectionChanged else { return }
+        let submitted = fields, desired = enabled
+        let updateState: Bool? = statePending || desired != confirmedEnabled ? desired : nil
+        if let result = await store.saveTask(persistedItem, fields: submitted, enabled: updateState) {
+            persistedItem = result.item; saveBlocked = result.item == nil
+            baseline = submitted
+            if let error = result.stateError { statePending = true; self.error = error }
+            else { confirmedEnabled = desired; statePending = false; dismiss() }
+        } else { error = store.message }
     }
 }
 

@@ -43,10 +43,16 @@ struct QinglongView: View {
         VStack(spacing: 0) {
             header
             if let resource {
-                QinglongResourceView(store: store, resource: resource,
-                    active: scenePhase == .active && destination == nil && taskAction == nil && page == nil,
-                    open: open, create: { create(resource) }, configure: { destination = .connection }, showsCreate: true)
-                    .id(resource)
+                if resource == .scripts {
+                    QinglongScriptBrowser(store: store,
+                        active: scenePhase == .active && destination == nil && page == nil,
+                        configure: { destination = .connection })
+                } else {
+                    QinglongResourceView(store: store, resource: resource,
+                        active: scenePhase == .active && destination == nil && taskAction == nil && page == nil,
+                        open: open, create: { create(resource) }, configure: { destination = .connection }, showsCreate: true)
+                        .id(resource)
+                }
             } else { more }
         }
         .background(QinglongStyle.background).foregroundStyle(QinglongStyle.text).tint(QinglongStyle.text)

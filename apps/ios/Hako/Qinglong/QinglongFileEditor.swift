@@ -2,29 +2,35 @@ import SwiftUI
 
 struct QinglongNewScriptFlow: View {
     @ObservedObject var store: QinglongStore
+    let onCreated: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var filename = ""
     @State private var directory = ""
     @State private var error: String?
     @State private var target: QinglongItem?
     @State private var openedRevision: UUID
-    init(store: QinglongStore) {
-        self.store = store
+    @State private var showDirectory = false
+    init(store: QinglongStore, directory: String = "", onCreated: ((String) -> Void)? = nil) {
+        self.store = store; self.onCreated = onCreated
         _openedRevision = State(initialValue: store.revision)
+        _directory = State(initialValue: directory)
     }
     private var connectionChanged: Bool { openedRevision != store.revision }
     var body: some View {
         Group {
             if let target {
-                QinglongFileEditor(store: store, item: target, creating: true)
+                QinglongFileEditor(store: store, item: target, creating: true, onCreated: onCreated)
             } else {
                 NavigationStack {
                     Form {
                         Section {
                             QinglongTextField("文件名", text: $filename)
-                            QinglongTextField("路径", text: $directory)
-                        } footer: {
-                            Text("路径为脚本相对目录，留空表示根目录。")
+                            Button { showDirectory = true } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("保存目录").font(.subheadline).foregroundStyle(.secondary)
+                                    HStack { Text(directory.isEmpty ? "根目录" : directory).multilineTextAlignment(.leading); Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }
+                                }
+                            }.accessibilityLabel("保存目录：" + (directory.isEmpty ? "根目录" : directory))
                         }.disabled(store.busy || connectionChanged)
                         if connectionChanged { QinglongNotice(text: "连接已改变，请关闭后重新新建脚本。", error: true) }
                         else if let error { QinglongNotice(text: error, error: true) }
@@ -38,6 +44,12 @@ struct QinglongNewScriptFlow: View {
                         }
                     }
                 }
+                .sheet(isPresented: $showDirectory) {
+                    QinglongScriptDirectoryPicker(store: store, directory: directory) { path in
+                        guard !connectionChanged else { return false }
+                        directory = path; return true
+                    }
+                }
             }
         }
         .tint(QinglongStyle.text)
@@ -49,6 +61,12 @@ struct QinglongNewScriptFlow: View {
         let path = directory.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             try QinglongParsing.file(name, directory: path)
+            try QinglongScriptTree.path(path)
+            try QinglongScriptTree.path(name, allowsRoot: false)
+            if let entries = store.items[.scripts] {
+                guard path.isEmpty || entries.contains(where: { $0.isDirectory && $0.filePath == path }) else { throw QinglongFailure(message: "保存目录已不存在，请重新选择。") }
+                guard !entries.contains(where: { $0.directory == path && $0.filename == name }) else { throw QinglongFailure(message: "此目录已存在同名文件或文件夹。") }
+            }
             target = QinglongItem(resource: .scripts, raw: .fields(["title": name, "parent": path]))
         } catch { self.error = error.localizedDescription }
     }
@@ -58,6 +76,7 @@ struct QinglongFileEditor: View {
     @ObservedObject var store: QinglongStore
     let item: QinglongItem
     var creating = false
+    let onCreated: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var baseline: String?
@@ -69,8 +88,8 @@ struct QinglongFileEditor: View {
     @State private var notice: String?
     @State private var openedRevision: UUID
     private enum FileAction { case close, reload }
-    init(store: QinglongStore, item: QinglongItem, creating: Bool = false) {
-        self.store = store; self.item = item; self.creating = creating
+    init(store: QinglongStore, item: QinglongItem, creating: Bool = false, onCreated: ((String) -> Void)? = nil) {
+        self.store = store; self.item = item; self.creating = creating; self.onCreated = onCreated
         _openedRevision = State(initialValue: store.revision)
     }
     private var writable: Bool { item.resource != .logs }
@@ -192,13 +211,14 @@ struct QinglongFileEditor: View {
             if creating {
                 let files = try await api.list(.scripts)
                 guard !files.contains(where: { $0.filePath == target.filePath }) else { throw QinglongFailure(message: "文件已存在，请打开后编辑。") }
+                guard target.directory.isEmpty || files.contains(where: { $0.isDirectory && $0.filePath == target.directory }) else { throw QinglongFailure(message: "保存目录已不存在，请关闭后重新选择。") }
             } else {
                 let current = try await api.file(target)
                 guard current == previous else { throw QinglongFailure(message: "远端文件已修改。本地草稿已保留，请重新打开远端文件比较后保存。") }
             }
             try await api.saveFile(target, content: content, creating: creating)
         }
-        if result { baseline = content; error = nil; notice = "文件已保存。" }
+        if result { baseline = content; error = nil; notice = "文件已保存。"; if creating { onCreated?(target.directory) } }
         else { error = store.message }
         return result
     }

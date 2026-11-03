@@ -143,9 +143,21 @@ enum QinglongCredentials {
     func delete(_ item: QinglongItem) async -> Bool {
         await perform(item.resource, success: "已删除。") { try await $0.delete(item) }
     }
+    func createScriptDirectory(name: String, directory: String) async -> Bool {
+        await perform(.scripts, success: "文件夹已创建。") { try await $0.createScriptDirectory(name: name, directory: directory) }
+    }
+    func relocateScript(_ item: QinglongItem, name: String, directory: String) async -> Bool {
+        await perform(.scripts, success: "已更新脚本位置。") { try await $0.relocateScript(item, name: name, directory: directory) }
+    }
     func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async -> QinglongEnvironmentSaveResult? {
         var result: QinglongEnvironmentSaveResult?
         let success = await perform(.envs, success: "已保存。") { result = try await $0.saveEnvironment(item, fields: fields, enabled: enabled) }
+        if let error = result?.stateError { message = error }
+        return success ? result : nil
+    }
+    func saveTask(_ item: QinglongItem?, fields: [String: String], enabled: Bool?) async -> QinglongTaskSaveResult? {
+        var result: QinglongTaskSaveResult?
+        let success = await perform(.tasks, success: "任务已保存。") { result = try await $0.saveTask(item, fields: fields, enabled: enabled) }
         if let error = result?.stateError { message = error }
         return success ? result : nil
     }

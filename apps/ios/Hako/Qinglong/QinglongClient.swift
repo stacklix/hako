@@ -144,6 +144,26 @@ actor QinglongClient {
         _ = try await call(item.resource == .configs ? ["configs", "save"] : ["scripts"], method: creating || item.resource == .configs ? "POST" : "PUT", body: body)
     }
 
+    func createScriptDirectory(name: String, directory: String) async throws {
+        try QinglongParsing.file(name, directory: directory)
+        try QinglongScriptTree.path(name, allowsRoot: false)
+        try QinglongScriptTree.path(directory)
+        let entries = try await list(.scripts)
+        guard directory.isEmpty || entries.contains(where: { $0.isDirectory && $0.filePath == directory }) else { throw QinglongFailure(message: "创建位置已不存在，请重新打开目录。") }
+        let target = [directory, name].filter { !$0.isEmpty }.joined(separator: "/")
+        guard !entries.contains(where: { $0.filePath == target }) else { throw QinglongFailure(message: "此目录已存在同名文件或文件夹。") }
+        // The API requires filename even for its directory-creation branch.
+        _ = try await call(["scripts"], method: "POST", body: .fields(["filename": name, "path": directory, "directory": name]))
+    }
+
+    func relocateScript(_ item: QinglongItem, name: String, directory: String) async throws {
+        let entries = try await list(.scripts)
+        let target = try QinglongScriptTree.destination(for: item, name: name, directory: directory, entries: entries)
+        // rename joins both names against path. Root-relative names support moving
+        // files AND whole folders in one request, without copying/deleting content.
+        _ = try await call(["scripts", "rename"], method: "PUT", body: .fields(["path": "", "filename": item.filePath, "newFilename": target]))
+    }
+
     func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async throws -> QinglongEnvironmentSaveResult {
         let payload = item?.editPayload(fields) ?? .fields(fields)
         let root = try await call(["envs"], method: item == nil ? "POST" : "PUT", body: item == nil ? .array([payload]) : payload)
@@ -160,6 +180,27 @@ actor QinglongClient {
         return QinglongEnvironmentSaveResult(item: saved, stateError: nil)
     }
 
+    func saveTask(_ item: QinglongItem?, fields: [String: String], enabled: Bool?) async throws -> QinglongTaskSaveResult {
+        var values = fields
+        if item == nil, values["name"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { values.removeValue(forKey: "name") }
+        let payload = item?.editPayload(values) ?? .fields(values)
+        let root: QinglongJSON
+        do { root = try await call(["crons"], method: item == nil ? "POST" : "PUT", body: payload) }
+        catch let failure as QinglongFailure where item == nil && failure.outcomeUnknown {
+            return QinglongTaskSaveResult(item: nil, stateError: "任务创建结果未确认，请关闭后回到列表核对，不要重复新增。")
+        }
+        let raw = root["data"].array?.first ?? root["data"]
+        let returned = QinglongItem(resource: .tasks, raw: raw)
+        guard let saved = returned.numberID != nil ? returned : item, saved.numberID != nil else {
+            return QinglongTaskSaveResult(item: nil, stateError: "任务内容已保存，但面板未返回任务编号。请关闭后核对列表，不要重复新增。")
+        }
+        if let enabled {
+            do { try await action(enabled ? "enable" : "disable", item: saved) }
+            catch { return QinglongTaskSaveResult(item: saved, stateError: "任务内容已保存，自动执行状态未确认：" + error.localizedDescription) }
+        }
+        return QinglongTaskSaveResult(item: saved, stateError: nil)
+    }
+
     func action(_ action: String, item: QinglongItem) async throws {
         guard let id = item.numberID else { throw QinglongFailure(message: "此资源缺少有效编号。") }
         _ = try await call([item.resource.rawValue, action], method: "PUT", body: .array([.number(Double(id))]))
@@ -169,7 +210,10 @@ actor QinglongClient {
         let body: QinglongJSON
         if item.resource == .scripts {
             try QinglongParsing.file(item.filename, directory: item.directory)
-            body = .fields(["filename": item.filename, "path": item.directory, "type": "file"])
+            try QinglongScriptTree.path(item.filePath, allowsRoot: false)
+            let entries = try await list(.scripts)
+            guard entries.contains(where: { $0.filePath == item.filePath && $0.isDirectory == item.isDirectory }) else { throw QinglongFailure(message: "文件或目录已改变，请刷新列表。") }
+            body = .fields(["filename": item.filename, "path": item.directory, "type": item.isDirectory ? "directory" : "file"])
         } else {
             guard let id = item.numberID else { throw QinglongFailure(message: "此资源缺少有效编号。") }
             body = .array([.number(Double(id))])

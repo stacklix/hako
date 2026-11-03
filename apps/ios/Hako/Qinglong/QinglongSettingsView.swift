@@ -139,38 +139,140 @@ struct QinglongTextField: View {
 struct QinglongPermissionsView: View {
     @ObservedObject var store: QinglongStore
     var embedded = false
-    @State private var results: [QinglongResource: String] = [:]
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var phase
+    @State private var results: [QinglongResource: QinglongPermissionResult] = [:]
     @State private var checking = false
     @State private var visible = false
-    var body: some View {
-        QinglongSheet("应用权限", embedded: embedded) {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(QinglongResource.allCases) { resource in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(resource.title)
-                        Text(results[resource] ?? "未检测").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }.qinglongCard()
-            Text("检测只读取各模块列表，不执行任务或修改数据。").font(.caption).foregroundStyle(.secondary)
-            Button(checking ? "正在检测…" : "重新检测") { Task { await check() } }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(checking || store.connection == nil)
-        }
-        .navigationTitle("应用权限").navigationBarTitleDisplayMode(.inline)
-        .onAppear { visible = true }.onDisappear { visible = false }
-        .task(id: store.revision) { await check() }
+    @State private var expanded: QinglongResource?
+    @State private var checkedAt: Date?
+    @State private var nonce = UUID()
+    @State private var activeCheck: UUID?
+    private struct CheckKey: Equatable {
+        let revision: UUID
+        let active: Bool
+        let connectionID: String?
+        let nonce: UUID
     }
-    private func check() async {
-        guard !checking else { return }
-        checking = true; results = [:]
-        let revision = store.revision
-        defer { checking = false }
+    private var completed: Int { results.values.filter(\.completed).count }
+    private var readable: Int { results.values.filter { $0 == .readable }.count }
+    private var total: Int { QinglongResource.allCases.count }
+    var body: some View {
+        let key = CheckKey(revision: store.revision, active: visible && phase == .active, connectionID: store.connection?.id, nonce: nonce)
+        Group {
+            if embedded { content }
+            else { NavigationStack { content } }
+        }
+        .onAppear { visible = true }.onDisappear { visible = false }
+        .task(id: key) {
+            guard key.connectionID != nil else {
+                activeCheck = nil; checking = false; results = [:]; checkedAt = nil; expanded = nil
+                return
+            }
+            guard key.active else { return }
+            await check(revision: key.revision)
+        }
+    }
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("应用权限").font(.system(size: 28, weight: .bold)).tracking(-0.7)
+                        Text(store.connection.map { $0.name + " · " + (checking ? "已检测 \(completed) / \(total) 个模块" : "\(readable) / \(total) 个模块可读取") } ?? "尚未配置面板")
+                            .font(.caption).foregroundStyle(QinglongStyle.muted)
+                    }
+                    Spacer(minLength: 0)
+                    Button { nonce = UUID() } label: {
+                        Group { if checking { ProgressView() } else { Image(systemName: "arrow.clockwise").font(.system(size: 18)) } }
+                            .frame(width: 44, height: 44).background(QinglongStyle.surface, in: Circle())
+                    }.buttonStyle(.plain).disabled(checking || store.connection == nil).accessibilityLabel("重新检测应用权限")
+                }
+                HStack {
+                    Text("模块读取权限"); Spacer(); Text(checking ? "检测中" : "\(total) 项")
+                }.font(.system(size: 13, weight: .semibold)).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3)
+                VStack(spacing: 0) {
+                    ForEach(Array(QinglongResource.allCases.enumerated()), id: \.element.id) { index, resource in
+                        if index > 0 { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.leading, 55) }
+                        permission(resource)
+                    }
+                }.qinglongCard(padding: 0, cornerRadius: 18)
+                Text("仅验证列表读取，不代表拥有新增、编辑或运行权限。").font(.caption).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3)
+                if let error = store.configurationError { QinglongNotice(text: error, error: true) }
+                Text(checking ? "正在检测：\(QinglongResource.allCases.first { results[$0] == .checking }?.title ?? "")" : checkedAt.map { $0.formatted(date: .omitted, time: .standard) + " 检测" } ?? "尚未完成检测")
+                    .font(.caption).foregroundStyle(QinglongStyle.muted).frame(maxWidth: .infinity)
+            }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 26)
+        }
+        .background(QinglongStyle.background).foregroundStyle(QinglongStyle.text).tint(QinglongStyle.text)
+        .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(QinglongStyle.background, for: .navigationBar).toolbarBackground(.visible, for: .navigationBar)
+        .toolbar { if !embedded { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } } }
+    }
+    private func permission(_ resource: QinglongResource) -> some View {
+        let result = results[resource] ?? .pending
+        return VStack(alignment: .leading, spacing: 0) {
+            if let message = result.message {
+                Button { expanded = expanded == resource ? nil : resource } label: { permissionRow(resource, result: result) }
+                    .buttonStyle(.plain).accessibilityLabel("\(resource.title)，\(result.title)，查看原因")
+                    .accessibilityValue(expanded == resource ? "已展开" : "已折叠")
+                if expanded == resource {
+                    Text(explanation(result, message: message))
+                        .font(.caption).foregroundStyle(QinglongStyle.muted)
+                        .padding(.leading, 52).padding(.trailing, 16).padding(.bottom, 16)
+                }
+            } else { permissionRow(resource, result: result).accessibilityElement(children: .combine) }
+        }
+    }
+    private func explanation(_ result: QinglongPermissionResult, message: String) -> String {
+        if case .failed = result { return "本次读取未成功，尚不能判断权限。\n" + message }
+        return message
+    }
+    private func resultColor(_ result: QinglongPermissionResult) -> Color {
+        switch result { case .readable: return QinglongStyle.success; case .denied: return QinglongStyle.failure; case .failed: return QinglongStyle.warning; default: return QinglongStyle.muted }
+    }
+    private func permissionRow(_ resource: QinglongResource, result: QinglongPermissionResult) -> some View {
+        let color = resultColor(result)
+        return HStack(spacing: 13) {
+            Image(systemName: resource.symbol).font(.system(size: 19)).foregroundStyle(QinglongStyle.muted).frame(width: 23).accessibilityHidden(true)
+            Text(resource.title).font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 5) {
+                if result == .checking { ProgressView().controlSize(.mini) }
+                else { Image(systemName: result == .readable ? "checkmark" : result.message != nil ? "exclamationmark.circle" : "minus").accessibilityHidden(true) }
+                Text(result.title)
+            }.font(.caption).foregroundStyle(color)
+            if result.message != nil { Image(systemName: "chevron.down").font(.system(size: 11)).foregroundStyle(QinglongStyle.muted).accessibilityHidden(true) }
+        }.padding(.horizontal, 16).padding(.vertical, 15).frame(minHeight: 58).contentShape(Rectangle())
+    }
+    private func check(revision: UUID) async {
+        let ticket = UUID()
+        activeCheck = ticket; checking = true; results = [:]; expanded = nil; checkedAt = nil
+        defer {
+            if activeCheck == ticket {
+                checking = false
+                if Task.isCancelled {
+                    for resource in QinglongResource.allCases where results[resource] == .checking { results[resource] = .pending }
+                }
+            }
+        }
         do {
             let client = try store.client()
             for resource in QinglongResource.allCases {
-                guard !Task.isCancelled, visible, revision == store.revision else { return }
-                do { _ = try await client.list(resource); if revision == store.revision { results[resource] = "可读取" } }
-                catch { if revision == store.revision { results[resource] = error.localizedDescription } }
+                guard !Task.isCancelled, visible, revision == store.revision, activeCheck == ticket else { return }
+                results[resource] = .checking
+                do {
+                    _ = try await client.list(resource)
+                    guard !Task.isCancelled, visible, revision == store.revision, activeCheck == ticket else { return }
+                    results[resource] = .readable
+                } catch {
+                    guard !Task.isCancelled, visible, revision == store.revision, activeCheck == ticket else { return }
+                    results[resource] = QinglongPermissionResult(error: error)
+                }
             }
-        } catch { for resource in QinglongResource.allCases { results[resource] = error.localizedDescription } }
+            checkedAt = .now
+        } catch {
+            guard !Task.isCancelled, visible, revision == store.revision, activeCheck == ticket else { return }
+            for resource in QinglongResource.allCases { results[resource] = QinglongPermissionResult(error: error) }
+            checkedAt = .now
+        }
     }
 }

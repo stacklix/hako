@@ -149,6 +149,7 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
     var id: String { resource.rawValue + ":" + (raw["id"].text.isEmpty ? filePath : raw["id"].text) }
     var numberID: Int? { raw["id"].int }
     var dependencyStatus: QinglongDependencyStatus? { raw["status"].int.flatMap(QinglongDependencyStatus.init(rawValue:)) }
+    var isDirectory: Bool { raw["type"].text == "directory" || raw["isDir"].flag }
     var language: String {
         switch (filename as NSString).pathExtension.lowercased() { case "py": return "Python"; case "js": return "JavaScript"; case "ts": return "TypeScript"; case "sh": return "Shell"; default: return "文本" }
     }
@@ -223,6 +224,26 @@ struct QinglongEnvironmentSaveResult: Sendable {
     let stateError: String?
 }
 
+struct QinglongTaskSaveResult: Sendable {
+    let item: QinglongItem?
+    let stateError: String?
+}
+
+enum QinglongPermissionResult: Equatable {
+    case pending, checking, readable, denied(String), failed(String)
+    init(error: Error) {
+        if (error as? QinglongFailure)?.status == 403 { self = .denied(error.localizedDescription) }
+        else { self = .failed(error.localizedDescription) }
+    }
+    var title: String {
+        switch self { case .pending: return "待检测"; case .checking: return "检测中"; case .readable: return "可读取"; case .denied: return "无权限"; case .failed: return "读取失败" }
+    }
+    var message: String? {
+        switch self { case .denied(let message), .failed(let message): return message; default: return nil }
+    }
+    var completed: Bool { self != .pending && self != .checking }
+}
+
 struct QinglongOutcome: Equatable, Sendable {
     let raw: QinglongJSON
     var failed: Bool { raw["status"].int == 3 || raw["status"].int == 1 && raw["exit_code"].int.map { $0 != 0 } == true }
@@ -237,6 +258,7 @@ struct QinglongOutcome: Equatable, Sendable {
 enum QinglongParsing {
     static func items(_ data: QinglongJSON, resource: QinglongResource) throws -> [QinglongItem] {
         guard let list = data.array ?? data["data"].array else { throw QinglongFailure(message: "面板返回的列表格式不受支持。") }
+        if resource == .scripts { return try QinglongScriptTree.entries(list) }
         func flatten(_ values: [QinglongJSON]) -> [QinglongItem] {
             values.flatMap { value -> [QinglongItem] in
                 if value["type"].text == "directory" || value["isDir"].flag { return flatten(value["children"].array ?? []) }
@@ -256,5 +278,77 @@ enum QinglongParsing {
               !(name + directory).unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
             throw QinglongFailure(message: "文件名或相对目录无效。")
         }
+    }
+}
+
+// A path-keyed snapshot retains empty directories as well as files. All UI and
+// mutation paths are relative to Qinglong's script root, never OS absolute paths.
+enum QinglongScriptTree {
+    static func path(_ path: String, allowsRoot: Bool = true) throws {
+        if path.isEmpty && allowsRoot { return }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !parts.isEmpty else { throw QinglongFailure(message: "目录无效。") }
+        for part in parts {
+            try QinglongParsing.file(String(part), directory: "")
+            guard part.utf8.count <= 255 else { throw QinglongFailure(message: "文件名过长。") }
+        }
+    }
+    static func parent(_ path: String) -> String { path.split(separator: "/").dropLast().joined(separator: "/") }
+    static func contains(_ path: String, in directory: String) -> Bool { path == directory || path.hasPrefix(directory + "/") }
+    static func entries(_ list: [QinglongJSON]) throws -> [QinglongItem] {
+        var values: [String: QinglongItem] = [:]
+        func visit(_ nodes: [QinglongJSON], parent: String) throws {
+            for node in nodes {
+                let item = QinglongItem(resource: .scripts, raw: node.text.isEmpty ? node : .fields(["title": node.text]))
+                let directory = item.directory.isEmpty ? parent : item.directory
+                let key = item.raw["key"].text.isEmpty ? [directory, item.filename].filter { !$0.isEmpty }.joined(separator: "/") : item.raw["key"].text
+                try path(key, allowsRoot: false)
+                let name = key.split(separator: "/").last.map(String.init) ?? ""
+                guard !name.isEmpty, values[key] == nil,
+                      item.filename.isEmpty || item.filename == name,
+                      item.directory.isEmpty || item.directory == Self.parent(key) else {
+                    throw QinglongFailure(message: "脚本列表包含重复或不一致的路径，请刷新。")
+                }
+                var raw = item.raw.object
+                raw["title"] = .string(name); raw["parent"] = .string(Self.parent(key)); raw["key"] = .string(key)
+                raw["type"] = .string(item.isDirectory || (item.raw["type"].text != "file" && item.raw["children"].array != nil) ? "directory" : "file")
+                raw.removeValue(forKey: "children"); raw.removeValue(forKey: "id")
+                let entry = QinglongItem(resource: .scripts, raw: .object(raw))
+                values[key] = entry
+                if entry.isDirectory { try visit(item.raw["children"].array ?? [], parent: key) }
+            }
+        }
+        try visit(list, parent: "")
+        // Some panel versions return a flat list. Keep ancestor folders visible.
+        for key in Array(values.keys) {
+            var directory = parent(key)
+            while !directory.isEmpty {
+                if let existing = values[directory], !existing.isDirectory { throw QinglongFailure(message: "脚本列表的文件与目录路径冲突。") }
+                if values[directory] == nil {
+                    values[directory] = QinglongItem(resource: .scripts, raw: .fields(["title": String(directory.split(separator: "/").last!), "parent": parent(directory), "key": directory, "type": "directory"]))
+                }
+                directory = parent(directory)
+            }
+        }
+        return values.values.sorted { $0.filePath.localizedStandardCompare($1.filePath) == .orderedAscending }
+    }
+    static func children(_ entries: [QinglongItem], directory: String) -> [QinglongItem] {
+        entries.filter { $0.directory == directory }.sorted {
+            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            return $0.filename.localizedStandardCompare($1.filename) == .orderedAscending
+        }
+    }
+    static func destination(for item: QinglongItem, name: String, directory: String, entries: [QinglongItem]) throws -> String {
+        try QinglongParsing.file(name, directory: directory)
+        try path(directory); try path(name, allowsRoot: false); try path(item.filePath, allowsRoot: false)
+        guard item.resource == .scripts, let source = entries.first(where: { $0.filePath == item.filePath }), source.isDirectory == item.isDirectory else {
+            throw QinglongFailure(message: "源文件或目录已改变，请刷新列表。")
+        }
+        guard directory.isEmpty || entries.contains(where: { $0.filePath == directory && $0.isDirectory }) else { throw QinglongFailure(message: "目标目录已不存在，请重新选择。") }
+        if item.isDirectory && contains(directory, in: item.filePath) { throw QinglongFailure(message: "不能移动到自身或子目录。") }
+        let target = [directory, name].filter { !$0.isEmpty }.joined(separator: "/")
+        guard target != item.filePath else { throw QinglongFailure(message: "名称和目录没有变化。") }
+        guard !entries.contains(where: { $0.filePath == target }) else { throw QinglongFailure(message: "目标目录已有同名文件或文件夹。") }
+        return target
     }
 }
