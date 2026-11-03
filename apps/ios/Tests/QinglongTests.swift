@@ -138,6 +138,37 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         }
         let outcome = try await client.latestOutcome(list[0])
         precondition(outcome?.failed == true, "Use the newest real instance, independent of response ordering")
-        print("Qinglong tests passed: connection/header validation, file tree, preserved edits, auth headers/cache/expiry, pagination, permissions, uncertain writes, empty file saves.")
+        var environmentRequests = [String]()
+        QinglongMockProtocol.respond { request in
+            let path = request.url!.path
+            environmentRequests.append(request.httpMethod! + " " + path)
+            if path.hasSuffix("envs/disable") {
+                let ids = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+                precondition(ids == .array([.number(42)]))
+                return (200, #"{"code":200}"#)
+            }
+            precondition(request.httpMethod == "POST")
+            let body = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            precondition(body.array?.first?["name"].text == "TEST_ENV" && body.array?.first?["status"] == .null)
+            return (200, #"{"code":200,"data":[{"id":42,"name":"TEST_ENV","value":"demo","status":0}]}"#)
+        }
+        let fields = ["name": "TEST_ENV", "value": "demo", "remarks": "test"]
+        let disabledEnvironment = try await client.saveEnvironment(nil, fields: fields, enabled: false)
+        precondition(disabledEnvironment.item?.numberID == 42 && disabledEnvironment.stateError == nil && environmentRequests.count == 2)
+        environmentRequests = []
+        let enabledEnvironment = try await client.saveEnvironment(nil, fields: fields, enabled: true)
+        precondition(enabledEnvironment.stateError == nil && environmentRequests.count == 1, "Default enabled creation requires no extra mutation")
+        QinglongMockProtocol.respond { request in
+            if request.url!.path.hasSuffix("envs/enable") { return (403, #"{"code":403}"#) }
+            precondition(request.httpMethod == "PUT")
+            return (200, #"{"code":200,"data":{"id":42,"name":"TEST_ENV","value":"demo","status":1}}"#)
+        }
+        let oldEnvironment = QinglongItem(resource: .envs, raw: try json(#"{"id":42,"status":1}"#))
+        let partial = try await client.saveEnvironment(oldEnvironment, fields: fields, enabled: true)
+        precondition(partial.item?.numberID == 42 && partial.stateError != nil, "Preserve the saved ID when only the state operation fails")
+        QinglongMockProtocol.respond { _ in (200, #"{"code":200,"data":[]}"#) }
+        let missingID = try await client.saveEnvironment(nil, fields: fields, enabled: false)
+        precondition(missingID.item == nil && missingID.stateError != nil, "Never invent an ID or repeat creation after an incomplete save response")
+        print("Qinglong tests passed, including environment create/state changes and partial-save recovery.")
     }
 }

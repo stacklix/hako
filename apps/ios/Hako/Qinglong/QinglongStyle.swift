@@ -20,6 +20,9 @@ enum QinglongStyle {
 }
 
 extension View {
+    func qinglongTaskAction(store: QinglongStore, request: Binding<QinglongTaskAction?>, showsFeedback: Bool = true) -> some View {
+        modifier(QinglongTaskActionConfirmation(store: store, request: request, showsFeedback: showsFeedback))
+    }
     func qinglongCard(padding: CGFloat = 15) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
             .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 14))
@@ -31,15 +34,59 @@ extension View {
     }
 }
 
+struct QinglongTaskAction {
+    let item: QinglongItem
+    let action: String
+    let revision: UUID
+    var title: String { action == "stop" ? "停止任务" : "运行任务" }
+}
+
+private struct QinglongTaskActionConfirmation: ViewModifier {
+    @ObservedObject var store: QinglongStore
+    @Binding var request: QinglongTaskAction?
+    let showsFeedback: Bool
+    @State private var feedback: String?
+    func body(content: Content) -> some View {
+        content.alert(request?.title ?? "任务操作", isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } }), presenting: request) { value in
+            Button("取消", role: .cancel) {}
+            Button(value.title, role: value.action == "stop" ? .destructive : nil) {
+                Task {
+                    guard !store.busy else { return }
+                    guard value.revision == store.revision else { feedback = "连接已改变，请返回列表重新打开。"; return }
+                    let accepted = value.action == "stop" ? "停止请求已提交，请查看状态和日志确认结果。" : "运行请求已提交，请查看状态和日志确认结果。"
+                    let success = await store.perform(value.item.resource, success: accepted) { try await $0.action(value.action, item: value.item) }
+                    feedback = success ? accepted : store.message
+                }
+            }
+        } message: { value in
+            Text("\(value.title)「\(value.item.title)」？")
+        }
+        .overlay(alignment: .bottom) {
+            if showsFeedback, let feedback {
+                Text(feedback).font(.caption).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(QinglongStyle.surface).background(QinglongStyle.text, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(20).allowsHitTesting(false)
+            }
+        }
+        .task(id: feedback) {
+            guard feedback != nil else { return }
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            feedback = nil
+        }
+        .onChange(of: store.revision) { _, _ in request = nil; feedback = nil }
+    }
+}
+
 struct QinglongPrimaryButtonStyle: ButtonStyle {
     var compact = false
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
-            .padding(.horizontal, compact ? 11 : 16).frame(minHeight: 44)
+            .padding(.horizontal, compact ? 11 : 16).frame(minHeight: compact ? 36 : 44)
             .frame(maxWidth: compact ? nil : .infinity)
             .foregroundStyle(QinglongStyle.surface)
             .background(QinglongStyle.text, in: RoundedRectangle(cornerRadius: compact ? 9 : 12))
+            .padding(.vertical, compact ? 4 : 0)
             .opacity(enabled ? configuration.isPressed ? 0.6 : 1 : 0.4)
     }
 }
@@ -87,6 +134,7 @@ struct QinglongSheet<Content: View>: View {
     }
     private var form: some View {
         Form { content }
+            .scrollContentBackground(.hidden).background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {
@@ -130,7 +178,7 @@ struct QinglongMenuRow: View {
         Button(action: action) {
             HStack(spacing: 12) {
                 if let symbol { Image(systemName: symbol).frame(width: 20) }
-                Text(title).font(.subheadline)
+                Text(title).font(.system(size: 13))
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
             }.foregroundStyle(destructive ? Color.red : .primary)

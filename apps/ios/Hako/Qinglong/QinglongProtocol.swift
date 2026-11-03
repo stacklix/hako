@@ -179,6 +179,11 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
     }
 }
 
+struct QinglongEnvironmentSaveResult: Sendable {
+    let item: QinglongItem?
+    let stateError: String?
+}
+
 struct QinglongOutcome: Equatable, Sendable {
     let raw: QinglongJSON
     var failed: Bool { raw["status"].int == 3 || raw["status"].int == 1 && raw["exit_code"].int.map { $0 != 0 } == true }

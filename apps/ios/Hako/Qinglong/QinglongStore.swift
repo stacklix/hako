@@ -134,6 +134,12 @@ enum QinglongCredentials {
     func delete(_ item: QinglongItem) async -> Bool {
         await perform(item.resource, success: "已删除。") { try await $0.delete(item) }
     }
+    func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async -> QinglongEnvironmentSaveResult? {
+        var result: QinglongEnvironmentSaveResult?
+        let success = await perform(.envs, success: "已保存。") { result = try await $0.saveEnvironment(item, fields: fields, enabled: enabled) }
+        if let error = result?.stateError { message = error }
+        return success ? result : nil
+    }
     func saveRecord(_ resource: QinglongResource, item: QinglongItem?, fields: [String: String]) async -> Bool {
         var body = item?.editPayload(fields) ?? .fields(fields)
         if resource == .envs && item == nil { body = .array([body]) }

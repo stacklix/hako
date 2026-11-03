@@ -144,6 +144,22 @@ actor QinglongClient {
         _ = try await call(item.resource == .configs ? ["configs", "save"] : ["scripts"], method: creating || item.resource == .configs ? "POST" : "PUT", body: body)
     }
 
+    func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async throws -> QinglongEnvironmentSaveResult {
+        let payload = item?.editPayload(fields) ?? .fields(fields)
+        let root = try await call(["envs"], method: item == nil ? "POST" : "PUT", body: item == nil ? .array([payload]) : payload)
+        let raw = root["data"].array?.first ?? root["data"]
+        let returned = QinglongItem(resource: .envs, raw: raw)
+        let saved = returned.numberID != nil ? returned : item
+        guard let saved, saved.numberID != nil else {
+            return QinglongEnvironmentSaveResult(item: nil, stateError: "变量内容已保存，但面板未返回变量编号。请关闭后核对列表，不要重复新增。")
+        }
+        if (item?.disabled ?? false) == enabled {
+            do { try await action(enabled ? "enable" : "disable", item: saved) }
+            catch { return QinglongEnvironmentSaveResult(item: saved, stateError: "变量内容已保存，启用状态未确认：" + error.localizedDescription) }
+        }
+        return QinglongEnvironmentSaveResult(item: saved, stateError: nil)
+    }
+
     func action(_ action: String, item: QinglongItem) async throws {
         guard let id = item.numberID else { throw QinglongFailure(message: "此资源缺少有效编号。") }
         _ = try await call([item.resource.rawValue, action], method: "PUT", body: .array([.number(Double(id))]))

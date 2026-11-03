@@ -1,29 +1,51 @@
 import SwiftUI
 
-struct QinglongInstancesView: View {
+struct QinglongSettingsView: View {
     @ObservedObject var store: QinglongStore
-    @Environment(\.dismiss) private var dismiss
     @State private var editing: QinglongConnection?
     @State private var error: String?
+    @State private var permissions = false
     var body: some View {
-        QinglongSheet("切换面板", disabled: store.busy) {
-            VStack(spacing: 0) {
-                ForEach(store.configuration.connections) { connection in
-                    Button {
-                        do { try store.select(connection.id); dismiss() } catch { self.error = error.localizedDescription }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "server.rack")
-                            Text(connection.name).font(.subheadline)
-                            Spacer()
-                            Image(systemName: connection.id == store.connection?.id ? "checkmark" : "chevron.right").font(.caption)
-                        }.padding(16).frame(minHeight: 52).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(store.busy)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("面板实例").font(.system(size: 14, weight: .semibold))
+                VStack(spacing: 0) {
+                    ForEach(store.configuration.connections) { connection in
+                        Button {
+                            do { try store.select(connection.id); error = nil } catch { self.error = error.localizedDescription }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "server.rack").frame(width: 20)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(connection.name).font(.system(size: 13))
+                                    Text(connection.id == store.connection?.id ? "当前使用" : "点击切换").font(.caption).foregroundStyle(QinglongStyle.muted)
+                                }
+                                Spacer()
+                                if connection.id == store.connection?.id { Image(systemName: "checkmark").font(.caption).accessibilityHidden(true) }
+                            }.padding(16).frame(minHeight: 60).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(store.busy)
+                            .accessibilityAddTraits(connection.id == store.connection?.id ? .isSelected : [])
+                            .overlay(alignment: .bottom) { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
+                    }
+                    QinglongMenuRow(title: "添加面板", symbol: "plus", last: true) { editing = QinglongConnection() }
+                }.qinglongCard(padding: 0)
+                if let connection = store.connection {
+                    Text("当前实例").font(.system(size: 14, weight: .semibold))
+                    VStack(spacing: 0) {
+                        QinglongMenuRow(title: "编辑连接", symbol: "network") { editing = connection }
+                        QinglongMenuRow(title: "应用权限", symbol: "checkmark.shield", last: true) { permissions = true }
+                    }.qinglongCard(padding: 0).disabled(store.busy)
                 }
-            }.qinglongCard(padding: 0)
-            Button("添加面板") { editing = QinglongConnection() }.buttonStyle(QinglongSecondaryButtonStyle())
-            if let error { QinglongNotice(text: error, error: true) }
-        }.sheet(item: $editing) { QinglongConnectionEditor(store: store, initial: $0) }
+                if let error { QinglongNotice(text: error, error: true) }
+                if let error = store.configurationError {
+                    QinglongNotice(text: error, error: true)
+                    Button("重新读取连接") { store.load() }.buttonStyle(QinglongSecondaryButtonStyle())
+                }
+            }.padding(20)
+        }.background(QinglongStyle.background).foregroundStyle(QinglongStyle.text).tint(QinglongStyle.text)
+            .navigationTitle("设置").navigationBarTitleDisplayMode(.inline)
+            .sheet(item: $editing) { QinglongConnectionEditor(store: store, initial: $0) }
+            .sheet(isPresented: $permissions) { QinglongPermissionsView(store: store) }
     }
 }
 
@@ -43,28 +65,27 @@ struct QinglongConnectionEditor: View {
     }
     var body: some View {
         QinglongSheet("连接设置", disabled: testing || store.busy, embedded: embedded, save: save) {
+            Section {
             QinglongTextField("连接名称", text: $draft.name)
             QinglongTextField("面板访问地址", text: $draft.address, keyboard: .URL)
             QinglongTextField("Client ID", text: $draft.clientID)
             QinglongTextField("Client Secret", text: $draft.clientSecret, secure: true)
+            }
+            Section {
             Toggle("添加自定义请求头", isOn: $headersEnabled).font(.subheadline)
                 .onChange(of: headersEnabled) { _, enabled in if enabled && draft.headers.isEmpty { draft.headers.append(QinglongHeader()) } }
             if headersEnabled {
                 ForEach($draft.headers) { $header in
                     VStack(alignment: .leading, spacing: 8) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(alignment: .top, spacing: 10) {
-                                QinglongTextField("Header 名称", text: $header.name)
-                                QinglongTextField("Header 值", text: $header.value, secure: true)
-                            }
-                            VStack { QinglongTextField("Header 名称", text: $header.name); QinglongTextField("Header 值", text: $header.value, secure: true) }
-                        }
+                        QinglongTextField("Header 名称", text: $header.name)
+                        QinglongTextField("Header 值", text: $header.value, secure: true)
                         if draft.headers.count > 1 { Button("移除此请求头", role: .destructive) { draft.headers.removeAll { $0.id == header.id } }.font(.caption) }
                     }
                 }
                 Button("添加另一条请求头", systemImage: "plus") { draft.headers.append(QinglongHeader()) }.buttonStyle(QinglongInlineButtonStyle())
             }
             if draft.address.lowercased().hasPrefix("http://") { Toggle("允许不加密的 HTTP 连接", isOn: $draft.allowHTTP).font(.subheadline) }
+            }
             if let testResult { QinglongNotice(text: testResult) }
             if let error { QinglongNotice(text: error, error: true) }
             Button(testing ? "正在测试…" : "测试连接") { test() }.buttonStyle(QinglongSecondaryButtonStyle())
