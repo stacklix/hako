@@ -1,6 +1,6 @@
 # 青龙面板
 
-首页入口使用表示定时任务的循环时钟图标（`clock.arrow.circlepath`），沿用首页其他入口的单色样式。
+首页入口使用青龙龙形单色矢量 Logo，按[官方面板原图](https://qn.whyour.cn/logo.png)描摹为 SVG 路径，保留龙形和外圈。资源位于 `Assets.xcassets/QinglongLogo.imageset`，以模板和 `.primary` 渲染，随浅色／深色模式显示黑色／白色。
 
 Hako iOS 首页的「青龙面板」直接连接已有青龙面板，不依赖 Hako 服务端。模块源码位于 `apps/ios/Hako/Qinglong/`，使用主应用提供的 `HTTPTransport`、`SecretStorage` 和日志服务，不引用其他子应用的业务代码。
 
