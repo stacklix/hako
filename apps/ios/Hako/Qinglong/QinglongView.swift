@@ -210,7 +210,8 @@ struct QinglongResourceView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
-                            card(item).padding(.horizontal, 16).padding(.vertical, 16)
+                            if resource == .envs { environmentCard(item) }
+                            else { card(item).padding(.horizontal, 16).padding(.vertical, 16) }
                         }
                     }.qinglongCard(padding: 0)
                     if store.loading.contains(resource) && store.items[resource] == nil { ProgressView("正在读取\(resource.title)…").frame(maxWidth: .infinity).padding() }
@@ -344,14 +345,25 @@ struct QinglongResourceView: View {
     }
     private func environmentCard(_ item: QinglongItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) { cardTitle(item, action: "edit"); Spacer(minLength: 8); QinglongStatus(item: item) }
+            HStack(alignment: .top) {
+                Text(item.title).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                QinglongStatus(item: item)
+            }.allowsHitTesting(false).accessibilityHidden(true)
             HStack {
-                Text(revealed.contains(item.id) ? item.raw["value"].text : "••••••••••••").font(.footnote.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(revealed.contains(item.id) ? item.raw["value"].text : "••••••••••••").font(.footnote.monospaced()).foregroundStyle(.secondary)
+                    .allowsHitTesting(false).accessibilityHidden(true)
                 Spacer()
-                Button { if revealed.contains(item.id) { revealed.remove(item.id) } else { revealed.insert(item.id) } } label: { Image(systemName: revealed.contains(item.id) ? "eye.slash" : "eye").frame(width: 44, height: 36) }.buttonStyle(.plain).accessibilityLabel(revealed.contains(item.id) ? "隐藏变量值" : "显示变量值")
+                Button { if revealed.contains(item.id) { revealed.remove(item.id) } else { revealed.insert(item.id) } } label: {
+                    Image(systemName: revealed.contains(item.id) ? "eye.slash" : "eye").frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel(revealed.contains(item.id) ? "隐藏变量值" : "显示变量值")
             }
-            HStack { Text(item.subtitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("编辑") { open(item, "edit") }.buttonStyle(QinglongInlineButtonStyle()) }
-        }
+            if !item.subtitle.isEmpty { Text(item.subtitle).font(.caption).foregroundStyle(.secondary).allowsHitTesting(false).accessibilityHidden(true) }
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                Button { open(item, "edit") } label: { Color.clear.contentShape(Rectangle()) }
+                    .buttonStyle(.plain).accessibilityLabel("编辑变量 \(item.title)").accessibilityValue(item.stateText)
+            }
     }
     private func cardTitle(_ item: QinglongItem, action: String) -> some View {
         Button { open(item, action) } label: { Text(item.title).font(.system(size: 13, weight: .semibold)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true) }.buttonStyle(.plain)

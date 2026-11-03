@@ -98,7 +98,7 @@ struct QinglongRecordEditor: View {
                 }
                 field("Cron 表达式", "schedule")
             }
-            if resource == .envs { field("变量值", "value", secure: true); field("备注", "remarks") }
+            if resource == .envs { field("变量值", "value"); field("备注", "remarks") }
             if resource == .subscriptions {
                 field("仓库地址", "url"); field("别名", "alias")
                 if item == nil || item?.raw["schedule_type"].text == "crontab" { field("Cron 表达式", "schedule") }
@@ -110,7 +110,10 @@ struct QinglongRecordEditor: View {
             if let error { QinglongNotice(text: error, error: true) }
             if let item = persistedItem {
                 if resource != .envs { Button(item.disabled ? "启用" : "禁用") { action = item.disabled ? "enable" : "disable" }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy) }
-                Button("删除\(resource.title)", role: .destructive) { action = "delete" }.buttonStyle(QinglongSecondaryButtonStyle(destructive: true)).disabled(store.busy)
+                Button(role: .destructive) { action = "delete" } label: {
+                    Text("删除\(resource.title)").font(.subheadline).frame(maxWidth: .infinity, minHeight: 46).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(QinglongStyle.failure)
+                    .listRowBackground(Color.clear).listRowSeparator(.hidden).disabled(store.busy)
             }
         }
         .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
