@@ -181,7 +181,6 @@ struct QinglongResourceView: View {
     var showsCreate = false
     @State private var search = ""
     @State private var filter = "全部"
-    @State private var revealed = Set<String>()
     private var values: [QinglongItem] { store.items[resource] ?? [] }
     private var filtered: [QinglongItem] {
         values.filter { item in
@@ -219,14 +218,12 @@ struct QinglongResourceView: View {
                         Text(search.isEmpty ? "暂无\(resource.title)" : "没有匹配的\(resource.title)").font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 32)
                     }
                     if let error = store.errors[resource] { QinglongNotice(text: error, error: true); Button("重新读取") { Task { await store.refresh(resource) } }.buttonStyle(QinglongSecondaryButtonStyle()) }
-                    if resource == .envs { Text("变量值默认隐藏，点击眼睛可查看。").font(.caption).foregroundStyle(.secondary) }
                     if let time = store.updated[resource] { Text("\(time.formatted(date: .omitted, time: .standard)) 更新\(resource == .tasks ? " · 按面板时区执行" : "")").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity) }
                 }
                 if let error = store.configurationError { QinglongNotice(text: error, error: true); Button("重新读取连接") { store.load() }.buttonStyle(QinglongSecondaryButtonStyle()) }
             }.padding(.horizontal, 20).padding(.bottom, 24)
         }
         .scrollDismissesKeyboard(.interactively).refreshable { await store.refresh(resource) }
-        .onChange(of: store.revision) { _, _ in revealed = [] }
         .task(id: refreshKey) { [refreshKey] in
             guard refreshKey.active, refreshKey.connectionID != nil else { return }
             repeat {
@@ -344,26 +341,12 @@ struct QinglongResourceView: View {
         }
     }
     private func environmentCard(_ item: QinglongItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                Text(item.title).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                QinglongStatus(item: item)
-            }.allowsHitTesting(false).accessibilityHidden(true)
-            HStack {
-                Text(revealed.contains(item.id) ? item.raw["value"].text : "••••••••••••").font(.footnote.monospaced()).foregroundStyle(.secondary)
-                    .allowsHitTesting(false).accessibilityHidden(true)
-                Spacer()
-                Button { if revealed.contains(item.id) { revealed.remove(item.id) } else { revealed.insert(item.id) } } label: {
-                    Image(systemName: revealed.contains(item.id) ? "eye.slash" : "eye").frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel(revealed.contains(item.id) ? "隐藏变量值" : "显示变量值")
-            }
-            if !item.subtitle.isEmpty { Text(item.subtitle).font(.caption).foregroundStyle(.secondary).allowsHitTesting(false).accessibilityHidden(true) }
-        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                Button { open(item, "edit") } label: { Color.clear.contentShape(Rectangle()) }
-                    .buttonStyle(.plain).accessibilityLabel("编辑变量 \(item.title)").accessibilityValue(item.stateText)
-            }
+        Button { open(item, "edit") } label: {
+            Text(item.title).font(.system(size: 13, weight: .semibold))
+                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                .frame(minHeight: 52).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("编辑变量 \(item.title)")
     }
     private func cardTitle(_ item: QinglongItem, action: String) -> some View {
         Button { open(item, action) } label: { Text(item.title).font(.system(size: 13, weight: .semibold)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true) }.buttonStyle(.plain)
