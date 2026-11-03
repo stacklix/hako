@@ -30,18 +30,19 @@ struct QinglongInstancesView: View {
 struct QinglongConnectionEditor: View {
     @ObservedObject var store: QinglongStore
     @Environment(\.dismiss) private var dismiss
+    let embedded: Bool
     @State private var draft: QinglongConnection
     @State private var testing = false
     @State private var headersEnabled: Bool
     @State private var testResult: String?
     @State private var error: String?
     @State private var deleting = false
-    init(store: QinglongStore, initial: QinglongConnection) {
-        self.store = store; _draft = State(initialValue: initial)
+    init(store: QinglongStore, initial: QinglongConnection, embedded: Bool = false) {
+        self.store = store; self.embedded = embedded; _draft = State(initialValue: initial)
         _headersEnabled = State(initialValue: !initial.headers.isEmpty)
     }
     var body: some View {
-        QinglongSheet("连接设置", disabled: testing || store.busy) {
+        QinglongSheet("连接设置", disabled: testing || store.busy, embedded: embedded, save: save) {
             QinglongTextField("连接名称", text: $draft.name)
             QinglongTextField("面板访问地址", text: $draft.address, keyboard: .URL)
             QinglongTextField("Client ID", text: $draft.clientID)
@@ -67,10 +68,6 @@ struct QinglongConnectionEditor: View {
             if let testResult { QinglongNotice(text: testResult) }
             if let error { QinglongNotice(text: error, error: true) }
             Button(testing ? "正在测试…" : "测试连接") { test() }.buttonStyle(QinglongSecondaryButtonStyle())
-            Button("保存连接") {
-                do { var value = draft; if !headersEnabled { value.headers = [] }; try store.save(value); dismiss() }
-                catch { self.error = error.localizedDescription }
-            }.buttonStyle(QinglongPrimaryButtonStyle())
             if store.configuration.connections.contains(where: { $0.id == draft.id }) {
                 Button("删除此连接", role: .destructive) { deleting = true }.buttonStyle(QinglongSecondaryButtonStyle(destructive: true))
             }
@@ -80,6 +77,10 @@ struct QinglongConnectionEditor: View {
         .confirmationDialog("删除此连接？", isPresented: $deleting, titleVisibility: .visible) {
             Button("删除", role: .destructive) { do { try store.remove(draft.id); dismiss() } catch { self.error = error.localizedDescription } }
         }
+    }
+    private func save() {
+        do { var value = draft; if !headersEnabled { value.headers = [] }; try store.save(value); dismiss() }
+        catch { self.error = error.localizedDescription }
     }
     private func test() {
         testing = true; error = nil; testResult = nil
@@ -106,9 +107,9 @@ struct QinglongTextField: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
             if secure {
-                SecureField("", text: $text).accessibilityLabel(title).textContentType(nil).padding(12).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 10))
+                SecureField("", text: $text).accessibilityLabel(title).textContentType(nil)
             } else {
-                TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title).padding(12).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 10))
+                TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title)
             }
         }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(.vertical, 4)
     }
@@ -116,11 +117,12 @@ struct QinglongTextField: View {
 
 struct QinglongPermissionsView: View {
     @ObservedObject var store: QinglongStore
+    var embedded = false
     @State private var results: [QinglongResource: String] = [:]
     @State private var checking = false
     @State private var visible = false
     var body: some View {
-        QinglongSheet("应用权限") {
+        QinglongSheet("应用权限", embedded: embedded) {
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(QinglongResource.allCases) { resource in
                     VStack(alignment: .leading, spacing: 5) {

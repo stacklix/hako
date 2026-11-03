@@ -1,16 +1,28 @@
 import SwiftUI
 
-// Geometry follows the approved prototype; colors follow Hako/system appearance.
+// Local presentation tokens match the approved sports-style prototype.
 enum QinglongStyle {
-    static let background = Color(uiColor: .systemGroupedBackground)
-    static let surface = Color(uiColor: .secondarySystemGroupedBackground)
+    static let background = adaptive(0xf5f5f7, 0x151517)
+    static let surface = adaptive(0xffffff, 0x242427)
+    static let text = adaptive(0x202124, 0xf2f2f4)
+    static let muted = adaptive(0x76777d, 0xaaaab0)
+    static let line = adaptive(0xe9e9ee, 0x38383c)
+    static let success = adaptive(0x478d80, 0x78b8aa)
+    static let warning = adaptive(0xa27d3e, 0xd3b27b)
+    static let failure = adaptive(0xb5605b, 0xd4948e)
     static let code = Color(uiColor: .tertiarySystemFill)
+    private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let v = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: Double((v >> 16) & 255) / 255, green: Double((v >> 8) & 255) / 255, blue: Double(v & 255) / 255, alpha: 1)
+        })
+    }
 }
 
 extension View {
     func qinglongCard(padding: CGFloat = 15) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 15))
+            .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 14))
     }
     func qinglongCode() -> some View {
         self.font(.footnote.monospaced()).textSelection(.enabled)
@@ -26,8 +38,8 @@ struct QinglongPrimaryButtonStyle: ButtonStyle {
         configuration.label.font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
             .padding(.horizontal, compact ? 11 : 16).frame(minHeight: 44)
             .frame(maxWidth: compact ? nil : .infinity)
-            .foregroundStyle(Color(uiColor: .systemBackground))
-            .background(Color.primary, in: RoundedRectangle(cornerRadius: compact ? 9 : 12))
+            .foregroundStyle(QinglongStyle.surface)
+            .background(QinglongStyle.text, in: RoundedRectangle(cornerRadius: compact ? 9 : 12))
             .opacity(enabled ? configuration.isPressed ? 0.6 : 1 : 0.4)
     }
 }
@@ -37,7 +49,7 @@ struct QinglongSecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.subheadline).frame(maxWidth: .infinity).frame(minHeight: 46)
-            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .foregroundStyle(destructive ? QinglongStyle.failure : QinglongStyle.text)
             .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 12))
             .opacity(enabled ? configuration.isPressed ? 0.6 : 1 : 0.4)
     }
@@ -52,32 +64,59 @@ struct QinglongInlineButtonStyle: ButtonStyle {
     }
 }
 
+// System sheet chrome and grouped Form; embedded content uses the host NavigationStack.
 struct QinglongSheet<Content: View>: View {
     let title: String
-    var disabled = false
-    var close: (() -> Void)?
+    let disabled: Bool
+    let embedded: Bool
+    let saveDisabled: Bool
+    let close: (() -> Void)?
+    let save: (() -> Void)?
     private let content: Content
     @Environment(\.dismiss) private var dismiss
-    init(_ title: String, disabled: Bool = false, close: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
-        self.title = title; self.disabled = disabled; self.close = close; self.content = content()
+    init(_ title: String, disabled: Bool = false, embedded: Bool = false, saveDisabled: Bool = false,
+         close: (() -> Void)? = nil, save: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title; self.disabled = disabled; self.embedded = embedded
+        self.saveDisabled = saveDisabled; self.close = close; self.save = save; self.content = content()
     }
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(title).font(.system(size: 18, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button { if let close { close() } else { dismiss() } } label: {
-                    Image(systemName: "xmark").font(.system(size: 16)).frame(width: 44, height: 44)
-                }.buttonStyle(.plain).accessibilityLabel("关闭").disabled(disabled)
-            }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 6)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) { content }
-                    .padding(.horizontal, 20).padding(.bottom, 28)
-            }.scrollDismissesKeyboard(.interactively)
-        }
-        .foregroundStyle(.primary).background(QinglongStyle.background).tint(.primary)
-        .presentationDetents([.large]).presentationDragIndicator(.visible).presentationCornerRadius(23)
-        .interactiveDismissDisabled(disabled)
+        Group {
+            if embedded { form }
+            else { NavigationStack { form } }
+        }.tint(QinglongStyle.text).interactiveDismissDisabled(disabled)
+    }
+    private var form: some View {
+        Form { content }
+            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar {
+                if !embedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(save == nil ? "完成" : "取消") { if let close { close() } else { dismiss() } }.disabled(disabled)
+                    }
+                }
+                if let save {
+                    ToolbarItem(placement: .confirmationAction) { Button("保存", action: save).disabled(disabled || saveDisabled) }
+                }
+            }
+    }
+}
+
+struct QinglongPageLink: View {
+    let title: String
+    let symbol: String
+    let route: QinglongMoreRoute
+    var last = false
+    var body: some View {
+        NavigationLink(value: route) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol).frame(width: 20)
+                Text(title).font(.system(size: 13))
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(QinglongStyle.muted)
+            }.padding(.horizontal, 16).frame(minHeight: 52).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+        .overlay(alignment: .bottom) { if !last { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) } }
     }
 }
 

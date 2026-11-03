@@ -1,5 +1,7 @@
 import SwiftUI
 
+enum QinglongMoreRoute: Hashable { case resource(QinglongResource), connection, permissions }
+
 private enum QinglongTab: String, CaseIterable {
     case tasks = "任务", scripts = "脚本", subscriptions = "订阅", more = "更多"
     var symbol: String { switch self { case .tasks: return "checklist"; case .scripts: return "doc.text"; case .subscriptions: return "arrow.triangle.branch"; case .more: return "square.grid.2x2" } }
@@ -35,6 +37,8 @@ struct QinglongView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            tabBar.padding(.horizontal, 20)
+            scope.padding(.horizontal, 20).padding(.vertical, 14)
             if let resource {
                 QinglongResourceView(store: store, resource: resource,
                     active: visible && scenePhase == .active && destination == nil,
@@ -43,14 +47,22 @@ struct QinglongView: View {
                     .id(resource)
             } else { more }
         }
-        .background(QinglongStyle.background).tint(.primary)
-        .safeAreaInset(edge: .bottom, spacing: 0) { tabBar }
-        .overlay(alignment: .bottom) { toast.padding(.horizontal, 20).padding(.bottom, 76) }
+        .background(QinglongStyle.background).foregroundStyle(QinglongStyle.text).tint(QinglongStyle.text)
+        .overlay(alignment: .bottom) { toast.padding(.horizontal, 20).padding(.bottom, 12) }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { destination = .connection } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel("青龙连接设置").disabled(store.busy)
+            }
+        }
+        .toolbarBackground(QinglongStyle.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .navigationDestination(for: QinglongMoreRoute.self) { route in
+            switch route {
+            case .connection: QinglongConnectionEditor(store: store, initial: store.connection ?? QinglongConnection(), embedded: true)
+            case .permissions: QinglongPermissionsView(store: store, embedded: true)
+            case .resource(let resource): QinglongMoreResourcePage(store: store, resource: resource)
             }
         }
         .sheet(item: $destination) { target in
@@ -76,41 +88,54 @@ struct QinglongView: View {
         }
     }
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 12) { title; Spacer(minLength: 0); instancePicker }
-                VStack(alignment: .leading, spacing: 8) { title; instancePicker }
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("青龙面板").font(.system(size: 28, weight: .bold)).tracking(-0.7)
+                HStack(spacing: 6) {
+                    Circle().fill(lastUpdated != nil ? QinglongStyle.success : QinglongStyle.muted).frame(width: 5, height: 5)
+                    Text(store.connection == nil ? "尚未配置面板" : lastUpdated.map { "已同步 " + $0.formatted(date: .omitted, time: .shortened) } ?? "等待读取")
+                        .font(.system(size: 11)).foregroundStyle(QinglongStyle.muted)
+                }
             }
-            Text(store.connection == nil ? "尚未配置面板" : lastUpdated.map { "已连接 · \($0.formatted(date: .omitted, time: .shortened)) 更新" } ?? "已配置 · 等待读取")
-                .font(.caption).foregroundStyle(.secondary)
-        }.padding(.horizontal, 22).padding(.top, 8).padding(.bottom, 16)
+            Spacer(minLength: 0)
+            Button {
+                if let resource { create(resource) } else { destination = .connection }
+            } label: {
+                Label(tab == .tasks ? "新建任务" : tab == .scripts ? "新建脚本" : tab == .subscriptions ? "新增订阅" : "连接设置", systemImage: tab == .more ? "slider.horizontal.3" : "plus")
+                    .font(.system(size: 13, weight: .semibold)).padding(.horizontal, 12).frame(minHeight: 44)
+                    .foregroundStyle(QinglongStyle.surface).background(QinglongStyle.text, in: RoundedRectangle(cornerRadius: 10))
+            }.buttonStyle(.plain).disabled(store.busy)
+        }.padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 14)
     }
-    private var title: some View { Text("青龙面板").font(.system(size: 30, weight: .semibold)).accessibilityAddTraits(.isHeader) }
-    private var instancePicker: some View {
-        Button { destination = .instances } label: {
-            HStack(spacing: 7) {
-                Circle().fill(lastUpdated != nil ? Color.green : Color.secondary).frame(width: 6, height: 6)
-                Text(store.connection?.name ?? "添加面板").font(.system(size: 13)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 11))
-            }.padding(.horizontal, 11).frame(minHeight: 40)
-                .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 12))
-        }.buttonStyle(.plain).disabled(store.busy).accessibilityLabel("切换面板，\(store.connection?.name ?? "尚未配置")")
+    private var scope: some View {
+        HStack {
+            Menu {
+                ForEach(store.configuration.connections) { connection in
+                    Button(connection.name) { do { try store.select(connection.id) } catch { store.message = error.localizedDescription } }
+                }
+                Button("管理连接") { destination = .instances }
+            } label: {
+                HStack(spacing: 8) { Text(store.connection?.name ?? "添加面板"); Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)) }
+                    .font(.system(size: 13)).padding(.horizontal, 11).frame(minHeight: 40)
+                    .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(QinglongStyle.line, lineWidth: 1) }
+            }.disabled(store.busy).accessibilityLabel("切换面板")
+            Spacer()
+            Text(tab == .tasks ? "任务与执行" : tab == .scripts ? "脚本文件" : tab == .subscriptions ? "订阅与拉取" : "面板管理").font(.caption).foregroundStyle(QinglongStyle.muted)
+        }
     }
     private var tabBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack(spacing: 0) {
-                ForEach(QinglongTab.allCases, id: \.self) { option in
-                    Button { tab = option; secondaryResource = nil } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: option.symbol).font(.system(size: 20))
-                            Text(option.rawValue).font(.system(size: 11, weight: tab == option ? .semibold : .regular))
-                        }.foregroundStyle(tab == option ? Color.primary : Color.secondary)
-                            .frame(maxWidth: .infinity).frame(minHeight: 48).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityAddTraits(tab == option ? .isSelected : [])
-                }
-            }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 4)
-        }.background(QinglongStyle.surface.ignoresSafeArea(edges: .bottom))
+        HStack(spacing: 25) {
+            ForEach(QinglongTab.allCases, id: \.self) { option in
+                Button { tab = option; secondaryResource = nil } label: {
+                    Text(option.rawValue).font(.system(size: 14, weight: tab == option ? .semibold : .regular))
+                        .foregroundStyle(tab == option ? QinglongStyle.text : QinglongStyle.muted)
+                        .frame(minHeight: 44).padding(.horizontal, 1)
+                        .overlay(alignment: .bottom) { Rectangle().fill(tab == option ? QinglongStyle.text : .clear).frame(height: 2) }
+                }.buttonStyle(.plain).accessibilityAddTraits(tab == option ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }.background(alignment: .bottom) { Rectangle().fill(QinglongStyle.line).frame(height: 1) }
     }
     @ViewBuilder private var toast: some View {
         if store.busy || store.message != nil {
@@ -126,18 +151,16 @@ struct QinglongView: View {
     private var more: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("面板资源").font(.headline)
+                Text("面板资源").font(.system(size: 14, weight: .semibold))
                 VStack(spacing: 0) {
                     ForEach([QinglongResource.envs, .configs, .dependencies, .logs]) { resource in
-                        QinglongMenuRow(title: resource.title, symbol: resource.symbol, last: resource == .logs) {
-                            if resource == .envs { secondaryResource = resource } else { destination = .resource(resource) }
-                        }
+                        QinglongPageLink(title: resource.title, symbol: resource.symbol, route: .resource(resource), last: resource == .logs)
                     }
                 }.qinglongCard(padding: 0)
-                Text("连接与权限").font(.headline)
+                Text("连接与权限").font(.system(size: 14, weight: .semibold))
                 VStack(spacing: 0) {
-                    QinglongMenuRow(title: "连接设置", symbol: "slider.horizontal.3") { destination = .connection }
-                    QinglongMenuRow(title: "应用权限", symbol: "checkmark.shield", last: true) { destination = .permissions }
+                    QinglongPageLink(title: "连接设置", symbol: "slider.horizontal.3", route: .connection)
+                    QinglongPageLink(title: "应用权限", symbol: "checkmark.shield", route: .permissions, last: true)
                 }.qinglongCard(padding: 0)
                 Text("凭据保存在本机 Keychain。日志不记录变量值、认证头或 Client Secret。").font(.caption).foregroundStyle(.secondary)
                 if let error = store.configurationError { QinglongNotice(text: error, error: true); Button("重新读取连接") { store.load() }.buttonStyle(QinglongSecondaryButtonStyle()) }
@@ -167,6 +190,7 @@ struct QinglongResourceView: View {
     let open: (QinglongItem, String) -> Void
     let create: () -> Void
     let configure: () -> Void
+    var showsCreate = false
     @State private var visible = false
     @State private var search = ""
     @State private var filter = "全部"
@@ -190,8 +214,12 @@ struct QinglongResourceView: View {
                     if resource == .tasks { summary }
                     if resource != .subscriptions { searchField }
                     sectionHeader
-                    if resource == .tasks { filters }
-                    LazyVStack(spacing: 10) { ForEach(filtered) { item in card(item) } }
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
+                            card(item).padding(.horizontal, 16).padding(.vertical, 16)
+                        }
+                    }.qinglongCard(padding: 0)
                     if store.loading.contains(resource) && store.items[resource] == nil { ProgressView("正在读取\(resource.title)…").frame(maxWidth: .infinity).padding() }
                     if filtered.isEmpty && !store.loading.contains(resource) && store.errors[resource] == nil {
                         Text(search.isEmpty ? "暂无\(resource.title)" : "没有匹配的\(resource.title)").font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 32)
@@ -224,10 +252,11 @@ struct QinglongResourceView: View {
     }
     private var sectionHeader: some View {
         HStack {
-            Text(resource == .tasks ? "定时任务" : resource == .scripts ? "脚本管理" : resource == .subscriptions ? "订阅管理" : resource.title).font(.system(size: 16, weight: .semibold))
+            Text(resource == .tasks ? "定时任务" : resource == .scripts ? "脚本管理" : resource == .subscriptions ? "订阅管理" : resource.title).font(.system(size: 14, weight: .semibold))
             if resource != .tasks { Text(values.count.formatted()).font(.caption).foregroundStyle(.secondary) }
             Spacer()
-            if canCreate { Button(resource == .envs || resource == .subscriptions ? "新增" : "新建", systemImage: "plus", action: create).buttonStyle(QinglongPrimaryButtonStyle(compact: true)).disabled(store.busy) }
+            if resource == .tasks { filters }
+            if canCreate && showsCreate { Button(resource == .envs || resource == .subscriptions ? "新增" : "新建", systemImage: "plus", action: create).buttonStyle(QinglongPrimaryButtonStyle(compact: true)).disabled(store.busy) }
         }
     }
     private var searchField: some View {
@@ -236,32 +265,28 @@ struct QinglongResourceView: View {
             TextField(resource == .tasks ? "搜索任务名称或命令" : resource == .scripts ? "搜索脚本名称或目录" : "搜索\(resource.title)", text: $search)
                 .font(.subheadline).autocorrectionDisabled().textInputAutocapitalization(.never).accessibilityLabel("搜索\(resource.title)")
             if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).accessibilityLabel("清除搜索") }
-        }.padding(.horizontal, 12).frame(minHeight: 44).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 12))
+        }.padding(.horizontal, 12).frame(minHeight: 44).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 9))
+        .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(QinglongStyle.line, lineWidth: 1) }
     }
     private var filters: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { filterButtons }
-            VStack(alignment: .leading, spacing: 6) { filterButtons }
-        }
-    }
-    @ViewBuilder private var filterButtons: some View {
-        ForEach(["全部", "运行中", "失败", "已禁用"], id: \.self) { option in
-            Button { filter = option } label: {
-                Text(option).font(.caption).padding(.horizontal, 12).frame(minHeight: 36)
-                    .foregroundStyle(filter == option ? Color(uiColor: .systemBackground) : .secondary)
-                    .background(filter == option ? Color.primary : Color.clear, in: RoundedRectangle(cornerRadius: 9))
-            }.buttonStyle(.plain).accessibilityAddTraits(filter == option ? .isSelected : [])
-        }
+        Menu {
+            Picker("任务状态", selection: $filter) { ForEach(["全部", "运行中", "失败", "已禁用"], id: \.self) { Text($0) } }
+        } label: {
+            HStack(spacing: 8) { Text(filter); Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)) }
+                .font(.system(size: 12)).padding(.horizontal, 10).frame(minHeight: 36)
+                .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 9))
+                .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(QinglongStyle.line, lineWidth: 1) }
+        }.accessibilityLabel("任务状态，" + filter)
     }
     private var summary: some View {
         HStack(spacing: 0) {
             metric("全部任务", value: values.count.formatted()); Divider().frame(height: 36)
             metric("正在运行", value: values.filter(\.running).count.formatted()); Divider().frame(height: 36)
             metric("最近失败", value: !store.outcomesComplete ? "—" : store.outcomes.values.filter(\.failed).count.formatted())
-        }.padding(.vertical, 16).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        }.padding(.vertical, 16).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 14))
     }
     private func metric(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) { Text(value).font(.system(size: 23, weight: .semibold)).monospacedDigit(); Text(title).font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
+        VStack(spacing: 8) { Text(title).font(.system(size: 11)).foregroundStyle(QinglongStyle.muted); HStack(alignment: .firstTextBaseline, spacing: 3) { Text(value).font(.system(size: 22, weight: .semibold)).monospacedDigit(); Text("项").font(.system(size: 11)).foregroundStyle(QinglongStyle.muted) } }.frame(maxWidth: .infinity).padding(.horizontal, 10)
     }
     @ViewBuilder private func card(_ item: QinglongItem) -> some View {
         switch resource {
@@ -271,7 +296,7 @@ struct QinglongResourceView: View {
         case .envs: environmentCard(item)
         default:
             Button { open(item, "file") } label: {
-                HStack { VStack(alignment: .leading, spacing: 6) { Text(item.title).font(.subheadline.weight(.semibold)); Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }.qinglongCard()
+                HStack { VStack(alignment: .leading, spacing: 6) { Text(item.title).font(.subheadline.weight(.semibold)); Text(item.subtitle).font(.caption).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }
             }.buttonStyle(.plain)
         }
     }
@@ -279,12 +304,11 @@ struct QinglongResourceView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) { cardTitle(item, action: "detail"); Spacer(minLength: 8); QinglongStatus(item: item, outcome: store.outcomes[item.id]) }
             Text(item.subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Divider()
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { Text(store.outcomes[item.id]?.summary ?? item.lastRunText).font(.caption).foregroundStyle(.secondary); Spacer(minLength: 0); taskActions(item) }
                 VStack(alignment: .leading, spacing: 3) { Text(store.outcomes[item.id]?.summary ?? item.lastRunText).font(.caption).foregroundStyle(.secondary); HStack { Spacer(); taskActions(item) } }
             }
-        }.qinglongCard()
+        }
     }
     private func taskActions(_ item: QinglongItem) -> some View {
         HStack(spacing: 14) {
@@ -296,22 +320,20 @@ struct QinglongResourceView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) { cardTitle(item, action: "file"); Spacer(minLength: 8); Text(item.language).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 3).background(QinglongStyle.code, in: RoundedRectangle(cornerRadius: 6)) }
             Text(item.subtitle).font(.caption).foregroundStyle(.secondary)
-            Divider()
             HStack {
                 Button("查看与编辑", systemImage: "pencil") { open(item, "file") }
                 Spacer()
                 Button("运行", systemImage: "play") { open(item, "run-script") }.disabled(store.busy)
             }.buttonStyle(QinglongInlineButtonStyle())
-        }.qinglongCard()
+        }
     }
     private func subscriptionCard(_ item: QinglongItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) { cardTitle(item, action: "edit"); Spacer(minLength: 8); QinglongStatus(item: item) }
             Text(item.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             HStack { Text(item.raw["schedule"].text.isEmpty ? "间隔计划" : item.raw["schedule"].text).font(.caption).foregroundStyle(.secondary); Spacer(); Button(item.running ? "停止拉取" : "立即拉取", systemImage: item.running ? "stop" : "arrow.clockwise") { open(item, item.running ? "stop" : "run") }.buttonStyle(QinglongInlineButtonStyle()).disabled(store.busy || item.disabled) }
-            Divider()
             HStack { Text(item.lastRunText).font(.caption).foregroundStyle(.secondary); Spacer(); Button("查看日志") { open(item, "log") }.buttonStyle(QinglongInlineButtonStyle()) }
-        }.qinglongCard()
+        }
     }
     private func environmentCard(_ item: QinglongItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -321,12 +343,11 @@ struct QinglongResourceView: View {
                 Spacer()
                 Button { if revealed.contains(item.id) { revealed.remove(item.id) } else { revealed.insert(item.id) } } label: { Image(systemName: revealed.contains(item.id) ? "eye.slash" : "eye").frame(width: 44, height: 36) }.buttonStyle(.plain).accessibilityLabel(revealed.contains(item.id) ? "隐藏变量值" : "显示变量值")
             }
-            Divider()
             HStack { Text(item.subtitle).font(.caption).foregroundStyle(.secondary); Spacer(); Button("编辑") { open(item, "edit") }.buttonStyle(QinglongInlineButtonStyle()) }
-        }.qinglongCard()
+        }
     }
     private func cardTitle(_ item: QinglongItem, action: String) -> some View {
-        Button { open(item, action) } label: { Text(item.title).font(.system(size: 14, weight: .semibold)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true) }.buttonStyle(.plain)
+        Button { open(item, action) } label: { Text(item.title).font(.system(size: 13, weight: .semibold)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true) }.buttonStyle(.plain)
     }
 }
 
@@ -334,16 +355,17 @@ struct QinglongStatus: View {
     let item: QinglongItem
     var outcome: QinglongOutcome? = nil
     private var state: String { item.disabled || item.running ? item.stateText : outcome?.stateText ?? item.stateText }
-    private var color: Color { if item.disabled { return .secondary }; if item.running { return .orange }; if outcome?.failed == true { return .red }; if outcome?.succeeded == true || item.resource == .envs { return .green }; return .secondary }
-    var body: some View { Text(state).font(.caption2).foregroundStyle(color).padding(.horizontal, 7).padding(.vertical, 3).background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 6)).fixedSize() }
+    private var color: Color { if item.disabled { return .secondary }; if item.running { return QinglongStyle.warning }; if outcome?.failed == true { return QinglongStyle.failure }; if outcome?.succeeded == true || item.resource == .envs { return QinglongStyle.success }; return .secondary }
+    var body: some View { Text("· " + state).font(.caption2).foregroundStyle(color).fixedSize() }
 }
 
 struct QinglongResourceSheet: View {
     @ObservedObject var store: QinglongStore
     let resource: QinglongResource
+    var embedded = false
     @State private var selected: QinglongItem?
     var body: some View {
-        QinglongSheet(resource.title) {
+        QinglongSheet(resource.title, embedded: embedded) {
             if store.loading.contains(resource) { ProgressView("正在读取…") }
             if let error = store.errors[resource] { QinglongNotice(text: error, error: true) }
             ForEach(store.items[resource] ?? []) { item in
@@ -357,5 +379,24 @@ struct QinglongResourceSheet: View {
             if resource == .dependencies { QinglongSheet(item.title) { Text(item.subtitle).font(.subheadline); Text("安装状态：\(item.raw["status"].text)").font(.caption).foregroundStyle(.secondary) } }
             else { QinglongFileEditor(store: store, item: item) }
         }
+    }
+}
+
+struct QinglongMoreResourcePage: View {
+    @ObservedObject var store: QinglongStore
+    let resource: QinglongResource
+    @Environment(\.scenePhase) private var phase
+    @State private var selected: QinglongItem?
+    @State private var creating = false
+    var body: some View {
+        Group {
+            if resource == .envs {
+                QinglongResourceView(store: store, resource: resource, active: phase == .active && selected == nil && !creating,
+                    open: { item, _ in selected = item }, create: { creating = true }, configure: {}, showsCreate: true)
+                    .navigationTitle(resource.title).navigationBarTitleDisplayMode(.inline)
+            } else { QinglongResourceSheet(store: store, resource: resource, embedded: true) }
+        }.background(QinglongStyle.background).tint(QinglongStyle.text)
+        .sheet(item: $selected) { QinglongRecordEditor(store: store, resource: resource, item: $0) }
+        .sheet(isPresented: $creating) { QinglongRecordEditor(store: store, resource: resource, item: nil) }
     }
 }

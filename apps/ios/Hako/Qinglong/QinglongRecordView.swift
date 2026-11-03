@@ -52,7 +52,7 @@ struct QinglongRecordEditor: View {
     }
     @State private var action: String?
     var body: some View {
-        QinglongSheet("\(item == nil ? "新建" : "编辑")\(resource.title)", disabled: store.busy) {
+        QinglongSheet("\(item == nil ? "新建" : "编辑")\(resource.title)", disabled: store.busy, save: { Task { await save() } }) {
             field(resource == .envs ? "变量名" : "任务名称", "name")
             if resource == .tasks {
                 VStack(alignment: .leading, spacing: 6) {
@@ -72,7 +72,6 @@ struct QinglongRecordEditor: View {
                 DisclosureGroup("更多选项") { field("分支", "branch"); field("包含关键词", "whitelist"); field("排除关键词", "blacklist") }
             }
             if let error { QinglongNotice(text: error, error: true) }
-            Button(store.busy ? "正在保存…" : "保存\(resource.title)") { Task { await save() } }.buttonStyle(QinglongPrimaryButtonStyle()).disabled(store.busy)
             if let item {
                 Button(item.disabled ? "启用" : "禁用") { action = item.disabled ? "enable" : "disable" }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy)
                 Button("删除\(resource.title)", role: .destructive) { action = "delete" }.buttonStyle(QinglongSecondaryButtonStyle(destructive: true)).disabled(store.busy)

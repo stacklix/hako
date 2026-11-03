@@ -37,9 +37,9 @@ struct QinglongFileEditor: View {
 
     @State private var showRunner = false
     private var editor: some View {
-        QinglongSheet(creating ? "新建脚本" : item.title, disabled: store.busy, close: {
+        QinglongSheet(creating ? "新建脚本" : item.title, disabled: store.busy, saveDisabled: loading || !creating && baseline == nil, close: {
             if changed { discarding = true } else { dismiss() }
-        }) {
+        }, save: writable ? { Task { await save() } } : nil) {
             if creating {
                 QinglongTextField("文件名", text: $filename)
                 QinglongTextField("相对目录", text: $directory)
@@ -55,7 +55,6 @@ struct QinglongFileEditor: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("文件内容")
                         .disabled(loading || store.busy || !creating && baseline == nil)
                 }
-                Button(store.busy ? "正在保存…" : item.resource == .configs ? "保存配置" : "保存脚本") { Task { await save() } }.buttonStyle(QinglongPrimaryButtonStyle()).disabled(store.busy || loading || !creating && baseline == nil)
             } else { Text(text.isEmpty ? "暂无内容" : text).qinglongCode() }
             if !creating {
                 if item.resource == .scripts {
