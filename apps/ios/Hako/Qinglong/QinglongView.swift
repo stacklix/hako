@@ -320,7 +320,7 @@ struct QinglongResourceView: View {
     private func taskActions(_ item: QinglongItem) -> some View {
         HStack(spacing: 14) {
             Button("日志", systemImage: "doc.text") { open(item, "log") }
-            Button(item.running ? "停止" : "运行", systemImage: item.running ? "stop" : "play") { open(item, item.running ? "stop" : "run") }.disabled(store.busy || item.disabled)
+            Button(item.running ? "停止" : "运行", systemImage: item.running ? "stop" : "play") { open(item, item.running ? "stop" : "run") }.disabled(store.busy)
         }.buttonStyle(QinglongInlineButtonStyle())
     }
     private func scriptCard(_ item: QinglongItem) -> some View {
@@ -363,8 +363,8 @@ struct QinglongResourceView: View {
 struct QinglongStatus: View {
     let item: QinglongItem
     var outcome: QinglongOutcome? = nil
-    private var state: String { item.disabled || item.running ? item.stateText : outcome?.stateText ?? item.stateText }
-    private var color: Color { if item.disabled { return .secondary }; if item.running { return QinglongStyle.warning }; if outcome?.failed == true { return QinglongStyle.failure }; if outcome?.succeeded == true || item.resource == .envs { return QinglongStyle.success }; return .secondary }
+    private var state: String { item.disabled || item.running || item.queued ? item.stateText : outcome?.stateText ?? item.stateText }
+    private var color: Color { if item.running || item.queued { return QinglongStyle.warning }; if item.disabled { return .secondary }; if outcome?.failed == true { return QinglongStyle.failure }; if outcome?.succeeded == true || item.resource == .envs { return QinglongStyle.success }; return .secondary }
     var body: some View { Text("· " + state).font(.caption2).foregroundStyle(color).fixedSize() }
 }
 

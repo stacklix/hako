@@ -183,11 +183,12 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
     var filePath: String { raw["key"].text.isEmpty ? [directory, filename].filter { !$0.isEmpty }.joined(separator: "/") : raw["key"].text }
     var disabled: Bool { resource == .envs ? raw["status"].int == 1 : raw["isDisabled"].flag || raw["is_disabled"].flag || raw["status"].int == 2 }
     var running: Bool { (resource == .tasks || resource == .subscriptions) && raw["status"].int == 0 }
+    var queued: Bool { (resource == .tasks || resource == .subscriptions) && raw["status"].int == 3 }
     var stateText: String {
-        if disabled { return "已禁用" }
         if running { return "运行中" }
+        if queued { return "排队中" }
+        if disabled { return "已禁用" }
         if resource == .envs { return "已启用" }
-        if raw["status"].int == 3 { return "排队中" }
         return "空闲"
     }
     var subtitle: String {

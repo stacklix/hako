@@ -168,6 +168,22 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(list.count == 2 && listRequests == 2 && tokenRequests == 1)
         _ = try await client.list(.tasks)
         precondition(tokenRequests == 1, "Token must be cached")
+        let manualTask = QinglongItem(resource: .tasks, raw: try json(#"{"id":17,"name":"manual-only","status":1,"isDisabled":1}"#))
+        let disabledRunning = QinglongItem(resource: .tasks, raw: try json(#"{"id":17,"status":0,"isDisabled":1}"#))
+        let disabledQueued = QinglongItem(resource: .tasks, raw: try json(#"{"id":17,"status":3,"isDisabled":1}"#))
+        precondition(manualTask.disabled && !manualTask.running)
+        precondition(disabledRunning.disabled && disabledRunning.running && disabledRunning.stateText == "运行中", "Automatic scheduling being disabled must not hide an active manual run")
+        precondition(disabledQueued.disabled && disabledQueued.queued && disabledQueued.stateText == "排队中")
+        var manualRequests = [String]()
+        QinglongMockProtocol.respond { request in
+            manualRequests.append(request.url!.path)
+            precondition(request.httpMethod == "PUT" && request.url!.path.hasSuffix("crons/run"))
+            let payload = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            precondition(payload == .array([.number(17)]))
+            return (200, #"{"code":200}"#)
+        }
+        try await client.action("run", item: manualTask)
+        precondition(manualRequests == ["/panel/open/crons/run"] && manualTask.disabled, "Manual run submits once and must not enable automatic scheduling")
         var writes = 0
         QinglongMockProtocol.respond { request in
             writes += 1

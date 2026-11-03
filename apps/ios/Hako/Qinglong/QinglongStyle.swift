@@ -25,9 +25,9 @@ extension View {
             QinglongExecutionLog(store: store, item: value.item, initialAction: value.action, revision: value.revision)
         }
     }
-    func qinglongCard(padding: CGFloat = 15) -> some View {
+    func qinglongCard(padding: CGFloat = 15, cornerRadius: CGFloat = 14) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
-            .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 14))
+            .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: cornerRadius))
     }
     func qinglongCode() -> some View {
         self.font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
@@ -84,14 +84,15 @@ struct QinglongSheet<Content: View>: View {
     let embedded: Bool
     let saveDisabled: Bool
     let usesForm: Bool
+    let showsClose: Bool
     let close: (() -> Void)?
     let save: (() -> Void)?
     private let content: Content
     @Environment(\.dismiss) private var dismiss
-    init(_ title: String, disabled: Bool = false, embedded: Bool = false, saveDisabled: Bool = false, usesForm: Bool = true,
+    init(_ title: String, disabled: Bool = false, embedded: Bool = false, saveDisabled: Bool = false, usesForm: Bool = true, showsClose: Bool = true,
          close: (() -> Void)? = nil, save: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.title = title; self.disabled = disabled; self.embedded = embedded
-        self.saveDisabled = saveDisabled; self.usesForm = usesForm; self.close = close; self.save = save; self.content = content()
+        self.saveDisabled = saveDisabled; self.usesForm = usesForm; self.showsClose = showsClose; self.close = close; self.save = save; self.content = content()
     }
     var body: some View {
         Group {
@@ -113,7 +114,7 @@ struct QinglongSheet<Content: View>: View {
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {
-                if !embedded {
+                if !embedded && showsClose {
                     ToolbarItem(placement: .cancellationAction) {
                         Button(save == nil ? "关闭" : "取消") { if let close { close() } else { dismiss() } }.disabled(disabled)
                     }
