@@ -19,6 +19,8 @@ Hako iOS 首页的「青龙面板」直接连接已有青龙面板，不依赖 H
 - 订阅：查看、创建公开 Git 仓库订阅、编辑名称／地址／别名／分支／筛选关键词／Cron、拉取、停止、启用／禁用、删除、最近日志。编辑已有订阅保留其私有仓库凭据、间隔计划、钩子等未展示字段。
 - 更多：环境变量增删改查与启用／禁用，变量值默认遮蔽；查看与编辑配置文件；只读依赖列表和日志文件；连接管理与权限检测。
 
+更多菜单与顶部设置使用独立的页面状态驱动原生导航，不依赖菜单行持有导航值。环境变量读取、编辑和关闭表单均保留当前页面；只有系统返回或明确点击底部 Tab 时退出资源页面。没有连接时可在环境变量页直接打开连接设置。
+
 Cron 按青龙面板自身的时区解释；任务状态使用接口实际的运行、空闲、排队和禁用状态，不把「空闲」解释为上次执行成功。运行／停止请求成功只表示接口接受，需继续查看状态及日志确认结果。
 
 任务列表与详情内的运行／停止打开原生 sheet。确认后保留同一个 sheet，自动切换到执行状态和最近日志，每 5 秒刷新日志、每 10 秒刷新状态；运行结束、停止请求成功或请求失败都不自动关闭。停止当前执行可在日志 sheet 内确认，不替换或清空日志。关闭、切到后台或连接改变后停止轮询；连接改变会清除旧日志并阻止旧页面继续操作。详情采用与原型一致的纵向布局：任务标题与状态、命令区、定时规则／执行计划／时区／最近执行、运行与日志按钮、独立操作菜单。未提供时区时显示跟随面板设置，不把原型演示时区当作实际设置。
@@ -41,11 +43,11 @@ Cron 按青龙面板自身的时区解释；任务状态使用接口实际的运
 
 ## 验证
 
-`apps/ios/Tests/QinglongTests.swift` 使用 URLProtocol 模拟面板，覆盖地址与 Header 校验、树形文件列表、订阅编辑字段保留、Token 缓存与失效、Header 传递、任务分页、业务错误、结果不确定的写操作不重试、空文本保存。已接入 iOS CI。
+`apps/ios/Tests/QinglongTests.swift` 使用 URLProtocol 模拟面板，覆盖地址与 Header 校验、树形文件列表、订阅编辑字段保留、Token 缓存与失效、Header 传递、任务分页、业务错误、结果不确定的写操作不重试、空文本保存；异步加载测试覆盖取消后的请求交接、并发读取合并、等待期间取消及连接切换隔离。脚本首次进入即加载，页面恢复后的请求会等待被取消的旧请求结束再接替，不依赖打开新增表单触发。已接入 iOS CI。
 
 ```sh
 cd apps/ios
-swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
+swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
 /tmp/hako-qinglong-tests
 ```
 

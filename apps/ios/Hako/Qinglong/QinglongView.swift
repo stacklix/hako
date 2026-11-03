@@ -1,6 +1,11 @@
 import SwiftUI
 
-enum QinglongMoreRoute: Hashable { case resource(QinglongResource), settings, permissions }
+enum QinglongMoreRoute: Hashable, Identifiable {
+    case resource(QinglongResource), settings, permissions
+    var id: String {
+        switch self { case .resource(let resource): return "resource:" + resource.rawValue; case .settings: return "settings"; case .permissions: return "permissions" }
+    }
+}
 
 enum QinglongTab: String, CaseIterable {
     case tasks = "任务", scripts = "脚本", subscriptions = "订阅", more = "更多"
@@ -29,7 +34,7 @@ struct QinglongView: View {
     @State private var tab = QinglongTab.tasks
     @State private var destination: QinglongDestination?
     @State private var taskAction: QinglongTaskAction?
-    @State private var visible = false
+    @State private var page: QinglongMoreRoute?
     private var resource: QinglongResource? { tab.resource }
     private var lastUpdated: Date? { resource.flatMap { store.updated[$0] } ?? store.updated.values.max() }
 
@@ -38,7 +43,7 @@ struct QinglongView: View {
             header
             if let resource {
                 QinglongResourceView(store: store, resource: resource,
-                    active: visible && scenePhase == .active && destination == nil && taskAction == nil,
+                    active: scenePhase == .active && destination == nil && taskAction == nil && page == nil,
                     open: open, create: { create(resource) }, configure: { destination = .connection }, showsCreate: true)
                     .id(resource)
             } else { more }
@@ -49,19 +54,22 @@ struct QinglongView: View {
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink(value: QinglongMoreRoute.settings) { Image(systemName: "slider.horizontal.3") }
+                Button { page = .settings } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel("青龙面板设置").disabled(store.busy)
             }
         }
         .toolbarBackground(QinglongStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .navigationDestination(for: QinglongMoreRoute.self) { route in
-            QinglongNavigationPage(selection: tab, select: { tab = $0 }) {
+        .navigationDestination(item: $page) { route in
+            Group {
                 switch route {
                 case .settings: QinglongSettingsView(store: store)
                 case .permissions: QinglongPermissionsView(store: store, embedded: true)
                 case .resource(let resource): QinglongMoreResourcePage(store: store, resource: resource)
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                QinglongTabBar(selection: tab) { tab = $0; page = nil }
             }
         }
         .qinglongTaskAction(store: store, request: $taskAction)
@@ -76,7 +84,7 @@ struct QinglongView: View {
             case .scriptRun(let item): QinglongScriptRunner(store: store, item: item)
             }
         }
-        .onAppear { visible = true; store.load() }.onDisappear { visible = false }
+        .onAppear { store.load() }
         .task(id: "\(store.busy):\(store.message ?? "")") {
             guard let message = store.message, !store.busy else { return }
             do { try await Task.sleep(for: .seconds(5)) } catch { return }
@@ -113,13 +121,13 @@ struct QinglongView: View {
                 Text("面板资源").font(.system(size: 14, weight: .semibold))
                 VStack(spacing: 0) {
                     ForEach([QinglongResource.envs, .configs, .dependencies, .logs]) { resource in
-                        QinglongPageLink(title: resource.title, symbol: resource.symbol, route: .resource(resource), last: resource == .logs)
+                        QinglongPageLink(title: resource.title, symbol: resource.symbol, last: resource == .logs) { page = .resource(resource) }
                     }
                 }.qinglongCard(padding: 0)
                 Text("面板管理").font(.system(size: 14, weight: .semibold))
                 VStack(spacing: 0) {
-                    QinglongPageLink(title: "设置", symbol: "slider.horizontal.3", route: .settings)
-                    QinglongPageLink(title: "应用权限", symbol: "checkmark.shield", route: .permissions, last: true)
+                    QinglongPageLink(title: "设置", symbol: "slider.horizontal.3") { page = .settings }
+                    QinglongPageLink(title: "应用权限", symbol: "checkmark.shield", last: true) { page = .permissions }
                 }.qinglongCard(padding: 0)
                 if let error = store.configurationError { QinglongNotice(text: error, error: true); Button("重新读取连接") { store.load() }.buttonStyle(QinglongSecondaryButtonStyle()) }
             }.padding(.horizontal, 20).padding(.bottom, 24)
@@ -162,18 +170,6 @@ struct QinglongTabBar: View {
     }
 }
 
-private struct QinglongNavigationPage<Content: View>: View {
-    let selection: QinglongTab
-    let select: (QinglongTab) -> Void
-    @ViewBuilder let content: () -> Content
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        content().safeAreaInset(edge: .bottom, spacing: 0) {
-            QinglongTabBar(selection: selection) { select($0); dismiss() }
-        }
-    }
-}
-
 struct QinglongResourceView: View {
     @ObservedObject var store: QinglongStore
     let resource: QinglongResource
@@ -183,7 +179,6 @@ struct QinglongResourceView: View {
     let create: () -> Void
     let configure: () -> Void
     var showsCreate = false
-    @State private var visible = false
     @State private var search = ""
     @State private var filter = "全部"
     @State private var revealed = Set<String>()
@@ -194,10 +189,16 @@ struct QinglongResourceView: View {
             && (filter == "全部" || filter == "运行中" && item.running || filter == "已禁用" && item.disabled || filter == "失败" && store.outcomes[item.id]?.failed == true)
         }
     }
-    private var pollKey: String { "\(active && visible):\(store.revision)" }
+    private struct RefreshKey: Equatable {
+        let active: Bool
+        let resource: QinglongResource
+        let revision: UUID
+        let connectionID: String?
+    }
     private var canCreate: Bool { [.tasks, .scripts, .subscriptions, .envs].contains(resource) }
 
     var body: some View {
+        let refreshKey = RefreshKey(active: active, resource: resource, revision: store.revision, connectionID: store.connection?.id)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 if let back { Button(action: back) { Label("更多", systemImage: "chevron.left") }.buttonStyle(QinglongInlineButtonStyle()) }
@@ -224,10 +225,9 @@ struct QinglongResourceView: View {
             }.padding(.horizontal, 20).padding(.bottom, 24)
         }
         .scrollDismissesKeyboard(.interactively).refreshable { await store.refresh(resource) }
-        .onAppear { visible = true }.onDisappear { visible = false }
         .onChange(of: store.revision) { _, _ in revealed = [] }
-        .task(id: pollKey) {
-            guard active, visible else { return }
+        .task(id: refreshKey) { [refreshKey] in
+            guard refreshKey.active, refreshKey.connectionID != nil else { return }
             repeat {
                 await store.refresh(resource)
                 guard resource == .tasks || resource == .subscriptions, !Task.isCancelled else { return }
@@ -293,14 +293,29 @@ struct QinglongResourceView: View {
         }
     }
     private func taskCard(_ item: QinglongItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) { cardTitle(item, action: "detail"); Spacer(minLength: 8); QinglongStatus(item: item, outcome: store.outcomes[item.id]) }
-            Text(item.subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            Button { open(item, "detail") } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top) {
+                        Text(item.title).font(.system(size: 13, weight: .semibold)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        QinglongStatus(item: item, outcome: store.outcomes[item.id])
+                    }
+                    Text(item.subtitle).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.bottom, 10).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityHint("查看任务详情")
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { Text(store.outcomes[item.id]?.summary ?? item.lastRunText).font(.caption).foregroundStyle(.secondary); Spacer(minLength: 0); taskActions(item) }
-                VStack(alignment: .leading, spacing: 3) { Text(store.outcomes[item.id]?.summary ?? item.lastRunText).font(.caption).foregroundStyle(.secondary); HStack { Spacer(); taskActions(item) } }
+                HStack(spacing: 8) { taskDetailSummary(item); taskActions(item) }
+                VStack(alignment: .leading, spacing: 3) { taskDetailSummary(item); HStack { Spacer(); taskActions(item) } }
             }
         }
+    }
+    private func taskDetailSummary(_ item: QinglongItem) -> some View {
+        Button { open(item, "detail") } label: {
+            Text(store.outcomes[item.id]?.summary ?? item.lastRunText).font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading).frame(maxWidth: .infinity, minHeight: 36, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityHint("查看任务详情")
     }
     private func taskActions(_ item: QinglongItem) -> some View {
         HStack(spacing: 14) {
@@ -380,15 +395,17 @@ struct QinglongMoreResourcePage: View {
     @Environment(\.scenePhase) private var phase
     @State private var selected: QinglongItem?
     @State private var creating = false
+    @State private var configuring = false
     var body: some View {
         Group {
             if resource == .envs {
-                QinglongResourceView(store: store, resource: resource, active: phase == .active && selected == nil && !creating,
-                    open: { item, _ in selected = item }, create: { creating = true }, configure: {}, showsCreate: true)
+                QinglongResourceView(store: store, resource: resource, active: phase == .active && selected == nil && !creating && !configuring,
+                    open: { item, _ in selected = item }, create: { creating = true }, configure: { configuring = true }, showsCreate: true)
                     .navigationTitle(resource.title).navigationBarTitleDisplayMode(.inline)
             } else { QinglongResourceSheet(store: store, resource: resource, embedded: true) }
         }.background(QinglongStyle.background).tint(QinglongStyle.text)
         .sheet(item: $selected) { QinglongRecordEditor(store: store, resource: resource, item: $0) }
         .sheet(isPresented: $creating) { QinglongRecordEditor(store: store, resource: resource, item: nil) }
+        .sheet(isPresented: $configuring) { QinglongConnectionEditor(store: store, initial: store.connection ?? QinglongConnection()) }
     }
 }

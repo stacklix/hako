@@ -96,9 +96,9 @@ jobs:
           /tmp/hako-log-tests
       - name: Test Qinglong OpenAPI and connection policies
         run: |
-          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
           /tmp/hako-qinglong-tests
-          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongClient.swift Hako/Qinglong/QinglongStore.swift
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Hako/Qinglong/QinglongStore.swift
       - name: Test ECS API signing, snapshots and terminal protocol
         run: |
           swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSNetworkModels.swift Tests/ECSNetworkTests.swift -o /tmp/hako-ecs-network-tests

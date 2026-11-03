@@ -132,10 +132,10 @@ struct QinglongSheet<Content: View>: View {
 struct QinglongPageLink: View {
     let title: String
     let symbol: String
-    let route: QinglongMoreRoute
     var last = false
+    let action: () -> Void
     var body: some View {
-        NavigationLink(value: route) {
+        Button(action: action) {
             HStack(spacing: 12) {
                 Image(systemName: symbol).frame(width: 20)
                 Text(title).font(.system(size: 13))

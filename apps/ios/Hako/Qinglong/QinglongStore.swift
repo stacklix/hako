@@ -32,6 +32,7 @@ enum QinglongCredentials {
     @Published var configurationError: String?
     @Published private(set) var revision = UUID()
     private var api: QinglongClient?
+    private let refreshes = QinglongRefreshCoordinator()
     private var loaded = false
     var connection: QinglongConnection? { configuration.connections.first { $0.id == configuration.selectedID } }
 
@@ -53,6 +54,7 @@ enum QinglongCredentials {
         let next = try connection.map { try QinglongClient(connection: $0) }
         try QinglongCredentials.save(configuration)
         self.configuration = configuration; api = next; loaded = true; configurationError = nil
+        refreshes.invalidate()
         revision = UUID(); items = [:]; errors = [:]; loading = []; updated = [:]; message = nil
         outcomes = [:]; outcomeSignatures = [:]; outcomesComplete = false
     }
@@ -79,7 +81,14 @@ enum QinglongCredentials {
         return api
     }
     func refresh(_ resource: QinglongResource) async {
-        guard !loading.contains(resource), let api else { return }
+        let ticket = revision
+        await refreshes.run(resource) {
+            guard ticket == self.revision else { return }
+            await self.read(resource)
+        }
+    }
+    private func read(_ resource: QinglongResource) async {
+        guard !Task.isCancelled, let api else { return }
         let ticket = revision
         loading.insert(resource)
         defer { if ticket == revision { loading.remove(resource) } }

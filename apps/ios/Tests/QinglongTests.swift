@@ -39,8 +39,77 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
+@MainActor private final class QinglongRefreshBarrier {
+    private(set) var entered = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func pause() async {
+        entered = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { continuation?.resume(); continuation = nil }
+}
+
 @main struct QinglongTests {
+    @MainActor static func refreshHandoff() async {
+        func waitUntil(_ condition: () -> Bool) async {
+            for _ in 0..<10_000 {
+                if condition() { return }
+                await Task.yield()
+            }
+            preconditionFailure("Refresh task did not reach its checkpoint")
+        }
+        let coordinator = QinglongRefreshCoordinator()
+        let cancelledRead = QinglongRefreshBarrier()
+        var reads = 0, replacementStarted = false, rendered = false
+        let first = Task { await coordinator.run(.scripts) { reads += 1; await cancelledRead.pause() } }
+        await waitUntil { cancelledRead.entered }
+        first.cancel()
+        let replacement = Task {
+            replacementStarted = true
+            await coordinator.run(.scripts) { reads += 1; rendered = true }
+        }
+        await waitUntil { replacementStarted }
+        for _ in 0..<10 { await Task.yield() }
+        precondition(!rendered, "Replacement must wait until the cancelled reader releases its slot")
+        cancelledRead.release()
+        await first.value; await replacement.value
+        precondition(reads == 2 && rendered, "Entering scripts must recover without opening the create sheet")
+
+        let sharedRead = QinglongRefreshBarrier()
+        var followerStarted = false, duplicateReads = 0
+        let owner = Task { await coordinator.run(.scripts) { await sharedRead.pause() } }
+        await waitUntil { sharedRead.entered }
+        let follower = Task { followerStarted = true; await coordinator.run(.scripts) { duplicateReads += 1 } }
+        await waitUntil { followerStarted }
+        for _ in 0..<10 { await Task.yield() }
+        sharedRead.release()
+        await owner.value; await follower.value
+        precondition(duplicateReads == 0, "Concurrent active readers share the completed request")
+
+        let pendingRead = QinglongRefreshBarrier()
+        var waiterStarted = false
+        let pendingOwner = Task { await coordinator.run(.scripts) { await pendingRead.pause() } }
+        await waitUntil { pendingRead.entered }
+        let waiter = Task { waiterStarted = true; await coordinator.run(.scripts) { preconditionFailure("Cancelled waiter loaded data") } }
+        await waitUntil { waiterStarted }
+        waiter.cancel(); await waiter.value
+        pendingRead.release(); await pendingOwner.value
+
+        let oldConnection = QinglongRefreshBarrier(), newConnection = QinglongRefreshBarrier()
+        let old = Task { await coordinator.run(.scripts) { await oldConnection.pause() } }
+        await waitUntil { oldConnection.entered }
+        coordinator.invalidate()
+        let current = Task { await coordinator.run(.scripts) { await newConnection.pause() } }
+        await waitUntil { newConnection.entered }
+        oldConnection.release(); await old.value
+        var currentFollowerStarted = false
+        let currentFollower = Task { currentFollowerStarted = true; await coordinator.run(.scripts) { preconditionFailure("Old connection completion released the new request") } }
+        await waitUntil { currentFollowerStarted }
+        for _ in 0..<10 { await Task.yield() }
+        newConnection.release(); await current.value; await currentFollower.value
+    }
     static func main() async throws {
+        await refreshHandoff()
         let decoder = JSONDecoder()
         func json(_ value: String) throws -> QinglongJSON { try decoder.decode(QinglongJSON.self, from: Data(value.utf8)) }
         func reject(_ connection: QinglongConnection) {
