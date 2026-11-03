@@ -48,6 +48,25 @@ struct HeadplaneBadge: View {
     }
 }
 
+struct HeadplaneNodeStatus: View {
+    let node: HeadplaneNode
+    var badge = false
+    @ScaledMetric(relativeTo: .caption2) private var dotSize = 6
+    private var color: Color {
+        node.expired ? HeadplaneStyle.orange : node.online ? HeadplaneStyle.green : HeadplaneStyle.muted
+    }
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: dotSize, height: dotSize).accessibilityHidden(true)
+            Text(node.status)
+        }
+        .font(.caption2).foregroundStyle(color)
+        .padding(.horizontal, badge ? 7 : 0).padding(.vertical, badge ? 4 : 0)
+        .background(color.opacity(badge ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 5))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 struct HeadplaneFact: View {
     let title: String
     let value: String

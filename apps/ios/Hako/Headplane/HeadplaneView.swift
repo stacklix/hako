@@ -2,10 +2,10 @@ import SwiftUI
 
 enum HeadplanePage: String, CaseIterable { case devices = "设备", network = "网络", policy = "访问控制", more = "更多" }
 enum HeadplaneScreen: Identifiable {
-    case settings, device(String), users, keys, dns, agent, policy
+    case settings, device(String), users, keys, createKey, dns, agent, policy
     var id: String {
         switch self { case .device(let id): return "device:" + id; case .settings: return "settings"; case .users: return "users"
-        case .keys: return "keys"; case .dns: return "dns"; case .agent: return "agent"; case .policy: return "policy" }
+        case .keys: return "keys"; case .createKey: return "createKey"; case .dns: return "dns"; case .agent: return "agent"; case .policy: return "policy" }
     }
 }
 
@@ -65,22 +65,22 @@ struct HeadplaneView: View {
             case .device(let id): HeadplaneDeviceView(store: store, nodeID: id, revision: store.revision)
             case .users: HeadplaneUsersView(store: store)
             case .keys: HeadplaneKeysView(store: store, revision: store.revision)
+            case .createKey: HeadplaneCreateKeyView(store: store, revision: store.revision)
             case .dns: HeadplaneDNSView(store: store)
             case .agent: HeadplaneAgentView(store: store)
             case .policy:
                 if let policy = store.policy { HeadplanePolicyEditor(store: store, original: policy.text, revision: store.revision) }
             }
         }
-        .confirmationDialog(routeChange?.enabled == true ? "批准此路由？" : "撤销路由批准？", isPresented: Binding(get: { routeChange != nil }, set: { if !$0 { routeChange = nil } }), titleVisibility: .visible) {
-            if let change = routeChange {
-                Button(change.enabled ? "确认批准" : "撤销批准", role: change.enabled ? nil : .destructive) {
-                    Task {
-                        do { _ = try await store.mutate(.machines, revision: change.revision, fields: ["action_id": "update_routes", "node_id": change.nodeID, "routes": change.routes.joined(separator: ","), "enabled": String(change.enabled)]) }
-                        catch { store.message = error.localizedDescription }
-                    }
+        .alert(routeChange?.enabled == true ? "批准此路由？" : "撤销路由批准？", isPresented: Binding(get: { routeChange != nil }, set: { if !$0 { routeChange = nil } }), presenting: routeChange) { change in
+            Button("取消", role: .cancel) { routeChange = nil }
+            Button(change.enabled ? "确认批准" : "撤销批准", role: change.enabled ? nil : .destructive) {
+                Task {
+                    do { _ = try await store.mutate(.machines, revision: change.revision, fields: ["action_id": "update_routes", "node_id": change.nodeID, "routes": change.routes.joined(separator: ","), "enabled": String(change.enabled)]) }
+                    catch { store.message = error.localizedDescription }
                 }
             }
-        } message: { Text(routeChange?.routes.joined(separator: "\n") ?? "") }
+        } message: { change in Text(change.routes.joined(separator: "\n")) }
         .task(id: refreshID) {
             store.load()
             guard scenePhase == .active, screen == nil else { return }
@@ -96,13 +96,29 @@ struct HeadplaneView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 17) {
             Text("HAKO   /   NETWORK").font(.system(size: 10, weight: .semibold)).tracking(2)
-            Text("组网管理").font(.system(size: 29, weight: .bold)).tracking(-0.7)
-            HStack(spacing: 7) {
-                Circle().fill(store.updated[.machines] != nil && store.errors[.machines] == nil ? HeadplaneStyle.green : HeadplaneStyle.muted).frame(width: 6, height: 6)
-                Text(store.connection?.name ?? "尚未连接")
-                Text("·")
-                Text("Headplane")
-            }.font(.caption).foregroundStyle(HeadplaneStyle.muted)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("组网管理").font(.system(size: 29, weight: .bold)).tracking(-0.7)
+                    HStack(spacing: 7) {
+                        Circle().fill(store.updated[.machines] != nil && store.errors[.machines] == nil ? HeadplaneStyle.green : HeadplaneStyle.muted).frame(width: 6, height: 6)
+                        Text(store.connection?.name ?? "尚未连接")
+                        Text("·")
+                        Text("Headplane")
+                    }.font(.caption).foregroundStyle(HeadplaneStyle.muted)
+                }
+                Spacer(minLength: 0)
+                Button { screen = .createKey } label: {
+                    Label("创建密钥", systemImage: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 12).frame(minHeight: 44)
+                        .foregroundStyle(HeadplaneStyle.background)
+                        .background(HeadplaneStyle.text, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain).fixedSize(horizontal: true, vertical: false)
+                .accessibilityLabel("创建接入密钥")
+                .disabled(store.connection == nil || store.busy || store.pending != nil)
+                .opacity(store.connection == nil || store.busy || store.pending != nil ? 0.35 : 1)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 25)
     }
     private var tabs: some View {
@@ -297,7 +313,7 @@ struct HeadplaneDeviceRow: View {
             }
             Spacer(minLength: 5)
             VStack(alignment: .trailing, spacing: 6) {
-                Text(node.status).font(.caption2).foregroundStyle(node.expired ? HeadplaneStyle.orange : node.online ? HeadplaneStyle.green : HeadplaneStyle.muted)
+                HeadplaneNodeStatus(node: node)
                 if !node.exitRoutes.isEmpty { Text("出口节点").font(.caption2).foregroundStyle(HeadplaneStyle.muted) }
                 else if !node.subnetRoutes.isEmpty { Text("子网路由").font(.caption2).foregroundStyle(HeadplaneStyle.muted) }
                 else if !node.online, let date = HeadplaneDate.parse(node.lastSeen) {

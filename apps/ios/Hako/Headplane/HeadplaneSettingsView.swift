@@ -59,7 +59,7 @@ struct HeadplaneDeviceView: View {
                 Image(systemName: node.symbol).font(.title2).frame(width: 50, height: 50)
                     .background(HeadplaneStyle.fill, in: RoundedRectangle(cornerRadius: 15))
                 Text(node.name).font(.title2.weight(.semibold)).textSelection(.enabled)
-                HeadplaneBadge(text: node.status, good: node.online && !node.expired)
+                HeadplaneNodeStatus(node: node, badge: true)
                 HeadplaneFact(title: "Tailnet IP", value: node.addresses.joined(separator: "\n"))
                 if !node.os.isEmpty { HeadplaneFact(title: "系统", value: node.os) }
                 if !node.version.isEmpty { HeadplaneFact(title: "客户端版本", value: node.version) }

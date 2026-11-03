@@ -199,9 +199,24 @@ private final class MemorySecrets: SecretStorage {
         WireProtocol.respond { _ in (200, [:], action) }
         do { _ = try await client.submit(.keys, fields: ["action_id": "add_preauthkey"]); preconditionFailure() }
         catch let e as HeadplaneFailure { precondition(e.outcomeUnknown, "Missing created key must not be success") }
-        WireProtocol.respond { _ in (200, [:], created) }
-        let key = try await client.submit(.keys, fields: ["action_id": "add_preauthkey"])
+        let taggedFields = try HeadplaneKeyCreation.fields(userID: "1", tags: "server, tag:home，server\n tag:router", days: 7, reusable: true, ephemeral: false)
+        precondition(taggedFields["acl_tags"] == "tag:server,tag:home,tag:router")
+        let untaggedFields = try HeadplaneKeyCreation.fields(userID: "1", tags: " , \n", days: 1, reusable: false, ephemeral: true)
+        precondition(untaggedFields["acl_tags"] == "" && untaggedFields["ephemeral"] == "on")
+        for invalid in ["tag:", "bad tag", "tag:1server", "tag:server/home"] {
+            rejects { _ = try HeadplaneKeyCreation.fields(userID: "1", tags: invalid, days: 1, reusable: false, ephemeral: false) }
+        }
+        rejects { _ = try HeadplaneKeyCreation.fields(userID: "", tags: "server", days: 1, reusable: false, ephemeral: false) }
+        WireProtocol.respond { request in
+            precondition(request.url!.path == "/admin/settings/auth-keys.data" && request.httpMethod == "POST")
+            precondition(WireProtocol.body(request) == "acl_tags=tag%3Aserver%2Ctag%3Ahome%2Ctag%3Arouter&action_id=add_preauthkey&ephemeral=off&expiry=7&reusable=on&user_id=1")
+            return (200, [:], created)
+        }
+        let key = try await client.submit(.keys, fields: taggedFields)
         precondition(key["key"].text == "test-only-new-key")
+        let taggedKey = try HeadplaneKey(.object(["id": .string("1"), "aclTags": .array([.string("tag:server")])]), user: .null)
+        let untaggedKey = try HeadplaneKey(.object(["id": .string("2")]), user: .null)
+        precondition(taggedKey.tags == ["tag:server"] && untaggedKey.tags.isEmpty)
         let agentError = try fixture("agentError")
         WireProtocol.respond { _ in (200, [:], agentError) }
         let store = await HeadplaneStore(client: client)
@@ -212,6 +227,22 @@ private final class MemorySecrets: SecretStorage {
         WireProtocol.respond { _ in (503, [:], agentError) }
         do { _ = try await client.read(.agent); preconditionFailure() }
         catch let e as HeadplaneFailure { precondition(e.status == 503, "Real HTTP failures must remain errors") }
+        let dnsServerError = try fixture("dnsServerError")
+        var dnsRequests = 0
+        WireProtocol.respond { request in
+            dnsRequests += 1
+            precondition(request.url!.path == "/admin/dns.data" && request.url!.query == "_routes=routes/dns/overview")
+            return (500, [:], dnsServerError)
+        }
+        await store.refresh(.dns)
+        let dnsError = await store.errors[.dns], dnsData = await store.values[.dns]
+        precondition(dnsError?.contains("HTTP 500") == true && dnsError?.contains("可能原因") == true && dnsData == nil)
+        precondition(dnsRequests == 1, "DNS server errors must not trigger reauthentication or retries")
+        let dnsDenied = Data(String(decoding: try fixture("denied"), as: UTF8.self)
+            .replacingOccurrences(of: "routes/acls/overview", with: "routes/dns/overview").utf8)
+        WireProtocol.respond { _ in (403, [:], dnsDenied) }
+        do { _ = try await client.read(.dns); preconditionFailure() }
+        catch let e as HeadplaneFailure { precondition(e.status == 403 && e.message == "Permission denied") }
         WireProtocol.respond { _ in (302, ["Location": "https://attacker.example.test/machines", "Set-Cookie": "session=x; Path=/"], Data()) }
         let bad = try HeadplaneClient(connection: connection, session: session)
         do { _ = try await bad.submit(.machines, fields: ["action_id": "rename"]); preconditionFailure() }

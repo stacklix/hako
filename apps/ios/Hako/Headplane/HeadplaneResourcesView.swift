@@ -14,7 +14,7 @@ struct HeadplaneUsersView: View {
                     }
                     if !user.email.isEmpty { Text(user.email).font(.caption).foregroundStyle(HeadplaneStyle.muted) }
                     ForEach(store.machines?.nodes.filter { $0.userID == user.id } ?? []) { node in
-                        HStack { Text(node.name); Spacer(); Text(node.status).foregroundStyle(HeadplaneStyle.muted) }.font(.caption)
+                        HStack { Text(node.name); Spacer(); HeadplaneNodeStatus(node: node) }.font(.caption)
                     }
                 }.headplaneCard()
             }
@@ -75,7 +75,6 @@ struct HeadplaneAgentView: View {
 struct HeadplaneKeysView: View {
     @ObservedObject var store: HeadplaneStore
     let revision: UUID
-    @State private var creating = false
     @State private var expiring: HeadplaneKey?
     @State private var error: String?
     var body: some View {
@@ -92,6 +91,9 @@ struct HeadplaneKeysView: View {
                     }
                     Text("编号 \(key.id) · \(key.reusable ? "可重复使用" : "单次使用")").font(.caption).foregroundStyle(HeadplaneStyle.muted)
                     Text("到期：\(HeadplaneDate.display(key.expiry))").font(.caption).foregroundStyle(HeadplaneStyle.muted)
+                    if !key.tags.isEmpty {
+                        Text(key.tags.joined(separator: " · ")).font(.caption).foregroundStyle(HeadplaneStyle.muted)
+                    }
                     if key.active && !key.userID.isEmpty && !key.secret.isEmpty {
                         Button("使密钥过期", role: .destructive) { expiring = key }.font(.caption)
                             .disabled(store.busy || store.pending != nil || store.values[.keys]?["access"].flag != true || revision != store.revision)
@@ -99,12 +101,9 @@ struct HeadplaneKeysView: View {
                 }.headplaneCard()
             }
             if store.updated[.keys] != nil && store.keys.isEmpty { Text("尚未创建接入密钥").foregroundStyle(HeadplaneStyle.muted) }
-            Button("创建接入密钥") { creating = true }.buttonStyle(HeadplaneButtonStyle(primary: true))
-                .disabled(store.values[.keys]?["access"].flag != true || store.busy || store.pending != nil || revision != store.revision)
             Button("刷新列表") { Task { await store.refresh(.keys) } }.buttonStyle(HeadplaneButtonStyle()).disabled(store.loading.contains(.keys))
         }
         .task { await store.refresh(.keys) }
-        .sheet(isPresented: $creating) { HeadplaneCreateKeyView(store: store, revision: revision) }
         .confirmationDialog("使此接入密钥立即过期？", isPresented: Binding(get: { expiring != nil }, set: { if !$0 { expiring = nil } }), titleVisibility: .visible) {
             if let key = expiring {
                 Button("确认过期", role: .destructive) {
@@ -118,10 +117,11 @@ struct HeadplaneKeysView: View {
     }
 }
 
-private struct HeadplaneCreateKeyView: View {
+struct HeadplaneCreateKeyView: View {
     @ObservedObject var store: HeadplaneStore
     let revision: UUID
     @State private var userID = ""
+    @State private var tags = ""
     @State private var days = 1
     @State private var reusable = false
     @State private var ephemeral = false
@@ -139,6 +139,14 @@ private struct HeadplaneCreateKeyView: View {
                     copied = true
                 }.buttonStyle(HeadplaneButtonStyle(primary: true))
             } else {
+                HeadplaneErrorText(message: store.errors[.keys])
+                if store.loading.contains(.keys) {
+                    ProgressView("正在读取用户与权限…")
+                } else if store.errors[.keys] != nil {
+                    Button("重新读取") { Task { await loadUsers() } }.buttonStyle(HeadplaneButtonStyle())
+                } else if store.values[.keys]?["access"].flag == false {
+                    Text("当前账号没有创建接入密钥的权限。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+                }
                 HeadplaneField(title: "所属用户") {
                     Picker("所属用户", selection: $userID) {
                         Text("选择用户").tag("")
@@ -149,6 +157,12 @@ private struct HeadplaneCreateKeyView: View {
                     Picker("有效期", selection: $days) { Text("24 小时").tag(1); Text("7 天").tag(7); Text("30 天").tag(30); Text("90 天").tag(90) }
                         .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
                 }
+                HeadplaneField(title: "ACL 标签（可选）") {
+                    TextField("例如：server, home", text: $tags, axis: .vertical)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                Text("多个标签用逗号分隔，无需填写 tag: 前缀，也支持 tag:server 这样的完整标签。使用此密钥加入的设备将携带这些标签，访问权限由 ACL 策略决定。")
+                    .font(.footnote).foregroundStyle(HeadplaneStyle.muted)
                 Toggle("可重复使用", isOn: $reusable)
                 Toggle("临时设备", isOn: $ephemeral)
                 Text("临时设备长时间离线后可能由服务器自动清理。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
@@ -156,13 +170,18 @@ private struct HeadplaneCreateKeyView: View {
                 Button(store.busy ? "正在生成…" : "生成密钥") {
                     Task {
                         do {
-                            let value = try await store.mutate(.keys, revision: revision, fields: ["action_id": "add_preauthkey", "user_id": userID, "expiry": String(days), "reusable": reusable ? "on" : "off", "ephemeral": ephemeral ? "on" : "off", "acl_tags": ""])
+                            let fields = try HeadplaneKeyCreation.fields(userID: userID, tags: tags, days: days, reusable: reusable, ephemeral: ephemeral)
+                            let value = try await store.mutate(.keys, revision: revision, fields: fields)
                             guard !value["key"].text.isEmpty else { error = "密钥可能已创建，但响应未包含完整密钥。请关闭后核对列表。"; return }
                             result = value["key"].text
                         } catch { self.error = error.localizedDescription }
                     }
-                }.buttonStyle(HeadplaneButtonStyle(primary: true)).disabled(userID.isEmpty || store.busy || store.pending != nil || revision != store.revision)
+                }.buttonStyle(HeadplaneButtonStyle(primary: true)).disabled(userID.isEmpty || store.loading.contains(.keys) || store.errors[.keys] != nil || store.values[.keys]?["access"].flag != true || store.busy || store.pending != nil || revision != store.revision)
             }
-        }.onAppear { if userID.isEmpty { userID = users.first?.id ?? "" } }
+        }.task { await loadUsers() }
+    }
+    private func loadUsers() async {
+        await store.refresh(.keys)
+        if userID.isEmpty { userID = users.first?.id ?? "" }
     }
 }

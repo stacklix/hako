@@ -223,6 +223,7 @@ struct HeadplaneKey: Identifiable, Sendable {
     let expiry: String
     let reusable: Bool
     let used: Bool
+    let tags: [String]
     var active: Bool { !(HeadplaneDate.parse(expiry).map { $0 < .now } ?? false) && (!used || reusable) }
     init(_ v: HeadplaneJSON, user: HeadplaneJSON) throws {
         id = v["id"].text; secret = v["key"].text
@@ -230,6 +231,27 @@ struct HeadplaneKey: Identifiable, Sendable {
         userID = v["user"]["id"].text.isEmpty ? user["id"].text : v["user"]["id"].text
         userName = HeadplaneUser.displayName(v["user"]).isEmpty ? HeadplaneUser.displayName(user) : HeadplaneUser.displayName(v["user"])
         expiry = v["expiration"].text; reusable = v["reusable"].flag; used = v["used"].flag
+        tags = v["aclTags"].strings
+    }
+}
+
+enum HeadplaneKeyCreation {
+    static func fields(userID: String, tags: String, days: Int, reusable: Bool, ephemeral: Bool) throws -> [String: String] {
+        guard !userID.isEmpty else { throw HeadplaneFailure(message: "请选择所属用户。") }
+        guard days >= 1 else { throw HeadplaneFailure(message: "有效期至少为 1 天。") }
+        var parsed: [String] = []
+        for part in tags.components(separatedBy: CharacterSet(charactersIn: ",，\n")) {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let tag = trimmed.hasPrefix("tag:") ? trimmed : "tag:" + trimmed
+            guard tag.range(of: "^tag:[a-zA-Z][a-zA-Z0-9-]*$", options: .regularExpression) != nil else {
+                throw HeadplaneFailure(message: "标签名称需以字母开头，仅包含字母、数字或连字符，例如 tag:server。")
+            }
+            if !parsed.contains(tag) { parsed.append(tag) }
+        }
+        return ["action_id": "add_preauthkey", "user_id": userID, "expiry": String(days),
+                "reusable": reusable ? "on" : "off", "ephemeral": ephemeral ? "on" : "off",
+                "acl_tags": parsed.joined(separator: ",")]
     }
 }
 

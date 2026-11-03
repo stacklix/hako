@@ -18,6 +18,7 @@ const fixtures = {
   agentError: { 'routes/settings/agent': { data: { enabled: true, syncedAt: '2026-11-04T00:00:00Z', nodeCount: 3, error: 'Headscale is unavailable', authUrl: undefined } } },
   agentPending: { 'routes/settings/agent': { data: { enabled: true, syncedAt: null, nodeCount: 0, error: undefined, authUrl: 'https://headscale.example.test/register/test-only' } } },
   agentDisabled: { 'routes/settings/agent': { data: { enabled: false, reason: 'Agent is not configured' } } },
+  dnsServerError: { 'routes/dns/overview': { error: new Error('Unexpected Server Error') } },
   action: {data: {success: true}},
   created: {data: {success: true, key: 'test-only-new-key'}},
   expired: {data: 'Pre-auth key expired'},
@@ -29,6 +30,7 @@ const fixtures = {
 for (const [name, input] of Object.entries(fixtures)) {
   const context = {deferred: {}, index: 0, indices: new Map(), stringified: [], plugins: [v => {
     if (v instanceof ResponseError) return ['ErrorResponse', v.data, v.status, 'Forbidden'];
+    if (v instanceof Error) return ['SanitizedError', v.name, v.message, undefined];
     if (v instanceof Redirect) return ['SingleFetchRedirect', {redirect: v.url, status: 302, revalidate: false, reload: false, replace: false}];
   }], postPlugins: [], signal: new AbortController().signal};
   await flatten.call(context, input);

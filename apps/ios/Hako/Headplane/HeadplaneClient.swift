@@ -118,7 +118,13 @@ actor HeadplaneClient: HeadplaneAccess {
         let value: HeadplaneJSON
         do { value = try HeadplaneStream.payload(root, resource: resource, action: fields != nil) }
         catch let failure as HeadplaneFailure {
-            throw HeadplaneFailure(message: sanitized(failure.message), status: failure.status ?? http.statusCode,
+            let status = failure.status ?? http.statusCode
+            // Production React Router hides the underlying loader exception.
+            // Suggest configuration checks without claiming to know the server's cause.
+            let message = resource == .dns && fields == nil && status >= 500 && failure.message == "Unexpected Server Error"
+                ? "Headplane 无法读取 DNS（HTTP \(status)）。请检查 Headplane 网页的 DNS 页面及服务端日志。可能原因包括 Headscale 配置文件未挂载、无法读取或账号权限不足；仅配置 API Key 不足以读取 DNS。"
+                : failure.message
+            throw HeadplaneFailure(message: sanitized(message), status: status,
                                    outcomeUnknown: fields != nil && (failure.status == nil || http.statusCode >= 500))
         }
         // Agent loaders return their last synchronization error as status data.
