@@ -1,11 +1,11 @@
-# 青龙管理
+# 青龙面板
 
-Hako iOS 首页的「青龙」直接连接已有青龙面板，不依赖 Hako 服务端。模块源码位于 `apps/ios/Hako/Qinglong/`，使用主应用提供的 `HTTPTransport`、`SecretStorage` 和日志服务，不引用其他子应用的业务代码。
+Hako iOS 首页的「青龙面板」直接连接已有青龙面板，不依赖 Hako 服务端。模块源码位于 `apps/ios/Hako/Qinglong/`，使用主应用提供的 `HTTPTransport`、`SecretStorage` 和日志服务，不引用其他子应用的业务代码。
 
 ## 配置连接
 
 1. 在青龙「系统设置 → 应用设置」创建应用，按使用范围授予 `crons`、`scripts`、`subscriptions`、`envs`、`configs`、`dependencies`、`logs` 权限。
-2. 打开 Hako → 青龙 → 右上角滑杆图标，添加面板地址、Client ID 和 Client Secret。两个凭据各占一行，始终显示字段名。
+2. 打开 Hako → 青龙面板 → 右上角滑杆图标，添加面板地址、Client ID 和 Client Secret。两个凭据各占一行，始终显示字段名。
 3. 需要自定义请求头时点击「添加请求头」。名称和值初始为空，不带占位符；可添加多条，应用于获取 Token 和后续全部接口请求。禁止覆盖 Authorization、Host、Content-Type 等内置请求头，拒绝重复名称和换行值。
 4. 测试连接仅验证应用凭据，不要求系统管理权限。保存后在「更多 → 应用权限」逐项检测读取权限。
 

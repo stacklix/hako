@@ -18,7 +18,7 @@ struct QinglongView: View {
             more.tabItem { Label("更多", systemImage: "square.grid.2x2") }.tag("more")
         }
         .tint(.primary)
-        .navigationTitle("青龙")
+        .navigationTitle("青龙面板")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

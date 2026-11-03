@@ -29,7 +29,7 @@ struct HomeView: View {
                 Section("应用") {
                     NavigationLink { QinglongView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("青龙").font(.headline)
+                            Text("青龙面板").font(.headline)
                             Text("定时任务 · 脚本 · 订阅管理").font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 8) } icon: { Image(systemName: "checklist").foregroundStyle(.primary) }
                     }
