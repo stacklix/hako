@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private struct ArcaneActionLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -21,7 +22,8 @@ struct ArcaneActionButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.medium))
             .imageScale(.small)
             .padding(.horizontal, 14)
-            .frame(minHeight: 44)
+            // List adds its own vertical insets; match a regular body-text row's content height.
+            .frame(minHeight: UIFont.preferredFont(forTextStyle: .body).lineHeight)
             .foregroundStyle(color)
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.5 : 1)
