@@ -5,7 +5,7 @@
   <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script>
 </head>
 <body>
-<nav class="landing-nav" aria-label="首页导航"><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a href="#hako-features">探索 Hako</a><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
+<nav class="landing-nav" aria-label="首页导航"><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
 <div class="shell">
   <aside><a class="brand" href="/admin/"><span class="mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
@@ -16,7 +16,6 @@
         <p class="landing-eyebrow"><span></span> A PERSONAL SPACE FOR YOUR TOOLS</p>
         <h1 id="landing-title">你的日常，<br>收进<span>一个盒子。</span></h1>
         <p class="landing-description">设备、服务和应用，在同一处相遇。<br>用 Hako 把分散的工具连接起来，<br class="desktop-break">让每一次查看与操作，都有一个熟悉的入口。</p>
-        <a class="landing-explore" href="#hako-features">看看盒子里有什么 <span aria-hidden="true">↓</span></a>
         <div class="tool-scene" aria-label="Hako 连接手机、设备和应用的示意图">
           <div class="scene-orbit"></div><div class="scene-line"></div>
           <div class="scene-device scene-phone"><span class="scene-icon" aria-hidden="true">↗</span><div><strong>在手机上确认</strong><small>Hako · iOS</small></div><span class="scene-status"></span></div>
@@ -30,11 +29,20 @@
         <div class="login-heading"><span class="login-symbol" aria-hidden="true"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span class="login-private"><span></span> 你的专属空间</span></div>
         <p class="landing-eyebrow login-eyebrow">WELCOME TO HAKO</p>
         <h2>从一次扫码开始。</h2><p class="login-description">打开 Hako，确认是你，即可进入工作空间。</p>
-        <div class="qr-box"><img id="login-qr" alt="使用 Hako 手机客户端扫码登录" width="220" height="220" hidden><p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p></div>
+        <div class="qr-box">
+          <div class="qr-image">
+            <img id="login-qr" alt="使用 Hako 手机客户端扫码登录" width="220" height="220" hidden>
+            <div id="qr-overlay" class="qr-overlay" hidden>
+              <p id="qr-overlay-message" role="status" aria-live="polite">二维码已过期</p>
+              <button id="refresh-qr-overlay" type="button">刷新二维码 <span aria-hidden="true">↻</span></button>
+            </div>
+          </div>
+          <p id="qr-status" role="status" aria-live="polite">正在准备二维码…</p>
+        </div>
         <div class="qr-confirmation"><span>核对手机上的确认码</span><strong id="qr-code">— — — — — —</strong></div>
         <div class="qr-actions"><p id="qr-expiry"></p><button id="refresh-qr" class="quiet" type="button">刷新二维码 <span aria-hidden="true">↻</span></button></div>
         <div class="login-instructions"><span>1</span> 打开 Hako <i>→</i> 设置 <i>→</i> 扫码登录</div>
-        <details class="qr-copy"><summary>无法扫码？试试复制登录请求 <span aria-hidden="true">＋</span></summary><p class="help">在手机扫码页粘贴登录请求，核对确认码后批准。请先在手机上登录当前 Hako 服务器。</p><button id="copy-login" class="quiet" type="button" disabled>复制登录请求</button></details>
+        <div class="qr-copy"><button id="copy-login" class="quiet" type="button" disabled title="在手机扫码页粘贴登录请求，核对确认码后批准">无法扫码？复制登录请求</button></div>
         <p class="login-footnote">只确认你正在使用的浏览器。每次登录，都由你掌握。</p>
       </section>
     </div>
@@ -85,15 +93,6 @@
         </div>
       </section>
     </div>
-    <section id="hako-features" class="landing-features" aria-labelledby="features-title">
-      <div class="features-heading"><p class="landing-eyebrow">SMALL TOOLS. ONE HOME.</p><h2 id="features-title">各有所长，也能在一起。</h2><p>从连接自己的设备，到管理服务和应用。</p></div>
-      <div class="feature-grid">
-        <article><div class="feature-top"><span>01 / CONNECT</span><span aria-hidden="true">⌘</span></div><h3>设备，就在手边。</h3><p>查看设备在线状态、读取运行指标，<br>在同一处调用设备提供的能力。</p><span class="feature-tag">设备代理 · Agent</span></article>
-        <article><div class="feature-top"><span>02 / OBSERVE</span><span aria-hidden="true">↗</span></div><h3>让访问，有迹可循。</h3><p>按时间与域名查看服务访问情况，<br>从来源和请求排行中了解变化。</p><span class="feature-tag">访问日志 · Caddy</span></article>
-        <article><div class="feature-top"><span>03 / AUTHORIZE</span><span aria-hidden="true">▦</span></div><h3>确认一次，安心进入。</h3><p>为自己的应用接入 Hako 扫码登录，<br>在手机上核对，并随时撤销授权。</p><span class="feature-tag">应用管理 · Apps</span></article>
-      </div>
-    </section>
-    <footer class="landing-footer"><a class="landing-brand" href="#"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako.</span></a><span>你的日常，收进一个盒子。</span><a href="#login-panel">回到登录 <span aria-hidden="true">↑</span></a></footer>
   </main>
 </div>
 <dialog id="register-dialog"><form id="register-form"><div class="section-heading"><h2 id="register-title">登记设备</h2><button type="button" id="close-register" class="quiet" aria-label="关闭">✕</button></div><label>设备名称<input name="name" required maxlength="100" placeholder="例如：我的设备"></label><label>公钥 PEM<textarea name="publicKeyPem" rows="7" required placeholder="-----BEGIN PUBLIC KEY-----"></textarea></label><label class="file-label">或从公钥文件读取<input id="public-key-file" type="file" accept=".pem,.pub,.txt"></label><p id="key-hint" class="muted"></p><div id="register-error" class="form-error" role="alert" hidden></div><button type="submit" class="primary">登记公钥</button></form></dialog>

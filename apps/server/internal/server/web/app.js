@@ -18,6 +18,18 @@ const messages = {admin_login_required:'管理登录已到期，请重新扫码�
 function notice(text, success = false) { $('notice').textContent = text; $('notice').className = success ? 'success' : ''; $('notice').hidden = !text; }
 Object.assign(messages, {invalid_log_filter:'请选择有效的时间区间、域名和整点小时。',access_logs_disabled:'访问日志统计尚未启用，请在服务器配置日志目录。'});
 function stopQr() { qrGeneration++; clearTimeout(qrTimer); clearInterval(qrCountdown); qrRequest = null; $('copy-login').disabled = true; }
+function qrOverlay(message, loading = false) {
+  $('qr-overlay-message').textContent = message;
+  $('refresh-qr-overlay').disabled = loading;
+  $('qr-overlay').hidden = false;
+}
+function expireQr() {
+  stopQr();
+  qrOverlay('二维码已过期');
+  $('qr-status').textContent = '二维码已过期';
+  $('qr-expiry').textContent = '';
+  $('refresh-qr').disabled = false;
+}
 function loggedIn(yes) { document.body.classList.toggle('is-authenticated', yes); if (yes) showPage(); else document.title = 'Hako · 你的日常，收进一个盒子'; $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
@@ -74,19 +86,35 @@ async function refresh() {
 async function startQr() {
   if (qrStarting || !$('dashboard').hidden) return;
   qrStarting = true; stopQr(); const generation = qrGeneration;
-  $('refresh-qr').disabled = true; $('login-qr').hidden = true; $('qr-status').textContent = '正在准备二维码…'; $('qr-code').textContent = '— — — — — —'; $('qr-expiry').textContent = '';
+  $('refresh-qr').disabled = true; qrOverlay('正在生成二维码…', true); $('qr-status').textContent = '正在准备二维码…'; $('qr-code').textContent = '— — — — — —'; $('qr-expiry').textContent = '';
   try {
     const request = await api('login/requests','POST',{}); if (generation !== qrGeneration) return;
     qrRequest = request; $('copy-login').disabled = false; $('qr-code').textContent = request.confirmationCode;
+    $('login-qr').onload = () => {
+      if (generation !== qrGeneration) return;
+      if (document.activeElement === $('refresh-qr-overlay')) $('refresh-qr').focus();
+      $('qr-overlay').hidden = true;
+    };
+    $('login-qr').onerror = () => {
+      if (generation !== qrGeneration) return;
+      stopQr(); qrOverlay('二维码加载失败'); $('qr-status').textContent = '请刷新二维码重试';
+    };
     $('login-qr').src = '/admin/api/login/requests/' + request.id + '/qr'; $('login-qr').hidden = false; $('qr-status').textContent = '等待 Console 扫码';
-    const countdown = () => { const left = Math.max(0,Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 1000)); $('qr-expiry').textContent = left ? `${left} 秒后过期` : '二维码已过期，请刷新。'; if (!left) { clearTimeout(qrTimer); clearInterval(qrCountdown); $('copy-login').disabled = true; $('qr-status').textContent = '二维码已过期'; $('login-qr').hidden = true; } };
-    countdown(); qrCountdown = setInterval(countdown,1000);
+    const countdown = () => {
+      if (generation !== qrGeneration) return false;
+      const left = Math.max(0,Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 1000));
+      if (!left) { expireQr(); return false; }
+      $('qr-expiry').textContent = `${left} 秒后过期`; return true;
+    };
+    if (!countdown()) return;
+    qrCountdown = setInterval(countdown,1000);
     const poll = async () => {
       if (generation !== qrGeneration) return;
       try {
         const state = await api('login/requests/' + request.id); if (generation !== qrGeneration) return;
-        if (state.status === 'denied') { $('qr-status').textContent = 'Console 已拒绝此次登录'; $('qr-expiry').textContent = '请刷新二维码后重新发起请求。'; clearInterval(qrCountdown); $('login-qr').hidden = true; $('copy-login').disabled = true; return; }
+        if (state.status === 'denied') { stopQr(); qrOverlay('此次登录已拒绝'); $('qr-status').textContent = '请刷新二维码重新登录'; $('qr-expiry').textContent = ''; return; }
         if (state.status === 'approved') {
+          clearInterval(qrCountdown);
           $('refresh-qr').disabled = true; $('qr-status').textContent = '已批准，正在建立会话…';
           let result;
           try { result = await api('login/requests/' + request.id + '/complete','POST',{}); }
@@ -96,14 +124,18 @@ async function startQr() {
         }
         $('qr-status').textContent = state.status === 'scanned' ? '已扫码，请在 Console 核对确认码并批准' : '等待 Console 扫码';
         qrTimer = setTimeout(poll,request.pollIntervalMs);
-      } catch (e) { if (generation === qrGeneration) { clearInterval(qrCountdown); $('qr-status').textContent = e.message; $('login-qr').hidden = true; $('copy-login').disabled = true; notice(e.message); } }
+      } catch (e) { if (generation === qrGeneration) {
+        if (e.message === messages.login_request_expired || e.message === messages.login_request_not_found) { expireQr(); return; }
+        stopQr(); qrOverlay('请重新生成二维码'); $('qr-status').textContent = e.message; notice(e.message);
+      } }
       finally { $('refresh-qr').disabled = false; }
     };
     qrTimer = setTimeout(poll,request.pollIntervalMs);
-  } catch (e) { $('qr-status').textContent = '暂时无法生成二维码'; notice(e.message); }
+  } catch (e) { if (generation === qrGeneration) { qrOverlay('暂时无法生成二维码'); $('qr-status').textContent = '请点击刷新重试'; notice(e.message); } }
   finally { qrStarting = false; $('refresh-qr').disabled = false; }
 }
 $('refresh-qr').addEventListener('click',startQr);
+$('refresh-qr-overlay').addEventListener('click',startQr);
 $('copy-login').addEventListener('click',async () => { if (!qrRequest) return; try { await navigator.clipboard.writeText(qrRequest.qrPayload); notice('已复制，请在 Console 中粘贴并核对确认码。',true); } catch { notice('无法访问剪贴板，请使用 Console 摄像头扫码。'); } });
 $('logout').addEventListener('click',async () => { try { await api('logout','POST',{}); loggedIn(false); notice('已退出管理。',true); await startQr(); } catch (e) { notice(e.message); } });
 $('refresh').addEventListener('click',() => refresh().catch(e => notice(e.message)));
