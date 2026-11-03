@@ -387,6 +387,11 @@ struct QinglongExecutionLog: View {
         .onChange(of: store.revision) { _, _ in text = ""; refreshed = nil; error = nil; actionMessage = nil }
         .refreshable { await refresh() }
         .task {
+            // The first read belongs to the sheet lifetime, not the changing polling key.
+            if initialAction == nil {
+                await refresh()
+                return
+            }
             guard initialAction == "run", !autoRunStarted, !Task.isCancelled else { return }
             // Claim the automatic submission before awaiting: redraws and reappearances must never run it twice.
             autoRunStarted = true
@@ -395,8 +400,8 @@ struct QinglongExecutionLog: View {
         .task(id: key) {
             guard live else { return }
             while !Task.isCancelled {
-                await refresh()
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                await refresh()
             }
         }
         .task(id: key) {
@@ -419,6 +424,7 @@ struct QinglongExecutionLog: View {
             submitted = true; actionMessage = message
         }
         if !success { actionError = store.message ?? "请求未完成，请核对任务状态后再操作。" }
+        await refresh()
     }
     private func refresh() async {
         guard monitoring, revision == store.revision, !loading else { return }

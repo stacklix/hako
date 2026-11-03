@@ -31,7 +31,7 @@ struct HomeView: View {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("青龙面板").font(.headline)
                             Text("定时任务 · 脚本 · 订阅管理").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "checklist").foregroundStyle(.primary) }
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "clock.arrow.circlepath").foregroundStyle(.primary) }
                     }
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { CloudServersView() } label: {
