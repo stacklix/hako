@@ -361,26 +361,143 @@ struct QinglongStatus: View {
     var body: some View { Text("· " + state).font(.caption2).foregroundStyle(color).fixedSize() }
 }
 
-struct QinglongResourceSheet: View {
+struct QinglongFileResourceList: View {
     @ObservedObject var store: QinglongStore
     let resource: QinglongResource
-    var embedded = false
+    @Environment(\.scenePhase) private var phase
     @State private var selected: QinglongItem?
+    private var values: [QinglongItem] { store.items[resource] ?? [] }
+    private var loading: Bool { store.loading.contains(resource) }
+    private var countText: String {
+        if resource == .dependencies {
+            let failures = values.filter { $0.dependencyStatus?.failed == true }.count
+            return "\(values.count) 项依赖" + (failures > 0 ? " · \(failures) 项失败" : "")
+        }
+        return "\(values.count) 个\(resource == .logs ? "日志文件" : "文件")"
+    }
+    private struct RefreshKey: Equatable {
+        let revision: UUID
+        let active: Bool
+        let connectionID: String?
+    }
     var body: some View {
-        QinglongSheet(resource.title, embedded: embedded) {
-            if store.loading.contains(resource) { ProgressView("正在读取…") }
-            if let error = store.errors[resource] { QinglongNotice(text: error, error: true) }
-            ForEach(store.items[resource] ?? []) { item in
-                Button { selected = item } label: { HStack { Text(item.title).font(.subheadline); Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }.qinglongCard() }.buttonStyle(.plain)
+        let key = RefreshKey(revision: store.revision, active: phase == .active && selected == nil, connectionID: store.connection?.id)
+        content
+        .task(id: key) {
+            guard key.active, key.connectionID != nil else { return }
+            await store.refresh(resource)
+        }
+        .sheet(item: $selected) { QinglongFileEditor(store: store, item: $0) }
+    }
+    private var content: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                header
+                if !values.isEmpty {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(values.enumerated()), id: \.element.id) { index, item in
+                            if index > 0 { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.leading, 63) }
+                            if resource == .dependencies { row(item).accessibilityElement(children: .combine) }
+                            else {
+                                Button { selected = item } label: { row(item) }
+                                    .buttonStyle(QinglongFileRowButtonStyle())
+                                    .accessibilityLabel("\(resource == .logs ? "查看" : "编辑") \(item.filePath)")
+                            }
+                        }
+                    }.background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 18))
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                }
+                if loading && store.items[resource] == nil {
+                    ProgressView("正在读取\(resource.title)…").frame(maxWidth: .infinity).padding(.vertical, 24)
+                }
+                if let error = store.errors[resource] {
+                    QinglongNotice(text: error, error: true)
+                } else if values.isEmpty && !loading && store.connection != nil && store.items[resource] != nil {
+                    ContentUnavailableView("暂无\(resource.title)", systemImage: resource.symbol)
+                }
+                if let error = store.configurationError { QinglongNotice(text: error, error: true) }
+                if store.connection == nil {
+                    Text("请先在青龙面板设置中配置连接。").font(.subheadline).foregroundStyle(QinglongStyle.muted)
+                }
+                if let time = store.updated[resource] {
+                    Text("\(time.formatted(date: .omitted, time: .standard)) 更新").font(.caption)
+                        .foregroundStyle(QinglongStyle.muted).frame(maxWidth: .infinity)
+                }
+            }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 26)
+        }
+        .refreshable { await store.refresh(resource) }
+        .background(QinglongStyle.background).foregroundStyle(QinglongStyle.text)
+        .navigationTitle("更多").navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(QinglongStyle.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+    }
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(resource.title).font(.system(size: 28, weight: .bold)).tracking(-0.7)
+                Text(store.items[resource] == nil ? "等待读取" : countText).font(.system(size: 13)).foregroundStyle(QinglongStyle.muted)
             }
-            if (store.items[resource] ?? []).isEmpty && !store.loading.contains(resource) { Text("暂无\(resource.title)").font(.subheadline).foregroundStyle(.secondary) }
-            Button("刷新") { Task { await store.refresh(resource) } }.buttonStyle(QinglongSecondaryButtonStyle())
+            Spacer(minLength: 0)
+            Button { Task { await store.refresh(resource) } } label: {
+                Group {
+                    if loading { ProgressView().tint(QinglongStyle.text) }
+                    else { Image(systemName: "arrow.clockwise").font(.system(size: 18)) }
+                }.frame(width: 44, height: 44).background(QinglongStyle.surface, in: Circle())
+            }.buttonStyle(.plain).disabled(loading || store.connection == nil)
+                .accessibilityLabel("刷新\(resource.title)")
         }
-        .task(id: store.revision) { await store.refresh(resource) }
-        .sheet(item: $selected) { item in
-            if resource == .dependencies { QinglongSheet(item.title) { Text(item.subtitle).font(.subheadline); Text("安装状态：\(item.raw["status"].text)").font(.caption).foregroundStyle(.secondary) } }
-            else { QinglongFileEditor(store: store, item: item) }
+    }
+    private func row(_ item: QinglongItem) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: resource == .dependencies ? "shippingbox" : "doc.text")
+                .font(.system(size: 25, weight: .light)).foregroundStyle(QinglongStyle.muted)
+                .frame(width: 34, height: 40).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(resource == .dependencies ? item.title : item.filename).font(.subheadline.weight(.semibold))
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                Text(subtitle(item)).font(.caption).foregroundStyle(QinglongStyle.muted)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if resource == .dependencies {
+                dependencyState(item)
+            } else {
+                if resource == .configs {
+                    Text(fileType(item)).font(.system(.caption2, design: .monospaced)).foregroundStyle(QinglongStyle.muted)
+                        .padding(.horizontal, 5).padding(.vertical, 3).background(QinglongStyle.code, in: RoundedRectangle(cornerRadius: 5))
+                }
+                Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(QinglongStyle.muted).accessibilityHidden(true)
+            }
+        }.padding(.horizontal, 16).padding(.vertical, 17).frame(minHeight: 78).contentShape(Rectangle())
+    }
+    private func subtitle(_ item: QinglongItem) -> String {
+        guard resource == .configs else { return item.subtitle }
+        switch item.filename {
+        case "config.sh": return "基础配置"
+        case "extra.sh": return "自定义扩展"
+        case "task_after.sh", "task_after.js", "task_after.py": return "任务后置脚本"
+        case "task_before.sh", "task_before.js", "task_before.py": return "任务前置脚本"
+        default: return item.language == "文本" ? "配置文件" : item.language + " 脚本"
         }
+    }
+    private func fileType(_ item: QinglongItem) -> String {
+        let value = (item.filename as NSString).pathExtension
+        return value.isEmpty ? "TXT" : value.uppercased()
+    }
+    private func dependencyState(_ item: QinglongItem) -> some View {
+        let status = item.dependencyStatus
+        let color: Color = status?.failed == true ? QinglongStyle.failure : status == .installed ? QinglongStyle.success
+            : [.installing, .removing, .queued].contains(status) ? QinglongStyle.warning : QinglongStyle.muted
+        return HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 4, height: 4).accessibilityHidden(true)
+            Text(status?.title ?? "未知状态").font(.caption).fixedSize(horizontal: false, vertical: true)
+        }.foregroundStyle(color)
+    }
+}
+
+private struct QinglongFileRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.frame(maxWidth: .infinity)
+            .background(configuration.isPressed ? QinglongStyle.code : Color.clear)
     }
 }
 
@@ -397,7 +514,7 @@ struct QinglongMoreResourcePage: View {
                 QinglongResourceView(store: store, resource: resource, active: phase == .active && selected == nil && !creating && !configuring,
                     open: { item, _ in selected = item }, create: { creating = true }, configure: { configuring = true }, showsCreate: true)
                     .navigationTitle(resource.title).navigationBarTitleDisplayMode(.inline)
-            } else { QinglongResourceSheet(store: store, resource: resource, embedded: true) }
+            } else { QinglongFileResourceList(store: store, resource: resource) }
         }.background(QinglongStyle.background).tint(QinglongStyle.text)
         .sheet(item: $selected) { QinglongRecordEditor(store: store, resource: resource, item: $0) }
         .sheet(isPresented: $creating) { QinglongRecordEditor(store: store, resource: resource, item: nil) }

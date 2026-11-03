@@ -125,11 +125,30 @@ enum QinglongResource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// Matches Qinglong's DependenceStatus enum; unknown values remain unknown.
+enum QinglongDependencyStatus: Int, Sendable {
+    case installing, installed, installFailed, removing, removed, removeFailed, queued, cancelled
+    var title: String {
+        switch self {
+        case .installing: return "安装中"
+        case .installed: return "已安装"
+        case .installFailed: return "安装失败"
+        case .removing: return "移除中"
+        case .removed: return "已移除"
+        case .removeFailed: return "移除失败"
+        case .queued: return "排队中"
+        case .cancelled: return "已取消"
+        }
+    }
+    var failed: Bool { self == .installFailed || self == .removeFailed }
+}
+
 struct QinglongItem: Identifiable, Equatable, Sendable {
     let resource: QinglongResource
     var raw: QinglongJSON
     var id: String { resource.rawValue + ":" + (raw["id"].text.isEmpty ? filePath : raw["id"].text) }
     var numberID: Int? { raw["id"].int }
+    var dependencyStatus: QinglongDependencyStatus? { raw["status"].int.flatMap(QinglongDependencyStatus.init(rawValue:)) }
     var language: String {
         switch (filename as NSString).pathExtension.lowercased() { case "py": return "Python"; case "js": return "JavaScript"; case "ts": return "TypeScript"; case "sh": return "Shell"; default: return "文本" }
     }
@@ -177,7 +196,8 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
         case .subscriptions: return raw["url"].text
         case .envs: return raw["remarks"].text
         case .scripts, .configs, .logs: return directory.isEmpty ? "根目录" : directory
-        case .dependencies: return ["Node.js", "Python3", "Linux"][min(2, max(0, raw["type"].int ?? 0))]
+        case .dependencies:
+            switch raw["type"].int { case 0: return "Node.js"; case 1: return "Python"; case 2: return "Linux"; default: return "未知类型" }
         }
     }
     func editPayload(_ changes: [String: String]) -> QinglongJSON {
