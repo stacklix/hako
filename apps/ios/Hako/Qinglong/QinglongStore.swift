@@ -25,6 +25,9 @@ enum QinglongCredentials {
     @Published private(set) var loading = Set<QinglongResource>()
     @Published private(set) var updated: [QinglongResource: Date] = [:]
     @Published private(set) var busy = false
+    @Published private(set) var outcomes: [String: QinglongOutcome] = [:]
+    @Published private(set) var outcomesComplete = false
+    private var outcomeSignatures: [String: String] = [:]
     @Published var message: String?
     @Published var configurationError: String?
     @Published private(set) var revision = UUID()
@@ -51,6 +54,7 @@ enum QinglongCredentials {
         try QinglongCredentials.save(configuration)
         self.configuration = configuration; api = next; loaded = true; configurationError = nil
         revision = UUID(); items = [:]; errors = [:]; loading = []; updated = [:]; message = nil
+        outcomes = [:]; outcomeSignatures = [:]; outcomesComplete = false
     }
 
     func save(_ draft: QinglongConnection) throws {
@@ -84,6 +88,22 @@ enum QinglongCredentials {
             try Task.checkCancellation()
             guard ticket == revision else { return }
             items[resource] = values; errors[resource] = nil; updated[resource] = .now
+            if resource == .tasks {
+                outcomesComplete = false
+                let ids = Set(values.map(\.id)); outcomes = outcomes.filter { ids.contains($0.key) }
+                for item in values {
+                    guard !Task.isCancelled, ticket == revision else { return }
+                    let signature = item.raw["status"].text + ":" + item.raw["last_running_time"].text
+                    guard outcomeSignatures[item.id] != signature else { continue }
+                    do {
+                        let result = try await api.latestOutcome(item)
+                        guard ticket == revision else { return }
+                        outcomes[item.id] = result; outcomeSignatures[item.id] = signature
+                    } catch let failure as QinglongFailure where failure.status == 404 || failure.status == 410 || failure.status == 403 { break }
+                    catch { break }
+                }
+                if ticket == revision { outcomesComplete = values.allSatisfy { outcomeSignatures[$0.id] == $0.raw["status"].text + ":" + $0.raw["last_running_time"].text } }
+            }
         } catch {
             guard ticket == revision, !Task.isCancelled else { return }
             errors[resource] = error.localizedDescription

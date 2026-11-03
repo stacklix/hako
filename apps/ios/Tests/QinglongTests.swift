@@ -127,6 +127,17 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         }
         try await client.saveFile(files[0], content: "")
         precondition(bodyChecked, "Empty file content must be sent explicitly")
+        let failure = QinglongOutcome(raw: try json(#"{"status":1,"exit_code":1,"started_at":1793670000}"#))
+        let success = QinglongOutcome(raw: try json(#"{"status":1,"exit_code":0}"#))
+        let unknown = QinglongOutcome(raw: try json(#"{"status":1}"#))
+        precondition(failure.failed && !failure.succeeded && success.succeeded && !success.failed)
+        precondition(!unknown.succeeded && !unknown.failed, "Missing exit code must not imply success")
+        QinglongMockProtocol.respond { request in
+            precondition(request.url!.path.hasSuffix("crons/1/instances"))
+            return (200, #"{"code":200,"data":[{"status":1,"exit_code":0,"started_at":100},{"status":3,"started_at":200}]}"#)
+        }
+        let outcome = try await client.latestOutcome(list[0])
+        precondition(outcome?.failed == true, "Use the newest real instance, independent of response ordering")
         print("Qinglong tests passed: connection/header validation, file tree, preserved edits, auth headers/cache/expiry, pagination, permissions, uncertain writes, empty file saves.")
     }
 }

@@ -168,4 +168,10 @@ actor QinglongClient {
         if case .string(let value) = root["data"]["content"] { return value }
         throw QinglongFailure(message: "日志尚未生成，或当前面板的日志格式不受支持。")
     }
+    func latestOutcome(_ item: QinglongItem) async throws -> QinglongOutcome? {
+        guard let id = item.numberID else { return nil }
+        let root = try await call(["crons", String(id), "instances"])
+        guard let records = root["data"].array else { return nil }
+        return records.max(by: { ($0["started_at"].int ?? 0) < ($1["started_at"].int ?? 0) }).map { QinglongOutcome(raw: $0) }
+    }
 }

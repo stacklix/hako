@@ -130,6 +130,13 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
     var raw: QinglongJSON
     var id: String { resource.rawValue + ":" + (raw["id"].text.isEmpty ? filePath : raw["id"].text) }
     var numberID: Int? { raw["id"].int }
+    var language: String {
+        switch (filename as NSString).pathExtension.lowercased() { case "py": return "Python"; case "js": return "JavaScript"; case "ts": return "TypeScript"; case "sh": return "Shell"; default: return "文本" }
+    }
+    var lastRunText: String {
+        guard let time = raw["last_running_time"].int, time > 0 else { return "尚无执行记录" }
+        return Date(timeIntervalSince1970: Double(time) / (time > 1_000_000_000_000 ? 1000 : 1)).formatted(date: .abbreviated, time: .shortened)
+    }
     var title: String {
         for key in ["name", "title", "filename", "alias"] where !raw[key].text.isEmpty { return raw[key].text }
         return raw["command"].text.isEmpty ? filePath : raw["command"].text
@@ -169,6 +176,17 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
         }
         for (key, value) in changes { values[key] = .string(value) }
         return .object(values)
+    }
+}
+
+struct QinglongOutcome: Equatable, Sendable {
+    let raw: QinglongJSON
+    var failed: Bool { raw["status"].int == 3 || raw["status"].int == 1 && raw["exit_code"].int.map { $0 != 0 } == true }
+    var succeeded: Bool { raw["status"].int == 1 && raw["exit_code"].int == 0 }
+    var stateText: String { failed ? "失败" : succeeded ? "成功" : raw["status"].int == 2 ? "已停止" : "结果未知" }
+    var summary: String {
+        guard let time = raw["started_at"].int else { return stateText }
+        return Date(timeIntervalSince1970: Double(time) / (time > 1_000_000_000_000 ? 1000 : 1)).formatted(date: .abbreviated, time: .shortened) + " · " + stateText
     }
 }
 

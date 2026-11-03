@@ -1,95 +1,84 @@
 import SwiftUI
 
-struct QinglongConnectionsView: View {
+struct QinglongInstancesView: View {
     @ObservedObject var store: QinglongStore
     @Environment(\.dismiss) private var dismiss
     @State private var editing: QinglongConnection?
-    @State private var removal: QinglongConnection?
     @State private var error: String?
     var body: some View {
-        NavigationStack {
-            List {
-                Section("已保存的面板") {
-                    ForEach(store.configuration.connections) { connection in
-                        Button { editing = connection } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(connection.name).foregroundStyle(.primary)
-                                    Text(HakoLog.safeURL(connection.address)).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if connection.id == store.connection?.id { Image(systemName: "checkmark").foregroundStyle(.primary) }
-                            }
-                        }.disabled(store.busy)
-                        .swipeActions {
-                            Button("删除", role: .destructive) { removal = connection }.disabled(store.busy)
-                        }
-                    }
-                    Button("添加面板", systemImage: "plus") { editing = QinglongConnection() }.disabled(store.busy)
+        QinglongSheet("切换面板", disabled: store.busy) {
+            VStack(spacing: 0) {
+                ForEach(store.configuration.connections) { connection in
+                    Button {
+                        do { try store.select(connection.id); dismiss() } catch { self.error = error.localizedDescription }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "server.rack")
+                            Text(connection.name).font(.subheadline)
+                            Spacer()
+                            Image(systemName: connection.id == store.connection?.id ? "checkmark" : "chevron.right").font(.caption)
+                        }.padding(16).frame(minHeight: 52).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(store.busy)
                 }
-                if let error { Section { Text(error).foregroundStyle(.orange) } }
-                Section { Text("应用凭据和自定义请求头保存在本机 Keychain，不写入应用日志。").font(.footnote).foregroundStyle(.secondary) }
-            }
-            .navigationTitle("青龙连接").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
-            .sheet(item: $editing) { QinglongConnectionEditor(store: store, initial: $0) }
-            .confirmationDialog("删除「\(removal?.name ?? "")」的本机连接？", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }), titleVisibility: .visible) {
-                Button("删除连接", role: .destructive) {
-                    guard let removal else { return }
-                    do { try store.remove(removal.id) } catch { self.error = error.localizedDescription }
-                    self.removal = nil
-                }
-            }
-        }
+            }.qinglongCard(padding: 0)
+            Button("添加面板") { editing = QinglongConnection() }.buttonStyle(QinglongSecondaryButtonStyle())
+            if let error { QinglongNotice(text: error, error: true) }
+        }.sheet(item: $editing) { QinglongConnectionEditor(store: store, initial: $0) }
     }
 }
 
-private struct QinglongConnectionEditor: View {
+struct QinglongConnectionEditor: View {
     @ObservedObject var store: QinglongStore
     @Environment(\.dismiss) private var dismiss
     @State private var draft: QinglongConnection
     @State private var testing = false
+    @State private var headersEnabled: Bool
     @State private var testResult: String?
     @State private var error: String?
-    init(store: QinglongStore, initial: QinglongConnection) { self.store = store; _draft = State(initialValue: initial) }
+    @State private var deleting = false
+    init(store: QinglongStore, initial: QinglongConnection) {
+        self.store = store; _draft = State(initialValue: initial)
+        _headersEnabled = State(initialValue: !initial.headers.isEmpty)
+    }
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("面板") {
-                    QinglongTextField("连接名称", text: $draft.name)
-                    QinglongTextField("面板访问地址", text: $draft.address, keyboard: .URL)
-                    Toggle("允许不加密的 HTTP 连接", isOn: $draft.allowHTTP)
-                }
-                Section("应用凭据") {
-                    QinglongTextField("Client ID", text: $draft.clientID)
-                    QinglongTextField("Client Secret", text: $draft.clientSecret, secure: true)
-                }
-                Section {
-                    ForEach($draft.headers) { $header in
-                        VStack(alignment: .leading, spacing: 12) {
-                            QinglongTextField("Header 名称", text: $header.name)
-                            QinglongTextField("Header 值", text: $header.value, secure: true)
-                            Button("移除此请求头", role: .destructive) { draft.headers.removeAll { $0.id == header.id } }
-                        }.padding(.vertical, 6)
+        QinglongSheet("连接设置", disabled: testing || store.busy) {
+            QinglongTextField("连接名称", text: $draft.name)
+            QinglongTextField("面板访问地址", text: $draft.address, keyboard: .URL)
+            QinglongTextField("Client ID", text: $draft.clientID)
+            QinglongTextField("Client Secret", text: $draft.clientSecret, secure: true)
+            Toggle("添加自定义请求头", isOn: $headersEnabled).font(.subheadline)
+                .onChange(of: headersEnabled) { _, enabled in if enabled && draft.headers.isEmpty { draft.headers.append(QinglongHeader()) } }
+            if headersEnabled {
+                ForEach($draft.headers) { $header in
+                    VStack(alignment: .leading, spacing: 8) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .top, spacing: 10) {
+                                QinglongTextField("Header 名称", text: $header.name)
+                                QinglongTextField("Header 值", text: $header.value, secure: true)
+                            }
+                            VStack { QinglongTextField("Header 名称", text: $header.name); QinglongTextField("Header 值", text: $header.value, secure: true) }
+                        }
+                        if draft.headers.count > 1 { Button("移除此请求头", role: .destructive) { draft.headers.removeAll { $0.id == header.id } }.font(.caption) }
                     }
-                    Button("添加请求头", systemImage: "plus") { draft.headers.append(QinglongHeader()) }
-                } header: { Text("自定义请求头（可选）") }
-                Section {
-                    Button { test() } label: { HStack { Text("测试连接"); if testing { Spacer(); ProgressView() } } }
-                    if let testResult { Text(testResult).font(.footnote).foregroundStyle(.secondary) }
-                    if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
                 }
+                Button("添加另一条请求头", systemImage: "plus") { draft.headers.append(QinglongHeader()) }.buttonStyle(QinglongInlineButtonStyle())
             }
-            .disabled(testing)
-            .onChange(of: draft) { _, _ in testResult = nil; error = nil }
-            .navigationTitle("连接设置").navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(testing) }
-                ToolbarItem(placement: .confirmationAction) { Button("保存") {
-                    do { try store.save(draft); dismiss() } catch { self.error = error.localizedDescription }
-                }.disabled(testing || store.busy) }
+            if draft.address.lowercased().hasPrefix("http://") { Toggle("允许不加密的 HTTP 连接", isOn: $draft.allowHTTP).font(.subheadline) }
+            if let testResult { QinglongNotice(text: testResult) }
+            if let error { QinglongNotice(text: error, error: true) }
+            Button(testing ? "正在测试…" : "测试连接") { test() }.buttonStyle(QinglongSecondaryButtonStyle())
+            Button("保存连接") {
+                do { var value = draft; if !headersEnabled { value.headers = [] }; try store.save(value); dismiss() }
+                catch { self.error = error.localizedDescription }
+            }.buttonStyle(QinglongPrimaryButtonStyle())
+            if store.configuration.connections.contains(where: { $0.id == draft.id }) {
+                Button("删除此连接", role: .destructive) { deleting = true }.buttonStyle(QinglongSecondaryButtonStyle(destructive: true))
             }
-            .interactiveDismissDisabled(testing)
+        }
+        .disabled(testing || store.busy)
+        .onChange(of: draft) { _, _ in testResult = nil; error = nil }
+        .confirmationDialog("删除此连接？", isPresented: $deleting, titleVisibility: .visible) {
+            Button("删除", role: .destructive) { do { try store.remove(draft.id); dismiss() } catch { self.error = error.localizedDescription } }
         }
     }
     private func test() {
@@ -97,9 +86,9 @@ private struct QinglongConnectionEditor: View {
         Task {
             defer { testing = false }
             do {
-                let api = try QinglongClient(connection: draft)
-                try await api.testConnection()
-                testResult = "连接成功，应用凭据有效。各模块权限可在「更多 → 应用权限」中检测。"
+                var value = draft; if !headersEnabled { value.headers = [] }
+                let api = try QinglongClient(connection: value); try await api.testConnection()
+                testResult = "连接成功，应用凭据有效。"
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -117,9 +106,9 @@ struct QinglongTextField: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
             if secure {
-                SecureField("", text: $text).accessibilityLabel(title).textContentType(nil)
+                SecureField("", text: $text).accessibilityLabel(title).textContentType(nil).padding(12).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 10))
             } else {
-                TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title)
+                TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title).padding(12).background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 10))
             }
         }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(.vertical, 4)
     }
@@ -131,16 +120,17 @@ struct QinglongPermissionsView: View {
     @State private var checking = false
     @State private var visible = false
     var body: some View {
-        List {
-            Section {
+        QinglongSheet("应用权限") {
+            VStack(alignment: .leading, spacing: 14) {
                 ForEach(QinglongResource.allCases) { resource in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(resource.title)
                         Text(results[resource] ?? "未检测").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-            } footer: { Text("检测只读取各模块列表，不执行任务或修改数据。可读取不代表所有写入操作均已授权。") }
-            Button(checking ? "正在检测…" : "重新检测") { Task { await check() } }.disabled(checking || store.connection == nil)
+            }.qinglongCard()
+            Text("检测只读取各模块列表，不执行任务或修改数据。").font(.caption).foregroundStyle(.secondary)
+            Button(checking ? "正在检测…" : "重新检测") { Task { await check() } }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(checking || store.connection == nil)
         }
         .navigationTitle("应用权限").navigationBarTitleDisplayMode(.inline)
         .onAppear { visible = true }.onDisappear { visible = false }
