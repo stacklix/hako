@@ -90,6 +90,10 @@ jobs:
           /tmp/hako-arcane-command-tests
           swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Hako/Containers/ArcaneCommandsData.swift Tests/ArcaneCommandDataTests.swift -o /tmp/hako-arcane-command-data-tests
           /tmp/hako-arcane-command-data-tests
+      - name: Test Headplane sessions, wire protocol and mutation recovery
+        run: |
+          swiftc -target arm64-apple-macos14.0 Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift Hako/Headplane/HeadplaneProtocol.swift Hako/Headplane/HeadplaneStream.swift Hako/Headplane/HeadplaneClient.swift Hako/Headplane/HeadplaneStore.swift Tests/HeadplaneTests.swift -o /tmp/hako-headplane-tests
+          /tmp/hako-headplane-tests
       - name: Test local application logs and credential redaction
         run: |
           swiftc Hako/Logging/HakoLog.swift Tests/HakoLogTests.swift -o /tmp/hako-log-tests

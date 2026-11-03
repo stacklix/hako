@@ -27,6 +27,13 @@ struct HomeView: View {
                     }.padding(.vertical, 12)
                 }
                 Section("应用") {
+                    NavigationLink { HeadplaneView() } label: {
+                        Label { VStack(alignment: .leading, spacing: 5) {
+                            Text("组网管理").font(.headline)
+                            Text("Headplane · 设备 · 路由与访问控制").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 8) } icon: { Image(systemName: "network").foregroundStyle(.primary) }
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                     NavigationLink { QinglongView() } label: {
                         Label { VStack(alignment: .leading, spacing: 5) {
                             Text("青龙面板").font(.headline)
