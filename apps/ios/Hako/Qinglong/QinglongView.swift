@@ -14,10 +14,11 @@ enum QinglongTab: String, CaseIterable {
 }
 
 private enum QinglongDestination: Identifiable {
-    case connection, detail(QinglongItem), edit(QinglongResource, QinglongItem?), file(QinglongItem, Bool), log(QinglongItem), action(QinglongItem, String), scriptRun(QinglongItem)
+    case connection, newScript, detail(QinglongItem), edit(QinglongResource, QinglongItem?), file(QinglongItem, Bool), log(QinglongItem), action(QinglongItem, String), scriptRun(QinglongItem)
     var id: String {
         switch self {
         case .connection: return "connection"
+        case .newScript: return "new-script"
         case .detail(let item): return "detail:" + item.id
         case .edit(let resource, let item): return "edit:" + resource.rawValue + (item?.id ?? "new")
         case .file(let item, let creating): return "file:" + item.id + String(creating)
@@ -76,6 +77,7 @@ struct QinglongView: View {
         .sheet(item: $destination) { target in
             switch target {
             case .connection: QinglongConnectionEditor(store: store, initial: store.connection ?? QinglongConnection())
+            case .newScript: QinglongNewScriptFlow(store: store)
             case .detail(let item): QinglongRecordDetail(store: store, item: item)
             case .edit(let resource, let item): QinglongRecordEditor(store: store, resource: resource, item: item)
             case .file(let item, let creating): QinglongFileEditor(store: store, item: item, creating: creating)
@@ -134,7 +136,7 @@ struct QinglongView: View {
         }
     }
     private func create(_ resource: QinglongResource) {
-        destination = resource == .scripts ? .file(QinglongItem(resource: .scripts, raw: .null), true) : .edit(resource, nil)
+        destination = resource == .scripts ? .newScript : .edit(resource, nil)
     }
     private func open(_ item: QinglongItem, _ action: String) {
         if item.resource == .tasks && ["run", "stop"].contains(action) {
@@ -209,7 +211,7 @@ struct QinglongResourceView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
                             if index > 0 { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
-                            if resource == .envs { environmentCard(item) }
+                            if resource == .envs || resource == .scripts { card(item) }
                             else { card(item).padding(.horizontal, 16).padding(.vertical, 16) }
                         }
                     }.qinglongCard(padding: 0)
@@ -322,14 +324,19 @@ struct QinglongResourceView: View {
         }.buttonStyle(QinglongInlineButtonStyle())
     }
     private func scriptCard(_ item: QinglongItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) { cardTitle(item, action: "file"); Spacer(minLength: 8); Text(item.language).font(.system(size: 11)).foregroundStyle(QinglongStyle.muted) }
-            Text(item.subtitle).font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("查看与编辑", systemImage: "pencil") { open(item, "file") }
-                Spacer()
-                Button("运行", systemImage: "play") { open(item, "run-script") }.disabled(store.busy)
-            }.buttonStyle(QinglongInlineButtonStyle())
+        HStack(spacing: 0) {
+            Button { open(item, "file") } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title).font(.system(size: 13, weight: .semibold))
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                    Text(item.subtitle).font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(16).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("编辑脚本 \(item.filePath)")
+            Button("运行", systemImage: "play") { open(item, "run-script") }
+                .buttonStyle(QinglongInlineButtonStyle()).padding(.trailing, 16).disabled(store.busy)
+                .accessibilityLabel("运行脚本 \(item.title)")
         }
     }
     private func subscriptionCard(_ item: QinglongItem) -> some View {

@@ -1,12 +1,64 @@
 import SwiftUI
 
+struct QinglongNewScriptFlow: View {
+    @ObservedObject var store: QinglongStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var filename = ""
+    @State private var directory = ""
+    @State private var error: String?
+    @State private var target: QinglongItem?
+    @State private var openedRevision: UUID
+    init(store: QinglongStore) {
+        self.store = store
+        _openedRevision = State(initialValue: store.revision)
+    }
+    private var connectionChanged: Bool { openedRevision != store.revision }
+    var body: some View {
+        Group {
+            if let target {
+                QinglongFileEditor(store: store, item: target, creating: true)
+            } else {
+                NavigationStack {
+                    Form {
+                        Section {
+                            QinglongTextField("文件名", text: $filename)
+                            QinglongTextField("路径", text: $directory)
+                        } footer: {
+                            Text("路径为脚本相对目录，留空表示根目录。")
+                        }.disabled(store.busy || connectionChanged)
+                        if connectionChanged { QinglongNotice(text: "连接已改变，请关闭后重新新建脚本。", error: true) }
+                        else if let error { QinglongNotice(text: error, error: true) }
+                    }
+                    .navigationTitle("新建脚本").navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("下一步", action: continueEditing)
+                                .disabled(filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy || connectionChanged)
+                        }
+                    }
+                }
+            }
+        }
+        .tint(QinglongStyle.text)
+        .presentationDetents(target == nil ? [.medium, .large] : [.large])
+    }
+    private func continueEditing() {
+        guard !connectionChanged, !store.busy else { return }
+        let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try QinglongParsing.file(name, directory: path)
+            target = QinglongItem(resource: .scripts, raw: .fields(["title": name, "parent": path]))
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
 struct QinglongFileEditor: View {
     @ObservedObject var store: QinglongStore
     let item: QinglongItem
     var creating = false
     @Environment(\.dismiss) private var dismiss
-    @State private var filename = ""
-    @State private var directory = ""
     @State private var text = ""
     @State private var baseline: String?
     @State private var error: String?
@@ -22,13 +74,10 @@ struct QinglongFileEditor: View {
         _openedRevision = State(initialValue: store.revision)
     }
     private var writable: Bool { item.resource != .logs }
-    private var changed: Bool { creating ? !text.isEmpty || !filename.isEmpty || !directory.isEmpty : baseline != nil && baseline != text }
-    private var target: QinglongItem {
-        creating ? QinglongItem(resource: .scripts, raw: .fields(["title": filename, "parent": directory])) : item
-    }
+    private var changed: Bool { creating || baseline != nil && baseline != text }
     private var canSave: Bool {
         writable && changed && !loading && !store.busy && loadedRevision == store.revision && openedRevision == store.revision
-            && (!creating || !filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            && (!creating || !item.filename.isEmpty)
     }
 
     var body: some View {
@@ -64,18 +113,12 @@ struct QinglongFileEditor: View {
     private var editor: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 0) {
-                if creating {
-                    VStack(alignment: .leading, spacing: 10) {
-                        QinglongTextField("文件名", text: $filename)
-                        QinglongTextField("相对目录", text: $directory)
-                    }.padding(.horizontal, 16).padding(.vertical, 8).disabled(store.busy)
-                }
                 messages
                 Divider()
                 if loading {
                     ProgressView("正在读取文件…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if creating || baseline != nil {
-                    ArcaneCodeEditor(text: $text, filename: target.filePath,
+                    ArcaneCodeEditor(text: $text, filename: item.filePath,
                         editable: writable && openedRevision == store.revision, saving: store.busy)
                 } else {
                     ContentUnavailableView("无法读取文件", systemImage: "doc", description: Text(error ?? "请重新读取文件内容。"))
@@ -93,7 +136,7 @@ struct QinglongFileEditor: View {
                 .accessibilityLabel("返回\(item.resource.title)").disabled(store.busy)
         }
         ToolbarItem(placement: .principal) {
-            Text(creating ? "新建脚本" : item.filename).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Text(item.filename).font(.subheadline.weight(.semibold)).lineLimit(1)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if !creating {
@@ -115,7 +158,7 @@ struct QinglongFileEditor: View {
     }
     private var messages: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(creating && filename.isEmpty ? "未命名脚本" : target.filePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(item.filePath).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             if changed { Text("未保存").foregroundStyle(.secondary) }
             if let error { Text(error).foregroundStyle(.orange) }
             if error != nil, !creating {
@@ -143,7 +186,7 @@ struct QinglongFileEditor: View {
     }
     private func save() async -> Bool {
         guard canSave else { return false }
-        let target = self.target, content = text, previous = baseline, creating = self.creating
+        let target = item, content = text, previous = baseline, creating = self.creating
         let result = await store.perform(target.resource, success: "文件已保存。") { api in
             try QinglongParsing.file(target.filename, directory: target.directory)
             if creating {
