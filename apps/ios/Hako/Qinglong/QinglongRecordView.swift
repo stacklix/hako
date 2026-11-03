@@ -13,11 +13,18 @@ struct QinglongRecordDetail: View {
     @Environment(\.dismiss) private var dismiss
     private var current: QinglongItem { store.items[item.resource]?.first { $0.id == item.id } ?? item }
     var body: some View {
-        QinglongSheet("任务详情", disabled: store.busy) {
-            HStack { Text(current.title).font(.headline); Spacer(); QinglongStatus(item: current, outcome: store.outcomes[item.id]) }
+        QinglongSheet("任务详情", disabled: store.busy, usesForm: false) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(current.title).font(.system(size: 17, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                QinglongStatus(item: current, outcome: store.outcomes[item.id])
+            }.padding(15).frame(maxWidth: .infinity, alignment: .leading)
+                .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 10))
             Text(current.raw["command"].text).qinglongCode()
             VStack(spacing: 0) {
                 detail("定时规则", current.raw["schedule"].text)
+                detail("执行计划", current.scheduleDescription)
+                detail("时区", current.raw["timezone"].text.isEmpty ? "跟随面板设置" : current.raw["timezone"].text)
                 detail("最近执行", store.outcomes[item.id]?.summary ?? current.lastRunText)
             }
             Button(current.running ? "停止任务" : "立即运行") {
@@ -27,7 +34,7 @@ struct QinglongRecordDetail: View {
             VStack(spacing: 0) {
                 QinglongMenuRow(title: "编辑任务") { editing = true }
                 QinglongMenuRow(title: current.disabled ? "启用任务" : "禁用任务") { action = current.disabled ? "enable" : "disable" }
-                QinglongMenuRow(title: "删除任务", destructive: true, last: true) { action = "delete" }
+                QinglongMenuRow(title: "删除任务", destructive: true, last: true, trailingSymbol: "trash") { action = "delete" }
             }.qinglongCard(padding: 0).disabled(store.busy)
         }
         .qinglongTaskAction(store: store, request: $taskAction)
@@ -37,8 +44,8 @@ struct QinglongRecordDetail: View {
             if let action { QinglongActionSheet(store: store, item: current, action: action, completed: { if action == "delete" { dismiss() } }) }
         }
         .onAppear { visible = true; if openedRevision == nil { openedRevision = store.revision } }.onDisappear { visible = false }
-        .task(id: "\(visible && phase == .active && !editing && !logging && action == nil):\(store.revision)") {
-            guard visible, phase == .active, !editing, !logging, action == nil else { return }
+        .task(id: "\(visible && phase == .active && !editing && !logging && action == nil && taskAction == nil):\(store.revision)") {
+            guard visible, phase == .active, !editing, !logging, action == nil, taskAction == nil else { return }
             while !Task.isCancelled && (openedRevision == nil || openedRevision == store.revision) {
                 await store.refresh(item.resource)
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
@@ -46,7 +53,14 @@ struct QinglongRecordDetail: View {
         }
     }
     private func detail(_ title: String, _ value: String) -> some View {
-        VStack(spacing: 0) { HStack(alignment: .top) { Text(title).foregroundStyle(.secondary); Spacer(); Text(value).multilineTextAlignment(.trailing).textSelection(.enabled) }.font(.subheadline).padding(.vertical, 12); Divider() }
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 20) {
+                Text(title).foregroundStyle(QinglongStyle.muted).fixedSize()
+                Spacer(minLength: 0)
+                Text(value).multilineTextAlignment(.trailing).textSelection(.enabled)
+            }.font(.system(size: 13)).padding(.vertical, 12)
+            Rectangle().fill(QinglongStyle.line).frame(height: 1)
+        }
     }
 }
 
@@ -137,54 +151,109 @@ struct QinglongRecordEditor: View {
 struct QinglongExecutionLog: View {
     @ObservedObject var store: QinglongStore
     let item: QinglongItem
+    let initialAction: String?
+    private let revision: UUID
     @Environment(\.scenePhase) private var scenePhase
     @State private var visible = false
     @State private var text = ""
     @State private var error: String?
     @State private var loading = false
-    @State private var openedRevision: UUID?
-    @State private var taskAction: QinglongTaskAction?
+    @State private var submitted = false
+    @State private var attempted = false
+    @State private var performing = false
+    @State private var actionError: String?
+    @State private var actionMessage: String?
+    @State private var stopping = false
+    @State private var refreshed: Date?
+    init(store: QinglongStore, item: QinglongItem, initialAction: String? = nil, revision: UUID? = nil) {
+        self.store = store; self.item = item; self.initialAction = initialAction; self.revision = revision ?? store.revision
+    }
     private var current: QinglongItem { store.items[item.resource]?.first { $0.id == item.id } ?? item }
-    private var key: String { "\(visible && scenePhase == .active):\(store.revision)" }
+    private var monitoring: Bool { initialAction == nil || submitted || attempted }
+    private var live: Bool { visible && scenePhase == .active && monitoring && revision == store.revision }
+    private var key: String { "\(live):\(store.revision)" }
+    private var title: String { initialAction == nil ? "执行日志" : monitoring ? "任务执行" : initialAction == "stop" ? "停止任务" : "运行任务" }
     var body: some View {
-        QinglongSheet("执行日志") {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack { Text(current.title).font(.headline); Spacer(); QinglongStatus(item: current, outcome: store.outcomes[item.id]) }
-                Text("最近一次执行 · 最多显示末尾 256 KiB").font(.caption).foregroundStyle(.secondary)
-                if loading && text.isEmpty { ProgressView("正在读取日志…") }
-                if let error { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) }
-                Text(text.isEmpty ? "暂无执行输出" : text).qinglongCode()
-                Button("刷新日志", systemImage: "arrow.clockwise") { Task { await refresh() } }.buttonStyle(QinglongSecondaryButtonStyle())
+        QinglongSheet(title, disabled: performing || store.busy, usesForm: false) {
+            HStack(alignment: .top, spacing: 12) {
+                Text(current.title).font(.headline).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                QinglongStatus(item: current, outcome: store.outcomes[item.id])
+            }.qinglongCard()
+            if !monitoring, let initialAction {
+                Text(initialAction == "stop" ? "停止此任务当前的执行？" : "立即运行此任务？").font(.subheadline)
+                Text(current.raw["command"].text).qinglongCode()
+                Button(performing ? "正在提交…" : initialAction == "stop" ? "确认停止" : "立即运行") {
+                    Task { await perform(initialAction) }
+                }.buttonStyle(QinglongPrimaryButtonStyle()).disabled(performing || store.busy || revision != store.revision || initialAction == "run" && current.disabled)
+            }
+            if let actionMessage { QinglongNotice(text: actionMessage) }
+            if let actionError { QinglongNotice(text: actionError, error: true) }
+            if monitoring {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("最近一次执行 · 最多显示末尾 256 KiB").font(.caption).foregroundStyle(QinglongStyle.muted)
+                    HStack(spacing: 6) {
+                        if loading { ProgressView().controlSize(.mini) }
+                        Text(refreshed.map { "日志更新于 " + $0.formatted(date: .omitted, time: .standard) } ?? "等待执行输出…")
+                            .font(.caption).foregroundStyle(QinglongStyle.muted)
+                        Spacer(minLength: 0)
+                        if live { Text("自动刷新").font(.caption).foregroundStyle(QinglongStyle.muted) }
+                    }
+                }
+                if let error { QinglongNotice(text: error, error: true) }
+                Text(text.isEmpty ? "暂无执行输出，正在等待日志…" : text).qinglongCode()
+                Button("刷新日志", systemImage: "arrow.clockwise") { Task { await refresh() } }
+                    .buttonStyle(QinglongSecondaryButtonStyle()).disabled(loading || revision != store.revision)
                 if current.resource == .tasks && current.running {
-                    Button("停止此任务") { taskAction = QinglongTaskAction(item: current, action: "stop", revision: openedRevision ?? store.revision) }
-                        .buttonStyle(QinglongSecondaryButtonStyle(destructive: true)).disabled(store.busy)
+                    Button("停止此任务") { stopping = true }
+                        .buttonStyle(QinglongSecondaryButtonStyle(destructive: true)).disabled(performing || store.busy || revision != store.revision)
                 }
             }
+            if revision != store.revision {
+                QinglongNotice(text: "连接已改变，请返回列表重新打开。", error: true)
+            }
         }
-        .qinglongTaskAction(store: store, request: $taskAction)
-        .navigationTitle("执行日志").navigationBarTitleDisplayMode(.inline)
-        .onAppear { visible = true; if openedRevision == nil { openedRevision = store.revision } }.onDisappear { visible = false }
+        .confirmationDialog("停止当前任务执行？", isPresented: $stopping, titleVisibility: .visible) {
+            Button("停止任务", role: .destructive) { Task { await perform("stop") } }
+        }
+        .onAppear { visible = true }.onDisappear { visible = false }
+        .onChange(of: store.revision) { _, _ in text = ""; refreshed = nil; error = nil; actionMessage = nil }
         .refreshable { await refresh() }
         .task(id: key) {
-            guard visible, scenePhase == .active else { return }
-            var tick = 0
+            guard live else { return }
             while !Task.isCancelled {
-                if tick % 2 == 0, openedRevision == store.revision { await store.refresh(item.resource) }
                 await refresh()
-                tick += 1
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
         }
+        .task(id: key) {
+            guard live else { return }
+            while !Task.isCancelled {
+                await store.refresh(item.resource)
+                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+            }
+        }
+    }
+    private func perform(_ action: String) async {
+        guard !performing, !store.busy, revision == store.revision else { return }
+        performing = true; actionError = nil
+        defer { performing = false }
+        let message = action == "stop" ? "停止请求已提交，正在刷新日志和状态。" : "运行请求已提交，正在等待本次执行输出。"
+        let success = await store.perform(item.resource, success: message) { api in
+            try await api.action(action, item: current)
+            submitted = true; actionMessage = message
+        }
+        attempted = true
+        if !success { actionError = store.message ?? "请求未完成，请核对任务状态后再操作。" }
     }
     private func refresh() async {
-        guard openedRevision == nil || openedRevision == store.revision else { text = ""; error = "连接已改变，请返回列表重新打开日志。"; return }
-        guard !loading else { return }
-        loading = true; let revision = store.revision
+        guard monitoring, revision == store.revision, !loading else { return }
+        loading = true
         defer { loading = false }
         do {
             let result = try await store.client().log(item)
             guard !Task.isCancelled, revision == store.revision else { return }
-            text = result; error = nil
+            text = result; error = nil; refreshed = .now
         } catch { if !Task.isCancelled && revision == store.revision { self.error = error.localizedDescription } }
     }
 }

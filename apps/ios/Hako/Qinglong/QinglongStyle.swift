@@ -10,7 +10,7 @@ enum QinglongStyle {
     static let success = adaptive(0x478d80, 0x78b8aa)
     static let warning = adaptive(0xa27d3e, 0xd3b27b)
     static let failure = adaptive(0xb5605b, 0xd4948e)
-    static let code = Color(uiColor: .tertiarySystemFill)
+    static let code = adaptive(0xeaeaef, 0x2c2c2e)
     private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
             let v = traits.userInterfaceStyle == .dark ? dark : light
@@ -20,61 +20,27 @@ enum QinglongStyle {
 }
 
 extension View {
-    func qinglongTaskAction(store: QinglongStore, request: Binding<QinglongTaskAction?>, showsFeedback: Bool = true) -> some View {
-        modifier(QinglongTaskActionConfirmation(store: store, request: request, showsFeedback: showsFeedback))
+    func qinglongTaskAction(store: QinglongStore, request: Binding<QinglongTaskAction?>) -> some View {
+        sheet(item: request) { value in
+            QinglongExecutionLog(store: store, item: value.item, initialAction: value.action, revision: value.revision)
+        }
     }
     func qinglongCard(padding: CGFloat = 15) -> some View {
         self.padding(padding).frame(maxWidth: .infinity, alignment: .leading)
             .background(QinglongStyle.surface, in: RoundedRectangle(cornerRadius: 14))
     }
     func qinglongCode() -> some View {
-        self.font(.footnote.monospaced()).textSelection(.enabled)
+        self.font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading).padding(15)
             .background(QinglongStyle.code, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
-struct QinglongTaskAction {
+struct QinglongTaskAction: Identifiable {
+    let id = UUID()
     let item: QinglongItem
     let action: String
     let revision: UUID
-    var title: String { action == "stop" ? "停止任务" : "运行任务" }
-}
-
-private struct QinglongTaskActionConfirmation: ViewModifier {
-    @ObservedObject var store: QinglongStore
-    @Binding var request: QinglongTaskAction?
-    let showsFeedback: Bool
-    @State private var feedback: String?
-    func body(content: Content) -> some View {
-        content.alert(request?.title ?? "任务操作", isPresented: Binding(get: { request != nil }, set: { if !$0 { request = nil } }), presenting: request) { value in
-            Button("取消", role: .cancel) {}
-            Button(value.title, role: value.action == "stop" ? .destructive : nil) {
-                Task {
-                    guard !store.busy else { return }
-                    guard value.revision == store.revision else { feedback = "连接已改变，请返回列表重新打开。"; return }
-                    let accepted = value.action == "stop" ? "停止请求已提交，请查看状态和日志确认结果。" : "运行请求已提交，请查看状态和日志确认结果。"
-                    let success = await store.perform(value.item.resource, success: accepted) { try await $0.action(value.action, item: value.item) }
-                    feedback = success ? accepted : store.message
-                }
-            }
-        } message: { value in
-            Text("\(value.title)「\(value.item.title)」？")
-        }
-        .overlay(alignment: .bottom) {
-            if showsFeedback, let feedback {
-                Text(feedback).font(.caption).padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(QinglongStyle.surface).background(QinglongStyle.text, in: RoundedRectangle(cornerRadius: 12))
-                    .padding(20).allowsHitTesting(false)
-            }
-        }
-        .task(id: feedback) {
-            guard feedback != nil else { return }
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            feedback = nil
-        }
-        .onChange(of: store.revision) { _, _ in request = nil; feedback = nil }
-    }
 }
 
 struct QinglongPrimaryButtonStyle: ButtonStyle {
@@ -111,20 +77,21 @@ struct QinglongInlineButtonStyle: ButtonStyle {
     }
 }
 
-// System sheet chrome and grouped Form; embedded content uses the host NavigationStack.
+// Native sheet navigation; editors use Form, details and execution logs use scrolling content.
 struct QinglongSheet<Content: View>: View {
     let title: String
     let disabled: Bool
     let embedded: Bool
     let saveDisabled: Bool
+    let usesForm: Bool
     let close: (() -> Void)?
     let save: (() -> Void)?
     private let content: Content
     @Environment(\.dismiss) private var dismiss
-    init(_ title: String, disabled: Bool = false, embedded: Bool = false, saveDisabled: Bool = false,
+    init(_ title: String, disabled: Bool = false, embedded: Bool = false, saveDisabled: Bool = false, usesForm: Bool = true,
          close: (() -> Void)? = nil, save: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.title = title; self.disabled = disabled; self.embedded = embedded
-        self.saveDisabled = saveDisabled; self.close = close; self.save = save; self.content = content()
+        self.saveDisabled = saveDisabled; self.usesForm = usesForm; self.close = close; self.save = save; self.content = content()
     }
     var body: some View {
         Group {
@@ -133,18 +100,30 @@ struct QinglongSheet<Content: View>: View {
         }.tint(QinglongStyle.text).interactiveDismissDisabled(disabled)
     }
     private var form: some View {
-        Form { content }
+        Group {
+            if usesForm { Form { content } }
+            else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) { content }
+                        .padding(.horizontal, 20).padding(.vertical, 16)
+                }
+            }
+        }
             .scrollContentBackground(.hidden).background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .scrollDismissesKeyboard(.interactively)
             .toolbar {
                 if !embedded {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(save == nil ? "完成" : "取消") { if let close { close() } else { dismiss() } }.disabled(disabled)
+                        Button(save == nil ? "关闭" : "取消") { if let close { close() } else { dismiss() } }.disabled(disabled)
                     }
                 }
                 if let save {
                     ToolbarItem(placement: .confirmationAction) { Button("保存", action: save).disabled(disabled || saveDisabled) }
+                } else if !embedded {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { if let close { close() } else { dismiss() } }.disabled(disabled)
+                    }
                 }
             }
     }
@@ -173,6 +152,7 @@ struct QinglongMenuRow: View {
     var symbol: String? = nil
     var destructive = false
     var last = false
+    var trailingSymbol = "chevron.right"
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -180,8 +160,8 @@ struct QinglongMenuRow: View {
                 if let symbol { Image(systemName: symbol).frame(width: 20) }
                 Text(title).font(.system(size: 13))
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-            }.foregroundStyle(destructive ? Color.red : .primary)
+                Image(systemName: trailingSymbol).font(.caption).foregroundStyle(destructive ? QinglongStyle.failure : QinglongStyle.muted)
+            }.foregroundStyle(destructive ? QinglongStyle.failure : QinglongStyle.text)
                 .padding(.horizontal, 16).frame(minHeight: 52).contentShape(Rectangle())
         }.buttonStyle(.plain)
         .overlay(alignment: .bottom) { if !last { Divider().padding(.horizontal, 16) } }

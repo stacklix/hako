@@ -38,7 +38,7 @@ struct QinglongView: View {
             header
             if let resource {
                 QinglongResourceView(store: store, resource: resource,
-                    active: visible && scenePhase == .active && destination == nil,
+                    active: visible && scenePhase == .active && destination == nil && taskAction == nil,
                     open: open, create: { create(resource) }, configure: { destination = .connection }, showsCreate: true)
                     .id(resource)
             } else { more }
@@ -64,7 +64,7 @@ struct QinglongView: View {
                 }
             }
         }
-        .qinglongTaskAction(store: store, request: $taskAction, showsFeedback: false)
+        .qinglongTaskAction(store: store, request: $taskAction)
         .sheet(item: $destination) { target in
             switch target {
             case .connection: QinglongConnectionEditor(store: store, initial: store.connection ?? QinglongConnection())

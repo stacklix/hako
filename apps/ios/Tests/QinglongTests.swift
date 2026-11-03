@@ -169,6 +169,20 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         QinglongMockProtocol.respond { _ in (200, #"{"code":200,"data":[]}"#) }
         let missingID = try await client.saveEnvironment(nil, fields: fields, enabled: false)
         precondition(missingID.item == nil && missingID.stateError != nil, "Never invent an ID or repeat creation after an incomplete save response")
-        print("Qinglong tests passed, including environment create/state changes and partial-save recovery.")
+        for (schedule, description) in [("0 2 * * *", "每天 02:00"), ("0 0 3 * * 0", "每周日 03:00"), ("*/5 * * * *", "每 5 分钟"), ("30 0 2 * * *", "自定义计划"), ("0 25 * * *", "自定义计划")] {
+            precondition(QinglongItem(resource: .tasks, raw: .fields(["schedule": schedule])).scheduleDescription == description)
+        }
+        var logReads = 0
+        QinglongMockProtocol.respond { request in
+            precondition(request.httpMethod == "GET" && request.url!.path.hasSuffix("crons/1/log"))
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            precondition(query.contains(URLQueryItem(name: "tail", value: "true")) && query.contains(URLQueryItem(name: "limit", value: "262144")))
+            logReads += 1
+            return (200, logReads == 1 ? #"{"code":200,"data":"[开始] 执行任务"}"# : #"{"code":200,"data":{"content":"[开始] 执行任务\n[完成] 退出码 0"}}"#)
+        }
+        let firstLog = try await client.log(list[0])
+        let updatedLog = try await client.log(list[0])
+        precondition(firstLog == "[开始] 执行任务" && updatedLog.hasSuffix("退出码 0") && logReads == 2)
+        print("Qinglong tests passed, including schedule descriptions and refreshed execution logs.")
     }
 }

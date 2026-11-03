@@ -137,6 +137,24 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
         guard let time = raw["last_running_time"].int, time > 0 else { return "尚无执行记录" }
         return Date(timeIntervalSince1970: Double(time) / (time > 1_000_000_000_000 ? 1000 : 1)).formatted(date: .abbreviated, time: .shortened)
     }
+    var scheduleDescription: String {
+        var parts = raw["schedule"].text.split(whereSeparator: \.isWhitespace).map(String.init)
+        if parts.count == 6 {
+            guard parts.removeFirst() == "0" else { return "自定义计划" }
+        }
+        guard parts.count == 5, parts[2] == "*", parts[3] == "*" else { return "自定义计划" }
+        if parts[4] == "*", parts[1] == "*" {
+            if parts[0] == "*" { return "每分钟" }
+            if parts[0].hasPrefix("*/"), let interval = Int(parts[0].dropFirst(2)), (1...59).contains(interval) { return "每 \(interval) 分钟" }
+        }
+        guard let minute = Int(parts[0]), (0...59).contains(minute) else { return "自定义计划" }
+        if parts[4] == "*", parts[1].hasPrefix("*/"), let interval = Int(parts[1].dropFirst(2)), (1...23).contains(interval) { return "每 \(interval) 小时 · 第 \(minute) 分钟" }
+        guard let hour = Int(parts[1]), (0...23).contains(hour) else { return "自定义计划" }
+        let time = String(format: "%02d:%02d", hour, minute)
+        if parts[4] == "*" { return "每天 " + time }
+        if let weekday = Int(parts[4]), (0...7).contains(weekday) { return "每周" + ["日", "一", "二", "三", "四", "五", "六"][weekday % 7] + " " + time }
+        return "自定义计划"
+    }
     var title: String {
         for key in ["name", "title", "filename", "alias"] where !raw[key].text.isEmpty { return raw[key].text }
         return raw["command"].text.isEmpty ? filePath : raw["command"].text
