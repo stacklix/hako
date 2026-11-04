@@ -33,6 +33,11 @@ import Foundation
         let restored = HakoLogStore(fileURL: file).snapshot().entries
         precondition(restored.count == 3 && restored[0].source == .devices && restored[2].source == .cloudServers)
         precondition(restored[2].detail.contains(":443/session"))
+        let fullDetail = String(repeating: "HTTP diagnostic 正文\n", count: 700_000) + "RESPONSE-END"
+        store.append(source: .headplane, level: .error, message: "HTTP failure", detail: fullDetail, fullDetail: true)
+        store.flush()
+        precondition(HakoLogStore(fileURL: file).snapshot().entries.first?.detail == fullDetail,
+                     "Complete HTTP details must survive persistence even beyond the old 8 MB file limit")
         precondition(!HakoLog.safeURL("not a URL secret").contains("secret"))
 
         // Concurrent producers are serialized; retention and clear survive a restart.

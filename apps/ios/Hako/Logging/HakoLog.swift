@@ -23,7 +23,7 @@ struct HakoLogEntry: Codable, Identifiable, Sendable {
 }
 
 // A serial queue orders appends, reads and clears, and keeps disk writes off the UI thread.
-// Only curated diagnostic fields are logged; HTTP bodies, headers and terminal I/O are excluded.
+// HTTP failure diagnostics may retain full details after credential redaction.
 final class HakoLogStore: @unchecked Sendable {
     static let shared = HakoLogStore(fileURL: defaultFileURL())
     static let capacity = 1_000
@@ -38,16 +38,14 @@ final class HakoLogStore: @unchecked Sendable {
         self.fileURL = fileURL
         guard let fileURL, FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            let size = try fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size <= 8 * 1_048_576 else { throw CocoaError(.fileReadCorruptFile) }
             values = Array(try JSONDecoder().decode([HakoLogEntry].self, from: Data(contentsOf: fileURL)).suffix(Self.capacity))
         } catch { storageIssue = "无法读取之前的日志；本次日志仍可查看。" }
     }
 
-    func append(source: HakoLogSource, level: HakoLogLevel, message: String, detail: String = "", secrets: [String] = []) {
+    func append(source: HakoLogSource, level: HakoLogLevel, message: String, detail: String = "", secrets: [String] = [], fullDetail: Bool = false) {
         let entry = HakoLogEntry(id: UUID(), time: .now, source: source, level: level,
             message: HakoLog.sanitize(message, secrets: secrets, limit: 512),
-            detail: HakoLog.sanitize(detail, secrets: secrets, limit: 3_072))
+            detail: HakoLog.sanitize(detail, secrets: secrets, limit: fullDetail ? Int.max : 3_072))
         queue.async {
             self.values.append(entry)
             if self.values.count > Self.capacity { self.values.removeFirst(self.values.count - Self.capacity) }

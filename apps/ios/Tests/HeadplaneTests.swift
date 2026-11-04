@@ -307,6 +307,21 @@ private final class MemorySecrets: SecretStorage {
         WireProtocol.respond { _ in (403, [:], dnsDenied) }
         do { _ = try await client.read(.dns); preconditionFailure() }
         catch let e as HeadplaneFailure { precondition(e.status == 403 && e.message == "Permission denied") }
+        let longBody = "<html>DNS backend failed " + String(repeating: "诊断数据", count: 2_000) + " RESPONSE-END</html>"
+        WireProtocol.respond { _ in
+            (500, ["Content-Type": "text/html", "X-Request-ID": "dns-failure-500", "Set-Cookie": "headplane=new-private-session; Path=/admin"],
+             Data((longBody + connection.apiKey + " session new-private-session").utf8))
+        }
+        do { _ = try await client.submit(.dns, fields: ["diagnostic": "REQUEST-END"]); preconditionFailure() }
+        catch let e as HeadplaneFailure { precondition(e.status == 500 && e.outcomeUnknown) }
+        let diagnostic = HakoLogStore.shared.snapshot().entries.first { $0.message == "Headplane 请求失败" }!
+        precondition(diagnostic.level == .error)
+        for expected in ["POST https://headplane.example.test/admin/dns.data", "diagnostic=REQUEST-END", "HTTP 500", "dns-failure-500", "RESPONSE-END</html>"] {
+            precondition(diagnostic.detail.contains(expected), "Missing full HTTP diagnostic: \(expected)")
+        }
+        for secret in [connection.apiKey, "new-private-session", " session "] {
+            precondition(!diagnostic.detail.contains(secret), "Credentials must be redacted")
+        }
         WireProtocol.respond { _ in (302, ["Location": "https://attacker.example.test/machines", "Set-Cookie": "session=x; Path=/"], Data()) }
         let bad = try HeadplaneClient(connection: connection, session: session)
         do { _ = try await bad.submit(.machines, fields: ["action_id": "rename"]); preconditionFailure() }
