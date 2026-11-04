@@ -153,9 +153,17 @@ func (s *Server) initOIDC() error {
 		respond(w, 200, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{s.oidc.jwk}})
 	})
 	s.mux.HandleFunc("GET /oidc/authorize", s.oidcAuthorize)
+	s.mux.HandleFunc("GET /api/v1/auth/oidc/requests", s.pendingOIDCLogins)
+	s.mux.HandleFunc("POST /api/v1/auth/oidc/requests/{id}/approve", s.approveAdminLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/oidc/requests/{id}/deny", s.approveAdminLogin)
 	s.mux.HandleFunc("GET /oidc/consent.js", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := adminFiles.ReadFile("web/oidc.js")
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		_, _ = w.Write(b)
+	})
+	s.mux.HandleFunc("GET /oidc/consent.css", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := adminFiles.ReadFile("web/oidc.css")
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		_, _ = w.Write(b)
 	})
 	s.mux.HandleFunc("GET /oidc/requests/{id}/status", s.oidcStatus)
@@ -298,6 +306,7 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	req := &adminLoginRequest{OIDC: &a, ClientID: c.ID, ClientName: c.Name, ClientOrigin: c.Origin, ClientKeyHash: c.SecretHash, Purpose: "oidc", BrowserHash: digest(browser), Code: code, Nonce: randomToken(), Browser: browserLabel(r.UserAgent()), ClientIP: s.loginClientIP(r), Status: "pending", Created: now, Expires: now.Add(adminLoginLifetime), QR: png}
+	req.RequestID = id
 	if !s.validApplicationRequest(req) {
 		fail("temporarily_unavailable")
 		return
@@ -322,7 +331,38 @@ func (s *Server) oidcBrowser(w http.ResponseWriter, r *http.Request) *adminLogin
 	return req
 }
 
-var oidcPageTemplate = template.Must(template.New("consent").Parse(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Hako 登录授权</title><link rel="stylesheet" href="/admin/style.css"><script src="/oidc/consent.js" defer></script><body><main class="card"><h1>使用 Hako 登录</h1><h2>{{.Name}}</h2><p>登记来源：{{.Origin}}</p><p>申请身份信息：{{.Scope}}（openid：稳定账号标识；profile：当前账号名称）</p><p>确认码：<strong>{{.Code}}</strong></p><p id="status">{{.Status}} · 请求有效期 90 秒。请只批准自己发起的登录。</p><img src="{{.QR}}" alt="使用 Hako 扫描授权二维码" width="260" height="260"><p><a href="{{.DeepLink}}">在本机 Hako 中确认</a></p><p>本机确认后返回此浏览器，点击继续。扫码或打开 Hako 都不会自动批准。</p><form method="post" action="{{.Complete}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><button name="action" value="continue">已在手机确认，继续</button><button name="action" value="cancel">取消登录</button></form></main></body></html>`))
+var oidcPageTemplate = template.Must(template.New("consent").Parse(`<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>使用 Hako 登录</title>
+<link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg">
+<link rel="stylesheet" href="/oidc/consent.css"><script src="/oidc/consent.js" defer></script></head>
+<body><main class="auth-shell">
+<div class="brand"><img src="/admin/hako-logo.svg" width="28" height="28" alt=""><span>hako<span class="brand-dot">.</span></span></div>
+<section class="auth-card" aria-labelledby="auth-title">
+<div class="auth-details">
+<p class="eyebrow">账号授权</p><h1 id="auth-title">使用 Hako 登录</h1>
+<p class="intro">即将登录到 <strong>{{.Name}}</strong></p>
+<div class="app-identity"><span class="app-icon" aria-hidden="true">↗</span><div><h2>{{.Name}}</h2><p class="origin-label">登记来源</p><p class="origin">{{.Origin}}</p></div></div>
+<section class="permissions" aria-labelledby="permissions-title"><h3 id="permissions-title">此应用将获取</h3>
+<ul><li><span class="permission-check" aria-hidden="true">✓</span><div>账号标识<small>用于识别你的 Hako 账号</small></div></li>
+{{if .Profile}}<li><span class="permission-check" aria-hidden="true">✓</span><div>账号名称<small>用于显示你的个人资料</small></div></li>{{end}}</ul><p class="scope-note">授权范围：{{.Scope}}</p></section>
+<p class="privacy-note">请只批准你本人发起的登录。扫码或打开 Hako 后，仍需在手机上明确确认。</p>
+</div>
+<div class="auth-approval">
+<h2>在手机上确认</h2><p class="scan-hint">打开 Hako，扫描下方二维码</p>
+<div class="qr-frame"><img src="{{.QR}}" alt="使用 Hako 扫描授权二维码" width="224" height="224"></div>
+<div class="confirmation"><span>核对确认码</span><strong>{{.Code}}</strong></div>
+<div class="status-row" role="status" aria-live="polite" aria-atomic="true"><span class="status-dot" aria-hidden="true"></span><span id="status">{{.Status}}</span></div>
+<p class="expiry" id="expiry" data-expires="{{.Expires}}">请求有效期 90 秒</p>
+<a class="open-app" href="{{.DeepLink}}">在本机 Hako 中确认 <span aria-hidden="true">↗</span></a>
+<p class="same-device-hint">正在用手机浏览？直接打开 Hako，无需扫码。</p>
+</div></section>
+<form method="post" action="{{.Complete}}" class="auth-actions"><input type="hidden" name="csrf" value="{{.CSRF}}">
+<button name="action" value="continue" class="continue">已在手机确认，继续 <span aria-hidden="true">→</span></button>
+<button name="action" value="cancel" class="cancel">取消登录</button></form>
+<p class="footer-note">手机确认后将自动返回应用。同机确认后，请回到此浏览器继续。</p>
+</main></body></html>`))
 
 func (s *Server) oidcPage(w http.ResponseWriter, r *http.Request) {
 	s.adminMu.Lock()
@@ -339,7 +379,8 @@ func (s *Server) oidcPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; form-action 'self' "+callback.Scheme+"://"+callback.Host+"; base-uri 'none'; frame-ancestors 'none'")
 	id := r.PathValue("id")
 	link := "hako://web-login?" + url.Values{"v": {"3"}, "server": {s.config.PublicURL}, "request": {id}}.Encode()
-	_ = oidcPageTemplate.Execute(w, map[string]any{"Name": req.ClientName, "Origin": req.ClientOrigin, "Scope": req.OIDC.Scope, "Code": req.Code, "Status": req.Status, "QR": "/oidc/requests/" + id + "/qr", "DeepLink": template.URL(link), "Complete": "/oidc/requests/" + id + "/complete", "CSRF": req.Nonce})
+	status := map[string]string{"pending": "等待手机确认", "scanned": "请在 Hako 中核对并确认", "approved": "已确认，正在返回应用", "denied": "已拒绝此请求"}[req.Status]
+	_ = oidcPageTemplate.Execute(w, map[string]any{"Name": req.ClientName, "Origin": req.ClientOrigin, "Scope": req.OIDC.Scope, "Profile": slices.Contains(strings.Fields(req.OIDC.Scope), "profile"), "Code": req.Code, "Status": status, "Expires": req.Expires.UnixMilli(), "QR": "/oidc/requests/" + id + "/qr", "DeepLink": template.URL(link), "Complete": "/oidc/requests/" + id + "/complete", "CSRF": req.Nonce})
 }
 func (s *Server) oidcStatus(w http.ResponseWriter, r *http.Request) {
 	s.adminMu.Lock()

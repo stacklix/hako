@@ -67,6 +67,19 @@ import Foundation
         let expired = ConsoleWebLoginRequest(id: id, origin: origin, confirmationCode: "123456", browser: "Safari", requestedAt: "", expiresAt: "2000-01-01T00:00:00Z", nonce: id)
         do { try expired.validate(origin: origin, requestId: id); fatalError("Expired approval accepted") }
         catch ConsoleWebLoginError.expired { }
-        print("PASS: Console QR parsing, origin binding, malformed requests, source IP decoding and expiration")
+        let prompt = ConsoleLoginPrompt(id: id, origin: origin, application: "Example", applicationOrigin: "https://client.example", scopes: "openid profile", browser: "Chrome", clientIP: "198.51.100.1", requestedAt: "", expiresAt: future, nonce: id)
+        try prompt.validate(origin: origin)
+        try ConsoleLoginPromptList(issuer: origin, requests: [prompt]).validate(origin: origin)
+        let entered = prompt.confirmationRequest(code: "123456")
+        precondition(entered.confirmationCode == "123456" && entered.purpose == "oidc")
+        for code in ["", "12345", "1234567", "１２３４５６", "12345\n", "abcdef"] { precondition(!ConsoleLoginPrompt.validCode(code)) }
+        precondition(ConsoleLoginPrompt.validCode("000000"))
+        do { try prompt.validate(origin: "https://other.example"); fatalError("Prompt server substitution accepted") }
+        catch ConsoleWebLoginError.serverMismatch { }
+        do { try ConsoleLoginPromptList(issuer: origin, requests: [prompt,prompt]).validate(origin: origin); fatalError("Duplicate prompt accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
+        do { try prompt.confirmationRequest(code: "12345").validate(origin: origin, requestId: id); fatalError("Malformed entered code accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
+        print("PASS: Console QR and foreground prompt parsing, server binding, entered codes, duplicate prompts, source IP and expiration")
     }
 }

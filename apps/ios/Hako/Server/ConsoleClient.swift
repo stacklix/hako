@@ -277,6 +277,26 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         _ = try await authorized("/api/v1/auth/web-login/requests/\(login.id)/\(approve ? "approve" : "deny")",
                                  method: "POST", body: ["confirmationCode": login.confirmationCode], nonce: login.nonce)
     }
+
+    func pendingLoginPrompts() async throws -> [ConsoleLoginPrompt] {
+        let context = requestContext, origin = serverURL
+        guard authenticated, !logoutPending else { throw CancellationError() }
+        let data = try await authorized("/api/v1/auth/oidc/requests")
+        guard context == requestContext else { throw CancellationError() }
+        let result = try JSONDecoder().decode(ConsoleLoginPromptList.self, from: data)
+        try result.validate(origin: origin)
+        return result.requests
+    }
+
+    func confirmLoginPrompt(_ prompt: ConsoleLoginPrompt, code: String, approve: Bool) async throws {
+        let context = requestContext
+        guard authenticated, !logoutPending else { throw CancellationError() }
+        try prompt.validate(origin: serverURL)
+        if approve && !ConsoleLoginPrompt.validCode(code) { throw HakoError(message: "请输入网页上的六位数字确认码。") }
+        _ = try await authorized("/api/v1/auth/oidc/requests/\(prompt.id)/\(approve ? "approve" : "deny")",
+            method: "POST", body: approve ? ["confirmationCode": code] : [:], nonce: prompt.nonce)
+        guard context == requestContext else { throw CancellationError() }
+    }
     func fetchSessions() async {
         await execute {
             struct List: Decodable { let sessions: [ConsoleRemoteSession] }

@@ -31,8 +31,8 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
       - name: Typecheck Console client without signing
         run: |
-          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
-          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/CloudServers/ECSAccessRecordsStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift Hako/CloudServers/ECSAccessClient.swift Hako/DeviceManagement/DeviceMonitorClient.swift
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/CloudServers/ECSAccessRecordsStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift Hako/CloudServers/ECSAccessClient.swift Hako/DeviceManagement/DeviceMonitorClient.swift
           swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Tests/ECSAccessTests.swift -o /tmp/hako-ecs-access-tests
           /tmp/hako-ecs-access-tests
           swiftc Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessRecordsStore.swift Tests/ECSAccessRecordsStoreTests.swift -o /tmp/hako-ecs-records-store-tests
@@ -43,9 +43,9 @@ jobs:
           /tmp/hako-agent-protocol-tests
           swiftc Hako/DeviceManagement/ConsoleAgentRegistration.swift Tests/ConsoleAgentRegistrationTests.swift -o /tmp/hako-agent-registration-tests
           /tmp/hako-agent-registration-tests
-          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
-          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleApplicationProtocol.swift Tests/ConsoleApplicationTests.swift -o /tmp/hako-application-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleApplicationProtocol.swift Tests/ConsoleApplicationTests.swift -o /tmp/hako-application-tests
           /tmp/hako-application-tests
           swiftc Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests

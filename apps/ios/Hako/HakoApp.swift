@@ -9,6 +9,7 @@ import SwiftUI
 }
 
 struct HomeView: View {
+    @ObservedObject private var console = ConsoleClient.shared
     @State private var loginLink: HakoLoginLink?
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
@@ -103,6 +104,10 @@ struct HomeView: View {
                 guard scenePhase == .active else { return }
                 HakoLog.record(.hako, "应用进入前台")
                 await ConsoleClient.shared.restore()
+            }
+            .task(id: "\(scenePhase)-\(console.requestContext)") {
+                guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }
+                await ConsoleLoginPromptCoordinator.shared.run()
             }
     }
 }

@@ -28,6 +28,7 @@ struct ServerHTTPError: Error, LocalizedError {
         case "login_request_expired": return "二维码已过期，请在网页刷新后重新扫码。"
         case "login_request_not_found", "login_request_finished": return "登录请求已失效或已处理，请刷新网页二维码。"
         case "login_confirmation_mismatch": return "登录确认码或签名挑战不匹配，请重新扫码。"
+        case "login_confirmation_locked": return "确认码输错次数过多，此请求已拒绝。请从原应用重新发起登录。"
         case "admin_approval_not_allowed", "approver_revoked": return "Console 会话无效，请检查服务端公钥配置后重新登录。"
         case "invalid_device_proof", "invalid_session_or_proof": return "设备身份验证失败，请检查手机与服务器时间。"
         default: return "服务器请求失败（\(status)：\(code)）。"

@@ -273,6 +273,8 @@ Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序
 
 ## 通用 OIDC 登录
 
+Hako iOS 前台可每 3 秒发现新的 OIDC 请求，弹框要求输入原浏览器的六位确认码后明确批准。提醒接口不返回确认码；五次输错拒绝请求，仍由原浏览器绑定 Cookie 领取结果。需同步更新 iOS 和服务端，不含后台推送，扫码及同机确认保留。接口与边界见 [OIDC 文档](../../docs/server-oidc.md#手机前台主动确认)。
+
 服务端提供 Discovery、Authorization Code Flow、PKCE S256、独立 RS256 ID Token/JWKS，以及隔离的 OIDC UserInfo 访问令牌。第三方应用必须显式开启 OIDC，登记精确 HTTPS 回调、允许 scope 和 Secret 认证方式；普通扫码应用不会自动变成 OIDC 客户端。单账号稳定 subject 不受用户名或 Console 换钥影响，无邮箱时不返回邮箱字段。
 
 应用管理页支持创建/配置 OIDC、复制通用接入信息、轮换 Secret 和停用。手机通过 v3 请求明确批准，支持桌面二维码和同机打开确认页；领取仍绑定原浏览器 Cookie。授权、Token 与第三方本地会话的撤销边界不同，无完整单点注销。

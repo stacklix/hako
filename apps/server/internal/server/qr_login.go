@@ -16,6 +16,8 @@ import (
 const adminLoginLifetime = 90 * time.Second
 
 type adminLoginRequest struct {
+	RequestID                                               string
+	FailedConfirmations                                     int
 	OIDC                                                    *oidcAuthorization
 	ClientID, ClientName, ClientOrigin, Purpose, RedeemHash string
 	ClientKeyHash                                           string
@@ -316,7 +318,12 @@ func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 410, "login_request_expired")
 		return
 	}
-	if req.Status != "scanned" {
+	foreground := strings.HasPrefix(r.URL.Path, "/api/v1/auth/oidc/requests/")
+	if foreground && req.OIDC == nil {
+		reject(w, 404, "login_request_not_found")
+		return
+	}
+	if req.Status != "scanned" && !(foreground && req.Status == "pending") {
 		reject(w, 409, "login_request_finished")
 		return
 	}
@@ -324,8 +331,19 @@ func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 410, "login_request_expired")
 		return
 	}
-	if err != nil || !equal(p.Nonce, req.Nonce) || !equal(body.ConfirmationCode, req.Code) {
+	if err != nil || !equal(p.Nonce, req.Nonce) {
 		reject(w, 400, "login_confirmation_mismatch")
+		return
+	}
+	denying := strings.HasSuffix(r.URL.Path, "/deny")
+	if !(foreground && denying) && !equal(body.ConfirmationCode, req.Code) {
+		req.FailedConfirmations++
+		if req.FailedConfirmations >= 5 {
+			req.Status = "denied"
+			reject(w, 429, "login_confirmation_locked")
+		} else {
+			reject(w, 400, "login_confirmation_mismatch")
+		}
 		return
 	}
 	if !s.validAdminApprover(sessionID, thumb) {
