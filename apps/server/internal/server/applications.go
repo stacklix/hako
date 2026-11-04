@@ -116,7 +116,7 @@ func (s *Server) createApplication(w http.ResponseWriter, r *http.Request) {
 // Invalidate both pending and completed grants; re-enabling never restores old grants.
 func (s *Server) invalidateApplication(id string) {
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	if s.oidc != nil {
 		s.invalidateOIDCLocked(id)
 	}

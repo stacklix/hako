@@ -11,9 +11,11 @@ import Combine
     var busy: Bool { get }
     var message: String? { get }
     var requestContext: String { get }
+    func watchLoginPrompts(_ receive: @escaping @MainActor (Data) throws -> Void) async throws
     func restore() async
     func send(_ path: String, method: String, body: [String: Any]?, logSource: HakoLogSource) async throws -> Data
 }
+
 
 struct ServerHTTPError: Error, LocalizedError {
     let status: Int

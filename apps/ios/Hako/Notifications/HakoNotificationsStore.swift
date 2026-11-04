@@ -8,7 +8,6 @@ import Combine
     @Published private var now = Date.now
     @Published private var dismissals: NotificationDismissals
     @Published private(set) var message: String?
-    private var refreshing = false
     private let authentication: any AuthenticatedServerAccess
     private let defaults: UserDefaults
     private var subscription: AnyCancellable?
@@ -56,38 +55,42 @@ import Combine
     func run() async {
         let expected = context
         if snapshot.context != expected { snapshot = Snapshot(context: expected); message = nil }
+        let clock = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.now = .now
+            }
+        }
+        defer { clock.cancel() }
+        var retrySeconds = 3
         while !Task.isCancelled, context == expected, authenticated {
-            await refresh()
-            do { try await Task.sleep(for: .seconds(message == nil ? 3 : 15)) } catch { return }
+            do {
+                try await authentication.watchLoginPrompts { [weak self] data in
+                    guard let self, self.context == expected else { throw CancellationError() }
+                    try self.apply(data, context: expected, issuer: self.authentication.serverURL)
+                    retrySeconds = 3
+                }
+                try Task.checkCancellation()
+            } catch {
+                guard !Task.isCancelled, context == expected, authenticated else { return }
+                now = .now
+                message = "通知连接已断开，正在重连，已保留尚未到期的内容。\n" + error.localizedDescription
+            }
+            do { try await Task.sleep(for: .seconds(retrySeconds)) } catch { return }
+            retrySeconds = min(retrySeconds * 2, 60)
         }
     }
 
-    func refresh() async {
-        guard !refreshing, authenticated else { return }
-        let expected = context, issuer = authentication.serverURL
-        refreshing = true
-        defer { refreshing = false }
-        do {
-            let data = try await authentication.send("/api/v1/auth/login-prompts", method: "GET", body: nil, logSource: .hako)
-            try Task.checkCancellation()
-            guard expected == context else { return }
-            let list = try JSONDecoder().decode(ConsoleLoginPromptList.self, from: data)
-            try list.validate(origin: issuer)
-            let items = list.requests.map { HakoNotification(loginRequest: $0) }.sorted {
-                if $0.createdAt != $1.createdAt { return ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
-                return $0.id < $1.id
-            }
-            if snapshot.context != expected || snapshot.items != items { snapshot = Snapshot(context: expected, items: items) }
-            now = .now
-            if dismissals.prune(now: now) { saveDismissals() }
-            message = nil
-        } catch {
-            guard !Task.isCancelled, expected == context else { return }
-            now = .now
-            // Keep the last successful snapshot on a transient failure. It is
-            // still bounded by expiry and every action is checked by the server.
-            if snapshot.context != expected { snapshot = Snapshot(context: expected) }
-            message = (error as? ServerHTTPError)?.status == 404 ? "服务端尚不支持通知列表，请先更新服务端；扫码登录仍可使用。" : "暂时无法更新通知，已保留上次获取的内容。\n" + error.localizedDescription
+    private func apply(_ data: Data, context expected: String, issuer: String) throws {
+        let list = try JSONDecoder().decode(ConsoleLoginPromptList.self, from: data)
+        try list.validate(origin: issuer)
+        let items = list.requests.map { HakoNotification(loginRequest: $0) }.sorted {
+            if $0.createdAt != $1.createdAt { return ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+            return $0.id < $1.id
         }
+        if snapshot.context != expected || snapshot.items != items { snapshot = Snapshot(context: expected, items: items) }
+        now = .now
+        if dismissals.prune(now: now) { saveDismissals() }
+        message = nil
     }
 }

@@ -141,18 +141,18 @@ func (s *Server) createAppLogin(w http.ResponseWriter, r *http.Request) {
 	req.RequestID = id
 	s.adminMu.Lock()
 	if !s.validApplicationRequest(req) {
-		s.adminMu.Unlock()
+		s.unlockAdminAndNotifyLoginPrompts()
 		reject(w, 401, "invalid_application")
 		return
 	}
 	s.cleanupAdminLogins(now)
 	if len(s.adminLogins) >= 256 {
-		s.adminMu.Unlock()
+		s.unlockAdminAndNotifyLoginPrompts()
 		reject(w, 429, "too_many_login_requests")
 		return
 	}
 	s.adminLogins[digest(id)] = req
-	s.adminMu.Unlock()
+	s.unlockAdminAndNotifyLoginPrompts()
 	// v2 prevents old mobile clients from approving without showing the target application.
 	payload := "hako://web-login?" + url.Values{"v": {"2"}, "server": {s.config.PublicURL}, "request": {id}}.Encode()
 	respond(w, 201, map[string]any{"id": id, "redeemToken": redeem, "confirmationCode": req.Code, "qrPayload": payload, "expiresAt": expires.UTC().Format(time.RFC3339), "pollIntervalMs": 2000})
@@ -184,7 +184,7 @@ func (s *Server) pollAppLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.applicationLogin(w, r, c)
 	if req == nil {
 		return
@@ -198,7 +198,7 @@ func (s *Server) cancelAppLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	if s.applicationLogin(w, r, c) == nil {
 		return
 	}
@@ -216,7 +216,7 @@ func (s *Server) completeAppLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.applicationLogin(w, r, c)
 	if req == nil {
 		return
@@ -251,7 +251,7 @@ func (s *Server) appSession(w http.ResponseWriter, r *http.Request) {
 	}
 	token := r.Header.Get("X-Hako-Session")
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	key := digest(token)
 	ss, ok := s.adminSessions[key]
 	current, enabled := s.authClient(c.ID)

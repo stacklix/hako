@@ -63,6 +63,41 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         }
     }
 
+    func watchLoginPrompts(_ receive: @escaping @MainActor (Data) throws -> Void) async throws {
+        let context = requestContext
+        // Reuse the normal refresh path before each connection. A stream never
+        // carries tokens in its URL and signs the HTTPS upgrade request with DPoP.
+        _ = try await authorized("/api/v1/auth/session")
+        guard context == requestContext, authenticated, !logoutPending, !resettingKey,
+              let token = saved?.tokens.accessToken,
+              let url = URL(string: serverURL + "/api/v1/auth/login-prompts/stream"), url.scheme == "https",
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw CancellationError() }
+        components.scheme = "wss"
+        guard let socketURL = components.url else { throw HakoError(message: "通知连接地址无效。") }
+        let device = try identity()
+        var request = URLRequest(url: socketURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization")
+        request.setValue(try device.proof(method: "GET", url: url, accessToken: token), forHTTPHeaderField: "DPoP")
+        request.setValue(device.deviceId, forHTTPHeaderField: "X-Hako-Device")
+        let socket = transport.webSocketTask(with: request)
+        socket.maximumMessageSize = 2_097_152
+        socket.resume()
+        defer { socket.cancel(with: .goingAway, reason: nil) }
+        try await withTaskCancellationHandler {
+            while !Task.isCancelled {
+                let data: Data
+                switch try await socket.receive() {
+                case .data(let value): data = value
+                case .string(let value): data = Data(value.utf8)
+                @unknown default: throw HakoError(message: "通知推送格式无效。")
+                }
+                try Task.checkCancellation()
+                guard context == requestContext else { throw CancellationError() }
+                try receive(data)
+            }
+        } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
+    }
+
     var requestContext: String { serverURL + "\n" + username + "\n" + (saved?.tokens.sessionId ?? "") + "|\(authenticated)|\(logoutPending)" }
 
     private var sessionAccount: String { "session." + (serverURL + "\n" + username).consoleDigest }

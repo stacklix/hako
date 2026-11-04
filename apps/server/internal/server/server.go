@@ -45,22 +45,23 @@ type bucket struct {
 }
 
 type Server struct {
-	oidc           *oidcProvider
-	config         Config
-	trustedProxies proxyTrust
-	store          *store
-	mux            *http.ServeMux
-	mu             sync.Mutex
-	online         map[string]*agentConnection
-	lastSeen       map[string]string
-	limits         map[string]bucket
-	requests       chan struct{}
-	registry       atomic.Pointer[Registry]
-	registryMu     sync.Mutex
-	adminMu        sync.Mutex
-	adminSessions  map[string]adminSession
-	adminLogins    map[string]*adminLoginRequest
-	accessLogs     *accessLogService
+	oidc               *oidcProvider
+	config             Config
+	trustedProxies     proxyTrust
+	store              *store
+	mux                *http.ServeMux
+	mu                 sync.Mutex
+	online             map[string]*agentConnection
+	lastSeen           map[string]string
+	limits             map[string]bucket
+	requests           chan struct{}
+	registry           atomic.Pointer[Registry]
+	registryMu         sync.Mutex
+	loginPromptStreams map[string]chan struct{}
+	adminMu            sync.Mutex
+	adminSessions      map[string]adminSession
+	adminLogins        map[string]*adminLoginRequest
+	accessLogs         *accessLogService
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -174,6 +175,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Close() error {
+	s.adminMu.Lock()
+	for id, stream := range s.loginPromptStreams {
+		close(stream)
+		delete(s.loginPromptStreams, id)
+	}
+	s.adminMu.Unlock()
 	if s.accessLogs != nil {
 		s.accessLogs.close()
 	}

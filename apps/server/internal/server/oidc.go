@@ -290,7 +290,7 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	s.cleanupAdminLogins(now)
 	s.cleanupOIDCLocked(now)
 	if len(s.adminLogins) >= 256 {
@@ -366,7 +366,7 @@ var oidcPageTemplate = template.Must(template.New("consent").Parse(`<!doctype ht
 
 func (s *Server) oidcPage(w http.ResponseWriter, r *http.Request) {
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.oidcBrowser(w, r)
 	if req == nil {
 		return
@@ -384,7 +384,7 @@ func (s *Server) oidcPage(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) oidcStatus(w http.ResponseWriter, r *http.Request) {
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.oidcBrowser(w, r)
 	if req == nil {
 		return
@@ -404,7 +404,7 @@ func (s *Server) oidcStatus(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) oidcQR(w http.ResponseWriter, r *http.Request) {
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.oidcBrowser(w, r)
 	if req == nil {
 		return
@@ -429,7 +429,7 @@ func (s *Server) oidcComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.oidcBrowser(w, r)
 	if req == nil {
 		return
@@ -558,7 +558,7 @@ func (s *Server) oidcToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	s.cleanupOIDCLocked(time.Now())
 	g, ok := s.oidc.codes[digest(v.Get("code"))]
 	if !ok || !validLoginID(v.Get("code")) || g.Auth.ClientID != c.ID || g.Auth.Redirect != v.Get("redirect_uri") || !s.validOIDCGrant(g) {
@@ -633,7 +633,7 @@ func (s *Server) oidcUserInfo(w http.ResponseWriter, r *http.Request) {
 	h := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(h, "Bearer ")
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	g, ok := s.oidc.access[digest(token)]
 	if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(h, "Bearer ") || !validLoginID(token) || !ok || !s.validOIDCGrant(g) {
 		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)

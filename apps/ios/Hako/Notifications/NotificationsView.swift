@@ -2,7 +2,6 @@ import SwiftUI
 
 struct NotificationsView: View {
     @ObservedObject var store: HakoNotificationsStore
-    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: NotificationSelection?
     @State private var showingServer = false
     @State private var confirmingClearAll = false
@@ -79,8 +78,7 @@ struct NotificationsView: View {
                     .padding(.horizontal, 20).padding(.bottom, 8).allowsHitTesting(false)
             }
         }
-        .task { await store.refresh() }
-        .sheet(item: $selection, onDismiss: { Task { await store.refresh() } }) { selected in
+        .sheet(item: $selection) { selected in
             ConsoleLoginPromptSheet(session: selected.session) {
                 // Only after a confirmed server response; local removal also
                 // prevents an older in-flight list response restoring this row.
@@ -96,7 +94,6 @@ struct NotificationsView: View {
                   store.message == nil, !ids.contains(selected.id) else { return }
             selected.session.invalidate()
         }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.refresh() } } }
         .onDisappear { noticeTask?.cancel(); notice = nil }
     }
 

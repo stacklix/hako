@@ -34,6 +34,7 @@ func (s *Server) qrLoginRoutes() {
 	s.mux.HandleFunc("POST /admin/api/login/requests/{id}/complete", s.completeAdminLogin)
 	s.mux.HandleFunc("GET /api/v1/auth/web-login/requests/{id}", s.inspectAdminLogin)
 	s.mux.HandleFunc("GET /api/v1/auth/login-prompts", s.pendingLoginPrompts)
+	s.mux.HandleFunc("GET /api/v1/auth/login-prompts/stream", s.loginPromptStream)
 	s.mux.HandleFunc("POST /api/v1/auth/login-prompts/{id}/approve", s.approveAdminLogin)
 	s.mux.HandleFunc("POST /api/v1/auth/login-prompts/{id}/deny", s.approveAdminLogin)
 	s.mux.HandleFunc("POST /api/v1/auth/web-login/requests/{id}/approve", s.approveAdminLogin)
@@ -132,12 +133,12 @@ func (s *Server) createAdminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(s.adminLogins) >= 256 {
-		s.adminMu.Unlock()
+		s.unlockAdminAndNotifyLoginPrompts()
 		reject(w, 429, "too_many_login_requests")
 		return
 	}
 	s.adminLogins[digest(id)] = &adminLoginRequest{RequestID: id, BrowserHash: digest(browser), Code: code, Nonce: nonce, Browser: browserLabel(r.UserAgent()), ClientIP: s.loginClientIP(r), Status: "pending", Created: now, Expires: expires, QR: png}
-	s.adminMu.Unlock()
+	s.unlockAdminAndNotifyLoginPrompts()
 	s.pendingCookie(w, browser, int(adminLoginLifetime.Seconds()))
 	respond(w, 201, map[string]any{"id": id, "confirmationCode": code, "qrPayload": payload, "expiresAt": expires.UTC().Format(time.RFC3339), "pollIntervalMs": 2000})
 }
@@ -168,7 +169,7 @@ func (s *Server) pollAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.browserLogin(w, r)
 	if req == nil {
 		return
@@ -189,7 +190,7 @@ func (s *Server) adminLoginQR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.browserLogin(w, r)
 	if req == nil {
 		return
@@ -207,7 +208,7 @@ func (s *Server) completeAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.browserLogin(w, r)
 	if req == nil {
 		return
@@ -276,7 +277,7 @@ func (s *Server) inspectAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.adminLogins[digest(r.PathValue("id"))]
 	if req == nil || !validLoginID(r.PathValue("id")) {
 		reject(w, 404, "login_request_not_found")
@@ -311,7 +312,7 @@ func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := verifyProof(r, s.config.PublicURL, strings.TrimPrefix(r.Header.Get("Authorization"), "DPoP "), time.Now())
 	s.adminMu.Lock()
-	defer s.adminMu.Unlock()
+	defer s.unlockAdminAndNotifyLoginPrompts()
 	req := s.adminLogins[digest(r.PathValue("id"))]
 	if req == nil || !validLoginID(r.PathValue("id")) {
 		reject(w, 404, "login_request_not_found")
