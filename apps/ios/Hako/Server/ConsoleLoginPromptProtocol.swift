@@ -1,6 +1,6 @@
 import Foundation
 
-struct ConsoleLoginPrompt: Decodable, Identifiable {
+struct ConsoleLoginPrompt: Decodable, Identifiable, Equatable {
     let id: String
     let origin: String
     let application: String

@@ -10,7 +10,7 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject private var console = ConsoleClient.shared
-    @StateObject private var loginRequests = ConsoleLoginRequestsStore()
+    @StateObject private var notifications = HakoNotificationsStore()
     @State private var loginLink: HakoLoginLink?
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
@@ -94,9 +94,9 @@ struct HomeView: View {
             .navigationTitle("Hako")
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    NavigationLink { ConsoleLoginRequestsView(store: loginRequests) } label: {
-                        Image(systemName: loginRequests.requests.isEmpty ? "bell" : "bell.badge")
-                    }.accessibilityLabel("登录通知，\(loginRequests.requests.count) 条待处理")
+                    NavigationLink { NotificationsView(store: notifications) } label: {
+                        Image(systemName: notifications.notifications.isEmpty ? "bell" : "bell.badge")
+                    }.accessibilityLabel("通知，\(notifications.notifications.count) 条待处理")
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }
             }
@@ -115,7 +115,7 @@ struct HomeView: View {
             }
             .task(id: "\(scenePhase)-\(console.requestContext)") {
                 guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }
-                await loginRequests.run()
+                await notifications.run()
             }
     }
 }

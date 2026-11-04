@@ -45,6 +45,8 @@ jobs:
           /tmp/hako-agent-registration-tests
           swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Notifications/HakoNotification.swift Tests/NotificationTests.swift -o /tmp/hako-notification-tests
+          /tmp/hako-notification-tests
           swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleApplicationProtocol.swift Tests/ConsoleApplicationTests.swift -o /tmp/hako-application-tests
           /tmp/hako-application-tests
           swiftc Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests

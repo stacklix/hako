@@ -38,6 +38,7 @@ import Combine
 
 struct ConsoleLoginPromptSheet: View {
     @ObservedObject var session: ConsoleLoginPromptSession
+    var onProcessed: () -> Void = { }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var code = ""
@@ -92,7 +93,7 @@ struct ConsoleLoginPromptSheet: View {
                             Button("拒绝此次请求", role: .destructive) { Task { await submit(approve: false) } }
                                 .disabled(session.busy || session.blocked || expired)
                         }
-                        if session.busy { Section { ProgressView("正在处理…") } }
+                        if session.busy { Section { Text("正在处理，请稍候…").font(.footnote).foregroundStyle(.secondary) } }
                         if let message = session.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
                     }
                 }
@@ -110,5 +111,6 @@ struct ConsoleLoginPromptSheet: View {
         let entered = code
         code = ""
         await session.submit(code: entered, approve: approve)
+        if session.outcome != nil { onProcessed() }
     }
 }
