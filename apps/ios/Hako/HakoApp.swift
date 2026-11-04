@@ -95,7 +95,13 @@ struct HomeView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink { NotificationsView(store: notifications) } label: {
-                        Image(systemName: notifications.notifications.isEmpty ? "bell" : "bell.badge")
+                        if notifications.notifications.isEmpty {
+                            Image(systemName: "bell")
+                        } else {
+                            Image(systemName: "bell.badge")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.red, .primary)
+                        }
                     }.accessibilityLabel("通知，\(notifications.notifications.count) 条待处理")
                     NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }

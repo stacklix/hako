@@ -1,6 +1,5 @@
 import SwiftUI
 import Combine
-import UIKit
 
 @MainActor final class ConsoleLoginPromptSession: ObservableObject {
     let prompt: ConsoleLoginPrompt
@@ -43,7 +42,6 @@ struct ConsoleLoginPromptSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var code = ""
-    @FocusState private var codeFocused: Bool
     @State private var now = Date.now
     private var prompt: ConsoleLoginPrompt { session.prompt }
     private var expired: Bool { (prompt.expiry ?? .distantPast) <= now }
@@ -57,63 +55,57 @@ struct ConsoleLoginPromptSheet: View {
                     } description: {
                         Text(approved ? "请返回原浏览器，继续完成操作。" : "此次请求已拒绝。")
                     } actions: {
-                        Button { dismiss() } label: {
-                            Text("完成").font(.headline).frame(minWidth: 160, minHeight: 44)
-                        }.buttonStyle(.borderedProminent).controlSize(.large)
+                        Button("完成") { dismiss() }
+                            .buttonStyle(HakoActionButtonStyle())
+                            .padding(.horizontal, 24)
                     }
                 } else {
-                    ScrollViewReader { scroll in
-                        Form {
-                            Section("登录请求") {
-                                LabeledContent("应用", value: prompt.title)
-                                LabeledContent("登记来源", value: prompt.isApplication ? prompt.applicationOrigin : prompt.origin).textSelection(.enabled)
-                                LabeledContent("操作", value: prompt.actionDescription)
-                                if prompt.effectivePurpose == "oidc" {
-                                    LabeledContent("申请身份信息", value: prompt.scopes)
-                                    Text(prompt.scopes.split(separator: " ").contains("profile") ? "提供稳定账号标识和账号名称，不授予 Hako 管理权限。" : "仅提供稳定账号标识，不授予 Hako 管理权限。")
-                                        .font(.footnote).foregroundStyle(.secondary)
-                                } else if !prompt.isApplication {
-                                    Text("确认后，此浏览器将获得 Hako 管理控制台访问权限。")
-                                        .font(.footnote).foregroundStyle(.secondary)
-                                }
-                                LabeledContent("Hako 服务器", value: prompt.origin).textSelection(.enabled)
-                                LabeledContent("浏览器", value: prompt.browser)
-                                LabeledContent(prompt.isApplication && prompt.effectivePurpose != "oidc" ? "来源 IP（应用报告）" : "来源 IP", value: prompt.clientIP.isEmpty ? "未知" : prompt.clientIP).textSelection(.enabled)
+                    Form {
+                        Section("登录请求") {
+                            LabeledContent("应用", value: prompt.title)
+                            LabeledContent("登记来源", value: prompt.isApplication ? prompt.applicationOrigin : prompt.origin).textSelection(.enabled)
+                            LabeledContent("操作", value: prompt.actionDescription)
+                            if prompt.effectivePurpose == "oidc" {
+                                LabeledContent("申请身份信息", value: prompt.scopes)
+                                Text(prompt.scopes.split(separator: " ").contains("profile") ? "提供稳定账号标识和账号名称，不授予 Hako 管理权限。" : "仅提供稳定账号标识，不授予 Hako 管理权限。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            } else if !prompt.isApplication {
+                                Text("确认后，此浏览器将获得 Hako 管理控制台访问权限。")
+                                    .font(.footnote).foregroundStyle(.secondary)
                             }
-                            Section {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("六位确认码").font(.subheadline).foregroundStyle(.secondary)
-                                    TextField("输入原浏览器上的六位数字", text: $code)
-                                        .focused($codeFocused)
-                                        .font(.title2.monospaced()).keyboardType(.numberPad)
-                                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                                        .accessibilityLabel("原浏览器上的六位确认码").privacySensitive()
-                                        .onChange(of: code) { _, value in code = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6)) }
-                                    HStack(spacing: 12) {
-                                        Button(prompt.effectivePurpose == "bind" ? "取消绑定" : "取消登录", role: .destructive) { Task { await submit(approve: false) } }
-                                            .buttonStyle(.bordered)
-                                            .frame(maxWidth: .infinity)
-                                        Button(prompt.effectivePurpose == "bind" ? "确认绑定" : "确认登录") { Task { await submit(approve: true) } }
-                                            .buttonStyle(.borderedProminent)
-                                            .frame(maxWidth: .infinity)
-                                            .disabled(!ConsoleLoginPrompt.validCode(code))
-                                    }
-                                    .controlSize(.large)
-                                    .padding(.top, 8)
-                                }
-                                .id("confirmationInput")
-                                Text("只批准你本人发起的请求。请从原浏览器读取确认码，不接受他人提供的数字。")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                                Text(expired ? "请求已过期，请重新发起。" : "\(max(0, Int(ceil((prompt.expiry ?? now).timeIntervalSince(now))))) 秒后过期")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }.disabled(session.busy || session.blocked || expired)
-                            if session.busy { Section { Text("正在处理，请稍候…").font(.footnote).foregroundStyle(.secondary) } }
-                            if let message = session.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
+                            LabeledContent("Hako 服务器", value: prompt.origin).textSelection(.enabled)
+                            LabeledContent("浏览器", value: prompt.browser)
+                            LabeledContent(prompt.isApplication && prompt.effectivePurpose != "oidc" ? "来源 IP（应用报告）" : "来源 IP", value: prompt.clientIP.isEmpty ? "未知" : prompt.clientIP).textSelection(.enabled)
                         }
-                        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-                            guard codeFocused else { return }
-                            withAnimation { scroll.scrollTo("confirmationInput", anchor: .bottom) }
+                        Section {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("六位确认码").font(.subheadline).foregroundStyle(.secondary)
+                                TextField("输入原浏览器上的六位数字", text: $code)
+                                    .font(.title2.monospaced()).keyboardType(.numberPad)
+                                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                    .accessibilityLabel("原浏览器上的六位确认码").privacySensitive()
+                                    .onChange(of: code) { _, value in code = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6)) }
+                            }
+                            Text("只批准你本人发起的请求。请从原浏览器读取确认码，不接受他人提供的数字。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Text(expired ? "请求已过期，请重新发起。" : "\(max(0, Int(ceil((prompt.expiry ?? now).timeIntervalSince(now))))) 秒后过期")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }.disabled(session.busy || session.blocked || expired)
+                        Section {
+                            HStack(spacing: 12) {
+                                Button(prompt.effectivePurpose == "bind" ? "取消绑定" : "取消登录", role: .destructive) { Task { await submit(approve: false) } }
+                                    .buttonStyle(HakoActionButtonStyle(primary: false))
+                                    .accessibilityHint("拒绝此次请求")
+                                Button(prompt.effectivePurpose == "bind" ? "确认绑定" : "确认登录") { Task { await submit(approve: true) } }
+                                    .buttonStyle(HakoActionButtonStyle())
+                                    .disabled(!ConsoleLoginPrompt.validCode(code))
+                            }
+                            .disabled(session.busy || session.blocked || expired)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
                         }
+                        if session.busy { Section { Text("正在处理，请稍候…").font(.footnote).foregroundStyle(.secondary) } }
+                        if let message = session.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
                     }
                 }
             }
@@ -128,7 +120,6 @@ struct ConsoleLoginPromptSheet: View {
 
     @MainActor private func submit(approve: Bool) async {
         let entered = code
-        codeFocused = false
         code = ""
         await session.submit(code: entered, approve: approve)
         if session.outcome != nil { onProcessed() }

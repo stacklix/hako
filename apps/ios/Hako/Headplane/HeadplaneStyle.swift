@@ -28,13 +28,8 @@ extension View {
 struct HeadplaneButtonStyle: ButtonStyle {
     var primary = false
     var destructive = false
-    @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.subheadline.weight(.medium)).padding(.horizontal, 15).frame(minHeight: 44)
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(destructive ? HeadplaneStyle.red : primary ? HeadplaneStyle.background : HeadplaneStyle.text)
-            .background(primary ? HeadplaneStyle.text : HeadplaneStyle.fill, in: RoundedRectangle(cornerRadius: 10))
-            .opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.35)
+        HakoActionButtonStyle(primary: primary, destructive: destructive).makeBody(configuration: configuration)
     }
 }
 
