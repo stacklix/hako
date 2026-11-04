@@ -102,7 +102,7 @@ struct CryptoView: View {
         HStack(alignment:.center,spacing:12) {
             VStack(alignment:.leading,spacing:7) {
                 Text("加密资产").font(.system(size:28,weight:.semibold))
-                Text("私有库 · \(store.pendingCount) 条待同步")
+                Text("\(store.pendingCount) 条待同步")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength:0)
