@@ -197,8 +197,10 @@ struct HeadplaneCreateKeyView: View {
     @ObservedObject var store: HeadplaneStore
     let revision: UUID
     @State private var userID = ""
+    @State private var tagOnly = false
     @State private var tags = ""
     @State private var days = 1
+    @State private var customDays = ""
     @State private var reusable = false
     @State private var ephemeral = false
     @State private var result: String?
@@ -223,19 +225,39 @@ struct HeadplaneCreateKeyView: View {
                 } else if store.values[.keys]?["access"].flag == false {
                     Text("当前账号没有创建接入密钥的权限。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
                 }
-                HeadplaneField(title: "所属用户") {
+                HeadplaneField(title: "密钥归属") {
+                    Picker("密钥归属", selection: $tagOnly) {
+                        Text("用户").tag(false)
+                        Text("纯标签").tag(true)
+                    }.pickerStyle(.segmented).accessibilityLabel("密钥归属")
+                }
+                if !tagOnly {
+                  HeadplaneField(title: "所属用户") {
                     Picker("所属用户", selection: $userID) {
                         Text("选择用户").tag("")
                         ForEach(users) { Text($0.name).tag($0.id) }
                     }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("所属用户")
+                  }
+                } else {
+                    Text("纯标签密钥不归属用户，至少需要一个 ACL 标签，并要求 Headscale 版本支持无用户归属的密钥。")
+                        .font(.footnote).foregroundStyle(HeadplaneStyle.muted)
                 }
                 HeadplaneField(title: "有效期") {
-                    Picker("有效期", selection: $days) { Text("24 小时").tag(1); Text("7 天").tag(7); Text("30 天").tag(30); Text("90 天").tag(90) }
+                    Picker("有效期", selection: $days) { Text("24 小时").tag(1); Text("7 天").tag(7); Text("30 天").tag(30); Text("90 天").tag(90); Text("自定义").tag(0) }
                         .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("有效期")
                 }
-                HeadplaneField(title: "ACL 标签（可选）") {
+                if days == 0 {
+                    HeadplaneField(title: "有效天数") {
+                        TextField("输入整数天数", text: $customDays).keyboardType(.numberPad)
+                            .accessibilityLabel("有效天数")
+                    }
+                }
+                HeadplaneField(title: tagOnly ? "ACL 标签（必填）" : "ACL 标签（可选）") {
                     TextField("例如：server, home", text: $tags, axis: .vertical)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityLabel("ACL 标签")
                 }
                 Text("多个标签用逗号分隔，无需填写 tag: 前缀，也支持 tag:server 这样的完整标签。使用此密钥加入的设备将携带这些标签，访问权限由 ACL 策略决定。")
                     .font(.footnote).foregroundStyle(HeadplaneStyle.muted)
@@ -246,13 +268,15 @@ struct HeadplaneCreateKeyView: View {
                 Button(store.busy ? "正在生成…" : "生成密钥") {
                     Task {
                         do {
-                            let fields = try HeadplaneKeyCreation.fields(userID: userID, tags: tags, days: days, reusable: reusable, ephemeral: ephemeral)
+                            if !tagOnly && userID.isEmpty { throw HeadplaneFailure(message: "请选择所属用户。") }
+                            let duration = days == 0 ? try HeadplaneKeyCreation.duration(customDays) : days
+                            let fields = try HeadplaneKeyCreation.fields(userID: tagOnly ? "" : userID, tags: tags, days: duration, reusable: reusable, ephemeral: ephemeral)
                             let value = try await store.mutate(.keys, revision: revision, fields: fields)
                             guard !value["key"].text.isEmpty else { error = "密钥可能已创建，但响应未包含完整密钥。请关闭后核对列表。"; return }
                             result = value["key"].text
                         } catch { self.error = error.localizedDescription }
                     }
-                }.buttonStyle(HeadplaneButtonStyle(primary: true)).disabled(userID.isEmpty || store.loading.contains(.keys) || store.errors[.keys] != nil || store.values[.keys]?["access"].flag != true || store.busy || store.pending != nil || revision != store.revision)
+                }.buttonStyle(HeadplaneButtonStyle(primary: true)).disabled((!tagOnly && userID.isEmpty) || store.loading.contains(.keys) || store.errors[.keys] != nil || store.values[.keys]?["access"].flag != true || store.busy || store.pending != nil || revision != store.revision)
             }
         }.task { await loadUsers() }
     }

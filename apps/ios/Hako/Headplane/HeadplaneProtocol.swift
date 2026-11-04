@@ -360,9 +360,19 @@ struct HeadplaneKey: Identifiable, Sendable {
 }
 
 enum HeadplaneKeyCreation {
+    static func duration(_ text: String) throws -> Int {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let days = Int(value), (1...maxDays).contains(days) else {
+            throw HeadplaneFailure(message: "有效期请输入 1 至 \(maxDays) 的整数天数。")
+        }
+        return days
+    }
+    // Keep expiration within the interoperable four-digit calendar range.
+    static let maxDays = 365_000
+
     static func fields(userID: String, tags: String, days: Int, reusable: Bool, ephemeral: Bool) throws -> [String: String] {
-        guard !userID.isEmpty else { throw HeadplaneFailure(message: "请选择所属用户。") }
-        guard days >= 1 else { throw HeadplaneFailure(message: "有效期至少为 1 天。") }
+        guard (1...maxDays).contains(days) else { throw HeadplaneFailure(message: "有效期请输入 1 至 \(maxDays) 的整数天数。") }
         var parsed: [String] = []
         for part in tags.components(separatedBy: CharacterSet(charactersIn: ",，\n")) {
             let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -373,9 +383,46 @@ enum HeadplaneKeyCreation {
             }
             if !parsed.contains(tag) { parsed.append(tag) }
         }
-        return ["action_id": "add_preauthkey", "user_id": userID, "expiry": String(days),
+        guard !userID.isEmpty || !parsed.isEmpty else { throw HeadplaneFailure(message: "请选择所属用户，或为纯标签密钥填写至少一个 ACL 标签。") }
+        var fields = ["action_id": "add_preauthkey", "expiry": String(days),
                 "reusable": reusable ? "on" : "off", "ephemeral": ephemeral ? "on" : "off",
                 "acl_tags": parsed.joined(separator: ",")]
+        if !userID.isEmpty { fields["user_id"] = userID }
+        return fields
+    }
+}
+
+enum HeadplaneSSH {
+    static func terminalURL(connection: HeadplaneConnection, hostname: String, username: String = "") throws -> URL {
+        let connection = try connection.normalized()
+        guard hostname.range(of: "^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$", options: .regularExpression) != nil else {
+            throw HeadplaneFailure(message: "设备名称不适用于 SSH，请先将设备重命名为有效的 DNS 名称。")
+        }
+        var url = URL(string: connection.address)!
+        url.appendPathComponent("ssh"); url.appendPathComponent(hostname)
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard user.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 }) else {
+            throw HeadplaneFailure(message: "SSH 用户名不能包含换行或控制字符。")
+        }
+        if !user.isEmpty { parts.queryItems = [URLQueryItem(name: "user", value: user)] }
+        guard let result = parts.url else { throw HeadplaneFailure.incompatible }
+        return result
+    }
+
+    static func allowsNavigation(_ url: URL, allowHTTP: Bool) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.user == nil, parts.password == nil, parts.host?.isEmpty == false else { return false }
+        return parts.scheme?.lowercased() == "https" || (allowHTTP && parts.scheme?.lowercased() == "http")
+    }
+
+    static func isLoginReturn(_ url: URL, connection: HeadplaneConnection) -> Bool {
+        guard let base = URL(string: connection.address),
+              url.scheme?.lowercased() == base.scheme?.lowercased(), url.host?.lowercased() == base.host?.lowercased(),
+              (url.port ?? (url.scheme == "https" ? 443 : 80)) == (base.port ?? (base.scheme == "https" ? 443 : 80)) else { return false }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let prefix = base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return path == prefix || path == prefix + "/machines"
     }
 }
 

@@ -63,6 +63,7 @@ struct HeadplaneDeviceView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editing: String?
     @State private var editingNode: HeadplaneNode?
+    @State private var ssh = false
     @State private var confirmation: String?
     @State private var error: String?
     private var resource: HeadplaneResource { .machine(nodeID) }
@@ -88,6 +89,12 @@ struct HeadplaneDeviceView: View {
                     Text(node.name).font(.title2.weight(.semibold)).textSelection(.enabled)
                     HeadplaneNodeStatus(node: node, badge: true)
                     if detail.isAgent { HeadplaneBadge(text: "Headplane Agent") }
+                    Button { ssh = true } label: { Label("SSH 终端", systemImage: "terminal") }
+                        .buttonStyle(HeadplaneButtonStyle(primary: true))
+                        .disabled(!node.online || node.expired || revision != store.revision || store.errors[resource] != nil)
+                    if !node.online || node.expired {
+                        Text("设备在线且未过期时可连接 SSH。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+                    }
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         Button("重命名") { editingNode = node; editing = "rename" }.buttonStyle(HeadplaneButtonStyle())
                         Button("修改标签") { editingNode = node; editing = "tags" }.buttonStyle(HeadplaneButtonStyle())
@@ -118,6 +125,11 @@ struct HeadplaneDeviceView: View {
             }
         }
         .task { await refresh() }
+        .fullScreenCover(isPresented: $ssh) {
+            if let connection = store.connection, let node, revision == store.revision {
+                HeadplaneSSHView(connection: connection, hostname: node.name)
+            }
+        }
         .sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } }), onDismiss: { editingNode = nil }) {
             if let node = editingNode, let editing { HeadplaneDeviceEditor(store: store, node: node, action: editing, revision: revision) }
         }

@@ -257,7 +257,24 @@ private final class MemorySecrets: SecretStorage {
         for invalid in ["tag:", "bad tag", "tag:1server", "tag:server/home"] {
             rejects { _ = try HeadplaneKeyCreation.fields(userID: "1", tags: invalid, days: 1, reusable: false, ephemeral: false) }
         }
-        rejects { _ = try HeadplaneKeyCreation.fields(userID: "", tags: "server", days: 1, reusable: false, ephemeral: false) }
+        rejects { _ = try HeadplaneKeyCreation.fields(userID: "", tags: " , \n", days: 1, reusable: false, ephemeral: false) }
+        let tagOnly = try HeadplaneKeyCreation.fields(userID: "", tags: "server,tag:server", days: 45, reusable: true, ephemeral: true)
+        precondition(tagOnly["user_id"] == nil && tagOnly["acl_tags"] == "tag:server" && tagOnly["expiry"] == "45")
+        precondition(tagOnly["reusable"] == "on" && tagOnly["ephemeral"] == "on")
+        let customDuration = try HeadplaneKeyCreation.duration(" 45 ")
+        precondition(customDuration == 45)
+        for invalid in ["", "0", "-1", "1.5", "1e2", "12days", "9999999999999999999999", "365001"] {
+            rejects { _ = try HeadplaneKeyCreation.duration(invalid) }
+        }
+        for invalid in [0, -1, Int.max] {
+            rejects { _ = try HeadplaneKeyCreation.fields(userID: "1", tags: "", days: invalid, reusable: false, ephemeral: false) }
+        }
+        WireProtocol.respond { request in
+            precondition(request.url!.path == "/admin/settings/auth-keys.data")
+            precondition(WireProtocol.body(request) == "acl_tags=tag%3Aserver&action_id=add_preauthkey&ephemeral=on&expiry=45&reusable=on")
+            return (200, [:], created)
+        }
+        _ = try await client.submit(.keys, fields: tagOnly)
         WireProtocol.respond { request in
             precondition(request.url!.path == "/admin/settings/auth-keys.data" && request.httpMethod == "POST")
             precondition(WireProtocol.body(request) == "acl_tags=tag%3Aserver%2Ctag%3Ahome%2Ctag%3Arouter&action_id=add_preauthkey&ephemeral=off&expiry=7&reusable=on&user_id=1")
@@ -488,7 +505,36 @@ private final class MemorySecrets: SecretStorage {
         print("PASS detail isolation, stale refresh recovery, mutation read-back and deleted/forbidden devices")
     }
 
+    static func sshRouting() throws {
+        let custom = try HeadplaneConnection(address: "https://headplane.example.test/custom/admin/", apiKey: "private-key").normalized()
+        let url = try HeadplaneSSH.terminalURL(connection: custom, hostname: "home-router", username: " ubuntu ")
+        precondition(url.absoluteString == "https://headplane.example.test/custom/admin/ssh/home-router?user=ubuntu")
+        precondition(!url.absoluteString.contains(custom.apiKey))
+        let prompted = try HeadplaneSSH.terminalURL(connection: custom, hostname: "home-router")
+        precondition(prompted.query == nil)
+        let escaped = try HeadplaneSSH.terminalURL(connection: custom, hostname: "home-router", username: "user&other=1")
+        let items = URLComponents(url: escaped, resolvingAgainstBaseURL: false)!.queryItems!
+        precondition(items.count == 1 && items[0].value == "user&other=1")
+        for invalid in ["", "../login", "router/other", "host?user=root", "-host", String(repeating: "a", count: 64)] {
+            rejects { _ = try HeadplaneSSH.terminalURL(connection: custom, hostname: invalid) }
+        }
+        rejects { _ = try HeadplaneSSH.terminalURL(connection: custom, hostname: "router", username: "user\nroot") }
+        for invalid in ["file:///etc/passwd", "javascript:alert(1)", "https://user:pass@example.test", "http://example.test"] {
+            precondition(!HeadplaneSSH.allowsNavigation(URL(string: invalid)!, allowHTTP: false))
+        }
+        precondition(HeadplaneSSH.allowsNavigation(URL(string: "https://identity.example.test/login")!, allowHTTP: false))
+        precondition(HeadplaneSSH.allowsNavigation(URL(string: "http://example.test/login")!, allowHTTP: true))
+        for path in ["/custom/admin", "/custom/admin/", "/custom/admin/machines"] {
+            precondition(HeadplaneSSH.isLoginReturn(URL(string: "https://headplane.example.test" + path)!, connection: custom))
+        }
+        for address in ["https://attacker.example.test/custom/admin", "https://headplane.example.test:444/custom/admin", "http://headplane.example.test/custom/admin", "https://headplane.example.test/custom/admin/oidc/callback"] {
+            precondition(!HeadplaneSSH.isLoginReturn(URL(string: address)!, connection: custom))
+        }
+        print("PASS SSH hostname routing, custom prefixes, username escaping, credential isolation and OIDC return origin")
+    }
+
     static func main() async throws {
+        try sshRouting()
         try decoding(); try configuration(); try agentStatus(); try machineDetails(); try await networking(); try await storeBehavior(); try await detailStoreBehavior(); try await diagnostics()
         print("Headplane tests passed")
     }
