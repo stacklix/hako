@@ -17,9 +17,9 @@ struct CryptoView: View {
             VStack(alignment:.leading,spacing:16) {
                 header
                 HakoUnderlineTabs(title:"资产来源",options:Tab.allCases,selection:$tab,label:{$0.rawValue})
-                if let message=syncMessage {
-                    Label(message,systemImage:syncPhase == .succeeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                        .font(.caption).foregroundStyle(syncPhase == .succeeded ? .green : .red)
+                if syncPhase == .failed, let message=syncMessage {
+                    Label(message,systemImage:"exclamationmark.circle.fill")
+                        .font(.caption).foregroundStyle(.red)
                         .textSelection(.enabled).accessibilityAddTraits(.updatesFrequently)
                 }
                 if tab == .overview {
@@ -28,46 +28,60 @@ struct CryptoView: View {
                         VStack(spacing:16) {
                             source("HTX",value:latest.values["htx"],tab:.htx)
                             source("Binance",value:latest.values["binance"],tab:.binance)
-                            source("链上资产",value:latest.values["chain"],tab:.chain)
+                            source("链上资产",value:store.chainTotal,tab:.chain)
                         }.cryptoPanel()
                         Text("数据日期：\(latest.day) · 仅汇总已配置来源")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     CryptoTrend(title:"每日总资产",records:store.portfolio,keys:["total"],names:["总资产"],units:["USDT"])
                 } else if tab == .htx {
-                    Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("趋势图表").tag(true) }.pickerStyle(.segmented)
+                    Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("合约收益").tag(true) }.pickerStyle(.segmented)
                     if trends {
-                        Picker("统计范围",selection:$days) { Text("最近7天").tag(7);Text("最近30天").tag(30);Text("全部").tag(0) }
+                        Picker("统计范围",selection:$days) {
+                            Text("最近7天").tag(7)
+                            Text("最近30天").tag(30)
+                            Text("最近半年").tag(180)
+                            Text("最近一年").tag(365)
+                            Text("全部").tag(0)
+                        }.pickerStyle(.menu)
                         LazyVGrid(columns:[GridItem(.adaptive(minimum:290),spacing:12)],spacing:12) {
                             ForEach(0..<6) { index in contractChart(index) }
                         }
                     } else {
                         amountPanel("HTX 总资产",value:latest?.values["htx"])
                         currentContractPanel
-                        VStack(alignment:.leading,spacing:16) {
-                            Text("历史合约 · TRX 币本位永续").font(.headline)
-                            metric("合约权益",store.contracts.last?.values["trx"],"TRX")
-                            metric("USDT 折值",contractValue,"USDT")
-                            metric("当日资金费净收入",store.contracts.last?.values["funding_trx"],"TRX")
-                            metric("当日资金费率总和",store.contracts.last?.values["funding_rate"].map{$0*100},"%",precision:4)
-                            metric("强平价",store.contracts.last?.values["liquidation"],"USD/TRX",precision:3)
-                            metric("累计资金费",store.contracts.isEmpty ? nil : store.contracts.reduce(0){$0+($1.values["funding_trx"] ?? 0)},"TRX")
-                            if let last=store.contracts.last { Text("数据日期：\(last.day) · 当日最后一笔结算权益").font(.caption).foregroundStyle(.secondary) }
-                        }.cryptoPanel()
+                        recentContractTable
                     }
                 } else if tab == .binance {
-                    amountPanel("Binance 总资产",value:latest?.values["binance"])
+                    amountPanel("Binance 总资产",value:store.binanceSnapshot?.total ?? latest?.values["binance"])
+                    binanceDetails
                 } else {
-                    amountPanel("链上资产",value:latest?.values["chain"])
+                    amountPanel("链上资产",value:store.chainTotal)
                     VStack(alignment:.leading,spacing:12) {
-                        NavigationLink("添加或管理观察地址") { CryptoSettingsView() }
-                        ForEach(store.wallets) { wallet in
-                            VStack(alignment:.leading,spacing:5) {
-                                Text(wallet.name).font(.subheadline.weight(.semibold))
-                                Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                if let value=store.walletValues[wallet.id] { Text(value,format:.number.precision(.fractionLength(2))) + Text(" USDT") }
+                        if store.wallets.isEmpty {
+                            Text("暂无观察地址，可在右上角设置中添加。").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(store.wallets.enumerated()),id:\.element.id) { index,wallet in
+                            if index > 0 { Divider() }
+                            NavigationLink {
+                                CryptoWalletDetailView(wallet:wallet,store:store)
+                            } label: {
+                                HStack(spacing:12) {
+                                    VStack(alignment:.leading,spacing:6) {
+                                        Text(wallet.name).font(.subheadline.weight(.semibold))
+                                        Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                        Text(store.walletValues[wallet.id].map { $0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无估值")
+                                            .font(.headline).monospacedDigit()
+                                        if let error=store.walletErrors[wallet.id] {
+                                            Text("更新失败："+error).font(.caption).foregroundStyle(.red)
+                                        }
+                                    }
+                                    Spacer(minLength:0)
+                                    Image(systemName:"chevron.right").font(.caption).foregroundStyle(.secondary)
+                                }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
                             }
-                            Divider()
+                            .buttonStyle(.plain)
+                            .accessibilityHint("查看该地址的总资产及各币种资产")
                         }
                     }.cryptoPanel()
                 }
@@ -91,6 +105,13 @@ struct CryptoView: View {
             default: nil
             }
         }
+        .task(id:syncPhase) {
+            guard syncPhase == .succeeded else { return }
+            do { try await Task.sleep(for:.seconds(5)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            syncPhase = .idle
+        }
         .task {
             guard !didCollect else { return }
             didCollect=true
@@ -107,14 +128,14 @@ struct CryptoView: View {
             }
             Spacer(minLength:0)
             Button {
-                guard syncPhase != .syncing else { return }
+                guard syncPhase != .syncing && syncPhase != .succeeded else { return }
                 syncPhase = .syncing
                 syncMessage=nil
                 Task {
                     let result=await store.trigger()
                     let succeeded=store.message == nil
                     syncPhase = succeeded ? .succeeded : .failed
-                    syncMessage=succeeded ? "已同步到 GitHub" : result
+                    syncMessage=succeeded ? nil : result
                 }
             } label: {
                 HStack(spacing:6) {
@@ -128,9 +149,58 @@ struct CryptoView: View {
                 }.frame(minWidth:88)
             }
             .buttonStyle(HakoActionButtonStyle()).fixedSize(horizontal:true,vertical:false)
-            .accessibilityLabel(syncPhase == .syncing ? "资产同步中" : "同步资产")
-            .accessibilityHint(syncPhase == .syncing ? "请等待同步完成" : "将本机缓存同步到 GitHub，不重新查询资产接口")
+            .allowsHitTesting(syncPhase != .syncing && syncPhase != .succeeded)
+            .accessibilityLabel(syncPhase == .syncing ? "资产同步中" : syncPhase == .succeeded ? "资产已同步" : "同步资产")
+            .accessibilityHint(syncPhase == .syncing ? "请等待同步完成" : syncPhase == .succeeded ? "同步已完成，按钮即将恢复" : "将本机缓存同步到 GitHub，不重新查询资产接口")
         }
+    }
+    private var binanceDetails: some View {
+        VStack(alignment:.leading,spacing:16) {
+            Text("资产详情").font(.headline)
+            if let error=store.binanceError {
+                Label("更新失败："+error,systemImage:"exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.red)
+                if store.binanceSnapshot != nil {
+                    Text("以下为上次成功获取的数据").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let snapshot=store.binanceSnapshot {
+                Text("更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
+                    .font(.caption).foregroundStyle(.secondary)
+                if snapshot.accounts.isEmpty {
+                    Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
+                }
+                ForEach(snapshot.accounts) { account in
+                    VStack(alignment:.leading,spacing:12) {
+                        metric(account.name,account.balance,"USDT")
+                        if let assets=account.assets {
+                            if assets.isEmpty {
+                                Text("暂无非零币种余额").font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(assets) { asset in
+                                Divider()
+                                VStack(alignment:.leading,spacing:8) {
+                                    Text(asset.symbol).font(.subheadline.weight(.semibold))
+                                    if asset.name != asset.symbol {
+                                        Text(asset.name).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    metric("持有数量",asset.quantity,asset.symbol,precision:8)
+                                    metric("可用",asset.free,asset.symbol,precision:8)
+                                    metric("锁定",asset.locked,asset.symbol,precision:8)
+                                    if asset.frozen != 0 { metric("冻结",asset.frozen,asset.symbol,precision:8) }
+                                    if asset.withdrawing != 0 { metric("提现中",asset.withdrawing,asset.symbol,precision:8) }
+                                }.accessibilityElement(children:.combine)
+                            }
+                        } else {
+                            Text("此账户暂未返回币种明细").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }.cryptoPanel()
+                }
+            } else {
+                Text(!store.binanceConfigured ? "请在右上角设置中配置 Binance 只读 API。" : store.busy ? "正在获取资产详情…" : "暂无资产详情，重新进入页面后将自动采集。")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth:.infinity,alignment:.leading)
     }
     private var currentContractPanel: some View {
         VStack(alignment:.leading,spacing:16) {
@@ -149,8 +219,34 @@ struct CryptoView: View {
             }
         }.cryptoPanel()
     }
-    private var contractValue: Double? {
-        store.contracts.last?.equity
+    private var recentContractTable: some View {
+        VStack(alignment:.leading,spacing:16) {
+            Text("最近7天").font(.headline)
+            ScrollView(.horizontal) {
+                Grid(horizontalSpacing:16,verticalSpacing:12) {
+                    GridRow {
+                        Text("日期").gridColumnAlignment(.leading)
+                        Text("总 TRX").gridColumnAlignment(.trailing)
+                        Text("资金费用 / TRX").gridColumnAlignment(.trailing)
+                    }.foregroundStyle(.secondary)
+                    ForEach(CryptoSyncPolicy.recentContractDays(now:.now),id:\.self) { date in
+                        let day=CryptoDay.key(date)
+                        let values=store.contracts.first(where:{$0.day==day})?.values
+                        Divider().gridCellColumns(3)
+                        GridRow {
+                            Text(day)
+                            Text(contractTableValue(values?["trx"]))
+                            Text(contractTableValue(values?["funding_trx"],signed:true))
+                        }.accessibilityElement(children:.combine)
+                    }
+                }.font(.caption).monospacedDigit().fixedSize(horizontal:true,vertical:false)
+                    .frame(minWidth:0,maxWidth:.infinity,alignment:.leading)
+            }
+        }.frame(maxWidth:.infinity,alignment:.leading).cryptoPanel()
+    }
+    private func contractTableValue(_ value:Double?,signed:Bool=false) -> String {
+        guard let value else { return "—" }
+        return (signed && value>0 ? "+" : "")+value.formatted(.number.precision(.fractionLength(2)))
     }
     private func amountPanel(_ title:String,value:Double?) -> some View {
         VStack(alignment:.leading,spacing:8) {
@@ -176,8 +272,66 @@ struct CryptoView: View {
             r.values["usdt"]=r.equity
             r.values["rate_percent"]=r.values["funding_rate"].map{$0*100};return r
         }
-        let cutoff=CryptoDay.key(CryptoDay.calendar.date(byAdding:.day,value:-days,to:.now)!)
+        let component:Calendar.Component = (days == 180 || days == 365) ? .month : .day
+        let offset = days == 180 ? -6 : days == 365 ? -12 : -days
+        let cutoff=CryptoDay.key(CryptoDay.calendar.date(byAdding:component,value:offset,to:.now)!)
         return CryptoTrend(title:titles[index],records:rows.filter { days==0 || $0.day>=cutoff },keys:keys[index],names:names[index],units:units[index],sharedScale:index==3)
+    }
+}
+
+private struct CryptoWalletDetailView: View {
+    let wallet:CryptoWallet
+    @ObservedObject var store:CryptoStore
+    private var snapshot:CryptoWalletSnapshot? { store.walletSnapshot(wallet) }
+    private var visibleAssets:[CryptoWalletAsset] {
+        (snapshot?.assets ?? []).filter {
+            CryptoWalletAsset.isIncluded($0.symbol)
+        }.sorted { ($0.value ?? -1) > ($1.value ?? -1) }
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:16) {
+                VStack(alignment:.leading,spacing:8) {
+                    Text(wallet.network).font(.subheadline).foregroundStyle(.secondary)
+                    Text(wallet.address).font(.caption.monospaced()).textSelection(.enabled)
+                    Text("折算总资产").font(.caption).foregroundStyle(.secondary).padding(.top,8)
+                    Text("仅汇总 BTC、ETH、ATOM、TRX、USDT、USDC").font(.caption).foregroundStyle(.secondary)
+                    Text(store.walletValues[wallet.id].map { $0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无估值")
+                        .font(.title.weight(.semibold)).monospacedDigit()
+                    if let snapshot {
+                        Text("更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth:.infinity,alignment:.leading).cryptoPanel()
+                if let error=store.walletErrors[wallet.id] {
+                    Text((snapshot == nil ? "更新失败：" : "更新失败，当前显示上次数据：")+error).font(.caption).foregroundStyle(.red)
+                }
+                VStack(alignment:.leading,spacing:14) {
+                    Text("币种资产").font(.headline)
+                    Text("BTC · ETH · ATOM · TRX · USDT · USDC").font(.caption).foregroundStyle(.secondary)
+                    if snapshot != nil {
+                        if visibleAssets.isEmpty { Text("该地址暂无所选六种币种的资产").foregroundStyle(.secondary) }
+                        ForEach(visibleAssets) { asset in
+                            Divider()
+                            VStack(alignment:.leading,spacing:6) {
+                                Text(asset.symbol).font(.subheadline.weight(.semibold))
+                                Text(asset.name).font(.caption).foregroundStyle(.secondary)
+                                Text("数量："+asset.quantity.formatted(.number.precision(.fractionLength(0...8)))+" "+asset.symbol)
+                                    .font(.subheadline).monospacedDigit()
+                                Text(asset.value.map { "折合 "+$0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无报价，未计入折算总额")
+                                    .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
+                            }.accessibilityElement(children:.combine)
+                        }
+                    } else if store.busy {
+                        ProgressView("正在获取币种资产…")
+                    } else {
+                        Text("暂无币种明细，重新进入资产页可更新。").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth:.infinity,alignment:.leading).cryptoPanel()
+            }.padding(20)
+        }
+        .background(HakoStyle.background).foregroundStyle(HakoStyle.text)
+        .navigationTitle(wallet.name).navigationBarTitleDisplayMode(.inline)
     }
 }
 

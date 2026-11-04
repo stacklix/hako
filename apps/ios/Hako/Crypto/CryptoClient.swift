@@ -53,13 +53,37 @@ struct CryptoClient {
         return try Self.number(d["totalBalance"]) * (try await price("BTC"))
     }
     func binanceTotal(_ c: CryptoCredential) async throws -> Double {
-        var q = ["timestamp":String(Int(Date.now.timeIntervalSince1970*1000)),"recvWindow":"10000","quoteAsset":"USDT"]
+        try await binanceSnapshot(c).total
+    }
+    func binanceSnapshot(_ c: CryptoCredential) async throws -> CryptoBinanceSnapshot {
+        var q = ["timestamp":String(Int(Date.now.timeIntervalSince1970*1000)),"recvWindow":"10000","quoteAsset":"USDT","needBalanceDetail":"true"]
         let signature = Self.mac(Self.query(q), secret:c.secret).map { String(format:"%02x",$0) }.joined()
         q["signature"] = signature
         var r = URLRequest(url: URL(string:"https://api.binance.com/sapi/v1/asset/wallet/balance?" + Self.query(q))!)
         r.setValue(c.key, forHTTPHeaderField:"X-MBX-APIKEY")
         guard let data = try await json(r) as? [[String: Any]] else { throw HakoError(message:"Binance 总资产格式无效。") }
-        return try data.reduce(0) { sum, row in sum + (try Self.number(row["balance"])) }
+        return try Self.binanceSnapshot(data,scope:CryptoDay.hash(c.key))
+    }
+    static func binanceSnapshot(_ rows:[[String:Any]],scope:String) throws -> CryptoBinanceSnapshot {
+        let accounts = try rows.enumerated().map { index,row in
+            var assets:[CryptoBinanceAsset]?
+            if let raw = row["assetBalances"] {
+                guard let details=raw as? [[String:Any]] else { throw HakoError(message:"Binance 币种明细格式无效。") }
+                assets=try details.map { asset in
+                    guard let symbol=asset["asset"] as? String, !symbol.isEmpty else { throw HakoError(message:"Binance 币种名称无效。") }
+                    return try CryptoBinanceAsset(symbol:symbol,name:asset["assetName"] as? String ?? symbol,
+                        free:Self.number(asset["free"]),locked:Self.number(asset["locked"]),
+                        frozen:Self.number(asset["freeze"]),withdrawing:Self.number(asset["withdrawing"]))
+                }.filter { $0.quantity != 0 }.sorted { $0.symbol < $1.symbol }
+                guard Set(assets!.map(\.id)).count == assets!.count else { throw HakoError(message:"Binance 币种明细重复。") }
+            }
+            return try CryptoBinanceAccount(name:row["walletName"] as? String ?? "账户 \(index+1)",balance:Self.number(row["balance"]),assets:assets)
+        }
+        guard Set(accounts.map(\.id)).count == accounts.count,
+              accounts.reduce(0, { $0 + $1.balance }).isFinite else { throw HakoError(message:"Binance 账户明细无效。") }
+        return CryptoBinanceSnapshot(scope:scope,sampledAt:.now,accounts:accounts.sorted {
+            $0.balance == $1.balance ? $0.name < $1.name : $0.balance > $1.balance
+        })
     }
     func price(_ symbol: String) async throws -> Double {
         if symbol == "USDT" { return 1 }

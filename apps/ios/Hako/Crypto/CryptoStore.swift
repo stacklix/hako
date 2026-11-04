@@ -47,12 +47,27 @@ import Combine
         running=task
         await task.value
     }
-    struct Cache: Codable { var records: [CryptoRecord] = []; var pending: [CryptoRecord] = []; var syncedAt: Date?; var walletBalances: [String:Double]?; var currentContract: CryptoCurrentContract? }
+    struct Cache: Codable { var records: [CryptoRecord] = []; var pending: [CryptoRecord] = []; var syncedAt: Date?; var walletBalances: [String:Double]?; var currentContract: CryptoCurrentContract?; var walletSnapshots: [String:CryptoWalletSnapshot]?; var binanceSnapshot: CryptoBinanceSnapshot? }
     @Published private(set) var cache = Cache()
     @Published private(set) var busy = false
     @Published var message: String?
     @Published private(set) var wallets: [CryptoWallet] = []
     @Published private(set) var walletValues: [UUID: Double] = [:]
+    @Published private(set) var walletErrors: [UUID: String] = [:]
+    @Published private(set) var binanceError: String?
+    @Published private(set) var binanceConfigured = false
+    @Published private(set) var binanceScope = ""
+    var binanceSnapshot: CryptoBinanceSnapshot? {
+        guard binanceConfigured, let snapshot=cache.binanceSnapshot, snapshot.scope == binanceScope else { return nil }
+        return snapshot
+    }
+    func walletSnapshot(_ wallet:CryptoWallet) -> CryptoWalletSnapshot? { cache.walletSnapshots?[wallet.identity]?.includedOnly }
+    var chainTotal:Double? {
+        guard !wallets.isEmpty else { return nil }
+        let snapshots=wallets.compactMap { walletSnapshot($0) }
+        guard snapshots.count == wallets.count else { return nil }
+        return snapshots.reduce(0) { $0 + $1.total }
+    }
     @Published private(set) var scope = ""
     @Published private(set) var contractScope = ""
     private var file: URL?
@@ -72,13 +87,18 @@ import Combine
         let nextFile = cacheDirectory
             .appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
         if file != nextFile {
-            cache = Cache(); walletValues = [:]; file=nil
+            cache = Cache(); walletValues = [:]; walletErrors = [:]; file=nil
             if FileManager.default.fileExists(atPath:nextFile.path) { cache=try JSONDecoder().decode(Cache.self,from:Data(contentsOf:nextFile)) }
             file=nextFile
         }
         wallets=try loadWallets()
+        let binance=try loadCredential("binance")
+        binanceConfigured=binance.configured
+        let nextBinanceScope=CryptoDay.hash(binance.key)
+        if binanceScope != nextBinanceScope { binanceError=nil }
+        binanceScope=nextBinanceScope
         walletValues=Dictionary(uniqueKeysWithValues:wallets.compactMap { wallet in
-            cache.walletBalances?[wallet.identity].map { (wallet.id,$0) }
+            walletSnapshot(wallet).map { (wallet.id,$0.total) }
         })
     }
     private func saveAcquired(_ record: CryptoRecord) throws {
@@ -124,12 +144,34 @@ import Combine
                 } catch { errors.append("今日 TRX 合约："+error.localizedDescription) }
             }
             if binance.configured {
-                do { totals["binance"]=try await client.binanceTotal(binance) } catch { errors.append("Binance："+error.localizedDescription) }
+                binanceError=nil
+                do {
+                    let snapshot=try await client.binanceSnapshot(binance)
+                    var value=cache;value.binanceSnapshot=snapshot
+                    try persist(value)
+                    totals["binance"]=snapshot.total
+                } catch {
+                    binanceError=error.localizedDescription
+                    errors.append("Binance："+error.localizedDescription)
+                }
             }
             var chain=0.0,chainComplete=true
+            walletErrors=[:]
             for wallet in wallets {
-                do { let value=try await client.walletTotal(wallet);walletValues[wallet.id]=value;chain+=value }
-                catch { chainComplete=false;errors.append(wallet.name+"："+error.localizedDescription) }
+                do {
+                    let snapshot=try await client.walletSnapshot(wallet)
+                    var value=cache
+                    if value.walletSnapshots == nil { value.walletSnapshots=[:] }
+                    if value.walletBalances == nil { value.walletBalances=[:] }
+                    value.walletSnapshots?[wallet.identity]=snapshot
+                    value.walletBalances?[wallet.identity]=snapshot.total
+                    try persist(value)
+                    walletValues[wallet.id]=snapshot.total;chain+=snapshot.total
+                }
+                catch {
+                    chainComplete=false;walletErrors[wallet.id]=error.localizedDescription
+                    errors.append(wallet.name+"："+error.localizedDescription)
+                }
             }
             if !wallets.isEmpty && chainComplete { totals["chain"]=chain }
             let complete=(!htx.configured || totals["htx"] != nil) && (!binance.configured || totals["binance"] != nil) && chainComplete

@@ -92,7 +92,14 @@ private final class AssetRepository: GitHubRepositoryAccess {
                 case "/v2/account/valuation": return ["success":true,"data":["updated":["success":!incompleteHTX],"profitAccountBalanceList":[["success":true]],"totalBalance":total]]
                 case "/market/detail/merged": return ["tick":["close":1]]
                 case "/sapi/v1/asset/wallet/balance":
-                    if failBinance { throw HakoError(message:"test unavailable") };return [["balance":"50"]]
+                    if failBinance { throw HakoError(message:"test unavailable") }
+                    let query=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
+                    precondition(query.contains { $0.name == "needBalanceDetail" && $0.value == "true" },"request per-asset details")
+                    precondition(query.contains { $0.name == "quoteAsset" && $0.value == "USDT" })
+                    return [["walletName":"Spot","balance":"50","assetBalances":[
+                        ["asset":"USDT","assetName":"TetherUS","free":"40","locked":"7","freeze":"2","withdrawing":"1"],
+                        ["asset":"BTC","free":"0","locked":"0","freeze":"0","withdrawing":"0"]
+                    ]]]
                 case "/swap-api/v1/swap_user_settlement_records":
                     var bodyData=request.httpBody ?? Data()
                     if bodyData.isEmpty,let stream=request.httpBodyStream {
@@ -133,6 +140,15 @@ private final class AssetRepository: GitHubRepositoryAccess {
         store.loadCachedData()
         precondition(store.contracts.count == 2 && AssetMockProtocol.requests.isEmpty && repository.reads == 0,"cached records are published before any network request")
         await store.collect()
+        precondition(store.binanceSnapshot?.total == 50 && store.binanceSnapshot?.accounts.first?.assets?.count == 1,"account and nonzero asset details are cached")
+        let binanceAsset=store.binanceSnapshot!.accounts[0].assets![0]
+        precondition(binanceAsset.quantity == 50 && binanceAsset.free == 40 && binanceAsset.locked == 7 && binanceAsset.frozen == 2 && binanceAsset.withdrawing == 1,"all asset balance components survive parsing")
+        let omitted=try CryptoClient.binanceSnapshot([["walletName":"Futures","balance":"3"]],scope:"test")
+        precondition(omitted.total == 3 && omitted.accounts[0].assets == nil,"missing details remain unavailable rather than empty balances")
+        do {
+            _ = try CryptoClient.binanceSnapshot([["balance":"NaN"]],scope:"test")
+            preconditionFailure("invalid balances must fail")
+        } catch {}
         precondition(repository.reads == 0 && repository.commits.isEmpty,"entry must never access GitHub")
         precondition(store.portfolio.last?.values["total"] == 150 && store.contracts.count == 7,"successful days and totals update even when one day fails")
         precondition(store.contracts.first{$0.id==existing.id} == existing && store.contracts.contains(ancient))
@@ -149,6 +165,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let restored=makeStore()
         configure(total:300)
         restored.loadCachedData()
+        precondition(restored.binanceSnapshot == store.binanceSnapshot,"Binance details restore before querying the API")
         precondition(restored.portfolio.last?.values["total"] == 250 && AssetMockProtocol.requests.isEmpty,"reentry immediately displays the previous cached total")
         precondition(restored.currentContract == store.currentContract,"current contract cache restores before network queries")
         await restored.collect()
@@ -176,7 +193,9 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let portfolioPath=restored.portfolio.last!.path
         let savedTotal=repository.files[portfolioPath]
         configure(total:600,failBinance:true)
+        let priorBinance=restored.binanceSnapshot
         await restored.collect()
+        precondition(restored.binanceSnapshot == priorBinance && restored.binanceError != nil,"failed Binance queries retain the previous snapshot with a visible error")
         precondition(restored.message != nil && restored.portfolio.last?.values["total"] == 350,"partial source failure never overwrites the displayed complete total")
         _ = await restored.trigger()
         precondition(repository.files[portfolioPath] == savedTotal,"failed collection leaves the archived total intact")

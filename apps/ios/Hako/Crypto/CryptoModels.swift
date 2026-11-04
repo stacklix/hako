@@ -1,5 +1,51 @@
 import Foundation
 
+struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
+    var symbol: String
+    var name: String
+    var free: Double
+    var locked: Double
+    var frozen: Double
+    var withdrawing: Double
+    var id: String { symbol }
+    var quantity: Double { free + locked + frozen + withdrawing }
+}
+
+struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
+    var name: String
+    var balance: Double
+    var assets: [CryptoBinanceAsset]?
+    var id: String { name }
+}
+
+struct CryptoBinanceSnapshot: Codable, Equatable {
+    var scope: String
+    var sampledAt: Date
+    var accounts: [CryptoBinanceAccount]
+    var total: Double { accounts.reduce(0) { $0 + $1.balance } }
+}
+
+struct CryptoWalletAsset: Codable, Identifiable, Equatable {
+    static func isIncluded(_ symbol:String) -> Bool {
+        ["BTC","ETH","ATOM","TRX","USDT","USDC"].contains(symbol.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())
+    }
+    var id: String
+    var symbol: String
+    var name: String
+    var quantity: Double
+    var value: Double?
+}
+
+struct CryptoWalletSnapshot: Codable, Equatable {
+    var total: Double
+    var assets: [CryptoWalletAsset]
+    var sampledAt: Date = .now
+    var includedOnly: Self {
+        let selected=assets.filter { CryptoWalletAsset.isIncluded($0.symbol) }
+        return Self(total:selected.compactMap(\.value).reduce(0,+),assets:selected,sampledAt:sampledAt)
+    }
+}
+
 struct CryptoWallet: Codable, Identifiable, Equatable {
     var id = UUID()
     var name = ""
