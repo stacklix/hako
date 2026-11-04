@@ -56,6 +56,12 @@ struct SettingsView: View {
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
+            Section("工具") {
+                NavigationLink { HakoLogsView() } label: {
+                    Label("日志", systemImage: "doc.text.magnifyingglass")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            }
             Section {
                 HStack(spacing: 16) {
                     LabeledContent("当前版本", value: currentVersion)
@@ -99,6 +105,8 @@ struct SettingsView: View {
             }
             BuildStatusView(isSettingsVisible: isVisible && sheet == nil)
         }.navigationTitle("设置")
+            .scrollContentBackground(.hidden)
+            .background(HakoStyle.background)
             .onAppear { isVisible = true }
             .onDisappear { isVisible = false }
             .sheet(item: $sheet) { route in

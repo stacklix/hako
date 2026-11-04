@@ -9,90 +9,93 @@ import SwiftUI
 }
 
 struct HomeView: View {
+    private enum Category: String, CaseIterable {
+        case it = "IT工具", finance = "金融", life = "生活"
+
+        var applications: [Application] {
+            switch self {
+            case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices]
+            case .finance: []
+            case .life: [.sports, .usage]
+            }
+        }
+    }
+
+    private enum Application: String, Identifiable {
+        case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
+        case containers = "容器管理", devices = "设备监控", sports = "运动记录", usage = "使用时间"
+
+        var id: Self { self }
+        var subtitle: String {
+            switch self {
+            case .headplane: "Headplane · 设备 · 路由与访问控制"
+            case .qinglong: "定时任务 · 脚本 · 订阅管理"
+            case .cloudServers: "阿里云 ECS · 监控 · 进程与终端"
+            case .containers: "Arcane · 容器状态 · 日志与更新"
+            case .devices: "设备在线状态 · 能力调用"
+            case .sports: "运动趋势 · 每次记录 · GitHub 归档"
+            case .usage: "每日概览 · Top 5 · GitHub 归档"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .headplane: "network"
+            case .qinglong: "checklist"
+            case .cloudServers: "server.rack"
+            case .containers: "shippingbox"
+            case .devices: "desktopcomputer"
+            case .sports: "figure.run"
+            case .usage: "chart.bar.xaxis"
+            }
+        }
+        @ViewBuilder var destination: some View {
+            switch self {
+            case .headplane: HeadplaneView()
+            case .qinglong: QinglongView()
+            case .cloudServers: CloudServersView()
+            case .containers: ContainersView()
+            case .devices: DeviceMonitorView()
+            case .sports: SportsView()
+            case .usage: UsageEntry()
+            }
+        }
+    }
+
     @ObservedObject private var console = ConsoleClient.shared
     @StateObject private var notifications = HakoNotificationsStore()
     @State private var loginLink: HakoLoginLink?
+    @State private var category = Category.it
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
-                        HakoMark()
-                            .stroke(.primary, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
-                            .frame(width: 86, height: 100)
-                            .frame(height: 120)
-                            .frame(maxWidth: .infinity)
-                            .accessibilityHidden(true)
-                        Text("你的日常，收进一个盒子。").font(.title3.bold())
-                        Text("HAKO · 个人工具箱").font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 12)
+                        Text("你的日常，收进一个盒子。")
+                            .font(.system(size: 22, weight: .semibold)).tracking(-0.5)
+                        Text("HAKO · 个人工具箱")
+                            .font(.system(size: 11)).tracking(1.1).foregroundStyle(HakoStyle.muted)
+                    }
+                    .padding(.bottom, 23)
+                    categoryTabs
+                    applications
                 }
-                Section("应用") {
-                    NavigationLink { HeadplaneView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("组网管理").font(.headline)
-                            Text("Headplane · 设备 · 路由与访问控制").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "network").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { QinglongView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("青龙面板").font(.headline)
-                            Text("定时任务 · 脚本 · 订阅管理").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: {
-                            Image("QinglongLogo").renderingMode(.template)
-                                .resizable().scaledToFit().frame(width: 28, height: 28)
-                                .foregroundStyle(.primary).accessibilityHidden(true)
-                        }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { CloudServersView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("云服务器").font(.headline)
-                            Text("阿里云 ECS · 监控 · 进程与终端").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "server.rack").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { ContainersView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("容器管理").font(.headline)
-                            Text("Arcane · 容器状态 · 日志与更新").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "shippingbox").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { DeviceMonitorView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("设备监控").font(.headline)
-                            Text("设备在线状态 · 能力调用").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "desktopcomputer").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { SportsView() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("运动记录").font(.headline)
-                            Text("运动趋势 · 每次记录 · GitHub 归档").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "figure.run").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    NavigationLink { UsageEntry() } label: {
-                        Label { VStack(alignment: .leading, spacing: 5) {
-                            Text("使用时间").font(.headline)
-                            Text("每日概览 · Top 5 · GitHub 归档").font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 8) } icon: { Image(systemName: "chart.bar.xaxis").foregroundStyle(.primary) }
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                }
-                Section("工具") {
-                    NavigationLink { HakoLogsView() } label: {
-                        Label("日志", systemImage: "doc.text.magnifyingglass")
-                    }
-                }
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 28)
             }
+            .background(HakoStyle.background)
+            .foregroundStyle(HakoStyle.text)
             .navigationTitle("Hako")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(HakoStyle.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("Hako").font(.system(size: 26, weight: .bold)).tracking(-1)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ToolbarItem(placement: .principal) { Text("").accessibilityHidden(true) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink { NotificationsView(store: notifications) } label: {
                         if notifications.notifications.isEmpty {
@@ -123,5 +126,86 @@ struct HomeView: View {
                 guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }
                 await notifications.run()
             }
+    }
+
+    private var categoryTabs: some View {
+        HStack(spacing: 25) {
+            ForEach(Category.allCases, id: \.self) { option in
+                Button { category = option } label: {
+                    Text(option.rawValue)
+                        .font(.system(size: 14, weight: category == option ? .semibold : .regular))
+                        .foregroundStyle(category == option ? HakoStyle.text : HakoStyle.muted)
+                        .padding(.horizontal, 1).frame(minHeight: 44)
+                        .overlay(alignment: .bottom) {
+                            Rectangle().fill(category == option ? HakoStyle.text : .clear).frame(height: 2)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(category == option ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .background(alignment: .bottom) { Rectangle().fill(HakoStyle.line).frame(height: 1) }
+        .accessibilityElement(children: .contain).accessibilityLabel("子应用分类")
+    }
+
+    private var applications: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Text(category.rawValue).font(.system(size: 13, weight: .medium)).foregroundStyle(HakoStyle.text)
+                Spacer()
+                Text("\(category.applications.count) 个应用").font(.system(size: 12))
+            }
+            .foregroundStyle(HakoStyle.muted)
+            .padding(.top, 20)
+
+            if category == .finance {
+                VStack(spacing: 12) {
+                    Image(systemName: "building.columns")
+                        .font(.system(size: 34, weight: .light)).foregroundStyle(HakoStyle.muted)
+                        .padding(.bottom, 6).accessibilityHidden(true)
+                    Text("暂无金融应用").font(.system(size: 17, weight: .semibold))
+                    Text("后续金融应用将收录在这里。")
+                        .font(.system(size: 13)).foregroundStyle(HakoStyle.muted)
+                }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity).padding(.horizontal, 12).padding(.vertical, 75)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(category.applications) { app in
+                        if app != category.applications.first {
+                            Rectangle().fill(HakoStyle.line).frame(height: 1).accessibilityHidden(true)
+                        }
+                        NavigationLink { app.destination } label: {
+                            applicationRow(app)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 14))
+            }
+        }
+    }
+
+    private func applicationRow(_ app: Application) -> some View {
+        HStack(spacing: 13) {
+            Group {
+                if app == .qinglong {
+                    Image("QinglongLogo").renderingMode(.template).resizable().scaledToFit()
+                } else {
+                    Image(systemName: app.symbol).font(.system(size: 22, weight: .regular))
+                }
+            }
+            .frame(width: 24, height: 24).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(app.rawValue).font(.system(size: 16, weight: .semibold))
+                Text(app.subtitle).font(.system(size: 11)).foregroundStyle(HakoStyle.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.right").font(.system(size: 12, weight: .medium))
+                .foregroundStyle(HakoStyle.muted.opacity(0.65)).accessibilityHidden(true)
+        }
+        .padding(.vertical, 19).frame(minHeight: 78).contentShape(Rectangle())
     }
 }

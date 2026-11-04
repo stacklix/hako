@@ -3,11 +3,11 @@ import UIKit
 
 // Visual tokens from the approved sports prototype, local to this child app.
 enum SportsStyle {
-    static let background = adaptive(0xf5f5f7, 0x151517)
-    static let card = adaptive(0xffffff, 0x242427)
-    static let text = adaptive(0x202124, 0xf2f2f4)
-    static let muted = adaptive(0x76777d, 0xaaaab0)
-    static let line = adaptive(0xe9e9ee, 0x38383c)
+    static let background = HakoStyle.background
+    static let card = HakoStyle.card
+    static let text = HakoStyle.text
+    static let muted = HakoStyle.muted
+    static let line = HakoStyle.line
     static let orderedTypes = ["Swimming", "Biking", "Walking", "Hiking"]
 
     static func color(_ type: String) -> Color {
