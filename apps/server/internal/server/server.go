@@ -45,6 +45,7 @@ type bucket struct {
 }
 
 type Server struct {
+	oidc           *oidcProvider
 	config         Config
 	trustedProxies proxyTrust
 	store          *store
@@ -131,6 +132,10 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	s.adminRoutes()
+	if err := s.initOIDC(); err != nil {
+		st.db.Close()
+		return nil, err
+	}
 	s.appLoginRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"ok": true}) })
 	s.mux.HandleFunc("POST /api/v1/auth/challenge", s.challenge)
@@ -154,6 +159,16 @@ func New(config Config) (*Server, error) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if strings.HasPrefix(r.URL.Path, "/oidc/") {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		if strings.HasPrefix(r.URL.Path, "/oidc/requests/") || r.URL.Path == "/oidc/authorize" {
+			u, _ := url.Parse(s.config.PublicURL)
+			if r.Host != u.Host {
+				reject(w, 400, "invalid_request")
+				return
+			}
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	s.mux.ServeHTTP(w, r)
 }
@@ -420,6 +435,21 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, sessionSummary{ID: ss.ID, Type: kind, Application: ss.ClientName, Origin: ss.ClientOrigin, Browser: ss.Browser, CreatedAt: ss.Created.UTC().Format(time.RFC3339), LastUsedAt: ss.LastUsed.UTC().Format(time.RFC3339)})
 	}
+	if s.oidc != nil {
+		s.cleanupOIDCLocked(time.Now())
+		for _, g := range s.oidc.codes {
+			if s.validOIDCGrant(g) {
+				c, _ := s.authClient(g.Auth.ClientID)
+				items = append(items, sessionSummary{ID: g.ID, Type: "application", Application: c.Name + " (OIDC 待兑换)", Origin: c.Origin, Browser: g.Browser, CreatedAt: g.Created.UTC().Format(time.RFC3339), LastUsedAt: g.Created.UTC().Format(time.RFC3339)})
+			}
+		}
+		for _, g := range s.oidc.access {
+			if s.validOIDCGrant(g) {
+				c, _ := s.authClient(g.Auth.ClientID)
+				items = append(items, sessionSummary{ID: g.ID, Type: "application", Application: c.Name + " (OIDC)", Origin: c.Origin, Browser: g.Browser, CreatedAt: g.Created.UTC().Format(time.RFC3339), LastUsedAt: g.Created.UTC().Format(time.RFC3339)})
+			}
+		}
+	}
 	s.adminMu.Unlock()
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Current != items[j].Current {
@@ -438,6 +468,18 @@ func (s *Server) revokeWebSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
+	if s.oidc != nil {
+		for key, g := range s.oidc.access {
+			if g.ID == r.PathValue("id") {
+				delete(s.oidc.access, key)
+			}
+		}
+		for key, g := range s.oidc.codes {
+			if g.ID == r.PathValue("id") {
+				delete(s.oidc.codes, key)
+			}
+		}
+	}
 	for key, ss := range s.adminSessions {
 		if ss.ID == r.PathValue("id") {
 			delete(s.adminSessions, key)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"mime"
 	"net/http"
 	"sort"
 	"strings"
@@ -9,15 +10,16 @@ import (
 )
 
 type applicationView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Origin    string `json:"origin"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"createdAt"`
+	OIDC      *OIDCClient `json:"oidc,omitempty"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Origin    string      `json:"origin"`
+	Enabled   bool        `json:"enabled"`
+	CreatedAt string      `json:"createdAt"`
 }
 
 func publicApplication(c AuthClientConfig) applicationView {
-	return applicationView{ID: c.ID, Name: c.Name, Origin: c.Origin, Enabled: c.Enabled, CreatedAt: time.Unix(c.CreatedAt, 0).UTC().Format(time.RFC3339)}
+	return applicationView{OIDC: c.OIDC, ID: c.ID, Name: c.Name, Origin: c.Origin, Enabled: c.Enabled, CreatedAt: time.Unix(c.CreatedAt, 0).UTC().Format(time.RFC3339)}
 }
 
 func (s *Server) applicationManagementRoutes() {
@@ -25,6 +27,37 @@ func (s *Server) applicationManagementRoutes() {
 	s.mux.HandleFunc("POST /admin/api/applications", s.admin(s.createApplication))
 	s.mux.HandleFunc("PATCH /admin/api/applications/{id}", s.admin(s.updateApplication))
 	s.mux.HandleFunc("POST /admin/api/applications/{id}/rotate", s.admin(s.rotateApplication))
+	s.mux.HandleFunc("GET /api/v1/applications", s.consoleApplications(s.listApplications))
+	s.mux.HandleFunc("POST /api/v1/applications", s.consoleApplications(s.createApplication))
+	s.mux.HandleFunc("PATCH /api/v1/applications/{id}", s.consoleApplications(s.updateApplication))
+	s.mux.HandleFunc("POST /api/v1/applications/{id}/rotate", s.consoleApplications(s.rotateApplication))
+}
+
+// Native administration uses the existing trusted Console session and DPoP.
+// Application secrets and browser cookies never authenticate these routes.
+func (s *Server) consoleApplications(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := s.authorized(w, r)
+		if !ok {
+			return
+		}
+		if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
+			reject(w, http.StatusForbidden, "native_console_required")
+			return
+		}
+		if r.Method != http.MethodGet {
+			media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || media != "application/json" {
+				reject(w, 415, "json_required")
+				return
+			}
+			if !s.allow("console-app-write:"+id, 30, time.Minute) {
+				reject(w, 429, "rate_limited")
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
@@ -40,24 +73,25 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 		}
 		return items[i].CreatedAt > items[j].CreatedAt
 	})
-	respond(w, 200, map[string]any{"applications": items})
+	respond(w, 200, map[string]any{"applications": items, "issuer": s.config.PublicURL})
 }
 
 func (s *Server) applicationSecret(w http.ResponseWriter, c AuthClientConfig, secret string, status int) {
-	respond(w, status, map[string]any{"application": publicApplication(c), "clientSecret": secret, "configuration": "HAKO_URL=" + s.config.PublicURL + "\nHAKO_CLIENT_ID=" + c.ID + "\nHAKO_CLIENT_SECRET=" + secret})
+	respond(w, status, map[string]any{"application": publicApplication(c), "clientSecret": secret, "configuration": "OIDC_ISSUER=" + s.config.PublicURL + "\n" + oidcConfiguration(c) + "HAKO_URL=" + s.config.PublicURL + "\nHAKO_CLIENT_ID=" + c.ID + "\nHAKO_CLIENT_SECRET=" + secret})
 }
 
 func (s *Server) createApplication(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name   string `json:"name"`
-		Origin string `json:"origin"`
+		Name   string      `json:"name"`
+		Origin string      `json:"origin"`
+		OIDC   *OIDCClient `json:"oidc"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
 	secret := randomToken()
-	c := AuthClientConfig{ID: "app_" + randomToken()[:20], Name: strings.TrimSpace(body.Name), Origin: strings.TrimRight(strings.TrimSpace(body.Origin), "/"), SecretHash: digest(secret), Enabled: true, CreatedAt: time.Now().Unix()}
-	if validateAuthClients([]AuthClientConfig{c}) != nil {
+	c := AuthClientConfig{OIDC: body.OIDC, Revision: randomToken(), ID: "app_" + randomToken()[:20], Name: strings.TrimSpace(body.Name), Origin: strings.TrimRight(strings.TrimSpace(body.Origin), "/"), SecretHash: digest(secret), Enabled: true, CreatedAt: time.Now().Unix()}
+	if validateAuthClients([]AuthClientConfig{c}) != nil || s.validateOIDCRegistration(c.OIDC) != nil {
 		reject(w, 400, "invalid_application_details")
 		return
 	}
@@ -83,6 +117,9 @@ func (s *Server) createApplication(w http.ResponseWriter, r *http.Request) {
 func (s *Server) invalidateApplication(id string) {
 	s.adminMu.Lock()
 	defer s.adminMu.Unlock()
+	if s.oidc != nil {
+		s.invalidateOIDCLocked(id)
+	}
 	for key, req := range s.adminLogins {
 		if req.ClientID == id {
 			delete(s.adminLogins, key)
@@ -97,12 +134,13 @@ func (s *Server) invalidateApplication(id string) {
 
 func (s *Server) updateApplication(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Enabled *bool `json:"enabled"`
+		Enabled *bool       `json:"enabled"`
+		OIDC    *OIDCClient `json:"oidc"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Enabled == nil {
+	if (body.Enabled == nil && body.OIDC == nil) || s.validateOIDCRegistration(body.OIDC) != nil {
 		reject(w, 400, "invalid_application_details")
 		return
 	}
@@ -114,7 +152,16 @@ func (s *Server) updateApplication(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return missing
 		}
-		result.Enabled = *body.Enabled
+		if body.Enabled != nil {
+			result.Enabled = *body.Enabled
+		}
+		if body.OIDC != nil {
+			result.OIDC = body.OIDC
+		}
+		if err := validateOIDCClient(result.OIDC); err != nil {
+			return err
+		}
+		result.Revision = randomToken()
 		st.AuthClients[result.ID] = result
 		return nil
 	}); err != nil {
@@ -144,6 +191,7 @@ func (s *Server) rotateApplication(w http.ResponseWriter, r *http.Request) {
 			return missing
 		}
 		result.SecretHash = digest(secret)
+		result.Revision = randomToken()
 		st.AuthClients[result.ID] = result
 		return nil
 	}); err != nil {

@@ -9,6 +9,8 @@ import SwiftUI
 }
 
 struct HomeView: View {
+    @State private var loginLink: HakoLoginLink?
+    private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -90,6 +92,12 @@ struct HomeView: View {
             .navigationTitle("Hako")
             .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
         }.tint(.primary)
+            .onOpenURL { url in
+                // Accept only the existing exact Hako login structure and configured HTTPS server.
+                guard let _ = try? ConsoleWebLoginPayload(url.absoluteString, origin: ConsoleClient.shared.serverURL) else { return }
+                loginLink = HakoLoginLink(payload: url.absoluteString)
+            }
+            .sheet(item: $loginLink) { link in ConsoleWebLoginView(initialPayload: link.payload) }
             .toggleStyle(SwitchToggleStyle(tint: .green))
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }

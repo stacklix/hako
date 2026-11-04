@@ -264,7 +264,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         let data = try await authorized("/api/v1/auth/web-login/requests/\(parsed.requestId)")
         let result = try JSONDecoder().decode(ConsoleWebLoginRequest.self, from: data)
         guard serverURL == origin else { throw ConsoleWebLoginError.serverMismatch }
-        try result.validate(origin: origin, requestId: parsed.requestId, applicationRequest: parsed.isApplication)
+        try result.validate(origin: origin, requestId: parsed.requestId, applicationRequest: parsed.isApplication, oidcRequest: parsed.isOIDC)
         return result
     }
 

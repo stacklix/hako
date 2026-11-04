@@ -37,6 +37,7 @@ type loginChallenge struct {
 }
 
 type state struct {
+	OIDCKey     string                      `json:"oidcKey,omitempty"`
 	Subject     string                      `json:"subject,omitempty"`
 	AuthClients map[string]AuthClientConfig `json:"authClients"`
 	Registry    *Registry                   `json:"registry,omitempty"`

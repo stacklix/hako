@@ -1,5 +1,7 @@
 # Hako Server
 
+先了解登录方式、凭据和会话边界，可阅读[登录与身份认证总览](../../docs/login-authentication-overview.md)。
+
 Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/admin/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
 
 服务端还支持定时扫描 Caddy 访问日志，在管理页查看每域名每小时访问量、来源 IP 及其 UA/URL 排行，以及正常响应／异常响应URL 与来源排行，统计独立持久化。
@@ -259,7 +261,7 @@ go run ./cmd/hako-server
 
 测试覆盖 Console 和 Agent 认证、签名重放、长期会话、轮换恢复、退出、查询转发、离线和超时，以及二维码过期、拒绝、刷新、浏览器绑定、一次性领取、确认码与签名 nonce、Console 撤销联动、Cookie/CSRF、并发 Agent 登记及配置迁移。网页和二维码生成功能内嵌于二进制，无需 CDN 或前端运行依赖。
 
-iOS 扫码、相机权限、会话列表和网页登录移除需在 iPhone 上验收；Windows 本机跳过 iOS 构建，macOS CI 执行协议测试、类型检查和打包。
+iOS 扫码、相机权限、会话列表和网页登录移除需在 iPhone 上验收；涉及 iOS 改动时沿用本机已配置工作台异步构建、签名和打包，在线授权设备可用时安装启动；macOS CI 继续执行其协议检查与打包。
 
 Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序](../windows/README.md) 的绝对路径后运行 `go test ./internal/server -run TestWindowsAgentEndToEnd -v`。该检查启动真实 C# 代理，验证 RSA 认证、请求转发及实际 CPU/内存采样。
 
@@ -268,3 +270,16 @@ Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序
 命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
 
 局域网 iLinker 可登记 `http://192.168.0.2:8001`（含端口）。HTTP 应用地址支持私有 IPv4、IPv6 ULA、回环、链路本地地址、localhost / .localhost 和 .local 主机；公网应用仍使用 HTTPS，地址不带路径、查询或片段。手机端需同步更新地址校验。该地址仅用于手机确认展示，Hako 不请求该地址；应用 SK 和手机认证仍发送到 HTTPS Hako 服务。
+
+## 通用 OIDC 登录
+
+服务端提供 Discovery、Authorization Code Flow、PKCE S256、独立 RS256 ID Token/JWKS，以及隔离的 OIDC UserInfo 访问令牌。第三方应用必须显式开启 OIDC，登记精确 HTTPS 回调、允许 scope 和 Secret 认证方式；普通扫码应用不会自动变成 OIDC 客户端。单账号稳定 subject 不受用户名或 Console 换钥影响，无邮箱时不返回邮箱字段。
+
+应用管理页支持创建/配置 OIDC、复制通用接入信息、轮换 Secret 和停用。手机通过 v3 请求明确批准，支持桌面二维码和同机打开确认页；领取仍绑定原浏览器 Cookie。授权、Token 与第三方本地会话的撤销边界不同，无完整单点注销。
+
+完整部署、API、生命周期、签名密钥备份与验证范围见[通用 OIDC 说明](../../docs/server-oidc.md)；首个客户端示例见 [Headplane v0.8.2 接入](../../docs/clients/headplane-oidc.md)。iOS 须同步更新；当前实现没有取得 OpenID 完整认证，自动化协议测试也不代表真实实例或 SSH 验收。
+
+
+### iOS 原生第三方应用管理
+
+Hako iOS「设置 → Hako 服务 → 第三方应用」支持登记、列表、启停、OIDC 配置和 Secret 轮换，与 Web 管理端共用记录。原生接口 `GET/POST /api/v1/applications`、`PATCH /api/v1/applications/{id}`、`POST /api/v1/applications/{id}/rotate` 使用可信 Console 会话和 DPoP；不接受管理 Cookie 或第三方应用凭据。写请求要求 JSON，每 Console 会话每分钟最多 30 次。需同步更新 iOS 和服务端，现有 Web 管理接口及自定义扫码接口保持兼容。

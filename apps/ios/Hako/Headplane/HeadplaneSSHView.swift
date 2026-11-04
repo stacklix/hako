@@ -9,6 +9,7 @@ import WebKit
     private let hostname: String
     private var terminalURL: URL?
     private var awaitingLogin = false
+    @Published var webLoginPayload: String?
     @Published private(set) var opened = false
     @Published private(set) var loading = false
     @Published private(set) var error: String?
@@ -67,6 +68,17 @@ import WebKit
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url, url.scheme == "hako" {
+            // Only the configured Hako authorization page may open its own v3 request.
+            if navigationAction.navigationType == .linkActivated, navigationAction.sourceFrame.isMainFrame,
+               navigationAction.targetFrame?.isMainFrame != false,
+               ConsoleWebLoginPayload.allowsOIDCLink(url.absoluteString, source: navigationAction.sourceFrame.request.url, origin: AuthenticatedServerService.shared.serverURL),
+               webView.url == navigationAction.sourceFrame.request.url {
+                webLoginPayload = url.absoluteString
+            }
+            decisionHandler(.cancel)
+            return
+        }
         guard let url = navigationAction.request.url,
               HeadplaneSSH.allowsNavigation(url, allowHTTP: connection.allowHTTP) else {
             error = "无法在终端中打开此链接，请使用 HTTPS 登录页面。"
@@ -179,6 +191,9 @@ struct HeadplaneSSHView: View {
             }
         }
         .tint(HeadplaneStyle.text)
+        .sheet(isPresented: Binding(get: { session.webLoginPayload != nil }, set: { if !$0 { session.webLoginPayload = nil } })) {
+            ConsoleWebLoginView(initialPayload: session.webLoginPayload)
+        }
         .onDisappear { session.shutdown() }
     }
 }

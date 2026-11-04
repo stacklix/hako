@@ -45,6 +45,8 @@ jobs:
           /tmp/hako-agent-registration-tests
           swiftc Hako/Server/ConsoleWebLoginProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleApplicationProtocol.swift Tests/ConsoleApplicationTests.swift -o /tmp/hako-application-tests
+          /tmp/hako-application-tests
           swiftc Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests
       - name: Test host secure storage contract

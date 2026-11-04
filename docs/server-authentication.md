@@ -1,5 +1,7 @@
 # Hako 服务器认证协议
 
+使用者入口与各方式流程图见[登录与身份认证总览](login-authentication-overview.md)。
+
 Hako 统一后端为主应用和子应用提供服务。服务器配置、设备身份、Console 登录、登录会话和扫码批准属于主应用；设备监控复用这些能力。iOS 入口为「设置 → 扫码登录」及「设置 → 服务器与登录」，均以 sheet 打开，无需先进入设备监控。服务器配置在点击 sheet 右上角勾号时保存，关闭有修改的配置会提示放弃；扫码 sheet 仅提供关闭按钮，批准仍需核对后明确确认。Console 表示可信管理客户端角色。
 
 ## 配置与身份
@@ -49,6 +51,21 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 
 Console 的会话列表新增 `type=application`，含 `application,origin,browser,createdAt,lastUsedAt` 和独立会话管理 ID，不返回 sessionToken。使用现有 `DELETE /api/v1/web-sessions/{id}` 可单独撤销，手机也提供移除操作。应用自行签发本地 Cookie，必须将其有效性与该授权关联；iLinker 至多缓存成功校验 60 秒，密码登录独立保留。配置示例和密钥生成步骤见 iLinker README 的 Hako 接入说明。
 
+## iOS Console 第三方应用管理
+
+原生入口为「设置 → Hako 服务 → 第三方应用」。与 Web 管理页共用应用记录、Secret 哈希及 OIDC 配置；不会在手机建立另一份独立登记表。登记默认支持自定义扫码登录，OIDC 仍须明确开启。
+
+| 原生 Console 接口 | 用途 |
+| --- | --- |
+| `GET /api/v1/applications` | 返回 `applications,issuer`，不返回 Secret 或哈希 |
+| `POST /api/v1/applications` | `name,origin` 和可选完整 `oidc`；返回应用与仅此一次的 Secret |
+| `PATCH /api/v1/applications/{id}` | 修改 `enabled` 或完整 `oidc` 配置 |
+| `POST /api/v1/applications/{id}/rotate` | JSON `{}`，轮换 Secret，返回新的一次性凭据 |
+
+全部要求当前可信 Console 会话、`X-Hako-Device` 及绑定路径/方法/令牌的 DPoP，每次消耗防重放 jti；写请求要求 JSON，按 Console 会话限制每分钟 30 次。带浏览器 Origin/Sec-Fetch-Site 的调用被拒绝。管理 Cookie、第三方 Secret、扫码 sessionToken 和 OIDC Access Token 均不能认证这些接口。Web 原有 `/admin/api/applications` 的 Cookie/CSRF 边界保持不变。
+
+原生与网页复用同一管理逻辑，停用、轮换和 OIDC 配置变更执行相同的授权失效操作。iOS 仅在创建/轮换响应后展示 Secret，内存结果绑定发起请求的服务器、账号及会话；切换上下文后丢弃旧响应并关闭凭据页，不持久化原始 Secret。网络失败不自动重试写入，先刷新核对；响应遗失且 Secret 不可恢复时由用户明确轮换。
+
 ## Console 认证与会话
 
 所有签名请求带 `DPoP` JWT（ES256），头部包含 `typ=dpop+jwt`、`alg=ES256`、P-256 公钥 JWK。声明包括 `htm`、`htu`（不含查询参数）、`iat`、随机 `jti`。业务请求额外包含 `ath=base64url(SHA256(accessToken))`，并带 `Authorization: DPoP <accessToken>`、`X-Hako-Device: <deviceId>`。
@@ -87,3 +104,13 @@ Console 的会话列表新增 `type=application`，含 `application,origin,brows
 Console 会话仅支持查看与本机退出，不提供远程删除接口；`DELETE /api/v1/sessions/{id}` 已移除。退出或会话失效不会取消公钥信任，持有已登记私钥的设备可以重新登录；要禁用设备，应在配置文件中移除对应 Console 公钥并重启。网页 Agent 列表改为 `GET /admin/api/agents`，原 `/admin/api/overview` 已移除，不提供兼容路由。
 
 局域网 iLinker 可登记 `http://192.168.0.2:8001`（含端口）。HTTP 应用地址支持私有 IPv4、IPv6 ULA、回环、链路本地地址、localhost / .localhost 和 .local 主机；公网应用仍使用 HTTPS，地址不带路径、查询或片段。手机端需同步更新地址校验。该地址仅用于手机确认展示，Hako 不请求该地址；应用 SK 和手机认证仍发送到 HTTPS Hako 服务。
+
+## 通用 OIDC Provider
+
+OIDC 在现有应用管理、稳定 subject 与 Console 手机批准基础上，增加独立 `/oidc/` 协议接口和凭据命名空间。仅显式启用并登记回调/scope/认证方式的应用可使用。v3 二维码/深链用于 OIDC，手机详情增加 `purpose=oidc` 和空格分隔的 `scopes`；v1 管理登录、v2 自定义扫码及其接口保持兼容。扫码和已有管理员会话都不能替代明确批准。
+
+OIDC 浏览器绑定 Cookie 与管理 Cookie 分离，使用 HttpOnly、HTTPS Secure、`__Host-` 及 SameSite=Lax；完成请求校验原浏览器与 CSRF。授权码短时单次兑换，Token/UserInfo 不接受 Console 或扫码凭据。Console 会话列表继续用 `type=application` 展示 OIDC 待兑换授权及访问授权，复用按管理 ID 撤销接口。
+
+OIDC 请求 90 秒、码 60 秒、ID Token 和 Access Token 5 分钟。临时授权重启失效，签名私钥与 subject 在现有加密 SQLite 内独立持久化。撤销阻止后续码兑换/UserInfo；已签发离线 ID Token 与客户端本地会话不会因此立即清除。没有 refresh token 或完整单点注销。
+
+通用协议、严格参数支持范围、客户端管理、HTTP loopback 限制、备份/密钥策略见 [OIDC 说明](server-oidc.md)，客户端示例见 [Headplane v0.8.2](clients/headplane-oidc.md)。

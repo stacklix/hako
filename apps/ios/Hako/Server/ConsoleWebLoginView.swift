@@ -4,6 +4,8 @@ import AVFoundation
 import UIKit
 
 struct ConsoleWebLoginView: View {
+    var initialPayload: String? = nil
+    @State private var loadedInitialPayload = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var client = ConsoleClient.shared
@@ -42,10 +44,15 @@ struct ConsoleWebLoginView: View {
                             if request.isApplication {
                                 LabeledContent("应用", value: request.application ?? "")
                                 LabeledContent("应用地址", value: request.applicationOrigin ?? "").textSelection(.enabled)
+                                if request.purpose == "oidc" {
+                                    LabeledContent("申请身份信息", value: request.scopes ?? "")
+                                    Text("openid：稳定账号标识。profile：当前账号名称。不提供邮箱；不授予 Hako 管理权限。")
+                                        .font(.footnote).foregroundStyle(.secondary)
+                                }
                                 LabeledContent("操作", value: request.purpose == "bind" ? "绑定已有管理员账号" : "登录应用")
                             }
                             LabeledContent("服务器", value: request.origin)
-                            LabeledContent(request.isApplication ? "来源 IP（应用报告）" : "来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
+                            LabeledContent(request.isApplication && request.purpose != "oidc" ? "来源 IP（应用报告）" : "来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
                                 .textSelection(.enabled)
                             Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
                                 .frame(maxWidth: .infinity).padding(.vertical, 12)
@@ -125,6 +132,11 @@ struct ConsoleWebLoginView: View {
                 await client.restore()
             }
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
+            .task(id: client.authenticated) {
+                guard client.authenticated, !loadedInitialPayload, let initialPayload else { return }
+                loadedInitialPayload = true
+                await inspect(initialPayload)
+            }
             .sheet(isPresented: $showingServerSettings) { ServerSettingsView() }
         }
     }

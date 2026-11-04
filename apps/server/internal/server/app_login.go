@@ -14,17 +14,22 @@ import (
 
 // SecretHash is base64url(SHA256(secret)); raw application secrets are never stored.
 type AuthClientConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Origin     string `json:"origin"`
-	SecretHash string `json:"secretHash"`
-	Enabled    bool   `json:"enabled"`
-	CreatedAt  int64  `json:"createdAt"`
+	OIDC       *OIDCClient `json:"oidc,omitempty"`
+	Revision   string      `json:"revision,omitempty"`
+	ID         string      `json:"id"`
+	Name       string      `json:"name"`
+	Origin     string      `json:"origin"`
+	SecretHash string      `json:"secretHash"`
+	Enabled    bool        `json:"enabled"`
+	CreatedAt  int64       `json:"createdAt"`
 }
 
 func validateAuthClients(clients []AuthClientConfig) error {
 	seen := map[string]bool{}
 	for _, c := range clients {
+		if err := validateOIDCClient(c.OIDC); err != nil {
+			return err
+		}
 		if !identifier.MatchString(c.ID) || seen[c.ID] || strings.TrimSpace(c.Name) == "" || len(c.Name) > 80 || !validLoginID(c.SecretHash) || !validApplicationOrigin(c.Origin) || strings.ContainsAny(c.Name, "\r\n") {
 			return fmt.Errorf("invalid application details (HTTPS or local HTTP origin required)")
 		}
@@ -72,7 +77,7 @@ func (s *Server) validApplicationRequest(req *adminLoginRequest) bool {
 		return true
 	}
 	c, ok := s.authClient(req.ClientID)
-	return ok && c.SecretHash == req.ClientKeyHash
+	return ok && c.SecretHash == req.ClientKeyHash && (req.OIDC == nil || (c.OIDC != nil && c.OIDC.Enabled && c.Revision == req.OIDC.Revision))
 }
 
 func (s *Server) appClient(w http.ResponseWriter, r *http.Request) (AuthClientConfig, bool) {

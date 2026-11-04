@@ -100,6 +100,16 @@ Apple 文档说明：开发测试可以使用 Apple 提供的 provisioning profi
 - [报表扩展隐私沙箱](https://developer.apple.com/documentation/deviceactivity/deviceactivityreport)
 - [GitHub GraphQL 提交与自动签名](https://docs.github.com/en/graphql/reference/commits)
 
+## 第三方应用管理
+
+主应用「设置 → Hako 服务 → 第三方应用」以原生分组列表打开，使用当前已登记 Console 的登录身份管理服务器上的应用，与 Web 管理页共用记录。未登录时提供「服务器与登录」入口；列表支持下拉刷新及右上角加号登记。
+
+登记填写应用名称与登记来源，默认支持自定义扫码协议。OIDC 须单独启用，登记精确 HTTPS 回调地址，选择是否提供 profile、要求 PKCE S256 及 Secret 认证方式。详情可复制不含 Secret 的接入信息、修改 OIDC 配置、启停应用或轮换 Secret；停用、轮换和修改 OIDC 前均明确提示授权失效。
+
+创建或轮换成功后打开一次性凭据页，Secret 默认隐藏，可显示和复制完整接入配置；关闭前确认已保存。Secret 仅保留在当前页面内存，不写入 UserDefaults、Keychain 或日志，关闭或切换服务器/账号/会话后不再显示。复制的秘密配置仅写入本机剪贴板，不通过通用剪贴板同步。失去响应时先刷新核对，不自动重复创建或轮换；原始 Secret 遗失须轮换。
+
+需同步部署支持 `/api/v1/applications` 的服务端。接口使用现有 Console DPoP，不使用管理网页 Cookie 或第三方应用 Secret。详见[认证协议](../../docs/server-authentication.md)与 [OIDC 接入](../../docs/server-oidc.md)。
+
 ## 安装及配置
 
 「设备监控」主页进入时验证会话并更新设备列表，此后每 10 秒自动刷新设备及在线状态，不显示刷新按钮或 loading 行；离开主页、打开添加 Agent 或服务器配置 sheet，或 App 进入后台时停止轮询，返回前台主页后恢复。主页「添加 Agent」下一行保留共享的「服务器与登录」快捷入口，未配置或未登录时也可进入；扫码入口统一位于 Hako 主应用设置页。列表和详情均支持下拉刷新，保留系统原生反馈。单台设备详情右上角保留刷新按钮，请求期间图标旋转，页面内容不插入 loading 行，已有数据保持显示；完成或失败后停止旋转，失败保留错误提示。开启系统“减弱动态效果”时不旋转，辅助功能仍可读取刷新状态。详情直接调用一次 `query.all` 获取查询数据，不再先请求设备列表。进入详情时自动执行同样的查询，离线或不支持的动作由服务端返回提示，不使用列表中的旧状态阻止刷新；设备重新上线后可直接在详情刷新，无需返回列表。

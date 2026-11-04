@@ -12,8 +12,15 @@ import Foundation
         precondition(parsed.requestId == id)
         precondition(!ConsoleWebLoginPayload.validID(id + "\n"))
         let appPayload = try ConsoleWebLoginPayload(valid.replacingOccurrences(of: "v=1", with: "v=2"), origin: origin)
-        precondition(appPayload.isApplication)
-        for invalid in [valid + "&request=" + id, valid + "&other=1", valid + "#fragment", valid.replacingOccurrences(of: "v=1", with: "v=3"),
+        precondition(appPayload.isApplication && !appPayload.isOIDC)
+        let oidcPayload = try ConsoleWebLoginPayload(valid.replacingOccurrences(of: "v=1", with: "v=3"), origin: origin)
+        precondition(oidcPayload.isApplication && oidcPayload.isOIDC)
+        let oidcLink = valid.replacingOccurrences(of: "v=1", with: "v=3")
+        precondition(ConsoleWebLoginPayload.allowsOIDCLink(oidcLink, source: URL(string: origin + "/oidc/requests/" + id), origin: origin))
+        for source in [origin + "/oidc/requests/" + id + "?extra=1", "https://evil.example/oidc/requests/" + id, origin + "/admin/", origin + "/oidc/requests/" + String(repeating: "B", count: 43)] {
+            precondition(!ConsoleWebLoginPayload.allowsOIDCLink(oidcLink, source: URL(string: source), origin: origin))
+        }
+        for invalid in [valid + "&request=" + id, valid + "&other=1", valid + "#fragment", valid.replacingOccurrences(of: "v=1", with: "v=4"),
                         valid.replacingOccurrences(of: "web-login?", with: "admin-login?"),
                         valid.replacingOccurrences(of: "hako://", with: "https://"), valid.replacingOccurrences(of: "hako://", with: "hako://user@"), valid.replacingOccurrences(of: "web-login?", with: "web-login/path?"),
                         valid.replacingOccurrences(of: "request=" + id, with: "request=../bad")] {
@@ -32,6 +39,13 @@ import Foundation
         var appRequest = request
         appRequest.application = "iLinker"; appRequest.applicationOrigin = "https://notify.example.com"; appRequest.purpose = "login"
         try appRequest.validate(origin: origin, requestId: id, applicationRequest: true)
+        var oidc = appRequest; oidc.purpose = "oidc"; oidc.scopes = "openid profile"
+        try oidc.validate(origin: origin, requestId: id, applicationRequest: true, oidcRequest: true)
+        do { try oidc.validate(origin: origin, requestId: id, oidcRequest: false); fatalError("OIDC request substitution accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
+        oidc.scopes = "openid email"
+        do { try oidc.validate(origin: origin, requestId: id); fatalError("Unsupported identity scope accepted") }
+        catch ConsoleWebLoginError.invalidRequest { }
         appRequest.applicationOrigin = "http://unsafe.example.com"
         do { try appRequest.validate(origin: origin, requestId: id); fatalError("Unsafe application origin accepted") }
         catch ConsoleWebLoginError.invalidRequest { }

@@ -16,6 +16,7 @@ import (
 const adminLoginLifetime = 90 * time.Second
 
 type adminLoginRequest struct {
+	OIDC                                                    *oidcAuthorization
 	ClientID, ClientName, ClientOrigin, Purpose, RedeemHash string
 	ClientKeyHash                                           string
 	BrowserHash, Code, Nonce, Browser, Status, ClientIP     string
@@ -289,7 +290,7 @@ func (s *Server) inspectAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Status = "scanned"
-	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "clientIP": req.ClientIP, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce, "application": req.ClientName, "applicationOrigin": req.ClientOrigin, "purpose": req.Purpose})
+	respond(w, 200, map[string]string{"id": r.PathValue("id"), "origin": s.config.PublicURL, "confirmationCode": req.Code, "browser": req.Browser, "clientIP": req.ClientIP, "requestedAt": req.Created.UTC().Format(time.RFC3339), "expiresAt": req.Expires.UTC().Format(time.RFC3339), "nonce": req.Nonce, "application": req.ClientName, "applicationOrigin": req.ClientOrigin, "purpose": req.Purpose, "scopes": oidcScopes(req)})
 }
 
 func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {

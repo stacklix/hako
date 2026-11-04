@@ -12,7 +12,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, github
+        case server, scanner, applications, github
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -43,6 +43,10 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
                 Button { sheet = .scanner } label: {
                     settingsEntry("扫码登录", systemImage: "qrcode.viewfinder")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                Button { sheet = .applications } label: {
+                    settingsEntry("第三方应用", systemImage: "square.stack.3d.up")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
@@ -101,6 +105,7 @@ struct SettingsView: View {
                 switch route {
                 case .server: ServerSettingsView()
                 case .scanner: ConsoleWebLoginView()
+                case .applications: ConsoleApplicationsView()
                 case .github: GitHubSettingsSheet()
                 }
             }

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | iOS | [apps/ios](apps/ios/README.md) | 主应用服务器登录与扫码；使用时间采集与 GitHub 同步；运动记录、趋势图及年度 GitHub 归档；设备监控 Console；Arcane 容器管理；青龙任务、脚本与订阅管理；阿里云 ECS 监控与终端 |
 | Windows | [apps/windows](apps/windows/README.md) | WPF 工具箱、设备代理、CPU 与内存监控 |
-| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证、设备请求转发与 Caddy 访问日志统计 |
+| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证、通用 OIDC、设备请求转发与 Caddy 访问日志统计 |
 
 ## 仓库结构
 
@@ -25,7 +25,7 @@ hako/
 └─ README.md
 ```
 
-各应用使用不同语言开发，没有共享代码包。各自目录变化触发对应 CI，应用级认证、会话和扫码登录见 [Hako 服务器认证协议](docs/server-authentication.md)，设备监控的三端接口见 [设备监控协议](docs/device-monitoring.md)。
+各应用使用不同语言开发，没有共享代码包。各自目录变化触发对应 CI，各类登录、凭据与流程图见[登录与身份认证总览](docs/login-authentication-overview.md)，接口细节见 [Hako 服务器认证协议](docs/server-authentication.md)，设备监控的三端接口见 [设备监控协议](docs/device-monitoring.md)。
 
 ## 构建产物
 
@@ -41,7 +41,7 @@ dist/
    └─ site/                           # OTA 安装页及分发资源
 ```
 
-Windows 打包执行 `apps/windows/scripts/publish.ps1`，服务端打包执行 `apps/server/scripts/publish.ps1`（Linux/macOS 使用同目录 `publish.sh`）。iOS 打包需在 macOS/Xcode 或 GitHub Actions 中执行。
+Windows 打包执行 `apps/windows/scripts/publish.ps1`，服务端打包执行 `apps/server/scripts/publish.ps1`（Linux/macOS 使用同目录 `publish.sh`）。iOS 可使用 macOS/Xcode、GitHub Actions，或本机已配置的 xkode 工作台构建与签名。
 
 ## 开发与验证
 
@@ -53,4 +53,4 @@ iOS 的功能、权限、安装和验证说明见 [iOS README](apps/ios/README.m
 python -m unittest discover -s apps/ios/Tests -p 'test_*.py'
 ```
 
-iOS 编译、归档、签名及设备安装需要 macOS 和 Xcode，在 Windows 上跳过；可在 Windows 上执行的验证仍正常运行。
+涉及 iOS 源码、资源或工程配置的任务，使用当前可用工具链异步构建、签名和打包；不因 Windows 统一跳过。已授权、已配对且在线的设备可用时安装启动，分别记录各阶段实际结果。
