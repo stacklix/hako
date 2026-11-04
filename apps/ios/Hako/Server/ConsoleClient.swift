@@ -281,7 +281,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     func pendingLoginPrompts() async throws -> [ConsoleLoginPrompt] {
         let context = requestContext, origin = serverURL
         guard authenticated, !logoutPending else { throw CancellationError() }
-        let data = try await authorized("/api/v1/auth/oidc/requests")
+        let data = try await authorized("/api/v1/auth/login-prompts")
         guard context == requestContext else { throw CancellationError() }
         let result = try JSONDecoder().decode(ConsoleLoginPromptList.self, from: data)
         try result.validate(origin: origin)
@@ -293,7 +293,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         guard authenticated, !logoutPending else { throw CancellationError() }
         try prompt.validate(origin: serverURL)
         if approve && !ConsoleLoginPrompt.validCode(code) { throw HakoError(message: "请输入网页上的六位数字确认码。") }
-        _ = try await authorized("/api/v1/auth/oidc/requests/\(prompt.id)/\(approve ? "approve" : "deny")",
+        _ = try await authorized("/api/v1/auth/login-prompts/\(prompt.id)/\(approve ? "approve" : "deny")",
             method: "POST", body: approve ? ["confirmationCode": code] : [:], nonce: prompt.nonce)
         guard context == requestContext else { throw CancellationError() }
     }

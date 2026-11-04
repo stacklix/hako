@@ -138,6 +138,7 @@ func (s *Server) createAppLogin(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	expires := now.Add(adminLoginLifetime)
 	req := &adminLoginRequest{ClientID: c.ID, ClientName: c.Name, ClientOrigin: c.Origin, ClientKeyHash: c.SecretHash, Purpose: body.Purpose, RedeemHash: digest(redeem), Code: fmt.Sprintf("%06d", number.Int64()), Nonce: randomToken(), Browser: browserLabel(body.UserAgent), ClientIP: body.ClientIP, Status: "pending", Created: now, Expires: expires}
+	req.RequestID = id
 	s.adminMu.Lock()
 	if !s.validApplicationRequest(req) {
 		s.adminMu.Unlock()

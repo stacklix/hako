@@ -8,7 +8,7 @@ import (
 
 // Authenticated Console discovery intentionally omits the confirmation code and
 // browser binding. Merely reading this list cannot approve or claim a login.
-func (s *Server) pendingOIDCLogins(w http.ResponseWriter, r *http.Request) {
+func (s *Server) pendingLoginPrompts(w http.ResponseWriter, r *http.Request) {
 	sessionID, _, ok := s.consoleAdminApprover(w, r)
 	if !ok {
 		return
@@ -18,6 +18,7 @@ func (s *Server) pendingOIDCLogins(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type prompt struct {
+		Purpose           string `json:"purpose"`
 		ID                string `json:"id"`
 		Origin            string `json:"origin"`
 		Application       string `json:"application"`
@@ -34,12 +35,15 @@ func (s *Server) pendingOIDCLogins(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	s.cleanupAdminLogins(now)
 	items := []prompt{}
+	oidcOnly := r.URL.Path == "/api/v1/auth/oidc/requests"
 	for _, req := range s.adminLogins {
-		// Requests already opened via QR/deep link are handled by that confirmation UI.
-		if req.OIDC == nil || req.Status != "pending" || !validLoginID(req.RequestID) || !s.validApplicationRequest(req) {
+		// The legacy OIDC notifier omits opened requests. The inbox includes all
+		// still-actionable requests, including those inspected by another device.
+		actionable := req.Status == "pending" || (!oidcOnly && req.Status == "scanned")
+		if (oidcOnly && req.OIDC == nil) || !actionable || !validLoginID(req.RequestID) || !s.validApplicationRequest(req) {
 			continue
 		}
-		items = append(items, prompt{req.RequestID, s.config.PublicURL, req.ClientName, req.ClientOrigin, req.OIDC.Scope, req.Browser, req.ClientIP, req.Created.UTC().Format(time.RFC3339), req.Expires.UTC().Format(time.RFC3339), req.Nonce})
+		items = append(items, prompt{req.Purpose, req.RequestID, s.config.PublicURL, req.ClientName, req.ClientOrigin, oidcScopes(req), req.Browser, req.ClientIP, req.Created.UTC().Format(time.RFC3339), req.Expires.UTC().Format(time.RFC3339), req.Nonce})
 	}
 	slices.SortFunc(items, func(a, b prompt) int {
 		if a.RequestedAt < b.RequestedAt {
@@ -56,7 +60,7 @@ func (s *Server) pendingOIDCLogins(w http.ResponseWriter, r *http.Request) {
 		}
 		return 0
 	})
-	if len(items) > 32 {
+	if oidcOnly && len(items) > 32 {
 		items = items[:32]
 	}
 	w.Header().Set("Cache-Control", "no-store")

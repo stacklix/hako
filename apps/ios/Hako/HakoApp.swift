@@ -10,6 +10,7 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject private var console = ConsoleClient.shared
+    @StateObject private var loginRequests = ConsoleLoginRequestsStore()
     @State private var loginLink: HakoLoginLink?
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
@@ -91,7 +92,14 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("Hako")
-            .toolbar { NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置") }
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    NavigationLink { ConsoleLoginRequestsView(store: loginRequests) } label: {
+                        Image(systemName: loginRequests.requests.isEmpty ? "bell" : "bell.badge")
+                    }.accessibilityLabel("登录通知，\(loginRequests.requests.count) 条待处理")
+                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置")
+                }
+            }
         }.tint(.primary)
             .onOpenURL { url in
                 // Accept only the existing exact Hako login structure and configured HTTPS server.
@@ -107,7 +115,7 @@ struct HomeView: View {
             }
             .task(id: "\(scenePhase)-\(console.requestContext)") {
                 guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }
-                await ConsoleLoginPromptCoordinator.shared.run()
+                await loginRequests.run()
             }
     }
 }

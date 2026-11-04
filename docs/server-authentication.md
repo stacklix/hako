@@ -107,7 +107,7 @@ Console 会话仅支持查看与本机退出，不提供远程删除接口；`DE
 
 ## 通用 OIDC Provider
 
-已登录的 Hako iOS 前台通过 `GET /api/v1/auth/oidc/requests` 每 3 秒发现待授权请求，接口要求可信 Console DPoP 且不返回确认码。用户在原生弹框中输入原浏览器六位数字，明确点击确认后，通过 `/api/v1/auth/oidc/requests/{id}/approve` 提交确认码与 nonce 签名；拒绝使用同级 `/deny`。五次输错拒绝该请求。批准仍由原浏览器领取，不提供后台推送；前后台和身份上下文切换清除弹框输入。具体限流及生命周期见 [OIDC 前台确认](server-oidc.md#手机前台主动确认)。
+Hako 首页设置按钮左侧提供通知入口，前台通过 `GET /api/v1/auth/login-prompts` 静默刷新全部待处理的管理网页登录、第三方扫码和 OIDC 请求，不自动弹窗。点击列表条目才打开原生确认 Sheet；接口要求可信 Console DPoP，不返回确认码。用户输入原浏览器六位数字后通过同级 `/{id}/approve` 提交确认码与 nonce 签名，拒绝走 `/{id}/deny`，五次输错拒绝该请求。查询和打开 Sheet 不批准、不领取；各类型继续使用原浏览器 Cookie 或客户端私有领取凭据。旧 OIDC 通知接口保持兼容。具体范围见 [登录请求通知](server-oidc.md#手机登录请求通知)。
 
 OIDC 在现有应用管理、稳定 subject 与 Console 手机批准基础上，增加独立 `/oidc/` 协议接口和凭据命名空间。仅显式启用并登记回调/scope/认证方式的应用可使用。v3 二维码/深链用于 OIDC，手机详情增加 `purpose=oidc` 和空格分隔的 `scopes`；v1 管理登录、v2 自定义扫码及其接口保持兼容。扫码和已有管理员会话都不能替代明确批准。
 

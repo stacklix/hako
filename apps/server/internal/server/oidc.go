@@ -153,7 +153,7 @@ func (s *Server) initOIDC() error {
 		respond(w, 200, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{s.oidc.jwk}})
 	})
 	s.mux.HandleFunc("GET /oidc/authorize", s.oidcAuthorize)
-	s.mux.HandleFunc("GET /api/v1/auth/oidc/requests", s.pendingOIDCLogins)
+	s.mux.HandleFunc("GET /api/v1/auth/oidc/requests", s.pendingLoginPrompts)
 	s.mux.HandleFunc("POST /api/v1/auth/oidc/requests/{id}/approve", s.approveAdminLogin)
 	s.mux.HandleFunc("POST /api/v1/auth/oidc/requests/{id}/deny", s.approveAdminLogin)
 	s.mux.HandleFunc("GET /oidc/consent.js", func(w http.ResponseWriter, r *http.Request) {

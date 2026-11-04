@@ -33,6 +33,9 @@ func (s *Server) qrLoginRoutes() {
 	s.mux.HandleFunc("GET /admin/api/login/requests/{id}/qr", s.adminLoginQR)
 	s.mux.HandleFunc("POST /admin/api/login/requests/{id}/complete", s.completeAdminLogin)
 	s.mux.HandleFunc("GET /api/v1/auth/web-login/requests/{id}", s.inspectAdminLogin)
+	s.mux.HandleFunc("GET /api/v1/auth/login-prompts", s.pendingLoginPrompts)
+	s.mux.HandleFunc("POST /api/v1/auth/login-prompts/{id}/approve", s.approveAdminLogin)
+	s.mux.HandleFunc("POST /api/v1/auth/login-prompts/{id}/deny", s.approveAdminLogin)
 	s.mux.HandleFunc("POST /api/v1/auth/web-login/requests/{id}/approve", s.approveAdminLogin)
 	s.mux.HandleFunc("POST /api/v1/auth/web-login/requests/{id}/deny", s.approveAdminLogin)
 }
@@ -133,7 +136,7 @@ func (s *Server) createAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 429, "too_many_login_requests")
 		return
 	}
-	s.adminLogins[digest(id)] = &adminLoginRequest{BrowserHash: digest(browser), Code: code, Nonce: nonce, Browser: browserLabel(r.UserAgent()), ClientIP: s.loginClientIP(r), Status: "pending", Created: now, Expires: expires, QR: png}
+	s.adminLogins[digest(id)] = &adminLoginRequest{RequestID: id, BrowserHash: digest(browser), Code: code, Nonce: nonce, Browser: browserLabel(r.UserAgent()), ClientIP: s.loginClientIP(r), Status: "pending", Created: now, Expires: expires, QR: png}
 	s.adminMu.Unlock()
 	s.pendingCookie(w, browser, int(adminLoginLifetime.Seconds()))
 	respond(w, 201, map[string]any{"id": id, "confirmationCode": code, "qrPayload": payload, "expiresAt": expires.UTC().Format(time.RFC3339), "pollIntervalMs": 2000})
@@ -318,8 +321,9 @@ func (s *Server) approveAdminLogin(w http.ResponseWriter, r *http.Request) {
 		reject(w, 410, "login_request_expired")
 		return
 	}
-	foreground := strings.HasPrefix(r.URL.Path, "/api/v1/auth/oidc/requests/")
-	if foreground && req.OIDC == nil {
+	oidcForeground := strings.HasPrefix(r.URL.Path, "/api/v1/auth/oidc/requests/")
+	foreground := oidcForeground || strings.HasPrefix(r.URL.Path, "/api/v1/auth/login-prompts/")
+	if oidcForeground && req.OIDC == nil {
 		reject(w, 404, "login_request_not_found")
 		return
 	}

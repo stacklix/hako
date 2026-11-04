@@ -74,6 +74,20 @@ import Foundation
         precondition(entered.confirmationCode == "123456" && entered.purpose == "oidc")
         for code in ["", "12345", "1234567", "１２３４５６", "12345\n", "abcdef"] { precondition(!ConsoleLoginPrompt.validCode(code)) }
         precondition(ConsoleLoginPrompt.validCode("000000"))
+        var promptFields: [String: String] = ["id": id, "origin": origin, "application": "", "applicationOrigin": "", "purpose": "", "scopes": "", "browser": "Safari", "clientIP": "127.0.0.1", "requestedAt": "", "expiresAt": future, "nonce": id]
+        let adminPrompt = try JSONDecoder().decode(ConsoleLoginPrompt.self, from: JSONSerialization.data(withJSONObject: promptFields))
+        try adminPrompt.validate(origin: origin)
+        precondition(adminPrompt.title == "Hako 管理控制台" && !adminPrompt.isApplication)
+        for purpose in ["login", "bind"] {
+            promptFields["purpose"] = purpose; promptFields["application"] = "Example"; promptFields["applicationOrigin"] = "https://client.example"
+            let scanPrompt = try JSONDecoder().decode(ConsoleLoginPrompt.self, from: JSONSerialization.data(withJSONObject: promptFields))
+            try scanPrompt.validate(origin: origin)
+            precondition(scanPrompt.effectivePurpose == purpose && scanPrompt.isApplication)
+        }
+        promptFields["scopes"] = "openid profile"
+        let mixedPrompt = try JSONDecoder().decode(ConsoleLoginPrompt.self, from: JSONSerialization.data(withJSONObject: promptFields))
+        do { try mixedPrompt.validate(origin: origin); fatalError("Non-OIDC prompt claimed OIDC scopes") }
+        catch ConsoleWebLoginError.invalidRequest { }
         do { try prompt.validate(origin: "https://other.example"); fatalError("Prompt server substitution accepted") }
         catch ConsoleWebLoginError.serverMismatch { }
         do { try ConsoleLoginPromptList(issuer: origin, requests: [prompt,prompt]).validate(origin: origin); fatalError("Duplicate prompt accepted") }
