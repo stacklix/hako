@@ -41,7 +41,7 @@ dist/
    └─ site/                           # OTA 安装页及分发资源
 ```
 
-Windows 打包执行 `apps/windows/scripts/publish.ps1`，服务端打包执行 `apps/server/scripts/publish.ps1`（Linux/macOS 使用同目录 `publish.sh`）。iOS 可使用 macOS/Xcode、GitHub Actions，或本机已配置的 xkode 工作台构建与签名。
+Windows 打包执行 `apps/windows/scripts/publish.ps1`，服务端打包执行 `apps/server/scripts/publish.ps1`（Linux/macOS 使用同目录 `publish.sh`）。iOS 可使用 macOS/Xcode 或 GitHub Actions 构建与签名。
 
 ## 开发与验证
 

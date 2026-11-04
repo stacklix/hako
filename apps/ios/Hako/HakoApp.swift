@@ -93,8 +93,10 @@ struct HomeView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Text("Hako").font(.system(size: 26, weight: .bold)).tracking(-1)
+                        .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                         .accessibilityAddTraits(.isHeader)
                 }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .principal) { Text("").accessibilityHidden(true) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink { NotificationsView(store: notifications) } label: {
