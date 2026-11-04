@@ -15,7 +15,7 @@ struct HomeView: View {
         var applications: [Application] {
             switch self {
             case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices]
-            case .finance: []
+            case .finance: [.crypto]
             case .life: [.sports, .usage]
             }
         }
@@ -24,6 +24,7 @@ struct HomeView: View {
     private enum Application: String, Identifiable {
         case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
         case containers = "容器管理", devices = "设备监控", sports = "运动记录", usage = "使用时间"
+        case crypto = "加密资产"
 
         var id: Self { self }
         var subtitle: String {
@@ -35,6 +36,7 @@ struct HomeView: View {
             case .devices: "设备在线状态 · 能力调用"
             case .sports: "运动趋势 · 每次记录 · GitHub 归档"
             case .usage: "每日概览 · Top 5 · GitHub 归档"
+            case .crypto: "HTX · Binance · 链上资产与私有归档"
             }
         }
         var symbol: String {
@@ -46,6 +48,7 @@ struct HomeView: View {
             case .devices: "desktopcomputer"
             case .sports: "figure.run"
             case .usage: "chart.bar.xaxis"
+            case .crypto: "bitcoinsign.circle"
             }
         }
         @ViewBuilder var destination: some View {
@@ -57,6 +60,7 @@ struct HomeView: View {
             case .devices: DeviceMonitorView()
             case .sports: SportsView()
             case .usage: UsageEntry()
+            case .crypto: CryptoView()
             }
         }
     }

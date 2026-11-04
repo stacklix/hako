@@ -27,6 +27,14 @@ struct GitHubSettings: Codable, Equatable {
         return value
     }
     func save() throws { UserDefaults.standard.set(try JSONEncoder().encode(self), forKey: "github.settings") }
+    static func loadPrivate() -> Self {
+        guard let data = UserDefaults.standard.data(forKey: "github.private.settings"),
+              let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return value
+    }
+    func savePrivate() throws {
+        UserDefaults.standard.set(try JSONEncoder().encode(self), forKey: "github.private.settings")
+    }
     func validate() throws {
         _ = try repository()
         guard !branch.isEmpty, !branch.contains(where: { $0.isWhitespace || $0.isNewline }) else {

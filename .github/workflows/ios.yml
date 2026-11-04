@@ -116,6 +116,10 @@ jobs:
           /tmp/hako-ecs-tests
           swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Tests/ECSLoadingTests.swift -o /tmp/hako-ecs-loading-tests
           /tmp/hako-ecs-loading-tests
+      - name: Test private asset records and daily sync policy
+        run: |
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoLegacyBackfill.swift Tests/CryptoModelsTests.swift -o /tmp/hako-crypto-model-tests
+          /tmp/hako-crypto-model-tests
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v6

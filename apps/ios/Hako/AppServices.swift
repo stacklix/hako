@@ -6,4 +6,7 @@ enum AppServices {
     static func gitHub() -> any GitHubRepositoryAccess {
         GitHubService(settings: .load(), tokenProvider: { try TokenStore.read() })
     }
+    static func privateGitHub() -> any GitHubRepositoryAccess {
+        PrivateGitHubRepository(settings: .loadPrivate())
+    }
 }
