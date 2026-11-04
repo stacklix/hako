@@ -40,6 +40,7 @@ struct NotificationsView: View {
                                             store.clear(notification)
                                             showNotice(notification.clearFeedback)
                                         } label: { Label("清除", systemImage: "trash") }
+                                        .tint(.red)
                                     }
                             }
                         } header: {
@@ -56,7 +57,9 @@ struct NotificationsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("清除全部", systemImage: "trash", role: .destructive) { notice = nil; confirmingClearAll = true }
+                    Button(role: .destructive) { notice = nil; confirmingClearAll = true } label: {
+                        Label("清除全部", systemImage: "trash").foregroundStyle(.red)
+                    }
                 } label: { Image(systemName: "ellipsis") }
                     .accessibilityLabel("通知操作")
                     .disabled(store.notifications.isEmpty)
