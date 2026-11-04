@@ -165,7 +165,7 @@ struct HomeView: View {
             .foregroundStyle(HakoStyle.muted)
             .padding(.top, 20)
 
-            if category == .finance {
+            if category.applications.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "building.columns")
                         .font(.system(size: 34, weight: .light)).foregroundStyle(HakoStyle.muted)
