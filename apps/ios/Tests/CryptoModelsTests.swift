@@ -5,35 +5,49 @@ import Foundation
         func check(_ condition: Bool, _ message: String) { precondition(condition,message) }
         let formatter=ISO8601DateFormatter()
         let now=formatter.date(from:"2026-12-31T16:01:00Z")!
-        let dates=CryptoSyncPolicy.dates(now:now)
-        check(dates.today=="2027-01-01" && dates.yesterday=="2026-12-31","Shanghai midnight and year rollover")
+        let recent=CryptoSyncPolicy.recentContractDays(now:now).map(CryptoDay.key)
+        check(recent == ["2026-12-31","2026-12-30","2026-12-29","2026-12-28","2026-12-27","2026-12-26","2026-12-25"],"seven completed Shanghai days across the year boundary")
         let scope=String(repeating:"a",count:64)
-        let prior=CryptoRecord(kind:"htx-trx",day:"2026-12-31",sampledAt:formatter.date(from:"2026-12-31T08:00:00Z")!.timeIntervalSince1970,scope:scope,values:["trx":100,"price":0.3,"funding_trx": -1,"funding_rate":0.0001])
-        let csv=CryptoRecord.encode([prior])
-        check(try CryptoRecord.decode(csv,kind:"htx-trx",year:"2026")==[prior],"roundtrip preserves signed funding and decimals")
-        check(prior.path=="data/crypto/htx-trx/2026.csv","historical target year")
-        check(!CryptoSyncPolicy.confirmed([prior],pending:[prior],kind:"htx-trx",day:dates.yesterday,scope:scope),"pending upload must retry")
-        check(CryptoSyncPolicy.confirmed([prior],pending:[],kind:"htx-trx",day:dates.yesterday,scope:scope),"confirmed yesterday skips on repeated trigger")
-        check(!CryptoSyncPolicy.confirmed([prior],pending:[],kind:"portfolio",day:dates.today,scope:scope),"contract success never suppresses portfolio task")
-        check(!CryptoSyncPolicy.confirmed([prior],pending:[],kind:"htx-trx",day:dates.yesterday,scope:"other"),"changed source cannot inherit completion")
-        var newer=prior;newer.sampledAt+=10;newer.values["funding_trx"]=2
-        check(CryptoRecord.merge([newer],[prior])==[newer],"older pending row cannot replace newer remote row")
-        do { _ = try CryptoRecord.decode(csv.replacingOccurrences(of:"0.3",with:"nan"),kind:"htx-trx",year:"2026");fatalError("nonfinite CSV accepted") } catch {}
+        let prior=CryptoRecord(kind:"htx-trx",day:"2026-12-31",sampledAt:formatter.date(from:"2026-12-31T08:00:00Z")!.timeIntervalSince1970,scope:scope,
+                               values:["equity":8723.12345*0.32439,"trx":8723.12345,"price":0.32439,"liquidation":0.4438,"funding_trx": -1.235,"funding_rate":0.0001234567])
+        let csv=try CryptoRecord.encode([prior],kind:"htx-trx")
+        let cells=try CSV.parse(csv)
+        check(cells[0] == ["date","total_equity","trx_balance","trx_liquidation_price","trx_price","funding_trx","funding_rate"],"new contract schema")
+        check(cells[1][0] == "20261231" && cells[1][2] == "8723.12" && cells[1][3] == "0.444" && cells[1][4] == "0.324" && cells[1][5] == "-1.24","amounts two decimals, prices three, signed half-up rounding")
+        check(cells[1][6] == "0.0001234567","rate precision unchanged")
+        check(!csv.contains("sampled_at") && !csv.contains(scope),"timestamps and scopes stay local")
+        let decoded=try CryptoRecord.decode(csv,kind:"htx-trx",year:"2026",scope:scope)[0]
+        check(decoded.sampledAt == 0 && CryptoDay.key(decoded.date) == prior.day,"archive date never becomes a fabricated collection time")
+        check(decoded.equity != decoded.values["trx"]! * decoded.values["price"]!,"equity retains independently rounded original valuation")
+        check(try CryptoRecord.encode([decoded],kind:"htx-trx") == csv,"repeated saves do not recalculate equity from rounded price")
+        check(try prior.normalized().sampledAt == prior.sampledAt,"local collection timestamp survives normalization")
+        var missing=decoded
+        missing.values.removeValue(forKey:"funding_rate");missing.values.removeValue(forKey:"equity")
+        let partial=try CryptoRecord.decode(CryptoRecord.encode([missing],kind:"htx-trx"),kind:"htx-trx",year:"2026")[0]
+        check(partial.missingContractFields == ["funding_rate","equity"] && partial.equity == nil,"blank fields remain missing until corresponding APIs fill them")
+        var update=decoded;update.values["trx"]=1;update.values["funding_rate"]=0
+        let filled=missing.fillingMissingContractFields(from:update)
+        check(filled.values["trx"] == decoded.values["trx"] && filled.values["funding_rate"] == 0,"fill only nil fields, including a real zero")
+        check(!filled.missingContractFields.contains("funding_rate"),"zero rates are complete")
+        let portfolio=CryptoRecord(kind:"portfolio",day:prior.day,sampledAt:prior.sampledAt,scope:scope,values:["htx":20.125,"binance":30,"chain":0,"total":50.125])
+        let portfolioCSV=try CryptoRecord.encode([portfolio],kind:"portfolio")
+        check(try CSV.parse(portfolioCSV) == [["date","htx","binance","chain","total"],["20261231","20.13","30.00","0.00","50.13"]],"all portfolio amounts use two fixed decimals")
+        var newer=portfolio;newer.scope="changed";newer.sampledAt+=10
+        check(CryptoRecord.merge([portfolio],[newer]) == [newer],"latest local daily snapshot wins")
+        check(try CryptoRecord.formatted(2.675,column:"funding_trx") == "2.68","decimal ties do not depend on binary floating point")
+        check(try CryptoRecord.formatted(-0.004,column:"funding_trx") == "0.00","no negative zero")
+        var optional=prior;optional.values.removeValue(forKey:"liquidation");optional.values.removeValue(forKey:"funding_trx")
+        let optionalCells=try CSV.parse(CryptoRecord.encode([optional],kind:"htx-trx"))
+        check(optionalCells[1][3].isEmpty && optionalCells[1][5].isEmpty,"missing values stay blank")
+        for invalid in ["20260230","2026121","20261301","2026-12-31"] {
+            do { _ = try CryptoRecord.decode(csv.replacingOccurrences(of:"20261231",with:invalid),kind:"htx-trx",year:"2026");fatalError("invalid date accepted") } catch {}
+        }
         do { _ = try CryptoRecord.decode(csv,kind:"htx-trx",year:"2027");fatalError("wrong year accepted") } catch {}
-        let wallet=CryptoWallet(name:"wallet",network:"Ethereum",address:"0x"+String(repeating:"1",count:40))
-        try wallet.validate()
-        do { var invalid=wallet;invalid.address="0x123";try invalid.validate();fatalError("invalid address accepted") } catch {}
-        let legacy="date,total_equity,trx_balance,trx_liquidation_price,trx_price\n20260901,100,300,0.5,0.3\n20260903,101,310,,0.3\n20261104,110,320,0.5,0.3\n"
-        let migrated=try CryptoLegacyBackfill.decode(legacy,scope:scope,before:"2026-11-04")
-        check(migrated.count==2 && migrated[0].day=="2026-09-01" && migrated[1].day=="2026-09-03","migration preserves date gaps and excludes today")
-        check(migrated[0].values["legacy_contract_equity"]==100 && migrated[0].values["trx"]==300,"migration preserves original rounded values")
-        check(migrated.allSatisfy{$0.values["funding_trx"]==nil && $0.values["funding_rate"]==nil},"missing legacy funding is not fabricated as zero")
-        check(try CryptoRecord.decode(CryptoRecord.encode(migrated),kind:"htx-trx",year:"2026")==migrated,"migrated records survive annual CSV roundtrip")
-        let preferred=CryptoLegacyBackfill.combine(api:["2026-09-01":["trx":999,"price":0.4,"funding_trx":2]],times:[:],legacy:migrated,existing:[],scope:scope,before:"2026-11-04")
-        check(preferred[0].values["trx"]==999 && preferred[0].values["price"]==0.4 && preferred[0].values["liquidation"]==0.5,"API wins field by field; unavailable historical liquidation falls back to CSV")
-        check(preferred[0].values["legacy_contract_equity"]==nil,"legacy valuation cannot override API equity and price")
-        check(preferred[1].values["trx"]==310,"CSV supplies days missing API equity")
-        check(CryptoLegacyBackfill.combine(api:[prior.day:["trx":999]],times:[:],legacy:[],existing:[prior],scope:scope,before:"2027-01-01").isEmpty,"normal daily records are not overwritten by migration")
-        print("Crypto models: 19 checks passed")
+        do { _ = try CryptoRecord.decode(csv.replacingOccurrences(of:"0.324",with:"nan"),kind:"htx-trx",year:"2026");fatalError("nonfinite value accepted") } catch {}
+        do { _ = try CryptoRecord.encode([prior,portfolio],kind:"htx-trx");fatalError("mixed kinds accepted") } catch {}
+        do { _ = try CryptoRecord.decode(CSV.encode([cells[0],cells[1],cells[1]]),kind:"htx-trx",year:"2026");fatalError("duplicate date accepted") } catch {}
+        check(try CryptoRecord.decode(CryptoRecord.encode([],kind:"htx-trx"),kind:"htx-trx",year:"2026").isEmpty,"empty annual file")
+        try CryptoWallet(name:"wallet",network:"Ethereum",address:"0x"+String(repeating:"1",count:40)).validate()
+        print("Crypto models: precision, dates, equity stability, strict CSV validation and sync policy passed")
     }
 }

@@ -1,0 +1,461 @@
+{
+  "status": "ok",
+  "data": {
+    "total_page": 144,
+    "current_page": 1,
+    "total_size": 7184,
+    "data": [
+      {
+        "avg_premium_index": "-0.000405895776010031",
+        "funding_rate": "0.000093963263484322",
+        "realized_rate": null,
+        "funding_time": "1793779200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000295308389336720",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793750400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000006123305304169",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793721600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000006707294413294",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793692800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000000945309194734",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793664000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000001407425911269",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793635200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000008192829412566",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793606400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000082663618240208",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793577600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000076043015202870",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793548800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000110521653616166",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793520000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000039521683818793",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793491200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000011377529492480",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793462400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000356220589193721",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793433600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "0.000000000000000000",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793404800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "0.000443260265441396",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793376000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "0.000754923781316146",
+        "funding_rate": "0.000255185953145045",
+        "realized_rate": null,
+        "funding_time": "1793347200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000118846043384851",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793318400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000200744102787949",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793289600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000010671343594192",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793260800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000044436842507717",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793232000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000132830005602680",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793203200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000007938596447374",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793174400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000015852497830123",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793145600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000002351571099072",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793116800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000013734900606966",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793088000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000053595592437550",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793059200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000010707481237921",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793030400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000016008309954316",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1793001600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000030192447978954",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792972800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000070338474208032",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792944000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000074580212504874",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792915200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000113373484821917",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792886400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000132713066891039",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792857600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000675653096420380",
+        "funding_rate": "-0.000175653096420380",
+        "realized_rate": null,
+        "funding_time": "1792828800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000752256766004230",
+        "funding_rate": "-0.000252518011625346",
+        "realized_rate": null,
+        "funding_time": "1792800000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000291854892233127",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792771200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000036984200275047",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792742400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000001914217230555",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792713600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000033227799819735",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792684800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000102174138971059",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792656000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000157918909352693",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792627200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000133249157133493",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792598400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000201802315819821",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792569600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000075589415154081",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792540800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000071557841227560",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792512000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000149779983823303",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792483200000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000022188888901015",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792454400000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000033782643137171",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792425600000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000015383766552996",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792396800000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      },
+      {
+        "avg_premium_index": "-0.000030156334514456",
+        "funding_rate": "0.000100000000000000",
+        "realized_rate": null,
+        "funding_time": "1792368000000",
+        "contract_code": "TRX-USD",
+        "symbol": "TRX",
+        "fee_asset": "TRX"
+      }
+    ]
+  },
+  "ts": 1793806399919
+}

@@ -1,23 +1,98 @@
 import SwiftUI
 
 struct CryptoSettingsView: View {
+    @State private var wallets:[CryptoWallet]=[]
+    @State private var editing:CryptoWallet?
+    @State private var walletError:String?
     var body: some View {
         Form {
             Section("交易所接口") {
-                NavigationLink("HTX · API Key / Secret Key") { CryptoCredentialEditor(exchange:"htx",title:"HTX 接口") }
-                NavigationLink("Binance · API Key / Secret Key") { CryptoCredentialEditor(exchange:"binance",title:"Binance 接口") }
+                CryptoCredentialLink(exchange:"htx",title:"HTX")
+                CryptoCredentialLink(exchange:"binance",title:"Binance")
             }
-            Section("链上资产") {
-                NavigationLink("观察地址管理") { CryptoWalletSettings() }
-                NavigationLink("TRONSCAN API Token") { CryptoCredentialEditor(exchange:"tronscan",title:"TRONSCAN",tokenOnly:true) }
-                NavigationLink("Moralis API Token · Ethereum / BSC") { CryptoCredentialEditor(exchange:"moralis",title:"Moralis",tokenOnly:true) }
-                Text("链上估值涵盖可定价的代币，不含 NFT、借贷或协议内头寸；Ethereum / BSC 按数据服务的净值口径过滤垃圾代币。").font(.caption)
+            Section {
+                ForEach(wallets) { wallet in
+                    Button { editing=wallet } label: {
+                        VStack(alignment:.leading,spacing:5) {
+                            Text(wallet.name).foregroundStyle(.primary)
+                            Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth:.infinity,minHeight:44,alignment:.leading)
+                        .padding(.horizontal,20).padding(.vertical,8)
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .cryptoSettingsRowSeparators()
+                }.onDelete { indices in
+                    var next=wallets;next.remove(atOffsets:indices)
+                    do { try CryptoWallet.save(next);wallets=next;walletError=nil } catch { walletError=error.localizedDescription }
+                }
+                if let walletError { Text(walletError).font(.caption).foregroundStyle(.red).cryptoSettingsRowSeparators() }
+                Button { editing=CryptoWallet() } label: {
+                    Label("添加观察地址",systemImage:"plus")
+                        .foregroundStyle(.blue)
+                        .frame(maxWidth:.infinity,minHeight:44,alignment:.leading)
+                        .padding(.horizontal,20).padding(.vertical,4)
+                }
+                .listRowInsets(EdgeInsets())
+                .cryptoSettingsRowSeparators()
+            } header: {
+                Text("链上资产")
+            } footer: {
+                Text("点击地址可编辑，左滑可移除。只保存观察地址，不需要钱包私钥。")
+            }
+            Section("链上浏览器") {
+                CryptoCredentialLink(exchange:"tronscan",title:"TRONSCAN",tokenOnly:true)
+                CryptoCredentialLink(exchange:"moralis",title:"Moralis",tokenOnly:true)
             }
             Section("私有仓库归档") {
-                Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled)
-                Text("总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled)
+                Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
+                Text("总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
             }
         }.navigationTitle("资产设置").navigationBarTitleDisplayMode(.inline)
+            .task {
+                do { wallets=try CryptoWallet.load();walletError=nil } catch { walletError=error.localizedDescription }
+            }
+            .sheet(item:$editing) { wallet in
+                CryptoWalletEditor(wallet:wallet,existing:wallets) { wallets=$0;walletError=nil }
+            }
+    }
+}
+
+private struct CryptoCredentialLink: View {
+    let exchange:String
+    let title:String
+    var tokenOnly=false
+    @State private var configured:Bool?
+    @State private var loadFailed=false
+
+    var body: some View {
+        NavigationLink {
+            CryptoCredentialEditor(exchange:exchange,title:title,tokenOnly:tokenOnly,onSave:loadStatus)
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                if configured == true {
+                    Label("已配置",systemImage:"checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                } else if loadFailed {
+                    Text("读取失败").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .cryptoSettingsRowSeparators()
+        .accessibilityValue(loadFailed ? "配置状态读取失败" : configured.map { $0 ? "已配置" : "未配置" } ?? "正在读取配置")
+        .task { loadStatus() }
+    }
+
+    private func loadStatus() {
+        do {
+            let credential=try CryptoCredential.load(exchange)
+            configured=tokenOnly ? !credential.key.isEmpty : credential.configured
+            loadFailed=false
+        } catch {
+            configured=nil;loadFailed=true
+        }
     }
 }
 
@@ -25,6 +100,7 @@ private struct CryptoCredentialEditor: View {
     let exchange:String
     let title:String
     var tokenOnly=false
+    var onSave:()->Void = {}
     @Environment(\.dismiss) private var dismiss
     @State private var credential=CryptoCredential()
     @State private var loaded=false
@@ -58,35 +134,8 @@ private struct CryptoCredentialEditor: View {
         do {
             credential.key=credential.key.trimmingCharacters(in:.whitespacesAndNewlines)
             credential.secret=tokenOnly ? credential.key : credential.secret.trimmingCharacters(in:.whitespacesAndNewlines)
-            try credential.save(exchange);dismiss()
+            try credential.save(exchange);onSave();dismiss()
         } catch { self.error=error.localizedDescription }
-    }
-}
-
-struct CryptoWalletSettings: View {
-    @State private var wallets:[CryptoWallet]=[]
-    @State private var editing:CryptoWallet?
-    @State private var error:String?
-    var body: some View {
-        List {
-            Section {
-                Button("添加观察地址",systemImage:"plus") { editing=CryptoWallet() }
-                ForEach(wallets) { wallet in
-                    Button { editing=wallet } label: {
-                        VStack(alignment:.leading,spacing:5) {
-                            Text(wallet.name).foregroundStyle(.primary)
-                            Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }.onDelete { indices in
-                    var next=wallets;next.remove(atOffsets:indices)
-                    do { try CryptoWallet.save(next);wallets=next } catch { self.error=error.localizedDescription }
-                }
-            } footer: { Text("左滑可移除地址。只保存观察地址，不需要钱包私钥。") }
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-        }.navigationTitle("观察地址").navigationBarTitleDisplayMode(.inline)
-            .task { do { wallets=try CryptoWallet.load() } catch { self.error=error.localizedDescription } }
-            .sheet(item:$editing) { wallet in CryptoWalletEditor(wallet:wallet,existing:wallets) { wallets=$0 } }
     }
 }
 
@@ -123,5 +172,13 @@ private struct CryptoWalletEditor: View {
             try wallet.validate();var next=existing.filter{$0.id != wallet.id};next.append(wallet)
             try CryptoWallet.save(next);onSave(next);dismiss()
         } catch { self.error=error.localizedDescription }
+    }
+}
+
+private extension View {
+    func cryptoSettingsRowSeparators() -> some View {
+        frame(maxWidth:.infinity,alignment:.leading)
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 }

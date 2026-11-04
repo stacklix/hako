@@ -14,11 +14,16 @@ struct CryptoClient {
     func json(_ request: URLRequest) async throws -> Any {
         do {
             let (data, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw HakoError(message: "资产接口请求失败，请检查权限、网络及设备时间。") }
+            guard let response = response as? HTTPURLResponse else { throw HakoError(message: "资产接口未返回 HTTP 响应。") }
+            guard (200..<300).contains(response.statusCode) else { throw HakoError(message: "资产接口请求失败（HTTP \(response.statusCode)）。") }
             let value = try JSONSerialization.jsonObject(with: data)
-            if let o = value as? [String: Any], o["status"] as? String == "error" { throw HakoError(message: "HTX 接口拒绝请求，请检查只读 API 配置及权限。") }
+            if let o = value as? [String: Any], o["status"] as? String == "error" {
+                let code = (o["err_code"] as? NSNumber)?.stringValue ?? "未知"
+                throw HakoError(message: "HTX 接口拒绝请求（错误码 \(code)）。")
+            }
             return value
         } catch is CancellationError { throw CancellationError() }
+        catch let error as HakoError { throw error }
         catch { throw HakoError(message: "资产接口请求失败，请检查配置、网络及设备时间。") }
     }
     static func escape(_ s: String) -> String { s.addingPercentEncoding(withAllowedCharacters: CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~"))! }
@@ -38,12 +43,13 @@ struct CryptoClient {
         if let body { r.httpBody = try JSONSerialization.data(withJSONObject: body); r.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         guard let object = try await json(r) as? [String: Any] else { throw HakoError(message: "HTX 返回格式无效。") }; return object
     }
-    func htxTotal(_ c: CryptoCredential) async throws -> Double {
+    // An incomplete valuation is unavailable; retain the previous snapshot without a warning.
+    func htxTotal(_ c: CryptoCredential) async throws -> Double? {
         let o = try await htx("api.huobi.pro", "/v2/account/valuation", credential: c, params: ["valuationCurrency":"BTC"])
         guard o["success"] as? Bool == true, let d = o["data"] as? [String: Any],
               let updated = d["updated"] as? [String: Any], updated["success"] as? Bool == true,
               let accounts = d["profitAccountBalanceList"] as? [[String: Any]],
-              accounts.allSatisfy({ $0["success"] as? Bool == true }) else { throw HakoError(message: "HTX 总资产数据未完整更新。") }
+              accounts.allSatisfy({ $0["success"] as? Bool == true }) else { return nil }
         return try Self.number(d["totalBalance"]) * (try await price("BTC"))
     }
     func binanceTotal(_ c: CryptoCredential) async throws -> Double {

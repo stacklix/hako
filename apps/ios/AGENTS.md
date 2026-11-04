@@ -21,3 +21,9 @@
 - 占位文字仅用于输入提示或示例，填写后字段名称仍须保留。字段内容和名称应支持大字号及换行。
 - 密码、API Key、Token 等敏感值继续使用 `SecureField` 遮蔽内容，字段名称照常显示；“显示 key”指显示字段名称。
 - 输入控件保留明确的 `accessibilityLabel`，与可见字段名称含义一致。新增或修改表单时检查所有字段是否符合此规范。
+
+## 列表分隔线
+
+- Form / List 分组内的行分隔线必须完整对齐整行内容区两端，不能从右侧状态文字、标签或图标处开始。
+- 自定义行（尤其是包含 HStack、Spacer、Label、配置状态的 NavigationLink）须在整行视图上显式设置 `.alignmentGuide(.listRowSeparatorLeading) { _ in 0 }` 和 `.alignmentGuide(.listRowSeparatorTrailing) { $0.width }`，并占满可用宽度；不要只给内部文字设置。
+- 同一分组统一行内边距。已采用零行内边距、内容自行 padding 的通栏分隔线行继续保持通栏。
