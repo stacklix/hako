@@ -14,12 +14,8 @@ struct CryptoSettingsView: View {
                 Text("链上估值涵盖可定价的代币，不含 NFT、借贷或协议内头寸；Ethereum / BSC 按数据服务的净值口径过滤垃圾代币。").font(.caption)
             }
             Section("私有仓库归档") {
-                Text("在主应用 GitHub 配置中设置私有仓库；已有公开库继续服务运动与使用记录。")
-                Text("TRX 合约：data/crypto/htx-trx/年份.csv\n总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled)
-            }
-            Section("自动触发") {
-                Text("在快捷指令中添加「同步加密资产」，可设置每日自动化；打开子应用时也会在后台执行。")
-                Text("合约采集前一天的最后结算权益与日度资金费；总资产采集当天首次成功获取的完整快照。各自成功同步后，当天再次触发会跳过；失败保留待同步数据。时区：Asia/Shanghai。")
+                Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled)
+                Text("总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled)
             }
         }.navigationTitle("资产设置").navigationBarTitleDisplayMode(.inline)
     }
@@ -46,7 +42,7 @@ private struct CryptoCredentialEditor: View {
                         Text("Secret Key").font(.subheadline).foregroundStyle(.secondary)
                         SecureField("输入 Secret Key",text:$credential.secret).accessibilityLabel("Secret Key")
                     }
-                    Text("使用只读权限。凭据保存在本机钥匙串，不写入 GitHub。").font(.caption)
+                    Text("使用只读权限。").font(.caption)
                 }
             }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(!loaded)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
