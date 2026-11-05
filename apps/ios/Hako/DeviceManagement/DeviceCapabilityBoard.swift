@@ -33,6 +33,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
     @State private var lastDragTarget: String?
 
     init(capabilities: [ConsoleAgentCapability], storageKey: String, emptyMessage: String,
+         initialOrder: [String] = [],
          pinnedHeaderNames: Set<String> = [],
          title: @escaping (ConsoleAgentCapability) -> String,
          icon: @escaping (ConsoleAgentCapability) -> String,
@@ -47,7 +48,7 @@ struct DeviceCapabilityBoard<Overview: View, Content: View>: View {
         self.summary = summary
         self.overview = overview
         self.content = content
-        _savedOrder = AppStorage(wrappedValue: Data(), storageKey)
+        _savedOrder = AppStorage(wrappedValue: (try? JSONEncoder().encode(initialOrder)) ?? Data(), storageKey)
     }
 
     private var persistedNames: [String] { (try? JSONDecoder().decode([String].self, from: savedOrder)) ?? [] }

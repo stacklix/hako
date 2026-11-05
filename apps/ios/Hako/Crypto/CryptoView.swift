@@ -479,15 +479,7 @@ struct CryptoWalletDetailView: View {
                         ForEach(visibleAssets) { asset in
                             Divider()
                             VStack(alignment:.leading,spacing:6) {
-                                HStack(spacing:10) {
-                                    Image("Crypto"+asset.symbol.uppercased())
-                                        .resizable().scaledToFit().frame(width:32,height:32)
-                                        .accessibilityHidden(true)
-                                    VStack(alignment:.leading,spacing:4) {
-                                        Text(asset.symbol).font(.subheadline.weight(.semibold))
-                                        Text(asset.name).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
+                                CryptoCoinIdentity(symbol:asset.symbol,name:asset.name)
                                 Text("数量："+asset.quantity.formatted(.number.precision(.fractionLength(2)))+" "+asset.symbol)
                                     .font(.subheadline).monospacedDigit()
                                 Text(asset.value.map { "折合 "+$0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无报价，未计入折算总额")
@@ -632,10 +624,14 @@ struct CryptoTrend: View {
                 if let date = value.as(Date.self) {
                     let first = date == dateDomain.lowerBound
                     let last = date == dateDomain.upperBound
-                    // Keep the date text inside the plot at both ends of the axis.
-                    AxisValueLabel(centered:false,anchor:first ? .topLeading : last ? .topTrailing : nil,
-                                   collisionResolution:first || last ? .disabled : .greedy) {
-                        Text(dateLabel(date)).font(.system(size: 10)).foregroundStyle(HakoStyle.muted)
+                    let label = Text(dateLabel(date)).font(.system(size: 10)).foregroundStyle(HakoStyle.muted)
+                    if last && independentScales {
+                        AxisValueLabel { label }
+                    } else {
+                        AxisValueLabel(centered:false,anchor:first ? .topLeading : last ? .topTrailing : nil,
+                                       collisionResolution:first || last ? .disabled : .greedy) {
+                            label
+                        }
                     }
                 }
             }

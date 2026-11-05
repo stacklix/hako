@@ -89,15 +89,20 @@ private final class AssetRepository: GitHubRepositoryAccess {
         func makeStore()->CryptoStore {
             CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
-        func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4, failSpotDetails:Bool=false) {
+        func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4, failSpotDetails:Bool=false, hasCrossMargin:Bool=true, failCrossMarginDetails:Bool=false) {
             AssetMockProtocol.configure { request in
                 switch request.url!.path {
                 case "/v2/account/valuation": return ["success":true,"data":["updated":["success":!incompleteHTX],"profitAccountBalanceList":[["success":true]],"totalBalance":total]]
-                case "/v1/account/accounts": return ["status":"ok","data":[["id":3,"type":"spot"]]]
+                case "/v1/account/accounts":
+                    var accounts: [[String:Any]] = [["id":3,"type":"spot"]]
+                    if hasCrossMargin { accounts.append(["id":4,"type":"super-margin"]) }
+                    return ["status":"ok","data":accounts]
                 case "/v1/account/accounts/3/balance":
                     if failSpotDetails { throw HakoError(message:"test spot unavailable") }
                     return ["status":"ok","data":["list":[["currency":"trx","type":"trade","balance":"30"],["currency":"trx","type":"frozen","balance":"10"]]]]
-                case "/v1/cross-margin/accounts/balance":
+                case "/v1/account/accounts/4/balance":
+                    precondition(hasCrossMargin,"query balances only for accounts returned by HTX")
+                    if failCrossMarginDetails { return ["status":"ok","data":NSNull()] }
                     return ["status":"ok","data":["list":[
                         ["currency":"usdt","type":"trade","balance":"50"],
                         ["currency":"usdt","type":"loan","balance":"-20"],
@@ -153,7 +158,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let htxMargin = htxDetails.rows(in:.margin).first!
         precondition(htxMargin.quantity == 29 && htxMargin.loan == 20 && htxMargin.interest == 1)
         precondition(htxDetails.rows(in:.swap).map(\.symbol) == ["TRX","USDT"],"show coin and V5 USDT equity")
-        precondition(htxDetails.rows(in:.swap).last?.quantity == 100 && htxDetails.queriedLinearSwapV5 == true,
+        precondition(htxDetails.rows(in:.swap).last?.quantity == 100 && htxDetails.balanceVersion == CryptoHTXSnapshot.currentBalanceVersion,
                      "avoid adding isolated equity or the account total to V5 currency equity")
         precondition(store.binanceSnapshot?.total == 50 && store.binanceSnapshot?.accounts.first?.assets?.count == 1,"account and nonzero asset details are cached")
         let binanceAsset=store.binanceSnapshot!.accounts[0].assets![0]
@@ -531,7 +536,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(quotedReopened.message != nil && quotedReopened.binanceSnapshot?.total == 695 && quotedReopened.pricesExpired,"failed quotes retain the last valuation and never renew the one-hour cache")
         configure(failSpotDetails:true)
         var legacyHTX = htxDetails
-        legacyHTX.queriedLinearSwapV5 = nil
+        legacyHTX.balanceVersion = nil
         let previousLinear = legacyHTX.holdings.removeValue(forKey:.linearSwap)
         legacyHTX.holdings[.isolatedSwap] = previousLinear
         let partial = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
@@ -539,6 +544,17 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(partial.rows(in:.spot) == htxDetails.rows(in:.spot) && partial.errors.count == 1,"a source failure preserves its previous holdings")
         precondition(partial.holdings[.isolatedSwap] == nil && partial.holdings[.linearSwap]?.count == 1,
                      "successful V5 refresh replaces legacy U-margined rows")
+        let htxClient = CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
+        configure(hasCrossMargin:false)
+        let unopened = try await htxClient.htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
+        precondition(unopened.rows(in:.margin).isEmpty && unopened.errors.isEmpty &&
+                     AssetMockProtocol.paths("/v1/account/accounts").count == 1 &&
+                     AssetMockProtocol.paths("/v1/account/accounts/4/balance").isEmpty,
+                     "absent margin accounts clear stale rows without querying an unopened account")
+        configure(failCrossMarginDetails:true)
+        let invalidMargin = try await htxClient.htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
+        precondition(invalidMargin.rows(in:.margin) == htxDetails.rows(in:.margin) && invalidMargin.errors.count == 1,
+                     "an invalid balance response for an existing margin account preserves its prior rows")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CryptoChainAssetsView: View {
     private enum Dimension: String, CaseIterable { case coin = "按币种", wallet = "按钱包" }
@@ -26,6 +27,7 @@ struct CryptoChainAssetsView: View {
                         ViewThatFits(in:.horizontal) {
                             HStack(spacing:10) {
                                 CryptoCoinIdentity(symbol:holding.symbol,name:holding.name)
+                                    .fixedSize(horizontal:true,vertical:false)
                                 Spacer(minLength:8)
                                 amounts(holding)
                                 chevron
@@ -33,6 +35,7 @@ struct CryptoChainAssetsView: View {
                             HStack(spacing:10) {
                                 VStack(alignment:.leading,spacing:10) {
                                     CryptoCoinIdentity(symbol:holding.symbol,name:holding.name)
+                                        .fixedSize(horizontal:true,vertical:false)
                                     amounts(holding)
                                 }
                                 Spacer(minLength:0)
@@ -103,17 +106,30 @@ struct CryptoChainAssetsView: View {
     }
 }
 
-private struct CryptoCoinIdentity: View {
+struct CryptoCoinIdentity: View {
     let symbol: String
     let name: String
     var body: some View {
         HStack(spacing:10) {
-            Image("Crypto"+symbol).resizable().scaledToFit().frame(width:32,height:32).accessibilityHidden(true)
+            logo
+                .frame(width:32,height:32)
+                .clipShape(RoundedRectangle(cornerRadius:symbol.uppercased() == "USDT" ? 16 : 0))
+                .accessibilityHidden(true)
             VStack(alignment:.leading,spacing:4) {
                 Text(symbol).font(.subheadline.weight(.semibold))
                 Text(name).font(.caption).foregroundStyle(.secondary)
             }
-        }.fixedSize(horizontal:true,vertical:false)
+        }
+    }
+
+    @ViewBuilder
+    private var logo: some View {
+        if let url = Bundle.main.url(forResource:"Crypto"+symbol.uppercased(),withExtension:"png"),
+           let image = UIImage(contentsOfFile:url.path) {
+            Image(uiImage:image).renderingMode(.original).resizable().scaledToFit()
+        } else {
+            Image(systemName:"bitcoinsign.circle").font(.system(size:26)).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -127,6 +143,7 @@ private struct CryptoCoinDetailView: View {
                 if let holding {
                     VStack(alignment:.leading,spacing:10) {
                         CryptoCoinIdentity(symbol:symbol,name:holding.name)
+                            .fixedSize(horizontal:true,vertical:false)
                         Text("总余额").font(.caption).foregroundStyle(.secondary).padding(.top,8)
                         Text(cryptoQuantity(holding.quantity)+" "+symbol).font(.title.weight(.semibold)).monospacedDigit()
                         Text(holding.value.map { (holding.partiallyPriced ? "部分折合 " : "折合 ")+cryptoUSDT($0) } ?? "暂无报价，未计入折算总额")
@@ -172,9 +189,6 @@ private struct CryptoCoinDetailView: View {
                     Text(cryptoQuantity(position.quantity)+" "+symbol).font(.subheadline).monospacedDigit()
                     Text(position.value.map { "折合 "+cryptoUSDT($0) } ?? "暂无报价，未计入折算总额")
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                    if let snapshot = store.walletSnapshot(position.wallet) {
-                        Text("更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard)).font(.caption).foregroundStyle(.secondary)
-                    }
                     if let error = store.walletErrors[position.wallet.id] {
                         Text("更新失败，当前显示上次数据："+error).font(.caption).foregroundStyle(.red)
                     }

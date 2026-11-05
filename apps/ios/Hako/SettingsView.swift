@@ -6,12 +6,35 @@ struct SettingsView: View {
 
         var title: String { self == .github ? "GitHub Pages" : "本机 xkode" }
         var baseURL: URL {
-            URL(string: self == .github ? "https://stacklix.github.io/hako/" : "https://nux.luckyqiao.com/chore/ios/")!
+            URL(string: self == .github ? "https://stacklix.github.io/hako/" : "https://nux.luckyqiao.com/chore/ios/hako/")!
         }
         var pageURL: URL { baseURL.appendingPathComponent("index.html") }
     }
     private enum UpdateState: Sendable {
         case checking, loaded(AppUpdateRelease), failed
+
+        var release: AppUpdateRelease? {
+            if case .loaded(let release) = self { return release }
+            return nil
+        }
+
+        func updateAvailable(comparedTo installedBuild: AppBuildVersion?) -> Bool? {
+            guard let installedBuild, let latest = release?.buildVersion else { return nil }
+            return latest > installedBuild
+        }
+
+        func detail(updateAvailable: Bool?) -> String {
+            switch self {
+            case .checking:
+                return "正在检查…"
+            case .failed:
+                return "检查更新失败"
+            case .loaded(let release):
+                let version = "\(release.version) (\(release.build))"
+                guard let updateAvailable else { return version }
+                return "\(version) · \(updateAvailable ? "可更新" : "无需更新")"
+            }
+        }
     }
     private enum SheetRoute: String, Identifiable {
         case server, scanner, applications, github
@@ -64,25 +87,26 @@ struct SettingsView: View {
             }
             Section {
                 HStack(spacing: 16) {
-                    LabeledContent("当前版本", value: currentVersion)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("当前版本")
+                        Text(currentVersion)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Button("检测更新") { updateCheckID += 1 }
                         .buttonStyle(.borderedProminent)
                         .tint(.blue)
                         .fixedSize()
                         .disabled(checkingForUpdate)
                 }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 ForEach(UpdateSource.allCases, id: \.self) { source in
                     updateRow(source)
-                    Link(destination: source.pageURL) {
-                        Label("查看 \(source.title) 下载页面", systemImage: "arrow.up.right.square")
-                    }
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
             } header: {
                 Text("应用更新")
-            } footer: {
-                Text("各渠道独立检测。发现较新版本时，可直接发起系统安装。")
             }
             BuildStatusView(isSettingsVisible: isVisible && sheet == nil)
         }.navigationTitle("设置")
@@ -113,33 +137,43 @@ struct SettingsView: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder
     private func updateRow(_ source: UpdateSource) -> some View {
-        switch updates[source] ?? .checking {
-        case .checking:
-            LabeledContent(source.title, value: "正在检查…")
-        case .failed:
-            LabeledContent(source.title, value: "检查更新失败")
-        case .loaded(let release):
-            if let installedBuild, let latest = release.buildVersion, latest > installedBuild {
-                Button { install(release, from: source) } label: {
-                    Label {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("安装 \(source.title) 最新版")
-                            Text("\(release.version) (\(release.build)) · \(release.builtAt.formatted(date: .numeric, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "arrow.down.circle").foregroundStyle(.green)
+        let state = updates[source] ?? .checking
+        let updateAvailable = state.updateAvailable(comparedTo: installedBuild)
+        let highlight = updateAvailable == true ? HakoStyle.adaptive(0x18743b, 0x5cdb83) : nil
+        return HStack(spacing: 8) {
+            Button {
+                if let release = state.release { install(release, from: source) }
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("下载 \(source.title) 版")
+                        Text(state.detail(updateAvailable: updateAvailable))
+                            .font(.caption)
+                            .foregroundStyle(highlight ?? .secondary)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                } icon: {
+                    Image(systemName: "arrow.down.to.line")
                 }
-                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-            } else {
-                LabeledContent(source.title, value: "\(release.version) (\(release.build)) · 无需更新")
+                .foregroundStyle(highlight ?? .primary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(state.release == nil)
+
+            Link(destination: source.pageURL) {
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(highlight ?? .blue)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("打开 \(source.title) 安装页")
         }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 
     private func checkUpdates() async {

@@ -271,7 +271,7 @@ import Combine
     private func refreshHTXDetails(_ credential: CryptoCredential, now: Date, force: Bool) async throws {
         guard credential.configured else { return }
         let previous = htxSnapshot
-        guard force || previous?.queriedLinearSwapV5 != true ||
+        guard force || previous?.balanceVersion != CryptoHTXSnapshot.currentBalanceVersion ||
                 !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
         let snapshot = try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous)
         var value = cache

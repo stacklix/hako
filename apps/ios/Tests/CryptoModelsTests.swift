@@ -107,7 +107,23 @@ import Foundation
         do { _ = try CryptoRecord.encode([prior,portfolio],kind:"htx-trx");fatalError("mixed kinds accepted") } catch {}
         do { _ = try CryptoRecord.decode(CSV.encode([cells[0],cells[1],cells[1]]),kind:"htx-trx",year:"2026");fatalError("duplicate date accepted") } catch {}
         check(try CryptoRecord.decode(CryptoRecord.encode([],kind:"htx-trx"),kind:"htx-trx",year:"2026").isEmpty,"empty annual file")
-        try CryptoWallet(name:"wallet",network:"Ethereum",address:"0x"+String(repeating:"1",count:40)).validate()
+        let evmAddress = "0x"+String(repeating:"1",count:40)
+        let original = CryptoWallet(name:"wallet",network:"Ethereum",address:evmAddress)
+        try original.validate()
+        let legacyWallet = try JSONDecoder().decode(CryptoWallet.self,from:JSONEncoder().encode(original))
+        let group = CryptoWalletGroup.groups(from:[legacyWallet])[0]
+        let expanded = try group.replacing(in:[legacyWallet],name:"wallet",address:evmAddress,networks:["Ethereum","BNB Smart Chain"])
+        check(expanded.count == 2 && Set(expanded.map(\.identity)).count == 2 && expanded[0].id == original.id,
+              "multi-network observation preserves the legacy Ethereum wallet and its cache identity")
+        let reloaded = try JSONDecoder().decode([CryptoWallet].self,from:JSONEncoder().encode(expanded))
+        let groups = CryptoWalletGroup.groups(from:reloaded)
+        check(groups.count == 1 && groups[0].wallets.count == 2,"restore both networks as one editable group")
+        let reduced = try groups[0].replacing(in:reloaded,name:"wallet",address:evmAddress,networks:["BNB Smart Chain"])
+        check(reduced.count == 1 && reduced[0].id == expanded[1].id,"removing a network keeps the remaining wallet identity")
+        do {
+            _ = try group.replacing(in:[original],name:"wallet",address:evmAddress,networks:["TRON","Ethereum"])
+            preconditionFailure("an EVM address cannot be saved for TRON")
+        } catch {}
         print("Crypto models: precision, dates, equity stability, strict CSV validation and sync policy passed")
     }
 }

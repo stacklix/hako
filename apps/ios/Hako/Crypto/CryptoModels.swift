@@ -59,6 +59,7 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
 }
 
 struct CryptoHTXSnapshot: Codable, Equatable {
+    static let currentBalanceVersion = 2
     enum Source: String, CaseIterable, Codable {
         case spot, crossMargin, isolatedMargin, coinSwap, crossSwap, isolatedSwap, linearSwap
 
@@ -106,7 +107,7 @@ struct CryptoHTXSnapshot: Codable, Equatable {
     var scope: String
     var sampledAt: Date
     var holdings: [Source: [Holding]] = [:]
-    var queriedLinearSwapV5: Bool?
+    var balanceVersion: Int?
     var prices: [String: Double] = ["USDT": 1]
     var errors: [String] = []
     var quoteError: String?
@@ -163,6 +164,8 @@ struct CryptoWallet: Codable, Identifiable, Equatable {
     var name = ""
     var network = "TRON"
     var address = ""
+    var groupID: UUID?
+    var observationID: UUID { groupID ?? id }
     func validate() throws {
         guard Self.networks.contains(network) else {
             throw HakoError(message: "不支持此观察地址网络。")
@@ -170,15 +173,20 @@ struct CryptoWallet: Codable, Identifiable, Equatable {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HakoError(message: "请填写名称和所选网络的完整公开地址。")
         }
-        if network == Self.cosmosHub {
-            guard Self.validCosmosAddress(address) else {
-                throw HakoError(message: "Cosmos Hub 地址校验失败，请检查完整 cosmos1 地址。")
-            }
-        } else {
-            let pattern = network == "TRON" ? "^T[1-9A-HJ-NP-Za-km-z]{33}$" : "^0x[0-9a-fA-F]{40}$"
-            guard address.range(of: pattern, options: .regularExpression) != nil else {
-                throw HakoError(message: "请填写名称和所选网络的完整公开地址。")
-            }
+        guard Self.supports(address:address,on:network) else {
+            let message = network == Self.cosmosHub
+                ? "Cosmos Hub 地址校验失败，请检查完整 cosmos1 地址。"
+                : "请填写名称和所选网络的完整公开地址。"
+            throw HakoError(message:message)
+        }
+    }
+
+    static func supports(address: String, on network: String) -> Bool {
+        switch network {
+        case cosmosHub: return validCosmosAddress(address)
+        case "TRON": return address.range(of:"^T[1-9A-HJ-NP-Za-km-z]{33}$",options:.regularExpression) != nil
+        case "Ethereum", "BNB Smart Chain": return address.range(of:"^0x[0-9a-fA-F]{40}$",options:.regularExpression) != nil
+        default: return false
         }
     }
     // Cosmos Hub account addresses contain 20 payload bytes and a Bech32 checksum.
@@ -209,6 +217,36 @@ struct CryptoWallet: Codable, Identifiable, Equatable {
         for value in values { try value.validate() }
         guard Set(values.map(\.identity)).count == values.count else { throw HakoError(message: "该网络下已添加此地址。") }
         UserDefaults.standard.set(try JSONEncoder().encode(values), forKey: "crypto.wallets")
+    }
+}
+
+struct CryptoWalletGroup: Identifiable {
+    var id = UUID()
+    var wallets: [CryptoWallet] = []
+
+    static func groups(from wallets: [CryptoWallet]) -> [Self] {
+        let grouped = Dictionary(grouping:wallets,by:\.observationID)
+        var seen = Set<UUID>()
+        return wallets.compactMap { wallet in
+            let id = wallet.observationID
+            guard seen.insert(id).inserted, let entries = grouped[id] else { return nil }
+            return Self(id:id,wallets:entries)
+        }
+    }
+
+    func replacing(in existing: [CryptoWallet], name: String, address: String, networks: Set<String>) throws -> [CryptoWallet] {
+        guard !networks.isEmpty else { throw HakoError(message:"请至少选择一个网络。") }
+        let supported = CryptoWallet.networks.filter { networks.contains($0) && CryptoWallet.supports(address:address,on:$0) }
+        guard supported.count == networks.count else { throw HakoError(message:"请为该地址选择兼容的网络。") }
+        let replacements = supported.map { network in
+            var wallet = wallets.first { $0.network == network } ?? CryptoWallet()
+            wallet.groupID = id
+            wallet.name = name
+            wallet.address = address
+            wallet.network = network
+            return wallet
+        }
+        return existing.filter { $0.observationID != id } + replacements
     }
 }
 

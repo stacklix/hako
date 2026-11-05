@@ -79,8 +79,14 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
-	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"query.network.listeners","version":1},{"name":"action.network.http.check","version":1}]`)) {
+	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"query.network.listeners","version":1},{"name":"action.network.http.check","version":1},{"name":"action.xkode.tasks.manage","version":1}]`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
+	}
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{
+		Method: "action.xkode.tasks.manage", Version: 1, Params: json.RawMessage(`{"operation":"cancel","id":"--help"}`),
+	}, f.tokens.AccessToken)
+	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
+		t.Fatal("Windows xkode action did not reject the invalid task ID", status, string(data))
 	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {
@@ -207,7 +213,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		}
 		Capabilities []agentCapability
 	}
-	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 3 || len(aggregate.Capabilities) != 4 || aggregate.Result.Data["query.network.listeners"].Version != 1 {
+	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() || len(aggregate.Result.Data) != 3 || len(aggregate.Capabilities) != 5 || aggregate.Result.Data["query.network.listeners"].Version != 1 {
 		t.Fatal("real aggregate query failed", status, string(data))
 	}
 	select {

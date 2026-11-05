@@ -219,11 +219,23 @@ extension CryptoClient {
                          previous: CryptoHTXSnapshot?) async throws -> CryptoHTXSnapshot {
         var snapshot = previous ?? CryptoHTXSnapshot(scope:scope,sampledAt:now)
         snapshot.sampledAt = now
-        snapshot.queriedLinearSwapV5 = true
+        snapshot.balanceVersion = CryptoHTXSnapshot.currentBalanceVersion
         snapshot.errors = []
+        let accounts: Result<[[String:Any]],Error>
+        do {
+            let response = try await htx("api.huobi.pro","/v1/account/accounts",credential:credential)
+            guard response["status"] as? String == "ok", let rows = response["data"] as? [[String:Any]],
+                  rows.allSatisfy({ $0["type"] is String }) else {
+                throw HakoError(message:"HTX 账户列表响应无效。")
+            }
+            accounts = .success(rows)
+        } catch {
+            try Task.checkCancellation()
+            accounts = .failure(error)
+        }
         for source in CryptoHTXSnapshot.Source.queried {
             do {
-                snapshot.holdings[source] = try await htxHoldings(source, credential:credential)
+                snapshot.holdings[source] = try await htxHoldings(source,credential:credential,accounts:accounts)
                 if source == .linearSwap {
                     snapshot.holdings.removeValue(forKey:.crossSwap)
                     snapshot.holdings.removeValue(forKey:.isolatedSwap)
@@ -270,27 +282,24 @@ extension CryptoClient {
         return result
     }
 
-    private func htxHoldings(_ source: CryptoHTXSnapshot.Source, credential: CryptoCredential) async throws -> [CryptoHTXSnapshot.Holding] {
+    private func htxHoldings(_ source: CryptoHTXSnapshot.Source, credential: CryptoCredential,
+                             accounts: Result<[[String:Any]],Error>) async throws -> [CryptoHTXSnapshot.Holding] {
         let spotHost = "api.huobi.pro"
         let invalid = HakoError(message:"账户明细响应无效。")
         switch source {
-        case .spot:
-            let response = try await htx(spotHost,"/v1/account/accounts",credential:credential)
-            guard response["status"] as? String == "ok", let accounts = response["data"] as? [[String:Any]] else { throw invalid }
+        case .spot, .crossMargin:
+            let isMargin = source == .crossMargin
+            let accountType = isMargin ? "super-margin" : "spot"
             var holdings: [CryptoHTXSnapshot.Holding] = []
-            for account in accounts where account["type"] as? String == "spot" {
+            // Unopened cross-margin accounts are absent from the account list.
+            for account in try accounts.get() where account["type"] as? String == accountType {
                 guard let id = account["id"] as? Int, id > 0 else { throw invalid }
                 let balance = try await htx(spotHost,"/v1/account/accounts/\(id)/balance",credential:credential)
                 guard balance["status"] as? String == "ok",
                       let data = balance["data"] as? [String:Any], let rows = data["list"] as? [[String:Any]] else { throw invalid }
-                holdings += try Self.htxBalanceRows(rows,id:"spot-\(id)",label:"",margin:false)
+                holdings += try Self.htxBalanceRows(rows,id:source.rawValue+"-\(id)",label:isMargin ? "全仓" : "",margin:isMargin)
             }
             return holdings
-        case .crossMargin:
-            let response = try await htx(spotHost,"/v1/cross-margin/accounts/balance",credential:credential)
-            guard response["status"] as? String == "ok",
-                  let data = response["data"] as? [String:Any], let rows = data["list"] as? [[String:Any]] else { throw invalid }
-            return try Self.htxBalanceRows(rows,id:source.rawValue,label:"全仓",margin:true)
         case .isolatedMargin:
             let response = try await htx(spotHost,"/v1/margin/accounts/balance",credential:credential)
             guard response["status"] as? String == "ok", let accounts = response["data"] as? [[String:Any]] else { throw invalid }

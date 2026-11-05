@@ -110,49 +110,42 @@ struct DeviceMonitorView: View {
 }
 
 struct DeviceMetricsView: View {
-    private enum DetailTab: String, CaseIterable { case query = "查询", action = "操作" }
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var targetURL = ""
-    @State private var selectedTab: DetailTab = .query
     @State private var codexTab: CodexTab = .sessions
     @State private var listenerTab: ConsoleListenerGroup = .user
     @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
     private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
-    private var visibleCapabilities: [ConsoleAgentCapability] {
-        (currentAgent.capabilities ?? []).filter { selectedTab == .query ? $0.name.hasPrefix("query.") : !$0.name.hasPrefix("query.") }
-    }
-    private var orderKey: String {
+    private func orderKey(_ group: String) -> String {
         DeviceCardOrder.storageKey(server: client.serverURL, account: client.username, agent: agent.id,
-                                  group: selectedTab == .query ? "query" : "action")
+                                  group: group)
+    }
+    private var initialOrder: [String] {
+        ["query", "action"].flatMap { group in
+            guard let data = UserDefaults.standard.data(forKey: orderKey(group)),
+                  let names = try? JSONDecoder().decode([String].self, from: data) else { return [String]() }
+            return names
+        }
     }
     var body: some View {
-        VStack(spacing: 0) {
-            DeviceCapabilityBoard(capabilities: visibleCapabilities, storageKey: orderKey,
-                emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" :
-                    selectedTab == .query ? "此设备暂无查询能力。" : "此设备暂无操作能力。",
-                pinnedHeaderNames: ["query.network.listeners"],
-                title: capabilityTitle, icon: capabilityIcon, summary: capabilitySummary) {
-                deviceOverview
-            } content: { capability in
-                capabilityContent(capability)
-            }
-            .id(orderKey)
-            .refreshable { if client.authenticated { await client.query(currentAgent) } }
+        DeviceCapabilityBoard(capabilities: (currentAgent.capabilities ?? []).filter { $0.name != "action.xkode.tasks.manage" },
+            storageKey: orderKey("all"),
+            emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
+            initialOrder: initialOrder, pinnedHeaderNames: ["query.network.listeners"],
+            title: capabilityTitle, icon: capabilityIcon, summary: capabilitySummary) {
+            deviceOverview
+        } content: { capability in
+            capabilityContent(capability)
         }
+        .id(orderKey("all"))
+        .refreshable { if client.authenticated { await client.query(currentAgent) } }
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HakoUnderlineTabs(title: "设备详情", options: DetailTab.allCases, selection: $selectedTab) {
-                $0.rawValue
-            }
-            .padding(.horizontal).padding(.vertical, 8)
-            .background(.bar)
-        }
         .task { if client.authenticated { await client.query(currentAgent) } }
     }
     private var deviceOverview: some View {
@@ -167,16 +160,12 @@ struct DeviceMetricsView: View {
                     .fixedSize()
             }
             Text("设备 ID · \(currentAgent.id)").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-            if selectedTab == .query {
-                if state.loading {
-                    HStack(spacing: 7) { ProgressView().controlSize(.mini); Text("正在更新查询数据…") }
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if let error = state.error {
-                    statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
-                }
-            } else {
-                Text("操作由此设备执行，点击按钮后开始。").font(.caption).foregroundStyle(.secondary)
+            if state.loading {
+                HStack(spacing: 7) { ProgressView().controlSize(.mini); Text("正在更新查询数据…") }
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = state.error {
+                statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
             }
         }
     }

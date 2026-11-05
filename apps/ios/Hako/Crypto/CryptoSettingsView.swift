@@ -3,7 +3,7 @@ import SwiftUI
 struct CryptoSettingsView: View {
     @ObservedObject private var store=CryptoStore.shared
     @State private var wallets:[CryptoWallet]=[]
-    @State private var editing:CryptoWallet?
+    @State private var editing:CryptoWalletGroup?
     @State private var walletError:String?
     @State private var clearingCache=false
     @State private var cacheMessage:String?
@@ -23,11 +23,13 @@ struct CryptoSettingsView: View {
                 CryptoCredentialLink(exchange:"binance",title:"Binance")
             }
             Section {
-                ForEach(wallets) { wallet in
-                    Button { editing=wallet } label: {
+                let groups = CryptoWalletGroup.groups(from:wallets)
+                ForEach(groups) { group in
+                    Button { editing=group } label: {
                         VStack(alignment:.leading,spacing:5) {
-                            Text(wallet.name).foregroundStyle(.primary)
-                            Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary)
+                            Text(group.wallets.first?.name ?? "").foregroundStyle(.primary)
+                            Text(group.wallets.map(\.network).joined(separator:" · ")).font(.caption).foregroundStyle(.secondary)
+                            Text(group.wallets.first?.address ?? "").font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth:.infinity,minHeight:44,alignment:.leading)
                         .padding(.horizontal,20).padding(.vertical,8)
@@ -35,11 +37,12 @@ struct CryptoSettingsView: View {
                     .listRowInsets(EdgeInsets())
                     .cryptoSettingsRowSeparators()
                 }.onDelete { indices in
-                    var next=wallets;next.remove(atOffsets:indices)
+                    let ids = Set(indices.map { groups[$0].id })
+                    let next = wallets.filter { !ids.contains($0.observationID) }
                     do { try CryptoWallet.save(next);wallets=next;walletError=nil } catch { walletError=error.localizedDescription }
                 }
                 if let walletError { Text(walletError).font(.caption).foregroundStyle(.red).cryptoSettingsRowSeparators() }
-                Button { editing=CryptoWallet() } label: {
+                Button { editing=CryptoWalletGroup() } label: {
                     Label("添加观察地址",systemImage:"plus")
                         .foregroundStyle(.blue)
                         .frame(maxWidth:.infinity,minHeight:44,alignment:.leading)
@@ -50,7 +53,7 @@ struct CryptoSettingsView: View {
             } header: {
                 Text("链上资产")
             } footer: {
-                Text("点击地址可编辑，左滑可移除。只保存观察地址，不需要钱包私钥。Cosmos Hub 支持 cosmos1 地址，无需 API Token。")
+                Text("同一个地址可选择多个兼容网络。点击可编辑，左滑可移除该地址下的全部网络。只保存观察地址，不需要钱包私钥。")
             }
             Section("链上浏览器") {
                 CryptoCredentialLink(exchange:"tronscan",title:"TRONSCAN",tokenOnly:true)
@@ -86,8 +89,8 @@ struct CryptoSettingsView: View {
             .task {
                 do { wallets=try CryptoWallet.load();walletError=nil } catch { walletError=error.localizedDescription }
             }
-            .sheet(item:$editing) { wallet in
-                CryptoWalletEditor(wallet:wallet,existing:wallets) { wallets=$0;walletError=nil }
+            .sheet(item:$editing) { group in
+                CryptoWalletEditor(group:group,existing:wallets) { wallets=$0;walletError=nil }
             }
     }
 }
@@ -234,39 +237,77 @@ private struct CryptoCredentialEditor: View {
 }
 
 private struct CryptoWalletEditor: View {
-    @State var wallet:CryptoWallet
-    let existing:[CryptoWallet]
-    let onSave:([CryptoWallet])->Void
+    let group: CryptoWalletGroup
+    let existing: [CryptoWallet]
+    let onSave: ([CryptoWallet]) -> Void
+    @State private var name: String
+    @State private var address: String
+    @State private var selected: Set<String>
     @Environment(\.dismiss) private var dismiss
     @State private var error:String?
+
+    init(group: CryptoWalletGroup, existing: [CryptoWallet], onSave: @escaping ([CryptoWallet]) -> Void) {
+        self.group = group
+        self.existing = existing
+        self.onSave = onSave
+        _name = State(initialValue:group.wallets.first?.name ?? "")
+        _address = State(initialValue:group.wallets.first?.address ?? "")
+        _selected = State(initialValue:Set(group.wallets.map(\.network)))
+    }
+
+    private var publicAddress: String { address.trimmingCharacters(in:.whitespacesAndNewlines) }
+    private var compatibleNetworks: Set<String> {
+        Set(CryptoWallet.networks.filter { CryptoWallet.supports(address:publicAddress,on:$0) })
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 VStack(alignment:.leading,spacing:6) {
                     Text("地址名称").font(.subheadline).foregroundStyle(.secondary)
-                    TextField("例如：我的冷钱包",text:$wallet.name).accessibilityLabel("地址名称")
+                    TextField("例如：我的冷钱包",text:$name).accessibilityLabel("地址名称")
                 }
-                Picker("网络",selection:$wallet.network) { ForEach(CryptoWallet.networks,id:\.self) { Text($0) } }
                 VStack(alignment:.leading,spacing:6) {
                     Text("钱包公开地址").font(.subheadline).foregroundStyle(.secondary)
-                    TextField("完整公开地址",text:$wallet.address).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("钱包公开地址")
+                    TextField("完整公开地址",text:$address).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("钱包公开地址")
                 }
-                if wallet.network == CryptoWallet.cosmosHub {
-                    Text("填写 cosmos1 开头的 Cosmos Hub 地址，无需配置 Token。").font(.caption).foregroundStyle(.secondary)
+                Section("网络（可多选）") {
+                    ForEach(CryptoWallet.networks,id:\.self) { network in
+                        Toggle(network,isOn:Binding(
+                            get: { selected.contains(network) && compatibleNetworks.contains(network) },
+                            set: { enabled in
+                                if enabled { selected.insert(network) }
+                                else { selected.remove(network) }
+                            }
+                        ))
+                        .disabled(!compatibleNetworks.contains(network))
+                        .cryptoSettingsRowSeparators()
+                    }
+                    if compatibleNetworks.isEmpty {
+                        Text("输入完整公开地址后可选择兼容网络。").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack(spacing:12) {
                     Button("取消") { dismiss() }.buttonStyle(HakoActionButtonStyle(primary:false))
                     Button("保存地址") { save() }.buttonStyle(HakoActionButtonStyle())
+                        .disabled(name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ||
+                                  selected.isEmpty || !selected.isSubset(of:compatibleNetworks))
                 }.listRowBackground(Color.clear)
-            }.navigationTitle(existing.contains(where:{$0.id==wallet.id}) ? "编辑观察地址" : "添加观察地址").navigationBarTitleDisplayMode(.inline)
+            }
+            .navigationTitle(group.wallets.isEmpty ? "添加观察地址" : "编辑观察地址")
+            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of:compatibleNetworks) { _, compatible in
+                guard !compatible.isEmpty else { return }
+                selected.formIntersection(compatible)
+                if compatible.count == 1 { selected = compatible }
+            }
         }
     }
     private func save() {
         do {
-            wallet.address=wallet.address.trimmingCharacters(in:.whitespacesAndNewlines)
-            wallet.name=wallet.name.trimmingCharacters(in:.whitespacesAndNewlines)
-            try wallet.validate();var next=existing.filter{$0.id != wallet.id};next.append(wallet)
+            let next = try group.replacing(in:existing,name:name.trimmingCharacters(in:.whitespacesAndNewlines),
+                                           address:publicAddress,networks:selected)
             try CryptoWallet.save(next);onSave(next);dismiss()
         } catch { self.error=error.localizedDescription }
     }

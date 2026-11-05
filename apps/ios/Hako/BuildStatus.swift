@@ -105,7 +105,7 @@ struct BuildStatusClient {
     }
 }
 
-struct BuildStatusView: View {
+struct GitHubBuildStatusRows: View {
     let isSettingsVisible: Bool
     @Environment(\.scenePhase) private var scenePhase
     @State private var workflow: BuildStatusClient.Workflow = .package
@@ -130,12 +130,24 @@ struct BuildStatusView: View {
     }
 
     var body: some View {
-        Section {
+        Group {
             Picker("Action", selection: workflowSelection) {
                 ForEach(BuildStatusClient.Workflow.allCases, id: \.self) { option in
                     Text(option.title).tag(option)
                 }
-            }.pickerStyle(.menu)
+            }
+            .pickerStyle(.menu)
+            .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(workflow.rawValue)") { [workflow] in
+                guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
+                repeat {
+                    await refresh(workflow)
+                    guard !Task.isCancelled else { return }
+                    // Back off after errors instead of repeatedly hitting a rate limit.
+                    let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
+                    do { try await Task.sleep(for: .seconds(interval)) }
+                    catch { return }
+                } while !Task.isCancelled
+            }
             if let snapshot {
                 LabeledContent("\(workflow.title) #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
                 ForEach(snapshot.jobs) { job in
@@ -167,21 +179,6 @@ struct BuildStatusView: View {
             Link("在 GitHub 查看", destination: URL(string: snapshot.map {
                 "https://github.com/stacklix/hako/actions/runs/\($0.run.id)"
             } ?? "https://github.com/stacklix/hako/actions/workflows/\(workflow.rawValue)")!)
-        } header: {
-            Text("GitHub Actions 进度")
-        } footer: {
-            Text("显示 Hako 主分支所选 Action 的最新进度。页面在前台时，运行中每 5 秒刷新，空闲时每 30 秒刷新。可安装版本以已发布的构建时间为准。")
-        }
-        .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(workflow.rawValue)") { [workflow] in
-            guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
-            repeat {
-                await refresh(workflow)
-                guard !Task.isCancelled else { return }
-                // Back off after errors instead of repeatedly hitting a rate limit.
-                let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
-                do { try await Task.sleep(for: .seconds(interval)) }
-                catch { return }
-            } while !Task.isCancelled
         }
     }
 

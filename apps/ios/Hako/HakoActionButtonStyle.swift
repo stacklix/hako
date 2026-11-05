@@ -6,26 +6,27 @@ struct HakoActionButtonStyle: ButtonStyle {
     var destructive = false
     @Environment(\.isEnabled) private var enabled
 
-    private var text: Color { color(0x18191b, 0xf1f2f3) }
-    private var background: Color { color(0xffffff, 0x17181a) }
-    private var fill: Color { color(0xf5f6f7, 0x232529) }
+    private static let text = HakoStyle.adaptive(0x18191b, 0xf1f2f3)
+    private static let primaryText = HakoStyle.adaptive(0xffffff, 0x17181a)
+    private static let secondaryFill = HakoStyle.adaptive(0xf5f6f7, 0x262629)
+    private static let destructiveText = HakoStyle.adaptive(0xa52b38, 0xff9da8)
+    private static let destructiveFill = HakoStyle.adaptive(0xfff0f1, 0x331d22)
+    private static let destructiveBorder = HakoStyle.adaptive(0xefc5cb, 0x62323b)
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.subheadline.weight(.medium))
+        let shape = RoundedRectangle(cornerRadius: 10)
+        return configuration.label.font(.subheadline.weight(.medium))
             .padding(.horizontal, 15).frame(minHeight: 44)
             .frame(maxWidth: .infinity)
-            .foregroundStyle(destructive ? color(0xc23d42, 0xff8b8f) : primary ? background : text)
-            .background(primary ? text : fill, in: RoundedRectangle(cornerRadius: 10))
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .foregroundStyle(destructive ? Self.destructiveText : primary ? Self.primaryText : Self.text)
+            .background(destructive ? Self.destructiveFill : primary ? Self.text : Self.secondaryFill, in: shape)
+            .overlay {
+                if destructive {
+                    shape.strokeBorder(Self.destructiveBorder, lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            .contentShape(shape)
             .opacity(enabled ? (configuration.isPressed ? 0.6 : 1) : 0.35)
-    }
-
-    private func color(_ light: UInt32, _ dark: UInt32) -> Color {
-        Color(uiColor: UIColor { trait in
-            let value = trait.userInterfaceStyle == .dark ? dark : light
-            return UIColor(red: Double((value >> 16) & 255) / 255,
-                           green: Double((value >> 8) & 255) / 255,
-                           blue: Double(value & 255) / 255, alpha: 1)
-        })
     }
 }
