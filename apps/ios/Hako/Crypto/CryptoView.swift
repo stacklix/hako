@@ -11,9 +11,11 @@ struct CryptoView: View {
     @State private var days=30
     @State private var syncMessage:String?
     @State private var syncPhase = SyncPhase.idle
+    @State private var syncRequested = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var collecting = true
     @State private var collectionWindow: Date?
+    @State private var contractTableWidth: CGFloat = 0
     private var latest: CryptoRecord? { store.portfolio.last }
     var body: some View {
         ScrollView {
@@ -140,6 +142,16 @@ struct CryptoView: View {
         collecting=true;collectionWindow=CryptoSyncPolicy.fundingRefreshWindow(now:.now);syncMessage=nil
         await store.collect()
         collecting=false
+        if syncRequested {
+            syncRequested=false
+            await synchronize()
+        }
+    }
+    @MainActor private func synchronize() async {
+        let result=await store.trigger()
+        let succeeded=store.message == nil
+        syncPhase = succeeded ? .succeeded : .failed
+        syncMessage=succeeded ? nil : result
     }
     private var header: some View {
         HStack(alignment:.center,spacing:12) {
@@ -160,11 +172,10 @@ struct CryptoView: View {
                 guard syncPhase != .syncing && syncPhase != .succeeded else { return }
                 syncPhase = .syncing
                 syncMessage=nil
-                Task {
-                    let result=await store.trigger()
-                    let succeeded=store.message == nil
-                    syncPhase = succeeded ? .succeeded : .failed
-                    syncMessage=succeeded ? nil : result
+                if collecting {
+                    syncRequested=true
+                } else {
+                    Task { await synchronize() }
                 }
             } label: {
                 HStack(spacing:6) {
@@ -178,10 +189,9 @@ struct CryptoView: View {
                 }.frame(minWidth:88)
             }
             .buttonStyle(HakoActionButtonStyle()).fixedSize(horizontal:true,vertical:false)
-            .disabled(collecting || (store.busy && syncPhase != .syncing))
             .allowsHitTesting(syncPhase != .syncing && syncPhase != .succeeded)
             .accessibilityLabel(syncPhase == .syncing ? "资产同步中" : syncPhase == .succeeded ? "资产已同步" : "同步资产")
-            .accessibilityHint(syncPhase == .syncing ? "请等待同步完成" : syncPhase == .succeeded ? "同步已完成，按钮即将恢复" : "将本机缓存同步到 GitHub，不重新查询资产接口")
+            .accessibilityHint(syncRequested ? "等待数据加载完成后同步" : syncPhase == .syncing ? "请等待同步完成" : syncPhase == .succeeded ? "同步已完成，按钮即将恢复" : "将本机缓存同步到 GitHub，数据加载中点击会等待加载完成")
         }
     }
     private var binanceDetails: some View {
@@ -254,26 +264,30 @@ struct CryptoView: View {
             ScrollView(.horizontal) {
                 Grid(horizontalSpacing:12,verticalSpacing:12) {
                     GridRow {
-                        Text("日期").gridColumnAlignment(.leading)
-                        Text("总 USDT").gridColumnAlignment(.trailing)
-                        Text("总 TRX").gridColumnAlignment(.trailing)
-                        Text("资金费用\nTRX").multilineTextAlignment(.trailing).gridColumnAlignment(.trailing)
+                        contractTableCell("日期",alignment:.leading).gridColumnAlignment(.leading)
+                        contractTableCell("总 USDT").gridColumnAlignment(.trailing)
+                        contractTableCell("总 TRX").gridColumnAlignment(.trailing)
+                        contractTableCell("资金费用/TRX").gridColumnAlignment(.trailing)
                     }.foregroundStyle(.secondary)
                     ForEach(CryptoSyncPolicy.recentContractDays(now:.now),id:\.self) { date in
                         let day=CryptoDay.key(date)
                         let values=store.contracts.first(where:{$0.day==day})?.values
                         Divider().gridCellColumns(4)
                         GridRow {
-                            Text(day)
-                            Text(contractTableValue(values?["equity"]))
-                            Text(contractTableValue(values?["trx"]))
-                            Text(contractTableValue(values?["funding_trx"],signed:true))
+                            contractTableCell(day,alignment:.leading)
+                            contractTableCell(contractTableValue(values?["equity"]))
+                            contractTableCell(contractTableValue(values?["trx"]))
+                            contractTableCell(contractTableValue(values?["funding_trx"],signed:true))
                         }.accessibilityElement(children:.combine)
                     }
                 }.font(.caption).monospacedDigit().fixedSize(horizontal:true,vertical:false)
                     .frame(minWidth:0,maxWidth:.infinity,alignment:.leading)
             }
+            .onGeometryChange(for:CGFloat.self) { $0.size.width } action: { contractTableWidth=$0 }
         }.frame(maxWidth:.infinity,alignment:.leading).cryptoPanel()
+    }
+    private func contractTableCell(_ text:String,alignment:Alignment = .trailing) -> some View {
+        Text(text).frame(minWidth:max(0,(contractTableWidth-36)/4),alignment:alignment)
     }
     private func contractTableValue(_ value:Double?,signed:Bool=false) -> String {
         guard let value else { return "—" }
