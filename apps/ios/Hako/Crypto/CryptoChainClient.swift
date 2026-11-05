@@ -7,6 +7,9 @@ extension CryptoClient {
 
     func walletSnapshot(_ wallet: CryptoWallet) async throws -> CryptoWalletSnapshot {
         try wallet.validate()
+        if wallet.network == CryptoWallet.cosmosHub {
+            return try await cosmosWalletSnapshot(address:wallet.address)
+        }
         if wallet.network == "TRON" {
             let token = try CryptoCredential.load("tronscan").key
             guard !token.isEmpty else { throw HakoError(message:"请在加密资产设置中配置 TRONSCAN API Token。") }
@@ -22,6 +25,72 @@ extension CryptoClient {
 
     func tronWalletTotal(address: String, token: String) async throws -> Double {
         try await tronWalletSnapshot(address:address,token:token).total
+    }
+
+    private static let cosmosREST = "https://rest.cosmos.directory/cosmoshub"
+
+    private func cosmosWalletSnapshot(address:String) async throws -> CryptoWalletSnapshot {
+        // These are disjoint ownership buckets. Redelegations already belong to
+        // the destination delegation and must not be added a second time.
+        let bank=try await cosmosRows("/cosmos/bank/v1beta1/balances/\(address)",key:"balances")
+        let delegated=try await cosmosRows("/cosmos/staking/v1beta1/delegations/\(address)",key:"delegation_responses")
+        let unbonding=try await cosmosRows("/cosmos/staking/v1beta1/delegators/\(address)/unbonding_delegations",key:"unbonding_responses")
+        let request=URLRequest(url:URL(string:Self.cosmosREST+"/cosmos/distribution/v1beta1/delegators/\(address)/rewards")!)
+        guard let rewards=try await json(request) as? [String:Any], let coins=rewards["total"] as? [[String:Any]] else {
+            throw HakoError(message:"Cosmos Hub 奖励响应不完整。")
+        }
+        func amount(_ value:Any?) throws -> Double {
+            let result=try Self.number(value)
+            guard result >= 0 else { throw HakoError(message:"Cosmos Hub 余额无效。") }
+            return result
+        }
+        func atom(_ coins:[[String:Any]]) throws -> Double {
+            var result=0.0
+            for coin in coins {
+                guard let denom=coin["denom"] as? String else { throw HakoError(message:"Cosmos Hub 币种缺失。") }
+                if denom == "uatom" { result += try amount(coin["amount"]) }
+            }
+            return result
+        }
+        var micro=try atom(bank) + atom(coins)
+        for row in delegated {
+            guard let balance=row["balance"] as? [String:Any], balance["denom"] as? String == "uatom" else {
+                throw HakoError(message:"Cosmos Hub 质押余额不完整。")
+            }
+            micro += try amount(balance["amount"])
+        }
+        for row in unbonding {
+            guard let entries=row["entries"] as? [[String:Any]] else { throw HakoError(message:"Cosmos Hub 解押余额不完整。") }
+            for entry in entries { micro += try amount(entry["balance"]) }
+        }
+        let quantity=micro / 1_000_000
+        guard quantity.isFinite else { throw HakoError(message:"Cosmos Hub 资产总额无效。") }
+        let value=quantity * (try await price("ATOM"))
+        guard value.isFinite else { throw HakoError(message:"Cosmos Hub 估值无效。") }
+        return CryptoWalletSnapshot(total:value,assets:[CryptoWalletAsset(id:"uatom",symbol:"ATOM",name:"Cosmos Hub（含质押、解押及奖励）",quantity:quantity,value:value)])
+    }
+
+    private func cosmosRows(_ path:String,key:String) async throws -> [[String:Any]] {
+        var result:[[String:Any]]=[], cursor:String?, seen=Set<String>()
+        repeat {
+            var url=URLComponents(string:Self.cosmosREST+path)!
+            url.queryItems=[URLQueryItem(name:"pagination.limit",value:"200")]
+            if let cursor { url.queryItems?.append(URLQueryItem(name:"pagination.key",value:cursor)) }
+            // Go's query decoder treats a literal plus as a space; page keys use base64.
+            url.percentEncodedQuery=url.percentEncodedQuery?.replacingOccurrences(of:"+",with:"%2B")
+            guard let object=try await json(URLRequest(url:url.url!)) as? [String:Any],
+                  let rows=object[key] as? [[String:Any]], let pagination=object["pagination"] as? [String:Any] else {
+                throw HakoError(message:"Cosmos Hub 余额或分页响应不完整。")
+            }
+            result += rows
+            let next=pagination["next_key"]
+            guard next == nil || next is NSNull || next is String else { throw HakoError(message:"Cosmos Hub 分页标识无效。") }
+            cursor=next as? String
+            if let cursor, !cursor.isEmpty {
+                guard seen.insert(cursor).inserted, seen.count < 100 else { throw HakoError(message:"Cosmos Hub 资产分页尚未完成。") }
+            }
+        } while cursor?.isEmpty == false
+        return result
     }
 
     func evmWalletAssets(address:String,chain:String,token:String) async throws -> [CryptoWalletAsset] {

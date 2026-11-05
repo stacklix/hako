@@ -160,6 +160,66 @@ private final class TronMockProtocol: URLProtocol, @unchecked Sendable {
             _ = try await client.evmWalletAssets(address:"0x123",chain:"eth",token:"test-token")
             fatalError("Repeated cursors must not loop or silently truncate details")
         } catch {}
-        print("Crypto chain: staking, ownership, quantities, valuation, persistence, pagination, authentication and failure checks passed")
+        let cosmosAddress="cosmos1y8nyfvmqh50p6ldpzljk3yrglppdv3t8h938ez"
+        let wallet=CryptoWallet(name:"ATOM",network:"Cosmos Hub",address:cosmosAddress)
+        try wallet.validate()
+        for invalid in [String(cosmosAddress.dropLast())+"q", cosmosAddress.uppercased(), address, "cosmos1bad"] {
+            do {
+                try CryptoWallet(name:"Invalid",network:"Cosmos Hub",address:invalid).validate()
+                fatalError("Invalid Cosmos address accepted")
+            } catch {}
+        }
+        for failure in ["none","bank","delegations","unbonding","rewards","malformed","repeated"] {
+            TronMockProtocol.respond { request in
+                let url=request.url!
+                if url.host == "api.huobi.pro" { return (200,["tick":["close":5]]) }
+                check(url.host == "rest.cosmos.directory", "Use public Cosmos Hub REST without credentials")
+                check(request.value(forHTTPHeaderField:"X-API-Key") == nil, "Cosmos needs no token")
+                check(url.path.contains(cosmosAddress), "Query requested Cosmos account")
+                let pagination:[String:Any] = ["next_key":NSNull(),"total":"0"]
+                if url.path.contains("/bank/") {
+                    if failure == "bank" { return (503,[:]) }
+                    if failure == "malformed" { return (200,["balances":[["denom":"uatom","amount":"bad"]],"pagination":pagination]) }
+                    let components=URLComponents(url:url,resolvingAgainstBaseURL:false)!
+                    let query=components.queryItems!
+                    if query.contains(where: { $0.name == "pagination.key" }) {
+                        check(query.contains { $0.name == "pagination.key" && $0.value == "next+/=" }, "Encode Cosmos page key")
+                        check(components.percentEncodedQuery?.contains("%2B") == true, "Escape base64 plus for the REST server")
+                        return (200,["balances":[["denom":"uatom","amount":"1000000"]],"pagination":failure == "repeated" ? ["next_key":"next+/="] : pagination])
+                    }
+                    return (200,["balances":[["denom":"uatom","amount":"2000000"],["denom":"ibc/other","amount":"999999999"]],"pagination":["next_key":"next+/="]])
+                }
+                if url.path.contains("unbonding_delegations") {
+                    if failure == "unbonding" { return (200,["unbonding_responses":[[:]],"pagination":pagination]) }
+                    return (200,["unbonding_responses":[["entries":[["balance":"4000000","initial_balance":"9000000"]]]],"pagination":pagination])
+                }
+                if url.path.contains("/staking/") {
+                    if failure == "delegations" { return (200,["delegation_responses":[[:]],"pagination":pagination]) }
+                    return (200,["delegation_responses":[["balance":["denom":"uatom","amount":"3000000"]]],"pagination":pagination])
+                }
+                if failure == "rewards" { return (200,[:]) }
+                return (200,["total":[["denom":"uatom","amount":"500000.125"],["denom":"ibc/other","amount":"999999999"]]])
+            }
+            do {
+                let cosmos=try await client.walletSnapshot(wallet)
+                check(failure == "none", "Incomplete Cosmos data must not return a partial balance")
+                check(cosmos.assets.count == 1 && cosmos.assets[0].symbol == "ATOM", "Only native ATOM is included")
+                check(abs(cosmos.assets[0].quantity - 10.500000125) < 1e-9, "Sum disjoint buckets, current unbonding principal and fractional rewards")
+                check(abs(cosmos.total - 52.500000625) < 1e-8, "Convert uatom and value using ATOM quote")
+                let decoded=try JSONDecoder().decode(CryptoWalletSnapshot.self,from:JSONEncoder().encode(cosmos))
+                check(decoded == cosmos, "Cosmos snapshot persists in existing cache")
+            } catch {
+                if failure == "none" { throw error }
+            }
+        }
+        TronMockProtocol.respond { request in
+            let path=request.url!.path
+            if request.url!.host == "api.huobi.pro" { return (200,["tick":["close":5]]) }
+            if path.contains("/distribution/") { return (200,["total":[]]) }
+            let key=path.contains("/bank/") ? "balances" : path.contains("unbonding_delegations") ? "unbonding_responses" : "delegation_responses"
+            return (200,[key:[],"pagination":["next_key":NSNull()]])
+        }
+        check(try await client.walletSnapshot(wallet).total == 0, "A complete empty Cosmos response is valid zero")
+        print("Crypto chain: TRON, EVM and Cosmos ownership, valuation, address validation, persistence, pagination and failure checks passed")
     }
 }

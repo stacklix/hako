@@ -8,7 +8,7 @@
 
 主应用「设置 → GitHub 配置」分别保存公开库和私有库地址及分支。原公开库配置保持不变；两个仓库共用钥匙串中的 GitHub Token，需授予对应仓库 Contents 读写权限。加密资产只使用私有库，读取和提交前均检查 GitHub 返回的 private 标记，不回退到公开库。私有库须预先创建分支和初始提交。
 
-子应用右上角滑杆进入设置，在「交易所接口」选择 HTX 或 Binance，填写只读 API Key / Secret Key。「链上资产」直接列出观察地址，可添加、点击编辑或左滑删除；「链上浏览器」提供 TRONSCAN、Moralis 的 Token 配置入口。密钥保存到本机钥匙串，不上传归档。观察地址支持 TRON、Ethereum、BNB Smart Chain，同网络同地址不允许重复；地址可以编辑或移除。TRON 查询需 TRONSCAN Token，Ethereum / BSC 需 Moralis Token。链上范围为数据服务可估值的原生币和代币。TRON 额外计入原生 TRX 的 Stake 1.0 / 2.0 质押本金（含委托给他人的部分）、Stake 2.0 解押中及已解押待提取本金；他人委托给本地址的资源不计为本地址资产。TRX 使用账户详情统一计算，不与代币列表中的 TRX 重复累加。不含 NFT、第三方 DeFi 协议质押和借贷头寸；缺少报价或接口失败不会把该来源当作零资产写入总额。
+子应用右上角滑杆进入设置，在「交易所接口」选择 HTX 或 Binance，填写只读 API Key / Secret Key。「链上资产」直接列出观察地址，可添加、点击编辑或左滑删除；「链上浏览器」提供 TRONSCAN、Moralis 的 Token 配置入口。密钥保存到本机钥匙串，不上传归档。观察地址支持 TRON、Ethereum、BNB Smart Chain、Cosmos Hub，同网络同地址不允许重复；地址可以编辑或移除。TRON 查询需 TRONSCAN Token，Ethereum / BSC 需 Moralis Token。链上范围为数据服务可估值的原生币和代币。TRON 额外计入原生 TRX 的 Stake 1.0 / 2.0 质押本金（含委托给他人的部分）、Stake 2.0 解押中及已解押待提取本金；他人委托给本地址的资源不计为本地址资产。TRX 使用账户详情统一计算，不与代币列表中的 TRX 重复累加。不含 NFT、第三方 DeFi 协议质押和借贷头寸；缺少报价或接口失败不会把该来源当作零资产写入总额。
 
 ## 同步入口
 
@@ -48,3 +48,11 @@ HTX 资产概览另列「今日合约」，通过 TRX-USD 当前账户信息与�
 - [Moralis 净值接口](https://moralis.com/how-to-get-the-net-worth-of-any-erc20-wallet-via-api/)。
 
 - [Binance 公共分钟行情](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#klinecandlestick-data)：按 startTime / endTime 读取结算时点的 TRXUSDT 分钟。
+
+## Cosmos Hub 原生 ATOM
+
+在资产设置中添加观察地址，网络选择 Cosmos Hub，填写完整 cosmos1 地址；保存时验证 Bech32 校验和。使用 cosmos.directory 的 Cosmos Hub 公共 REST 节点，无需 API Token 或私钥。合计原生 uatom 钱包余额、委托质押本金、解押中当前本金和待领取的 ATOM 奖励（1 ATOM = 1,000,000 uatom），通过 HTX ATOM/USDT 报价折算。转委托已包含在目标委托中，不重复累加；其他奖励币种、其他链的 IBC ATOM、流动性质押代币和验证者佣金不计入。
+
+余额、委托与解押接口均完整读取分页；接口失败、分页异常或字段不完整时不保存部分资产总额，沿用已有缓存并提示错误。复用现有余额 6 小时、报价 1 小时且北京时间同一自然日的缓存及按币种/钱包展示、私有仓库归档逻辑。
+
+接口定义：[bank](https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/bank/v1beta1/query.proto)、[staking](https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/staking/v1beta1/query.proto)、[distribution](https://github.com/cosmos/cosmos-sdk/blob/main/proto/cosmos/distribution/v1beta1/query.proto)。

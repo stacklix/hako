@@ -74,16 +74,48 @@ struct CryptoWalletSnapshot: Codable, Equatable {
 }
 
 struct CryptoWallet: Codable, Identifiable, Equatable {
+    static let cosmosHub = "Cosmos Hub"
+    static let networks = ["TRON", "Ethereum", "BNB Smart Chain", cosmosHub]
     var id = UUID()
     var name = ""
     var network = "TRON"
     var address = ""
     func validate() throws {
-        let pattern = network == "TRON" ? "^T[1-9A-HJ-NP-Za-km-z]{33}$" : "^0x[0-9a-fA-F]{40}$"
-        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              address.range(of: pattern, options: .regularExpression) != nil else {
+        guard Self.networks.contains(network) else {
+            throw HakoError(message: "不支持此观察地址网络。")
+        }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw HakoError(message: "请填写名称和所选网络的完整公开地址。")
         }
+        if network == Self.cosmosHub {
+            guard Self.validCosmosAddress(address) else {
+                throw HakoError(message: "Cosmos Hub 地址校验失败，请检查完整 cosmos1 地址。")
+            }
+        } else {
+            let pattern = network == "TRON" ? "^T[1-9A-HJ-NP-Za-km-z]{33}$" : "^0x[0-9a-fA-F]{40}$"
+            guard address.range(of: pattern, options: .regularExpression) != nil else {
+                throw HakoError(message: "请填写名称和所选网络的完整公开地址。")
+            }
+        }
+    }
+    // Cosmos Hub account addresses contain 20 payload bytes and a Bech32 checksum.
+    private static func validCosmosAddress(_ address:String) -> Bool {
+        guard address.hasPrefix("cosmos1"), address.count == 45 else { return false }
+        let alphabet=Array("qpzry9x8gf2tvdw0s3jn54khce6mua7l".utf8)
+        let hrp=Array("cosmos".utf8)
+        var values=hrp.map { $0 >> 5 } + [0] + hrp.map { $0 & 31 }
+        for byte in address.dropFirst(7).utf8 {
+            guard let index=alphabet.firstIndex(of:byte) else { return false }
+            values.append(UInt8(index))
+        }
+        var checksum:UInt32=1
+        let generators:[UInt32]=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3]
+        for value in values {
+            let top=checksum >> 25
+            checksum=(checksum & 0x1ffffff) << 5 ^ UInt32(value)
+            for index in 0..<5 where ((top >> index) & 1) != 0 { checksum ^= generators[index] }
+        }
+        return checksum == 1
     }
     var identity: String { network + ":" + (network == "TRON" ? address : address.lowercased()) }
     static func load() throws -> [Self] {

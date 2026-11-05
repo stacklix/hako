@@ -50,7 +50,7 @@ struct CryptoSettingsView: View {
             } header: {
                 Text("链上资产")
             } footer: {
-                Text("点击地址可编辑，左滑可移除。只保存观察地址，不需要钱包私钥。")
+                Text("点击地址可编辑，左滑可移除。只保存观察地址，不需要钱包私钥。Cosmos Hub 支持 cosmos1 地址，无需 API Token。")
             }
             Section("链上浏览器") {
                 CryptoCredentialLink(exchange:"tronscan",title:"TRONSCAN",tokenOnly:true)
@@ -129,6 +129,7 @@ private struct CryptoDataExplanationView: View {
             Section("链上资产范围") {
                 explanation("余额与估值","TRON 余额及代币的 TRX 计价来自 TRONSCAN，再用 HTX 的 TRX/USDT 报价折算。Ethereum 和 BNB Smart Chain 的余额与美元估值来自 Moralis，USD 与 USDT 按 1:1 计算。只统计所选六种资产。")
                 explanation("TRX 质押","TRX 包含钱包余额、Stake 1.0 / 2.0 质押本金、委托给他人的本金，以及解押中和待提取本金。他人委托给本地址的资源不算资产。")
+                explanation("ATOM 余额","Cosmos Hub 通过公开节点查询原生 ATOM，合计钱包余额、委托质押本金、解押中本金及待领取的 ATOM 奖励，再用 HTX ATOM/USDT 报价折算。转委托不重复计入；不包含其他链上的 IBC ATOM、流动性质押代币及验证者佣金。任一余额接口失败时保留上次数据。")
                 explanation("未覆盖资产","不包含 NFT、第三方 DeFi 质押和借贷头寸；明细和总额均以当前支持的资产范围为准。")
             }
             Section("更新、缓存与归档") {
@@ -245,10 +246,13 @@ private struct CryptoWalletEditor: View {
                     Text("地址名称").font(.subheadline).foregroundStyle(.secondary)
                     TextField("例如：我的冷钱包",text:$wallet.name).accessibilityLabel("地址名称")
                 }
-                Picker("网络",selection:$wallet.network) { ForEach(["TRON","Ethereum","BNB Smart Chain"],id:\.self) { Text($0) } }
+                Picker("网络",selection:$wallet.network) { ForEach(CryptoWallet.networks,id:\.self) { Text($0) } }
                 VStack(alignment:.leading,spacing:6) {
                     Text("钱包公开地址").font(.subheadline).foregroundStyle(.secondary)
                     TextField("完整公开地址",text:$wallet.address).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("钱包公开地址")
+                }
+                if wallet.network == CryptoWallet.cosmosHub {
+                    Text("填写 cosmos1 开头的 Cosmos Hub 地址，无需配置 Token。余额包含质押、解押中本金和待领取的 ATOM 奖励。").font(.caption).foregroundStyle(.secondary)
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack(spacing:12) {
