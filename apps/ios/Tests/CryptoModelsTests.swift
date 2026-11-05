@@ -14,6 +14,16 @@ import Foundation
         let snapshot=CryptoBinanceSnapshot(scope:"test",sampledAt:.now,accounts:accounts)
         check(snapshot.visibleAccounts.map(\.name) == ["Spot"],"only show account types with displayable asset rows")
         check(snapshot.total == 13.9 && snapshot.accounts.count == 4,"display filtering does not change reported total assets or cached accounts")
+        let htxHoldings = [
+            CryptoHTXSnapshot.Holding(id:"dust",symbol:"USDT",label:"",quantity:0.999),
+            CryptoHTXSnapshot.Holding(id:"boundary",symbol:"USDT",label:"",quantity:1),
+            CryptoHTXSnapshot.Holding(id:"liability",symbol:"USDT",label:"",quantity:-1.25),
+            CryptoHTXSnapshot.Holding(id:"unknown",symbol:"UNKNOWN",label:"",quantity:0.01)
+        ]
+        let htx = CryptoHTXSnapshot(scope:"test",sampledAt:.now,holdings:[.spot:[htxHoldings[0]],.crossMargin:htxHoldings])
+        check(htx.visibleRows(in:.spot).isEmpty,"HTX hides groups with only sub-1-USDT holdings")
+        check(htx.visibleRows(in:.margin).map(\.id) == ["boundary","liability","unknown"],"filter before rounding, retain significant liabilities and unquoted holdings")
+        check(htx.rows(in:.margin).count == 4,"filtering does not drop assets from HTX valuations or storage")
         let formatter=ISO8601DateFormatter()
         let now=formatter.date(from:"2026-12-31T16:01:00Z")!
         let recent=CryptoSyncPolicy.recentContractDays(now:now).map(CryptoDay.key)

@@ -43,6 +43,10 @@ struct CryptoView: View {
                         Text("数据日期：\(latest.day) · 仅汇总已配置来源")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if let updatedAt=store.cache.pricesUpdatedAt {
+                        Text("报价更新于："+updatedAt.formatted(date:.numeric,time:.standard))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     CryptoTrend(title:"每日总资产",records:store.portfolio,keys:["total"],names:["总资产"],units:["USDT"])
                 } else if tab == .htx {
                     Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("合约收益").tag(true) }.pickerStyle(.segmented)
@@ -183,10 +187,6 @@ struct CryptoView: View {
             if let snapshot=store.binanceSnapshot {
                 Text("余额更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
                     .font(.caption).foregroundStyle(.secondary)
-                if let updatedAt=store.cache.pricesUpdatedAt {
-                    Text("报价更新于："+updatedAt.formatted(date:.numeric,time:.standard))
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 let accounts = snapshot.visibleAccounts
                 let hasUnavailableDetails = snapshot.accounts.contains { $0.assets == nil && $0.balance != 0 }
                 if accounts.isEmpty && !hasUnavailableDetails {
@@ -219,7 +219,7 @@ struct CryptoView: View {
         VStack(alignment:.leading,spacing:12) {
             Text("资产详情").font(.headline)
             if let snapshot = store.htxSnapshot {
-                let groups = CryptoHTXSnapshot.Group.allCases.filter { !snapshot.rows(in:$0).isEmpty }
+                let groups = CryptoHTXSnapshot.Group.allCases.filter { !snapshot.visibleRows(in:$0).isEmpty }
                 if !groups.isEmpty {
                     VStack(alignment:.leading,spacing:0) {
                         ForEach(groups) { group in
@@ -248,11 +248,12 @@ struct CryptoView: View {
     }
 
     private func htxAccountRow(_ group: CryptoHTXSnapshot.Group, snapshot: CryptoHTXSnapshot) -> some View {
-        let assets = snapshot.rows(in:group)
-        let values = assets.compactMap { snapshot.value($0) }
+        let assets = snapshot.visibleRows(in:group)
+        let allAssets = snapshot.rows(in:group)
+        let values = allAssets.compactMap { snapshot.value($0) }
         let subtotal = values.reduce(0,+)
         let value = values.isEmpty || !subtotal.isFinite ? nil : subtotal
-        let unit = values.count == assets.count ? "USDT" : "部分折合 USDT"
+        let unit = values.count == allAssets.count ? "USDT" : "部分折合 USDT"
         let expanded = expandedHTXGroup == group
         return assetAccountRow(title:group.rawValue,subtitle:"\(assets.count) 项",value:value,unit:unit,expanded:expanded) {
             expandedHTXGroup = expanded ? nil : group
@@ -265,26 +266,17 @@ struct CryptoView: View {
     }
 
     private func htxAssetRow(_ asset: CryptoHTXSnapshot.Holding, value: Double?, isContract: Bool) -> some View {
-        VStack(alignment:.leading,spacing:8) {
-            HStack(alignment:.top,spacing:10) {
-                VStack(alignment:.leading,spacing:4) {
-                    Text(asset.symbol).font(.subheadline.weight(.semibold))
-                    if !asset.label.isEmpty { Text(asset.label).font(.caption).foregroundStyle(.secondary) }
-                }
-                Spacer(minLength:0)
-                VStack(alignment:.trailing,spacing:4) {
-                    Text(asset.quantity.formatted(.number.precision(.fractionLength(2...8))) + " " + asset.symbol)
-                        .font(.subheadline.weight(.semibold))
-                    Text(value.map { $0.formatted(.number.precision(.fractionLength(2))) + " USDT" } ?? "暂无报价")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.multilineTextAlignment(.trailing).monospacedDigit()
-            }
-            if let available = asset.available { metric(isContract ? "可用保证金" : "可用",available,asset.symbol) }
-            if let frozen = asset.frozen, frozen != 0 { metric(isContract ? "冻结保证金" : "冻结",frozen,asset.symbol) }
-            if let loan = asset.loan, loan != 0 { metric("借款本金",loan,asset.symbol) }
-            if let interest = asset.interest, interest != 0 { metric("待还利息",interest,asset.symbol) }
-            if let unrealized = asset.unrealized { metric("未实现盈亏",unrealized,asset.symbol) }
-        }.accessibilityElement(children:.combine)
+        let balances = [
+            (isContract ? "可用保证金" : "可用", asset.available),
+            (isContract ? "冻结保证金" : "冻结", asset.frozen),
+            ("借款", asset.loan), ("利息", asset.interest), ("未实现盈亏", asset.unrealized)
+        ].compactMap { label, amount -> String? in
+            amount.flatMap { $0 == 0 ? nil : label + " " + exchangeAmount($0) }
+        }.joined(separator:" · ")
+        return exchangeAssetRow(symbol:asset.symbol,quantity:asset.quantity,unit:asset.symbol,value:value) {
+            if !asset.label.isEmpty { Text(asset.label).font(.caption).foregroundStyle(.secondary) }
+            if !balances.isEmpty { Text(balances).font(.caption).foregroundStyle(.secondary) }
+        }
     }
 
     private func binanceAccountRow(_ account: CryptoBinanceAccount) -> some View {
@@ -338,25 +330,32 @@ struct CryptoView: View {
 
     private func binanceAssetRow(_ asset: CryptoBinanceAsset) -> some View {
         let isStock = asset.equitySymbol != nil
-        let precision = isStock ? 8 : 2
-        let quantity = String(format:"%.*f",precision,asset.quantity)
-        let unitPrice = asset.price.map { String(format:"%.*f",precision,$0) }
-        let value = asset.usdtValue.map { $0.formatted(.number.precision(.fractionLength(2))) + " USDT" }
-        return HStack(alignment:.top,spacing:10) {
+        let unitPrice = asset.price.map { String(format:"%.*f",isStock ? 8 : 2,$0) }
+        return exchangeAssetRow(symbol:asset.symbol,quantity:asset.quantity,unit:isStock ? "股" : asset.symbol,value:asset.usdtValue) {
+            if asset.name != asset.symbol { Text(asset.name).font(.caption).foregroundStyle(.secondary) }
+            if let unitPrice {
+                Text("单价 \(unitPrice) \(isStock ? "USD" : "USDT")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func exchangeAmount(_ amount: Double) -> String {
+        amount.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    private func exchangeAssetRow<Notes: View>(symbol: String, quantity: Double, unit: String, value: Double?,
+                                                @ViewBuilder notes: () -> Notes) -> some View {
+        HStack(alignment:.top,spacing:10) {
             VStack(alignment:.leading,spacing:4) {
-                Text(asset.symbol).font(.subheadline.weight(.semibold))
-                if asset.name != asset.symbol {
-                    Text(asset.name).font(.caption).foregroundStyle(.secondary)
-                }
-                if let unitPrice {
-                    Text("单价 \(unitPrice) \(isStock ? "USD" : "USDT")")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                Text(symbol).font(.subheadline.weight(.semibold))
+                notes()
             }
             Spacer(minLength:0)
             VStack(alignment:.trailing,spacing:4) {
-                Text(quantity + " " + (isStock ? "股" : asset.symbol)).font(.subheadline.weight(.semibold))
-                Text(value ?? "暂无报价").font(.caption).foregroundStyle(.secondary)
+                Text(exchangeAmount(quantity) + " " + unit).font(.subheadline.weight(.semibold))
+                Text(value.map { exchangeAmount($0) + " USDT" } ?? "暂无报价")
+                    .font(.caption).foregroundStyle(.secondary)
             }.multilineTextAlignment(.trailing)
         }
         .monospacedDigit()

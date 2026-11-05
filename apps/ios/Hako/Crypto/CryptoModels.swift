@@ -1,5 +1,11 @@
 import Foundation
 
+enum CryptoExchangeAssetDisplay {
+    static func includes(estimatedValue: Double?) -> Bool {
+        estimatedValue.map { abs($0) >= 1 } ?? true
+    }
+}
+
 struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
     var symbol: String
     var name: String
@@ -24,7 +30,7 @@ struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
         let value=quantity * price
         return value.isFinite ? value : nil
     }
-    var isVisible: Bool { quantity != 0 && (usdtValue.map { abs($0) >= 1 } ?? true) }
+    var isVisible: Bool { quantity != 0 && CryptoExchangeAssetDisplay.includes(estimatedValue:usdtValue) }
 }
 
 struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
@@ -102,6 +108,10 @@ struct CryptoHTXSnapshot: Codable, Equatable {
 
     func rows(in group: Group) -> [Holding] {
         Source.allCases.filter { $0.group == group }.flatMap { holdings[$0] ?? [] }
+    }
+
+    func visibleRows(in group: Group) -> [Holding] {
+        rows(in:group).filter { CryptoExchangeAssetDisplay.includes(estimatedValue:value($0)) }
     }
 
     func value(_ holding: Holding) -> Double? {
