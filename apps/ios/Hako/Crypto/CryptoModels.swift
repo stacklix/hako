@@ -96,6 +96,11 @@ enum CryptoDay {
 }
 
 enum CryptoSyncPolicy {
+    static func canReuseAssets(updatedAt: Date?, now: Date) -> Bool {
+        guard let updatedAt else { return false }
+        let age=now.timeIntervalSince(updatedAt)
+        return age >= 0 && age < 6*60*60 && CryptoDay.calendar.isDate(updatedAt,inSameDayAs:now)
+    }
     static func recentContractDays(now: Date) -> [Date] {
         let today=CryptoDay.calendar.startOfDay(for:now)
         return (1...7).map { CryptoDay.calendar.date(byAdding:.day,value:-$0,to:today)! }

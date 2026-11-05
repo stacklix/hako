@@ -127,7 +127,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(failDay:failed)
         store.loadCachedData()
         precondition(store.contracts.count == 2 && AssetMockProtocol.requests.isEmpty && repository.reads == 0,"cached records are published before any network request")
-        await store.collect()
+        await store.collect(force:true)
         precondition(store.binanceSnapshot?.total == 50 && store.binanceSnapshot?.accounts.first?.assets?.count == 1,"account and nonzero asset details are cached")
         let binanceAsset=store.binanceSnapshot!.accounts[0].assets![0]
         precondition(binanceAsset.quantity == 50 && binanceAsset.free == 40 && binanceAsset.locked == 7 && binanceAsset.frozen == 2 && binanceAsset.withdrawing == 1,"all asset balance components survive parsing")
@@ -149,7 +149,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(store.currentContract?.liquidation == 0.4 && store.currentContract?.scope == CryptoDay.hash(htx.key))
         precondition(store.contracts.allSatisfy { $0.day != CryptoDay.key(today) },"today's snapshot never becomes a historical archive row")
         configure(total:200)
-        await store.collect()
+        await store.collect(force:true)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"complete historical equity never requests retired settlements")
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"neither cached today funding nor completed historical funding is fetched again when retrying yesterday's settlement")
         precondition(store.contracts.count == 8 && store.portfolio.last?.values["total"] == 250 && store.pendingCount == 7)
@@ -160,7 +160,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(restored.binanceSnapshot == store.binanceSnapshot,"Binance details restore before querying the API")
         precondition(restored.portfolio.last?.values["total"] == 250 && AssetMockProtocol.requests.isEmpty,"reentry immediately displays the previous cached total")
         precondition(restored.currentContract == store.currentContract,"current contract cache restores before network queries")
-        await restored.collect()
+        await restored.collect(force:true)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"funding cache persists across store recreation in the same settlement period")
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"pending rows survive restart")
         precondition(restored.portfolio.last?.values["total"] == 350,"fresh results update the published display")
@@ -187,13 +187,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let savedTotal=repository.files[portfolioPath]
         configure(total:600,failBinance:true)
         let priorBinance=restored.binanceSnapshot
-        await restored.collect()
+        await restored.collect(force:true)
         precondition(restored.binanceSnapshot == priorBinance && restored.binanceError != nil,"failed Binance queries retain the previous snapshot with a visible error")
         precondition(restored.message != nil && restored.portfolio.last?.values["total"] == 350,"partial source failure never overwrites the displayed complete total")
         _ = await restored.trigger()
         precondition(repository.files[portfolioPath] == savedTotal,"failed collection leaves the archived total intact")
         configure(total:600,incompleteHTX:true)
-        await restored.collect()
+        await restored.collect(force:true)
         precondition(restored.message?.contains("HTX 总资产：") == true && restored.message?.contains("data.updated.success") == true && restored.message?.contains("今日总资产未更新") == true,"incomplete HTX valuation explains the missing daily total")
         precondition(restored.portfolio.last?.values["total"] == 350 && repository.files[portfolioPath] == savedTotal,"incomplete HTX valuation preserves cached and archived complete totals")
         precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == 1 && restored.binanceError == nil,"HTX valuation failure does not stop other sources")
@@ -214,7 +214,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         // A manual trigger queued behind entry collection must still perform a GitHub sync.
         let before=repository.reads
         configure(total:700)
-        let entry=Task { await restored.collect() }
+        let entry=Task { await restored.collect(force:true) }
         while !restored.busy { await Task.yield() }
         async let manual:String=restored.trigger()
         async let repeated:String=restored.trigger()
@@ -228,7 +228,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let upload=Task { await restored.trigger() }
         while !repository.blocked { await Task.yield() }
         do { try restored.clearCache();preconditionFailure("clearing an active sync must fail") } catch {}
-        let nextEntry=Task { await restored.collect() }
+        let nextEntry=Task { await restored.collect(force:true) }
         await Task.yield()
         repository.resume?.resume();repository.resume=nil
         _ = await (upload.value,nextEntry.value)
@@ -247,13 +247,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
         try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:fieldsFile)
         let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure(failRates:true)
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         precondition(fieldsStore.contracts.first{$0.day==completeDays[1].day}?.values["funding_rate"] == nil,"failed field remains missing")
         let filledFee=fieldsStore.contracts.first{$0.day==completeDays[0].day}!
         precondition(filledFee.values["funding_trx"] == 0 && filledFee.values["trx"] == 999 && filledFee.values["equity"] == 299.7,"fill zero fee and preserve every existing value")
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty && AssetMockProtocol.paths("/api/v3/klines").isEmpty,"missing fee or rate must not require equity or minute history")
         configure()
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         let filledRate=fieldsStore.contracts.first{$0.day==completeDays[1].day}!
         precondition(abs(filledRate.values["funding_rate"]! - 0.03) < 1e-12 && filledRate.values["funding_trx"] == 7)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").count == 2 && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"retry missing rates independently while reusing successfully cached funding cash flow")
@@ -272,12 +272,12 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(rateArchive.values["trx"] == 777 && rateArchive.values["equity"] == 233.1 && rateArchive.values["funding_rate"] == filledRate.values["funding_rate"],"GitHub merge fills only blank fields, never replaces existing contract values")
         precondition(fieldArchive.first{$0.day==filledFee.day}?.values["funding_trx"] == 0 && fieldArchive.contains(ancient))
         configure()
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"complete history and cached today funding are not requested again before settlement")
         let historicalBefore=fieldsStore.contracts
         let pendingBefore=fieldsStore.pendingCount
         configure(currentTRX:1234.56,currentLiquidation:nil)
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         precondition(fieldsStore.currentContract?.trx == 1234.56 && fieldsStore.currentContract?.equity == 1234.56 && fieldsStore.currentContract?.liquidation == nil)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_account_info").count == 1,"complete history only needs one current account query per entry")
         precondition(fieldsStore.contracts == historicalBefore && fieldsStore.pendingCount == pendingBefore,"current snapshot neither changes historical values nor adds an archive row")
@@ -285,10 +285,10 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let cached=try JSONDecoder().decode(CryptoStore.Cache.self,from:Data(contentsOf:fieldsFile))
         precondition(cached.currentContract == currentSnapshot,"new current data is saved to disk as well as published")
         configure(failCurrent:true)
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         precondition(fieldsStore.currentContract == currentSnapshot,"failed current query retains the old snapshot and its timestamp")
         configure(currentLiquidation:0)
-        await fieldsStore.collect()
+        await fieldsStore.collect(force:true)
         precondition(fieldsStore.currentContract?.liquidation == nil,"zero liquidation is unavailable, not a valid price")
         AssetMockProtocol.configure { request in
             if request.url!.path == "/api/v3/ticker/price" {
@@ -352,11 +352,11 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let cold=coldStore()
         cold.loadCachedData()
         precondition(cold.contracts.isEmpty && coldRepository.reads == 0)
-        await cold.collect()
+        await cold.collect(force:true)
         precondition(cold.message == nil && cold.contracts.first?.values["funding_rate"] == 0.022 && cold.cache.archiveLoaded == true)
         precondition(coldRepository.reads == 2 && coldRepository.commits.isEmpty && cold.pendingCount == 0 && AssetMockProtocol.requests.isEmpty,"cold bootstrap is read-only and does not create pending rows")
         let warm=coldStore();warm.loadCachedData()
-        await warm.collect()
+        await warm.collect(force:true)
         precondition(warm.contracts == cold.contracts && coldRepository.reads == 2,"persisted archive cache avoids fetching GitHub again")
         let otherCache=directory.appendingPathComponent("crypto/unrelated.json")
         try Data("preserve".utf8).write(to:otherCache)
@@ -365,10 +365,10 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(warm.cacheGeneration == 1 && warm.contracts.isEmpty && warm.portfolio.isEmpty && warm.currentContract == nil && warm.pendingCount == 0 && !FileManager.default.fileExists(atPath:coldFile.path))
         precondition(FileManager.default.fileExists(atPath:otherCache.path) && coldRepository.files == archiveBefore && coldRepository.commits.isEmpty,"clear is scoped to this local cache")
         coldRepository.failReads=true
-        await warm.collect()
+        await warm.collect(force:true)
         precondition(warm.message?.contains("test archive unavailable") == true && warm.cache.archiveLoaded != true && warm.contracts.isEmpty,"archive failure remains visible and retryable")
         coldRepository.failReads=false
-        await warm.collect()
+        await warm.collect(force:true)
         precondition(warm.message == nil && warm.cache.archiveLoaded == true && warm.contracts.first?.values["funding_rate"] == 0.022,"entry after clearing retries and rebuilds from GitHub")
         // Clearing explicitly discards pending records and live snapshots.
         let percentCurrent=CryptoCurrentContract(sampledAt:now,scope:"",trx:1,price:0.3,available:nil,unrealizedProfit:nil,liquidation:nil,fundingTRX:0,fundingRate:0.04)
@@ -381,7 +381,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let corrupt=coldStore();corrupt.loadCachedData()
         precondition(corrupt.message != nil)
         try corrupt.clearCache()
-        await corrupt.collect()
+        await corrupt.collect(force:true)
         precondition(corrupt.message == nil && corrupt.contracts.count == 1,"clear also recovers unreadable caches")
         // Existing daily balances suppress only the reminder; explicit sync still uploads fresh values.
         let reminderRepository=AssetRepository()
@@ -395,7 +395,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         }
         configure()
         let reminder=reminderStore()
-        await reminder.collect()
+        await reminder.collect(force:true)
         precondition(reminder.message == nil && reminderRepository.reads == 2 && reminderRepository.commits.isEmpty)
         precondition(reminder.pendingCount == 1 && reminder.pendingReminderCount == 0 && reminder.portfolio.last?.values["total"] == 50,"GitHub balance including zero hides the reminder without discarding the fresh local balance")
         let reminderRestored=reminderStore()
@@ -413,6 +413,48 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(mixedReminder.pendingCount == 3 && mixedReminder.pendingReminderCount == 2,"missing balance dates and contract rows still appear in the reminder")
         try mixedReminder.clearCache()
         precondition(mixedReminder.cache.archivedPortfolioDays == nil && mixedReminder.pendingReminderCount == 0,"clearing removes remote-day metadata as well")
+        // Automatic entry collection reuses only successful, same-day snapshots for six hours.
+        let ttlRepository=AssetRepository()
+        var ttlNow=now
+        var ttlCredential=binance
+        func ttlStore()->CryptoStore {
+            CryptoStore(repositoryProvider:{ttlRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "binance" ? ttlCredential : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{ttlNow})
+        }
+        configure()
+        let ttl=ttlStore()
+        await ttl.collect()
+        precondition(ttl.message == nil && ttl.cache.assetsUpdatedAt == now && !ttl.assetsExpired)
+        let calls=AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count
+        let reads=ttlRepository.reads
+        ttlNow=now.addingTimeInterval(6*60*60-1)
+        await ttl.collect()
+        let reopened=ttlStore()
+        await reopened.collect()
+        precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == calls && ttlRepository.reads == reads,"valid cache survives re-entry and process recreation without API or GitHub reads")
+        ttlNow=now.addingTimeInterval(6*60*60)
+        precondition(reopened.assetsExpired)
+        await reopened.collect()
+        precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == calls+1,"exactly six hours expires the snapshot")
+        ttlCredential.secret="changed-secret"
+        await reopened.collect()
+        precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == calls+2,"changed credentials invalidate an otherwise fresh snapshot")
+        ttlNow=CryptoDay.calendar.date(bySettingHour:23,minute:59,second:0,of:now)!
+        await reopened.collect(force:true)
+        let lateCalls=AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count
+        ttlNow=ttlNow.addingTimeInterval(60)
+        precondition(reopened.assetsExpired)
+        await reopened.collect()
+        precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == lateCalls+1,"midnight invalidates a one-minute-old snapshot")
+        ttlNow=ttlNow.addingTimeInterval(6*60*60)
+        configure(failBinance:true)
+        let successfulAt=reopened.cache.assetsUpdatedAt
+        await reopened.collect()
+        precondition(reopened.message != nil && reopened.assetsExpired && reopened.cache.assetsUpdatedAt == successfulAt,"a failed refresh preserves data and never renews cache lifetime")
+        configure()
+        await reopened.collect()
+        precondition(reopened.message == nil && !reopened.assetsExpired,"failed refresh is retried on the next entry")
+        try reopened.clearCache()
+        precondition(reopened.assetsExpired && reopened.cache.assetsUpdatedAt == nil,"clearing cache invalidates the successful collection timestamp")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

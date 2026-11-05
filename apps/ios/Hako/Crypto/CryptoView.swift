@@ -14,7 +14,6 @@ struct CryptoView: View {
     @State private var syncRequested = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var collecting = true
-    @State private var collectionWindow: Date?
     @State private var contractTableWidth: CGFloat = 0
     private var latest: CryptoRecord? { store.portfolio.last }
     var body: some View {
@@ -108,7 +107,7 @@ struct CryptoView: View {
         } }
         .onAppear { collecting=true;store.loadCachedData() }
         .onChange(of:scenePhase) { _,phase in
-            if phase == .active && !collecting && collectionWindow != CryptoSyncPolicy.fundingRefreshWindow(now:.now) {
+            if phase == .active && !collecting && store.assetsExpired {
                 Task { await collect() }
             }
         }
@@ -128,18 +127,18 @@ struct CryptoView: View {
         }
         .task(id:store.cacheGeneration) {
             await collect()
-            // Check newly settled funding and completed days even while the page stays open.
+            // Refresh expired assets, including at midnight, while the page stays open.
             while !Task.isCancelled {
                 do { try await Task.sleep(for:.seconds(60)) }
                 catch { return }
-                if scenePhase == .active && !collecting && collectionWindow != CryptoSyncPolicy.fundingRefreshWindow(now:.now) {
+                if scenePhase == .active && !collecting && store.assetsExpired {
                     await collect()
                 }
             }
         }
     }
     @MainActor private func collect() async {
-        collecting=true;collectionWindow=CryptoSyncPolicy.fundingRefreshWindow(now:.now);syncMessage=nil
+        collecting=true;syncMessage=nil
         await store.collect()
         collecting=false
         if syncRequested {

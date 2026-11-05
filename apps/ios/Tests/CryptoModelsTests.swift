@@ -31,6 +31,12 @@ import Foundation
         check(!CryptoSyncPolicy.canReuseFunding(updatedAt:settled,now:formatter.date(from:"2026-11-05T16:00:00Z")!),"midnight invalidates yesterday funding")
         check(!CryptoSyncPolicy.canReuseFunding(updatedAt:nil,now:settled),"legacy or missing success timestamp requires a query")
         check(!CryptoSyncPolicy.canReuseFunding(updatedAt:provisional,now:settled),"clock rollback cannot reuse a future observation")
+        check(CryptoSyncPolicy.canReuseAssets(updatedAt:settled,now:settled.addingTimeInterval(6*60*60-1)),"assets stay valid before six hours within the day")
+        check(!CryptoSyncPolicy.canReuseAssets(updatedAt:settled,now:settled.addingTimeInterval(6*60*60)),"assets expire at six hours")
+        let assetsBeforeMidnight=formatter.date(from:"2026-11-05T15:59:59Z")!
+        check(!CryptoSyncPolicy.canReuseAssets(updatedAt:assetsBeforeMidnight,now:assetsBeforeMidnight.addingTimeInterval(1)),"assets expire at Beijing midnight")
+        check(!CryptoSyncPolicy.canReuseAssets(updatedAt:nil,now:settled),"missing asset timestamp is expired")
+        check(!CryptoSyncPolicy.canReuseAssets(updatedAt:settled.addingTimeInterval(1),now:settled),"clock rollback invalidates assets")
         let scope=String(repeating:"a",count:64)
         let prior=CryptoRecord(kind:"htx-trx",day:"2026-12-31",sampledAt:formatter.date(from:"2026-12-31T08:00:00Z")!.timeIntervalSince1970,scope:scope,
                                values:["equity":8723.12345*0.32439,"trx":8723.12345,"price":0.32439,"liquidation":0.4438,"funding_trx": -1.235,"funding_rate":0.01234567])

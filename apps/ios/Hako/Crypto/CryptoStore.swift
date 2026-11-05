@@ -22,28 +22,29 @@ import Combine
         self.loadCredential=loadCredential;self.loadWallets=loadWallets;self.cacheDirectory=cacheDirectory;self.nowProvider=nowProvider
     }
 
-    // Restore synchronously before the view starts its one collection per entry.
+    // Restore synchronously before checking whether the cached assets are still valid.
     func loadCachedData() {
         guard !busy else { return }
         do { try restoreLocalData(repositoryProvider()) }
         catch { message=error.localizedDescription }
     }
     // Collection updates the published cache; explicit synchronization never queries asset APIs.
-    func collect() async { await run(sync:false) }
+    func collect(force: Bool = false) async { await run(sync:false,force:force) }
+    var assetsExpired: Bool { !CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:nowProvider()) }
     func trigger() async -> String {
         await run(sync:true)
         return message ?? "本机缓存已同步到 GitHub。"
     }
-    private func run(sync: Bool) async {
+    private func run(sync: Bool, force: Bool = false) async {
         if let running {
             let satisfies = sync == runningSyncs
             await running.value
-            if !satisfies { await run(sync:sync) }
+            if !satisfies { await run(sync:sync,force:force) }
             return
         }
         runningSyncs=sync
         let task=Task {
-            await self.refresh(sync:sync)
+            await self.refresh(sync:sync,force:force)
             self.running=nil;self.runningSyncs=false
         }
         running=task
@@ -59,6 +60,8 @@ import Combine
         var binanceSnapshot: CryptoBinanceSnapshot?
         var archiveLoaded = false
         var archivedPortfolioDays: Set<String>?
+        var assetsUpdatedAt: Date?
+        var assetsScope: String?
     }
 
     @Published private(set) var cache = Cache()
@@ -142,7 +145,7 @@ import Combine
         }
         try persist(value)
     }
-    private func refresh(sync: Bool) async {
+    private func refresh(sync: Bool, force: Bool) async {
         busy=true;message=nil
         let operation=sync ? "资产同步" : "资产更新"
         client.logStore.append(source:.crypto,level:.info,message:operation+"开始")
@@ -161,11 +164,13 @@ import Combine
                 try await synchronize(repository)
                 return
             }
+            let now=nowProvider()
+            let assetsScope=CryptoDay.hash(htx.key+"|"+htx.secret+"|"+binance.key+"|"+binance.secret+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
+            if !force && cache.assetsScope == assetsScope && CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:now) { return }
             if cache.archiveLoaded != true || cache.archivedPortfolioDays == nil {
                 do { try await rebuildArchiveCache(repository) }
                 catch { errors.append("GitHub 历史缓存："+error.localizedDescription) }
             }
-            let now=nowProvider()
             // Inspect local records first. Network requests are derived only from this missing-data plan.
             let contractRequests: [(day:Date,fields:Set<String>)] = htx.configured
                 ? CryptoSyncPolicy.recentContractDays(now:now).compactMap { day in
@@ -230,6 +235,10 @@ import Combine
                 catch { errors.append(CryptoDay.key(request.day)+" TRX 合约："+error.localizedDescription) }
             }
             if !htx.configured && !binance.configured && wallets.isEmpty && cache.records.isEmpty { errors.append("尚未配置资产来源，请先设置交易所 API 或观察地址。") }
+            if errors.isEmpty {
+                var value=cache;value.assetsUpdatedAt=now;value.assetsScope=assetsScope
+                try persist(value)
+            }
             message=errors.isEmpty ? nil : errors.joined(separator:"\n")
         } catch { message=error.localizedDescription }
     }
