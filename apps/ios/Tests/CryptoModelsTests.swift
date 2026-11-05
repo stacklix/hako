@@ -38,9 +38,10 @@ import Foundation
         let cells=try CSV.parse(csv)
         check(cells[0] == ["date","total_equity","trx_balance","trx_liquidation_price","trx_price","funding_trx","funding_rate"],"new contract schema")
         check(cells[1][0] == "20261231" && cells[1][2] == "8723.12" && cells[1][3] == "0.444" && cells[1][4] == "0.324" && cells[1][5] == "-1.24","amounts two decimals, prices three, signed half-up rounding")
-        check(cells[1][6] == "0.0001234567","rate precision unchanged")
+        check(cells[1][6] == "0.012","archive rate uses percent with three decimals")
         check(!csv.contains("sampled_at") && !csv.contains(scope),"timestamps and scopes stay local")
         let decoded=try CryptoRecord.decode(csv,kind:"htx-trx",year:"2026",scope:scope)[0]
+        check(abs(decoded.values["funding_rate"]! - 0.00012) < 1e-15,"percentage archive decodes to a ratio for existing charts and caches")
         check(decoded.sampledAt == 0 && CryptoDay.key(decoded.date) == prior.day,"archive date never becomes a fabricated collection time")
         check(decoded.equity != decoded.values["trx"]! * decoded.values["price"]!,"equity retains independently rounded original valuation")
         check(try CryptoRecord.encode([decoded],kind:"htx-trx") == csv,"repeated saves do not recalculate equity from rounded price")
@@ -60,6 +61,20 @@ import Foundation
         check(CryptoRecord.merge([portfolio],[newer]) == [newer],"latest local daily snapshot wins")
         check(try CryptoRecord.formatted(2.675,column:"funding_trx") == "2.68","decimal ties do not depend on binary floating point")
         check(try CryptoRecord.formatted(-0.004,column:"funding_trx") == "0.00","no negative zero")
+        for (ratio,percent) in [(0.0003,"0.030"),(-0.00106,"-0.106"),(0.0,"0.000"),(0.000455185953145045,"0.046"),(-0.000004,"0.000"),(0.000125,"0.013"),(-0.000125,"-0.013")] {
+            check(try CryptoRecord.formatted(ratio,column:"funding_rate") == percent,"percent conversion, signed decimal ties and negative zero")
+        }
+        let current=CryptoCurrentContract(sampledAt:now,scope:scope,trx:1,price:0.3,available:nil,unrealizedProfit:nil,liquidation:nil,fundingTRX:0,fundingRate:0.0003)
+        let cached=try JSONDecoder().decode(CryptoCurrentContract.self,from:JSONEncoder().encode(current))
+        check(cached.fundingRate == 0.0003,"local JSON caches retain ratio units")
+        if let archivePath=CommandLine.arguments.dropFirst().first {
+            let archive=try CryptoRecord.decode(String(contentsOfFile:archivePath,encoding:.utf8),kind:"htx-trx",year:"2026")
+            check(archive.count == 65,"reviewed vault archive contains 65 days")
+            check(abs(archive.first{$0.day == "2026-10-30"}!.values["funding_rate"]! - 0.00046) < 1e-15,"real vault percentages decode without multiplying charts by 100 twice")
+            let rateOnly=archive.first{$0.day == "2026-09-26"}!
+            check(rateOnly.missingContractFields == CryptoRecord.contractFields.subtracting(["funding_rate"]),"rate-only historical row preserves missing account fields")
+            check(try CSV.parse(CryptoRecord.encode(archive,kind:"htx-trx")) == CSV.parse(String(contentsOfFile:archivePath,encoding:.utf8)),"real vault archive round-trips without data changes")
+        }
         var optional=prior;optional.values.removeValue(forKey:"liquidation");optional.values.removeValue(forKey:"funding_trx")
         let optionalCells=try CSV.parse(CryptoRecord.encode([optional],kind:"htx-trx"))
         check(optionalCells[1][3].isEmpty && optionalCells[1][5].isEmpty,"missing values stay blank")

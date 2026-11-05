@@ -241,7 +241,7 @@ struct CryptoView: View {
                 .font(.caption).foregroundStyle(.secondary)
             metric("TRX 价格",store.currentContract?.price,"USDT/TRX",precision:3)
             metric("今日资金费净收入",store.currentContract?.fundingTRX,"TRX")
-            metric("今日资金费率合计",store.currentContract?.fundingRate.map { $0 * 100 },"%",precision:4)
+            metric("今日资金费率合计",store.currentContract?.fundingRate.map { $0 * 100 },"%",precision:3)
             metric("可用保证金",store.currentContract?.available,"TRX")
             metric("未实现盈亏",store.currentContract?.unrealizedProfit,"TRX")
             metric("强平价",store.currentContract?.liquidation,"USD/TRX",precision:3)
@@ -406,7 +406,7 @@ struct CryptoTrend: View {
         return (value - bounds.0) / (bounds.1 - bounds.0)
     }
     private func digits(_ key: String) -> Int {
-        key == "rate_percent" ? 4 : (["price", "liquidation"].contains(key) ? 3 : 2)
+        ["rate_percent", "price", "liquidation"].contains(key) ? 3 : 2
     }
     private func display(_ value: Double, key: String) -> String {
         String(format: "%.*f", digits(key), value)
