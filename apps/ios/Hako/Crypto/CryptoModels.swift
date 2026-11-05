@@ -68,7 +68,16 @@ struct CryptoWalletSnapshot: Codable, Equatable {
     var assets: [CryptoWalletAsset]
     var sampledAt: Date = .now
     var includedOnly: Self {
-        let selected=assets.filter { CryptoWalletAsset.isIncluded($0.symbol) }
+        let selected=assets.filter { CryptoWalletAsset.isIncluded($0.symbol) }.map { asset in
+            var asset = asset
+            // Shorten the native asset names already saved in existing snapshots.
+            switch (asset.symbol, asset.name) {
+            case ("TRX", "TRON（含质押及解质押资产）"): asset.name = "TRON"
+            case ("ATOM", "Cosmos Hub（含质押、解押及奖励）"): asset.name = CryptoWallet.cosmosHub
+            default: break
+            }
+            return asset
+        }
         return Self(total:selected.compactMap(\.value).reduce(0,+),assets:selected,sampledAt:sampledAt)
     }
 }

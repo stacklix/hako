@@ -252,7 +252,7 @@ private struct CryptoWalletEditor: View {
                     TextField("完整公开地址",text:$wallet.address).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityLabel("钱包公开地址")
                 }
                 if wallet.network == CryptoWallet.cosmosHub {
-                    Text("填写 cosmos1 开头的 Cosmos Hub 地址，无需配置 Token。余额包含质押、解押中本金和待领取的 ATOM 奖励。").font(.caption).foregroundStyle(.secondary)
+                    Text("填写 cosmos1 开头的 Cosmos Hub 地址，无需配置 Token。").font(.caption).foregroundStyle(.secondary)
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 HStack(spacing:12) {

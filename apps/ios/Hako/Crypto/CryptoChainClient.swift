@@ -67,7 +67,7 @@ extension CryptoClient {
         guard quantity.isFinite else { throw HakoError(message:"Cosmos Hub 资产总额无效。") }
         let value=quantity * (try await price("ATOM"))
         guard value.isFinite else { throw HakoError(message:"Cosmos Hub 估值无效。") }
-        return CryptoWalletSnapshot(total:value,assets:[CryptoWalletAsset(id:"uatom",symbol:"ATOM",name:"Cosmos Hub（含质押、解押及奖励）",quantity:quantity,value:value)])
+        return CryptoWalletSnapshot(total:value,assets:[CryptoWalletAsset(id:"uatom",symbol:"ATOM",name:CryptoWallet.cosmosHub,quantity:quantity,value:value)])
     }
 
     private func cosmosRows(_ path:String,key:String) async throws -> [[String:Any]] {
@@ -130,7 +130,7 @@ extension CryptoClient {
         }
         let trx = try Self.tronOwnedTRX(account)
         let trxPrice = try await price("TRX")
-        var assets=[CryptoWalletAsset(id:"_",symbol:"TRX",name:"TRON（含质押及解质押资产）",quantity:trx,value:trx * trxPrice)]
+        var assets=[CryptoWalletAsset(id:"_",symbol:"TRX",name:"TRON",quantity:trx,value:trx * trxPrice)]
         var total = trx * trxPrice, offset = 0
         while true {
             var r = URLRequest(url:URL(string:"https://apilist.tronscanapi.com/api/account/tokens?address=\(address)&start=\(offset)&limit=200&hidden=1&show=0")!)
