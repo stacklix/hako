@@ -31,6 +31,7 @@ import Combine
     // Collection updates the published cache; explicit synchronization never queries asset APIs.
     func collect(force: Bool = false) async { await run(sync:false,force:force) }
     var assetsExpired: Bool { !CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:nowProvider()) }
+    var pricesExpired: Bool { !CryptoSyncPolicy.canReusePrices(updatedAt:cache.pricesUpdatedAt,now:nowProvider()) }
     func trigger() async -> String {
         await run(sync:true)
         return message ?? "本机缓存已同步到 GitHub。"
@@ -62,6 +63,7 @@ import Combine
         var archivedPortfolioDays: Set<String>?
         var assetsUpdatedAt: Date?
         var assetsScope: String?
+        var pricesUpdatedAt: Date?
     }
 
     @Published private(set) var cache = Cache()
@@ -166,7 +168,10 @@ import Combine
             }
             let now=nowProvider()
             let assetsScope=CryptoDay.hash(htx.key+"|"+htx.secret+"|"+binance.key+"|"+binance.secret+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
-            if !force && cache.assetsScope == assetsScope && CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:now) { return }
+            if !force && cache.assetsScope == assetsScope && CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:now) {
+                if pricesExpired { try await refreshPrices(htx:htx,binance:binance) }
+                return
+            }
             if cache.archiveLoaded != true || cache.archivedPortfolioDays == nil {
                 do { try await rebuildArchiveCache(repository) }
                 catch { errors.append("GitHub 历史缓存："+error.localizedDescription) }
@@ -196,6 +201,8 @@ import Combine
                     var value=cache;value.binanceSnapshot=snapshot
                     try persist(value)
                     totals["binance"]=snapshot.total
+                    binanceError=snapshot.quoteError
+                    if let error=snapshot.quoteError { errors.append("Binance 报价："+error) }
                 } catch {
                     binanceError=error.localizedDescription
                     errors.append("Binance："+error.localizedDescription)
@@ -236,11 +243,49 @@ import Combine
             }
             if !htx.configured && !binance.configured && wallets.isEmpty && cache.records.isEmpty { errors.append("尚未配置资产来源，请先设置交易所 API 或观察地址。") }
             if errors.isEmpty {
-                var value=cache;value.assetsUpdatedAt=now;value.assetsScope=assetsScope
+                var value=cache;value.assetsUpdatedAt=now;value.assetsScope=assetsScope;value.pricesUpdatedAt=now
                 try persist(value)
             }
             message=errors.isEmpty ? nil : errors.joined(separator:"\n")
         } catch { message=error.localizedDescription }
+    }
+    private func refreshPrices(htx:CryptoCredential,binance:CryptoCredential) async throws {
+        var errors:[String]=[]
+        if binance.configured,let snapshot=binanceSnapshot {
+            do {
+                let quoted=try await client.binancePrices(snapshot,credential:binance)
+                var value=cache;value.binanceSnapshot=quoted
+                try persist(value);binanceError=quoted.quoteError
+                if let error=quoted.quoteError { errors.append("Binance 报价："+error) }
+            } catch { binanceError=error.localizedDescription;errors.append("Binance 报价："+error.localizedDescription) }
+        }
+        var prices:[String:Double]=["USDT":1]
+        var symbols=Set(wallets.flatMap { walletSnapshot($0)?.assets.map(\.symbol) ?? [] })
+        if htx.configured,currentContract != nil { symbols.insert("TRX") }
+        for symbol in symbols.sorted() where prices[symbol] == nil {
+            do { prices[symbol]=try await client.price(symbol) }
+            catch { errors.append(symbol+" 报价："+error.localizedDescription) }
+        }
+        var value=cache
+        if htx.configured,var current=currentContract,let price=prices["TRX"] {
+            current.price=price;value.currentContract=current
+        }
+        for wallet in wallets {
+            guard var snapshot=walletSnapshot(wallet) else { continue }
+            snapshot.assets=snapshot.assets.map { asset in
+                var asset=asset
+                if let price=prices[asset.symbol] { asset.value=asset.quantity * price }
+                return asset
+            }
+            snapshot.total=snapshot.assets.compactMap(\.value).reduce(0,+)
+            value.walletSnapshots?[wallet.identity]=snapshot
+            value.walletBalances?[wallet.identity]=snapshot.total
+            walletValues[wallet.id]=snapshot.total
+        }
+        // Quote refreshes never renew balance timestamps or create pending archive rows.
+        if errors.isEmpty { value.pricesUpdatedAt=nowProvider() }
+        try persist(value)
+        message=errors.isEmpty ? nil : errors.joined(separator:"\n")
     }
     private func readArchive(_ repository: any GitHubRepositoryAccess) async throws -> (records:[CryptoRecord],head:String) {
         var remote:[CryptoRecord]=[], head:String?

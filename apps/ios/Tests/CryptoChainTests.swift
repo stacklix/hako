@@ -152,12 +152,12 @@ private final class TronMockProtocol: URLProtocol, @unchecked Sendable {
                 ["token_address":"other","symbol":"DOGE","balance_formatted":"1000","usd_value":999999]
             ]])
         }
-        let evm=try await client.evmWalletAssets(address:"0x123",chain:"eth",token:"test-token",rate:2)
-        check(evm.count == 2 && evm[0].quantity == 2.5 && evm[0].value == 2500, "Convert USD to USDT and collect every page")
+        let evm=try await client.evmWalletAssets(address:"0x123",chain:"eth",token:"test-token")
+        check(evm.count == 2 && evm[0].quantity == 2.5 && evm[0].value == 5000, "Treat USD as USDT one-to-one and collect every page")
         check(evm[1].value == nil && evm[1].quantity == 3, "Retain unpriced tokens without inventing a zero valuation")
         TronMockProtocol.respond { _ in (200,["cursor":"repeated","result":[]]) }
         do {
-            _ = try await client.evmWalletAssets(address:"0x123",chain:"eth",token:"test-token",rate:1)
+            _ = try await client.evmWalletAssets(address:"0x123",chain:"eth",token:"test-token")
             fatalError("Repeated cursors must not loop or silently truncate details")
         } catch {}
         print("Crypto chain: staking, ownership, quantities, valuation, persistence, pagination, authentication and failure checks passed")

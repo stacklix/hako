@@ -102,56 +102,61 @@ struct CryptoClient {
         var r = URLRequest(url: URL(string:"https://api.binance.com/sapi/v1/asset/wallet/balance?" + Self.query(q))!)
         r.setValue(c.key, forHTTPHeaderField:"X-MBX-APIKEY")
         guard let data = try await json(r,secrets:[c.key,c.secret]) as? [[String: Any]] else { throw HakoError(message:"Binance 总资产格式无效。") }
-        var snapshot=try Self.binanceSnapshot(data,scope:CryptoDay.hash(c.key))
+        return try await binancePrices(Self.binanceSnapshot(data,scope:CryptoDay.hash(c.key)),credential:c)
+    }
+    // Refresh quotes independently so cached holdings never require a balance request.
+    func binancePrices(_ cached:CryptoBinanceSnapshot,credential c:CryptoCredential) async throws -> CryptoBinanceSnapshot {
+        var snapshot=cached,prices=[String:Double]()
+        var missing=Set<String>()
+        let assets=snapshot.accounts.flatMap { $0.assets ?? [] }
+        let equities=Set(assets.compactMap(\.equitySymbol))
         var equityPrices=[String:Double]()
-        let equities=Set(snapshot.accounts.flatMap { ($0.assets ?? []).compactMap(\.equitySymbol) })
         for symbol in equities.sorted() {
             do {
                 if let price=try await binanceEquityPrice(symbol,credential:c) { equityPrices[symbol]=price }
+                else { missing.insert(symbol) }
             } catch {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
-                // A missing stock quote must not discard balances or other stock quotes.
+                missing.insert(symbol)
             }
         }
-        if snapshot.accounts.contains(where: { $0.assets?.contains(where: { $0.symbol != "USDT" }) == true }) {
-            let request=URLRequest(url:URL(string:"https://data-api.binance.vision/api/v3/ticker/price")!)
-            var prices=[String:Double]()
+        if assets.contains(where: { $0.equitySymbol == nil && !["USDT","USD"].contains($0.symbol) }) {
             do {
+                let request=URLRequest(url:URL(string:"https://data-api.binance.vision/api/v3/ticker/price")!)
                 guard let rows=try await json(request) as? [[String:Any]] else { throw HakoError(message:"Binance 单价格式无效。") }
                 prices=try Self.binancePrices(rows)
             } catch {
                 try Task.checkCancellation()
-                if error is CancellationError || equities.isEmpty { throw error }
-                // Keep USD stock quotes and balances when USDT conversion is unavailable.
-            }
-            for account in snapshot.accounts.indices {
-                guard let assets=snapshot.accounts[account].assets else { continue }
-                snapshot.accounts[account].assets=assets.map { asset in
-                    var value=asset
-                    if let symbol=asset.equitySymbol {
-                        value.equityUSDPrice=equityPrices[symbol]
-                        value.unitPrice=nil
-                        // USDC is a USD proxy, not an exact USD/USDT exchange rate.
-                        if let usd=value.equityUSDPrice,let rate=prices["USDCUSDT"] {
-                            let converted=usd * rate
-                            if converted.isFinite && converted > 0 { value.unitPrice=converted }
-                        }
-                        return value
-                    }
-                    value.unitPrice=prices[asset.symbol+"USDT"]
-                    if value.unitPrice == nil {
-                        for quote in ["BTC","ETH","BNB","USDC","FDUSD"] {
-                            if let base=prices[asset.symbol+quote],let conversion=prices[quote+"USDT"] {
-                                let converted=base * conversion
-                                if converted.isFinite && converted > 0 { value.unitPrice=converted;break }
-                            }
-                        }
-                    }
-                    return value
-                }
+                if error is CancellationError { throw error }
+                missing.formUnion(assets.filter { $0.equitySymbol == nil && !["USDT","USD"].contains($0.symbol) }.map(\.symbol))
             }
         }
+        for account in snapshot.accounts.indices {
+            guard let assets=snapshot.accounts[account].assets else { continue }
+            snapshot.accounts[account].assets=assets.map { asset in
+                var value=asset
+                if let symbol=asset.equitySymbol {
+                    if let price=equityPrices[symbol] { value.equityUSDPrice=price;value.unitPrice=price }
+                    else if let price=asset.equityUSDPrice { value.unitPrice=price }
+                    return value
+                }
+                if ["USDT","USD"].contains(asset.symbol) { value.unitPrice=1;return value }
+                var price=prices[asset.symbol+"USDT"]
+                if price == nil {
+                    for quote in ["BTC","ETH","BNB","USDC","FDUSD"] {
+                        if let base=prices[asset.symbol+quote],let conversion=prices[quote+"USDT"] {
+                            let converted=base * conversion
+                            if converted.isFinite && converted > 0 { price=converted;break }
+                        }
+                    }
+                }
+                if let price { value.unitPrice=price }
+                else { missing.insert(asset.symbol) }
+                return value
+            }
+        }
+        snapshot.quoteError=missing.isEmpty ? nil : "报价暂不可用，保留上次报价；无历史报价时显示未提供："+missing.sorted().joined(separator:"、")
         return snapshot
     }
     func binanceEquityPrice(_ symbol:String,credential:CryptoCredential) async throws -> Double? {

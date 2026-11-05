@@ -326,7 +326,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         }
         let stocks=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
         let apple=stocks.accounts[0].assets!.first { $0.symbol == "EQ_AAPL" }!
-        precondition(apple.equityUSDPrice == 181 && abs(apple.usdtValue! - 358.38) < 0.00001,"stock midpoint is in USD; USDT uses the documented USDC proxy")
+        precondition(apple.equityUSDPrice == 181 && apple.usdtValue == 362,"stock USD midpoint equals USDT under the selected one-to-one convention")
         precondition(stocks.accounts[0].visibleAssets!.count == 3 && stocks.total == 1000,"empty or failed stock quotes never hide holdings or change exchange totals")
         precondition(stocks.accounts[0].assets!.filter { $0.symbol != "EQ_AAPL" }.allSatisfy { $0.price == nil && $0.equityUSDPrice == nil })
         let crossed=try CryptoClient.binanceEquityMidpoint(["bidPrice":"182","askPrice":"180"])
@@ -339,7 +339,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         }
         let unconverted=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
         let usdOnly=unconverted.accounts[0].assets!.first { $0.equitySymbol == "AAPL" }!
-        precondition(usdOnly.equityUSDPrice == 181 && usdOnly.price == nil && usdOnly.isVisible,"missing USDT conversion preserves USD stock quotes without assuming USD equals USDT")
+        precondition(usdOnly.equityUSDPrice == 181 && usdOnly.price == 181 && usdOnly.isVisible,"stock valuations never require a USD conversion ticker")
         // A cold entry reads the archive without posting or querying asset APIs.
         let coldRepository=AssetRepository()
         let archived=CryptoRecord(kind:"htx-trx",day:"2026-09-26",sampledAt:0,scope:"",values:["funding_rate":0.022])
@@ -455,6 +455,50 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(reopened.message == nil && !reopened.assetsExpired,"failed refresh is retried on the next entry")
         try reopened.clearCache()
         precondition(reopened.assetsExpired && reopened.cache.assetsUpdatedAt == nil,"clearing cache invalidates the successful collection timestamp")
+        // Quotes have their own one-hour lifetime and revalue cached positions without balance calls.
+        ttlNow=now
+        ttlCredential=binance
+        var quoteCache=ttl.cache
+        quoteCache.binanceSnapshot!.accounts[0].assets=[
+            CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:2,locked:0,frozen:0,withdrawing:0,unitPrice:100),
+            CryptoBinanceAsset(symbol:"EQ_AAPL",name:"Apple",free:3,locked:0,frozen:0,withdrawing:0,unitPrice:10,equityUSDPrice:10),
+            CryptoBinanceAsset(symbol:"USDT",name:"Tether",free:5,locked:0,frozen:0,withdrawing:0)
+        ]
+        quoteCache.pricesUpdatedAt=nil
+        let quoteFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(ttlRepository.storageScope)+".json")
+        try JSONEncoder().encode(quoteCache).write(to:quoteFile)
+        var btcQuote=200.0,stockQuote=20.0,quoteFails=false
+        AssetMockProtocol.configure { request in
+            switch request.url!.path {
+            case "/api/v3/ticker/price":
+                if quoteFails { throw HakoError(message:"test price unavailable") }
+                return [["symbol":"BTCUSDT","price":String(btcQuote)]]
+            case "/sapi/v1/equity/market/quote":
+                if quoteFails { throw HakoError(message:"test stock unavailable") }
+                return ["symbol":"AAPL","bidPrice":String(stockQuote),"askPrice":String(stockQuote)]
+            default: preconditionFailure("Quote-only entry must never query balances: \(request.url!.path)")
+            }
+        }
+        let quoted=ttlStore()
+        let pendingQuote=quoteCache.pending
+        let quoteReads=ttlRepository.reads
+        await quoted.collect()
+        precondition(quoted.message == nil && quoted.binanceSnapshot?.total == 465,"USDT valuation and complete account totals use cached quantities times latest prices; USD equals USDT")
+        precondition(quoted.cache.assetsUpdatedAt == quoteCache.assetsUpdatedAt && quoted.cache.pending == pendingQuote && ttlRepository.reads == quoteReads,"quotes neither renew balances nor change archive rows or read GitHub")
+        let quoteCount=AssetMockProtocol.requests.count
+        ttlNow=now.addingTimeInterval(3599)
+        await quoted.collect()
+        let quotedReopened=ttlStore()
+        await quotedReopened.collect()
+        precondition(AssetMockProtocol.requests.count == quoteCount,"coin and stock quote caches survive reopening for one hour")
+        ttlNow=now.addingTimeInterval(3600)
+        btcQuote=300;stockQuote=30
+        await quotedReopened.collect()
+        precondition(quotedReopened.binanceSnapshot?.total == 695 && AssetMockProtocol.requests.count == quoteCount+2,"exactly one hour refreshes both quotes and recalculates USDT values")
+        precondition(quotedReopened.binanceSnapshot?.accounts[0].assets?.map(\.quantity) == [2,3,5] && quotedReopened.cache.assetsUpdatedAt == now,"quote refresh preserves all positions and balance expiry")
+        ttlNow=now.addingTimeInterval(7200);quoteFails=true
+        await quotedReopened.collect()
+        precondition(quotedReopened.message != nil && quotedReopened.binanceSnapshot?.total == 695 && quotedReopened.pricesExpired,"failed quotes retain the last valuation and never renew the one-hour cache")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

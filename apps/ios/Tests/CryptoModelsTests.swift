@@ -37,6 +37,11 @@ import Foundation
         check(!CryptoSyncPolicy.canReuseAssets(updatedAt:assetsBeforeMidnight,now:assetsBeforeMidnight.addingTimeInterval(1)),"assets expire at Beijing midnight")
         check(!CryptoSyncPolicy.canReuseAssets(updatedAt:nil,now:settled),"missing asset timestamp is expired")
         check(!CryptoSyncPolicy.canReuseAssets(updatedAt:settled.addingTimeInterval(1),now:settled),"clock rollback invalidates assets")
+        check(CryptoSyncPolicy.canReusePrices(updatedAt:settled,now:settled.addingTimeInterval(3599)),"quotes stay valid for less than one hour")
+        check(!CryptoSyncPolicy.canReusePrices(updatedAt:settled,now:settled.addingTimeInterval(3600)),"quotes expire at one hour")
+        check(!CryptoSyncPolicy.canReusePrices(updatedAt:assetsBeforeMidnight,now:assetsBeforeMidnight.addingTimeInterval(1)),"quote cache expires at midnight")
+        let cachedStock=CryptoBinanceAsset(symbol:"EQ_AAPL",name:"Apple",free:2,locked:0,frozen:0,withdrawing:0,unitPrice:9,equityUSDPrice:10)
+        check(cachedStock.price == 10 && cachedStock.usdtValue == 20,"old converted stock prices use the cached USD quote directly under the one-to-one convention")
         let scope=String(repeating:"a",count:64)
         let prior=CryptoRecord(kind:"htx-trx",day:"2026-12-31",sampledAt:formatter.date(from:"2026-12-31T08:00:00Z")!.timeIntervalSince1970,scope:scope,
                                values:["equity":8723.12345*0.32439,"trx":8723.12345,"price":0.32439,"liquidation":0.4438,"funding_trx": -1.235,"funding_rate":0.01234567])

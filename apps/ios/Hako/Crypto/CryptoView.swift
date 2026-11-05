@@ -107,7 +107,7 @@ struct CryptoView: View {
         } }
         .onAppear { collecting=true;store.loadCachedData() }
         .onChange(of:scenePhase) { _,phase in
-            if phase == .active && !collecting && store.assetsExpired {
+            if phase == .active && !collecting && (store.assetsExpired || store.pricesExpired) {
                 Task { await collect() }
             }
         }
@@ -127,11 +127,11 @@ struct CryptoView: View {
         }
         .task(id:store.cacheGeneration) {
             await collect()
-            // Refresh expired assets, including at midnight, while the page stays open.
+            // Check the separate balance and quote lifetimes, including at midnight.
             while !Task.isCancelled {
                 do { try await Task.sleep(for:.seconds(60)) }
                 catch { return }
-                if scenePhase == .active && !collecting && store.assetsExpired {
+                if scenePhase == .active && !collecting && (store.assetsExpired || store.pricesExpired) {
                     await collect()
                 }
             }
@@ -204,14 +204,18 @@ struct CryptoView: View {
                 }
             }
             if let snapshot=store.binanceSnapshot {
-                Text("更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
+                Text("余额更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
                     .font(.caption).foregroundStyle(.secondary)
+                if let updatedAt=store.cache.pricesUpdatedAt {
+                    Text("报价更新于："+updatedAt.formatted(date:.numeric,time:.standard))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if snapshot.visibleAccounts.isEmpty {
                     Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
                 }
                 ForEach(snapshot.visibleAccounts) { account in
                     VStack(alignment:.leading,spacing:12) {
-                        metric(account.name,account.balance,"USDT")
+                        metric(account.name,account.currentBalance,"USDT")
                         if let assets=account.visibleAssets {
                             ForEach(assets) { asset in
                                 Divider()
@@ -231,7 +235,7 @@ struct CryptoView: View {
                     }.cryptoPanel()
                 }
                 if snapshot.accounts.contains(where: { $0.assets?.contains(where: { $0.equitySymbol != nil }) == true }) {
-                    Text("股票单价采用买卖报价中间值；USDT 折值按 USDC/USDT 行情估算。")
+                    Text("股票单价采用买卖报价中间值；USD 与 USDT 按 1:1 计算折值。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {

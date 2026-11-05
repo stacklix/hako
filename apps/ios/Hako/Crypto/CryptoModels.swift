@@ -15,7 +15,10 @@ struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
     }
     var id: String { symbol }
     var quantity: Double { free + locked + frozen + withdrawing }
-    var price: Double? { symbol == "USDT" ? 1 : unitPrice }
+    var price: Double? {
+        if ["USDT","USD"].contains(symbol) { return 1 }
+        return equitySymbol == nil ? unitPrice : equityUSDPrice
+    }
     var usdtValue: Double? {
         guard let price, price.isFinite, price > 0 else { return nil }
         let value=quantity * price
@@ -29,6 +32,13 @@ struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
     var balance: Double
     var assets: [CryptoBinanceAsset]?
     var id: String { name }
+    var currentBalance: Double {
+        guard let assets,!assets.isEmpty else { return balance }
+        let values=assets.compactMap(\.usdtValue)
+        guard values.count == assets.count else { return balance }
+        let total=values.reduce(0,+)
+        return total.isFinite ? total : balance
+    }
     var visibleAssets: [CryptoBinanceAsset]? { assets.map { $0.filter(\.isVisible) } }
     var isVisible: Bool { visibleAssets.map { !$0.isEmpty } ?? (balance != 0) }
 }
@@ -37,7 +47,8 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
     var scope: String
     var sampledAt: Date
     var accounts: [CryptoBinanceAccount]
-    var total: Double { accounts.reduce(0) { $0 + $1.balance } }
+    var quoteError: String? = nil
+    var total: Double { accounts.reduce(0) { $0 + $1.currentBalance } }
     var visibleAccounts: [CryptoBinanceAccount] { accounts.filter(\.isVisible) }
 }
 
@@ -97,9 +108,15 @@ enum CryptoDay {
 
 enum CryptoSyncPolicy {
     static func canReuseAssets(updatedAt: Date?, now: Date) -> Bool {
+        canReuse(updatedAt:updatedAt,now:now,lifetime:6*60*60)
+    }
+    static func canReusePrices(updatedAt: Date?, now: Date) -> Bool {
+        canReuse(updatedAt:updatedAt,now:now,lifetime:60*60)
+    }
+    private static func canReuse(updatedAt: Date?, now: Date, lifetime:TimeInterval) -> Bool {
         guard let updatedAt else { return false }
         let age=now.timeIntervalSince(updatedAt)
-        return age >= 0 && age < 6*60*60 && CryptoDay.calendar.isDate(updatedAt,inSameDayAs:now)
+        return age >= 0 && age < lifetime && CryptoDay.calendar.isDate(updatedAt,inSameDayAs:now)
     }
     static func recentContractDays(now: Date) -> [Date] {
         let today=CryptoDay.calendar.startOfDay(for:now)

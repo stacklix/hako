@@ -15,12 +15,8 @@ extension CryptoClient {
         let token = try CryptoCredential.load("moralis").key
         guard !token.isEmpty else { throw HakoError(message:"请配置 Moralis API Token 以查询 Ethereum / BSC 资产。") }
         let chain = wallet.network == "Ethereum" ? "eth" : "bsc"
-        // USD and USDT are not assumed to have a fixed 1:1 exchange rate.
-        let quote = try await json(URLRequest(url:URL(string:"https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=usd")!))
-        guard let data = quote as? [String: Any], let tether = data["tether"] as? [String: Any] else { throw HakoError(message:"USDT/USD 报价缺失。") }
-        let rate = try Self.number(tether["usd"])
-        guard rate > 0 else { throw HakoError(message:"USDT/USD 报价无效。") }
-        let assets = try await evmWalletAssets(address:wallet.address,chain:chain,token:token,rate:rate)
+        // User-selected valuation convention: USD equals USDT.
+        let assets = try await evmWalletAssets(address:wallet.address,chain:chain,token:token)
         return CryptoWalletSnapshot(total:assets.compactMap(\.value).reduce(0,+),assets:assets)
     }
 
@@ -28,7 +24,7 @@ extension CryptoClient {
         try await tronWalletSnapshot(address:address,token:token).total
     }
 
-    func evmWalletAssets(address:String,chain:String,token:String,rate:Double) async throws -> [CryptoWalletAsset] {
+    func evmWalletAssets(address:String,chain:String,token:String) async throws -> [CryptoWalletAsset] {
         var assets:[CryptoWalletAsset]=[], cursor:String?, seen=Set<String>()
         repeat {
             var url=URLComponents(string:"https://deep-index.moralis.io/api/v2.2/wallets/\(address)/tokens")!
@@ -45,7 +41,7 @@ extension CryptoClient {
                 let quantity=try Self.number(row["balance_formatted"])
                 guard quantity > 0 else { continue }
                 guard let id=row["token_address"] as? String else { throw HakoError(message:"链上币种地址缺失。") }
-                let value=(try? Self.number(row["usd_value"])).map { $0 / rate }
+                let value=try? Self.number(row["usd_value"])
                 assets.append(CryptoWalletAsset(id:id.lowercased(),symbol:symbol,name:row["name"] as? String ?? symbol,quantity:quantity,value:value))
             }
             cursor=object["cursor"] as? String
