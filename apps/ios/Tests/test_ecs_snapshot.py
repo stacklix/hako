@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import sys
 import tempfile
 import types
@@ -518,8 +519,10 @@ class SnapshotTests(unittest.TestCase):
         overview = json.loads(collector.collect('overview'))
         self.assertGreater(overview['memoryTotal'], 0)
         self.assertLessEqual(overview.get('memoryAvailable', 0), overview['memoryTotal'])
+        has_eth0 = any(name == 'eth0' for _, name in socket.if_nameindex())
         network = json.loads(collector.collect('network'))
-        self.assertTrue(network['interfaces'])
+        self.assertEqual([row['name'] for row in network['interfaces']], ['eth0'] if has_eth0 else [])
+        self.assertEqual(network['primaryInterface'], 'eth0' if has_eth0 else None)
         self.assertTrue(network.get('sockets') is not None or network.get('socketError'))
         if network.get('sockets') is not None:
             self.assertTrue(all(network['socketSummary'][key] >= 0 for key in ('outgoing', 'incoming', 'unknown')))

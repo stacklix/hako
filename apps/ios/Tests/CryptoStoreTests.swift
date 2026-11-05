@@ -306,12 +306,10 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(currentTRX:1234.56,currentLiquidation:nil)
         await fieldsStore.collect(force:true)
         precondition(fieldsStore.currentContract?.trx == 1234.56 && fieldsStore.currentContract?.equity == 1234.56 && fieldsStore.currentContract?.liquidation == nil)
-        let currentRequests = AssetMockProtocol.paths("/swap-api/v1/swap_account_info").filter { request in
-            guard let body = request.httpBody,
-                  let object = (try? JSONSerialization.jsonObject(with:body)) as? [String:Any] else { return false }
-            return object["contract_code"] as? String == "TRX-USD"
-        }
-        precondition(currentRequests.count == 1,"complete history only needs one TRX account query per entry")
+        // The current TRX snapshot and the coin-margined detail list share this route.
+        // URLProtocol on Darwin can expose a POST body as a stream instead of httpBody.
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_account_info").count == 2,
+                     "complete history uses only the current TRX and coin-margined detail queries")
         precondition(fieldsStore.contracts == historicalBefore && fieldsStore.pendingCount == pendingBefore,"current snapshot neither changes historical values nor adds an archive row")
         let currentSnapshot=fieldsStore.currentContract
         let cached=try JSONDecoder().decode(CryptoStore.Cache.self,from:Data(contentsOf:fieldsFile))
