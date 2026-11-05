@@ -41,6 +41,7 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
+    @ObservedObject private var buildPush = BuildPushSubscription.shared
     @State private var sheet: SheetRoute?
     @State private var message: String?
     @State private var updates: [UpdateSource: UpdateState] = [:]
@@ -78,6 +79,18 @@ struct SettingsView: View {
                     settingsEntry("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            }
+            Section("构建通知") {
+                Toggle("接收 Hako 构建通知", isOn: Binding(
+                    get: { buildPush.enabled },
+                    set: { enabled in Task { await buildPush.setEnabled(enabled) } }
+                ))
+                .disabled(buildPush.busy)
+                if let message = buildPush.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("工具") {
                 NavigationLink { HakoLogsView() } label: {

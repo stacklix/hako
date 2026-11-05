@@ -1,9 +1,17 @@
 import SwiftUI
 
 @main struct HakoApp: App {
+    @UIApplicationDelegateAdaptor(BuildPushDelegate.self) private var pushDelegate
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some Scene {
         WindowGroup {
             HomeView()
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    if phase == .active {
+                        Task { await BuildPushSubscription.shared.refresh() }
+                    }
+                }
         }
     }
 }

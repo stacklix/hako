@@ -37,6 +37,12 @@ team=v['TeamIdentifier'][0]
 assert e.get('application-identifier') == team+'.me.stackli.hako', 'Profile must be for me.stackli.hako'
 for key in ['com.apple.developer.family-controls','com.apple.developer.family-controls.app-and-website-usage']:
     assert e.get(key) is True, 'Missing entitlement: '+key
+entitlements = plistlib.loads(Path('Hako/Hako.entitlements').read_bytes())
+if 'aps-environment' in e:
+    entitlements['aps-environment'] = e['aps-environment']
+else:
+    entitlements.pop('aps-environment', None)
+p.joinpath('Hako.entitlements').write_bytes(plistlib.dumps(entitlements))
 method='debugging' if e.get('get-task-allow') else 'release-testing'
 for name,value in [('team',team),('uuid',v['UUID'])]: p.joinpath(name).write_text(value)
 options={'method':method,'teamID':team,'signingStyle':'manual','provisioningProfiles':{'me.stackli.hako':v['UUID']},'manageAppVersionAndBuildNumber':False}
@@ -67,6 +73,7 @@ BUILD_NUMBER="$(python3 scripts/build-number.py)"
 xcodebuild -skipPackagePluginValidation -project Hako.xcodeproj -scheme Hako -configuration Release -destination 'generic/platform=iOS' \
   -archivePath build/ci/Hako.xcarchive -derivedDataPath build/ci/DerivedData \
   HAKO_SIGN_STYLE=Manual HAKO_SIGN_TEAM="$TEAM" HAKO_SIGN_IDENTITY="$IDENTITY" \
+  HAKO_SIGN_ENTITLEMENTS="$SIGNING_DIR/Hako.entitlements" \
   HAKO_SIGN_PROFILE="$PROFILE_UUID" HAKO_SIGN_FLAGS="--keychain $KEYCHAIN" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" archive
 xcodebuild -exportArchive -archivePath build/ci/Hako.xcarchive \
