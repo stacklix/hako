@@ -65,33 +65,7 @@ struct CryptoView: View {
                     binanceDetails
                 } else {
                     amountPanel("链上资产",value:store.chainTotal)
-                    VStack(alignment:.leading,spacing:12) {
-                        if store.wallets.isEmpty {
-                            Text("暂无观察地址，可在右上角设置中添加。").font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(store.wallets.enumerated()),id:\.element.id) { index,wallet in
-                            if index > 0 { Divider() }
-                            NavigationLink {
-                                CryptoWalletDetailView(wallet:wallet,store:store)
-                            } label: {
-                                HStack(spacing:12) {
-                                    VStack(alignment:.leading,spacing:6) {
-                                        Text(wallet.name).font(.subheadline.weight(.semibold))
-                                        Text(wallet.network+" · "+wallet.address).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                        Text(store.walletValues[wallet.id].map { $0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无估值")
-                                            .font(.headline).monospacedDigit()
-                                        if let error=store.walletErrors[wallet.id] {
-                                            Text("更新失败："+error).font(.caption).foregroundStyle(.red)
-                                        }
-                                    }
-                                    Spacer(minLength:0)
-                                    Image(systemName:"chevron.right").font(.caption).foregroundStyle(.secondary)
-                                }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityHint("查看该地址的总资产及各币种资产")
-                        }
-                    }.cryptoPanel()
+                    CryptoChainAssetsView(store:store)
                 }
                 if store.portfolio.isEmpty && store.contracts.isEmpty && store.currentContract == nil {
                     Text("还没有采集数据。请先配置交易所只读 API、观察地址及主应用私有仓库。")
@@ -327,7 +301,7 @@ struct CryptoView: View {
     }
 }
 
-private struct CryptoWalletDetailView: View {
+struct CryptoWalletDetailView: View {
     let wallet:CryptoWallet
     @ObservedObject var store:CryptoStore
     private var snapshot:CryptoWalletSnapshot? { store.walletSnapshot(wallet) }
@@ -343,7 +317,6 @@ private struct CryptoWalletDetailView: View {
                     Text(wallet.network).font(.subheadline).foregroundStyle(.secondary)
                     Text(wallet.address).font(.caption.monospaced()).textSelection(.enabled)
                     Text("折算总资产").font(.caption).foregroundStyle(.secondary).padding(.top,8)
-                    Text("仅汇总 BTC、ETH、ATOM、TRX、USDT、USDC").font(.caption).foregroundStyle(.secondary)
                     Text(store.walletValues[wallet.id].map { $0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无估值")
                         .font(.title.weight(.semibold)).monospacedDigit()
                     if let snapshot {
@@ -362,8 +335,15 @@ private struct CryptoWalletDetailView: View {
                         ForEach(visibleAssets) { asset in
                             Divider()
                             VStack(alignment:.leading,spacing:6) {
-                                Text(asset.symbol).font(.subheadline.weight(.semibold))
-                                Text(asset.name).font(.caption).foregroundStyle(.secondary)
+                                HStack(spacing:10) {
+                                    Image("Crypto"+asset.symbol.uppercased())
+                                        .resizable().scaledToFit().frame(width:32,height:32)
+                                        .accessibilityHidden(true)
+                                    VStack(alignment:.leading,spacing:4) {
+                                        Text(asset.symbol).font(.subheadline.weight(.semibold))
+                                        Text(asset.name).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
                                 Text("数量："+asset.quantity.formatted(.number.precision(.fractionLength(0...8)))+" "+asset.symbol)
                                     .font(.subheadline).monospacedDigit()
                                 Text(asset.value.map { "折合 "+$0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无报价，未计入折算总额")

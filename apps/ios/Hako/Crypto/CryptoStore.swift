@@ -81,6 +81,9 @@ import Combine
         return snapshot
     }
     func walletSnapshot(_ wallet:CryptoWallet) -> CryptoWalletSnapshot? { cache.walletSnapshots?[wallet.identity]?.includedOnly }
+    var chainHoldings: [CryptoChainHolding] {
+        CryptoChainHolding.aggregate(wallets.compactMap { wallet in walletSnapshot(wallet).map { (wallet,$0) } })
+    }
     var chainTotal:Double? {
         guard !wallets.isEmpty else { return nil }
         let snapshots=wallets.compactMap { walletSnapshot($0) }
