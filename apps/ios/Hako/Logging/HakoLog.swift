@@ -38,7 +38,11 @@ final class HakoLogStore: @unchecked Sendable {
         self.fileURL = fileURL
         guard let fileURL, FileManager.default.fileExists(atPath: fileURL.path) else { return }
         do {
-            values = Array(try JSONDecoder().decode([HakoLogEntry].self, from: Data(contentsOf: fileURL)).suffix(Self.capacity))
+            let stored = try JSONDecoder().decode([HakoLogEntry].self, from: Data(contentsOf: fileURL))
+            values = Array(stored.filter { entry in
+                !(entry.source == .crypto && entry.level == .info &&
+                  (entry.message == "资产更新开始" || entry.message == "资产更新完成"))
+            }.suffix(Self.capacity))
         } catch { storageIssue = "无法读取之前的日志；本次日志仍可查看。" }
     }
 

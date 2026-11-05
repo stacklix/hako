@@ -60,7 +60,10 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
 
 struct CryptoHTXSnapshot: Codable, Equatable {
     enum Source: String, CaseIterable, Codable {
-        case spot, crossMargin, isolatedMargin, coinSwap, crossSwap, isolatedSwap
+        case spot, crossMargin, isolatedMargin, coinSwap, crossSwap, isolatedSwap, linearSwap
+
+        // Keep the legacy keys decodable until V5 successfully replaces their cached rows.
+        static let queried: [Self] = [.spot, .crossMargin, .isolatedMargin, .coinSwap, .linearSwap]
 
         var title: String {
             switch self {
@@ -70,6 +73,7 @@ struct CryptoHTXSnapshot: Codable, Equatable {
             case .coinSwap: "币本位永续"
             case .crossSwap: "U 本位全仓"
             case .isolatedSwap: "U 本位逐仓"
+            case .linearSwap: "U 本位"
             }
         }
 
@@ -77,7 +81,7 @@ struct CryptoHTXSnapshot: Codable, Equatable {
             switch self {
             case .spot: .spot
             case .crossMargin, .isolatedMargin: .margin
-            case .coinSwap, .crossSwap, .isolatedSwap: .swap
+            case .coinSwap, .crossSwap, .isolatedSwap, .linearSwap: .swap
             }
         }
     }
@@ -102,6 +106,7 @@ struct CryptoHTXSnapshot: Codable, Equatable {
     var scope: String
     var sampledAt: Date
     var holdings: [Source: [Holding]] = [:]
+    var queriedLinearSwapV5: Bool?
     var prices: [String: Double] = ["USDT": 1]
     var errors: [String] = []
     var quoteError: String?

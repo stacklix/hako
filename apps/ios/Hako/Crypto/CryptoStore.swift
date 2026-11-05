@@ -163,9 +163,13 @@ import Combine
     private func refresh(sync: Bool, force: Bool) async {
         busy=true;message=nil
         let operation=sync ? "资产同步" : "资产更新"
-        client.logStore.append(source:.crypto,level:.info,message:operation+"开始")
+        if sync { client.logStore.append(source:.crypto,level:.info,message:operation+"开始") }
         defer {
-            client.logStore.append(source:.crypto,level:message == nil ? .info : .error,message:operation+(message == nil ? "完成" : "出现错误"),detail:message ?? "",fullDetail:true)
+            if let message {
+                client.logStore.append(source:.crypto,level:.error,message:operation+"出现错误",detail:message,fullDetail:true)
+            } else if sync {
+                client.logStore.append(source:.crypto,level:.info,message:operation+"完成")
+            }
             busy=false
         }
         do {
@@ -267,7 +271,8 @@ import Combine
     private func refreshHTXDetails(_ credential: CryptoCredential, now: Date, force: Bool) async throws {
         guard credential.configured else { return }
         let previous = htxSnapshot
-        guard force || !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
+        guard force || previous?.queriedLinearSwapV5 != true ||
+                !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
         let snapshot = try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous)
         var value = cache
         value.htxSnapshot = snapshot

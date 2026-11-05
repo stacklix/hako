@@ -104,10 +104,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
                         ["currency":"usdt","type":"interest","balance":"-1"],
                         ["currency":"usdt","type":"loan-available","balance":"2000"]
                     ]]]
-                case "/v1/margin/accounts/balance", "/linear-swap-api/v1/swap_account_info":
+                case "/v1/margin/accounts/balance":
                     return ["status":"ok","data":[]]
-                case "/linear-swap-api/v1/swap_cross_account_info":
-                    return ["status":"ok","data":[["margin_account":"USDT","margin_balance":"100","margin_available":"80","profit_unreal":"-3"]]]
+                case "/v5/account/balance":
+                    precondition(request.httpMethod == "GET" && request.url?.host == "api.hbdm.com","use HTX V5 for U-margined balances")
+                    return ["code":200,"data":["equity":"100","details":[
+                        ["currency":"USDT","equity":"100","isolated_equity":"20","available_margin":"80","profit_unreal":"-3"]
+                    ]]]
                 case "/market/tickers": return ["status":"ok","data":[["symbol":"trxusdt","close":0.25]]]
                 case "/market/detail/merged": return ["tick":["close":1]]
                 case "/swap-api/v1/swap_balance_valuation": return ["data":[["valuation_asset":"USDT","balance":currentTRX]]]
@@ -149,7 +152,9 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(htxSpot.quantity == 40 && htxSpot.frozen == 10 && htxDetails.value(htxSpot) == 10)
         let htxMargin = htxDetails.rows(in:.margin).first!
         precondition(htxMargin.quantity == 29 && htxMargin.loan == 20 && htxMargin.interest == 1)
-        precondition(htxDetails.rows(in:.swap).map(\.symbol) == ["TRX","USDT"],"show coin and USDT equity without fabricating empty isolated accounts")
+        precondition(htxDetails.rows(in:.swap).map(\.symbol) == ["TRX","USDT"],"show coin and V5 USDT equity")
+        precondition(htxDetails.rows(in:.swap).last?.quantity == 100 && htxDetails.queriedLinearSwapV5 == true,
+                     "avoid adding isolated equity or the account total to V5 currency equity")
         precondition(store.binanceSnapshot?.total == 50 && store.binanceSnapshot?.accounts.first?.assets?.count == 1,"account and nonzero asset details are cached")
         let binanceAsset=store.binanceSnapshot!.accounts[0].assets![0]
         precondition(binanceAsset.quantity == 50 && binanceAsset.free == 40 && binanceAsset.locked == 7 && binanceAsset.frozen == 2 && binanceAsset.withdrawing == 1,"all asset balance components survive parsing")
@@ -527,9 +532,15 @@ private final class AssetRepository: GitHubRepositoryAccess {
         await quotedReopened.collect()
         precondition(quotedReopened.message != nil && quotedReopened.binanceSnapshot?.total == 695 && quotedReopened.pricesExpired,"failed quotes retain the last valuation and never renew the one-hour cache")
         configure(failSpotDetails:true)
+        var legacyHTX = htxDetails
+        legacyHTX.queriedLinearSwapV5 = nil
+        let previousLinear = legacyHTX.holdings.removeValue(forKey:.linearSwap)
+        legacyHTX.holdings[.isolatedSwap] = previousLinear
         let partial = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
-            .htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
+            .htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:legacyHTX)
         precondition(partial.rows(in:.spot) == htxDetails.rows(in:.spot) && partial.errors.count == 1,"a source failure preserves its previous holdings")
+        precondition(partial.holdings[.isolatedSwap] == nil && partial.holdings[.linearSwap]?.count == 1,
+                     "successful V5 refresh replaces legacy U-margined rows")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

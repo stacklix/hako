@@ -219,10 +219,15 @@ extension CryptoClient {
                          previous: CryptoHTXSnapshot?) async throws -> CryptoHTXSnapshot {
         var snapshot = previous ?? CryptoHTXSnapshot(scope:scope,sampledAt:now)
         snapshot.sampledAt = now
+        snapshot.queriedLinearSwapV5 = true
         snapshot.errors = []
-        for source in CryptoHTXSnapshot.Source.allCases {
+        for source in CryptoHTXSnapshot.Source.queried {
             do {
                 snapshot.holdings[source] = try await htxHoldings(source, credential:credential)
+                if source == .linearSwap {
+                    snapshot.holdings.removeValue(forKey:.crossSwap)
+                    snapshot.holdings.removeValue(forKey:.isolatedSwap)
+                }
             } catch {
                 try Task.checkCancellation()
                 snapshot.errors.append(source.title + "：" + error.localizedDescription)
@@ -294,32 +299,43 @@ extension CryptoClient {
                       let rows = account["list"] as? [[String:Any]] else { throw invalid }
                 return try Self.htxBalanceRows(rows,id:source.rawValue+"-"+pair,label:"逐仓 · "+pair.uppercased(),margin:true)
             }
-        case .coinSwap, .crossSwap, .isolatedSwap:
-            let path: String
-            switch source {
-            case .coinSwap: path = "/swap-api/v1/swap_account_info"
-            case .crossSwap: path = "/linear-swap-api/v1/swap_cross_account_info"
-            default: path = "/linear-swap-api/v1/swap_account_info"
-            }
-            let response = try await htx("api.hbdm.com",path,credential:credential,body:[:])
+        case .coinSwap:
+            let response = try await htx("api.hbdm.com","/swap-api/v1/swap_account_info",credential:credential,body:[:])
             guard response["status"] as? String == "ok", let rows = response["data"] as? [[String:Any]] else { throw invalid }
             return try rows.compactMap { row in
                 let quantity = try Self.number(row["margin_balance"])
                 guard quantity != 0 else { return nil }
                 let contract = row["contract_code"] as? String
-                let account = row["margin_account"] as? String
-                let symbol: String?
-                switch source {
-                case .coinSwap: symbol = row["symbol"] as? String ?? contract?.split(separator:"-").first.map(String.init)
-                case .crossSwap: symbol = row["margin_asset"] as? String ?? account
-                default: symbol = row["margin_asset"] as? String ?? (contract ?? account)?.split(separator:"-").last.map(String.init)
-                }
-                guard let symbol, !symbol.isEmpty, let identifier = contract ?? account ?? row["symbol"] as? String else { throw invalid }
+                let symbol = row["symbol"] as? String ?? contract?.split(separator:"-").first.map(String.init)
+                guard let symbol, !symbol.isEmpty else { throw invalid }
                 let label = source.title + (contract.map { " · " + $0 } ?? "")
-                return CryptoHTXSnapshot.Holding(id:source.rawValue+"-"+identifier,symbol:symbol.uppercased(),
+                return CryptoHTXSnapshot.Holding(id:source.rawValue+"-"+(contract ?? symbol),symbol:symbol.uppercased(),
                     label:label,quantity:quantity,available:try? Self.number(row["margin_available"]),
                     frozen:try? Self.number(row["margin_frozen"]),unrealized:try? Self.number(row["profit_unreal"]))
             }
+        case .linearSwap:
+            let response = try await htx("api.hbdm.com","/v5/account/balance",credential:credential)
+            let code = (response["code"] as? NSNumber)?.stringValue ?? response["code"] as? String
+            guard code == "200" else {
+                if let code, let number = Int(code) { throw HakoError(message:"HTX V5 查询失败（错误码 \(number)）。") }
+                throw invalid
+            }
+            guard let data = response["data"] as? [String:Any], let rows = data["details"] as? [[String:Any]] else { throw invalid }
+            // Each currency row already contains the account equity. Do not add the
+            // separate isolated-equity field or the top-level account total to it.
+            var seen = Set<String>()
+            return try rows.compactMap { row in
+                guard let currency = row["currency"] as? String, !currency.isEmpty,
+                      seen.insert(currency.uppercased()).inserted else { throw invalid }
+                let equity = try Self.number(row["equity"])
+                guard equity != 0 else { return nil }
+                let symbol = currency.uppercased()
+                return CryptoHTXSnapshot.Holding(id:source.rawValue+"-"+symbol,symbol:symbol,label:source.title,
+                    quantity:equity,available:try? Self.number(row["available_margin"]),
+                    unrealized:try? Self.number(row["profit_unreal"]))
+            }
+        case .crossSwap, .isolatedSwap:
+            throw invalid
         }
     }
 

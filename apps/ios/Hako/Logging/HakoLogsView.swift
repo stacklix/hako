@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct HakoLogsView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -80,6 +81,7 @@ struct HakoLogsView: View {
 
 private struct HakoLogDetailView: View {
     let entry: HakoLogEntry
+    @State private var copied = false
     var body: some View {
         List {
             Section {
@@ -89,7 +91,15 @@ private struct HakoLogDetailView: View {
             }
             Section("事件") { Text(entry.message).textSelection(.enabled) }
             if !entry.detail.isEmpty {
-                Section("详情") { Text(entry.detail).font(.footnote.monospaced()).textSelection(.enabled) }
+                Section {
+                    Button {
+                        UIPasteboard.general.setItems([["public.utf8-plain-text": entry.detail]], options: [.localOnly: true])
+                        copied = true
+                    } label: {
+                        Label(copied ? "已复制" : "复制正文", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    Text(entry.detail).font(.footnote.monospaced()).textSelection(.enabled)
+                } header: { Text("详情") }
             }
         }
         .navigationTitle("日志详情")

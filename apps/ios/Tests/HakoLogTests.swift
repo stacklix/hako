@@ -33,6 +33,14 @@ import Foundation
         let restored = HakoLogStore(fileURL: file).snapshot().entries
         precondition(restored.count == 3 && restored[0].source == .devices && restored[2].source == .cloudServers)
         precondition(restored[2].detail.contains(":443/session"))
+        store.append(source: .crypto, level: .info, message: "资产更新开始")
+        store.append(source: .crypto, level: .info, message: "资产更新完成")
+        store.append(source: .crypto, level: .error, message: "资产更新出现错误")
+        store.append(source: .crypto, level: .info, message: "资产同步完成")
+        store.flush()
+        let restoredCrypto = HakoLogStore(fileURL: file).snapshot().entries.filter { $0.source == .crypto }
+        precondition(restoredCrypto.map(\.message) == ["资产同步完成", "资产更新出现错误"],
+                     "hide only the two retired asset update events when restoring logs")
         let fullDetail = String(repeating: "HTTP diagnostic 正文\n", count: 700_000) + "RESPONSE-END"
         store.append(source: .headplane, level: .error, message: "HTTP failure", detail: fullDetail, fullDetail: true)
         store.flush()
