@@ -12,6 +12,7 @@
 
 /* Begin PBXFileReference section */
 		A00000000000000000000006 /* Hako.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Hako.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000007 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration/Release.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -34,6 +35,7 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000004 /* Hako */,
+				A00000000000000000000007 /* Release.xcconfig */,
 				A00000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -181,12 +183,12 @@
 		};
 		A00000000000000000000023 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A00000000000000000000007 /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Hako/Hako.entitlements;
 				CODE_SIGN_IDENTITY = "$(HAKO_SIGN_IDENTITY)";
 				CODE_SIGN_STYLE = "$(HAKO_SIGN_STYLE)";
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "$(HAKO_SIGN_TEAM)";
 				HAKO_SIGN_IDENTITY = "Apple Development";
 				HAKO_SIGN_PROFILE = "";

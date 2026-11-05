@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct SettingsView: View {
-    private struct Release: Decodable {
-        let version: String
-        let build: String
-        let builtAt: Date
+    private enum UpdateSource: String, CaseIterable, Sendable {
+        case github, xkode
 
-        func isNewer(than currentBuild: String) -> Bool {
-            guard let latest = Int(build), let current = Int(currentBuild) else { return false }
-            return latest > current
+        var title: String { self == .github ? "GitHub Pages" : "本机 xkode" }
+        var baseURL: URL {
+            URL(string: self == .github ? "https://stacklix.github.io/hako/" : "https://nux.luckyqiao.com/chore/ios/")!
         }
+        var pageURL: URL { baseURL.appendingPathComponent("index.html") }
+    }
+    private enum UpdateState: Sendable {
+        case checking, loaded(AppUpdateRelease), failed
     }
     private enum SheetRoute: String, Identifiable {
         case server, scanner, applications, github
@@ -18,8 +20,7 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @State private var sheet: SheetRoute?
     @State private var message: String?
-    @State private var latestRelease: Release?
-    @State private var latestBuildDateFailed = false
+    @State private var updates: [UpdateSource: UpdateState] = [:]
     @State private var checkingForUpdate = false
     @State private var updateCheckID = 0
     @State private var isVisible = false
@@ -28,11 +29,10 @@ struct SettingsView: View {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
         return "\(version) (\(build))"
     }
-    private var availableUpdate: Release? {
-        guard let release = latestRelease,
-              let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-              release.isNewer(than: build) else { return nil }
-        return release
+    private var installedBuild: AppBuildVersion? {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String else { return nil }
+        return AppBuildVersion(version: version, build: build)
     }
     var body: some View {
         Form {
@@ -71,37 +71,18 @@ struct SettingsView: View {
                         .fixedSize()
                         .disabled(checkingForUpdate)
                 }
-                if let release = availableUpdate {
-                    Button(action: installLatestVersion) {
-                        HStack(alignment: .top) {
-                            Image(systemName: "arrow.down.circle")
-                                .foregroundStyle(.green)
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Text("安装最新版")
-                                    Spacer()
-                                    Text("\(release.version) (\(release.build))")
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text("构建于 \(release.builtAt.formatted(date: .numeric, time: .shortened))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                ForEach(UpdateSource.allCases, id: \.self) { source in
+                    updateRow(source)
+                    Link(destination: source.pageURL) {
+                        Label("查看 \(source.title) 下载页面", systemImage: "arrow.up.right.square")
                     }
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                } else {
-                    Text(latestBuildDateFailed ? "检查更新失败" : latestRelease == nil ? "正在检查更新…" : "当前无需更新")
-                        .font(.footnote).foregroundStyle(.secondary)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
-                Link(destination: URL(string: "https://stacklix.github.io/hako/")!) {
-                    Label("查看下载页面", systemImage: "arrow.up.right.square")
-                }
-                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             } header: {
                 Text("应用更新")
             } footer: {
-                Text("「安装最新版」直接发起系统安装；「查看下载页面」打开分发页，查看版本信息或下载 IPA。")
+                Text("各渠道独立检测。发现较新版本时，可直接发起系统安装。")
             }
             BuildStatusView(isSettingsVisible: isVisible && sheet == nil)
         }.navigationTitle("设置")
@@ -117,7 +98,7 @@ struct SettingsView: View {
                 case .github: GitHubSettingsSheet()
                 }
             }
-            .task(id: updateCheckID) { await loadLatestBuildDate() }
+            .task(id: updateCheckID) { await checkUpdates() }
             .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
     }
     private func settingsEntry(_ title: String, systemImage: String) -> some View {
@@ -132,39 +113,75 @@ struct SettingsView: View {
         .contentShape(Rectangle())
     }
 
-    private func loadLatestBuildDate() async {
+    @ViewBuilder
+    private func updateRow(_ source: UpdateSource) -> some View {
+        switch updates[source] ?? .checking {
+        case .checking:
+            LabeledContent(source.title, value: "正在检查…")
+        case .failed:
+            LabeledContent(source.title, value: "检查更新失败")
+        case .loaded(let release):
+            if let installedBuild, let latest = release.buildVersion, latest > installedBuild {
+                Button { install(release, from: source) } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("安装 \(source.title) 最新版")
+                            Text("\(release.version) (\(release.build)) · \(release.builtAt.formatted(date: .numeric, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "arrow.down.circle").foregroundStyle(.green)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+            } else {
+                LabeledContent(source.title, value: "\(release.version) (\(release.build)) · 无需更新")
+            }
+        }
+    }
+
+    private func checkUpdates() async {
         guard !Task.isCancelled else { return }
         checkingForUpdate = true
-        defer { checkingForUpdate = false }
-        latestRelease = nil
-        latestBuildDateFailed = false
-        var endpoint = URLComponents(string: "https://stacklix.github.io/hako/latest.json")!
-        endpoint.queryItems = [URLQueryItem(name: "t", value: String(Int(Date.now.timeIntervalSince1970)))]
+        defer { if !Task.isCancelled { checkingForUpdate = false } }
+        updates = [:]
+        guard installedBuild != nil else {
+            updates = Dictionary(uniqueKeysWithValues: UpdateSource.allCases.map { ($0, .failed) })
+            return
+        }
+        await withTaskGroup(of: (UpdateSource, UpdateState).self) { group in
+            for source in UpdateSource.allCases {
+                group.addTask { (source, await Self.check(source)) }
+            }
+            for await (source, state) in group {
+                guard !Task.isCancelled else { return }
+                updates[source] = state
+            }
+        }
+    }
+
+    nonisolated private static func check(_ source: UpdateSource) async -> UpdateState {
+        var endpoint = URLComponents(url: source.baseURL.appendingPathComponent("latest.json"), resolvingAgainstBaseURL: false)!
+        endpoint.queryItems = [URLQueryItem(name: "t", value: UUID().uuidString)]
         let request = URLRequest(url: endpoint.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                latestBuildDateFailed = true
-                return
-            }
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let release = try decoder.decode(Release.self, from: data)
-            guard Int(release.build) != nil,
-                  let currentBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-                  Int(currentBuild) != nil else {
-                latestBuildDateFailed = true
-                return
-            }
-            try Task.checkCancellation()
-            latestRelease = release
+            let release = try decoder.decode(AppUpdateRelease.self, from: data)
+            guard release.buildVersion != nil, release.manifestName != nil else { return .failed }
+            return .loaded(release)
         } catch {
-            if !Task.isCancelled { latestBuildDateFailed = true }
+            return .failed
         }
     }
-    private func installLatestVersion() {
-        var manifest = URLComponents(string: "https://stacklix.github.io/hako/manifest.plist")!
-        manifest.queryItems = [URLQueryItem(name: "t", value: String(Int(Date.now.timeIntervalSince1970)))]
+    private func install(_ release: AppUpdateRelease, from source: UpdateSource) {
+        guard let name = release.manifestName else { return }
+        var manifest = URLComponents(url: source.baseURL.appendingPathComponent(name), resolvingAgainstBaseURL: false)!
+        manifest.queryItems = [URLQueryItem(name: "t", value: UUID().uuidString)]
         var installation = URLComponents()
         installation.scheme = "itms-services"
         installation.host = ""
@@ -174,7 +191,7 @@ struct SettingsView: View {
         ]
         openURL(installation.url!) { accepted in
             if !accepted {
-                message = "无法打开系统安装入口，请在 Safari 打开 https://stacklix.github.io/hako/ 安装最新版本。"
+                message = "无法打开系统安装入口，请从 \(source.title) 下载页面安装。"
             }
         }
     }

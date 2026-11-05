@@ -11,6 +11,9 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('install_page', Path(__file__).resolve().parents[1] / 'scripts/build-install-page.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+number_spec = importlib.util.spec_from_file_location('build_number', Path(__file__).resolve().parents[1] / 'scripts/build-number.py')
+number_module = importlib.util.module_from_spec(number_spec)
+number_spec.loader.exec_module(number_module)
 
 class InstallPageTests(unittest.TestCase):
     def test_ota_artifact(self):
@@ -39,9 +42,24 @@ class InstallPageTests(unittest.TestCase):
             self.assertEqual(datetime.datetime.fromisoformat(release['builtAt']), built_at)
             self.assertEqual(release['version'], '1.0')
             self.assertEqual(release['build'], '42')
+            self.assertEqual(release['manifest'], manifest_path.name)
             self.assertIn('itms-services://?action=download-manifest&amp;url=https%3A%2F%2Fexample.github.io%2Fhako%2Fmanifest-', page)
             with self.assertRaises(ValueError):
                 module.build(ipa, 'http://example.com', output)
+
+    def test_build_numbers_are_ordered_across_channels(self):
+        seconds = 1793850000
+        ci = number_module.ordinal_at(seconds, False)
+        local = number_module.ordinal_at(seconds, True)
+        self.assertLess(ci, local)
+        self.assertLess(local, number_module.ordinal_at(seconds + 20, False))
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'LocalBuild.xcconfig'
+            first = number_module.prepare_local(config, local)
+            second = number_module.prepare_local(config, local)
+            self.assertEqual(first, number_module.build_number(local))
+            self.assertEqual(second, number_module.build_number(local + 2))
+            self.assertEqual(config.read_text(), f'CURRENT_PROJECT_VERSION = {second}\n')
 
 if __name__ == '__main__':
     unittest.main()

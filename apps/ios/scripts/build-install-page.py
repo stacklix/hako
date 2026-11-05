@@ -44,7 +44,8 @@ def build(ipa, base_url, output):
     (output / 'latest.json').write_text(json.dumps({
         'builtAt': built_at.isoformat(timespec='seconds'),
         'version': str(info.get('CFBundleShortVersionString', '1.0')),
-        'build': str(info['CFBundleVersion'])
+        'build': str(info['CFBundleVersion']),
+        'manifest': manifest_name
     }), encoding='utf-8')
     values = {'INSTALL_URL': install_url, 'IPA_URL': ipa_url,
               'VERSION': str(info.get('CFBundleShortVersionString', '1.0')),

@@ -59,6 +59,7 @@ PROFILE_PATH="$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
 cp "$SIGNING_DIR/profile.mobileprovision" "$PROFILE_PATH"
 xcodebuild -version
 mkdir -p build/ci "$DIST"
+BUILD_NUMBER="$(python3 scripts/build-number.py)"
 # SwiftTerm's build-tool plugin generates its version information. The package
 # is pinned to an exact version in the project; CI has no interactive trust UI.
 # HAKO_SIGN_* is consumed only by the app target. Global signing overrides
@@ -67,6 +68,6 @@ xcodebuild -skipPackagePluginValidation -project Hako.xcodeproj -scheme Hako -co
   -archivePath build/ci/Hako.xcarchive -derivedDataPath build/ci/DerivedData \
   HAKO_SIGN_STYLE=Manual HAKO_SIGN_TEAM="$TEAM" HAKO_SIGN_IDENTITY="$IDENTITY" \
   HAKO_SIGN_PROFILE="$PROFILE_UUID" HAKO_SIGN_FLAGS="--keychain $KEYCHAIN" \
-  CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER:-1}" archive
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" archive
 xcodebuild -exportArchive -archivePath build/ci/Hako.xcarchive \
   -exportPath "$DIST" -exportOptionsPlist "$SIGNING_DIR/ExportOptions.plist"

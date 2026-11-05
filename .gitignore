@@ -7,6 +7,7 @@ xcuserdata/
 .env
 *.mobileprovision
 *.p12
+/apps/ios/Configuration/LocalBuild.xcconfig
 
 __pycache__/
 *.pyc

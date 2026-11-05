@@ -29,6 +29,8 @@ jobs:
         run: |
           bash -n scripts/ci-archive.sh
           python3 -m unittest discover -s Tests -p 'test_*.py'
+          swiftc Hako/AppUpdateRelease.swift Tests/AppUpdateReleaseTests.swift -o /tmp/hako-app-update-tests
+          /tmp/hako-app-update-tests
       - name: Typecheck Console client without signing
         run: |
           swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
