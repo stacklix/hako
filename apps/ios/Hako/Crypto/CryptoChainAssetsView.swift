@@ -184,5 +184,5 @@ private struct CryptoCoinDetailView: View {
     }
 }
 
-private func cryptoQuantity(_ value:Double) -> String { value.formatted(.number.precision(.fractionLength(0...8))) }
+private func cryptoQuantity(_ value:Double) -> String { value.formatted(.number.precision(.fractionLength(2))) }
 private func cryptoUSDT(_ value:Double) -> String { value.formatted(.number.precision(.fractionLength(2)))+" USDT" }

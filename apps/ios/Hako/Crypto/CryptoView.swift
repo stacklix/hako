@@ -192,14 +192,15 @@ struct CryptoView: View {
                         metric(account.name,account.currentBalance,"USDT")
                         if let assets=account.visibleAssets {
                             ForEach(assets) { asset in
+                                let precision = asset.equitySymbol == nil ? 2 : 8
                                 Divider()
                                 VStack(alignment:.leading,spacing:8) {
                                     Text(asset.symbol).font(.subheadline.weight(.semibold))
                                     if asset.name != asset.symbol {
                                         Text(asset.name).font(.caption).foregroundStyle(.secondary)
                                     }
-                                    metric("持有金额",asset.quantity,asset.equitySymbol == nil ? asset.symbol : "股",precision:8)
-                                    metric("单价",asset.equitySymbol == nil ? asset.price : asset.equityUSDPrice,asset.equitySymbol == nil ? "USDT" : "USD",precision:8)
+                                    metric("持有金额",asset.quantity,asset.equitySymbol == nil ? asset.symbol : "股",precision:precision)
+                                    metric("单价",asset.equitySymbol == nil ? asset.price : asset.equityUSDPrice,asset.equitySymbol == nil ? "USDT" : "USD",precision:precision)
                                     metric("折算 USDT",asset.usdtValue,"USDT")
                                 }.accessibilityElement(children:.combine)
                             }
@@ -223,7 +224,7 @@ struct CryptoView: View {
             Text("今日合约 · TRX 币本位永续").font(.headline)
             metric("当前权益",store.currentContract?.trx,"TRX")
             metric("合约总权益",store.currentContract?.totalEquity,"USDT")
-            metric("TRX 价格",store.currentContract?.price,"USDT/TRX",precision:3)
+            metric("TRX 价格",store.currentContract?.price,"USDT/TRX")
             metric("今日资金费净收入",store.currentContract?.fundingTRX,"TRX")
             metric("今日资金费率合计",store.currentContract?.fundingRate,"%",precision:3)
             metric("可用保证金",store.currentContract?.available,"TRX")
@@ -344,7 +345,7 @@ struct CryptoWalletDetailView: View {
                                         Text(asset.name).font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
-                                Text("数量："+asset.quantity.formatted(.number.precision(.fractionLength(0...8)))+" "+asset.symbol)
+                                Text("数量："+asset.quantity.formatted(.number.precision(.fractionLength(2)))+" "+asset.symbol)
                                     .font(.subheadline).monospacedDigit()
                                 Text(asset.value.map { "折合 "+$0.formatted(.number.precision(.fractionLength(2)))+" USDT" } ?? "暂无报价，未计入折算总额")
                                     .font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
@@ -402,7 +403,7 @@ struct CryptoTrend: View {
         return (value - bounds.0) / (bounds.1 - bounds.0)
     }
     private func digits(_ key: String) -> Int {
-        ["rate_percent", "price", "liquidation"].contains(key) ? 3 : 2
+        ["rate_percent", "liquidation"].contains(key) ? 3 : 2
     }
     private func display(_ value: Double, key: String) -> String {
         String(format: "%.*f", digits(key), value)
