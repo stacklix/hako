@@ -1,0 +1,130 @@
+name: Test Hako iOS
+on:
+  push:
+    paths:
+      - 'apps/ios/**'
+      - '.github/workflows/ios-tests.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test Linux ECS snapshots and installation page
+        run: python3 -m unittest discover -s apps/ios/Tests -p 'test_*.py'
+  test:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: apps/ios
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate packaging scripts
+        run: |
+          bash -n scripts/ci-archive.sh
+          python3 -m unittest discover -s Tests -p 'test_*.py'
+      - name: Typecheck Console client without signing
+        run: |
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Server/AuthenticatedServerAccess.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/HakoError.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessStore.swift Hako/CloudServers/ECSAccessRecordsStore.swift Hako/Server/ConsoleSecurity.swift Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/DeviceManagement/ConsoleAgentRegistration.swift Hako/DeviceManagement/ConsoleAgentProtocol.swift Hako/Server/ConsoleSessionRestoration.swift Hako/Server/ConsoleClient.swift Hako/CloudServers/ECSAccessClient.swift Hako/DeviceManagement/DeviceMonitorClient.swift
+          swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSAccessModels.swift Tests/ECSAccessTests.swift -o /tmp/hako-ecs-access-tests
+          /tmp/hako-ecs-access-tests
+          swiftc Hako/CloudServers/ECSAccessModels.swift Hako/CloudServers/ECSAccessRecordsStore.swift Tests/ECSAccessRecordsStoreTests.swift -o /tmp/hako-ecs-records-store-tests
+          /tmp/hako-ecs-records-store-tests
+          swiftc Hako/Server/ConsoleSessionRestoration.swift Tests/ConsoleSessionRestorationTests.swift -o /tmp/hako-session-restoration-tests
+          /tmp/hako-session-restoration-tests
+          swiftc Hako/DeviceManagement/ConsoleAgentProtocol.swift Tests/ConsoleAgentProtocolTests.swift -o /tmp/hako-agent-protocol-tests
+          /tmp/hako-agent-protocol-tests
+          swiftc Hako/DeviceManagement/ConsoleAgentRegistration.swift Tests/ConsoleAgentRegistrationTests.swift -o /tmp/hako-agent-registration-tests
+          /tmp/hako-agent-registration-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
+          /tmp/hako-web-login-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Notifications/HakoNotification.swift Tests/NotificationTests.swift -o /tmp/hako-notification-tests
+          /tmp/hako-notification-tests
+          swiftc Hako/Server/ConsoleWebLoginProtocol.swift Hako/Server/ConsoleLoginPromptProtocol.swift Hako/Server/ConsoleApplicationProtocol.swift Tests/ConsoleApplicationTests.swift -o /tmp/hako-application-tests
+          /tmp/hako-application-tests
+          swiftc Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Server/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
+          /tmp/hako-identity-tests
+      - name: Test host secure storage contract
+        run: |
+          swiftc -target arm64-apple-macos14.0 Hako/SecureStorage.swift Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneKeychain.swift Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSKeychain.swift Tests/CredentialStorageTests.swift -o /tmp/hako-credential-tests
+          /tmp/hako-credential-tests
+      - name: Test usage storage and GitHub merge
+        run: |
+          swiftc Hako/Usage/UsagePresentation.swift Tests/UsagePresentationTests.swift -o /tmp/hako-usage-presentation-tests
+          /tmp/hako-usage-presentation-tests
+          swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+          /tmp/hako-core-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+          /tmp/hako-github-tests
+      - name: Test sports records, timestamps and annual GitHub synchronization
+        run: |
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Tests/SportsTests.swift -o /tmp/hako-sports-tests
+          /tmp/hako-sports-tests
+          swiftc Hako/HTTPTransport.swift Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Hako/GitHubSettings.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Sports/SportsGitHub.swift Tests/SportsGitHubTests.swift -o /tmp/hako-sports-github-tests
+          /tmp/hako-sports-github-tests
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/GitHubRepository.swift Hako/Sports/SportsModels.swift Hako/Sports/SportsGitHub.swift Tests/SportsRepositoryTests.swift -o /tmp/hako-sports-repository-tests
+          /tmp/hako-sports-repository-tests
+      - name: Test device card ordering, layout and scroll restoration
+        run: |
+          swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
+          /tmp/hako-device-card-tests
+      - name: Test Arcane client protocols and networking
+        run: |
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneTests.swift -o /tmp/hako-arcane-tests
+          /tmp/hako-arcane-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Tests/ArcaneLoadingTests.swift -o /tmp/hako-arcane-loading-tests
+          /tmp/hako-arcane-loading-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
+          /tmp/hako-arcane-workspace-tests
+          swiftc Hako/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
+          /tmp/hako-arcane-syntax-tests
+          swiftc Hako/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
+          /tmp/hako-arcane-editor-lines-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
+          /tmp/hako-arcane-host-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Tests/ArcaneCommandTests.swift -o /tmp/hako-arcane-command-tests
+          /tmp/hako-arcane-command-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Containers/ArcaneProtocol.swift Hako/Containers/ArcaneWorkspaceProtocol.swift Hako/Containers/ArcaneHostProtocol.swift Hako/Containers/ArcaneClient.swift Hako/Containers/ArcaneKeychain.swift Hako/Containers/ArcaneStore.swift Hako/Containers/ArcaneFilesStore.swift Hako/Containers/ArcaneCommandProtocol.swift Hako/Containers/ArcaneTerminalTransport.swift Hako/Containers/ArcaneCommandsData.swift Tests/ArcaneCommandDataTests.swift -o /tmp/hako-arcane-command-data-tests
+          /tmp/hako-arcane-command-data-tests
+      - name: Test Headplane sessions, wire protocol and mutation recovery
+        run: |
+          swiftc -target arm64-apple-macos14.0 Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift Hako/Headplane/HeadplaneProtocol.swift Hako/Headplane/HeadplaneStream.swift Hako/Headplane/HeadplaneClient.swift Hako/Headplane/HeadplaneStore.swift Tests/HeadplaneTests.swift -o /tmp/hako-headplane-tests
+          /tmp/hako-headplane-tests
+      - name: Test local application logs and credential redaction
+        run: |
+          swiftc Hako/Logging/HakoLog.swift Tests/HakoLogTests.swift -o /tmp/hako-log-tests
+          /tmp/hako-log-tests
+      - name: Test Qinglong OpenAPI and connection policies
+        run: |
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
+          /tmp/hako-qinglong-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Hako/Qinglong/QinglongStore.swift
+      - name: Test ECS API signing, snapshots and terminal protocol
+        run: |
+          swiftc Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSNetworkModels.swift Tests/ECSNetworkTests.swift -o /tmp/hako-ecs-network-tests
+          /tmp/hako-ecs-network-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Hako/CloudServers/ECSTerminalProtocol.swift Hako/CloudServers/ECSTerminalData.swift
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSTerminalProtocol.swift Tests/ECSTests.swift -o /tmp/hako-ecs-tests
+          /tmp/hako-ecs-tests
+          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/CloudServers/ECSModels.swift Hako/CloudServers/ECSRPC.swift Hako/CloudServers/ECSKeychain.swift Hako/CloudServers/ECSStore.swift Tests/ECSLoadingTests.swift -o /tmp/hako-ecs-loading-tests
+          /tmp/hako-ecs-loading-tests
+      - name: Test private asset records and daily sync policy
+        run: |
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/Crypto/CryptoModels.swift Tests/CryptoModelsTests.swift -o /tmp/hako-crypto-model-tests
+          /tmp/hako-crypto-model-tests
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoChainHoldings.swift Tests/CryptoChainHoldingsTests.swift -o /tmp/hako-crypto-chain-holdings-tests
+          /tmp/hako-crypto-chain-holdings-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Tests/CryptoChainTests.swift -o /tmp/hako-crypto-chain-tests
+          /tmp/hako-crypto-chain-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/GitHubRepository.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoChainHoldings.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Hako/Crypto/CryptoHistory.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoStore.swift Tests/CryptoStoreTests.swift -o /tmp/hako-crypto-store-tests
+          /tmp/hako-crypto-store-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoHistory.swift Tests/CryptoFundingRatesTests.swift -o /tmp/hako-crypto-funding-tests
+          /tmp/hako-crypto-funding-tests
