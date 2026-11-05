@@ -16,7 +16,6 @@ import Combine
     func send(_ path: String, method: String, body: [String: Any]?, logSource: HakoLogSource) async throws -> Data
 }
 
-
 struct ServerHTTPError: Error, LocalizedError {
     let status: Int
     let code: String
@@ -26,6 +25,7 @@ struct ServerHTTPError: Error, LocalizedError {
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests": return "请求过于频繁或设备繁忙，请稍后重试。"
         case "session_revoked": return "登录会话已撤销，请重新登录。"
+        case "notification_stream_unavailable": return "服务端尚不支持通知推送，请先更新服务端。"
         case "storage_unavailable": return "服务器暂时无法保存更改，请稍后重试。"
         case "login_request_expired": return "二维码已过期，请在网页刷新后重新扫码。"
         case "login_request_not_found", "login_request_finished": return "登录请求已失效或已处理，请刷新网页二维码。"

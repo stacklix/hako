@@ -42,6 +42,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     @Published var message: String?
     private var saved: ConsoleSession?
     private let restoration = ConsoleSessionRestoration()
+    private var sessionValidation = ConsoleSessionValidation()
     private var refreshTask: Task<Void, Error>?
     private var refreshTaskID: UUID?
     private let transport: URLSession
@@ -65,11 +66,25 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
 
     func watchLoginPrompts(_ receive: @escaping @MainActor (Data) throws -> Void) async throws {
         let context = requestContext
-        // Reuse the normal refresh path before each connection. A stream never
-        // carries tokens in its URL and signs the HTTPS upgrade request with DPoP.
-        _ = try await authorized("/api/v1/auth/session")
+        guard authenticated, !logoutPending, !resettingKey, let session = saved else { throw CancellationError() }
+        // The upgrade authenticates the session itself. Refresh an expiring
+        // token locally, or retry once if the handshake reports HTTP 401.
+        if ConsoleSessionValidation.needsRefresh(expiresAt: session.tokens.expiresAt) { try await refresh() }
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            guard context == requestContext, let token = saved?.tokens.accessToken else { throw CancellationError() }
+            do {
+                try await receiveLoginPrompts(token: token, context: context, receive: receive)
+                return
+            } catch let error as ServerHTTPError where error.status == 401 && attempt == 0 {
+                guard context == requestContext else { throw CancellationError() }
+                try await refresh()
+            }
+        }
+    }
+
+    private func receiveLoginPrompts(token: String, context: String, receive: @escaping @MainActor (Data) throws -> Void) async throws {
         guard context == requestContext, authenticated, !logoutPending, !resettingKey,
-              let token = saved?.tokens.accessToken,
               let url = URL(string: serverURL + "/api/v1/auth/login-prompts/stream"), url.scheme == "https",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw CancellationError() }
         components.scheme = "wss"
@@ -83,19 +98,30 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         socket.maximumMessageSize = 2_097_152
         socket.resume()
         defer { socket.cancel(with: .goingAway, reason: nil) }
-        try await withTaskCancellationHandler {
-            while !Task.isCancelled {
-                let data: Data
-                switch try await socket.receive() {
-                case .data(let value): data = value
-                case .string(let value): data = Data(value.utf8)
-                @unknown default: throw HakoError(message: "通知推送格式无效。")
+        do {
+            try await withTaskCancellationHandler {
+                while !Task.isCancelled {
+                    let data: Data
+                    switch try await socket.receive() {
+                    case .data(let value): data = value
+                    case .string(let value): data = Data(value.utf8)
+                    @unknown default: throw HakoError(message: "通知推送格式无效。")
+                    }
+                    try Task.checkCancellation()
+                    guard context == requestContext else { throw CancellationError() }
+                    try receive(data)
                 }
-                try Task.checkCancellation()
-                guard context == requestContext else { throw CancellationError() }
-                try receive(data)
+            } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
+        } catch {
+            guard !Task.isCancelled, context == requestContext else { throw CancellationError() }
+            let status = (socket.response as? HTTPURLResponse)?.statusCode
+            HakoLog.record(.hako, .error, "登录通知连接断开",
+                           detail: "HTTP：\(status.map(String.init) ?? "未知")，关闭码：\(socket.closeCode.rawValue)")
+            if let status, status != 101 {
+                throw ServerHTTPError(status: status, code: status == 404 ? "notification_stream_unavailable" : "notification_stream_rejected")
             }
-        } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
+            throw error
+        }
     }
 
     var requestContext: String { serverURL + "\n" + username + "\n" + (saved?.tokens.sessionId ?? "") + "|\(authenticated)|\(logoutPending)" }
@@ -136,6 +162,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         if let value { try ConsoleKeychain.save(sessionAccount, data: JSONEncoder().encode(value)) }
         else { try ConsoleKeychain.delete(sessionAccount) }
         saved = value
+        sessionValidation = ConsoleSessionValidation()
         logoutPending = value?.logoutPending ?? false
         hasSavedSession = value != nil && !logoutPending
     }
@@ -170,6 +197,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         }
     }
     private func restoreInternal() async throws {
+        if authenticated, !logoutPending, let session = saved,
+           sessionValidation.canReuse(context: requestContext, expiresAt: session.tokens.expiresAt) { return }
         _ = try publicKeyForExport()
         guard !serverURL.isEmpty else { return }
         if let data = try ConsoleKeychain.read(sessionAccount) {
@@ -186,6 +215,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         if saved != nil {
             _ = try await authorized("/api/v1/auth/session")
             authenticated = true
+            sessionValidation.record(context: requestContext)
         }
     }
 

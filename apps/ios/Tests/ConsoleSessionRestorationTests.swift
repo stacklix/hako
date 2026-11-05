@@ -19,6 +19,22 @@ import Foundation
 
 @main struct ConsoleSessionRestorationTests {
     @MainActor static func main() async {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let expiry = ISO8601DateFormatter().string(from: now.addingTimeInterval(300))
+        var validation = ConsoleSessionValidation()
+        precondition(!validation.canReuse(context: "one", expiresAt: expiry, now: now), "An unvalidated session was reused")
+        validation.record(context: "one", now: now)
+        precondition(validation.canReuse(context: "one", expiresAt: expiry, now: now.addingTimeInterval(59)))
+        precondition(!validation.canReuse(context: "one", expiresAt: expiry, now: now.addingTimeInterval(60)), "Validation cache outlived its bound")
+        precondition(!validation.canReuse(context: "two", expiresAt: expiry, now: now), "Validation leaked across accounts or sessions")
+        precondition(!validation.canReuse(context: "one", expiresAt: expiry, now: now.addingTimeInterval(-1)), "Clock rollback extended the cache")
+        precondition(!validation.canReuse(context: "one", expiresAt: "invalid", now: now))
+        precondition(!ConsoleSessionValidation.needsRefresh(expiresAt: expiry, now: now.addingTimeInterval(269)))
+        precondition(ConsoleSessionValidation.needsRefresh(expiresAt: expiry, now: now.addingTimeInterval(270)))
+        precondition(ConsoleSessionValidation.needsRefresh(expiresAt: expiry, now: now.addingTimeInterval(301)))
+        let almostExpired = ISO8601DateFormatter().string(from: now.addingTimeInterval(30))
+        precondition(!validation.canReuse(context: "one", expiresAt: almostExpired, now: now), "Expiring credentials bypassed validation")
+
         let restoration = ConsoleSessionRestoration()
         let started = Gate()
         let response = Gate()

@@ -1,5 +1,26 @@
 import Foundation
 
+struct ConsoleSessionValidation {
+    private var context: String?
+    private var validatedAt: Date?
+
+    static func needsRefresh(expiresAt: String, now: Date = .now) -> Bool {
+        guard let expiry = ISO8601DateFormatter().date(from: expiresAt) else { return true }
+        return expiry.timeIntervalSince(now) <= 30
+    }
+
+    func canReuse(context: String, expiresAt: String, now: Date = .now) -> Bool {
+        guard self.context == context, let validatedAt,
+              now >= validatedAt, now.timeIntervalSince(validatedAt) < 60 else { return false }
+        return !Self.needsRefresh(expiresAt: expiresAt, now: now)
+    }
+
+    mutating func record(context: String, now: Date = .now) {
+        self.context = context
+        validatedAt = now
+    }
+}
+
 @MainActor final class ConsoleSessionRestoration {
     private var pending: Task<Void, Never>?
 
