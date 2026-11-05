@@ -127,7 +127,7 @@ struct CryptoCurrentContract: Codable, Equatable {
     var unrealizedProfit: Double?
     var liquidation: Double?
     var fundingTRX: Double?
-    var fundingRate: Double?
+    var fundingRate: Double? // Percent: 0.030 means 0.030%.
     var fundingTRXUpdatedAt: Date? = nil
     var fundingRateUpdatedAt: Date? = nil
     var totalEquity: Double? = nil
@@ -180,8 +180,6 @@ struct CryptoRecord: Codable, Identifiable, Equatable {
         guard var decimal=Decimal(string:String(value),locale:Locale(identifier:"en_US_POSIX")) else {
             throw HakoError(message:"资产 CSV 数值超出范围。")
         }
-        // API responses and local caches use ratios; the archive stores percentage points.
-        if column == "funding_rate" { decimal *= 100 }
         var rounded=Decimal();NSDecimalRound(&rounded,&decimal,digits,.plain)
         guard !rounded.isNaN else { throw HakoError(message:"资产 CSV 数值超出范围。") }
         let number = rounded == 0 ? 0 : NSDecimalNumber(decimal:rounded).doubleValue
@@ -223,7 +221,7 @@ struct CryptoRecord: Codable, Identifiable, Equatable {
             var values: [String: Double] = [:]
             for column in columns where column != "date" && !fields[column]!.isEmpty {
                 guard let value = Double(fields[column]!), value.isFinite else { throw HakoError(message: "资产 CSV 数值无效。") }
-                values[valueKey(column)] = column == "funding_rate" ? value / 100 : value
+                values[valueKey(column)] = value
             }
             let required = kind == "portfolio" ? ["total"] : []
             guard required.allSatisfy({ values[$0] != nil }) else {

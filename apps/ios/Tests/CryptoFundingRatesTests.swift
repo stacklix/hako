@@ -85,7 +85,7 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
             return (200,fixture)
         }
         let rateOnly=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:end,scope:"",day:start,fields:["funding_rate"])
-        check(rateOnly.record.values.count == 1 && rateOnly.errors.isEmpty,"rate-only retry never queries current equity")
+        check(rateOnly.record.values.count == 1 && abs(rateOnly.record.values["funding_rate"]! - 0.03) < 1e-12 && rateOnly.errors.isEmpty,"rate-only retry never queries current equity")
 
         let sample=start.addingTimeInterval(12*3600)
         let credential=CryptoCredential(key:"test",secret:"test")
@@ -133,7 +133,7 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
             let snapshot=try await client.currentContract(credential,scope:"test",now:sample)
             check(snapshot.trx == 100 && snapshot.equity == 30,"funding failures must not hide the current account")
             if mode == "normal" {
-                check(snapshot.fundingTRX == 3 && abs(snapshot.fundingRate! + 0.0001) < 1e-12,"sum signed cash flow and settled rates, excluding future entries and duplicate cash flow")
+                check(snapshot.fundingTRX == 3 && abs(snapshot.fundingRate! + 0.01) < 1e-12,"sum signed cash flow and settled rates, excluding future entries and duplicate cash flow")
                 let restored=try JSONDecoder().decode(CryptoCurrentContract.self,from:JSONEncoder().encode(snapshot))
                 check(restored == snapshot,"new funding fields survive the cache round trip")
                 var legacy=try JSONSerialization.jsonObject(with:JSONEncoder().encode(snapshot)) as! [String:Any]
@@ -192,7 +192,7 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
         check(feeCalls == 3 && rateCalls == 4,"success timestamps survive disk serialization and avoid another query")
         moment=end.addingTimeInterval(180)
         cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
-        check(feeCalls == 4 && rateCalls == 5 && cached.fundingRate == 0.0001,"midnight requests fresh daily totals instead of reusing yesterday")
+        check(feeCalls == 4 && rateCalls == 5 && cached.fundingRate == 0.01,"midnight requests fresh daily totals instead of reusing yesterday")
         failFee=true
         cached=try await client.currentContract(credential,scope:"changed-account",now:moment,cached:cached)
         check(feeCalls == 5 && rateCalls == 6 && cached.fundingTRX == nil && cached.fundingTRXUpdatedAt == nil,"account changes invalidate caches; failed fees have no success timestamp")

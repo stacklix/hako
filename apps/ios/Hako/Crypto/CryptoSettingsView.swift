@@ -1,11 +1,23 @@
 import SwiftUI
 
 struct CryptoSettingsView: View {
+    @ObservedObject private var store=CryptoStore.shared
     @State private var wallets:[CryptoWallet]=[]
     @State private var editing:CryptoWallet?
     @State private var walletError:String?
+    @State private var clearingCache=false
+    @State private var cacheMessage:String?
     var body: some View {
         Form {
+            Section {
+                NavigationLink {
+                    CryptoDataExplanationView()
+                } label: {
+                    Label("数据说明",systemImage:"info.circle")
+                }
+                .cryptoSettingsRowSeparators()
+                .accessibilityHint("查看各项资产、权益、资金费与历史数据的取值逻辑")
+            }
             Section("交易所接口") {
                 CryptoCredentialLink(exchange:"htx",title:"HTX")
                 CryptoCredentialLink(exchange:"binance",title:"Binance")
@@ -48,13 +60,94 @@ struct CryptoSettingsView: View {
                 Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
                 Text("总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
             }
+            Section {
+                Button("清空缓存",role:.destructive) { clearingCache=true }
+                    .buttonStyle(HakoActionButtonStyle(destructive:true))
+                    .disabled(store.busy)
+                    .cryptoSettingsRowSeparators()
+                if let cacheMessage {
+                    Text(cacheMessage).font(.caption).cryptoSettingsRowSeparators()
+                }
+            } header: {
+                Text("本机缓存")
+            } footer: {
+                Text("清空当前私有仓库对应的资产缓存及待同步记录。再次进入加密资产时，从 GitHub 历史数据重建缓存，再采集最新资产。")
+            }
         }.navigationTitle("资产设置").navigationBarTitleDisplayMode(.inline)
+            .alert("清空资产缓存？",isPresented:$clearingCache) {
+                Button("取消",role:.cancel) {}
+                Button("清空缓存",role:.destructive) {
+                    do { try store.clearCache();cacheMessage="缓存已清空，再次进入加密资产时将从 GitHub 重建。" }
+                    catch { cacheMessage=error.localizedDescription }
+                }
+            } message: {
+                Text("将删除本机资产历史、实时快照及 \(store.pendingCount) 条待同步记录。未同步数据无法恢复；GitHub 数据、接口配置和观察地址均保留。")
+            }
             .task {
                 do { wallets=try CryptoWallet.load();walletError=nil } catch { walletError=error.localizedDescription }
             }
             .sheet(item:$editing) { wallet in
                 CryptoWalletEditor(wallet:wallet,existing:wallets) { wallets=$0;walletError=nil }
             }
+    }
+}
+
+private struct CryptoDataExplanationView: View {
+    var body: some View {
+        Form {
+            Section("总资产与各来源") {
+                explanation("总资产","汇总已配置的 HTX、Binance 和链上资产，单位为 USDT。全部已配置来源获取成功后才更新当天总额；任一来源失败时保留上次成功的总额。")
+                explanation("HTX 总资产","使用 HTX 平台总资产估值，按当前 BTC/USDT 报价换算，已包含合约资产，不再额外叠加今日合约权益。")
+                explanation("Binance 总资产","使用 Binance 返回的各资产类型 USDT 余额之和。隐藏小额币种或空资产类型只影响明细展示，不扣减总资产。")
+                explanation("链上资产","汇总已添加观察地址中 BTC、ETH、ATOM、TRX、USDT、USDC 六种资产的估值，不同地址分别统计；同一资产来源不要重复添加。")
+            }
+            Section("今日合约 · TRX 币本位永续") {
+                explanation("当前权益 / TRX","取 HTX 的 TRX-USD 账户权益，单位为 TRX。它与全部币本位合约的总权益属于不同口径。")
+                explanation("合约总权益 / USDT","直接取 HTX 全部币本位合约的资产估值，优先使用 USDT；不支持或获取失败时尝试 USD，并按 USDT 等值记录。不是 TRX 数量乘单价。")
+                explanation("TRX 价格","取 HTX 当前 TRX/USDT 现货报价，单位为 USDT/TRX。")
+                explanation("可用保证金与未实现盈亏","分别取 TRX-USD 账户返回的可用保证金和未实现盈亏，单位均为 TRX。")
+                explanation("强平价","取当前 TRX-USD 账户的强平价，单位为 USD/TRX。空值或非正数显示 —；历史行中的强平价也是补录时的当前值。")
+            }
+            Section("资金费用与费率") {
+                explanation("资金费净收入","取实际资金费流水，收入为正、支出为负，去重后按北京时间归集。今日统计当天零点至采集时刻，历史统计对应完整自然日，单位为 TRX。")
+                explanation("资金费率合计","将统计时段内已结算的各期费率相加，不包含下一期预估费率。优先取实际费率；实际费率缺失时取同一期公布费率。取回后转换为百分比，本机缓存、GitHub 归档与页面均使用百分比，保留三位小数。")
+                explanation("累计资金费用","从最早已保存的日期开始，将已有的每日资金费净收入依次相加。切换统计范围只截取图表展示区间，不把累计值重新归零；缺失日期不推算资金费。")
+            }
+            Section("最近7天与合约收益图表") {
+                explanation("日期范围","所有日期按北京时间划分。最近7天为今天之前的七个完整自然日，不包含今天；图表按已保存日期展示，拖动竖线可查看对应日的数据。")
+                explanation("历史权益补录","最近7天缺少 TRX 权益、价格或总权益时，使用本轮成功获取的当前快照填补对应空字段。多个缺失日复用同一快照，并非这些日期的实际结算权益；已有值不覆盖。")
+                explanation("总 USDT、总 TRX 与资金费用","最近7天分别展示该日期已保存的合约总权益（USDT）、TRX 账户权益（TRX）和资金费净收入（TRX）。新补录的总 USDT 为全部币本位合约总估值；早期已保存值按原口径保留，不重新计算。")
+                explanation("按缺失字段查询","只缺资金费率就只补查费率，只缺资金费就只补查流水。支持时间范围查询的流水覆盖整个7天，按接口的48小时限制分段，再按天填补缺失值。")
+                explanation("空值与失败","— 表示尚未获取到有效数据，不代表零。实际没有资金费收支且流水查询完整时可记为零；查询失败保留已有数据，不用过期权益补录历史。")
+            }
+            Section("Binance 币种与股票") {
+                explanation("持有金额","合并币种的可用、锁定、冻结和提现中数量，只展示合计，不单独展示各组成部分。")
+                explanation("币种单价与折值","USDT 单价为 1。其他币种优先使用 Binance 对 USDT 的现货价格，没有直接交易对时尝试通过 BTC、ETH、BNB、USDC 或 FDUSD 换算；折值为持有数量乘单价。")
+                explanation("EQ_ 股票","去掉 EQ_ 前缀后查询 Binance 股票行情，取买卖报价中间值作为美元单价；按 USDC/USDT 报价估算 USDT 折值。无有效报价时沿用 — 显示。")
+                explanation("明细筛选","隐藏折算绝对值不足 1 USDT 的币种及没有可展示币种的资产类型。无法估值的非零持仓继续显示。")
+            }
+            Section("链上资产范围") {
+                explanation("余额与估值","TRON 余额及代币的 TRX 计价来自 TRONSCAN，再用 HTX 的 TRX/USDT 报价折算。Ethereum 和 BNB Smart Chain 的余额与美元估值来自 Moralis，再按 USDT/USD 行情换算为 USDT。只统计所选六种资产。")
+                explanation("TRX 质押","TRX 包含钱包余额、Stake 1.0 / 2.0 质押本金、委托给他人的本金，以及解押中和待提取本金。他人委托给本地址的资源不算资产。")
+                explanation("未覆盖资产","不包含 NFT、第三方 DeFi 质押和借贷头寸；明细和总额均以当前支持的资产范围为准。")
+            }
+            Section("更新、缓存与归档") {
+                explanation("自动更新","进入加密资产页时先展示本机缓存；没有缓存时先读取 GitHub 历史数据建立缓存，再获取最新资产。历史读取失败时保留缺失并提示原因，下次进入重试，不上传本机数据。资金费和费率按结算时段复用缓存，新时段会重新查询，结算后短暂延迟再补查。")
+                explanation("清空缓存","删除当前私有仓库对应的本机历史、实时快照及待同步记录。GitHub 数据、接口配置和观察地址保留；再次进入时从 GitHub 重建。清空前应先同步需要保留的记录。")
+                explanation("同步资产","页面同步按钮和快捷指令只将本机缓存合并上传到 GitHub 私有仓库，不重新请求资产接口。上传失败保留待同步数据；历史已有值保留，只填补空字段。")
+                explanation("显示精度","总额、合约权益和资金费保留两位小数，TRX 价格、强平价和百分比资金费率保留三位小数；Binance 持仓数量与单价最多显示八位小数。各指标独立保存，不用页面已舍入的数字重新计算总权益。")
+            }
+        }
+        .navigationTitle("数据说明").navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func explanation(_ title:String,_ detail:String) -> some View {
+        VStack(alignment:.leading,spacing:6) {
+            Text(title).font(.subheadline.weight(.medium))
+            Text(detail).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+        }
+        .textSelection(.enabled)
+        .cryptoSettingsRowSeparators()
     }
 }
 

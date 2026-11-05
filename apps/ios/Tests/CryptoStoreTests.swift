@@ -35,12 +35,14 @@ private final class AssetRepository: GitHubRepositoryAccess {
     var reads=0
     var commits:[[String:String]]=[]
     var failWrites=false
+    var failReads=false
     var staleOnce=false
     var pauseNextRead=false
     var blocked=false
     var resume:CheckedContinuation<Void,Never>?
     func listFiles(in directory:String) async throws -> GitHubDirectorySnapshot {
         reads+=1
+        if failReads { throw HakoError(message:"test archive unavailable") }
         if pauseNextRead {
             pauseNextRead=false;blocked=true
             await withCheckedContinuation { resume=$0 }
@@ -83,7 +85,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let ancient=CryptoRecord(kind:"htx-trx",day:CryptoDay.key(CryptoDay.calendar.date(byAdding:.day,value:-8,to:today)!),sampledAt:0,scope:"",values:["trx":1,"price":0.3,"equity":0.3])
         let cacheFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
         try FileManager.default.createDirectory(at:cacheFile.deletingLastPathComponent(),withIntermediateDirectories:true)
-        try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient])).write(to:cacheFile)
+        try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true)).write(to:cacheFile)
         func makeStore()->CryptoStore {
             CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
@@ -143,7 +145,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(store.contracts.first{$0.id==existing.id} == existing && store.contracts.contains(ancient))
         precondition(store.pendingCount == 7 && AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"retired settlement interface is never called")
         precondition(store.currentContract?.trx == 2000 && store.currentContract?.equity == 2000 && store.currentContract?.available == 1500 && store.currentContract?.unrealizedProfit == -12.5,"current account fields are displayed independently of historical settlements")
-        precondition(store.currentContract?.fundingTRX == 0 && store.currentContract?.fundingRate == 0.0004,"today funding is included in the published snapshot")
+        precondition(store.currentContract?.fundingTRX == 0 && store.currentContract?.fundingRate == 0.04,"today funding is included in the published snapshot")
         precondition(store.currentContract?.liquidation == 0.4 && store.currentContract?.scope == CryptoDay.hash(htx.key))
         precondition(store.contracts.allSatisfy { $0.day != CryptoDay.key(today) },"today's snapshot never becomes a historical archive row")
         configure(total:200)
@@ -225,6 +227,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         repository.pauseNextRead=true
         let upload=Task { await restored.trigger() }
         while !repository.blocked { await Task.yield() }
+        do { try restored.clearCache();preconditionFailure("clearing an active sync must fail") } catch {}
         let nextEntry=Task { await restored.collect() }
         await Task.yield()
         repository.resume?.resume();repository.resume=nil
@@ -241,7 +244,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         completeDays[1].values.removeValue(forKey:"funding_rate")
         completeDays[6].values["funding_trx"]=0;completeDays[6].values["funding_rate"]=0
         let fieldsFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(fieldsRepository.storageScope)+".json")
-        try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient])).write(to:fieldsFile)
+        try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient],archiveLoaded:true)).write(to:fieldsFile)
         let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure(failRates:true)
         await fieldsStore.collect()
@@ -252,7 +255,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure()
         await fieldsStore.collect()
         let filledRate=fieldsStore.contracts.first{$0.day==completeDays[1].day}!
-        precondition(abs(filledRate.values["funding_rate"]! - 0.0003) < 1e-12 && filledRate.values["funding_trx"] == 7)
+        precondition(abs(filledRate.values["funding_rate"]! - 0.03) < 1e-12 && filledRate.values["funding_trx"] == 7)
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").count == 2 && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"retry missing rates independently while reusing successfully cached funding cash flow")
         precondition(fieldsStore.contracts.contains(ancient) && fieldsRepository.reads == 0 && fieldsRepository.commits.isEmpty)
         var remoteDays=completeDays
@@ -337,6 +340,49 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let unconverted=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
         let usdOnly=unconverted.accounts[0].assets!.first { $0.equitySymbol == "AAPL" }!
         precondition(usdOnly.equityUSDPrice == 181 && usdOnly.price == nil && usdOnly.isVisible,"missing USDT conversion preserves USD stock quotes without assuming USD equals USDT")
-        print("Crypto store: cache-first display, fresh cache persistence, single entry collection, cache-only sync, failure retention, Binance valuation and serialized operations passed")
+        // A cold entry reads the archive without posting or querying asset APIs.
+        let coldRepository=AssetRepository()
+        let archived=CryptoRecord(kind:"htx-trx",day:"2026-09-26",sampledAt:0,scope:"",values:["funding_rate":0.022])
+        coldRepository.files[archived.path]=try CryptoRecord.encode([archived],kind:"htx-trx")
+        let coldFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(coldRepository.storageScope)+".json")
+        func coldStore()->CryptoStore {
+            CryptoStore(repositoryProvider:{coldRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{_ in CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+        }
+        AssetMockProtocol.configure { _ in fatalError("Archive-only entry must not query asset APIs") }
+        let cold=coldStore()
+        cold.loadCachedData()
+        precondition(cold.contracts.isEmpty && coldRepository.reads == 0)
+        await cold.collect()
+        precondition(cold.message == nil && cold.contracts.first?.values["funding_rate"] == 0.022 && cold.cache.archiveLoaded == true)
+        precondition(coldRepository.reads == 2 && coldRepository.commits.isEmpty && cold.pendingCount == 0 && AssetMockProtocol.requests.isEmpty,"cold bootstrap is read-only and does not create pending rows")
+        let warm=coldStore();warm.loadCachedData()
+        await warm.collect()
+        precondition(warm.contracts == cold.contracts && coldRepository.reads == 2,"persisted archive cache avoids fetching GitHub again")
+        let otherCache=directory.appendingPathComponent("crypto/unrelated.json")
+        try Data("preserve".utf8).write(to:otherCache)
+        let archiveBefore=coldRepository.files
+        try warm.clearCache()
+        precondition(warm.cacheGeneration == 1 && warm.contracts.isEmpty && warm.portfolio.isEmpty && warm.currentContract == nil && warm.pendingCount == 0 && !FileManager.default.fileExists(atPath:coldFile.path))
+        precondition(FileManager.default.fileExists(atPath:otherCache.path) && coldRepository.files == archiveBefore && coldRepository.commits.isEmpty,"clear is scoped to this local cache")
+        coldRepository.failReads=true
+        await warm.collect()
+        precondition(warm.message?.contains("test archive unavailable") == true && warm.cache.archiveLoaded != true && warm.contracts.isEmpty,"archive failure remains visible and retryable")
+        coldRepository.failReads=false
+        await warm.collect()
+        precondition(warm.message == nil && warm.cache.archiveLoaded == true && warm.contracts.first?.values["funding_rate"] == 0.022,"entry after clearing retries and rebuilds from GitHub")
+        // Clearing explicitly discards pending records and live snapshots.
+        let percentCurrent=CryptoCurrentContract(sampledAt:now,scope:"",trx:1,price:0.3,available:nil,unrealizedProfit:nil,liquidation:nil,fundingTRX:0,fundingRate:0.04)
+        try JSONEncoder().encode(CryptoStore.Cache(records:[archived],pending:[archived],currentContract:percentCurrent,archiveLoaded:true)).write(to:coldFile)
+        let pendingStore=coldStore();pendingStore.loadCachedData()
+        precondition(pendingStore.pendingCount == 1 && pendingStore.currentContract?.fundingRate == 0.04)
+        try pendingStore.clearCache()
+        precondition(pendingStore.pendingCount == 0 && pendingStore.currentContract == nil && pendingStore.contracts.isEmpty,"clear removes unsynced records and current snapshots")
+        try Data("corrupt cache".utf8).write(to:coldFile)
+        let corrupt=coldStore();corrupt.loadCachedData()
+        precondition(corrupt.message != nil)
+        try corrupt.clearCache()
+        await corrupt.collect()
+        precondition(corrupt.message == nil && corrupt.contracts.count == 1,"clear also recovers unreadable caches")
+        print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync and source collection passed")
     }
 }

@@ -105,7 +105,7 @@ extension CryptoClient {
             try await collect("历史资金费率") {
                 let rates=try await fundingRates(from:startDate,to:endDate)
                 guard let rate=rates[CryptoDay.key(startDate)] else { throw HakoError(message:"该日资金费率缺失。") }
-                values["funding_rate"]=rate
+                values["funding_rate"]=rate * 100
             }
         }
         return CryptoContractCollection(record:CryptoRecord(kind:"htx-trx",day:CryptoDay.key(startDate),sampledAt:sampledAt,scope:scope,values:values),errors:errors)

@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import UIKit
 
 struct CryptoView: View {
     private enum Tab: String, CaseIterable { case overview="概览",htx="HTX",binance="Binance",chain="链上资产" }
@@ -42,8 +43,6 @@ struct CryptoView: View {
                     CryptoTrend(title:"每日总资产",records:store.portfolio,keys:["total"],names:["总资产"],units:["USDT"])
                 } else if tab == .htx {
                     Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("合约收益").tag(true) }.pickerStyle(.segmented)
-                    Text("历史缺失权益按补录时的当前权益和价格填充，并非当日结算值；已有数据保留。")
-                        .font(.caption).foregroundStyle(.secondary)
                     if trends {
                         Picker("统计范围",selection:$days) {
                             Text("最近7天").tag(7)
@@ -125,7 +124,7 @@ struct CryptoView: View {
             guard !Task.isCancelled else { return }
             syncPhase = .idle
         }
-        .task {
+        .task(id:store.cacheGeneration) {
             await collect()
             // Check newly settled funding and completed days even while the page stays open.
             while !Task.isCancelled {
@@ -237,11 +236,9 @@ struct CryptoView: View {
             Text("今日合约 · TRX 币本位永续").font(.headline)
             metric("当前权益",store.currentContract?.trx,"TRX")
             metric("合约总权益",store.currentContract?.totalEquity,"USDT")
-            Text("合约总权益包含全部币本位合约；USD 估值按 USDT 等值记录。")
-                .font(.caption).foregroundStyle(.secondary)
             metric("TRX 价格",store.currentContract?.price,"USDT/TRX",precision:3)
             metric("今日资金费净收入",store.currentContract?.fundingTRX,"TRX")
-            metric("今日资金费率合计",store.currentContract?.fundingRate.map { $0 * 100 },"%",precision:3)
+            metric("今日资金费率合计",store.currentContract?.fundingRate,"%",precision:3)
             metric("可用保证金",store.currentContract?.available,"TRX")
             metric("未实现盈亏",store.currentContract?.unrealizedProfit,"TRX")
             metric("强平价",store.currentContract?.liquidation,"USD/TRX",precision:3)
@@ -255,18 +252,20 @@ struct CryptoView: View {
         VStack(alignment:.leading,spacing:16) {
             Text("最近7天").font(.headline)
             ScrollView(.horizontal) {
-                Grid(horizontalSpacing:16,verticalSpacing:12) {
+                Grid(horizontalSpacing:12,verticalSpacing:12) {
                     GridRow {
                         Text("日期").gridColumnAlignment(.leading)
+                        Text("总 USDT").gridColumnAlignment(.trailing)
                         Text("总 TRX").gridColumnAlignment(.trailing)
-                        Text("资金费用 / TRX").gridColumnAlignment(.trailing)
+                        Text("资金费用\nTRX").multilineTextAlignment(.trailing).gridColumnAlignment(.trailing)
                     }.foregroundStyle(.secondary)
                     ForEach(CryptoSyncPolicy.recentContractDays(now:.now),id:\.self) { date in
                         let day=CryptoDay.key(date)
                         let values=store.contracts.first(where:{$0.day==day})?.values
-                        Divider().gridCellColumns(3)
+                        Divider().gridCellColumns(4)
                         GridRow {
                             Text(day)
+                            Text(contractTableValue(values?["equity"]))
                             Text(contractTableValue(values?["trx"]))
                             Text(contractTableValue(values?["funding_trx"],signed:true))
                         }.accessibilityElement(children:.combine)
@@ -302,7 +301,7 @@ struct CryptoView: View {
             var r=r
             if let fee=r.values["funding_trx"] { sum += fee;r.values["cumulative"]=sum }
             r.values["usdt"]=r.equity
-            r.values["rate_percent"]=r.values["funding_rate"].map{$0*100};return r
+            r.values["rate_percent"]=r.values["funding_rate"];return r
         }
         let component:Calendar.Component = (days == 180 || days == 365) ? .month : .day
         let offset = days == 180 ? -6 : days == 365 ? -12 : -days
@@ -521,27 +520,19 @@ struct CryptoTrend: View {
                 }
             }
         }
-        .chartXSelection(value: Binding<Date?>(get: { selectedRecord?.date }, set: { date in
-            // Keep the chosen day and its values visible after lifting the finger.
-            guard let date else { return }
-            selectedDay = records.min {
-                abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
-            }?.day
-        }))
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                Rectangle().fill(.clear).contentShape(Rectangle())
-                    .simultaneousGesture(SpatialTapGesture().onEnded { event in
-                        guard let anchor = proxy.plotFrame else { return }
-                        let frame = geometry[anchor]
-                        guard frame.contains(event.location),
-                              let date = proxy.value(atX: event.location.x - frame.minX, as: Date.self),
-                              let row = records.min(by: { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }) else {
-                            selectedDay = nil
-                            return
-                        }
-                        selectedDay = selectedDay == row.day ? nil : row.day
-                    })
+                if let anchor=proxy.plotFrame {
+                    let frame=geometry[anchor]
+                    CryptoChartInteraction { point,toggle in
+                        let x=min(max(point.x,0),frame.width)
+                        guard let date=proxy.value(atX:x,as:Date.self),
+                              let row=records.min(by: { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }) else { return }
+                        selectedDay=toggle && selectedDay == row.day ? nil : row.day
+                    }
+                    .frame(width:max(0,frame.width),height:max(0,frame.height))
+                    .position(x:frame.midX,y:frame.midY)
+                }
             }
         }
         .frame(height: dynamicTypeSize.isAccessibilitySize ? 230 : 160)
@@ -580,6 +571,84 @@ struct CryptoTrend: View {
                 }
                 .accessibilityElement(children: .combine)
             }
+        }
+    }
+}
+
+// Own the plot's gestures so the surrounding ScrollView cannot consume horizontal scrubbing.
+private struct CryptoChartInteraction: UIViewRepresentable {
+    let select:(CGPoint,Bool)->Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context:Context) -> InteractionView {
+        let view=InteractionView()
+        view.backgroundColor = .clear
+        view.isAccessibilityElement=false
+        let coordinator=context.coordinator
+        coordinator.attach(to:view)
+        view.connectScroll={ [weak coordinator] scroll in coordinator?.connect(to:scroll) }
+        return view
+    }
+    func updateUIView(_ view:InteractionView,context:Context) { context.coordinator.parent=self }
+
+    final class InteractionView:UIView {
+        var connectScroll:((UIScrollView)->Void)?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            var ancestor=superview
+            while let view=ancestor {
+                if let scroll=view as? UIScrollView { connectScroll?(scroll);break }
+                ancestor=view.superview
+            }
+        }
+    }
+
+    final class Coordinator:NSObject,UIGestureRecognizerDelegate {
+        var parent:CryptoChartInteraction
+        private weak var view:UIView?
+        private weak var scrollView:UIScrollView?
+        private var pan:UIPanGestureRecognizer!
+        private var press:UILongPressGestureRecognizer!
+        init(_ parent:CryptoChartInteraction) { self.parent=parent }
+        func attach(to view:UIView) {
+            self.view=view
+            let tap=UITapGestureRecognizer(target:self,action:#selector(tapped(_:)))
+            pan=UIPanGestureRecognizer(target:self,action:#selector(moved(_:)))
+            pan.maximumNumberOfTouches=1
+            press=UILongPressGestureRecognizer(target:self,action:#selector(held(_:)))
+            press.minimumPressDuration=0.2
+            press.allowableMovement=10
+            for gesture in [tap,pan!,press!] as [UIGestureRecognizer] {
+                gesture.delegate=self
+                view.addGestureRecognizer(gesture)
+            }
+            pan.require(toFail:press)
+            tap.require(toFail:pan)
+            tap.require(toFail:press)
+        }
+        func connect(to scroll:UIScrollView) {
+            guard scrollView !== scroll else { return }
+            scrollView=scroll
+            // Vertical movement rejects both plot recognizers and hands the touch to page scrolling.
+            scroll.panGestureRecognizer.require(toFail:pan)
+            scroll.panGestureRecognizer.require(toFail:press)
+        }
+        func gestureRecognizerShouldBegin(_ recognizer:UIGestureRecognizer) -> Bool {
+            guard recognizer === pan,let view else { return true }
+            let velocity=pan.velocity(in:view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+        @objc private func tapped(_ gesture:UITapGestureRecognizer) {
+            guard gesture.state == .ended,let view else { return }
+            parent.select(gesture.location(in:view),true)
+        }
+        @objc private func moved(_ gesture:UIPanGestureRecognizer) {
+            guard [.began,.changed,.ended].contains(gesture.state),let view else { return }
+            parent.select(gesture.location(in:view),false)
+        }
+        @objc private func held(_ gesture:UILongPressGestureRecognizer) {
+            guard [.began,.changed,.ended].contains(gesture.state),let view else { return }
+            parent.select(gesture.location(in:view),false)
         }
     }
 }

@@ -41,7 +41,7 @@ extension CryptoClient {
         } else {
             do {
                 let rates=try await fundingRates(from:start,to:now,requiringSettlement:CryptoSyncPolicy.fundingSettlement(now:now))
-                rate=rates[CryptoDay.key(start)];rateUpdatedAt=rate == nil ? nil : now
+                rate=rates[CryptoDay.key(start)].map { $0 * 100 };rateUpdatedAt=rate == nil ? nil : now
             } catch { logStore.append(source:.crypto,level:.error,message:"今日 TRX 资金费率查询失败",detail:error.localizedDescription) }
         }
         return CryptoCurrentContract(sampledAt:now,scope:scope,trx:trx,price:price,

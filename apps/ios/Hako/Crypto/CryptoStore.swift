@@ -49,9 +49,20 @@ import Combine
         running=task
         await task.value
     }
-    struct Cache: Codable { var records: [CryptoRecord] = []; var pending: [CryptoRecord] = []; var syncedAt: Date?; var walletBalances: [String:Double]?; var currentContract: CryptoCurrentContract?; var walletSnapshots: [String:CryptoWalletSnapshot]?; var binanceSnapshot: CryptoBinanceSnapshot? }
+    struct Cache: Codable {
+        var records: [CryptoRecord] = []
+        var pending: [CryptoRecord] = []
+        var syncedAt: Date?
+        var walletBalances: [String:Double]?
+        var currentContract: CryptoCurrentContract?
+        var walletSnapshots: [String:CryptoWalletSnapshot]?
+        var binanceSnapshot: CryptoBinanceSnapshot?
+        var archiveLoaded = false
+    }
+
     @Published private(set) var cache = Cache()
     @Published private(set) var busy = false
+    @Published private(set) var cacheGeneration = 0
     @Published var message: String?
     @Published private(set) var wallets: [CryptoWallet] = []
     @Published private(set) var walletValues: [UUID: Double] = [:]
@@ -80,6 +91,15 @@ import Combine
         return current
     }
     var pendingCount: Int { cache.pending.count }
+    func clearCache() throws {
+        guard !busy, running == nil else { throw HakoError(message:"资产正在更新或同步，请完成后再清空缓存。") }
+        let repository=repositoryProvider()
+        let target=cacheDirectory.appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
+        if FileManager.default.fileExists(atPath:target.path) { try FileManager.default.removeItem(at:target) }
+        cache=Cache();file=nil;walletValues=[:];walletErrors=[:];binanceError=nil;message=nil
+        scope="";contractScope=""
+        cacheGeneration+=1
+    }
     private func persist(_ value: Cache) throws {
         guard let file else { throw HakoError(message:"资产缓存尚未就绪。") }
         try FileManager.default.createDirectory(at:file.deletingLastPathComponent(),withIntermediateDirectories:true)
@@ -90,7 +110,8 @@ import Combine
             .appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
         if file != nextFile {
             cache = Cache(); walletValues = [:]; walletErrors = [:]; file=nil
-            if FileManager.default.fileExists(atPath:nextFile.path) { cache=try JSONDecoder().decode(Cache.self,from:Data(contentsOf:nextFile)) }
+            let exists=FileManager.default.fileExists(atPath:nextFile.path)
+            if exists { cache=try JSONDecoder().decode(Cache.self,from:Data(contentsOf:nextFile)) }
             file=nextFile
         }
         wallets=try loadWallets()
@@ -133,6 +154,10 @@ import Combine
             if sync {
                 try await synchronize(repository)
                 return
+            }
+            if cache.archiveLoaded != true {
+                do { try await rebuildArchiveCache(repository) }
+                catch { errors.append("GitHub 历史缓存："+error.localizedDescription) }
             }
             let now=nowProvider()
             // Inspect local records first. Network requests are derived only from this missing-data plan.
@@ -198,25 +223,50 @@ import Combine
                 }
                 catch { errors.append(CryptoDay.key(request.day)+" TRX 合约："+error.localizedDescription) }
             }
-            if !htx.configured && !binance.configured && wallets.isEmpty { errors.append("尚未配置资产来源，请先设置交易所 API 或观察地址。") }
+            if !htx.configured && !binance.configured && wallets.isEmpty && cache.records.isEmpty { errors.append("尚未配置资产来源，请先设置交易所 API 或观察地址。") }
             message=errors.isEmpty ? nil : errors.joined(separator:"\n")
         } catch { message=error.localizedDescription }
     }
+    private func readArchive(_ repository: any GitHubRepositoryAccess) async throws -> (records:[CryptoRecord],head:String) {
+        var remote:[CryptoRecord]=[], head:String?
+        for kind in ["htx-trx","portfolio"] {
+            let directory=try await repository.listFiles(in:"data/crypto/"+kind)
+            if let head, head != directory.head { throw HakoError(message:"资产仓库正在更新，请重试同步。") }
+            head=directory.head
+            for entry in directory.entries where entry.kind == "blob" && entry.name.range(of:"^[0-9]{4}\\.csv$",options:.regularExpression) != nil {
+                let snapshot=try await repository.readFile(at:"data/crypto/"+kind+"/"+entry.name,revision:head)
+                guard let text=snapshot.text else { throw HakoError(message:"资产年度文件不可读取。") }
+                let year=String(entry.name.prefix(4))
+                remote += try CryptoRecord.decode(text,kind:kind,year:year)
+            }
+        }
+        guard let head else { throw HakoError(message:"资产仓库版本缺失。") }
+        return (remote,head)
+    }
+    private func rebuildArchiveCache(_ repository:any GitHubRepositoryAccess) async throws {
+        let archive=try await readArchive(repository)
+        var value=cache
+        let local=Dictionary(uniqueKeysWithValues:value.records.map { ($0.id,$0) })
+        let remote=archive.records.map { record in
+            var record=record
+            record.scope=record.kind == "htx-trx" ? contractScope : scope
+            if record.kind == "htx-trx",let acquired=local[record.id] {
+                record=record.fillingMissingContractFields(from:acquired)
+            }
+            return record
+        }
+        let archivedContracts=Set(remote.filter{$0.kind == "htx-trx"}.map(\.id))
+        value.records=CryptoRecord.merge(remote,value.records.filter{!archivedContracts.contains($0.id)})
+        value.archiveLoaded=true
+        try persist(value)
+    }
     private func synchronize(_ repository: any GitHubRepositoryAccess) async throws {
         for attempt in 0..<3 {
-            var remote:[CryptoRecord]=[], head:String?
-            for kind in ["htx-trx","portfolio"] {
-                let directory=try await repository.listFiles(in:"data/crypto/"+kind)
-                if let head, head != directory.head { throw HakoError(message:"资产仓库正在更新，请重试同步。") }
-                head=directory.head
-                for entry in directory.entries where entry.kind == "blob" && entry.name.range(of:"^[0-9]{4}\\.csv$",options:.regularExpression) != nil {
-                    let snapshot=try await repository.readFile(at:"data/crypto/"+kind+"/"+entry.name,revision:head)
-                    guard let text=snapshot.text else { throw HakoError(message:"资产年度文件不可读取。") }
-                    let year=String(entry.name.prefix(4))
-                    remote += try CryptoRecord.decode(text,kind:kind,year:year)
-                }
-            }
+            let archive=try await readArchive(repository)
+            var remote=archive.records
+            let head=archive.head
             var value=cache
+            value.archiveLoaded=true
             // Source identity stays in the local cache; archives have one row per day.
             remote = remote.map { row in
                 var row=row
@@ -243,7 +293,7 @@ import Combine
             }
             // Keep the merged cache visible even if uploading fails; pending rows remain retryable.
             try persist(value)
-            let result=try await repository.commit(files:files,expectedHead:head!,message:GitHubCommitMessage(headline:"Update private asset snapshots"))
+            let result=try await repository.commit(files:files,expectedHead:head,message:GitHubCommitMessage(headline:"Update private asset snapshots"))
             if result == .staleHead { if attempt == 2 { throw HakoError(message:"私有库持续变化，请稍后重试。") }; continue }
             value.pending=[];value.syncedAt = .now;try persist(value);message=nil;return
         }
