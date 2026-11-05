@@ -606,11 +606,6 @@ struct CryptoTrend: View {
             .foregroundStyle(by: .value("指标", names[index]))
             .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
             .accessibilityLabel(label).accessibilityValue(description)
-        PointMark(x: .value("日期", record.date), y: .value(names[index], y))
-            .foregroundStyle(by: .value("指标", names[index]))
-            .symbolSize(record.day == selectedDay ? 32 : 16)
-            .opacity(selectedDay == nil || record.day == selectedDay ? 1 : 0.3)
-            .accessibilityLabel(label).accessibilityValue(description)
     }
 
     private var renderedChart: some View {
@@ -634,8 +629,12 @@ struct CryptoTrend: View {
         .chartYScale(domain: 0...1)
         .chartXAxis {
             AxisMarks(values: tickDates) { value in
-                AxisValueLabel {
-                    if let date = value.as(Date.self) {
+                if let date = value.as(Date.self) {
+                    let first = date == dateDomain.lowerBound
+                    let last = date == dateDomain.upperBound
+                    // Keep the date text inside the plot at both ends of the axis.
+                    AxisValueLabel(centered:false,anchor:first ? .topLeading : last ? .topTrailing : nil,
+                                   collisionResolution:first || last ? .disabled : .greedy) {
                         Text(dateLabel(date)).font(.system(size: 10)).foregroundStyle(HakoStyle.muted)
                     }
                 }
