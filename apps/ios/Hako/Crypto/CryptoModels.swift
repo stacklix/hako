@@ -40,7 +40,7 @@ struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
         return total.isFinite ? total : balance
     }
     var visibleAssets: [CryptoBinanceAsset]? { assets.map { $0.filter(\.isVisible) } }
-    var isVisible: Bool { visibleAssets.map { !$0.isEmpty } ?? (balance != 0) }
+    var isVisible: Bool { visibleAssets?.isEmpty == false }
 }
 
 struct CryptoBinanceSnapshot: Codable, Equatable {

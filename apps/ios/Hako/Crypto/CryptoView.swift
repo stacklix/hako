@@ -15,6 +15,7 @@ struct CryptoView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var collecting = true
     @State private var contractTableWidth: CGFloat = 0
+    @State private var expandedBinanceAccount: CryptoBinanceAccount.ID?
     private var latest: CryptoRecord? { store.portfolio.last }
     var body: some View {
         ScrollView {
@@ -184,32 +185,24 @@ struct CryptoView: View {
                     Text("报价更新于："+updatedAt.formatted(date:.numeric,time:.standard))
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if snapshot.visibleAccounts.isEmpty {
+                let accounts = snapshot.visibleAccounts
+                let hasUnavailableDetails = snapshot.accounts.contains { $0.assets == nil && $0.balance != 0 }
+                if accounts.isEmpty && !hasUnavailableDetails {
                     Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
                 }
-                ForEach(snapshot.visibleAccounts) { account in
-                    VStack(alignment:.leading,spacing:12) {
-                        metric(account.name,account.currentBalance,"USDT")
-                        if let assets=account.visibleAssets {
-                            ForEach(assets) { asset in
-                                let precision = asset.equitySymbol == nil ? 2 : 8
-                                Divider()
-                                VStack(alignment:.leading,spacing:8) {
-                                    Text(asset.symbol).font(.subheadline.weight(.semibold))
-                                    if asset.name != asset.symbol {
-                                        Text(asset.name).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    metric("持有金额",asset.quantity,asset.equitySymbol == nil ? asset.symbol : "股",precision:precision)
-                                    metric("单价",asset.equitySymbol == nil ? asset.price : asset.equityUSDPrice,asset.equitySymbol == nil ? "USDT" : "USD",precision:precision)
-                                    metric("折算 USDT",asset.usdtValue,"USDT")
-                                }.accessibilityElement(children:.combine)
-                            }
-                        } else {
-                            Text("此账户暂未返回币种明细").font(.caption).foregroundStyle(.secondary)
+                if !accounts.isEmpty {
+                    VStack(alignment:.leading,spacing:0) {
+                        ForEach(accounts) { account in
+                            if account.id != accounts.first?.id { Divider() }
+                            binanceAccountRow(account)
                         }
                     }.cryptoPanel()
                 }
-                if snapshot.accounts.contains(where: { $0.assets?.contains(where: { $0.equitySymbol != nil }) == true }) {
+                if hasUnavailableDetails {
+                    Text("部分账户暂未返回币种明细，其估值仍计入总资产。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if accounts.contains(where: { $0.visibleAssets?.contains(where: { $0.equitySymbol != nil }) == true }) {
                     Text("股票单价采用买卖报价中间值；USD 与 USDT 按 1:1 计算折值。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -219,6 +212,76 @@ struct CryptoView: View {
             }
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
+
+    private func binanceAccountRow(_ account: CryptoBinanceAccount) -> some View {
+        let assets = account.visibleAssets ?? []
+        let expanded = expandedBinanceAccount == account.id
+        return VStack(alignment:.leading,spacing:0) {
+            Button {
+                expandedBinanceAccount = expanded ? nil : account.id
+            } label: {
+                HStack(spacing:10) {
+                    Image(systemName:"wallet.bifold").frame(width:22).accessibilityHidden(true)
+                    VStack(alignment:.leading,spacing:4) {
+                        Text(account.name).font(.subheadline.weight(.semibold))
+                        Text("\(assets.count) 个币种").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength:8)
+                    VStack(alignment:.trailing,spacing:4) {
+                        Text(account.currentBalance.formatted(.number.precision(.fractionLength(2))))
+                            .font(.subheadline.weight(.semibold)).monospacedDigit()
+                        Text("USDT").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Image(systemName:expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption).foregroundStyle(.secondary).frame(width:12).accessibilityHidden(true)
+                }
+                .frame(maxWidth:.infinity,minHeight:52,alignment:.leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(expanded ? "已展开" : "已折叠")
+            .accessibilityHint(expanded ? "收起币种明细" : "展开币种明细")
+            if expanded {
+                VStack(alignment:.leading,spacing:10) {
+                    ForEach(assets) { asset in
+                        if asset.id != assets.first?.id { Divider() }
+                        binanceAssetRow(asset)
+                    }
+                }
+                .padding(12)
+                .background(HakoStyle.background,in:RoundedRectangle(cornerRadius:10))
+                .padding(.bottom,10)
+            }
+        }
+    }
+
+    private func binanceAssetRow(_ asset: CryptoBinanceAsset) -> some View {
+        let isStock = asset.equitySymbol != nil
+        let precision = isStock ? 8 : 2
+        let quantity = String(format:"%.*f",precision,asset.quantity)
+        let unitPrice = asset.price.map { String(format:"%.*f",precision,$0) }
+        let value = asset.usdtValue.map { $0.formatted(.number.precision(.fractionLength(2))) + " USDT" }
+        return HStack(alignment:.top,spacing:10) {
+            VStack(alignment:.leading,spacing:4) {
+                Text(asset.symbol).font(.subheadline.weight(.semibold))
+                if asset.name != asset.symbol {
+                    Text(asset.name).font(.caption).foregroundStyle(.secondary)
+                }
+                if let unitPrice {
+                    Text("单价 \(unitPrice) \(isStock ? "USD" : "USDT")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength:0)
+            VStack(alignment:.trailing,spacing:4) {
+                Text(quantity + " " + (isStock ? "股" : asset.symbol)).font(.subheadline.weight(.semibold))
+                Text(value ?? "暂无报价").font(.caption).foregroundStyle(.secondary)
+            }.multilineTextAlignment(.trailing)
+        }
+        .monospacedDigit()
+        .accessibilityElement(children:.combine)
+    }
+
     private var currentContractPanel: some View {
         VStack(alignment:.leading,spacing:16) {
             Text("今日合约 · TRX 币本位永续").font(.headline)

@@ -12,7 +12,7 @@ import Foundation
         check(legacy.price == nil && legacy.usdtValue == nil && legacy.isVisible,"old cached unpriced assets remain readable and are not mistaken for dust")
         let accounts=[CryptoBinanceAccount(name:"Empty",balance:0,assets:[]),CryptoBinanceAccount(name:"Dust",balance:0.9,assets:[dust]),CryptoBinanceAccount(name:"Spot",balance:11,assets:[boundary,usdt]),CryptoBinanceAccount(name:"Unavailable",balance:2,assets:nil)]
         let snapshot=CryptoBinanceSnapshot(scope:"test",sampledAt:.now,accounts:accounts)
-        check(snapshot.visibleAccounts.map(\.name) == ["Spot","Unavailable"],"hide empty asset types and types containing only dust, preserve unavailable details")
+        check(snapshot.visibleAccounts.map(\.name) == ["Spot"],"only show account types with displayable asset rows")
         check(snapshot.total == 13.9 && snapshot.accounts.count == 4,"display filtering does not change reported total assets or cached accounts")
         let formatter=ISO8601DateFormatter()
         let now=formatter.date(from:"2026-12-31T16:01:00Z")!
