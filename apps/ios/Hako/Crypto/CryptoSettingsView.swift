@@ -62,7 +62,7 @@ struct CryptoSettingsView: View {
             }
             Section {
                 Button("清空缓存",role:.destructive) { clearingCache=true }
-                    .buttonStyle(HakoActionButtonStyle(destructive:true))
+                    .buttonStyle(.automatic)
                     .disabled(store.busy)
                     .cryptoSettingsRowSeparators()
                 if let cacheMessage {

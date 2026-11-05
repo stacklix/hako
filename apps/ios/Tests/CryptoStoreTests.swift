@@ -85,7 +85,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let ancient=CryptoRecord(kind:"htx-trx",day:CryptoDay.key(CryptoDay.calendar.date(byAdding:.day,value:-8,to:today)!),sampledAt:0,scope:"",values:["trx":1,"price":0.3,"equity":0.3])
         let cacheFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
         try FileManager.default.createDirectory(at:cacheFile.deletingLastPathComponent(),withIntermediateDirectories:true)
-        try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true)).write(to:cacheFile)
+        try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:cacheFile)
         func makeStore()->CryptoStore {
             CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
@@ -244,7 +244,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         completeDays[1].values.removeValue(forKey:"funding_rate")
         completeDays[6].values["funding_trx"]=0;completeDays[6].values["funding_rate"]=0
         let fieldsFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(fieldsRepository.storageScope)+".json")
-        try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient],archiveLoaded:true)).write(to:fieldsFile)
+        try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:fieldsFile)
         let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure(failRates:true)
         await fieldsStore.collect()
@@ -383,6 +383,36 @@ private final class AssetRepository: GitHubRepositoryAccess {
         try corrupt.clearCache()
         await corrupt.collect()
         precondition(corrupt.message == nil && corrupt.contracts.count == 1,"clear also recovers unreadable caches")
-        print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync and source collection passed")
+        // Existing daily balances suppress only the reminder; explicit sync still uploads fresh values.
+        let reminderRepository=AssetRepository()
+        let remoteBalance=CryptoRecord(kind:"portfolio",day:CryptoDay.key(now),sampledAt:0,scope:"",values:["total":0,"binance":0])
+        reminderRepository.files[remoteBalance.path]=try CryptoRecord.encode([remoteBalance],kind:"portfolio")
+        let reminderFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(reminderRepository.storageScope)+".json")
+        // Older caches lack the remote-day index and must read GitHub once to populate it.
+        try JSONEncoder().encode(CryptoStore.Cache(archiveLoaded:true)).write(to:reminderFile)
+        func reminderStore()->CryptoStore {
+            CryptoStore(repositoryProvider:{reminderRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "binance" ? binance : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+        }
+        configure()
+        let reminder=reminderStore()
+        await reminder.collect()
+        precondition(reminder.message == nil && reminderRepository.reads == 2 && reminderRepository.commits.isEmpty)
+        precondition(reminder.pendingCount == 1 && reminder.pendingReminderCount == 0 && reminder.portfolio.last?.values["total"] == 50,"GitHub balance including zero hides the reminder without discarding the fresh local balance")
+        let reminderRestored=reminderStore()
+        reminderRestored.loadCachedData()
+        precondition(reminderRestored.pendingCount == 1 && reminderRestored.pendingReminderCount == 0,"remote-day knowledge survives reopening")
+        _=await reminderRestored.trigger()
+        let updatedBalance=try CryptoRecord.decode(reminderRepository.files[remoteBalance.path]!,kind:"portfolio",year:"2026")
+        precondition(reminderRestored.message == nil && reminderRestored.pendingCount == 0 && updatedBalance.first?.values["total"] == 50,"manual sync still uploads the hidden same-day balance")
+        var reminderCache=reminderRestored.cache
+        let missingBalance=CryptoRecord(kind:"portfolio",day:"2026-11-04",sampledAt:0,scope:"",values:["total":1])
+        reminderCache.pending=[remoteBalance,missingBalance,archived]
+        try JSONEncoder().encode(reminderCache).write(to:reminderFile)
+        let mixedReminder=reminderStore()
+        mixedReminder.loadCachedData()
+        precondition(mixedReminder.pendingCount == 3 && mixedReminder.pendingReminderCount == 2,"missing balance dates and contract rows still appear in the reminder")
+        try mixedReminder.clearCache()
+        precondition(mixedReminder.cache.archivedPortfolioDays == nil && mixedReminder.pendingReminderCount == 0,"clearing removes remote-day metadata as well")
+        print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

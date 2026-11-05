@@ -150,8 +150,8 @@ struct CryptoView: View {
                         ProgressView().controlSize(.small)
                         Text("更新中…")
                     }.font(.caption).foregroundStyle(.secondary)
-                } else if store.pendingCount > 0 {
-                    Text("\(store.pendingCount) 条待同步")
+                } else if store.pendingReminderCount > 0 {
+                    Text("\(store.pendingReminderCount) 条待同步")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

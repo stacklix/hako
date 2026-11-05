@@ -58,6 +58,7 @@ import Combine
         var walletSnapshots: [String:CryptoWalletSnapshot]?
         var binanceSnapshot: CryptoBinanceSnapshot?
         var archiveLoaded = false
+        var archivedPortfolioDays: Set<String>?
     }
 
     @Published private(set) var cache = Cache()
@@ -91,6 +92,11 @@ import Combine
         return current
     }
     var pendingCount: Int { cache.pending.count }
+    var pendingReminderCount: Int {
+        cache.pending.filter { record in
+            record.kind != "portfolio" || !(cache.archivedPortfolioDays?.contains(record.day) ?? false)
+        }.count
+    }
     func clearCache() throws {
         guard !busy, running == nil else { throw HakoError(message:"资产正在更新或同步，请完成后再清空缓存。") }
         let repository=repositoryProvider()
@@ -155,7 +161,7 @@ import Combine
                 try await synchronize(repository)
                 return
             }
-            if cache.archiveLoaded != true {
+            if cache.archiveLoaded != true || cache.archivedPortfolioDays == nil {
                 do { try await rebuildArchiveCache(repository) }
                 catch { errors.append("GitHub 历史缓存："+error.localizedDescription) }
             }
@@ -258,6 +264,7 @@ import Combine
         let archivedContracts=Set(remote.filter{$0.kind == "htx-trx"}.map(\.id))
         value.records=CryptoRecord.merge(remote,value.records.filter{!archivedContracts.contains($0.id)})
         value.archiveLoaded=true
+        value.archivedPortfolioDays=Set(archive.records.filter { $0.kind == "portfolio" && $0.values["total"] != nil }.map(\.day))
         try persist(value)
     }
     private func synchronize(_ repository: any GitHubRepositoryAccess) async throws {
@@ -267,6 +274,7 @@ import Combine
             let head=archive.head
             var value=cache
             value.archiveLoaded=true
+            value.archivedPortfolioDays=Set(remote.filter { $0.kind == "portfolio" && $0.values["total"] != nil }.map(\.day))
             // Source identity stays in the local cache; archives have one row per day.
             remote = remote.map { row in
                 var row=row
@@ -295,6 +303,7 @@ import Combine
             try persist(value)
             let result=try await repository.commit(files:files,expectedHead:head,message:GitHubCommitMessage(headline:"Update private asset snapshots"))
             if result == .staleHead { if attempt == 2 { throw HakoError(message:"私有库持续变化，请稍后重试。") }; continue }
+            value.archivedPortfolioDays=Set(value.records.filter { $0.kind == "portfolio" && $0.values["total"] != nil }.map(\.day))
             value.pending=[];value.syncedAt = .now;try persist(value);message=nil;return
         }
     }
