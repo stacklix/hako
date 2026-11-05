@@ -89,10 +89,26 @@ private final class AssetRepository: GitHubRepositoryAccess {
         func makeStore()->CryptoStore {
             CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
-        func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4) {
+        func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4, failSpotDetails:Bool=false) {
             AssetMockProtocol.configure { request in
                 switch request.url!.path {
                 case "/v2/account/valuation": return ["success":true,"data":["updated":["success":!incompleteHTX],"profitAccountBalanceList":[["success":true]],"totalBalance":total]]
+                case "/v1/account/accounts": return ["status":"ok","data":[["id":3,"type":"spot"]]]
+                case "/v1/account/accounts/3/balance":
+                    if failSpotDetails { throw HakoError(message:"test spot unavailable") }
+                    return ["status":"ok","data":["list":[["currency":"trx","type":"trade","balance":"30"],["currency":"trx","type":"frozen","balance":"10"]]]]
+                case "/v1/cross-margin/accounts/balance":
+                    return ["status":"ok","data":["list":[
+                        ["currency":"usdt","type":"trade","balance":"50"],
+                        ["currency":"usdt","type":"loan","balance":"-20"],
+                        ["currency":"usdt","type":"interest","balance":"-1"],
+                        ["currency":"usdt","type":"loan-available","balance":"2000"]
+                    ]]]
+                case "/v1/margin/accounts/balance", "/linear-swap-api/v1/swap_account_info":
+                    return ["status":"ok","data":[]]
+                case "/linear-swap-api/v1/swap_cross_account_info":
+                    return ["status":"ok","data":[["margin_account":"USDT","margin_balance":"100","margin_available":"80","profit_unreal":"-3"]]]
+                case "/market/tickers": return ["status":"ok","data":[["symbol":"trxusdt","close":0.25]]]
                 case "/market/detail/merged": return ["tick":["close":1]]
                 case "/swap-api/v1/swap_balance_valuation": return ["data":[["valuation_asset":"USDT","balance":currentTRX]]]
                 case "/sapi/v1/asset/wallet/balance":
@@ -117,7 +133,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
                     return [[start,"0","0","0","0.3","0",start+59_999]]
                 case "/swap-api/v1/swap_account_info":
                     if failCurrent { throw HakoError(message:"test current account unavailable") }
-                    return ["data":[["contract_code":"TRX-USD","margin_balance":currentTRX,"margin_available":1500,"profit_unreal":-12.5,"liquidation_price":currentLiquidation as Any? ?? NSNull()]]]
+                    return ["status":"ok","data":[["contract_code":"TRX-USD","margin_balance":currentTRX,"margin_available":1500,"profit_unreal":-12.5,"liquidation_price":currentLiquidation as Any? ?? NSNull()]]]
                 default: fatalError("Unexpected endpoint: \(request.url!)")
                 }
             }
@@ -128,6 +144,12 @@ private final class AssetRepository: GitHubRepositoryAccess {
         store.loadCachedData()
         precondition(store.contracts.count == 2 && AssetMockProtocol.requests.isEmpty && repository.reads == 0,"cached records are published before any network request")
         await store.collect(force:true)
+        let htxDetails = store.htxSnapshot!
+        let htxSpot = htxDetails.rows(in:.spot).first!
+        precondition(htxSpot.quantity == 40 && htxSpot.frozen == 10 && htxDetails.value(htxSpot) == 10)
+        let htxMargin = htxDetails.rows(in:.margin).first!
+        precondition(htxMargin.quantity == 29 && htxMargin.loan == 20 && htxMargin.interest == 1)
+        precondition(htxDetails.rows(in:.swap).map(\.symbol) == ["TRX","USDT"],"show coin and USDT equity without fabricating empty isolated accounts")
         precondition(store.binanceSnapshot?.total == 50 && store.binanceSnapshot?.accounts.first?.assets?.count == 1,"account and nonzero asset details are cached")
         let binanceAsset=store.binanceSnapshot!.accounts[0].assets![0]
         precondition(binanceAsset.quantity == 50 && binanceAsset.free == 40 && binanceAsset.locked == 7 && binanceAsset.frozen == 2 && binanceAsset.withdrawing == 1,"all asset balance components survive parsing")
@@ -279,7 +301,12 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(currentTRX:1234.56,currentLiquidation:nil)
         await fieldsStore.collect(force:true)
         precondition(fieldsStore.currentContract?.trx == 1234.56 && fieldsStore.currentContract?.equity == 1234.56 && fieldsStore.currentContract?.liquidation == nil)
-        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_account_info").count == 1,"complete history only needs one current account query per entry")
+        let currentRequests = AssetMockProtocol.paths("/swap-api/v1/swap_account_info").filter { request in
+            guard let body = request.httpBody,
+                  let object = (try? JSONSerialization.jsonObject(with:body)) as? [String:Any] else { return false }
+            return object["contract_code"] as? String == "TRX-USD"
+        }
+        precondition(currentRequests.count == 1,"complete history only needs one TRX account query per entry")
         precondition(fieldsStore.contracts == historicalBefore && fieldsStore.pendingCount == pendingBefore,"current snapshot neither changes historical values nor adds an archive row")
         let currentSnapshot=fieldsStore.currentContract
         let cached=try JSONDecoder().decode(CryptoStore.Cache.self,from:Data(contentsOf:fieldsFile))
@@ -499,6 +526,10 @@ private final class AssetRepository: GitHubRepositoryAccess {
         ttlNow=now.addingTimeInterval(7200);quoteFails=true
         await quotedReopened.collect()
         precondition(quotedReopened.message != nil && quotedReopened.binanceSnapshot?.total == 695 && quotedReopened.pricesExpired,"failed quotes retain the last valuation and never renew the one-hour cache")
+        configure(failSpotDetails:true)
+        let partial = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
+            .htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
+        precondition(partial.rows(in:.spot) == htxDetails.rows(in:.spot) && partial.errors.count == 1,"a source failure preserves its previous holdings")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

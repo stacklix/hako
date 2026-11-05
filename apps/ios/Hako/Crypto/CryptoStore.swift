@@ -59,6 +59,7 @@ import Combine
         var currentContract: CryptoCurrentContract?
         var walletSnapshots: [String:CryptoWalletSnapshot]?
         var binanceSnapshot: CryptoBinanceSnapshot?
+        var htxSnapshot: CryptoHTXSnapshot?
         var archiveLoaded = false
         var archivedPortfolioDays: Set<String>?
         var assetsUpdatedAt: Date?
@@ -76,6 +77,12 @@ import Combine
     @Published private(set) var binanceError: String?
     @Published private(set) var binanceConfigured = false
     @Published private(set) var binanceScope = ""
+    @Published private(set) var htxConfigured = false
+    @Published private(set) var htxScope = ""
+    var htxSnapshot: CryptoHTXSnapshot? {
+        guard htxConfigured, let snapshot = cache.htxSnapshot, snapshot.scope == htxScope else { return nil }
+        return snapshot
+    }
     var binanceSnapshot: CryptoBinanceSnapshot? {
         guard binanceConfigured, let snapshot=cache.binanceSnapshot, snapshot.scope == binanceScope else { return nil }
         return snapshot
@@ -129,6 +136,9 @@ import Combine
             file=nextFile
         }
         wallets=try loadWallets()
+        let htx = try loadCredential("htx")
+        htxConfigured = htx.configured
+        htxScope = CryptoDay.hash(htx.key+"|"+htx.secret)
         let binance=try loadCredential("binance")
         binanceConfigured=binance.configured
         let nextBinanceScope=CryptoDay.hash(binance.key)
@@ -173,6 +183,7 @@ import Combine
             let assetsScope=CryptoDay.hash(htx.key+"|"+htx.secret+"|"+binance.key+"|"+binance.secret+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
             if !force && cache.assetsScope == assetsScope && CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:now) {
                 if pricesExpired { try await refreshPrices(htx:htx,binance:binance) }
+                try await refreshHTXDetails(htx,now:now,force:false)
                 return
             }
             if cache.archiveLoaded != true || cache.archivedPortfolioDays == nil {
@@ -196,6 +207,7 @@ import Combine
                     var value=cache;value.currentContract=current
                     try persist(value)
                 } catch { currentResult = .failure(error);errors.append("今日 TRX 合约："+error.localizedDescription) }
+                try await refreshHTXDetails(htx,now:now,force:force)
             }
             if binance.configured {
                 binanceError=nil
@@ -252,6 +264,16 @@ import Combine
             message=errors.isEmpty ? nil : errors.joined(separator:"\n")
         } catch { message=error.localizedDescription }
     }
+    private func refreshHTXDetails(_ credential: CryptoCredential, now: Date, force: Bool) async throws {
+        guard credential.configured else { return }
+        let previous = htxSnapshot
+        guard force || !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
+        let snapshot = try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous)
+        var value = cache
+        value.htxSnapshot = snapshot
+        try persist(value)
+    }
+
     private func refreshPrices(htx:CryptoCredential,binance:CryptoCredential) async throws {
         var errors:[String]=[]
         if binance.configured,let snapshot=binanceSnapshot {
@@ -270,6 +292,9 @@ import Combine
             catch { errors.append(symbol+" 报价："+error.localizedDescription) }
         }
         var value=cache
+        if let snapshot = htxSnapshot {
+            value.htxSnapshot = try await client.htxAssetPrices(snapshot)
+        }
         if htx.configured,var current=currentContract,let price=prices["TRX"] {
             current.price=price;value.currentContract=current
         }

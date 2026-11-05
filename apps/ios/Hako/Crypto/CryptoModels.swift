@@ -52,6 +52,65 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
     var visibleAccounts: [CryptoBinanceAccount] { accounts.filter(\.isVisible) }
 }
 
+struct CryptoHTXSnapshot: Codable, Equatable {
+    enum Source: String, CaseIterable, Codable {
+        case spot, crossMargin, isolatedMargin, coinSwap, crossSwap, isolatedSwap
+
+        var title: String {
+            switch self {
+            case .spot: "现货"
+            case .crossMargin: "全仓杠杆"
+            case .isolatedMargin: "逐仓杠杆"
+            case .coinSwap: "币本位永续"
+            case .crossSwap: "U 本位全仓"
+            case .isolatedSwap: "U 本位逐仓"
+            }
+        }
+
+        var group: Group {
+            switch self {
+            case .spot: .spot
+            case .crossMargin, .isolatedMargin: .margin
+            case .coinSwap, .crossSwap, .isolatedSwap: .swap
+            }
+        }
+    }
+
+    enum Group: String, CaseIterable, Identifiable {
+        case spot = "现货", margin = "杠杆", swap = "合约"
+        var id: Self { self }
+    }
+
+    struct Holding: Codable, Equatable, Identifiable {
+        var id: String
+        var symbol: String
+        var label: String
+        var quantity: Double
+        var available: Double?
+        var frozen: Double?
+        var loan: Double?
+        var interest: Double?
+        var unrealized: Double?
+    }
+
+    var scope: String
+    var sampledAt: Date
+    var holdings: [Source: [Holding]] = [:]
+    var prices: [String: Double] = ["USDT": 1]
+    var errors: [String] = []
+    var quoteError: String?
+
+    func rows(in group: Group) -> [Holding] {
+        Source.allCases.filter { $0.group == group }.flatMap { holdings[$0] ?? [] }
+    }
+
+    func value(_ holding: Holding) -> Double? {
+        guard let price = prices[holding.symbol] else { return nil }
+        let value = holding.quantity * price
+        return value.isFinite ? value : nil
+    }
+}
+
 struct CryptoWalletAsset: Codable, Identifiable, Equatable {
     static func isIncluded(_ symbol:String) -> Bool {
         ["BTC","ETH","ATOM","TRX","USDT","USDC"].contains(symbol.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())

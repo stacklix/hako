@@ -214,6 +214,140 @@ struct CryptoClient {
     }
 }
 
+extension CryptoClient {
+    func htxAssetDetails(_ credential: CryptoCredential, scope: String, now: Date,
+                         previous: CryptoHTXSnapshot?) async throws -> CryptoHTXSnapshot {
+        var snapshot = previous ?? CryptoHTXSnapshot(scope:scope,sampledAt:now)
+        snapshot.sampledAt = now
+        snapshot.errors = []
+        for source in CryptoHTXSnapshot.Source.allCases {
+            do {
+                snapshot.holdings[source] = try await htxHoldings(source, credential:credential)
+            } catch {
+                try Task.checkCancellation()
+                snapshot.errors.append(source.title + "：" + error.localizedDescription)
+            }
+        }
+        return try await htxAssetPrices(snapshot)
+    }
+
+    func htxAssetPrices(_ snapshot: CryptoHTXSnapshot) async throws -> CryptoHTXSnapshot {
+        var result = snapshot
+        result.quoteError = nil
+        let symbols = Set(result.holdings.values.flatMap { $0.map(\.symbol) }).subtracting(["USDT"])
+        guard !symbols.isEmpty else { return result }
+        do {
+            let response = try await htx("api.huobi.pro","/market/tickers")
+            guard response["status"] as? String == "ok", let rows = response["data"] as? [[String:Any]] else {
+                throw HakoError(message:"行情响应无效。")
+            }
+            var quotes: [String: Double] = [:]
+            for row in rows {
+                if let pair = row["symbol"] as? String, let price = try? Self.number(row["close"]), price > 0 {
+                    quotes[pair.lowercased()] = price
+                }
+            }
+            var missing: [String] = []
+            for symbol in symbols.sorted() {
+                let base = symbol.lowercased()
+                let price = quotes[base+"usdt"] ?? ["btc","eth"].compactMap { bridge -> Double? in
+                    guard let first = quotes[base+bridge], let second = quotes[bridge+"usdt"] else { return nil }
+                    return first * second
+                }.first
+                if let price, price.isFinite { result.prices[symbol] = price }
+                else { missing.append(symbol) }
+            }
+            if !missing.isEmpty { result.quoteError = "暂无最新报价：" + missing.joined(separator:"、") }
+        } catch {
+            try Task.checkCancellation()
+            result.quoteError = "报价更新失败：" + error.localizedDescription
+        }
+        return result
+    }
+
+    private func htxHoldings(_ source: CryptoHTXSnapshot.Source, credential: CryptoCredential) async throws -> [CryptoHTXSnapshot.Holding] {
+        let spotHost = "api.huobi.pro"
+        let invalid = HakoError(message:"账户明细响应无效。")
+        switch source {
+        case .spot:
+            let response = try await htx(spotHost,"/v1/account/accounts",credential:credential)
+            guard response["status"] as? String == "ok", let accounts = response["data"] as? [[String:Any]] else { throw invalid }
+            var holdings: [CryptoHTXSnapshot.Holding] = []
+            for account in accounts where account["type"] as? String == "spot" {
+                guard let id = account["id"] as? Int, id > 0 else { throw invalid }
+                let balance = try await htx(spotHost,"/v1/account/accounts/\(id)/balance",credential:credential)
+                guard balance["status"] as? String == "ok",
+                      let data = balance["data"] as? [String:Any], let rows = data["list"] as? [[String:Any]] else { throw invalid }
+                holdings += try Self.htxBalanceRows(rows,id:"spot-\(id)",label:"",margin:false)
+            }
+            return holdings
+        case .crossMargin:
+            let response = try await htx(spotHost,"/v1/cross-margin/accounts/balance",credential:credential)
+            guard response["status"] as? String == "ok",
+                  let data = response["data"] as? [String:Any], let rows = data["list"] as? [[String:Any]] else { throw invalid }
+            return try Self.htxBalanceRows(rows,id:source.rawValue,label:"全仓",margin:true)
+        case .isolatedMargin:
+            let response = try await htx(spotHost,"/v1/margin/accounts/balance",credential:credential)
+            guard response["status"] as? String == "ok", let accounts = response["data"] as? [[String:Any]] else { throw invalid }
+            return try accounts.flatMap { account in
+                guard let pair = account["symbol"] as? String, !pair.isEmpty,
+                      let rows = account["list"] as? [[String:Any]] else { throw invalid }
+                return try Self.htxBalanceRows(rows,id:source.rawValue+"-"+pair,label:"逐仓 · "+pair.uppercased(),margin:true)
+            }
+        case .coinSwap, .crossSwap, .isolatedSwap:
+            let path: String
+            switch source {
+            case .coinSwap: path = "/swap-api/v1/swap_account_info"
+            case .crossSwap: path = "/linear-swap-api/v1/swap_cross_account_info"
+            default: path = "/linear-swap-api/v1/swap_account_info"
+            }
+            let response = try await htx("api.hbdm.com",path,credential:credential,body:[:])
+            guard response["status"] as? String == "ok", let rows = response["data"] as? [[String:Any]] else { throw invalid }
+            return try rows.compactMap { row in
+                let quantity = try Self.number(row["margin_balance"])
+                guard quantity != 0 else { return nil }
+                let contract = row["contract_code"] as? String
+                let account = row["margin_account"] as? String
+                let symbol: String?
+                switch source {
+                case .coinSwap: symbol = row["symbol"] as? String ?? contract?.split(separator:"-").first.map(String.init)
+                case .crossSwap: symbol = row["margin_asset"] as? String ?? account
+                default: symbol = row["margin_asset"] as? String ?? (contract ?? account)?.split(separator:"-").last.map(String.init)
+                }
+                guard let symbol, !symbol.isEmpty, let identifier = contract ?? account ?? row["symbol"] as? String else { throw invalid }
+                let label = source.title + (contract.map { " · " + $0 } ?? "")
+                return CryptoHTXSnapshot.Holding(id:source.rawValue+"-"+identifier,symbol:symbol.uppercased(),
+                    label:label,quantity:quantity,available:try? Self.number(row["margin_available"]),
+                    frozen:try? Self.number(row["margin_frozen"]),unrealized:try? Self.number(row["profit_unreal"]))
+            }
+        }
+    }
+
+    static func htxBalanceRows(_ rows: [[String:Any]], id: String, label: String, margin: Bool) throws -> [CryptoHTXSnapshot.Holding] {
+        var balances: [String:[String:Double]] = [:]
+        let supported = margin ? ["trade","frozen","loan","interest"] : ["trade","frozen"]
+        for row in rows {
+            guard let type = row["type"] as? String else { throw HakoError(message:"余额类型缺失。") }
+            guard supported.contains(type) else { continue }
+            guard let currency = row["currency"] as? String, !currency.isEmpty else { throw HakoError(message:"币种缺失。") }
+            let amount = try Self.number(row["balance"])
+            balances[currency.uppercased(),default:[:]][type,default:0] += amount
+        }
+        return try balances.keys.sorted().compactMap { symbol in
+            let amounts = balances[symbol] ?? [:]
+            let available = amounts["trade"] ?? 0
+            let frozen = amounts["frozen"] ?? 0
+            let loan = abs(amounts["loan"] ?? 0)
+            let interest = abs(amounts["interest"] ?? 0)
+            let quantity = available + frozen - loan - interest
+            guard quantity.isFinite else { throw HakoError(message:"账户余额无效。") }
+            guard quantity != 0 || available != 0 || frozen != 0 || loan != 0 || interest != 0 else { return nil }
+            return CryptoHTXSnapshot.Holding(id:id+"-"+symbol,symbol:symbol,label:label,quantity:quantity,
+                available:available,frozen:frozen,loan:margin ? loan : nil,interest:margin ? interest : nil)
+        }
+    }
+}
+
 // Redact structured fields before formatting; known credentials are also removed from free text.
 private struct CryptoHTTPLog {
     private var secrets: Set<String>

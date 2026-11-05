@@ -16,6 +16,7 @@ struct CryptoView: View {
     @State private var collecting = true
     @State private var contractTableWidth: CGFloat = 0
     @State private var expandedBinanceAccount: CryptoBinanceAccount.ID?
+    @State private var expandedHTXGroup: CryptoHTXSnapshot.Group?
     private var latest: CryptoRecord? { store.portfolio.last }
     var body: some View {
         ScrollView {
@@ -58,6 +59,7 @@ struct CryptoView: View {
                         }
                     } else {
                         amountPanel("HTX 总资产",value:latest?.values["htx"])
+                        htxDetails
                         currentContractPanel
                         recentContractTable
                     }
@@ -213,24 +215,106 @@ struct CryptoView: View {
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
 
+    private var htxDetails: some View {
+        VStack(alignment:.leading,spacing:12) {
+            Text("资产详情").font(.headline)
+            if let snapshot = store.htxSnapshot {
+                let groups = CryptoHTXSnapshot.Group.allCases.filter { !snapshot.rows(in:$0).isEmpty }
+                if !groups.isEmpty {
+                    VStack(alignment:.leading,spacing:0) {
+                        ForEach(groups) { group in
+                            if group != groups.first { Divider() }
+                            htxAccountRow(group,snapshot:snapshot)
+                        }
+                    }.cryptoPanel()
+                } else if snapshot.errors.isEmpty {
+                    Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
+                }
+                if !snapshot.errors.isEmpty {
+                    Text("部分明细更新失败，已缓存的明细继续显示。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(snapshot.errors,id:\.self) { error in
+                        Text(error).font(.caption).foregroundStyle(.red)
+                    }
+                }
+                if let error = snapshot.quoteError {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text(!store.htxConfigured ? "请在右上角设置中配置 HTX 只读 API。" : store.busy ? "正在获取资产详情…" : "暂无资产详情")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth:.infinity,alignment:.leading)
+    }
+
+    private func htxAccountRow(_ group: CryptoHTXSnapshot.Group, snapshot: CryptoHTXSnapshot) -> some View {
+        let assets = snapshot.rows(in:group)
+        let values = assets.compactMap { snapshot.value($0) }
+        let subtotal = values.reduce(0,+)
+        let value = values.isEmpty || !subtotal.isFinite ? nil : subtotal
+        let unit = values.count == assets.count ? "USDT" : "部分折合 USDT"
+        let expanded = expandedHTXGroup == group
+        return assetAccountRow(title:group.rawValue,subtitle:"\(assets.count) 项",value:value,unit:unit,expanded:expanded) {
+            expandedHTXGroup = expanded ? nil : group
+        } details: {
+            ForEach(assets) { asset in
+                if asset.id != assets.first?.id { Divider() }
+                htxAssetRow(asset,value:snapshot.value(asset),isContract:group == .swap)
+            }
+        }
+    }
+
+    private func htxAssetRow(_ asset: CryptoHTXSnapshot.Holding, value: Double?, isContract: Bool) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            HStack(alignment:.top,spacing:10) {
+                VStack(alignment:.leading,spacing:4) {
+                    Text(asset.symbol).font(.subheadline.weight(.semibold))
+                    if !asset.label.isEmpty { Text(asset.label).font(.caption).foregroundStyle(.secondary) }
+                }
+                Spacer(minLength:0)
+                VStack(alignment:.trailing,spacing:4) {
+                    Text(asset.quantity.formatted(.number.precision(.fractionLength(2...8))) + " " + asset.symbol)
+                        .font(.subheadline.weight(.semibold))
+                    Text(value.map { $0.formatted(.number.precision(.fractionLength(2))) + " USDT" } ?? "暂无报价")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.multilineTextAlignment(.trailing).monospacedDigit()
+            }
+            if let available = asset.available { metric(isContract ? "可用保证金" : "可用",available,asset.symbol) }
+            if let frozen = asset.frozen, frozen != 0 { metric(isContract ? "冻结保证金" : "冻结",frozen,asset.symbol) }
+            if let loan = asset.loan, loan != 0 { metric("借款本金",loan,asset.symbol) }
+            if let interest = asset.interest, interest != 0 { metric("待还利息",interest,asset.symbol) }
+            if let unrealized = asset.unrealized { metric("未实现盈亏",unrealized,asset.symbol) }
+        }.accessibilityElement(children:.combine)
+    }
+
     private func binanceAccountRow(_ account: CryptoBinanceAccount) -> some View {
         let assets = account.visibleAssets ?? []
         let expanded = expandedBinanceAccount == account.id
-        return VStack(alignment:.leading,spacing:0) {
-            Button {
-                expandedBinanceAccount = expanded ? nil : account.id
-            } label: {
+        return assetAccountRow(title:account.name,subtitle:"\(assets.count) 个币种",value:account.currentBalance,unit:"USDT",expanded:expanded) {
+            expandedBinanceAccount = expanded ? nil : account.id
+        } details: {
+            ForEach(assets) { asset in
+                if asset.id != assets.first?.id { Divider() }
+                binanceAssetRow(asset)
+            }
+        }
+    }
+
+    private func assetAccountRow<Details: View>(title: String, subtitle: String, value: Double?, unit: String, expanded: Bool,
+                                                toggle: @escaping () -> Void, @ViewBuilder details: () -> Details) -> some View {
+        VStack(alignment:.leading,spacing:0) {
+            Button(action:toggle) {
                 HStack(spacing:10) {
                     Image(systemName:"wallet.bifold").frame(width:22).accessibilityHidden(true)
                     VStack(alignment:.leading,spacing:4) {
-                        Text(account.name).font(.subheadline.weight(.semibold))
-                        Text("\(assets.count) 个币种").font(.caption).foregroundStyle(.secondary)
+                        Text(title).font(.subheadline.weight(.semibold))
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength:8)
                     VStack(alignment:.trailing,spacing:4) {
-                        Text(account.currentBalance.formatted(.number.precision(.fractionLength(2))))
+                        Text(value.map { $0.formatted(.number.precision(.fractionLength(2))) } ?? "—")
                             .font(.subheadline.weight(.semibold)).monospacedDigit()
-                        Text("USDT").font(.caption).foregroundStyle(.secondary)
+                        Text(unit).font(.caption).foregroundStyle(.secondary)
                     }
                     Image(systemName:expanded ? "chevron.down" : "chevron.right")
                         .font(.caption).foregroundStyle(.secondary).frame(width:12).accessibilityHidden(true)
@@ -243,10 +327,7 @@ struct CryptoView: View {
             .accessibilityHint(expanded ? "收起币种明细" : "展开币种明细")
             if expanded {
                 VStack(alignment:.leading,spacing:10) {
-                    ForEach(assets) { asset in
-                        if asset.id != assets.first?.id { Divider() }
-                        binanceAssetRow(asset)
-                    }
+                    details()
                 }
                 .padding(12)
                 .background(HakoStyle.background,in:RoundedRectangle(cornerRadius:10))
