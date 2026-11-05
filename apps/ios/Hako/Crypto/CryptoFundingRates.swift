@@ -1,30 +1,68 @@
 import Foundation
 
 extension CryptoClient {
-    func currentContract(_ c: CryptoCredential, scope: String, now: Date = .now) async throws -> CryptoCurrentContract {
+    func contractTotalEquity(_ c:CryptoCredential) async throws -> Double {
+        var failure:Error=HakoError(message:"当前合约总估值缺失。")
+        for asset in ["USDT","USD"] {
+            do {
+                let response=try await htx("api.hbdm.com","/swap-api/v1/swap_balance_valuation",credential:c,body:["valuation_asset":asset])
+                guard let rows=response["data"] as? [[String:Any]],
+                      let row=rows.first(where: { ($0["valuation_asset"] as? String)?.uppercased() == asset }) else {
+                    throw HakoError(message:"当前合约 \(asset) 总估值缺失。")
+                }
+                return try Self.number(row["balance"])
+            } catch is CancellationError { throw CancellationError() }
+            catch { try Task.checkCancellation();failure=error }
+        }
+        throw failure
+    }
+
+    func currentContract(_ c: CryptoCredential, scope: String, now: Date = .now, cached: CryptoCurrentContract? = nil) async throws -> CryptoCurrentContract {
         let response=try await htx("api.hbdm.com", "/swap-api/v1/swap_account_info", credential:c, body:["contract_code":"TRX-USD"])
         guard let account=(response["data"] as? [[String:Any]])?.first(where: { $0["contract_code"] as? String == "TRX-USD" }) else {
             throw HakoError(message:"当前 TRX 合约账户数据缺失。")
         }
         let trx=try Self.number(account["margin_balance"])
         let price=try await price("TRX")
+        let totalEquity=try await contractTotalEquity(c)
         guard (trx * price).isFinite else { throw HakoError(message:"当前 TRX 合约估值无效。") }
         let liquidation=try? Self.number(account["liquidation_price"])
         let start=CryptoDay.calendar.startOfDay(for:now)
-        let fee=try? await fundingFee(c,from:start,to:now)
-        let rates=try? await fundingRates(from:start,to:now)
+        let previous=cached.flatMap { $0.scope == scope && CryptoDay.key($0.sampledAt) == CryptoDay.key(now) ? $0 : nil }
+        var fee:Double?,rate:Double?,feeUpdatedAt:Date?,rateUpdatedAt:Date?
+        if let previous,previous.fundingTRX != nil,CryptoSyncPolicy.canReuseFunding(updatedAt:previous.fundingTRXUpdatedAt,now:now) {
+            fee=previous.fundingTRX;feeUpdatedAt=previous.fundingTRXUpdatedAt
+        } else {
+            do { fee=try await fundingFee(c,from:start,to:now);feeUpdatedAt=now }
+            catch { logStore.append(source:.crypto,level:.error,message:"今日 TRX 资金费查询失败",detail:error.localizedDescription) }
+        }
+        if let previous,previous.fundingRate != nil,CryptoSyncPolicy.canReuseFunding(updatedAt:previous.fundingRateUpdatedAt,now:now) {
+            rate=previous.fundingRate;rateUpdatedAt=previous.fundingRateUpdatedAt
+        } else {
+            do {
+                let rates=try await fundingRates(from:start,to:now,requiringSettlement:CryptoSyncPolicy.fundingSettlement(now:now))
+                rate=rates[CryptoDay.key(start)];rateUpdatedAt=rate == nil ? nil : now
+            } catch { logStore.append(source:.crypto,level:.error,message:"今日 TRX 资金费率查询失败",detail:error.localizedDescription) }
+        }
         return CryptoCurrentContract(sampledAt:now,scope:scope,trx:trx,price:price,
             available:try? Self.number(account["margin_available"]),
             unrealizedProfit:try? Self.number(account["profit_unreal"]),
             liquidation:liquidation.flatMap { $0 > 0 ? $0 : nil },
-            fundingTRX:fee,fundingRate:rates?[CryptoDay.key(start)])
+            fundingTRX:fee,fundingRate:rate,fundingTRXUpdatedAt:feeUpdatedAt,fundingRateUpdatedAt:rateUpdatedAt,totalEquity:totalEquity)
     }
 
     // Actual funding cash flow in a half-open date range, shared by today and completed days.
     func fundingFee(_ c: CryptoCredential, from startDate: Date, to endDate: Date) async throws -> Double {
+        let fees=try await fundingFees(c,from:startDate,to:endDate)
+        let total=fees.values.reduce(0,+)
+        guard total.isFinite else { throw HakoError(message:"资金费汇总无效。") }
+        return total
+    }
+    func fundingFees(_ c: CryptoCredential, from startDate: Date, to endDate: Date) async throws -> [String:Double] {
         guard startDate < endDate else { throw HakoError(message:"资金费查询日期范围无效。") }
+        guard endDate.timeIntervalSince(startDate) <= 48*3600 else { throw HakoError(message:"资金费单次查询不能超过48小时。") }
         let start=startDate.timeIntervalSince1970*1000, end=endDate.timeIntervalSince1970*1000
-        var fee=0.0,cursor:Int64?,seen=Set<String>()
+        var fees=[String:Double](),cursor:Int64?,seen=Set<String>()
         for page in 1...100 {
             var body:[String:Any]=["contract":"TRX-USD","type":"30,31","start_time":Int64(start),"end_time":Int64(end-1),"direct":"next"]
             if let cursor { body["from_id"]=cursor }
@@ -35,14 +73,17 @@ extension CryptoClient {
                 let time=try Self.number(row["ts"]),type=row["type"] as? Int ?? 0
                 guard time>=start,time<end,row["contract_code"] as? String == "TRX-USD",[30,31].contains(type) else { continue }
                 let id=String(describing:row["id"] ?? "")
-                if seen.insert(id).inserted { fee += (type==30 ? 1 : -1)*abs(try Self.number(row["amount"])) }
+                if seen.insert(id).inserted {
+                    let day=CryptoDay.key(Date(timeIntervalSince1970:time/1000))
+                    fees[day,default:0] += (type==30 ? 1 : -1)*abs(try Self.number(row["amount"]))
+                }
             }
             guard let next=list.compactMap({ ($0["query_id"] as? NSNumber)?.int64Value }).max(),next != cursor else { throw HakoError(message:"资金费分页游标未前进。") }
             cursor=next
             if page==100 { throw HakoError(message:"该日资金费流水未读取完整。") }
         }
-        guard fee.isFinite else { throw HakoError(message:"资金费汇总无效。") }
-        return fee
+        guard fees.values.allSatisfy(\.isFinite) else { throw HakoError(message:"资金费汇总无效。") }
+        return fees
     }
 
 
@@ -59,7 +100,7 @@ extension CryptoClient {
     }
 
     // Aggregate settlement rates in a half-open Shanghai date range.
-    func fundingRates(from start: Date, to end: Date) async throws -> [String: Double] {
+    func fundingRates(from start: Date, to end: Date, requiringSettlement: Date? = nil) async throws -> [String: Double] {
         guard start < end else { throw HakoError(message: "资金费率查询日期范围无效。") }
         let startMS = start.timeIntervalSince1970 * 1000, endMS = end.timeIntervalSince1970 * 1000
         var rates: [Double: Double] = [:], previousOldest = Double.infinity
@@ -100,6 +141,9 @@ extension CryptoClient {
             previousOldest = oldest
             if oldest < startMS || page >= pages { break }
             guard page < 100 else { throw HakoError(message: "历史资金费率分页超过上限，尚未读取完整。") }
+        }
+        if let requiringSettlement,rates[requiringSettlement.timeIntervalSince1970 * 1000] == nil {
+            throw HakoError(message:"最新一期资金费率尚未入账，稍后重试。")
         }
         var sums: [String: Double] = [:]
         for time in rates.keys.sorted() {

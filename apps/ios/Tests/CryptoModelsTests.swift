@@ -3,10 +3,34 @@ import Foundation
 @main struct CryptoModelsTests {
     static func main() throws {
         func check(_ condition: Bool, _ message: String) { precondition(condition,message) }
+        let dust=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0.000009,locked:0,frozen:0,withdrawing:0,unitPrice:100000)
+        let boundary=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0,locked:0.00001,frozen:0,withdrawing:0,unitPrice:100000)
+        let usdt=CryptoBinanceAsset(symbol:"USDT",name:"Tether",free:2,locked:3,frozen:4,withdrawing:1)
+        check(!dust.isVisible && boundary.isVisible,"hide values below 1 USDT, retain exactly 1 USDT including locked holdings")
+        check(usdt.quantity == 10 && usdt.price == 1 && usdt.usdtValue == 10,"holdings include all balance components without displaying their breakdown")
+        let legacy=try JSONDecoder().decode(CryptoBinanceAsset.self,from:Data(#"{"symbol":"BTC","name":"Bitcoin","free":1,"locked":0,"frozen":0,"withdrawing":0}"#.utf8))
+        check(legacy.price == nil && legacy.usdtValue == nil && legacy.isVisible,"old cached unpriced assets remain readable and are not mistaken for dust")
+        let accounts=[CryptoBinanceAccount(name:"Empty",balance:0,assets:[]),CryptoBinanceAccount(name:"Dust",balance:0.9,assets:[dust]),CryptoBinanceAccount(name:"Spot",balance:11,assets:[boundary,usdt]),CryptoBinanceAccount(name:"Unavailable",balance:2,assets:nil)]
+        let snapshot=CryptoBinanceSnapshot(scope:"test",sampledAt:.now,accounts:accounts)
+        check(snapshot.visibleAccounts.map(\.name) == ["Spot","Unavailable"],"hide empty asset types and types containing only dust, preserve unavailable details")
+        check(snapshot.total == 13.9 && snapshot.accounts.count == 4,"display filtering does not change reported total assets or cached accounts")
         let formatter=ISO8601DateFormatter()
         let now=formatter.date(from:"2026-12-31T16:01:00Z")!
         let recent=CryptoSyncPolicy.recentContractDays(now:now).map(CryptoDay.key)
         check(recent == ["2026-12-31","2026-12-30","2026-12-29","2026-12-28","2026-12-27","2026-12-26","2026-12-25"],"seven completed Shanghai days across the year boundary")
+        let beforeMidnight=CryptoSyncPolicy.recentContractDays(now:formatter.date(from:"2026-11-04T15:59:59Z")!).map(CryptoDay.key)
+        let afterMidnight=CryptoSyncPolicy.recentContractDays(now:formatter.date(from:"2026-11-04T16:00:00Z")!).map(CryptoDay.key)
+        check(beforeMidnight.first == "2026-11-03" && !beforeMidnight.contains("2026-11-04"),"the current Shanghai day stays out of history")
+        check(afterMidnight == ["2026-11-04","2026-11-03","2026-11-02","2026-11-01","2026-10-31","2026-10-30","2026-10-29"],"November 5 midnight immediately includes November 4 in the missing-data window")
+        let settled=formatter.date(from:"2026-11-05T00:03:00Z")!
+        check(CryptoSyncPolicy.canReuseFunding(updatedAt:settled,now:formatter.date(from:"2026-11-05T07:59:59Z")!),"cache survives repeated entry before the next Shanghai 16:00 settlement")
+        check(!CryptoSyncPolicy.canReuseFunding(updatedAt:settled,now:formatter.date(from:"2026-11-05T08:00:00Z")!),"new settlement invalidates old funding totals")
+        let provisional=formatter.date(from:"2026-11-05T08:00:30Z")!
+        check(CryptoSyncPolicy.canReuseFunding(updatedAt:provisional,now:formatter.date(from:"2026-11-05T08:01:00Z")!),"avoid repeated requests within the initial settlement window")
+        check(!CryptoSyncPolicy.canReuseFunding(updatedAt:provisional,now:formatter.date(from:"2026-11-05T08:02:00Z")!),"recheck provisional results after posting grace")
+        check(!CryptoSyncPolicy.canReuseFunding(updatedAt:settled,now:formatter.date(from:"2026-11-05T16:00:00Z")!),"midnight invalidates yesterday funding")
+        check(!CryptoSyncPolicy.canReuseFunding(updatedAt:nil,now:settled),"legacy or missing success timestamp requires a query")
+        check(!CryptoSyncPolicy.canReuseFunding(updatedAt:provisional,now:settled),"clock rollback cannot reuse a future observation")
         let scope=String(repeating:"a",count:64)
         let prior=CryptoRecord(kind:"htx-trx",day:"2026-12-31",sampledAt:formatter.date(from:"2026-12-31T08:00:00Z")!.timeIntervalSince1970,scope:scope,
                                values:["equity":8723.12345*0.32439,"trx":8723.12345,"price":0.32439,"liquidation":0.4438,"funding_trx": -1.235,"funding_rate":0.0001234567])

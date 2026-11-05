@@ -120,11 +120,11 @@ jobs:
         run: |
           swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/Crypto/CryptoModels.swift Tests/CryptoModelsTests.swift -o /tmp/hako-crypto-model-tests
           /tmp/hako-crypto-model-tests
-          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Tests/CryptoChainTests.swift -o /tmp/hako-crypto-chain-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Tests/CryptoChainTests.swift -o /tmp/hako-crypto-chain-tests
           /tmp/hako-crypto-chain-tests
-          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/GitHubRepository.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Hako/Crypto/CryptoHistory.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoStore.swift Tests/CryptoStoreTests.swift -o /tmp/hako-crypto-store-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/GitHubRepository.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoChainClient.swift Hako/Crypto/CryptoHistory.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoStore.swift Tests/CryptoStoreTests.swift -o /tmp/hako-crypto-store-tests
           /tmp/hako-crypto-store-tests
-          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoHistory.swift Tests/CryptoFundingRatesTests.swift -o /tmp/hako-crypto-funding-tests
+          swiftc Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoCredential.swift Hako/Crypto/CryptoClient.swift Hako/Crypto/CryptoFundingRates.swift Hako/Crypto/CryptoHistory.swift Tests/CryptoFundingRatesTests.swift -o /tmp/hako-crypto-funding-tests
           /tmp/hako-crypto-funding-tests
       - name: Configure Pages
         id: pages

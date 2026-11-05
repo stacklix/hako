@@ -22,7 +22,7 @@ private final class AssetMockProtocol: URLProtocol, @unchecked Sendable {
         do {
             let object=try handler(request)
             client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
-            client?.urlProtocol(self,didLoad:try JSONSerialization.data(withJSONObject:object))
+            client?.urlProtocol(self,didLoad:try (object as? Data) ?? JSONSerialization.data(withJSONObject:object))
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self,didFailWithError:error) }
     }
@@ -70,27 +70,29 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let repository=AssetRepository()
         let htx=CryptoCredential(key:"test-htx",secret:"test-secret")
         let binance=CryptoCredential(key:"test-binance",secret:"test-secret")
-        let days=CryptoSyncPolicy.recentContractDays(now:.now)
-        let today=CryptoDay.calendar.startOfDay(for:.now)
+        let now=CryptoDay.calendar.date(from:DateComponents(year:2026,month:11,day:5,hour:12))!
+        let days=CryptoSyncPolicy.recentContractDays(now:now)
+        let today=CryptoDay.calendar.startOfDay(for:now)
         let lower=days.last!.timeIntervalSince1970*1000
         var rateRows:[[String:Any]]=[]
         for day in days {
             for hour in [0,8,16] { rateRows.append(["contract_code":"TRX-USD","funding_time":(day.timeIntervalSince1970+Double(hour)*3600)*1000,"funding_rate":"0.0001"]) }
         }
-        rateRows.append(["contract_code":"TRX-USD","funding_time":today.timeIntervalSince1970*1000,"funding_rate":"0.0002"])
+        for hour in [0,8] { rateRows.append(["contract_code":"TRX-USD","funding_time":(today.timeIntervalSince1970+Double(hour)*3600)*1000,"funding_rate":"0.0002"]) }
         let existing=CryptoRecord(kind:"htx-trx",day:CryptoDay.key(days[2]),sampledAt:0,scope:"",values:["trx":999,"price":0.3,"equity":299.7,"liquidation":0.4,"funding_trx":7,"funding_rate":0.01])
         let ancient=CryptoRecord(kind:"htx-trx",day:CryptoDay.key(CryptoDay.calendar.date(byAdding:.day,value:-8,to:today)!),sampledAt:0,scope:"",values:["trx":1,"price":0.3,"equity":0.3])
         let cacheFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(repository.storageScope)+".json")
         try FileManager.default.createDirectory(at:cacheFile.deletingLastPathComponent(),withIntermediateDirectories:true)
         try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient])).write(to:cacheFile)
         func makeStore()->CryptoStore {
-            CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory)
+            CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
         func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4) {
             AssetMockProtocol.configure { request in
                 switch request.url!.path {
                 case "/v2/account/valuation": return ["success":true,"data":["updated":["success":!incompleteHTX],"profitAccountBalanceList":[["success":true]],"totalBalance":total]]
                 case "/market/detail/merged": return ["tick":["close":1]]
+                case "/swap-api/v1/swap_balance_valuation": return ["data":[["valuation_asset":"USDT","balance":currentTRX]]]
                 case "/sapi/v1/asset/wallet/balance":
                     if failBinance { throw HakoError(message:"test unavailable") }
                     let query=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
@@ -100,23 +102,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
                         ["asset":"USDT","assetName":"TetherUS","free":"40","locked":"7","freeze":"2","withdrawing":"1"],
                         ["asset":"BTC","free":"0","locked":"0","freeze":"0","withdrawing":"0"]
                     ]]]
-                case "/swap-api/v1/swap_user_settlement_records":
-                    var bodyData=request.httpBody ?? Data()
-                    if bodyData.isEmpty,let stream=request.httpBodyStream {
-                        stream.open();defer { stream.close() }
-                        var buffer=[UInt8](repeating:0,count:4096)
-                        while stream.hasBytesAvailable {
-                            let count=stream.read(&buffer,maxLength:buffer.count)
-                            if count <= 0 { break };bodyData.append(contentsOf:buffer.prefix(count))
-                        }
-                    }
-                    let body=try JSONSerialization.jsonObject(with:bodyData) as! [String:Any]
-                    let start=(body["start_time"] as! NSNumber).doubleValue,end=(body["end_time"] as! NSNumber).doubleValue
-                    precondition(start >= lower && end < today.timeIntervalSince1970*1000 && end-start == 86_400_000-1,"only the seven completed days")
-                    let day=CryptoDay.key(Date(timeIntervalSince1970:start/1000))
-                    precondition(day != existing.day,"existing local date must never be requested")
-                    if day == failDay { throw HakoError(message:"test missing day") }
-                    return ["data":["total_page":1,"settlement_records":[["settlement_time":start+16*3_600_000,"margin_balance":100]]]]
+                case "/swap-api/v1/swap_user_settlement_records": fatalError("Retired settlement API must never be requested")
                 case "/swap-api/v3/swap_financial_record": return ["code":200,"data":[]]
                 case "/swap-api/v1/swap_historical_funding_rate":
                     if failRates { throw HakoError(message:"test rate unavailable") }
@@ -135,7 +121,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
             }
         }
         let store=makeStore()
-        let failed=CryptoDay.key(days[4])
+        let failed=CryptoDay.key(days[0])
         configure(failDay:failed)
         store.loadCachedData()
         precondition(store.contracts.count == 2 && AssetMockProtocol.requests.isEmpty && repository.reads == 0,"cached records are published before any network request")
@@ -150,16 +136,20 @@ private final class AssetRepository: GitHubRepositoryAccess {
             preconditionFailure("invalid balances must fail")
         } catch {}
         precondition(repository.reads == 0 && repository.commits.isEmpty,"entry must never access GitHub")
-        precondition(store.portfolio.last?.values["total"] == 150 && store.contracts.count == 7,"successful days and totals update even when one day fails")
+        precondition(store.portfolio.last?.values["total"] == 150 && store.contracts.count == 8,"successful fields and totals update even when one day's settlement fails")
+        let filledYesterday=store.contracts.first{$0.day==failed}!
+        precondition(filledYesterday.values["trx"] == 2000 && filledYesterday.values["equity"] == 2000 && filledYesterday.values["price"] == 1,"missing history copies current TRX equity, price and valuation")
+        precondition(store.message == nil,"retired settlement API cannot cause update failures")
         precondition(store.contracts.first{$0.id==existing.id} == existing && store.contracts.contains(ancient))
-        precondition(store.pendingCount == 6 && AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").count == 6)
+        precondition(store.pendingCount == 7 && AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"retired settlement interface is never called")
         precondition(store.currentContract?.trx == 2000 && store.currentContract?.equity == 2000 && store.currentContract?.available == 1500 && store.currentContract?.unrealizedProfit == -12.5,"current account fields are displayed independently of historical settlements")
-        precondition(store.currentContract?.fundingTRX == 0 && store.currentContract?.fundingRate == 0.0002,"today funding is included in the published snapshot")
+        precondition(store.currentContract?.fundingTRX == 0 && store.currentContract?.fundingRate == 0.0004,"today funding is included in the published snapshot")
         precondition(store.currentContract?.liquidation == 0.4 && store.currentContract?.scope == CryptoDay.hash(htx.key))
         precondition(store.contracts.allSatisfy { $0.day != CryptoDay.key(today) },"today's snapshot never becomes a historical archive row")
         configure(total:200)
         await store.collect()
-        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").count == 1,"only failed date is retried, including pending rows as present")
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"complete historical equity never requests retired settlements")
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"neither cached today funding nor completed historical funding is fetched again when retrying yesterday's settlement")
         precondition(store.contracts.count == 8 && store.portfolio.last?.values["total"] == 250 && store.pendingCount == 7)
         precondition(repository.reads == 0 && repository.commits.isEmpty)
         let restored=makeStore()
@@ -169,6 +159,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(restored.portfolio.last?.values["total"] == 250 && AssetMockProtocol.requests.isEmpty,"reentry immediately displays the previous cached total")
         precondition(restored.currentContract == store.currentContract,"current contract cache restores before network queries")
         await restored.collect()
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"funding cache persists across store recreation in the same settlement period")
         precondition(AssetMockProtocol.paths("/swap-api/v1/swap_user_settlement_records").isEmpty,"pending rows survive restart")
         precondition(restored.portfolio.last?.values["total"] == 350,"fresh results update the published display")
         let diskReader=makeStore()
@@ -201,7 +192,23 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(repository.files[portfolioPath] == savedTotal,"failed collection leaves the archived total intact")
         configure(total:600,incompleteHTX:true)
         await restored.collect()
-        precondition(restored.message == nil && repository.files[portfolioPath] == savedTotal,"incomplete HTX valuation stays silent and preserves the complete total")
+        precondition(restored.message?.contains("HTX 总资产：") == true && restored.message?.contains("data.updated.success") == true && restored.message?.contains("今日总资产未更新") == true,"incomplete HTX valuation explains the missing daily total")
+        precondition(restored.portfolio.last?.values["total"] == 350 && repository.files[portfolioPath] == savedTotal,"incomplete HTX valuation preserves cached and archived complete totals")
+        precondition(AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == 1 && restored.binanceError == nil,"HTX valuation failure does not stop other sources")
+        for (response,reason) in [
+            (["success":false] as [String:Any],"接口 success"),
+            (["success":true] as [String:Any],"缺少 data"),
+            (["success":true,"data":["updated":["success":true]]] as [String:Any],"profitAccountBalanceList"),
+            (["success":true,"data":["updated":["success":true],"profitAccountBalanceList":[["success":false]]]] as [String:Any],"账户 success")
+        ] {
+            AssetMockProtocol.configure { _ in response }
+            do {
+                _ = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).htxTotal(htx)
+                preconditionFailure("incomplete HTX response must report an error")
+            } catch {
+                precondition(error.localizedDescription.contains(reason) && error.localizedDescription.contains("今日总资产未更新"))
+            }
+        }
         // A manual trigger queued behind entry collection must still perform a GitHub sync.
         let before=repository.reads
         configure(total:700)
@@ -235,7 +242,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         completeDays[6].values["funding_trx"]=0;completeDays[6].values["funding_rate"]=0
         let fieldsFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(fieldsRepository.storageScope)+".json")
         try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient])).write(to:fieldsFile)
-        let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory)
+        let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure(failRates:true)
         await fieldsStore.collect()
         precondition(fieldsStore.contracts.first{$0.day==completeDays[1].day}?.values["funding_rate"] == nil,"failed field remains missing")
@@ -246,7 +253,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         await fieldsStore.collect()
         let filledRate=fieldsStore.contracts.first{$0.day==completeDays[1].day}!
         precondition(abs(filledRate.values["funding_rate"]! - 0.0003) < 1e-12 && filledRate.values["funding_trx"] == 7)
-        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").count == 2 && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").count == 1,"retry just the missing rate, preserve zero values and out-of-window rows")
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").count == 2 && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"retry missing rates independently while reusing successfully cached funding cash flow")
         precondition(fieldsStore.contracts.contains(ancient) && fieldsRepository.reads == 0 && fieldsRepository.commits.isEmpty)
         var remoteDays=completeDays
         remoteDays[1].values["trx"]=777;remoteDays[1].values["equity"]=233.1
@@ -263,7 +270,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(fieldArchive.first{$0.day==filledFee.day}?.values["funding_trx"] == 0 && fieldArchive.contains(ancient))
         configure()
         await fieldsStore.collect()
-        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").count == 1 && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").count == 1,"complete history is not requested; only today funding is refreshed")
+        precondition(AssetMockProtocol.paths("/swap-api/v1/swap_historical_funding_rate").isEmpty && AssetMockProtocol.paths("/swap-api/v3/swap_financial_record").isEmpty,"complete history and cached today funding are not requested again before settlement")
         let historicalBefore=fieldsStore.contracts
         let pendingBefore=fieldsStore.pendingCount
         configure(currentTRX:1234.56,currentLiquidation:nil)
@@ -280,6 +287,56 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(currentLiquidation:0)
         await fieldsStore.collect()
         precondition(fieldsStore.currentContract?.liquidation == nil,"zero liquidation is unavailable, not a valid price")
-        print("Crypto store: cache-first display, fresh cache persistence, single entry collection, cache-only sync, failure retention and serialized operations passed")
+        AssetMockProtocol.configure { request in
+            if request.url!.path == "/api/v3/ticker/price" {
+                precondition(request.value(forHTTPHeaderField:"X-MBX-APIKEY") == nil,"public price requests never carry credentials")
+                return [["symbol":"BTCUSDT","price":"100000"],["symbol":"FOOBTC","price":"0.00002"],["symbol":"DEADUSDT","price":"0"]]
+            }
+            return [["walletName":"Spot","balance":"3.9","assetBalances":[
+                ["asset":"BTC","free":"0.000009","locked":"0","freeze":"0","withdrawing":"0"],
+                ["asset":"FOO","free":"1","locked":"0","freeze":"0","withdrawing":"0"],
+                ["asset":"USDT","free":"1","locked":"0","freeze":"0","withdrawing":"0"]
+            ]]]
+        }
+        let priced=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        precondition(priced.accounts[0].visibleAssets!.map(\.symbol) == ["FOO","USDT"],"filter dust by converted value rather than token quantity")
+        precondition(priced.accounts[0].visibleAssets![0].price == 2 && priced.accounts[0].visibleAssets![0].usdtValue == 2,"convert BTC quoted holdings to USDT")
+        precondition(priced.total == 3.9,"dust filtering preserves the exchange reported total")
+        AssetMockProtocol.configure { request in
+            switch request.url!.path {
+            case "/sapi/v1/equity/market/quote":
+                precondition(request.value(forHTTPHeaderField:"X-MBX-APIKEY") == binance.key)
+                let query=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
+                precondition(!query.contains { $0.name == "signature" },"stock market data needs the API key but no signature")
+                let ticker=query.first { $0.name == "symbol" }!.value!
+                if ticker == "EMPTY" { return Data() }
+                if ticker == "FAIL" { throw HakoError(message:"test quote unavailable") }
+                precondition(ticker == "AAPL","strip only EQ_ before requesting stock quotes")
+                return ["symbol":"AAPL","bidPrice":"180","askPrice":"182"]
+            case "/api/v3/ticker/price": return [["symbol":"USDCUSDT","price":"0.99"],["symbol":"EQ_AAPLUSDT","price":"9999"]]
+            default: return [["walletName":"Stock","balance":"1000","assetBalances":[
+                ["asset":"EQ_AAPL","free":"2","locked":"0","freeze":"0","withdrawing":"0"],
+                ["asset":"EQ_EMPTY","free":"1","locked":"0","freeze":"0","withdrawing":"0"],
+                ["asset":"EQ_FAIL","free":"1","locked":"0","freeze":"0","withdrawing":"0"]
+            ]]]
+            }
+        }
+        let stocks=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        let apple=stocks.accounts[0].assets!.first { $0.symbol == "EQ_AAPL" }!
+        precondition(apple.equityUSDPrice == 181 && abs(apple.usdtValue! - 358.38) < 0.00001,"stock midpoint is in USD; USDT uses the documented USDC proxy")
+        precondition(stocks.accounts[0].visibleAssets!.count == 3 && stocks.total == 1000,"empty or failed stock quotes never hide holdings or change exchange totals")
+        precondition(stocks.accounts[0].assets!.filter { $0.symbol != "EQ_AAPL" }.allSatisfy { $0.price == nil && $0.equityUSDPrice == nil })
+        let crossed=try CryptoClient.binanceEquityMidpoint(["bidPrice":"182","askPrice":"180"])
+        let zero=try CryptoClient.binanceEquityMidpoint(["bidPrice":"0","askPrice":"180"])
+        precondition(crossed == nil && zero == nil,"invalid or one-sided quotes do not invent a stock price")
+        let stockHandler=AssetMockProtocol.handler!
+        AssetMockProtocol.configure { request in
+            if request.url!.path == "/api/v3/ticker/price" { throw HakoError(message:"test conversion unavailable") }
+            return try stockHandler(request)
+        }
+        let unconverted=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        let usdOnly=unconverted.accounts[0].assets!.first { $0.equitySymbol == "AAPL" }!
+        precondition(usdOnly.equityUSDPrice == 181 && usdOnly.price == nil && usdOnly.isVisible,"missing USDT conversion preserves USD stock quotes without assuming USD equals USDT")
+        print("Crypto store: cache-first display, fresh cache persistence, single entry collection, cache-only sync, failure retention, Binance valuation and serialized operations passed")
     }
 }

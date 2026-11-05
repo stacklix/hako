@@ -10,7 +10,9 @@ struct CryptoView: View {
     @State private var days=30
     @State private var syncMessage:String?
     @State private var syncPhase = SyncPhase.idle
-    @State private var didCollect = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var collecting = true
+    @State private var collectionWindow: Date?
     private var latest: CryptoRecord? { store.portfolio.last }
     var body: some View {
         ScrollView {
@@ -21,6 +23,10 @@ struct CryptoView: View {
                     Label(message,systemImage:"exclamationmark.circle.fill")
                         .font(.caption).foregroundStyle(.red)
                         .textSelection(.enabled).accessibilityAddTraits(.updatesFrequently)
+                }
+                if !collecting && !store.busy && syncPhase != .failed, let message=store.message {
+                    Label("更新失败："+message,systemImage:"exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
                 if tab == .overview {
                     amountPanel("总资产",value:latest?.values["total"])
@@ -36,6 +42,8 @@ struct CryptoView: View {
                     CryptoTrend(title:"每日总资产",records:store.portfolio,keys:["total"],names:["总资产"],units:["USDT"])
                 } else if tab == .htx {
                     Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("合约收益").tag(true) }.pickerStyle(.segmented)
+                    Text("历史缺失权益按补录时的当前权益和价格填充，并非当日结算值；已有数据保留。")
+                        .font(.caption).foregroundStyle(.secondary)
                     if trends {
                         Picker("统计范围",selection:$days) {
                             Text("最近7天").tag(7)
@@ -97,7 +105,12 @@ struct CryptoView: View {
             NavigationLink { CryptoSettingsView() } label: { Image(systemName:"slider.horizontal.3") }
                 .accessibilityLabel("加密资产连接与地址设置")
         } }
-        .onAppear { store.loadCachedData() }
+        .onAppear { collecting=true;store.loadCachedData() }
+        .onChange(of:scenePhase) { _,phase in
+            if phase == .active && !collecting && collectionWindow != CryptoSyncPolicy.fundingRefreshWindow(now:.now) {
+                Task { await collect() }
+            }
+        }
         .sensoryFeedback(trigger:syncPhase) { _,phase in
             switch phase {
             case .succeeded: .success
@@ -113,18 +126,35 @@ struct CryptoView: View {
             syncPhase = .idle
         }
         .task {
-            guard !didCollect else { return }
-            didCollect=true
-            syncMessage=nil
-            await store.collect()
+            await collect()
+            // Check newly settled funding and completed days even while the page stays open.
+            while !Task.isCancelled {
+                do { try await Task.sleep(for:.seconds(60)) }
+                catch { return }
+                if scenePhase == .active && !collecting && collectionWindow != CryptoSyncPolicy.fundingRefreshWindow(now:.now) {
+                    await collect()
+                }
+            }
         }
+    }
+    @MainActor private func collect() async {
+        collecting=true;collectionWindow=CryptoSyncPolicy.fundingRefreshWindow(now:.now);syncMessage=nil
+        await store.collect()
+        collecting=false
     }
     private var header: some View {
         HStack(alignment:.center,spacing:12) {
             VStack(alignment:.leading,spacing:7) {
                 Text("加密资产").font(.system(size:28,weight:.semibold))
-                Text("\(store.pendingCount) 条待同步")
-                    .font(.caption).foregroundStyle(.secondary)
+                if collecting || (store.busy && syncPhase != .syncing) {
+                    HStack(spacing:6) {
+                        ProgressView().controlSize(.small)
+                        Text("更新中…")
+                    }.font(.caption).foregroundStyle(.secondary)
+                } else if store.pendingCount > 0 {
+                    Text("\(store.pendingCount) 条待同步")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength:0)
             Button {
@@ -149,6 +179,7 @@ struct CryptoView: View {
                 }.frame(minWidth:88)
             }
             .buttonStyle(HakoActionButtonStyle()).fixedSize(horizontal:true,vertical:false)
+            .disabled(collecting || (store.busy && syncPhase != .syncing))
             .allowsHitTesting(syncPhase != .syncing && syncPhase != .succeeded)
             .accessibilityLabel(syncPhase == .syncing ? "资产同步中" : syncPhase == .succeeded ? "资产已同步" : "同步资产")
             .accessibilityHint(syncPhase == .syncing ? "请等待同步完成" : syncPhase == .succeeded ? "同步已完成，按钮即将恢复" : "将本机缓存同步到 GitHub，不重新查询资产接口")
@@ -167,16 +198,13 @@ struct CryptoView: View {
             if let snapshot=store.binanceSnapshot {
                 Text("更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
                     .font(.caption).foregroundStyle(.secondary)
-                if snapshot.accounts.isEmpty {
+                if snapshot.visibleAccounts.isEmpty {
                     Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
                 }
-                ForEach(snapshot.accounts) { account in
+                ForEach(snapshot.visibleAccounts) { account in
                     VStack(alignment:.leading,spacing:12) {
                         metric(account.name,account.balance,"USDT")
-                        if let assets=account.assets {
-                            if assets.isEmpty {
-                                Text("暂无非零币种余额").font(.caption).foregroundStyle(.secondary)
-                            }
+                        if let assets=account.visibleAssets {
                             ForEach(assets) { asset in
                                 Divider()
                                 VStack(alignment:.leading,spacing:8) {
@@ -184,17 +212,19 @@ struct CryptoView: View {
                                     if asset.name != asset.symbol {
                                         Text(asset.name).font(.caption).foregroundStyle(.secondary)
                                     }
-                                    metric("持有数量",asset.quantity,asset.symbol,precision:8)
-                                    metric("可用",asset.free,asset.symbol,precision:8)
-                                    metric("锁定",asset.locked,asset.symbol,precision:8)
-                                    if asset.frozen != 0 { metric("冻结",asset.frozen,asset.symbol,precision:8) }
-                                    if asset.withdrawing != 0 { metric("提现中",asset.withdrawing,asset.symbol,precision:8) }
+                                    metric("持有金额",asset.quantity,asset.equitySymbol == nil ? asset.symbol : "股",precision:8)
+                                    metric("单价",asset.equitySymbol == nil ? asset.price : asset.equityUSDPrice,asset.equitySymbol == nil ? "USDT" : "USD",precision:8)
+                                    metric("折算 USDT",asset.usdtValue,"USDT")
                                 }.accessibilityElement(children:.combine)
                             }
                         } else {
                             Text("此账户暂未返回币种明细").font(.caption).foregroundStyle(.secondary)
                         }
                     }.cryptoPanel()
+                }
+                if snapshot.accounts.contains(where: { $0.assets?.contains(where: { $0.equitySymbol != nil }) == true }) {
+                    Text("股票单价采用买卖报价中间值；USDT 折值按 USDC/USDT 行情估算。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text(!store.binanceConfigured ? "请在右上角设置中配置 Binance 只读 API。" : store.busy ? "正在获取资产详情…" : "暂无资产详情，重新进入页面后将自动采集。")
@@ -206,7 +236,9 @@ struct CryptoView: View {
         VStack(alignment:.leading,spacing:16) {
             Text("今日合约 · TRX 币本位永续").font(.headline)
             metric("当前权益",store.currentContract?.trx,"TRX")
-            metric("USDT 折值",store.currentContract?.equity,"USDT")
+            metric("合约总权益",store.currentContract?.totalEquity,"USDT")
+            Text("合约总权益包含全部币本位合约；USD 估值按 USDT 等值记录。")
+                .font(.caption).foregroundStyle(.secondary)
             metric("TRX 价格",store.currentContract?.price,"USDT/TRX",precision:3)
             metric("今日资金费净收入",store.currentContract?.fundingTRX,"TRX")
             metric("今日资金费率合计",store.currentContract?.fundingRate.map { $0 * 100 },"%",precision:4)
@@ -263,7 +295,7 @@ struct CryptoView: View {
     private func contractChart(_ index:Int) -> some View {
         let titles=["TRX 与 USDT 总额","TRX 总额与 TRX 价格","USDT 总额与 TRX 价格","强平价格与 TRX 价格","每日资金费与费率","累计资金费用"]
         let keys=[["trx","usdt"],["trx","price"],["usdt","price"],["liquidation","price"],["funding_trx","rate_percent"],["cumulative"]]
-        let names=[["TRX 权益","USDT 折值"],["TRX 权益","TRX 价格"],["USDT 折值","TRX 价格"],["强平价","TRX 价格"],["资金费","资金费率总和"],["资金费累计"]]
+        let names=[["TRX 权益","合约总权益"],["TRX 权益","TRX 价格"],["合约总权益","TRX 价格"],["强平价","TRX 价格"],["资金费","资金费率总和"],["资金费累计"]]
         let units=[["TRX","USDT"],["TRX","USDT/TRX"],["USDT","USDT/TRX"],["USD/TRX","USDT/TRX"],["TRX","%"],["TRX"]]
         var sum=0.0
         let rows=store.contracts.map { r -> CryptoRecord in
@@ -452,7 +484,8 @@ struct CryptoTrend: View {
             }
             if let row = selectedRecord {
                 RuleMark(x: .value("日期", row.date))
-                    .foregroundStyle(HakoStyle.muted.opacity(0.3)).zIndex(-1)
+                    .foregroundStyle(HakoStyle.muted.opacity(0.65))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3])).zIndex(2)
             }
         }
         .chartForegroundStyleScale(domain: names, range: keys.indices.map { color($0) })
@@ -488,10 +521,17 @@ struct CryptoTrend: View {
                 }
             }
         }
+        .chartXSelection(value: Binding<Date?>(get: { selectedRecord?.date }, set: { date in
+            // Keep the chosen day and its values visible after lifting the finger.
+            guard let date else { return }
+            selectedDay = records.min {
+                abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+            }?.day
+        }))
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 Rectangle().fill(.clear).contentShape(Rectangle())
-                    .gesture(SpatialTapGesture().onEnded { event in
+                    .simultaneousGesture(SpatialTapGesture().onEnded { event in
                         guard let anchor = proxy.plotFrame else { return }
                         let frame = geometry[anchor]
                         guard frame.contains(event.location),
@@ -506,7 +546,7 @@ struct CryptoTrend: View {
         }
         .frame(height: dynamicTypeSize.isAccessibilitySize ? 230 : 160)
         .accessibilityLabel(title + "，" + zip(names, units).map { $0 + "，单位" + $1 }.joined(separator: "；"))
-        .accessibilityHint("点击图表，在下方查看当日各项数据，再次点击可收起。")
+        .accessibilityHint("点击或左右拖动图表竖线，在下方查看所选日期的各项数据，松手后保留选择，再次点击可收起。")
     }
 
     private func selectionDetails(_ row: CryptoRecord) -> some View {

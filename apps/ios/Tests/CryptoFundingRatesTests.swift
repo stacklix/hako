@@ -12,8 +12,11 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
         do {
             Self.lock.lock();let block=Self.handler!;Self.lock.unlock()
             let (status,object)=try block(request)
-            client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
-            client?.urlProtocol(self,didLoad:try JSONSerialization.data(withJSONObject:object))
+            client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:nil,headerFields:["X-Request-ID":"visible-response-trace","Set-Cookie":"session=private-response-cookie; Path=/"])!,cacheStoragePolicy:.notAllowed)
+            let data:Data
+            if let body=object as? Data { data=body }
+            else { data=try JSONSerialization.data(withJSONObject:object) }
+            client?.urlProtocol(self,didLoad:data)
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self,didFailWithError:error) }
     }
@@ -36,7 +39,11 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
         let fixture=try JSONSerialization.jsonObject(with:Data(contentsOf:fixtureURL))
         let config=URLSessionConfiguration.ephemeral;config.protocolClasses=[FundingMockProtocol.self]
         let session=URLSession(configuration:config);defer { session.invalidateAndCancel() }
-        let client=CryptoClient(session:session)
+        let logDirectory=FileManager.default.temporaryDirectory.appendingPathComponent("hako-crypto-logs-"+UUID().uuidString)
+        let logFile=logDirectory.appendingPathComponent("events.json")
+        let logs=HakoLogStore(fileURL:logFile)
+        defer { logs.flush();try? FileManager.default.removeItem(at:logDirectory) }
+        let client=CryptoClient(session:session,logStore:logs)
         let calendar=CryptoDay.calendar
         let start=calendar.date(from:DateComponents(year:2026,month:11,day:3))!
         let end=calendar.date(byAdding:.day,value:1,to:start)!
@@ -72,55 +79,14 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
             catch { precondition(error.localizedDescription.contains(expected),error.localizedDescription) }
         }
 
-        // Exercise the daily contract collector, with no historical backfill entry point.
-        let settlement=startMS+16*3_600_000
+        // A missing fee rate must remain independent of all equity sources.
         FundingMockProtocol.respond { request in
-            let path=request.url!.path
-            switch path {
-            case "/swap-api/v1/swap_user_settlement_records":
-                return (200,["data":["total_page":1,"settlement_records":[["settlement_time":settlement,"margin_balance":100]]]])
-            case "/swap-api/v3/swap_financial_record": return (200,["code":200,"data":[]])
-            case "/swap-api/v1/swap_historical_funding_rate": return (200,fixture)
-            case "/market/history/kline": return (200,["data":[["id":settlement/1000-60,"close":0.3]]])
-            case "/swap-api/v1/swap_account_info": return (200,["data":[["contract_code":"TRX-USD","liquidation_price":0.4]]])
-            default: fatalError("Unexpected endpoint: \(path)")
-            }
-        }
-        let contract=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:end,scope:String(repeating:"a",count:64))
-        check(contract.day == "2026-11-03" && contract.values["trx"] == 100,"daily collection still records yesterday's equity")
-        check(abs(contract.values["funding_rate"]! - 0.0003) < 1e-12 && contract.values["funding_trx"] == 0,"daily collection handles missing realized rate without changing actual funding cash flow")
-        FundingMockProtocol.respond { request in
-            precondition(request.url!.path == "/swap-api/v1/swap_historical_funding_rate","a missing rate must not query unrelated contract endpoints")
+            precondition(request.url!.path == "/swap-api/v1/swap_historical_funding_rate")
             return (200,fixture)
         }
         let rateOnly=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:end,scope:"",day:start,fields:["funding_rate"])
-        check(rateOnly.values.count == 1 && abs(rateOnly.values["funding_rate"]! - 0.0003) < 1e-12,"rate-only collection succeeds independently of other contract APIs")
-        let weekEnd=calendar.date(byAdding:.day,value:7,to:start)!
-        var historicalRequests=0
-        FundingMockProtocol.respond { request in
-            switch request.url!.path {
-            case "/swap-api/v1/swap_user_settlement_records":
-                return (200,["data":["total_page":1,"settlement_records":[["settlement_time":settlement,"margin_balance":100]]]])
-            case "/swap-api/v3/swap_financial_record": return (200,["code":200,"data":[]])
-            case "/swap-api/v1/swap_historical_funding_rate": return (200,fixture)
-            case "/api/v3/klines":
-                historicalRequests+=1
-                let q=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
-                check(q.first{$0.name=="endTime"}!.value == String(Int64(settlement-1)),"bounded historical minute request")
-                check(request.value(forHTTPHeaderField:"X-MBX-APIKEY") == nil,"no account credentials sent for public history")
-                return (200,[[settlement-60_000,"0","0","0","0.31","0",settlement-1],
-                             [settlement,"0","0","0","999","0",settlement+59_999]])
-            case "/swap-api/v1/swap_account_info": return (200,["data":[["contract_code":"TRX-USD","liquidation_price":0.4]]])
-            default: fatalError("Old day must request time-bounded public history: \(request.url!)")
-            }
-        }
-        let week=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:weekEnd,scope:"",day:start)
-        check(week.day == "2026-11-03" && week.values["price"] == 0.31 && historicalRequests == 1,"oldest allowed day uses completed historical minute, never future candle")
-        FundingMockProtocol.respond { _ in fatalError("Out-of-window date must not call an API") }
-        for invalid in [calendar.date(byAdding:.day,value:-1,to:start)!,weekEnd] {
-            do { _ = try await client.contract(CryptoCredential(key:"test",secret:"test"),now:weekEnd,scope:"",day:invalid);fatalError("out-of-window collection accepted") } catch {}
-        }
-        // Today's funding uses only midnight-to-sample cash flow and settled rates.
+        check(rateOnly.record.values.count == 1 && rateOnly.errors.isEmpty,"rate-only retry never queries current equity")
+
         let sample=start.addingTimeInterval(12*3600)
         let credential=CryptoCredential(key:"test",secret:"test")
         func body(_ request: URLRequest) throws -> [String:Any] {
@@ -145,6 +111,7 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
                 case "/swap-api/v1/swap_account_info":
                     return (200,["data":[["contract_code":"TRX-USD","margin_balance":100,"liquidation_price":0.1]]])
                 case "/market/detail/merged": return (200,["tick":["close":0.3]])
+                case "/swap-api/v1/swap_balance_valuation": return (200,["data":[["valuation_asset":"USDT","balance":30]]])
                 case "/swap-api/v1/swap_historical_funding_rate":
                     if mode == "failed" { return (503,[:]) }
                     return (200,["data":["total_page":1,"data":mode == "empty" ? [] : [row(-8,"100"),midnight,morning,afternoon]]])
@@ -179,6 +146,171 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
                 check(snapshot.fundingTRX == nil && snapshot.fundingRate == nil,"failed funding requests never become zero")
             }
         }
-        print("Crypto funding: real API fixture, fallback, zero/negative rates, pagination, missing data, diagnostics, seven-day bounds and historical minute pricing passed")
+        // Reentering refreshes realtime balances, but funding is cached independently per settlement.
+        var moment=sample,feeCalls=0,rateCalls=0,accountCalls=0
+        var delayLatest=false,failFee=false
+        FundingMockProtocol.respond { request in
+            let dayStart=calendar.startOfDay(for:moment)
+            switch request.url!.path {
+            case "/swap-api/v1/swap_account_info":
+                accountCalls+=1
+                return (200,["data":[["contract_code":"TRX-USD","margin_balance":100+accountCalls]]])
+            case "/market/detail/merged": return (200,["tick":["close":0.3]])
+                case "/swap-api/v1/swap_balance_valuation": return (200,["data":[["valuation_asset":"USDT","balance":30]]])
+            case "/swap-api/v3/swap_financial_record":
+                feeCalls+=1
+                return failFee ? (503,[:]) : (200,["code":200,"data":[]])
+            case "/swap-api/v1/swap_historical_funding_rate":
+                rateCalls+=1
+                let latest=CryptoSyncPolicy.fundingSettlement(now:moment)
+                let rows=[0,8,16].compactMap { hour -> [String:Any]? in
+                    let time=dayStart.addingTimeInterval(Double(hour)*3600)
+                    guard time < moment, !delayLatest || time != latest else { return nil }
+                    return ["contract_code":"TRX-USD","funding_time":time.timeIntervalSince1970*1000,"funding_rate":"0.0001"]
+                }
+                return (200,["data":["total_page":1,"data":rows]])
+            default: fatalError("Unexpected funding cache endpoint")
+            }
+        }
+        var cached=try await client.currentContract(credential,scope:"test",now:moment)
+        check(feeCalls == 1 && rateCalls == 1 && cached.fundingTRX == 0,"initial funding observation, including a real zero")
+        moment=sample.addingTimeInterval(60)
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 1 && rateCalls == 1 && accountCalls == 2 && cached.trx == 102,"reentry reuses funding while refreshing account equity")
+        moment=start.addingTimeInterval(16*3600+30);delayLatest=true
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 2 && rateCalls == 2 && cached.fundingRate == nil && cached.fundingRateUpdatedAt == nil,"an unpublished latest settlement must not cache an incomplete daily rate")
+        moment=moment.addingTimeInterval(30);delayLatest=false
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 2 && rateCalls == 3 && cached.fundingRate != nil,"retry only the unavailable rate, keep successful fee cache")
+        moment=start.addingTimeInterval(16*3600+120)
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 3 && rateCalls == 4,"refresh provisional settlement data once after posting grace")
+        cached=try JSONDecoder().decode(CryptoCurrentContract.self,from:JSONEncoder().encode(cached))
+        moment=moment.addingTimeInterval(60)
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 3 && rateCalls == 4,"success timestamps survive disk serialization and avoid another query")
+        moment=end.addingTimeInterval(180)
+        cached=try await client.currentContract(credential,scope:"test",now:moment,cached:cached)
+        check(feeCalls == 4 && rateCalls == 5 && cached.fundingRate == 0.0001,"midnight requests fresh daily totals instead of reusing yesterday")
+        failFee=true
+        cached=try await client.currentContract(credential,scope:"changed-account",now:moment,cached:cached)
+        check(feeCalls == 5 && rateCalls == 6 && cached.fundingTRX == nil && cached.fundingTRXUpdatedAt == nil,"account changes invalidate caches; failed fees have no success timestamp")
+        failFee=false
+        cached=try await client.currentContract(credential,scope:"changed-account",now:moment,cached:cached)
+        check(feeCalls == 6 && rateCalls == 6 && cached.fundingTRX == 0,"retry failed fees without requerying valid rates")
+        var legacyCache=try JSONSerialization.jsonObject(with:JSONEncoder().encode(cached)) as! [String:Any]
+        legacyCache.removeValue(forKey:"fundingTRXUpdatedAt");legacyCache.removeValue(forKey:"fundingRateUpdatedAt")
+        cached=try JSONDecoder().decode(CryptoCurrentContract.self,from:JSONSerialization.data(withJSONObject:legacyCache))
+        check(cached.fundingTRXUpdatedAt == nil && cached.fundingRateUpdatedAt == nil,"old caches with funding values but no success timestamps remain readable")
+        _ = try await client.currentContract(credential,scope:"changed-account",now:moment,cached:cached)
+        check(feeCalls == 7 && rateCalls == 7,"legacy funding values receive one fresh observation before being reused")
+        let privateKey="private-log-api-key",privateSecret="private-log-api-secret"
+        let privateHeader="private-log-header",privateBody="private-log-body",privateResponse="private-log-balance"
+        let bodyToken="private-body-token",responseToken="private-response-token",bearer="private-bearer-token"
+        var requestSignatures=[String]()
+        logs.clear()
+        FundingMockProtocol.respond { request in
+            if let signature=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "Signature"})?.value { requestSignatures.append(signature) }
+            return (200,["status":"ok","balance":privateResponse,"access_token":responseToken,
+                         "nested":[["refresh_token":bodyToken,"echo":privateKey]],
+                         "authorization":"Bearer "+bearer,"debug":bearer+" private-response-cookie",
+                         "tokens":[["symbol":"TRX","balance":"123.45"]]])
+        }
+        _ = try await client.htx("api.hbdm.com","/swap-api/v1/swap_account_info",credential:CryptoCredential(key:privateKey,secret:privateSecret),body:["test":privateBody,"contract_code":"TRX-USD","start_time":startMS,"nested":["api_secret":privateSecret,"refresh_token":bodyToken]])
+        let address="0x"+String(repeating:"1",count:40)
+        var privateRequest=URLRequest(url:URL(string:"https://deep-index.moralis.io/api/v2.2/wallets/"+address+"/tokens?apiKey="+privateKey)!)
+        privateRequest.setValue(privateHeader,forHTTPHeaderField:"X-API-Key")
+        privateRequest.setValue("Bearer "+bearer,forHTTPHeaderField:"Authorization")
+        privateRequest.httpBody=Data(privateBody.utf8)
+        _ = try await client.json(privateRequest)
+        let networkLogs=logs.snapshot().entries
+        check(networkLogs.count == 4 && networkLogs.allSatisfy{$0.source == .crypto},"record request starts and completions under the Crypto source")
+        check(networkLogs.contains{$0.message.contains("swap_account_info") && $0.detail.contains("HTTP 状态：200") && $0.detail.contains("耗时：")},"request logs identify endpoint, HTTP result and elapsed time")
+        let safeText=networkLogs.map(\.text).joined(separator:"\n")
+        for secret in [privateKey,privateSecret,privateHeader,bodyToken,responseToken,bearer,"private-response-cookie"]+requestSignatures {
+            check(!safeText.contains(secret),"redact credential fields and their echoes before writing complete HTTP logs")
+        }
+        check(!networkLogs[0].detail.contains(bearer),"redact bearer token echoes in response bodies")
+        check(safeText.contains(privateBody) && safeText.contains(privateResponse) && safeText.contains(address),"retain permitted request/response business data instead of dropping entire bodies")
+        check(safeText.contains("start_time") && safeText.contains("TRX-USD") && safeText.contains("123.45") && safeText.contains("visible-response-trace"),"retain query fields, timestamps, token holdings and non-secret response headers")
+        FundingMockProtocol.respond { _ in (503,["error":privateResponse]) }
+        do { _ = try await client.json(privateRequest);fatalError("Expected HTTP failure") } catch {}
+        check(logs.snapshot().entries.first?.level == .error && logs.snapshot().entries.first?.detail.contains("HTTP 状态：503") == true && logs.snapshot().entries.first?.detail.contains(privateResponse) == true,"HTTP failures retain their complete redacted response body")
+        FundingMockProtocol.respond { _ in (200,["status":"error","err_code":1016,"err_msg":privateResponse]) }
+        do { _ = try await client.json(privateRequest);fatalError("Expected HTX rejection") } catch {}
+        check(logs.snapshot().entries.first?.detail.contains("1016") == true && logs.snapshot().entries.first?.level == .error,"log API rejection codes even for HTTP 200")
+        let rawToken="unlisted-raw-token",longBody=String(repeating:"business-data ",count:1000)+"RESPONSE-END"
+        FundingMockProtocol.respond { _ in (503,Data(("refresh_token="+rawToken+"\n"+longBody).utf8)) }
+        do { _ = try await client.json(privateRequest);fatalError("Expected plaintext failure") } catch {}
+        check(logs.snapshot().entries.first?.detail.contains("RESPONSE-END") == true && logs.snapshot().entries.first?.detail.contains(rawToken) == false,"keep full non-JSON error bodies while removing credential key/value pairs")
+        FundingMockProtocol.respond { _ in (503,[:]) }
+        _ = try await client.contract(credential,now:end,scope:"",day:start,fields:["trx"])
+        check(logs.snapshot().entries.contains { $0.level == .error && $0.message.contains("当前权益补录") },"backfill failure remains visible")
+        logs.flush()
+        let restoredLogs=HakoLogStore(fileURL:logFile).snapshot().entries
+        check(restoredLogs.contains{$0.source == .crypto && $0.message.contains("当前权益补录")},"backfill failure survives log persistence")
+        check(restoredLogs.map(\.text).joined().contains(privateResponse),"full response data survives persistence")
+        for secret in [privateKey,privateSecret,privateHeader,bodyToken,responseToken,bearer,rawToken,"private-response-cookie"]+requestSignatures {
+            check(!restoredLogs.map(\.text).joined().contains(secret),"persisted HTTP logs contain no known credentials")
+        }
+        let weeklyEnd=calendar.date(byAdding:.day,value:7,to:start)!
+        let weeklyEndMS=weeklyEnd.timeIntervalSince1970*1000
+        var feeWindows=Set<Double>()
+        let current=CryptoCurrentContract(sampledAt:weeklyEnd,scope:"",trx:100,price:0.3,available:nil,unrealizedProfit:nil,liquidation:0.4,fundingTRX:nil,fundingRate:nil)
+        FundingMockProtocol.respond { request in
+            let params=try body(request)
+            let from=(params["start_time"] as! NSNumber).doubleValue,to=(params["end_time"] as! NSNumber).doubleValue
+            switch request.url!.path {
+            case "/swap-api/v3/swap_financial_record":
+                check(to-from < 48*3_600_000 && from >= startMS && to < weeklyEndMS,"financial chunks stay within 48 hours and seven completed days")
+                feeWindows.insert(from)
+                if from == startMS+2*86_400_000 { return (503,[:]) }
+                if params["from_id"] != nil { return (200,["code":200,"data":[]]) }
+                return (200,["code":200,"data":[
+                    ["contract_code":"TRX-USD","ts":from,"type":30,"id":"income","query_id":1,"amount":"2"],
+                    ["contract_code":"TRX-USD","ts":to,"type":31,"id":"expense","query_id":2,"amount":"0.5"]
+                ]])
+            default: fatalError("Batch preparation must query only missing source types")
+            }
+        }
+        let weeklyRequests:[(day:Date,fields:Set<String>)]=[
+            (start,["trx","funding_trx"]),
+            (calendar.date(byAdding:.day,value:6,to:start)!,["trx","funding_trx"])
+        ]
+        let batch=try await client.contractHistory(CryptoCredential(key:"test",secret:"test"),now:weeklyEnd,requests:weeklyRequests,current:.success(current))
+        check(feeWindows.count == 4,"reuse the current snapshot; only four financial windows cover seven days")
+        FundingMockProtocol.respond { _ in fatalError("Daily consumers must reuse shared batch results") }
+        let firstDay=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:weeklyEnd,scope:"",day:start,fields:["trx","funding_trx"],history:batch)
+        let lastDay=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:weeklyEnd,scope:"",day:weeklyRequests[1].day,fields:["trx","funding_trx"],history:batch)
+        check(firstDay.record.values["trx"] == 100 && firstDay.record.values["funding_trx"] == 2,"group settlement and fee records by Shanghai day")
+        check(lastDay.record.values["trx"] == 100 && lastDay.record.values["funding_trx"] == 1.5,"last window covers exactly one day and sums signed fees")
+        let failedDay=calendar.date(byAdding:.day,value:2,to:start)!
+        let partial=try await client.contract(CryptoCredential(key:"test",secret:"test"),now:weeklyEnd,scope:"",day:failedDay,fields:["trx","funding_trx"],history:batch)
+        check(partial.record.values["trx"] == 100 && partial.record.values["funding_trx"] == nil && partial.errors.count == 1,"failed financial chunk cannot erase independently acquired settlements")
+        let backfilled=try await client.contract(credential,now:weeklyEnd,scope:"",day:start,fields:["trx","price","equity"],history:batch)
+        check(backfilled.record.values["equity"] == 30 && backfilled.record.values["price"] == 0.3 && backfilled.record.sampledAt == weeklyEnd.timeIntervalSince1970,"current snapshot fills historical fields with actual collection time")
+        let failed=CryptoContractHistory(current:.failure(HakoError(message:"current unavailable")))
+        let missing=try await client.contract(credential,now:weeklyEnd,scope:"",day:start,fields:["trx","price","equity"],history:failed)
+        check(missing.record.values.isEmpty && missing.errors.count == 1,"never fall back to stale equity on a fresh request failure")
+        _ = try await client.contractHistory(CryptoCredential(key:"test",secret:"test"),now:weeklyEnd,requests:[])
+        var valuations=[String]()
+        FundingMockProtocol.respond { request in
+            check(request.url!.path == "/swap-api/v1/swap_balance_valuation","total equity is queried directly, not calculated from TRX")
+            let asset=try body(request)["valuation_asset"] as! String
+            valuations.append(asset)
+            if asset == "USDT" { return (200,["status":"error","err_code":1067]) }
+            return (200,["status":"ok","data":[["valuation_asset":"USD","balance":"999.5"]]])
+        }
+        let valuation=try await client.contractTotalEquity(credential)
+        check(valuation == 999.5 && valuations == ["USDT","USD"],"match storage valuation preference and USD fallback")
+        var totalSnapshot=current;totalSnapshot.totalEquity=999.5
+        let shared=CryptoContractHistory(current:.success(totalSnapshot))
+        FundingMockProtocol.respond { _ in fatalError("Backfill must reuse the successful current snapshot") }
+        let totalBackfill=try await client.contract(credential,now:weeklyEnd,scope:"",day:start,fields:["equity","trx"],history:shared)
+        check(totalBackfill.record.values["equity"] == 999.5 && totalBackfill.record.values["trx"] == 100,"contract total valuation is independent of TRX holdings and price")
+        let restored=try JSONDecoder().decode(CryptoCurrentContract.self,from:JSONEncoder().encode(totalSnapshot))
+        check(restored.equity == 999.5,"total valuation survives cache persistence")
+        print("Crypto funding: weekly range batching, 48-hour chunks, partial failures, full redacted HTTP logging, current equity backfill passed")
     }
 }

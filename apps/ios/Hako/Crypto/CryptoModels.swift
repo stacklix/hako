@@ -7,8 +7,21 @@ struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
     var locked: Double
     var frozen: Double
     var withdrawing: Double
+    var unitPrice: Double? = nil
+    var equityUSDPrice: Double? = nil
+    var equitySymbol: String? {
+        let code=symbol.uppercased()
+        return code.hasPrefix("EQ_") && code.count > 3 ? String(code.dropFirst(3)) : nil
+    }
     var id: String { symbol }
     var quantity: Double { free + locked + frozen + withdrawing }
+    var price: Double? { symbol == "USDT" ? 1 : unitPrice }
+    var usdtValue: Double? {
+        guard let price, price.isFinite, price > 0 else { return nil }
+        let value=quantity * price
+        return value.isFinite ? value : nil
+    }
+    var isVisible: Bool { quantity != 0 && (usdtValue.map { abs($0) >= 1 } ?? true) }
 }
 
 struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
@@ -16,6 +29,8 @@ struct CryptoBinanceAccount: Codable, Identifiable, Equatable {
     var balance: Double
     var assets: [CryptoBinanceAsset]?
     var id: String { name }
+    var visibleAssets: [CryptoBinanceAsset]? { assets.map { $0.filter(\.isVisible) } }
+    var isVisible: Bool { visibleAssets.map { !$0.isEmpty } ?? (balance != 0) }
 }
 
 struct CryptoBinanceSnapshot: Codable, Equatable {
@@ -23,6 +38,7 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
     var sampledAt: Date
     var accounts: [CryptoBinanceAccount]
     var total: Double { accounts.reduce(0) { $0 + $1.balance } }
+    var visibleAccounts: [CryptoBinanceAccount] { accounts.filter(\.isVisible) }
 }
 
 struct CryptoWalletAsset: Codable, Identifiable, Equatable {
@@ -84,7 +100,21 @@ enum CryptoSyncPolicy {
         let today=CryptoDay.calendar.startOfDay(for:now)
         return (1...7).map { CryptoDay.calendar.date(byAdding:.day,value:-$0,to:today)! }
     }
-
+    static func fundingSettlement(now: Date) -> Date {
+        let calendar=CryptoDay.calendar
+        let hour=calendar.component(.hour,from:now) / 8 * 8
+        return calendar.date(byAdding:.hour,value:hour,to:calendar.startOfDay(for:now))!
+    }
+    static func fundingRefreshWindow(now: Date) -> Date {
+        let settlement=fundingSettlement(now:now)
+        // A query during settlement can precede posting. Recheck once after a short grace period.
+        let posted=settlement.addingTimeInterval(120)
+        return now < posted ? settlement : posted
+    }
+    static func canReuseFunding(updatedAt: Date?, now: Date) -> Bool {
+        guard let updatedAt else { return false }
+        return updatedAt <= now && updatedAt >= fundingRefreshWindow(now:now)
+    }
 }
 
 // A current account snapshot is local-only and never a historical settlement row.
@@ -98,7 +128,10 @@ struct CryptoCurrentContract: Codable, Equatable {
     var liquidation: Double?
     var fundingTRX: Double?
     var fundingRate: Double?
-    var equity: Double { trx * price }
+    var fundingTRXUpdatedAt: Date? = nil
+    var fundingRateUpdatedAt: Date? = nil
+    var totalEquity: Double? = nil
+    var equity: Double { totalEquity ?? trx * price }
 }
 
 struct CryptoRecord: Codable, Identifiable, Equatable {

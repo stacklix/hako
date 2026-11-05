@@ -1,7 +1,7 @@
 import Foundation
 
 enum HakoLogSource: String, Codable, CaseIterable, Sendable {
-    case hako = "Hako", cloudServers = "云服务器", containers = "容器管理", devices = "设备监控", usage = "使用时间", qinglong = "青龙", headplane = "组网管理"
+    case hako = "Hako", cloudServers = "云服务器", containers = "容器管理", devices = "设备监控", usage = "使用时间", qinglong = "青龙", headplane = "组网管理", crypto = "加密资产"
 }
 
 enum HakoLogLevel: String, Codable, CaseIterable, Sendable {

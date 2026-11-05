@@ -71,7 +71,7 @@ private final class TronMockProtocol: URLProtocol, @unchecked Sendable {
         config.protocolClasses = [TronMockProtocol.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let client = CryptoClient(session: session)
+        let client = CryptoClient(session: session, logStore: HakoLogStore(fileURL:nil))
         let owned = account
         TronMockProtocol.respond { request in
             let url = request.url!

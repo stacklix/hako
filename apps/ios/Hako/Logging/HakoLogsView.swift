@@ -26,7 +26,7 @@ struct HakoLogsView: View {
                     Text("全部").tag(Optional<HakoLogLevel>.none)
                     ForEach(HakoLogLevel.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
                 }
-            } footer: { Text("仅保存在本机，保留最近 \(HakoLogStore.capacity) 条。连接凭据已隐藏，不记录请求正文和终端输入输出。") }
+            } footer: { Text("仅保存在本机，保留最近 \(HakoLogStore.capacity) 条。接口请求及响应仅在脱敏后记录，不记录终端输入输出。") }
             if let storageIssue { Section { Text(storageIssue).foregroundStyle(.orange).font(.footnote) } }
             Section("\(filtered.count) 条日志 · 最新在前") {
                 if filtered.isEmpty {

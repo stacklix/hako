@@ -10,14 +10,16 @@ import Combine
     private let loadCredential: (String) throws -> CryptoCredential
     private let loadWallets: () throws -> [CryptoWallet]
     private let cacheDirectory: URL
+    private let nowProvider: () -> Date
 
     init(repositoryProvider: @escaping () -> any GitHubRepositoryAccess = AppServices.privateGitHub,
          client: CryptoClient = CryptoClient(),
          loadCredential: @escaping (String) throws -> CryptoCredential = CryptoCredential.load,
          loadWallets: @escaping () throws -> [CryptoWallet] = CryptoWallet.load,
-         cacheDirectory: URL = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]) {
+         cacheDirectory: URL = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0],
+         nowProvider: @escaping () -> Date = { .now }) {
         self.repositoryProvider=repositoryProvider;self.client=client
-        self.loadCredential=loadCredential;self.loadWallets=loadWallets;self.cacheDirectory=cacheDirectory
+        self.loadCredential=loadCredential;self.loadWallets=loadWallets;self.cacheDirectory=cacheDirectory;self.nowProvider=nowProvider
     }
 
     // Restore synchronously before the view starts its one collection per entry.
@@ -114,7 +116,13 @@ import Combine
         try persist(value)
     }
     private func refresh(sync: Bool) async {
-        busy=true;message=nil;defer { busy=false }
+        busy=true;message=nil
+        let operation=sync ? "资产同步" : "资产更新"
+        client.logStore.append(source:.crypto,level:.info,message:operation+"开始")
+        defer {
+            client.logStore.append(source:.crypto,level:message == nil ? .info : .error,message:operation+(message == nil ? "完成" : "出现错误"),detail:message ?? "",fullDetail:true)
+            busy=false
+        }
         do {
             let repository=repositoryProvider()
             try restoreLocalData(repository)
@@ -126,7 +134,7 @@ import Combine
                 try await synchronize(repository)
                 return
             }
-            let now=Date.now
+            let now=nowProvider()
             // Inspect local records first. Network requests are derived only from this missing-data plan.
             let contractRequests: [(day:Date,fields:Set<String>)] = htx.configured
                 ? CryptoSyncPolicy.recentContractDays(now:now).compactMap { day in
@@ -135,13 +143,15 @@ import Combine
                     return fields.isEmpty ? nil : (day,fields)
                 } : []
             var totals:[String:Double]=[:]
+            var currentResult:Result<CryptoCurrentContract,Error>?
             if htx.configured {
                 do { totals["htx"]=try await client.htxTotal(htx) } catch { errors.append("HTX 总资产："+error.localizedDescription) }
                 do {
-                    let current=try await client.currentContract(htx,scope:contractScope)
+                    let current=try await client.currentContract(htx,scope:contractScope,now:now,cached:cache.currentContract)
+                    currentResult = .success(current)
                     var value=cache;value.currentContract=current
                     try persist(value)
-                } catch { errors.append("今日 TRX 合约："+error.localizedDescription) }
+                } catch { currentResult = .failure(error);errors.append("今日 TRX 合约："+error.localizedDescription) }
             }
             if binance.configured {
                 binanceError=nil
@@ -179,8 +189,13 @@ import Combine
                 totals["total"]=totals.values.reduce(0,+)
                 try saveAcquired(CryptoRecord(kind:"portfolio",day:CryptoDay.key(now),sampledAt:now.timeIntervalSince1970,scope:scope,values:totals))
             }
+            let history=try await client.contractHistory(htx,now:now,requests:contractRequests,current:currentResult)
             for request in contractRequests {
-                do { try saveAcquired(await client.contract(htx,now:now,scope:contractScope,day:request.day,fields:request.fields)) }
+                do {
+                    let result=try await client.contract(htx,now:now,scope:contractScope,day:request.day,fields:request.fields,history:history)
+                    if !result.record.values.isEmpty { try saveAcquired(result.record) }
+                    errors += result.errors.map { CryptoDay.key(request.day)+" TRX 合约 · "+$0 }
+                }
                 catch { errors.append(CryptoDay.key(request.day)+" TRX 合约："+error.localizedDescription) }
             }
             if !htx.configured && !binance.configured && wallets.isEmpty { errors.append("尚未配置资产来源，请先设置交易所 API 或观察地址。") }
