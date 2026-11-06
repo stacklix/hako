@@ -12,7 +12,7 @@ Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子�
 
 ### 自动发布镜像到 GHCR
 
-GitHub Actions 工作流 [Server Docker](../../.github/workflows/server-docker.yml) 自动构建 Linux amd64 镜像并发布到 `ghcr.io/stacklix/hako-server`，使用自带的 `GITHUB_TOKEN` 和仅授予发布任务的 `packages: write` 权限，无需另配仓库密码或 PAT。发布结果取代原来的镜像压缩包构建产物。
+GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服务端测试，并在 `master` 推送服务端或工作流改动、推送标签或手动运行时，将 Linux amd64 镜像发布到 `ghcr.io/stacklix/hako-server`。服务端 PR 运行测试。镜像发布任务使用自带的 `GITHUB_TOKEN` 和独立授予的 `packages: write` 权限。
 
 - `master`：在 `apps/server/` 或镜像工作流有变更时发布，对比本次推送前后的提交，镜像带有 `latest`、`master` 和 `sha-<短提交号>` 标签。仅修改 iOS、Windows 或仓库级文档时跳过。
 - tag：推送任意 tag 都发布，不过滤路径，镜像带有对应 tag 和 `sha-<短提交号>` 标签。tag 名中的 `/` 等字符由 Docker metadata action 转换为合法镜像标签字符。

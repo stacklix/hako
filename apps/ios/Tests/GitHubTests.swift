@@ -281,8 +281,13 @@ final class MockProtocol: URLProtocol {
                     "status": "in_progress", "updated_at": "2026-10-22T08:30:00Z"]]])
             }
             precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/123/attempts/2/jobs")
-            return try json(["jobs": [["id": 456, "name": "build", "status": "in_progress",
-                "steps": [["name": "Archive and export signed IPA", "status": "in_progress"]]]]])
+            return try json(["jobs": [
+                ["id": 455, "name": "snapshot", "status": "completed", "conclusion": "success"],
+                ["id": 456, "name": "build", "status": "in_progress",
+                 "steps": [["name": "Archive and export signed IPA", "status": "in_progress"]]],
+                ["id": 457, "name": "test", "status": "in_progress"],
+                ["id": 458, "name": "deploy", "status": "queued"]
+            ]])
         }
         let progress = try await builds.latest()
         precondition(calls == 2 && progress?.run.runNumber == 42)
@@ -297,27 +302,14 @@ final class MockProtocol: URLProtocol {
                                            status: "completed", conclusion: conclusion, updatedAt: .now)
             precondition(run.refreshInterval == 30)
         }
-        precondition(progress?.jobs.first?.activeStep == "Archive and export signed IPA")
+        precondition(progress?.jobs.map(\.name) == ["snapshot", "build", "test", "deploy"])
+        precondition(progress?.jobs.first { $0.name == "build" }?.activeStep == "Archive and export signed IPA")
         precondition(BuildStatusClient.statusText("completed", conclusion: "failure") == "失败")
         precondition(BuildStatusClient.statusText("completed", conclusion: "cancelled") == "已取消")
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try json(["workflow_runs": []]) }
         let emptyBuild = try await builds.latest()
         precondition(emptyBuild == nil && calls == 1)
-        calls = 0
-        MockProtocol.handler = { req in
-            calls += 1
-            if calls == 1 {
-                precondition(req.url!.path == "/repos/stacklix/hako/actions/workflows/ios-tests.yml/runs")
-                precondition(req.url!.query == "branch=master&per_page=1")
-                return try json(["workflow_runs": [["id": 789, "run_number": 5, "run_attempt": 1,
-                    "status": "completed", "conclusion": "success", "updated_at": "2026-10-22T08:30:00Z"]]])
-            }
-            precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/789/attempts/1/jobs")
-            return try json(["jobs": [["id": 987, "name": "test", "status": "completed", "conclusion": "success"]]])
-        }
-        let testProgress = try await builds.latest(workflow: .tests)
-        precondition(calls == 2 && testProgress?.run.runNumber == 5 && testProgress?.jobs.first?.name == "test")
         for status in [401, 403, 404, 429, 500] {
             MockProtocol.handler = { _ in (status, Data()) }
             do { _ = try await builds.latest(); fatalError("Accepted failed build status request") }

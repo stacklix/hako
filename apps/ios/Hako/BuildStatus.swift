@@ -5,12 +5,7 @@ struct BuildStatusClient {
     var session: URLSession = HTTPTransport.shared
     let token: String
 
-    enum Workflow: String, CaseIterable {
-        case package = "ios.yml"
-        case tests = "ios-tests.yml"
-
-        var title: String { self == .package ? "打包" : "测试" }
-    }
+    static let workflowFile = "ios.yml"
 
     struct Run: Decodable {
         let id: Int
@@ -72,10 +67,10 @@ struct BuildStatusClient {
         return try decoder.decode(type, from: data)
     }
 
-    func latest(workflow: Workflow = .package) async throws -> Snapshot? {
+    func latest() async throws -> Snapshot? {
         struct Runs: Decodable { let workflowRuns: [Run] }
         struct Jobs: Decodable { let jobs: [Job] }
-        let result = try await get("actions/workflows/\(workflow.rawValue)/runs?branch=master&per_page=1", as: Runs.self)
+        let result = try await get("actions/workflows/\(Self.workflowFile)/runs?branch=master&per_page=1", as: Runs.self)
         guard let run = result.workflowRuns.first else { return nil }
         // Pin jobs to this attempt so a rerun never mixes old and new steps.
         let jobs = try await get("actions/runs/\(run.id)/attempts/\(run.runAttempt)/jobs?per_page=100", as: Jobs.self)
@@ -108,7 +103,6 @@ struct BuildStatusClient {
 struct GitHubBuildStatusRows: View {
     let isSettingsVisible: Bool
     @Environment(\.scenePhase) private var scenePhase
-    @State private var workflow: BuildStatusClient.Workflow = .package
     @State private var snapshot: BuildStatusClient.Snapshot?
     @State private var errorMessage: String?
     @State private var loadingRequest: UUID?
@@ -117,39 +111,10 @@ struct GitHubBuildStatusRows: View {
     @State private var checkedAt: Date?
 
     private var loading: Bool { loadingRequest != nil }
-    private var workflowSelection: Binding<BuildStatusClient.Workflow> {
-        Binding(get: { workflow }, set: { selection in
-            guard selection != workflow else { return }
-            workflow = selection
-            snapshot = nil
-            errorMessage = nil
-            loadingRequest = nil
-            loaded = false
-            checkedAt = nil
-        })
-    }
-
     var body: some View {
         Group {
-            Picker("Action", selection: workflowSelection) {
-                ForEach(BuildStatusClient.Workflow.allCases, id: \.self) { option in
-                    Text(option.title).tag(option)
-                }
-            }
-            .pickerStyle(.menu)
-            .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(workflow.rawValue)") { [workflow] in
-                guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
-                repeat {
-                    await refresh(workflow)
-                    guard !Task.isCancelled else { return }
-                    // Back off after errors instead of repeatedly hitting a rate limit.
-                    let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
-                    do { try await Task.sleep(for: .seconds(interval)) }
-                    catch { return }
-                } while !Task.isCancelled
-            }
             if let snapshot {
-                LabeledContent("\(workflow.title) #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
+                LabeledContent("iOS #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
                 ForEach(snapshot.jobs) { job in
                     VStack(alignment: .leading, spacing: 4) {
                         LabeledContent(jobTitle(job.name),
@@ -160,9 +125,9 @@ struct GitHubBuildStatusRows: View {
                     }
                 }
             } else if !loaded {
-                ProgressView("读取\(workflow.title)进度…")
+                ProgressView("读取 iOS 构建进度…")
             } else if errorMessage == nil {
-                Text("暂无\(workflow.title)记录").foregroundStyle(.secondary)
+                Text("暂无 iOS 构建记录").foregroundStyle(.secondary)
             }
             if let errorMessage {
                 Text(errorMessage).font(.footnote).foregroundStyle(.secondary)
@@ -176,9 +141,20 @@ struct GitHubBuildStatusRows: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)") {
+                guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
+                repeat {
+                    await refresh()
+                    guard !Task.isCancelled else { return }
+                    // Back off after errors instead of repeatedly hitting a rate limit.
+                    let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
+                    do { try await Task.sleep(for: .seconds(interval)) }
+                    catch { return }
+                } while !Task.isCancelled
+            }
             Link("在 GitHub 查看", destination: URL(string: snapshot.map {
                 "https://github.com/stacklix/hako/actions/runs/\($0.run.id)"
-            } ?? "https://github.com/stacklix/hako/actions/workflows/\(workflow.rawValue)")!)
+            } ?? "https://github.com/stacklix/hako/actions/workflows/\(BuildStatusClient.workflowFile)")!)
         }
     }
 
@@ -186,14 +162,14 @@ struct GitHubBuildStatusRows: View {
         switch name {
         case "build": "打包"
         case "deploy": "发布下载页面"
-        case "snapshot" where workflow == .tests: "Linux 测试"
-        case "test" where workflow == .tests: "macOS 测试"
+        case "snapshot": "Linux 测试"
+        case "test": "macOS 测试"
         default: name
         }
     }
 
-    @MainActor private func refresh(_ selection: BuildStatusClient.Workflow) async {
-        guard selection == workflow, !Task.isCancelled else { return }
+    @MainActor private func refresh() async {
+        guard !Task.isCancelled else { return }
         let request = UUID()
         loadingRequest = request
         defer {
@@ -201,7 +177,7 @@ struct GitHubBuildStatusRows: View {
         }
         do {
             let token = try TokenStore.read()
-            let latest = try await BuildStatusClient(token: token).latest(workflow: selection)
+            let latest = try await BuildStatusClient(token: token).latest()
             try Task.checkCancellation()
             guard loadingRequest == request else { return }
             snapshot = latest

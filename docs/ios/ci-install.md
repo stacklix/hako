@@ -1,6 +1,6 @@
 # 自动打包与网页安装
 
-仅当默认分支推送包含 `apps/ios/` 目录下的文件变化时，自动编译 Release、导出已签名 IPA，并更新 GitHub Pages 安装页。也可从 Actions 手动运行。非默认分支不会发布。工作流使用 macos-26 的默认 Xcode，要求 Xcode 26.4 或更新。
+`Hako iOS` 工作流在推送 `apps/ios/` 或 `.github/workflows/ios.yml` 改动时触发，也可从 Actions 手动运行。Linux 测试在各分支运行，默认分支额外运行 macOS 测试，并构建 Release、导出已签名 IPA 和发布 GitHub Pages 安装页。工作流使用 macos-26 的默认 Xcode，要求 Xcode 26.4 或更新。
 
 iOS 工程位于 `apps/ios/`，本页的本地命令均从该目录执行。在仓库根目录先运行 `cd apps/ios`。应用说明见 [iOS README](../../apps/ios/README.md)。
 
@@ -20,7 +20,7 @@ iOS 工程位于 `apps/ios/`，本页的本地命令均从该目录执行。在�
 本地可用 `base64 -i /path/to/certificate.p12 | pbcopy` 和 `base64 -i /path/to/profile.mobileprovision | pbcopy` 复制对应内容，直接粘贴到 GitHub Secret。不要提交证书、私钥或描述文件。无需额外填写 Team ID，脚本从描述文件读取，并覆盖项目中的本地签名设置。
 
 5. 仓库 Settings → Pages → Build and deployment → Source 选择 **GitHub Actions**。确认当前 GitHub 套餐支持该仓库使用 Pages。
-6. 推送默认分支，或 Actions → Build and install Hako → Run workflow。完成后，进入 `github-pages` 环境中的 URL，在 iPhone Safari 打开，点击「安装 Hako」。标准地址通常是 `https://用户名.github.io/仓库名/`；自定义域名也支持，地址由 Pages 自动传入。
+6. 推送默认分支，或 Actions → Hako iOS → Run workflow。完成后，进入 `github-pages` 环境中的 URL，在 iPhone Safari 打开，点击「安装 Hako」。标准地址通常是 `https://用户名.github.io/仓库名/`；自定义域名也支持，地址由 Pages 自动传入。
 
 ## 行为与限制
 
