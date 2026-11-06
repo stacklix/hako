@@ -4,6 +4,9 @@ import Charts
 struct ECSNetworkSections: View {
     let snapshot: ECSSnapshot?
     let monitor: [ECSMonitorPoint]
+    @Binding var monitorRange: ECSMonitorRange
+    let monitorLoading: Bool
+    let monitorError: String?
     let onSelectConnection: (ECSConnectionDirection, ECSSnapshot) -> Void
     @State private var listenersExpanded = false
 
@@ -90,7 +93,13 @@ struct ECSNetworkSections: View {
     }
 
     private var trend: some View {
-        Section("实例内网 · 最近 1 小时") {
+        let end = ECSMonitorRange.minuteBoundary()
+        return Section("实例内网") {
+            Picker("时间范围", selection: $monitorRange) {
+                ForEach(ECSMonitorRange.allCases, id: \.self) { range in
+                    Text("最近 \(range.rawValue) 小时").tag(range)
+                }
+            }.pickerStyle(.menu)
             Chart {
                 ForEach(monitor) { point in
                     if let value = point.receiveBytesPerSecond {
@@ -102,8 +111,16 @@ struct ECSNetworkSections: View {
                             .foregroundStyle(by: .value("方向", "上行"))
                     }
                 }
-            }.chartYAxisLabel("KiB/s").frame(height: 175)
-                .overlay { if monitor.isEmpty { Text("—").foregroundStyle(.secondary) } }
+            }
+            .chartXScale(domain: end.addingTimeInterval(-monitorRange.duration)...end)
+            .chartYAxisLabel("KiB/s").frame(height: 175)
+            .overlay {
+                if monitorLoading { ProgressView("正在读取监控数据…") }
+                else if monitor.isEmpty { Text("—").foregroundStyle(.secondary) }
+            }
+            if let monitorError {
+                Label(monitorError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+            }
             if let last = monitor.last {
                 Text("监控时间：\(last.time.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption).foregroundStyle(.secondary)

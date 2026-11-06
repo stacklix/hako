@@ -6,6 +6,7 @@ struct QinglongRecordDetail: View {
     @State private var editing = false
     @State private var logging = false
     @State private var action: String?
+    @State private var didDelete = false
     @State private var taskAction: QinglongTaskAction?
     @State private var requestedEnabled: Bool?
     @State private var updatingEnabled = false
@@ -64,8 +65,10 @@ struct QinglongRecordDetail: View {
         .qinglongTaskAction(store: store, request: $taskAction)
         .sheet(isPresented: $editing) { QinglongRecordEditor(store: store, resource: item.resource, item: current) }
         .sheet(isPresented: $logging) { QinglongExecutionLog(store: store, item: current) }
-        .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
-            if let action { QinglongActionSheet(store: store, item: current, action: action, completed: { if action == "delete" { dismiss() } }) }
+        .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } }), onDismiss: {
+            if didDelete { dismiss() }
+        }) {
+            if let action { QinglongActionSheet(store: store, item: current, action: action, completed: { didDelete = true }) }
         }
         .onAppear { visible = true }.onDisappear { visible = false }
         .onChange(of: current.disabled) { _, _ in if !updatingEnabled { enableError = nil } }
@@ -146,6 +149,7 @@ struct QinglongRecordEditor: View {
         _persistedItem = State(initialValue: item)
     }
     @State private var action: String?
+    @State private var didDelete = false
     var body: some View {
         Group {
             if resource == .tasks { QinglongTaskEditor(store: store, item: item) }
@@ -173,8 +177,10 @@ struct QinglongRecordEditor: View {
                     .listRowBackground(Color.clear).listRowSeparator(.hidden).disabled(store.busy)
             }
         }
-        .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } })) {
-            if let item = persistedItem, let action { QinglongActionSheet(store: store, item: item, action: action, completed: { if action == "delete" { dismiss() } }) }
+        .sheet(isPresented: Binding(get: { action != nil }, set: { if !$0 { action = nil } }), onDismiss: {
+            if didDelete { dismiss() }
+        }) {
+            if let item = persistedItem, let action { QinglongActionSheet(store: store, item: item, action: action, completed: { didDelete = action == "delete" }) }
         }
     }
     private func field(_ title: String, _ key: String, secure: Bool = false) -> some View {
@@ -275,12 +281,11 @@ private struct QinglongTaskEditor: View {
             Button("继续编辑", role: .cancel) {}
             Button("放弃修改", role: .destructive) { dismiss() }
         } message: { Text("当前修改尚未保存。") }
-        .confirmationDialog("删除任务？此操作无法撤销。", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除任务", role: .destructive) {
-                Task {
-                    guard !connectionChanged, !store.busy, let saved = persistedItem else { return }
-                    if await store.delete(saved) { dismiss() } else { error = store.message }
-                }
+        .hakoDeleteConfirmation(Text("删除任务？"), isPresented: $deleting, message: Text("此操作无法撤销。"),
+                                confirmTitle: Text("删除任务"), disabled: connectionChanged || store.busy) {
+            Task {
+                guard !connectionChanged, !store.busy, let saved = persistedItem else { return }
+                if await store.delete(saved) { dismiss() } else { error = store.message }
             }
         }
     }

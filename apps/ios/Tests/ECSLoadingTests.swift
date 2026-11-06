@@ -14,8 +14,8 @@ private actor ECSMockReader: ECSReading {
         calls.append("instance")
         return ECSInstance(name: "test", status: "Running", os: "Linux", address: "10.0.0.1", cpu: 2, memoryMiB: 4096)
     }
-    func monitor() async throws -> [ECSMonitorPoint] {
-        calls.append("monitor")
+    func monitor(range: ECSMonitorRange) async throws -> [ECSMonitorPoint] {
+        calls.append(range == .hour ? "monitor" : "monitor-\(range.rawValue)")
         if delay { try await Task.sleep(for: .milliseconds(100)) }
         return []
     }
@@ -101,6 +101,11 @@ private actor ECSMockReader: ECSReading {
         await background.refreshAll(includeOverview: false)
         let backgroundCalls = await backgroundReader.calls
         precondition(Set(backgroundCalls) == ["instance", "monitor", "network", "processes"])
+        await background.refreshMonitorHistory(.day)
+        await background.refreshMonitorHistory(.hour)
+        let historyCalls = await backgroundReader.calls
+        precondition(historyCalls.dropFirst(backgroundCalls.count).elementsEqual(["monitor-24"]))
+        precondition(background.monitorHistory[.day]?.points?.isEmpty == true && background.monitorHistory[.hour] == nil)
 
         let preloadReader = ECSMockReader(holdOnce: ["overview"], delay: true)
         let preloaded = ECSStore(connection: connection, clientFactory: { _ in preloadReader })

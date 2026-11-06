@@ -106,12 +106,12 @@ struct QinglongFileEditor: View {
             if creating { loadedRevision = store.revision }
             else if loadedRevision == nil { await load() }
         }
-        .confirmationDialog("删除「\(item.title)」？此操作无法撤销。", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除脚本", role: .destructive) {
-                Task {
-                    guard openedRevision == store.revision else { error = "连接已改变，请重新打开文件。"; return }
-                    if await store.delete(item) { dismiss() }
-                }
+        .hakoDeleteConfirmation(Text("删除「\(item.title)」？"), isPresented: $deleting,
+                                message: Text("此操作无法撤销。"), confirmTitle: Text("删除脚本"),
+                                disabled: store.busy || openedRevision != store.revision) {
+            Task {
+                guard openedRevision == store.revision else { error = "连接已改变，请重新打开文件。"; return }
+                if await store.delete(item) { dismiss() }
             }
         }
         .alert("当前文件有未保存的修改", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), presenting: pending) { action in

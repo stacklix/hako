@@ -107,10 +107,10 @@ struct QinglongScriptBrowser: View {
             Button("取消", role: .cancel) { renameItem = nil }
             Button("保存") { rename() }.disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
         } message: { Text("名称") }
-        .confirmationDialog(deleteItem?.isDirectory == true ? "删除文件夹及其中的全部内容？" : "删除此脚本？", isPresented: $showDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive, action: remove)
-            Button("取消", role: .cancel) { deleteItem = nil }
-        } message: { Text(deleteItem?.filePath ?? "") }
+        .hakoDeleteConfirmation(deleteItem?.isDirectory == true ? Text("删除文件夹及其中的全部内容？") : Text("删除此脚本？"),
+                                isPresented: $showDelete, message: deleteItem.map { Text($0.filePath) },
+                                confirmTitle: Text("删除"), disabled: store.busy,
+                                onDismiss: { deleteItem = nil }, confirm: remove)
         .alert("操作未完成", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("好", role: .cancel) {} } message: { Text(error ?? "") }
     }
     private var searchField: some View {

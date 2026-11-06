@@ -83,6 +83,7 @@ import Combine
         guard htxConfigured, let snapshot = cache.htxSnapshot, snapshot.scope == htxScope else { return nil }
         return snapshot
     }
+    var htxDetailsNeedRetry: Bool { htxSnapshot?.errors.isEmpty == false }
     var binanceSnapshot: CryptoBinanceSnapshot? {
         guard binanceConfigured, let snapshot=cache.binanceSnapshot, snapshot.scope == binanceScope else { return nil }
         return snapshot
@@ -271,7 +272,7 @@ import Combine
     private func refreshHTXDetails(_ credential: CryptoCredential, now: Date, force: Bool) async throws {
         guard credential.configured else { return }
         let previous = htxSnapshot
-        guard force || previous?.balanceVersion != CryptoHTXSnapshot.currentBalanceVersion ||
+        guard force || htxDetailsNeedRetry || previous?.balanceVersion != CryptoHTXSnapshot.currentBalanceVersion ||
                 !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
         let snapshot = try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous)
         var value = cache

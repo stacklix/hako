@@ -336,6 +336,11 @@ struct DeviceMetricsView: View {
                 networkContent(metrics)
             }
             .devicePagePanel()
+            VStack(alignment: .leading, spacing: 12) {
+                Text("磁盘监控").font(.subheadline.weight(.semibold))
+                diskContent(metrics)
+            }
+            .devicePagePanel()
             Text(metrics.map { "\(sampleTime($0.sampledAt)) 采样 · 窗口 \($0.sampleWindowMs) ms" } ?? "尚无采样信息")
                 .font(.caption2).foregroundStyle(.secondary)
             if entry?.result != nil && metrics == nil && entry?.error == nil && entry?.version == 1 {
@@ -370,17 +375,55 @@ struct DeviceMetricsView: View {
         }
     }
     @ViewBuilder private func networkRates(_ network: ConsoleNetworkMetrics) -> some View {
-        networkRate("下行", symbol: "arrow.down", value: network.downloadBytesPerSecond)
-        networkRate("上行", symbol: "arrow.up", value: network.uploadBytesPerSecond)
+        dataRate("下行", symbol: "arrow.down", value: network.downloadBytesPerSecond)
+        dataRate("上行", symbol: "arrow.up", value: network.uploadBytesPerSecond)
     }
-    private func networkRate(_ title: String, symbol: String, value: Double?) -> some View {
+    @ViewBuilder private func diskContent(_ metrics: ConsoleMetrics?) -> some View {
+        if let disk = metrics?.disk, disk.isValid {
+            if disk.volumes.isEmpty {
+                Text("磁盘容量暂不可用。").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(disk.volumes) { volume in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(volume.name).font(.subheadline.weight(.medium))
+                        Spacer()
+                        Text(String(format: "%.1f%%", volume.usagePercent)).font(.subheadline.monospacedDigit())
+                    }
+                    ProgressView(value: volume.usagePercent, total: 100)
+                        .tint(.orange).accessibilityHidden(true)
+                    Text(String(format: "已用 %.1f / %.1f GiB", Double(volume.usedBytes) / 1_073_741_824,
+                                Double(volume.totalBytes) / 1_073_741_824))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Divider()
+            if disk.readBytesPerSecond != nil || disk.writeBytesPerSecond != nil {
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top, spacing: 18))
+                layout {
+                    dataRate("读取", symbol: "arrow.down", value: disk.readBytesPerSecond)
+                    dataRate("写入", symbol: "arrow.up", value: disk.writeBytesPerSecond)
+                }
+                Text("物理磁盘合计").font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("磁盘读写速度暂不可用。").font(.footnote).foregroundStyle(.secondary)
+            }
+        } else {
+            Text(metrics == nil ? "等待磁盘采样数据" : metrics?.diskReported == true ? "设备返回的磁盘数据格式无效。" : "更新 Windows Agent 后可查看磁盘监控。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+    private func dataRate(_ title: String, symbol: String, value: Double?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: symbol).font(.caption).foregroundStyle(.secondary)
-            Text(value.map(formatNetworkRate) ?? "—").font(.title3.weight(.semibold)).monospacedDigit()
+            Text(value.map(formatByteRate) ?? "—").font(.title3.weight(.semibold)).monospacedDigit()
                 .fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
     }
-    private func formatNetworkRate(_ bytes: Double) -> String {
+    private func formatByteRate(_ bytes: Double) -> String {
         let units = ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
         var value = bytes
         var index = 0

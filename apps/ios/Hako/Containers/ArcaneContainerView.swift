@@ -19,6 +19,7 @@ struct ArcaneContainerView: View {
     @State private var tab = "overview"
     @State private var revision = UUID()
     @State private var confirming: ArcaneAction?
+    @State private var confirmingDeletion = false
     @State private var confirmingImageUpdate = false
     @State private var exportedLog: URL?
     @State private var exporting = false
@@ -145,7 +146,7 @@ struct ArcaneContainerView: View {
                     .disabled(!canAct || details.redeployDisabled == true)
                     .arcaneRowSeparators()
                     .listRowSeparator(.visible, edges: .bottom)
-                    Button(role: .destructive) { confirming = .delete } label: {
+                    Button(role: .destructive) { confirmingDeletion = true } label: {
                         Label("删除容器", systemImage: "trash")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -231,7 +232,7 @@ struct ArcaneContainerView: View {
         }
         .alert(confirming?.confirmationTitle ?? "确认容器操作", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), presenting: confirming) { action in
             if let details {
-                Button(action.title, role: action == .delete || action == .stop ? .destructive : nil) {
+                Button(action.title, role: action == .stop ? .destructive : nil) {
                     store.start(action, container: details, environment: environment)
                     confirming = nil
                 }
@@ -239,6 +240,12 @@ struct ArcaneContainerView: View {
             Button("取消", role: .cancel) { confirming = nil }
         } message: { action in
             Text(verbatim: confirmationMessage(action))
+        }
+        .hakoDeleteConfirmation(Text(ArcaneAction.delete.confirmationTitle), isPresented: $confirmingDeletion,
+                                message: Text(verbatim: confirmationMessage(.delete)),
+                                confirmTitle: Text(ArcaneAction.delete.title), disabled: !canAct) {
+            guard canAct, let details else { return }
+            store.start(.delete, container: details, environment: environment)
         }
         .onAppear { visible = true }
         .onDisappear { visible = false; removeExport() }

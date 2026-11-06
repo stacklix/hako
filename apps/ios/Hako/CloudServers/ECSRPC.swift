@@ -117,19 +117,28 @@ final class ECSClient: @unchecked Sendable {
             cpu: (item["Cpu"] as? NSNumber)?.intValue, memoryMiB: (item["Memory"] as? NSNumber)?.intValue)
     }
 
-    func monitor() async throws -> [ECSMonitorPoint] {
+    func monitor(range: ECSMonitorRange) async throws -> [ECSMonitorPoint] {
         let formatter = ISO8601DateFormatter()
-        let end = Date(timeIntervalSince1970: floor(Date.now.timeIntervalSince1970 / 60) * 60)
-        let object = try await call("DescribeInstanceMonitorData", ["InstanceId": connection.instanceID,
-            "StartTime": formatter.string(from: end.addingTimeInterval(-3600)), "EndTime": formatter.string(from: end), "Period": "60"])
-        let items = (object["MonitorData"] as? [String: Any])?["InstanceMonitorData"] as? [[String: Any]] ?? []
-        return items.compactMap { item in
-            guard let text = item["TimeStamp"] as? String, let date = formatter.date(from: text) else { return nil }
-            func number(_ key: String) -> Double? { (item[key] as? NSNumber)?.doubleValue }
-            // RX/TX are kbits per period, not bytes/s. Preserve absent values.
-            return ECSMonitorPoint(time: date, cpu: number("CPU"), receiveBytesPerSecond: number("IntranetRX").map { $0 * 1000 / 8 / 60 },
-                sendBytesPerSecond: number("IntranetTX").map { $0 * 1000 / 8 / 60 }, readBytesPerSecond: number("BPSRead"), writeBytesPerSecond: number("BPSWrite"))
-        }.sorted { $0.time < $1.time }
+        let end = ECSMonitorRange.minuteBoundary()
+        let period = ECSMonitorRange.period
+        var points: [ECSMonitorPoint] = []
+        for window in range.queryWindows(endingAt: end) {
+            try Task.checkCancellation()
+            let object = try await call("DescribeInstanceMonitorData", ["InstanceId": connection.instanceID,
+                "StartTime": formatter.string(from: window.start), "EndTime": formatter.string(from: window.end),
+                "Period": String(period)])
+            let items = (object["MonitorData"] as? [String: Any])?["InstanceMonitorData"] as? [[String: Any]] ?? []
+            for item in items {
+                guard let text = item["TimeStamp"] as? String, let date = formatter.date(from: text) else { continue }
+                func number(_ key: String) -> Double? { (item[key] as? NSNumber)?.doubleValue }
+                // RX/TX report kbits per period. Preserve absent values.
+                points.append(ECSMonitorPoint(time: date, cpu: number("CPU"),
+                    receiveBytesPerSecond: number("IntranetRX").map { $0 * 1000 / 8 / Double(period) },
+                    sendBytesPerSecond: number("IntranetTX").map { $0 * 1000 / 8 / Double(period) },
+                    readBytesPerSecond: number("BPSRead"), writeBytesPerSecond: number("BPSWrite")))
+            }
+        }
+        return range.merge([], with: points, endingAt: end)
     }
 
     func snapshot(mode: String, pid: Int? = nil) async throws -> ECSSnapshot {

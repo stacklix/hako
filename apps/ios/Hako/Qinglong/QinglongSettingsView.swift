@@ -106,8 +106,9 @@ struct QinglongConnectionEditor: View {
         }
         .disabled(testing || store.busy)
         .onChange(of: draft) { _, _ in testResult = nil; error = nil }
-        .confirmationDialog("删除此连接？", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除", role: .destructive) { do { try store.remove(draft.id); dismiss() } catch { self.error = error.localizedDescription } }
+        .hakoDeleteConfirmation(Text("删除此连接？"), isPresented: $deleting, confirmTitle: Text("删除"),
+                                disabled: testing || store.busy) {
+            do { try store.remove(draft.id); dismiss() } catch { self.error = error.localizedDescription }
         }
     }
     private func save() {

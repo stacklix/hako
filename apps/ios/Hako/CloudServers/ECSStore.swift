@@ -5,15 +5,21 @@ enum ECSPage: String, CaseIterable { case overview = "概览", network = "网络
 
 protocol ECSReading: Sendable {
     func instance() async throws -> ECSInstance
-    func monitor() async throws -> [ECSMonitorPoint]
+    func monitor(range: ECSMonitorRange) async throws -> [ECSMonitorPoint]
     func snapshot(mode: String, pid: Int?) async throws -> ECSSnapshot
 }
 extension ECSClient: ECSReading { }
+
+struct ECSMonitorHistory {
+    var points: [ECSMonitorPoint]?
+    var error: String?
+}
 
 @MainActor final class ECSStore: ObservableObject {
     @Published private(set) var connection: ECSConnection?
     @Published private(set) var instance: ECSInstance?
     @Published private(set) var monitor: [ECSMonitorPoint] = []
+    @Published private(set) var monitorHistory: [ECSMonitorRange: ECSMonitorHistory] = [:]
     @Published private(set) var overview: ECSSnapshot?
     @Published private(set) var network: ECSSnapshot?
     @Published private(set) var processes: ECSSnapshot?
@@ -43,7 +49,7 @@ extension ECSClient: ECSReading { }
         let value = try value.validated()
         try ECSKeychain.save(value)
         requests.values.forEach { $0.cancel() }; requests = [:]; requestIDs = [:]; issues = [:]
-        revision = UUID(); connection = value; instance = nil; monitor = []
+        revision = UUID(); connection = value; instance = nil; monitor = []; monitorHistory = [:]
         overview = nil; network = nil; processes = nil; busy = false; error = nil; loaded = true
     }
     func refreshAll(includeOverview: Bool = true) async {
@@ -69,6 +75,11 @@ extension ECSClient: ECSReading { }
         }
     }
 
+    func refreshMonitorHistory(_ range: ECSMonitorRange) async {
+        guard range != .hour, let connection else { return }
+        await refreshResource("monitor", connection: connection, monitorRange: range)
+    }
+
     private func refreshResources(_ resources: [String]) async {
         guard !Task.isCancelled else { return }
         load()
@@ -80,21 +91,22 @@ extension ECSClient: ECSReading { }
         }
     }
 
-    private func refreshResource(_ resource: String, connection: ECSConnection) async {
+    private func refreshResource(_ resource: String, connection: ECSConnection, monitorRange: ECSMonitorRange = .hour) async {
         guard !Task.isCancelled else { return }
+        let key = monitorRange == .hour ? resource : "monitor-\(monitorRange.rawValue)"
         let task: Task<Void, Never>
-        if let current = requests[resource], !current.isCancelled {
+        if let current = requests[key], !current.isCancelled {
             task = current
         } else {
-            let previous = requests[resource]
+            let previous = requests[key]
             let id = UUID(), ticket = revision
-            requestIDs[resource] = id; busy = true
+            requestIDs[key] = id; busy = true
             task = Task { [weak self] in
                 await previous?.value
                 guard let self else { return }
                 defer {
-                    if self.requestIDs[resource] == id {
-                        self.requests[resource] = nil; self.requestIDs[resource] = nil
+                    if self.requestIDs[key] == id {
+                        self.requests[key] = nil; self.requestIDs[key] = nil
                         self.busy = !self.requests.isEmpty
                     }
                 }
@@ -108,9 +120,9 @@ extension ECSClient: ECSReading { }
                         try Task.checkCancellation(); guard self.revision == ticket else { return }
                         self.instance = value
                     case "monitor":
-                        let value = try await client.monitor()
+                        let value = try await client.monitor(range: monitorRange)
                         try Task.checkCancellation(); guard self.revision == ticket else { return }
-                        self.monitor = value
+                        self.updateMonitor(value, range: monitorRange)
                     default:
                         let value = try await client.snapshot(mode: resource, pid: nil)
                         try Task.checkCancellation(); guard self.revision == ticket else { return }
@@ -122,17 +134,34 @@ extension ECSClient: ECSReading { }
                         }
                         issue = value.socketError
                     }
-                    self.issues[resource] = issue
+                    if monitorRange == .hour { self.issues[resource] = issue }
                 } catch is CancellationError { return }
                 catch {
                     guard self.revision == ticket, !Task.isCancelled else { return }
+                    if monitorRange != .hour {
+                        self.monitorHistory[monitorRange, default: ECSMonitorHistory()].error = error.localizedDescription
+                        return
+                    }
                     self.issues[resource] = error.localizedDescription
                 }
                 self.error = self.issues.isEmpty ? nil : Set(self.issues.values).sorted().joined(separator: "\n")
             }
-            requests[resource] = task
+            requests[key] = task
         }
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func updateMonitor(_ points: [ECSMonitorPoint], range: ECSMonitorRange) {
+        let end = ECSMonitorRange.minuteBoundary()
+        if range == .hour {
+            monitor = points
+            for range in Array(monitorHistory.keys) {
+                guard let history = monitorHistory[range]?.points else { continue }
+                monitorHistory[range]?.points = range.merge(history, with: points, endingAt: end)
+            }
+        } else {
+            monitorHistory[range] = ECSMonitorHistory(points: range.merge(points, with: monitor, endingAt: end))
+        }
     }
 }
 

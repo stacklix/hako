@@ -323,7 +323,7 @@ private struct DeviceGitRepositoryView: View {
         catch { self.error = error.localizedDescription; return }
         guard checkRemote, !Task.isCancelled, context == client.requestContext else { return }
         remoteWarning = nil
-        guard snapshot?.pullSource != nil, supports(DeviceGitCommand.remote) else { return }
+        guard snapshot?.pullSource != nil, snapshot?.remoteCheckFresh != true, supports(DeviceGitCommand.remote) else { return }
         checkingRemote = true
         do {
             let initial = try await client.invokeAgent(agent, method: DeviceGitCommand.remote, version: 1,

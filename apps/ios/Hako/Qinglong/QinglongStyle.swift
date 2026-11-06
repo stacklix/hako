@@ -188,24 +188,37 @@ struct QinglongActionSheet: View {
     @State private var revision: UUID?
     @State private var error: String?
     var title: String {
-        switch action { case "run": return item.resource == .subscriptions ? "拉取订阅" : "运行任务"; case "stop": return "停止任务"; case "delete": return "确认删除"; case "disable": return "禁用"; default: return "启用" }
+        switch action { case "run": return item.resource == .subscriptions ? "拉取订阅" : "运行任务"; case "stop": return "停止任务"; case "disable": return "禁用"; default: return "启用" }
     }
     var body: some View {
-        QinglongSheet(title, disabled: store.busy) {
-            Text("\(title)「\(item.title)」？").font(.subheadline)
-            if action == "delete" { Text("此操作无法撤销。").font(.footnote).foregroundStyle(.secondary) }
-            if item.resource == .tasks, action == "run" { Text(item.raw["command"].text).qinglongCode() }
-            if let error { QinglongNotice(text: error, error: true) }
-            Button(store.busy ? "正在处理…" : action == "delete" ? "确认删除" : title) {
-                Task {
-                    guard revision == store.revision else { error = "连接已改变，请关闭后重新打开。"; return }
-                    let succeeded: Bool
-                    if action == "delete" { succeeded = await store.delete(item) }
-                    else { succeeded = await store.perform(item.resource, success: "请求已提交，请查看状态和日志确认执行结果。") { try await $0.action(action, item: item) } }
-                    if succeeded { dismiss(); completed?() } else { error = store.message }
+        Group {
+            if action == "delete" {
+                HakoDeleteConfirmation(title: Text("删除「\(item.title)」？"), message: Text("此操作无法撤销。"),
+                                       confirmTitle: Text("确认删除"), busy: store.busy, confirm: perform)
+                    .alert("无法删除", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                        Button("好", role: .cancel) { error = nil }
+                    } message: { Text(error ?? "") }
+            } else {
+                QinglongSheet(title, disabled: store.busy) {
+                    Text("\(title)「\(item.title)」？").font(.subheadline)
+                    if item.resource == .tasks, action == "run" { Text(item.raw["command"].text).qinglongCode() }
+                    if let error { QinglongNotice(text: error, error: true) }
+                    Button(store.busy ? "正在处理…" : title, action: perform)
+                        .buttonStyle(QinglongPrimaryButtonStyle()).disabled(store.busy)
+                    Button("取消") { dismiss() }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy)
                 }
-            }.buttonStyle(QinglongPrimaryButtonStyle()).disabled(store.busy)
-            Button("取消") { dismiss() }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy)
-        }.onAppear { if revision == nil { revision = store.revision } }
+            }
+        }
+        .onAppear { if revision == nil { revision = store.revision } }
+    }
+
+    private func perform() {
+        Task {
+            guard revision == store.revision else { error = "连接已改变，请关闭后重新打开。"; return }
+            let succeeded: Bool
+            if action == "delete" { succeeded = await store.delete(item) }
+            else { succeeded = await store.perform(item.resource, success: "请求已提交，请查看状态和日志确认执行结果。") { try await $0.action(action, item: item) } }
+            if succeeded { completed?(); dismiss() } else { error = store.message }
+        }
     }
 }

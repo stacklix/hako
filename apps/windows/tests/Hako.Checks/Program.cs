@@ -104,6 +104,11 @@ internal static class Program
             if (metrics.Network is null || (metrics.Network.Available &&
                 (metrics.Network.DownloadBytesPerSecond is not >= 0 || metrics.Network.UploadBytesPerSecond is not >= 0)))
                 throw new Exception("Network metrics were not included in the system query");
+            if (metrics.Disk is not { } disk || disk.Volumes.Any(volume => volume.TotalBytes == 0 || volume.UsedBytes > volume.TotalBytes) ||
+                (disk.ReadBytesPerSecond is double read && (!double.IsFinite(read) || read < 0)) ||
+                (disk.WriteBytesPerSecond is double write && (!double.IsFinite(write) || write < 0)))
+                throw new Exception("Disk metrics are missing or invalid");
+            Console.WriteLine($"PASS: real disk sample, volumes={disk.Volumes.Length}, read B/s={disk.ReadBytesPerSecond}, write B/s={disk.WriteBytesPerSecond}");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CapabilityChecks.RunAsync();
             await GitRepositoryChecks.RunAsync();

@@ -87,7 +87,7 @@ struct SportsView: View {
                     }
                     Text("\(month == 0 ? "全年" : "\(month) 月") · \(filtered.count) 次运动 · \(filtered.reduce(0) { $0 + $1.distance }, specifier: "%.1f") km · \(filtered.reduce(0.0) { $0 + Double($1.duration) } / 60, specifier: "%.1f") 小时")
                         .font(.caption).foregroundStyle(SportsStyle.muted)
-                    recordList(filtered)
+                    recordList(Array(filtered.reversed()))
                         .sportsPanel()
                 }
             }
@@ -259,6 +259,7 @@ private struct SportsDetail: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editing = false
     @State private var deleting = false
+    @State private var didDelete = false
     @State private var error: String?
     private var record: SportsRecord? { store.state.records.first { $0.id == id } }
 
@@ -300,15 +301,29 @@ private struct SportsDetail: View {
             ToolbarItem(placement: .topBarTrailing) { Button("编辑") { editing = true }.disabled(record == nil || store.syncing) }
         }
         .sheet(isPresented: $editing) { if let record { SportsEditor(store: store, record: record) } }
-        .confirmationDialog("删除这条运动记录？", isPresented: $deleting, titleVisibility: .visible) {
-            Button("删除运动记录", role: .destructive) {
-                do { try store.delete(id); dismiss() } catch { self.error = error.localizedDescription }
-            }
-            Button("取消", role: .cancel) { }
-        } message: { Text("删除后从列表和图表移除，并立即同步到 GitHub。") }
+        .sheet(isPresented: $deleting, onDismiss: {
+            if didDelete { dismiss() }
+        }) { deleteConfirmation }
+    }
+
+    private var deleteConfirmation: some View {
+        HakoDeleteConfirmation(title: Text("删除这条运动记录？"),
+                               message: Text("删除后将从列表和图表中移除，并立即同步到 GitHub。"),
+                               confirmTitle: Text("删除运动记录"), disabled: didDelete || store.syncing,
+                               confirm: deleteRecord)
         .alert("无法删除记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好") { error = nil }
         } message: { Text(error ?? "") }
+    }
+
+    private func deleteRecord() {
+        do {
+            try store.delete(id)
+            didDelete = true
+            deleting = false
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
 

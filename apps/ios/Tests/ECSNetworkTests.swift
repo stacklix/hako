@@ -61,6 +61,22 @@ import Foundation
         precondition(ECSNetworkRate(Double.infinity).value == "—")
         precondition(ECSNetworkRate(0).value == "0" && ECSNetworkRate(0).unit == "B/s")
         precondition(ECSNetworkRate(1024).unit == "KiB/s" && ECSNetworkRate(1024 * 1024).value == "1")
+        let end = ECSMonitorRange.minuteBoundary(at: Date(timeIntervalSince1970: 100_039))
+        precondition(end.timeIntervalSince1970 == 100_020)
+        for (range, count) in [(ECSMonitorRange.hour, 1), (.threeHours, 1), (.twelveHours, 2), (.day, 4)] {
+            let windows = range.queryWindows(endingAt: end)
+            precondition(windows.count == count && windows.first?.start == end.addingTimeInterval(-range.duration))
+            precondition(windows.last?.end == end)
+            precondition(windows.allSatisfy { $0.duration / Double(ECSMonitorRange.period) + 1 <= 400 })
+            precondition(zip(windows, windows.dropFirst()).allSatisfy { $0.0.end == $0.1.start })
+        }
+        func point(secondsAgo: TimeInterval, rate: Double) -> ECSMonitorPoint {
+            ECSMonitorPoint(time: end.addingTimeInterval(-secondsAgo), cpu: nil, receiveBytesPerSecond: rate,
+                            sendBytesPerSecond: nil, readBytesPerSecond: nil, writeBytesPerSecond: nil)
+        }
+        let merged = ECSMonitorRange.hour.merge([point(secondsAgo: 60, rate: 1), point(secondsAgo: 3660, rate: 2)],
+            with: [point(secondsAgo: 0, rate: 3), point(secondsAgo: 60, rate: 4)], endingAt: end)
+        precondition(merged.map(\.receiveBytesPerSecond) == [4, 3])
         print("ECS network grouping and summary tests passed")
     }
 }

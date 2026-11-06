@@ -58,7 +58,7 @@ Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/a
 
 鉴权及转发失败使用 HTTP 错误和 `{"error":"错误码"}`：格式无效 400 `invalid_request`，未声明或版本不匹配 400 `unsupported_method`，离线或断开 409，并发上限 429，超时 504。每设备最多 4 个待处理请求，全局最多 32 个。服务端等待 10 秒，聚合采集预算 8 秒。断线取消 Agent 连接下的任务，超时不表示请求从未执行。客户端不自动重试操作；明确鉴权失败后的会话续期不属于操作重试。
 
-### 系统指标与网络速率
+### 系统指标、网络与磁盘速率
 
 `query.system.metrics` v1 在原有 CPU、内存与采样时间字段外增加可选的 `network` 对象：
 
@@ -67,6 +67,8 @@ Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/a
 ```
 
 Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收发字节计数器，逐网卡求差后按实际经过时间计算 B/s，再汇总物理网卡；包含局域网流量，不等同于互联网测速。排除回环、隧道、过滤与非物理接口，避免虚拟网络层重复计数。正常空闲返回 0；无法读取、没有符合条件的网卡、网卡增减或计数器重置时，`available: false`、两个速率为 null，并通过 `message` 说明，CPU 与内存继续显示。只在本地或远程请求采样时读取，不后台累积或保存流量，不提供今日累计流量。无需新增服务端路由或命令版本。iOS 对缺少该字段的 Agent 提示更新；网络字段格式错误时仅提示网络数据异常，不丢弃有效的 CPU / 内存数据。
+
+`query.system.metrics` v1 也可包含 `disk`。其中 `volumes` 列出已就绪的固定盘符卷及其已用、总容量，`readBytesPerSecond` 与 `writeBytesPerSecond` 是同一采样窗口内物理磁盘的合计速度。单项速度不可用时返回 null，空闲时返回 0。磁盘数据缺失时，已有的 CPU、内存和网卡指标照常显示。 [Windows 物理磁盘性能计数器](https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives)
 
 ### 监听端口
 
@@ -100,7 +102,7 @@ iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均按�
 
 ### Git 仓库
 
-Windows Agent 按需检查当前用户 `~/Code` 的一级子目录，列出其中的 Git 仓库和 worktree。扫描跳过 Git 元数据目录和目录链接。远程地址显示前会去除 URL 中的凭据与查询参数。仓库列表的领先和落后数使用本机远程跟踪引用。打开仓库详情或下拉刷新时，客户端检查当前分支的远端更新。
+Windows Agent 按需检查当前用户 `~/Code` 的一级子目录，列出其中的 Git 仓库和 worktree。扫描跳过 Git 元数据目录和目录链接。远程地址显示前会去除 URL 中的凭据与查询参数。仓库列表的领先和落后数使用本机远程跟踪引用。打开仓库详情或下拉刷新时，有效期内直接读取跟踪引用。成功检查远端后，Agent 按仓库和远端分支在内存中缓存一小时。
 
 | 命令（v1） | 参数 | 结果 |
 | --- | --- | --- |

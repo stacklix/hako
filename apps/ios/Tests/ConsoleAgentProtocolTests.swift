@@ -76,15 +76,17 @@ import Foundation
         days[0]["totalTokens"] = 111
         let invalidUsage = try codex(days)
         precondition(!invalidUsage.isValid)
-        func metrics(_ network: Any? = nil) throws -> ConsoleMetrics {
+        func metrics(_ network: Any? = nil, disk: Any? = nil) throws -> ConsoleMetrics {
             var payload: [String: Any] = ["cpuUsagePercent": 25, "memoryUsagePercent": 50,
                 "memoryUsedBytes": 4_294_967_296, "memoryTotalBytes": 8_589_934_592,
                 "sampledAt": "2026-10-29T08:00:00Z", "sampleWindowMs": 1000]
             if let network { payload["network"] = network }
+            if let disk { payload["disk"] = disk }
             return try decoder.decode(ConsoleMetrics.self, from: JSONSerialization.data(withJSONObject: payload))
         }
         let legacyMetrics = try metrics()
         precondition(legacyMetrics.isValid && !legacyMetrics.networkReported && legacyMetrics.network == nil)
+        precondition(!legacyMetrics.diskReported && legacyMetrics.disk == nil)
         let networkMetrics = try metrics(["available": true, "downloadBytesPerSecond": 3072,
             "uploadBytesPerSecond": 1536, "interfaceCount": 2])
         precondition(networkMetrics.isValid && networkMetrics.networkReported && networkMetrics.network?.isValid == true
@@ -96,6 +98,17 @@ import Foundation
         let negativeRate = try metrics(["available": true, "downloadBytesPerSecond": -1,
             "uploadBytesPerSecond": 1, "interfaceCount": 1])
         precondition(negativeRate.isValid && negativeRate.network?.isValid == false)
+        let diskMetrics = try metrics(disk: ["volumes": [["name": "C:", "usedBytes": 300, "totalBytes": 400]],
+            "readBytesPerSecond": 1_048_576, "writeBytesPerSecond": 0])
+        precondition(diskMetrics.isValid && diskMetrics.diskReported && diskMetrics.disk?.isValid == true
+            && diskMetrics.disk?.volumes.first?.usagePercent == 75
+            && diskMetrics.disk?.readBytesPerSecond == 1_048_576 && diskMetrics.disk?.writeBytesPerSecond == 0)
+        let missingDiskRates = try metrics(disk: ["volumes": []])
+        precondition(missingDiskRates.isValid && missingDiskRates.disk?.isValid == true && missingDiskRates.disk?.readBytesPerSecond == nil)
+        let malformedDisk = try metrics(disk: ["volumes": "invalid"])
+        precondition(malformedDisk.isValid && malformedDisk.diskReported && malformedDisk.disk == nil)
+        let invalidDisk = try metrics(disk: ["volumes": [["name": "C:", "usedBytes": 500, "totalBytes": 400]]])
+        precondition(invalidDisk.isValid && invalidDisk.disk?.isValid == false)
         let payload = Data(#"{"capabilities":[{"name":"query.system.metrics","version":1}],"result":{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}},"query.future.data":{"version":7,"result":{"bytes":9007199254740993}},"query.future.null":{"version":1,"result":null},"query.future.invalid":{"version":1,"error":{},"result":0}}}}"#.utf8)
         let envelope = try decoder.decode(ConsoleQueryEnvelope.self, from: payload)
         precondition(envelope.capabilities.first?.name == "query.system.metrics")

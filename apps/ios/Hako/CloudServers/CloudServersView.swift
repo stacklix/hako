@@ -12,6 +12,7 @@ struct CloudServersView: View {
     @State private var terminalPrepared = false
     @State private var group = ECSProcessGroup.all
     @State private var memorySort = false
+    @State private var monitorRange = ECSMonitorRange.hour
     @State private var selectedConnection: ECSNetworkConnectionSelection?
 
     private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)" }
@@ -53,9 +54,11 @@ struct CloudServersView: View {
                         }
                         .contentMargins(.top, 24, for: .scrollContent)
                         .refreshable {
-                            async let instance: Void = store.refresh(page)
-                            if page == .overview { await access.refresh(client: console) }
-                            await instance
+                            let activePage = page
+                            async let instance: Void = store.refresh(activePage)
+                            async let history: Void = store.refreshMonitorHistory(activePage == .network ? monitorRange : .hour)
+                            if activePage == .overview { await access.refresh(client: console) }
+                            _ = await (instance, history)
                         }
                     }
                 }
@@ -92,6 +95,10 @@ struct CloudServersView: View {
             store.load()
             guard visible, scenePhase == .active, !settings, store.connection != nil else { return }
             await store.pollUsage()
+        }
+        .task(id: "\(taskKey)|\(page == .network)|\(monitorRange.rawValue)") {
+            guard visible, scenePhase == .active, !settings, page == .network else { return }
+            await store.refreshMonitorHistory(monitorRange)
         }
         .task(id: taskKey) {
             store.load()
@@ -166,7 +173,10 @@ struct CloudServersView: View {
     }
 
     @ViewBuilder private var network: some View {
-        ECSNetworkSections(snapshot: store.network, monitor: store.monitor) { direction, snapshot in
+        let history = store.monitorHistory[monitorRange]
+        ECSNetworkSections(snapshot: store.network, monitor: monitorRange == .hour ? store.monitor : history?.points ?? [],
+                           monitorRange: $monitorRange, monitorLoading: monitorRange != .hour && history == nil,
+                           monitorError: history?.error) { direction, snapshot in
             selectedConnection = ECSNetworkConnectionSelection(direction: direction, snapshot: snapshot)
         }
         if let snapshot = store.network { snapshotFooter(snapshot) }

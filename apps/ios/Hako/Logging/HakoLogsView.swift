@@ -62,8 +62,10 @@ struct HakoLogsView: View {
                 .accessibilityLabel("日志操作")
             }
         }
-        .confirmationDialog("清空本机全部日志？", isPresented: $confirmingClear, titleVisibility: .visible) {
-            Button("清空全部日志", role: .destructive) { HakoLogStore.shared.clear(); reload() }
+        .hakoDeleteConfirmation(Text("清空本机全部日志？"), isPresented: $confirmingClear,
+                                confirmTitle: Text("清空全部日志")) {
+            HakoLogStore.shared.clear()
+            reload()
         }
         .refreshable { reload() }
         .task(id: scenePhase) {

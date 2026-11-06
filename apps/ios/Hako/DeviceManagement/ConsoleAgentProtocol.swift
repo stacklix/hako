@@ -187,8 +187,10 @@ struct ConsoleMetrics: Decodable {
     let sampleWindowMs: Int
     let network: ConsoleNetworkMetrics?
     let networkReported: Bool
+    let disk: ConsoleDiskMetrics?
+    let diskReported: Bool
     private enum CodingKeys: String, CodingKey {
-        case cpuUsagePercent, memoryUsagePercent, memoryUsedBytes, memoryTotalBytes, sampledAt, sampleWindowMs, network
+        case cpuUsagePercent, memoryUsagePercent, memoryUsedBytes, memoryTotalBytes, sampledAt, sampleWindowMs, network, disk
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -202,6 +204,8 @@ struct ConsoleMetrics: Decodable {
         else { networkReported = false }
         // A malformed optional network result must not discard valid CPU/memory data.
         network = try? values.decode(ConsoleNetworkMetrics.self, forKey: .network)
+        diskReported = (try? values.decodeNil(forKey: .disk)) == false
+        disk = try? values.decode(ConsoleDiskMetrics.self, forKey: .disk)
     }
     var isValid: Bool {
         let formatter = ISO8601DateFormatter()
@@ -211,6 +215,23 @@ struct ConsoleMetrics: Decodable {
             && memoryUsagePercent.isFinite && (0...100).contains(memoryUsagePercent)
             && memoryTotalBytes > 0 && memoryUsedBytes <= memoryTotalBytes && (500...5000).contains(sampleWindowMs)
             && abs(memoryUsagePercent - Double(memoryUsedBytes) / Double(memoryTotalBytes) * 100) < 0.1
+    }
+}
+struct ConsoleDiskMetrics: Decodable {
+    struct Volume: Decodable, Identifiable {
+        let name: String
+        let usedBytes: UInt64
+        let totalBytes: UInt64
+        var id: String { name }
+        var usagePercent: Double { Double(usedBytes) / Double(totalBytes) * 100 }
+        var isValid: Bool { !name.isEmpty && totalBytes > 0 && usedBytes <= totalBytes }
+    }
+    let volumes: [Volume]
+    let readBytesPerSecond: Double?
+    let writeBytesPerSecond: Double?
+    var isValid: Bool {
+        Set(volumes.map(\.id)).count == volumes.count && volumes.allSatisfy(\.isValid)
+            && [readBytesPerSecond, writeBytesPerSecond].compactMap { $0 }.allSatisfy { $0.isFinite && $0 >= 0 }
     }
 }
 struct ConsoleNetworkMetrics: Decodable {

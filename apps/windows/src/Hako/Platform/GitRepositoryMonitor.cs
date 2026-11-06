@@ -5,7 +5,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,18 +18,21 @@ internal sealed record GitRepositoryPage(string Root, GitRepositorySummary[] Rep
 internal sealed record GitChange(string Path, string Status, int Index = 0);
 internal sealed record GitPendingCommit(string Id, string Subject);
 internal sealed record GitRepositoryDetail(GitRepositorySummary Repository, string Revision, GitChange[] Changes,
-    GitPendingCommit[] Pending, bool ChangesTruncated, string? PullSource, string? PullUrl, bool CanPull);
+    GitPendingCommit[] Pending, bool ChangesTruncated, string? PullSource, string? PullUrl, bool CanPull, bool RemoteCheckFresh);
 internal sealed record GitOperation(string Id, string State, string? Message = null);
 internal enum GitOperationKind { Commit, Push, Fetch, Pull }
 
 internal sealed class GitRepositoryMonitor
 {
     private const int PageSize = 6;
+    private static readonly TimeSpan RemoteCheckLifetime = TimeSpan.FromHours(1);
     private static readonly StringComparer PathOrder = StringComparer.OrdinalIgnoreCase;
     private readonly string root;
+    private readonly TimeProvider timeProvider;
     private readonly SemaphoreSlim scanGate = new(1, 1);
     private readonly byte[] revisionKey = RandomNumberGenerator.GetBytes(32);
     private readonly Dictionary<string, GitOperation> jobs = new();
+    private readonly Dictionary<string, DateTimeOffset> remoteChecks = new();
     private readonly Dictionary<string, Scan> scans = new();
     private string? runningJob;
 
@@ -44,7 +46,7 @@ internal sealed class GitRepositoryMonitor
     }
     private sealed record Snapshot(GitRepositorySummary Summary, string Revision, GitChange[] Changes,
         string? Head, string? Remote, string? RemoteRef, string? ComparedRef, string? TrackingRef,
-        string? RemoteTip, string? FetchUrl, bool CleanOperation)
+        string? RemoteTip, string? FetchUrl, bool CleanOperation, string? RemoteCheckKey)
     {
         public string? PullSource => FetchUrl is not null && TrackingRef is not null && RemoteRef is not null
             ? Remote + "/" + RemoteRef["refs/heads/".Length..] : null;
@@ -52,8 +54,11 @@ internal sealed class GitRepositoryMonitor
             Changes.Length == 0 && Summary.Ahead == 0 && Summary.Behind > 0;
     }
 
-    public GitRepositoryMonitor(string? root = null) =>
+    public GitRepositoryMonitor(string? root = null, TimeProvider? timeProvider = null)
+    {
         this.root = Path.GetFullPath(root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Code"));
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+    }
 
     public async Task<object?> ListAsync(JsonElement parameters, CancellationToken token)
     {
@@ -149,7 +154,8 @@ internal sealed class GitRepositoryMonitor
             var changes = snapshot.Changes.Where(change => change.Path.Length <= 1024).Take(100).ToList();
             // Keep the complete WebSocket response well below the 64 KiB frame limit.
             var detail = new GitRepositoryDetail(snapshot.Summary, snapshot.Revision, changes.ToArray(), pending,
-                changes.Count != snapshot.Changes.Length, snapshot.PullSource, snapshot.FetchUrl, snapshot.CanPull);
+                changes.Count != snapshot.Changes.Length, snapshot.PullSource, snapshot.FetchUrl, snapshot.CanPull,
+                HasFreshRemoteCheck(snapshot.RemoteCheckKey));
             while (JsonSerializer.SerializeToUtf8Bytes(detail, AgentConnection.Json).Length > 56 * 1024)
             {
                 changes.RemoveAt(changes.Count - 1);
@@ -299,16 +305,40 @@ internal sealed class GitRepositoryMonitor
             throw Failure("git_push_failed", "Git 未确认推送成功，请刷新核对远端状态，并在电脑上检查权限或分支差异。");
     }
 
-    private static async Task FetchAsync(string directory, Snapshot snapshot, CancellationToken token)
+    private async Task FetchAsync(string directory, Snapshot snapshot, CancellationToken token)
     {
-        if (snapshot.PullSource is null || snapshot.Remote is null || snapshot.RemoteRef is null || snapshot.TrackingRef is null)
+        if (snapshot.RemoteCheckKey is not { } key || snapshot.Remote is null || snapshot.RemoteRef is null || snapshot.TrackingRef is null)
             throw Failure("git_fetch_unavailable", "当前分支没有可检查的远端分支。");
+        if (HasFreshRemoteCheck(key)) return;
         var result = await GitCommand.RunAsync(directory, token,
             ["fetch", "--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules", "--no-write-fetch-head",
                 "--no-auto-maintenance", "--refmap=", "--", snapshot.Remote, "+" + snapshot.RemoteRef + ":" + snapshot.TrackingRef]);
         if (result.ExitCode != 0)
             throw Failure("git_fetch_failed", "无法检查远端分支，请核对电脑上的 Git 凭据、网络和分支配置。");
+        RememberRemoteCheck(key);
     }
+
+    private bool HasFreshRemoteCheck(string? key)
+    {
+        if (key is null) return false;
+        var now = timeProvider.GetUtcNow();
+        lock (jobs)
+            return remoteChecks.TryGetValue(key, out var checkedAt) && IsFresh(checkedAt, now);
+    }
+
+    private void RememberRemoteCheck(string key)
+    {
+        var now = timeProvider.GetUtcNow();
+        lock (jobs)
+        {
+            foreach (var expired in remoteChecks.Where(entry => !IsFresh(entry.Value, now)).Select(entry => entry.Key).ToArray())
+                remoteChecks.Remove(expired);
+            remoteChecks[key] = now;
+        }
+    }
+
+    private static bool IsFresh(DateTimeOffset checkedAt, DateTimeOffset now) =>
+        checkedAt <= now && now - checkedAt < RemoteCheckLifetime;
 
     private static async Task PullAsync(string directory, Snapshot snapshot, CancellationToken token)
     {
@@ -413,11 +443,15 @@ internal sealed class GitRepositoryMonitor
             remoteUrl, singleDestination && remoteRef is not null ? remote + "/" + remoteRef["refs/heads/".Length..] : null,
             changes.Length, ahead, behind, cleanOperation && changes.Length > 0,
             cleanOperation && singleDestination && head is not null && remoteRef is not null && behind.GetValueOrDefault() == 0 && ahead != 0);
-        var revision = Convert.ToHexString(HMACSHA256.HashData(revisionKey, Encoding.UTF8.GetBytes(
-            JsonSerializer.Serialize(new { id, status = status.Output, remote, remoteRef, urls = urls.Output, ahead, behind,
-                cleanOperation, trackingRef, rawFetchUrl, remoteTip }))));
-        return new(summary, revision, changes, head, remote, remoteRef, comparedRef, trackingRef, remoteTip, fetchUrl, cleanOperation);
+        var revision = HashSnapshot(new { id, status = status.Output, remote, remoteRef, urls = urls.Output, ahead, behind,
+            cleanOperation, trackingRef, rawFetchUrl, remoteTip });
+        var remoteCheckKey = fetchUrl is not null && trackingRef is not null && remoteRef is not null
+            ? HashSnapshot(new { directory = directory.ToUpperInvariant(), remote, remoteRef, trackingRef, rawFetchUrl }) : null;
+        return new(summary, revision, changes, head, remote, remoteRef, comparedRef, trackingRef, remoteTip, fetchUrl, cleanOperation, remoteCheckKey);
     }
+
+    private string HashSnapshot<T>(T value) => Convert.ToHexString(
+        HMACSHA256.HashData(revisionKey, JsonSerializer.SerializeToUtf8Bytes(value)));
 
     private static GitChange[] ReadChanges(string status) => status.Split('\0').Select(record =>
     {

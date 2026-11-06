@@ -77,14 +77,11 @@ struct CryptoSettingsView: View {
                 Text("清空当前私有仓库对应的资产缓存及待同步记录。再次进入加密资产时，从 GitHub 历史数据重建缓存，再采集最新资产。")
             }
         }.navigationTitle("资产设置").navigationBarTitleDisplayMode(.inline)
-            .alert("清空资产缓存？",isPresented:$clearingCache) {
-                Button("取消",role:.cancel) {}
-                Button("清空缓存",role:.destructive) {
-                    do { try store.clearCache();cacheMessage="缓存已清空，再次进入加密资产时将从 GitHub 重建。" }
-                    catch { cacheMessage=error.localizedDescription }
-                }
-            } message: {
-                Text("将删除本机资产历史、实时快照及 \(store.pendingCount) 条待同步记录。未同步数据无法恢复；GitHub 数据、接口配置和观察地址均保留。")
+            .hakoDeleteConfirmation(Text("清空资产缓存？"), isPresented: $clearingCache,
+                                    message: Text("将删除本机资产历史、实时快照及 \(store.pendingCount) 条待同步记录。未同步数据无法恢复；GitHub 数据、接口配置和观察地址均保留。"),
+                                    confirmTitle: Text("清空缓存"), disabled: store.busy) {
+                do { try store.clearCache();cacheMessage="缓存已清空，再次进入加密资产时将从 GitHub 重建。" }
+                catch { cacheMessage=error.localizedDescription }
             }
             .task {
                 do { wallets=try CryptoWallet.load();walletError=nil } catch { walletError=error.localizedDescription }
@@ -139,7 +136,7 @@ private struct CryptoDataExplanationView: View {
                 explanation("自动更新","进入加密资产页时先展示本机缓存；持仓和余额缓存自成功获取起有效 6 小时，且仅在北京时间同一自然日内有效，超过 6 小时或跨日后重新获取。接口配置或观察地址变更后也重新获取。没有缓存时先读取 GitHub 历史数据建立缓存，再获取最新资产。历史读取失败时保留缺失并提示原因，下次进入重试，不上传本机数据。币价和股票报价独立缓存 1 小时且仅限同一自然日；进入页面或停留期间报价失效时只刷新价格，不查询余额。USDT 折值由缓存数量乘有效报价实时计算；有完整报价时账户合计同样重算。余额缓存有效期内不因资金费结算时段变化重新查询余额。")
                 explanation("清空缓存","删除当前私有仓库对应的本机历史、实时快照及待同步记录。GitHub 数据、接口配置和观察地址保留；再次进入时从 GitHub 重建。清空前应先同步需要保留的记录。")
                 explanation("同步资产","页面同步按钮和快捷指令只将本机缓存合并上传到 GitHub 私有仓库，不重新请求资产接口。上传失败保留待同步数据；历史已有值保留，只填补空字段。")
-                explanation("显示精度","币种余额、单价、总额、合约权益和资金费显示两位小数，强平价和百分比资金费率显示三位小数，Binance 股票持仓和单价显示八位小数。估值使用原始数据计算。")
+                explanation("显示精度","币种余额、股票持股数量、单价、总额、合约权益和资金费显示两位小数，强平价和百分比资金费率显示三位小数。估值使用原始数据计算。")
             }
         }
         .navigationTitle("数据说明").navigationBarTitleDisplayMode(.inline)

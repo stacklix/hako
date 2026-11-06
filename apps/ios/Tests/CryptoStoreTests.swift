@@ -555,6 +555,38 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let invalidMargin = try await htxClient.htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
         precondition(invalidMargin.rows(in:.margin) == htxDetails.rows(in:.margin) && invalidMargin.errors.count == 1,
                      "an invalid balance response for an existing margin account preserves its prior rows")
+
+        let retryRepository = AssetRepository()
+        let retryCache = CryptoStore.Cache(htxSnapshot: invalidMargin, archiveLoaded: true, archivedPortfolioDays: [],
+            assetsUpdatedAt: now, assetsScope: CryptoDay.hash([htx.key, htx.secret, binance.key, binance.secret, ""].joined(separator: "|")),
+            pricesUpdatedAt: now)
+        let retryFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(retryRepository.storageScope) + ".json")
+        try JSONEncoder().encode(retryCache).write(to: retryFile)
+        func retryStore() -> CryptoStore {
+            CryptoStore(repositoryProvider: { retryRepository }, client: htxClient,
+                loadCredential: { $0 == "htx" ? htx : binance }, loadWallets: { [] },
+                cacheDirectory: directory, nowProvider: { now })
+        }
+        configure(failSpotDetails: true, failCrossMarginDetails: true)
+        let failedEntry = retryStore()
+        await failedEntry.collect()
+        precondition(failedEntry.htxDetailsNeedRetry && failedEntry.htxSnapshot?.errors.count == 2 &&
+            failedEntry.htxSnapshot?.rows(in: .spot) == htxDetails.rows(in: .spot) &&
+            AssetMockProtocol.paths("/v1/account/accounts/3/balance").count == 1,
+            "re-entry retries partial details within the balance lifetime and retains rows when retry fails")
+        configure()
+        let recoveredEntry = retryStore()
+        await recoveredEntry.collect()
+        precondition(!recoveredEntry.htxDetailsNeedRetry &&
+            AssetMockProtocol.paths("/v1/account/accounts/3/balance").count == 1 &&
+            AssetMockProtocol.paths("/v1/account/accounts/4/balance").count == 1 &&
+            AssetMockProtocol.paths("/v2/account/valuation").isEmpty &&
+            AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").isEmpty &&
+            recoveredEntry.cache.assetsUpdatedAt == now,
+            "reopening repairs partial HTX details while fresh asset totals remain cached")
+        let recoveredCalls = AssetMockProtocol.requests.count
+        await retryStore().collect()
+        precondition(AssetMockProtocol.requests.count == recoveredCalls, "successful HTX details use the normal cache lifetime")
         print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
     }
 }

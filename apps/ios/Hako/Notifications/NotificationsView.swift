@@ -5,6 +5,7 @@ struct NotificationsView: View {
     @State private var selection: NotificationSelection?
     @State private var showingServer = false
     @State private var confirmingClearAll = false
+    @State private var clearAllContext: String?
     @State private var notice: String?
     @State private var noticeTask: Task<Void, Never>?
     private struct NotificationSelection: Identifiable {
@@ -56,19 +57,25 @@ struct NotificationsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button(role: .destructive) { notice = nil; confirmingClearAll = true } label: {
+                    Button(role: .destructive) {
+                        notice = nil
+                        clearAllContext = store.context
+                        confirmingClearAll = true
+                    } label: {
                         Label("清除全部", systemImage: "trash").foregroundStyle(.red)
                     }
                 } label: { Image(systemName: "ellipsis") }
                     .accessibilityLabel("通知操作")
                     .disabled(store.notifications.isEmpty)
-                    .confirmationDialog("清除全部通知？", isPresented: $confirmingClearAll, titleVisibility: .visible) {
-                        Button("清除全部", role: .destructive) { store.clearAll(); showNotice("已清除全部通知。") }
-                        Button("取消", role: .cancel) { }
-                    } message: {
-                        Text("将移除当前列表中的 \(store.notifications.count) 条通知。不会批准或拒绝任何登录请求。")
-                    }
             }
+        }
+        .hakoDeleteConfirmation(Text("清除全部通知？"), isPresented: $confirmingClearAll,
+                                message: Text("将移除当前列表中的 \(store.notifications.count) 条通知。不会批准或拒绝任何登录请求。"),
+                                confirmTitle: Text("清除全部"), disabled: store.notifications.isEmpty,
+                                onDismiss: { clearAllContext = nil }) {
+            guard clearAllContext == store.context else { return }
+            store.clearAll()
+            showNotice("已清除全部通知。")
         }
         .overlay(alignment: .bottom) {
             if let notice {
@@ -88,6 +95,8 @@ struct NotificationsView: View {
         .sheet(isPresented: $showingServer) { ServerSettingsView() }
         .onChange(of: store.context) { _, _ in
             selection?.session.active = false; selection = nil; noticeTask?.cancel(); notice = nil
+            clearAllContext = nil
+            confirmingClearAll = false
         }
         .onChange(of: store.activeIDs) { _, ids in
             guard let selected = selection, !selected.session.busy, selected.session.outcome == nil,

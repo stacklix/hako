@@ -37,7 +37,8 @@ internal static class GitRepositoryChecks
             File.WriteAllText(Path.Combine(repo, "ignored", "nested.tmp"), "ignored by repository");
             File.WriteAllText(Path.Combine(repo, "local.tmp"), "ignored by repository-local settings");
             File.WriteAllText(Path.Combine(repo, "global.tmp"), "ignored by global settings");
-            var monitor = new GitRepositoryMonitor(code);
+            var clock = new TestClock();
+            var monitor = new GitRepositoryMonitor(code, clock);
             const string id = "app";
             var page = (GitRepositoryPage)(await monitor.ListAsync(Json(new { }), Token))!;
             Require(page.Repositories.Single().Id == id, "only direct child repositories are discovered");
@@ -110,7 +111,7 @@ internal static class GitRepositoryChecks
             var originalHead = (await Git(repo, "rev-parse", "HEAD")).Trim();
             Require((await Run(monitor, GitOperationKind.Fetch, new { repository = id })).State == "succeeded", "check remote branch");
             var behind = await Detail(monitor, id);
-            Require(behind.Repository.Behind == 1 && behind.PullSource == "origin/master" && !behind.CanPull && !behind.Repository.CanPush &&
+            Require(behind.RemoteCheckFresh && behind.Repository.Behind == 1 && behind.PullSource == "origin/master" && !behind.CanPull && !behind.Repository.CanPush &&
                 originalHead == (await Git(repo, "rev-parse", "HEAD")).Trim(), "fetch discovers updates without changing the working branch");
             Require((await Run(monitor, GitOperationKind.Pull, new { repository = id, revision = behind.Revision })).State == "failed",
                 "local changes prevent pulling");
@@ -132,9 +133,25 @@ internal static class GitRepositoryChecks
             Require(pulled.Repository.Behind == 0 && !pulled.CanPull && File.ReadAllText(Path.Combine(repo, "remote.txt")) == "remote update",
                 "pull updates the branch and working tree");
 
+            File.WriteAllText(Path.Combine(peer, "remote.txt"), "later remote update");
+            await Git(peer, "commit", "-am", "Later remote update");
+            await Git(peer, "push", "origin", "master");
+            clock.Advance(TimeSpan.FromMinutes(59));
+            Require((await Run(monitor, GitOperationKind.Fetch, new { repository = id })).State == "succeeded",
+                "repeat check uses cached result");
+            var cached = await Detail(monitor, id);
+            Require(cached.RemoteCheckFresh && cached.Repository.Behind == 0, "no second fetch within an hour");
+            clock.Advance(TimeSpan.FromMinutes(1));
+            Require(!(await Detail(monitor, id)).RemoteCheckFresh, "remote check expires exactly after an hour");
+            Require((await Run(monitor, GitOperationKind.Fetch, new { repository = id })).State == "succeeded",
+                "expired check fetches again");
+            var rechecked = await Detail(monitor, id);
+            Require(rechecked.RemoteCheckFresh && rechecked.Repository.Behind == 1, "new remote update becomes visible after expiry");
+
             await Git(repo, "remote", "set-url", "origin", "https://name:secret@example.invalid/owner/app.git?credential=secret");
             var redacted = await Detail(monitor, id);
-            Require(redacted.Repository.RemoteUrl == "https://example.invalid/owner/app.git", "remote credentials redacted");
+            Require(redacted.Repository.RemoteUrl == "https://example.invalid/owner/app.git" && !redacted.RemoteCheckFresh,
+                "remote credentials redacted and a changed remote URL has its own cache");
             await Git(repo, "branch", "local-tracking");
             await Git(repo, "branch", "--set-upstream-to=local-tracking", "master");
             var localUpstream = await Detail(monitor, id);
@@ -148,7 +165,7 @@ internal static class GitRepositoryChecks
             Require(secondPage.Repositories.Length == 2 && secondPage.NextCursor is null &&
                 firstPage.Repositories.Select(row => row.Id).Intersect(secondPage.Repositories.Select(row => row.Id)).Count() == 0,
                 "repository continuation without duplicates");
-            Console.WriteLine("PASS: Git discovery and pagination, ignore rules, commits, pushes, remote checks, safe fast-forward pulls, and URL redaction");
+            Console.WriteLine("PASS: Git discovery and pagination, ignore rules, commits, pushes, one-hour remote checks, safe fast-forward pulls, and URL redaction");
         }
         finally
         {
@@ -185,6 +202,14 @@ internal static class GitRepositoryChecks
         return result.Output;
     }
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value);
+
+    private sealed class TestClock : TimeProvider
+    {
+        private DateTimeOffset now = DateTimeOffset.UnixEpoch;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void Advance(TimeSpan elapsed) => now += elapsed;
+    }
+
     private static void Require(bool condition, string operation)
     {
         if (!condition) throw new Exception("Git check failed: " + operation);

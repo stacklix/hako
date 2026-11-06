@@ -86,18 +86,6 @@ struct SettingsView: View {
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
-            Section("构建通知") {
-                Toggle("接收 Hako 构建通知", isOn: Binding(
-                    get: { buildPush.enabled },
-                    set: { enabled in Task { await buildPush.setEnabled(enabled) } }
-                ))
-                .disabled(buildPush.busy)
-                if let message = buildPush.message {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
             Section("工具") {
                 NavigationLink { HakoLogsView() } label: {
                     Label("日志", systemImage: "doc.text.magnifyingglass")

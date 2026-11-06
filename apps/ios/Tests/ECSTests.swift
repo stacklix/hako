@@ -237,13 +237,20 @@ private func checkProcessPages() async throws {
         connection.region = "cn-chengdu"
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ECSMockURLProtocol.self]
         let client = try ECSClient(connection: connection, session: URLSession(configuration: config))
-        ECSMockURLProtocol.handler = { _ in
-            (200, ["MonitorData": ["InstanceMonitorData": [["TimeStamp": "2026-10-30T00:00:00Z", "CPU": 25,
-                "IntranetRX": 480, "IntranetTX": 960, "BPSRead": 1234]]]])
+        let end = ECSMonitorRange.minuteBoundary()
+        let timestamp = ISO8601DateFormatter().string(from: end.addingTimeInterval(-60))
+        for (range, count) in [(ECSMonitorRange.hour, 1), (.threeHours, 1), (.twelveHours, 2), (.day, 4)] {
+            var requests = 0
+            ECSMockURLProtocol.handler = { _ in
+                requests += 1
+                return (200, ["MonitorData": ["InstanceMonitorData": [["TimeStamp": timestamp, "CPU": 25,
+                    "IntranetRX": 480, "IntranetTX": 960, "BPSRead": 1234]]]])
+            }
+            let points = try await client.monitor(range: range)
+            precondition(requests == count && points.count == 1, "Repeated timestamps must be merged")
+            precondition(points[0].receiveBytesPerSecond == 1000 && points[0].sendBytesPerSecond == 2000)
+            precondition(points[0].writeBytesPerSecond == nil)
         }
-        let points = try await client.monitor()
-        precondition(points.count == 1 && points[0].receiveBytesPerSecond == 1000 && points[0].sendBytesPerSecond == 2000)
-        precondition(points[0].writeBytesPerSecond == nil)
         ECSMockURLProtocol.handler = { _ in (403, ["Code": "Forbidden", "Message": "never-display-testsecret"]) }
         do { _ = try await client.instance(); fatalError("Expected provider error") }
         catch { precondition(!error.localizedDescription.contains("testsecret")) }

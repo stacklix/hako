@@ -48,10 +48,9 @@ struct HeadplaneSettingsView: View {
         }
         .onAppear { draft = store.connection ?? HeadplaneConnection(); original = draft }
         .sheet(isPresented: $diagnostics) { HeadplaneDiagnosticsView(store: store, revision: store.revision) }
-        .confirmationDialog("移除本机保存的连接和凭据？", isPresented: $disconnect, titleVisibility: .visible) {
-            Button("移除连接", role: .destructive) {
-                do { try store.disconnect(); dismiss() } catch { self.error = error.localizedDescription }
-            }
+        .hakoDeleteConfirmation(Text("移除本机保存的连接和凭据？"), isPresented: $disconnect,
+                                confirmTitle: Text("移除连接"), disabled: store.busy || store.pending != nil) {
+            do { try store.disconnect(); dismiss() } catch { self.error = error.localizedDescription }
         }
     }
 }
@@ -64,7 +63,8 @@ struct HeadplaneDeviceView: View {
     @State private var editing: String?
     @State private var editingNode: HeadplaneNode?
     @State private var ssh = false
-    @State private var confirmation: String?
+    @State private var confirmingExpiration = false
+    @State private var confirmingDeletion = false
     @State private var error: String?
     private var resource: HeadplaneResource { .machine(nodeID) }
     private var detail: HeadplaneMachineDetail? { revision == store.revision ? store.machineDetails[nodeID] : nil }
@@ -98,8 +98,8 @@ struct HeadplaneDeviceView: View {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                         Button("重命名") { editingNode = node; editing = "rename" }.buttonStyle(HeadplaneButtonStyle())
                         Button("修改标签") { editingNode = node; editing = "tags" }.buttonStyle(HeadplaneButtonStyle())
-                        Button("使设备过期") { confirmation = "expire" }.buttonStyle(HeadplaneButtonStyle())
-                        Button("删除设备") { confirmation = "delete" }.buttonStyle(HeadplaneButtonStyle(destructive: true))
+                        Button("使设备过期") { confirmingExpiration = true }.buttonStyle(HeadplaneButtonStyle())
+                        Button("删除设备") { confirmingDeletion = true }.buttonStyle(HeadplaneButtonStyle(destructive: true))
                     }.disabled(disabled)
                     Text("设备信息").font(.headline)
                     HeadplaneFact(title: "设备编号", value: node.id)
@@ -133,18 +133,21 @@ struct HeadplaneDeviceView: View {
         .sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } }), onDismiss: { editingNode = nil }) {
             if let node = editingNode, let editing { HeadplaneDeviceEditor(store: store, node: node, action: editing, revision: revision) }
         }
-        .confirmationDialog(confirmation == "delete" ? "删除此设备？" : "使设备立即过期？", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), titleVisibility: .visible) {
-            if let action = confirmation {
-                Button(action == "delete" ? "确认删除" : "确认过期", role: .destructive) {
-                    Task {
-                        do {
-                            _ = try await store.mutate(.machines, revision: revision, fields: ["action_id": action, "node_id": nodeID])
-                            if action == "delete" { dismiss() }
-                        } catch { self.error = error.localizedDescription }
-                    }
-                }
-            }
-        } message: { Text(confirmation == "delete" ? "设备将从网络移除，需要重新注册才能加入。" : "设备需要重新认证才能继续连接网络。") }
+        .confirmationDialog("使设备立即过期？", isPresented: $confirmingExpiration, titleVisibility: .visible) {
+            Button("确认过期", role: .destructive) { Task { await mutateDevice("expire") } }
+        } message: { Text("设备需要重新认证才能继续连接网络。") }
+        .hakoDeleteConfirmation(Text("删除此设备？"), isPresented: $confirmingDeletion,
+                                message: Text("设备将从网络移除，需要重新注册才能加入。"),
+                                confirmTitle: Text("确认删除"), disabled: disabled) {
+            Task { await mutateDevice("delete") }
+        }
+    }
+
+    private func mutateDevice(_ action: String) async {
+        do {
+            _ = try await store.mutate(.machines, revision: revision, fields: ["action_id": action, "node_id": nodeID])
+            if action == "delete" { dismiss() }
+        } catch { self.error = error.localizedDescription }
     }
 
     private func refresh() async {

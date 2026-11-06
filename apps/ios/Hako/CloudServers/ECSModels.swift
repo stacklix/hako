@@ -49,6 +49,37 @@ struct ECSInstance: Sendable {
     let memoryMiB: Int?
 }
 
+enum ECSMonitorRange: Int, CaseIterable, Sendable {
+    case hour = 1, threeHours = 3, twelveHours = 12, day = 24
+
+    static let period = 60
+    var duration: TimeInterval { TimeInterval(rawValue * 3600) }
+
+    func queryWindows(endingAt end: Date) -> [DateInterval] {
+        let start = end.addingTimeInterval(-duration)
+        // Six hours per request leaves room under the 400-point API limit,
+        // including endpoints shared by neighboring windows.
+        return stride(from: 0, to: rawValue, by: 6).map { offset in
+            DateInterval(start: start.addingTimeInterval(TimeInterval(offset * 3600)),
+                         duration: TimeInterval(min(6, rawValue - offset) * 3600))
+        }
+    }
+
+    func merge(_ history: [ECSMonitorPoint], with recent: [ECSMonitorPoint], endingAt end: Date) -> [ECSMonitorPoint] {
+        let start = end.addingTimeInterval(-duration)
+        var points: [Date: ECSMonitorPoint] = [:]
+        for point in history + recent where point.time >= start && point.time <= end {
+            points[point.time] = point
+        }
+        return points.values.sorted { $0.time < $1.time }
+    }
+
+    static func minuteBoundary(at date: Date = .now) -> Date {
+        let seconds = TimeInterval(period)
+        return Date(timeIntervalSince1970: floor(date.timeIntervalSince1970 / seconds) * seconds)
+    }
+}
+
 struct ECSMonitorPoint: Identifiable, Sendable {
     var id: Date { time }
     let time: Date

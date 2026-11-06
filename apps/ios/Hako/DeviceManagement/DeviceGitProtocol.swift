@@ -73,6 +73,7 @@ struct DeviceGitDetail: Decodable {
     let pullSource: String?
     let pullUrl: String?
     let canPull: Bool?
+    let remoteCheckFresh: Bool?
 }
 
 struct DeviceGitOperation: Decodable {

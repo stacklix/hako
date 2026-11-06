@@ -63,15 +63,13 @@ private struct CryptoWatchlist: View {
             await refreshPrices()
         }
         .sheet(isPresented: $adding) { addSheet }
-        .alert("删除关注币种？", isPresented: $confirmingDeletion, presenting: pendingDeletion) { symbol in
-            Button("取消", role: .cancel) {}
-            Button("删除", role: .destructive) {
-                savedSymbols = customSymbols.filter { $0 != symbol }.joined(separator: ",")
-                prices.removeValue(forKey: symbol + "USDT")
-                revealedSymbol = nil
-            }
-        } message: { symbol in
-            Text("将 \(symbol) 从关注列表移除。")
+        .hakoDeleteConfirmation(Text("删除关注币种？"), isPresented: $confirmingDeletion,
+                                message: pendingDeletion.map { Text("将 \($0) 从关注列表移除。") },
+                                confirmTitle: Text("删除"), onDismiss: { pendingDeletion = nil }) {
+            guard let symbol = pendingDeletion else { return }
+            savedSymbols = customSymbols.filter { $0 != symbol }.joined(separator: ",")
+            prices.removeValue(forKey: symbol + "USDT")
+            revealedSymbol = nil
         }
     }
 
@@ -234,6 +232,7 @@ struct CryptoView: View {
     @State private var expandedBinanceAccount: CryptoBinanceAccount.ID?
     @State private var expandedHTXGroup: CryptoHTXSnapshot.Group?
     private var latest: CryptoRecord? { store.portfolio.last }
+    private var showingHTXAssets: Bool { tab == .htx && !trends }
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
@@ -264,6 +263,7 @@ struct CryptoView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     CryptoTrend(title:"每日总资产",records:store.portfolio,keys:["total"],names:["总资产"],units:["USDT"])
+                    CryptoWatchlist()
                 } else if tab == .htx {
                     Picker("HTX 页面",selection:$trends) { Text("资产概览").tag(false);Text("合约收益").tag(true) }.pickerStyle(.segmented)
                     if trends {
@@ -294,7 +294,6 @@ struct CryptoView: View {
                     Text("还没有采集数据。请先配置交易所只读 API、观察地址及主应用私有仓库。")
                         .font(.subheadline).foregroundStyle(.secondary).padding(.vertical,18)
                 }
-                CryptoWatchlist()
             }.padding(20)
         }
         .background(HakoStyle.background).foregroundStyle(HakoStyle.text)
@@ -304,8 +303,14 @@ struct CryptoView: View {
                 .accessibilityLabel("加密资产连接与地址设置")
         } }
         .onAppear { collecting=true;store.loadCachedData() }
+        .onChange(of: showingHTXAssets) { _, visible in
+            if visible && scenePhase == .active && !collecting && store.htxDetailsNeedRetry {
+                Task { await collect() }
+            }
+        }
         .onChange(of:scenePhase) { _,phase in
-            if phase == .active && !collecting && (store.assetsExpired || store.pricesExpired) {
+            if phase == .active && !collecting &&
+                (store.assetsExpired || store.pricesExpired || (showingHTXAssets && store.htxDetailsNeedRetry)) {
                 Task { await collect() }
             }
         }
@@ -551,7 +556,7 @@ struct CryptoView: View {
 
     private func binanceAssetRow(_ asset: CryptoBinanceAsset) -> some View {
         let isStock = asset.equitySymbol != nil
-        let unitPrice = asset.price.map { String(format:"%.*f",isStock ? 8 : 2,$0) }
+        let unitPrice = asset.price.map { String(format:"%.2f",$0) }
         return exchangeAssetRow(symbol:asset.symbol,quantity:asset.quantity,unit:isStock ? "股" : asset.symbol,value:asset.usdtValue) {
             if asset.name != asset.symbol { Text(asset.name).font(.caption).foregroundStyle(.secondary) }
             if let unitPrice {
