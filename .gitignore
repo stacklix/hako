@@ -3,6 +3,7 @@ DerivedData/
 build/
 /dist/
 /.test-tmp/
+/.zsign_cache/
 *.xcuserstate
 xcuserdata/
 .env
