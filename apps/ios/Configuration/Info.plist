@@ -10,6 +10,6 @@
         <true/>
     </dict>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>连接你配置的局域网 Arcane 服务，查看和管理 Docker 容器。</string>
+    <string>连接局域网中的 Chore 以查询构建和下载更新，并连接你配置的 Arcane 服务以管理 Docker 容器。</string>
 </dict>
 </plist>

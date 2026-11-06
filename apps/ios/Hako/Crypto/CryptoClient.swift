@@ -20,7 +20,7 @@ struct CryptoClient {
         let path=request.url?.path ?? "[未知接口]"
         let endpoint=(request.httpMethod ?? "GET")+" "+(request.url?.host ?? "[未知主机]")+path
         var status:Int?,failure:String?,level=HakoLogLevel.info
-        var redactor=CryptoHTTPLog(request:request,secrets:secrets)
+        var redactor=HTTPLogRedactor(request:request,secrets:secrets)
         var responseDetail="未收到响应正文"
         logStore.append(source:.crypto,level:.info,message:redactor.text("开始请求 "+endpoint),detail:"请求 ID："+requestID+"\n"+redactor.request(request),fullDetail:true)
         defer {
@@ -380,118 +380,5 @@ extension CryptoClient {
             return CryptoHTXSnapshot.Holding(id:id+"-"+symbol,symbol:symbol,label:label,quantity:quantity,
                 available:available,frozen:frozen,loan:margin ? loan : nil,interest:margin ? interest : nil)
         }
-    }
-}
-
-// Redact structured fields before formatting; known credentials are also removed from free text.
-private struct CryptoHTTPLog {
-    private var secrets: Set<String>
-    private let hidden = "[已隐藏]"
-    init(request: URLRequest, secrets: [String]) {
-        self.secrets=Set(secrets.filter { !$0.isEmpty })
-        if let url=request.url,let components=URLComponents(url:url,resolvingAgainstBaseURL:false) {
-            for value in [components.user,components.password].compactMap({$0}) where !value.isEmpty { self.secrets.insert(value) }
-            for item in components.queryItems ?? [] where Self.sensitive(item.name) {
-                if let value=item.value { collectSecret(value,field:item.name) }
-            }
-        }
-        collect(request.allHTTPHeaderFields ?? [:])
-        if let body=request.httpBody,let object=try? JSONSerialization.jsonObject(with:body,options:.fragmentsAllowed) { collect(object) }
-    }
-    private static func sensitive(_ name:String) -> Bool {
-        let key=name.lowercased().filter { $0.isLetter || $0.isNumber }
-        if ["signaturemethod","signatureversion"].contains(key) { return false }
-        return ["key","auth","authentication","jwt","session","sessionid","sessionkey"].contains(key)
-            || key.hasSuffix("token")
-            || ["apikey","accesskey","secret","password","passwd","authorization","signature","cookie","privatekey","credential"].contains { key.contains($0) }
-    }
-    private mutating func collectSecret(_ value:Any, field:String) {
-        if let value=value as? String,!value.isEmpty {
-            secrets.insert(value)
-            if value.lowercased().hasPrefix("bearer ") || value.lowercased().hasPrefix("basic ") {
-                if let token=value.split(whereSeparator:{$0.isWhitespace}).last { secrets.insert(String(token)) }
-            }
-            if field.lowercased().contains("cookie") {
-                for part in value.split(separator:";") {
-                    let pair=part.split(separator:"=",maxSplits:1).map { $0.trimmingCharacters(in:.whitespaces) }
-                    if pair.count == 2,!pair[1].isEmpty,!["path","domain","expires","max-age","samesite"].contains(pair[0].lowercased()) { secrets.insert(pair[1]) }
-                }
-            }
-        }
-        else if let values=value as? [Any] { for value in values { collectSecret(value,field:field) } }
-        else if let values=value as? [String:Any] { for value in values.values { collectSecret(value,field:field) } }
-    }
-    private mutating func collect(_ object:Any) {
-        if let values=object as? [String:Any] {
-            for (key,value) in values {
-                if Self.sensitive(key) { collectSecret(value,field:key) } else { collect(value) }
-            }
-        } else if let values=object as? [Any] { for value in values { collect(value) } }
-    }
-    func text(_ value:String) -> String {
-        var result=value
-        for secret in secrets.sorted(by:{$0.count > $1.count}) {
-            result=result.replacingOccurrences(of:secret,with:hidden)
-            if let encoded=secret.addingPercentEncoding(withAllowedCharacters:.alphanumerics) {
-                result=result.replacingOccurrences(of:encoded,with:hidden,options:.caseInsensitive)
-            }
-            if let encoded=try? JSONSerialization.data(withJSONObject:secret,options:.fragmentsAllowed),
-               let escaped=String(data:encoded,encoding:.utf8),escaped.count > 2 {
-                result=result.replacingOccurrences(of:String(escaped.dropFirst().dropLast()),with:hidden)
-            }
-        }
-        return HakoLog.sanitize(result,limit:Int.max)
-    }
-    private func plainText(_ value:String) -> String {
-        var result=text(value)
-        // Cover credential key/value pairs in non-JSON error bodies and JSON string values too.
-        let name=#"(?:[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|authorization|signature|cookie|private[_-]?key)[A-Za-z0-9_-]*)"#
-        let pair="(?i)(\\b"+name+#"[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'[^']*'|[^\s,;&<>]+)"#
-        result=result.replacingOccurrences(of:pair,with:"$1\""+hidden+"\"",options:.regularExpression)
-        result=result.replacingOccurrences(of:#"(?im)((?:set-cookie|cookie|authorization|proxy-authorization)\s*:\s*)[^\r\n]*"#,with:"$1"+hidden,options:.regularExpression)
-        result=result.replacingOccurrences(of:#"(?is)-----BEGIN (?:[A-Z ]*PRIVATE KEY)-----.*?-----END (?:[A-Z ]*PRIVATE KEY)-----"#,with:hidden,options:.regularExpression)
-        return HakoLog.sanitize(result,limit:Int.max)
-    }
-    private func redact(_ object:Any) -> Any {
-        if let values=object as? [String:Any] {
-            return values.reduce(into:[String:Any]()) { result,item in
-                result[item.key]=Self.sensitive(item.key) ? hidden : redact(item.value)
-            }
-        }
-        if let values=object as? [Any] { return values.map(redact) }
-        if let value=object as? String { return plainText(value) }
-        return object
-    }
-    private func formatted(_ object:Any) -> String {
-        guard let data=try? JSONSerialization.data(withJSONObject:redact(object),options:[.prettyPrinted,.sortedKeys,.fragmentsAllowed]),
-              let value=String(data:data,encoding:.utf8) else { return "[无法格式化正文]" }
-        return text(value)
-    }
-    private mutating func body(_ data:Data?) -> String {
-        guard let data,!data.isEmpty else { return "[空]" }
-        if let object=try? JSONSerialization.jsonObject(with:data,options:.fragmentsAllowed) {
-            collect(object)
-            return formatted(object)
-        }
-        guard let value=String(data:data,encoding:.utf8) else { return "[非 UTF-8 正文，\(data.count) 字节]" }
-        return plainText(value)
-    }
-    mutating func request(_ request:URLRequest) -> String {
-        var components=request.url.flatMap { URLComponents(url:$0,resolvingAgainstBaseURL:false) }
-        var query=[String:[String]]()
-        for item in components?.queryItems ?? [] { query[item.name,default:[]].append(item.value ?? "") }
-        components?.user=nil;components?.password=nil;components?.query=nil;components?.fragment=nil
-        let headers=request.allHTTPHeaderFields ?? [:]
-        // Discover body secrets before rendering headers or query values that might echo them.
-        let contents=body(request.httpBody)
-        return text("方法："+(request.httpMethod ?? "GET")+"\nURL："+(components?.string ?? "[无效地址]")
-            + "\n查询参数：\n"+formatted(query)+"\n请求头：\n"+formatted(headers)
-            + "\n请求正文：\n"+(request.httpBodyStream == nil ? contents : "[流式正文未读取，避免影响请求]"))
-    }
-    mutating func response(_ response:HTTPURLResponse,data:Data) -> String {
-        let headers=response.allHeaderFields.reduce(into:[String:Any]()) { $0[String(describing:$1.key)]=$1.value }
-        collect(headers)
-        let contents=body(data)
-        return text("响应头：\n"+formatted(headers)+"\n响应正文：\n"+contents)
     }
 }

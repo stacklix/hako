@@ -42,3 +42,17 @@ struct AppUpdateRelease: Decodable, Sendable {
         return manifest.range(of: #"\Amanifest-[0-9a-f]{16}\.plist\z"#, options: .regularExpression) == nil ? nil : manifest
     }
 }
+
+enum ChoreUpdateRoute: String, Sendable {
+    case local, publicNetwork
+
+    private var iosURL: URL {
+        switch self {
+        case .local: URL(string: "http://192.168.0.10:8000/chore/ios/")!
+        case .publicNetwork: URL(string: "https://nux.luckyqiao.com/chore/ios/")!
+        }
+    }
+
+    var appURL: URL { iosURL.appendingPathComponent("hako", isDirectory: true) }
+    var buildStatusURL: URL { iosURL.appendingPathComponent("build-status.json") }
+}

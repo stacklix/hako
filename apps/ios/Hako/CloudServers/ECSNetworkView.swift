@@ -9,6 +9,9 @@ struct ECSNetworkSections: View {
     let monitorError: String?
     let onSelectConnection: (ECSConnectionDirection, ECSSnapshot) -> Void
     @State private var listenersExpanded = false
+    @State private var showingDownload = true
+    @State private var showingUpload = true
+    @State private var chartEnd = ECSMonitorRange.minuteBoundary()
 
     private var selectedInterface: ECSInterface? {
         snapshot?.interfaces?.first { $0.name == "eth0" }
@@ -19,6 +22,9 @@ struct ECSNetworkSections: View {
             trend
             listeners(snapshot?.sockets ?? [])
             interfaceDetails
+        }
+        .onChange(of: monitor.last?.time, initial: true) { _, _ in
+            chartEnd = ECSMonitorRange.minuteBoundary()
         }
     }
 
@@ -93,30 +99,49 @@ struct ECSNetworkSections: View {
     }
 
     private var trend: some View {
-        let end = ECSMonitorRange.minuteBoundary()
+        let timeDomain = chartEnd.addingTimeInterval(-monitorRange.duration)...chartEnd
+        let peakRate = monitor.reduce(0.0) { peak, point in
+            max(peak, point.sendBytesPerSecond ?? 0, point.receiveBytesPerSecond ?? 0)
+        }
         return Section("实例内网") {
             Picker("时间范围", selection: $monitorRange) {
                 ForEach(ECSMonitorRange.allCases, id: \.self) { range in
                     Text("最近 \(range.rawValue) 小时").tag(range)
                 }
             }.pickerStyle(.menu)
-            Chart {
-                ForEach(monitor) { point in
-                    if let value = point.receiveBytesPerSecond {
-                        LineMark(x: .value("时间", point.time), y: .value("KiB/s", value / 1024))
-                            .foregroundStyle(by: .value("方向", "下行"))
+            if monitorLoading {
+                ProgressView("正在读取监控数据…")
+            } else {
+                Chart {
+                    // Keep the axes present when both series are hidden.
+                    PointMark(x: .value("时间", chartEnd), y: .value("KiB/s", 0.0))
+                        .foregroundStyle(Color.clear)
+                        .accessibilityHidden(true)
+                    if showingUpload {
+                        trafficSeries("上行", color: .green, rate: \.sendBytesPerSecond, layer: 0)
                     }
-                    if let value = point.sendBytesPerSecond {
-                        LineMark(x: .value("时间", point.time), y: .value("KiB/s", value / 1024))
-                            .foregroundStyle(by: .value("方向", "上行"))
+                    if showingDownload {
+                        trafficSeries("下行", color: .blue, rate: \.receiveBytesPerSecond, layer: 1)
+                    }
+                }
+                .chartXScale(domain: timeDomain)
+                .chartYScale(domain: 0...max(1, peakRate / 1024))
+                .chartYAxisLabel("KiB/s")
+                .frame(height: 175)
+                .overlay {
+                    if !showingDownload && !showingUpload {
+                        Text("点按图例显示下行或上行。").font(.caption).foregroundStyle(.secondary)
+                    } else if !monitor.contains(where: {
+                        (showingUpload && $0.sendBytesPerSecond != nil) ||
+                        (showingDownload && $0.receiveBytesPerSecond != nil)
+                    }) {
+                        Text("暂无数据").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
-            .chartXScale(domain: end.addingTimeInterval(-monitorRange.duration)...end)
-            .chartYAxisLabel("KiB/s").frame(height: 175)
-            .overlay {
-                if monitorLoading { ProgressView("正在读取监控数据…") }
-                else if monitor.isEmpty { Text("—").foregroundStyle(.secondary) }
+            HStack(spacing: 20) {
+                trafficLegend("下行", color: .blue, isVisible: $showingDownload)
+                trafficLegend("上行", color: .green, isVisible: $showingUpload)
             }
             if let monitorError {
                 Label(monitorError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
@@ -127,6 +152,44 @@ struct ECSNetworkSections: View {
             }
             Text("阿里云实例内网 1 分钟均值，与上方网卡短时采样的范围和时段不同。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func trafficLegend(_ title: String, color: Color, isVisible: Binding<Bool>) -> some View {
+        let visible = isVisible.wrappedValue
+        return Button {
+            isVisible.wrappedValue.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: visible ? "circle.fill" : "circle")
+                    .font(.caption2)
+                    .foregroundStyle(color)
+                    .accessibilityHidden(true)
+                Text(title).foregroundStyle(visible ? .primary : .secondary)
+            }
+            .font(.subheadline)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityValue(visible ? "已显示" : "已隐藏")
+        .accessibilityHint("切换对应曲线")
+    }
+
+    private func trafficSeries(_ title: String, color: Color, rate: KeyPath<ECSMonitorPoint, Double?>,
+                               layer: Double) -> some ChartContent {
+        let points = monitor.filter { $0[keyPath: rate] != nil }
+        return ForEach(points) { point in
+            if let value = point[keyPath: rate] {
+                if points.count == 1 {
+                    PointMark(x: .value("时间", point.time), y: .value(title, value / 1024))
+                        .foregroundStyle(color).zIndex(layer)
+                } else {
+                    LineMark(x: .value("时间", point.time), y: .value(title, value / 1024),
+                             series: .value("方向", title))
+                        .foregroundStyle(color).zIndex(layer)
+                }
+            }
         }
     }
 

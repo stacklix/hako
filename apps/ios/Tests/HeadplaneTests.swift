@@ -331,12 +331,12 @@ private final class MemorySecrets: SecretStorage {
         }
         do { _ = try await client.submit(.dns, fields: ["diagnostic": "REQUEST-END"]); preconditionFailure() }
         catch let e as HeadplaneFailure { precondition(e.status == 500 && e.outcomeUnknown) }
-        let diagnostic = HakoLogStore.shared.snapshot().entries.first { $0.message == "Headplane 请求失败" }!
+        let diagnostic = HakoLogStore.shared.snapshot().entries.first { $0.source == .headplane && $0.detail.contains("dns-failure-500") }!
         precondition(diagnostic.level == .error)
-        for expected in ["POST https://headplane.example.test/admin/dns.data", "diagnostic=REQUEST-END", "HTTP 500", "dns-failure-500", "RESPONSE-END</html>"] {
-            precondition(diagnostic.detail.contains(expected), "Missing full HTTP diagnostic: \(expected)")
+        for expected in ["方法：POST", "https://headplane.example.test/admin/dns.data", "diagnostic=REQUEST-END", "HTTP 状态：500", "dns-failure-500", "正文已省略"] {
+            precondition(diagnostic.detail.contains(expected), "Missing HTTP diagnostic: \(expected)")
         }
-        for secret in [connection.apiKey, "new-private-session", " session "] {
+        for secret in [connection.apiKey, "new-private-session", " session ", "RESPONSE-END</html>"] {
             precondition(!diagnostic.detail.contains(secret), "Credentials must be redacted")
         }
         WireProtocol.respond { _ in (302, ["Location": "https://attacker.example.test/machines", "Set-Cookie": "session=x; Path=/"], Data()) }

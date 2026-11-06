@@ -23,11 +23,13 @@ struct HakoLogsView: View {
                     Text("全部").tag(Optional<HakoLogSource>.none)
                     ForEach(HakoLogSource.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
                 }
+                .logRowSeparators()
                 Picker("级别", selection: $level) {
                     Text("全部").tag(Optional<HakoLogLevel>.none)
                     ForEach(HakoLogLevel.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
                 }
-            } footer: { Text("仅保存在本机，保留最近 \(HakoLogStore.capacity) 条。接口请求及响应仅在脱敏后记录，不记录终端输入输出。") }
+                .logRowSeparators()
+            } footer: { Text("仅保存在本机，保留最近 \(HakoLogStore.capacity) 条。HTTP 请求头、响应头和不超过 8 KiB 的文本正文会脱敏后记录。") }
             if let storageIssue { Section { Text(storageIssue).foregroundStyle(.orange).font(.footnote) } }
             Section("\(filtered.count) 条日志 · 最新在前") {
                 if filtered.isEmpty {
@@ -46,6 +48,7 @@ struct HakoLogsView: View {
                             if !entry.detail.isEmpty { Text(entry.detail).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2) }
                         }.padding(.vertical, 3)
                     }
+                    .logRowSeparators()
                 }
             }
         }
@@ -88,8 +91,11 @@ private struct HakoLogDetailView: View {
         List {
             Section {
                 LabeledContent("子应用", value: entry.source.rawValue)
+                    .logRowSeparators()
                 LabeledContent("级别", value: entry.level.rawValue)
+                    .logRowSeparators()
                 LabeledContent("时间", value: entry.time.formatted(date: .complete, time: .standard))
+                    .logRowSeparators()
             }
             Section("事件") { Text(entry.message).textSelection(.enabled) }
             if !entry.detail.isEmpty {
@@ -100,12 +106,22 @@ private struct HakoLogDetailView: View {
                     } label: {
                         Label(copied ? "已复制" : "复制正文", systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
+                    .logRowSeparators()
                     Text(entry.detail).font(.footnote.monospaced()).textSelection(.enabled)
+                        .logRowSeparators()
                 } header: { Text("详情") }
             }
         }
         .navigationTitle("日志详情")
         .toolbar { ShareLink(item: entry.text) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("分享此条日志") }
         .privacySensitive()
+    }
+}
+
+private extension View {
+    func logRowSeparators() -> some View {
+        frame(maxWidth: .infinity, alignment: .leading)
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 }

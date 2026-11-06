@@ -63,13 +63,13 @@ jobs:
           /tmp/hako-usage-presentation-tests
           swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
           /tmp/hako-core-tests
-          swiftc Hako/HTTPTransport.swift Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/SecureStorage.swift -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
           /tmp/hako-github-tests
       - name: Test sports records, timestamps and annual GitHub synchronization
         run: |
           swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Tests/SportsTests.swift -o /tmp/hako-sports-tests
           /tmp/hako-sports-tests
-          swiftc Hako/HTTPTransport.swift Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Hako/GitHubSettings.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Sports/SportsGitHub.swift Tests/SportsGitHubTests.swift -o /tmp/hako-sports-github-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/HakoError.swift Hako/CSV.swift Hako/Sports/SportsModels.swift Hako/GitHubSettings.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Sports/SportsGitHub.swift Tests/SportsGitHubTests.swift -o /tmp/hako-sports-github-tests
           /tmp/hako-sports-github-tests
           swiftc Hako/HakoError.swift Hako/CSV.swift Hako/GitHubRepository.swift Hako/Sports/SportsModels.swift Hako/Sports/SportsGitHub.swift Tests/SportsRepositoryTests.swift -o /tmp/hako-sports-repository-tests
           /tmp/hako-sports-repository-tests
@@ -102,7 +102,7 @@ jobs:
           /tmp/hako-headplane-tests
       - name: Test local application logs and credential redaction
         run: |
-          swiftc Hako/Logging/HakoLog.swift Tests/HakoLogTests.swift -o /tmp/hako-log-tests
+          swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Tests/HakoLogTests.swift -o /tmp/hako-log-tests
           /tmp/hako-log-tests
       - name: Test Qinglong OpenAPI and connection policies
         run: |
@@ -120,7 +120,7 @@ jobs:
           /tmp/hako-ecs-loading-tests
       - name: Test private asset records and daily sync policy
         run: |
-          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/Crypto/CryptoModels.swift Tests/CryptoModelsTests.swift -o /tmp/hako-crypto-model-tests
+          swiftc Hako/HakoError.swift Hako/CSV.swift Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Crypto/CryptoModels.swift Tests/CryptoModelsTests.swift -o /tmp/hako-crypto-model-tests
           /tmp/hako-crypto-model-tests
           swiftc Hako/HakoError.swift Hako/CSV.swift Hako/Crypto/CryptoModels.swift Hako/Crypto/CryptoChainHoldings.swift Tests/CryptoChainHoldingsTests.swift -o /tmp/hako-crypto-chain-holdings-tests
           /tmp/hako-crypto-chain-holdings-tests

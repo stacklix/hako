@@ -36,15 +36,8 @@ actor HeadplaneClient: HeadplaneAccess {
         let task = Task<[HTTPCookie], Error> {
             var request = try connection.request(.login, data: false, method: "POST")
             request.httpBody = Self.form(["api_key": connection.apiKey])
-            let data: Data, response: URLResponse
-            do { (data, response) = try await session.data(for: request) }
-            catch {
-                Self.logFailure(request, error: error, secrets: [connection.apiKey])
-                throw error
-            }
-            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                Self.logFailure(request, response: http, data: data, secrets: [connection.apiKey])
-            }
+            let (_, response) = try await HTTPTransport.data(for: request, using: session, source: .headplane,
+                                                             secrets: [connection.apiKey])
             guard let http = response as? HTTPURLResponse, let url = request.url,
                   [302, 303].contains(http.statusCode), let location = http.value(forHTTPHeaderField: "Location"),
                   let destination = URL(string: location, relativeTo: url)?.absoluteURL,
@@ -96,13 +89,15 @@ actor HeadplaneClient: HeadplaneAccess {
         }
         // These endpoints do not use the API Key login or its session Cookie.
         let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: request) }
+        do {
+            (data, response) = try await HTTPTransport.data(for: request, using: session, source: .headplane,
+                                                          secrets: [connection.infoSecret ?? ""])
+        }
         catch {
             if Task.isCancelled || (error as? URLError)?.code == .cancelled { throw CancellationError() }
             throw HeadplaneFailure(message: "无法连接 Headplane，服务器健康状态未知。")
         }
         guard let http = response as? HTTPURLResponse else { throw HeadplaneFailure.incompatible }
-        HakoLog.record(.headplane, "Headplane 诊断完成", detail: "GET \(resource.path) · \(http.statusCode)")
         if [301, 302, 303, 307, 308].contains(http.statusCode) {
             throw HeadplaneFailure(message: "诊断接口返回重定向，请核对 Headplane 管理地址。", status: http.statusCode)
         }
@@ -142,18 +137,15 @@ actor HeadplaneClient: HeadplaneAccess {
         }
         request.setValue(HTTPCookie.requestHeaderFields(with: valid)["Cookie"], forHTTPHeaderField: "Cookie")
         let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: request) }
+        do {
+            (data, response) = try await HTTPTransport.data(for: request, using: session, source: .headplane,
+                                                          secrets: [connection.apiKey] + valid.map(\.value))
+        }
         catch {
             if fields == nil && (Task.isCancelled || (error as? URLError)?.code == .cancelled) { throw CancellationError() }
-            Self.logFailure(request, error: error, secrets: [connection.apiKey] + valid.map(\.value))
             throw HeadplaneFailure(message: fields == nil ? "无法连接 Headplane，请检查网络后刷新。" : "操作结果尚未确认，请先刷新远端状态，勿重复提交。", outcomeUnknown: fields != nil)
         }
         guard let http = response as? HTTPURLResponse else { throw HeadplaneFailure.incompatible }
-        if http.statusCode >= 400 {
-            Self.logFailure(request, response: http, data: data, secrets: [connection.apiKey] + valid.map(\.value))
-        } else {
-            HakoLog.record(.headplane, "Headplane 请求完成", detail: "\(request.httpMethod ?? "GET") \(resource.path) · \(http.statusCode)")
-        }
         if http.statusCode == 401 { cookies = []; throw HeadplaneFailure(message: "会话失效，请重新连接。", status: 401) }
         if [301, 302, 303, 307, 308].contains(http.statusCode) || http.value(forHTTPHeaderField: "X-Remix-Redirect") != nil {
             cookies = []
@@ -199,45 +191,6 @@ actor HeadplaneClient: HeadplaneAccess {
         return value
     }
 
-    // Keep the raw wire body (including HTML and turbo-stream) before decoding can fail.
-    private static func logFailure(_ request: URLRequest, response: HTTPURLResponse? = nil,
-                                   data: Data = Data(), error: Error? = nil, secrets: [String]) {
-        var secrets = secrets
-        let responseHeaders = response?.allHeaderFields.reduce(into: [String: String]()) {
-            $0[String(describing: $1.key)] = String(describing: $1.value)
-        } ?? [:]
-        if let url = response?.url {
-            secrets += HTTPCookie.cookies(withResponseHeaderFields: responseHeaders, for: url).map(\.value)
-        }
-        func headers(_ values: [String: String]) -> String {
-            values.sorted { $0.key.lowercased() < $1.key.lowercased() }.map { key, value in
-                let sensitive = ["authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key"].contains(key.lowercased())
-                return "\(key): \(sensitive ? "[已隐藏]" : value)"
-            }.joined(separator: "\n")
-        }
-        func body(_ value: Data?) -> String {
-            guard let value, !value.isEmpty else { return "[空]" }
-            return String(data: value, encoding: .utf8) ?? "[Base64]\n\(value.base64EncodedString())"
-        }
-        let detail = """
-        请求
-        \(request.httpMethod ?? "GET") \(HakoLog.safeURL(request.url?.absoluteString ?? ""))
-        \(headers(request.allHTTPHeaderFields ?? [:]))
-
-        请求正文
-        \(body(request.httpBody))
-
-        响应
-        \(response.map { "HTTP \($0.statusCode)" } ?? "[未收到 HTTP 响应]")
-        \(headers(responseHeaders))
-
-        响应正文
-        \(body(data))
-        \(error.map { "\n传输错误\n\($0.localizedDescription)" } ?? "")
-        """
-        HakoLogStore.shared.append(source: .headplane, level: .error, message: "Headplane 请求失败",
-                                   detail: detail, secrets: secrets, fullDetail: true)
-    }
     private func sanitized(_ message: String) -> String {
         var result = message.replacingOccurrences(of: connection.apiKey, with: "[已隐藏]")
         if let secret = connection.infoSecret, !secret.isEmpty { result = result.replacingOccurrences(of: secret, with: "[已隐藏]") }

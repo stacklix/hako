@@ -74,7 +74,9 @@ final class ECSClient: @unchecked Sendable {
                 secrets: [connection.accessKeyID, connection.accessKeySecret, connection.securityToken])
         }
         do {
-            let (data, response) = try await session.data(for: ECSRPC.request(connection: connection, action: action, parameters: parameters))
+            let request = ECSRPC.request(connection: connection, action: action, parameters: parameters)
+            let (data, response) = try await HTTPTransport.data(for: request, using: session, source: .cloudServers,
+                secrets: [connection.accessKeyID, connection.accessKeySecret, connection.securityToken])
             guard let http = response as? HTTPURLResponse, data.count <= 2_097_152,
                   let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw ECSFailure(message: "阿里云返回的数据格式无效。")

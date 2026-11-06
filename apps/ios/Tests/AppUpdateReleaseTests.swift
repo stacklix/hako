@@ -22,6 +22,11 @@ import Foundation
         precondition(current.summary == "显示构建变更摘要" && legacy.summary == nil)
         let unsafe = AppUpdateRelease(version: "0.1.0", build: "2160.10.0", builtAt: .now, manifest: "../manifest.plist", summary: nil)
         precondition(unsafe.manifestName == nil)
+        let local = ChoreUpdateRoute.local
+        let remote = ChoreUpdateRoute.publicNetwork
+        precondition(local.appURL.scheme == "http" && local.appURL.path == "/chore/ios/hako")
+        precondition(local.buildStatusURL.path == "/chore/ios/build-status.json")
+        precondition(remote.appURL.scheme == "https" && remote.appURL.path == local.appURL.path)
         print("App update: numeric version ordering, legacy metadata and pinned manifests passed")
     }
 }

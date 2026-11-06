@@ -23,7 +23,6 @@ struct HakoLogEntry: Codable, Identifiable, Sendable {
 }
 
 // A serial queue orders appends, reads and clears, and keeps disk writes off the UI thread.
-// HTTP failure diagnostics may retain full details after credential redaction.
 final class HakoLogStore: @unchecked Sendable {
     static let shared = HakoLogStore(fileURL: defaultFileURL())
     static let capacity = 1_000
@@ -40,7 +39,8 @@ final class HakoLogStore: @unchecked Sendable {
         do {
             let stored = try JSONDecoder().decode([HakoLogEntry].self, from: Data(contentsOf: fileURL))
             values = Array(stored.filter { entry in
-                !(entry.source == .crypto && entry.level == .info &&
+                if entry.source == .hako && entry.message == "应用进入前台" { return false }
+                return !(entry.source == .crypto && entry.level == .info &&
                   (entry.message == "资产更新开始" || entry.message == "资产更新完成"))
             }.suffix(Self.capacity))
         } catch { storageIssue = "无法读取之前的日志；本次日志仍可查看。" }

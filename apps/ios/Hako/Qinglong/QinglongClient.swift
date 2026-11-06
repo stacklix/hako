@@ -26,7 +26,8 @@ actor QinglongClient {
             let request = try connection.request(["auth", "token"], query: [
                 URLQueryItem(name: "client_id", value: connection.clientID),
                 URLQueryItem(name: "client_secret", value: connection.clientSecret)])
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await HTTPTransport.data(for: request, using: session, source: .qinglong,
+                secrets: [connection.clientID, connection.clientSecret] + connection.headers.map(\.value))
             let root = try Self.response(data, response: response)
             let token = root["data"]["token"].text
             guard !token.isEmpty, let expiry = root["data"]["expiration"].int else {
@@ -64,7 +65,8 @@ actor QinglongClient {
         }
         let started = Date()
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await HTTPTransport.data(for: request, using: session, source: .qinglong,
+                secrets: [connection.clientID, connection.clientSecret] + connection.headers.map(\.value))
             let root = try Self.response(data, response: response)
             try Task.checkCancellation()
             HakoLog.record(.qinglong, "青龙请求完成", detail: "\(method) \(path.first ?? "") · \(Int(Date().timeIntervalSince(started) * 1000)) ms")

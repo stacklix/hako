@@ -60,7 +60,7 @@ final class BuildPushSubscription: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: ["id": id, "token": hexToken])
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await HTTPTransport.data(for: request, using: URLSession.shared, secrets: [hexToken])
             guard (response as? HTTPURLResponse)?.statusCode == 204 else {
                 throw URLError(.badServerResponse)
             }

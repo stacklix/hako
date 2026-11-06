@@ -221,7 +221,7 @@ final class ArcaneClient: @unchecked Sendable {
         do {
             var request = try request(["environments", environment, "containers", id, "logs", "download"])
             request.setValue("text/plain", forHTTPHeaderField: "Accept")
-            let (temporary, response) = try await session.download(for: request)
+            let (temporary, response) = try await HTTPTransport.download(for: request, using: session, source: .containers, secrets: [connection.apiKey])
             defer { try? FileManager.default.removeItem(at: temporary) }
             guard let response = response as? HTTPURLResponse else { throw ArcaneFailure(message: "日志下载响应无效。") }
             guard response.statusCode == 200 else { throw failure(response.statusCode, method: "GET") }
@@ -304,7 +304,7 @@ final class ArcaneClient: @unchecked Sendable {
                 secrets: [connection.apiKey])
         }
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await HTTPTransport.data(for: request, using: session, source: .containers, secrets: [connection.apiKey])
             guard let http = response as? HTTPURLResponse else {
                 throw ArcaneFailure(message: "Arcane 返回了无效响应。", outcomeUnknown: mutation)
             }

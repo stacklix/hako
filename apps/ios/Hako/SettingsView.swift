@@ -5,10 +5,6 @@ struct SettingsView: View {
         case github, xkode
 
         var title: String { self == .github ? "GitHub Pages" : "本机 xkode" }
-        var baseURL: URL {
-            URL(string: self == .github ? "https://stacklix.github.io/hako/" : "https://nux.luckyqiao.com/chore/ios/hako/")!
-        }
-        var pageURL: URL { baseURL.appendingPathComponent("index.html") }
     }
     private enum UpdateState: Sendable {
         case checking, loaded(AppUpdateRelease), failed
@@ -46,6 +42,7 @@ struct SettingsView: View {
     @State private var sheet: SheetRoute?
     @State private var alert: (title: String, message: String)?
     @State private var updates: [UpdateSource: UpdateState] = [:]
+    @State private var choreRoute: ChoreUpdateRoute?
     @State private var updateRequestID: UUID?
     @State private var updateCheckID = 0
     @State private var isVisible = false
@@ -54,6 +51,7 @@ struct SettingsView: View {
         guard isVisible, inForeground, !buildPush.settingsRequested else { return nil }
         return "\(updateCheckID)-\(buildPush.settingsRequestID)"
     }
+    private static let githubUpdateURL = URL(string: "https://stacklix.github.io/hako/")!
     private var currentVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
@@ -109,13 +107,14 @@ struct SettingsView: View {
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                LabeledContent("Chore 连接", value: choreRoute == .local ? "当前在局域网" : choreRoute == nil ? "正在检测…" : "使用公网地址")
                 ForEach(UpdateSource.allCases, id: \.self) { source in
                     updateRow(source)
                 }
             } header: {
                 Text("应用更新")
             }
-            BuildStatusView(isSettingsVisible: isVisible && sheet == nil)
+            BuildStatusView(isSettingsVisible: isVisible && sheet == nil, choreRoute: choreRoute)
         }.navigationTitle("设置")
             .scrollContentBackground(.hidden)
             .background(HakoStyle.background)
@@ -137,6 +136,11 @@ struct SettingsView: View {
             .task(id: updateTaskID) { [updateTaskID] in
                 guard updateTaskID != nil else { return }
                 await checkUpdates()
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(30)) }
+                    catch { return }
+                    await refreshChore()
+                }
             }
             .alert(alert?.title ?? "Hako", isPresented: Binding(get: { alert != nil }, set: { if !$0 { alert = nil } }), presenting: alert) { _ in
                 Button("好") { alert = nil }
@@ -201,13 +205,15 @@ struct SettingsView: View {
             .disabled(state.release == nil)
             .accessibilityLabel("查看 \(source.title) 版变更摘要")
 
-            Link(destination: source.pageURL) {
+            let baseURL = source == .github ? Self.githubUpdateURL : choreRoute?.appURL
+            Link(destination: (baseURL ?? ChoreUpdateRoute.publicNetwork.appURL).appendingPathComponent("index.html")) {
                 Image(systemName: "arrow.up.right.square")
                     .foregroundStyle(.blue)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            .disabled(baseURL == nil)
             .accessibilityLabel("打开 \(source.title) 安装页")
         }
         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -224,23 +230,33 @@ struct SettingsView: View {
             updates = Dictionary(uniqueKeysWithValues: UpdateSource.allCases.map { ($0, .failed) })
             return
         }
-        await withTaskGroup(of: (UpdateSource, UpdateState).self) { group in
-            for source in UpdateSource.allCases {
-                group.addTask { (source, await Self.check(source)) }
-            }
-            for await (source, state) in group {
-                guard !Task.isCancelled, updateRequestID == request else { return }
-                updates[source] = state
-            }
+        async let github = Self.check(Self.githubUpdateURL)
+        await refreshChore()
+        let githubState = await github
+        guard !Task.isCancelled, updateRequestID == request else { return }
+        updates[.github] = githubState
+    }
+
+    private func refreshChore() async {
+        let local = await Self.check(ChoreUpdateRoute.local.appURL, timeout: 3)
+        guard !Task.isCancelled else { return }
+        if local.release != nil {
+            choreRoute = .local
+            updates[.xkode] = local
+        } else {
+            choreRoute = .publicNetwork
+            let remote = await Self.check(ChoreUpdateRoute.publicNetwork.appURL)
+            guard !Task.isCancelled else { return }
+            updates[.xkode] = remote
         }
     }
 
-    nonisolated private static func check(_ source: UpdateSource) async -> UpdateState {
-        var endpoint = URLComponents(url: source.baseURL.appendingPathComponent("latest.json"), resolvingAgainstBaseURL: false)!
+    nonisolated private static func check(_ baseURL: URL, timeout: TimeInterval = 15) async -> UpdateState {
+        var endpoint = URLComponents(url: baseURL.appendingPathComponent("latest.json"), resolvingAgainstBaseURL: false)!
         endpoint.queryItems = [URLQueryItem(name: "t", value: UUID().uuidString)]
-        let request = URLRequest(url: endpoint.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        let request = URLRequest(url: endpoint.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await HTTPTransport.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -253,7 +269,9 @@ struct SettingsView: View {
     }
     private func install(_ release: AppUpdateRelease, from source: UpdateSource) {
         guard let name = release.manifestName else { return }
-        var manifest = URLComponents(url: source.baseURL.appendingPathComponent(name), resolvingAgainstBaseURL: false)!
+        // The system installer requires trusted HTTPS for the manifest and IPA.
+        let baseURL = source == .github ? Self.githubUpdateURL : ChoreUpdateRoute.publicNetwork.appURL
+        var manifest = URLComponents(url: baseURL.appendingPathComponent(name), resolvingAgainstBaseURL: false)!
         manifest.queryItems = [URLQueryItem(name: "t", value: UUID().uuidString)]
         var installation = URLComponents()
         installation.scheme = "itms-services"

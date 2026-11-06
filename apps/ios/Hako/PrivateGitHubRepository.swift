@@ -13,7 +13,7 @@ struct PrivateGitHubRepository: GitHubRepositoryAccess {
         guard !token.isEmpty else { throw HakoError(message: "请先配置 GitHub Token。") }
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await HTTPTransport.shared.data(for: request)
+        let (data, response) = try await HTTPTransport.data(for: request)
         struct Visibility: Decodable { let `private`: Bool }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let visibility = try? JSONDecoder().decode(Visibility.self, from: data), visibility.private else {

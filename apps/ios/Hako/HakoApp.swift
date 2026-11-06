@@ -153,7 +153,6 @@ struct HomeView: View {
             .toggleStyle(SwitchToggleStyle(tint: .green))
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
-                HakoLog.record(.hako, "应用进入前台")
                 await ConsoleClient.shared.restore()
             }
             .task(id: "\(scenePhase)-\(console.requestContext)") {

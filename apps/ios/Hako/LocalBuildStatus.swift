@@ -8,6 +8,7 @@ struct BuildStatusView: View {
     }
 
     let isSettingsVisible: Bool
+    let choreRoute: ChoreUpdateRoute?
     @State private var source = Source.local
 
     var body: some View {
@@ -35,7 +36,7 @@ struct BuildStatusView: View {
             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
 
             switch source {
-            case .local: LocalBuildStatusRows(isSettingsVisible: isSettingsVisible)
+            case .local: LocalBuildStatusRows(isSettingsVisible: isSettingsVisible, choreRoute: choreRoute)
             case .github: GitHubBuildStatusRows(isSettingsVisible: isSettingsVisible)
             }
         }
@@ -140,6 +141,7 @@ private struct LocalBuildTask: Decodable, Identifiable {
 
 struct LocalBuildStatusRows: View {
     let isSettingsVisible: Bool
+    let choreRoute: ChoreUpdateRoute?
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshot: LocalBuildSnapshot?
     @State private var unavailable = false
@@ -154,10 +156,10 @@ struct LocalBuildStatusRows: View {
                         refreshID += 1
                     }
                 }
-                .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)") {
-                    guard isSettingsVisible, scenePhase == .active else { return }
+                .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(choreRoute?.rawValue ?? "")") {
+                    guard isSettingsVisible, scenePhase == .active, let choreRoute else { return }
                     while !Task.isCancelled {
-                        await refresh()
+                        await refresh(using: choreRoute)
                         let interval = unavailable || snapshot?.active.isEmpty != false ? 30 : 5
                         do { try await Task.sleep(for: .seconds(interval)) }
                         catch { return }
@@ -221,23 +223,26 @@ struct LocalBuildStatusRows: View {
         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 
-    @MainActor private func refresh() async {
-        let url = URL(string: "https://nux.luckyqiao.com/chore/ios/build-status.json")!
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
-        do {
-            let (data, response) = try await HTTPTransport.shared.data(for: request)
-            try Task.checkCancellation()
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                unavailable = true
+    @MainActor private func refresh(using route: ChoreUpdateRoute) async {
+        let routes: [ChoreUpdateRoute] = route == .local ? [.local, .publicNetwork] : [.publicNetwork]
+        for candidate in routes {
+            guard !Task.isCancelled else { return }
+            let request = URLRequest(url: candidate.buildStatusURL, cachePolicy: .reloadIgnoringLocalCacheData,
+                                     timeoutInterval: candidate == .local ? 3 : 10)
+            do {
+                let (data, response) = try await HTTPTransport.data(for: request)
+                try Task.checkCancellation()
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                snapshot = try decoder.decode(LocalBuildSnapshot.self, from: data)
+                unavailable = false
                 return
+            } catch {
+                if Task.isCancelled { return }
             }
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            snapshot = try decoder.decode(LocalBuildSnapshot.self, from: data)
-            unavailable = false
-        } catch {
-            if !Task.isCancelled { unavailable = true }
         }
+        unavailable = true
     }
 }
 

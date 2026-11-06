@@ -123,7 +123,7 @@ struct GitHubService: GitHubRepositoryAccess {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["query": query, "variables": variables])
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await HTTPTransport.data(for: request, using: session, secrets: [token])
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw HakoError(message: "GitHub 请求失败（HTTP \(status)），请检查网络及主应用的仓库访问权限。") }
         return try JSONDecoder().decode(Envelope<T>.self, from: data)
