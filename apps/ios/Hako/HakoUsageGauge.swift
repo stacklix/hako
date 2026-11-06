@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ECSUsageGauge: View {
+struct HakoUsageGauge: View {
     let title: String
     let percent: Double?
     let color: Color

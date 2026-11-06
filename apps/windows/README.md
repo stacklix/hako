@@ -19,7 +19,9 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 EXE、窗口与系统托盘统一使用由 iOS `AppIcon.appiconset/icon.png` 转换的 Hako 图标（`src/Hako/Assets/Hako.ico`，包含 16–256 像素尺寸）。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
 
-Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合全部查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
+Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
+
+新版 Agent 的 Git 功能需要本机安装 Git，使用 Agent 当前 Windows 用户的 Git 身份与凭据。iOS 可查看 `~/Code` 下的仓库并创建提交、推送。操作仅针对手机确认的仓库、文件或分支。命令详见 [设备监控协议](../../docs/device-monitoring.md#git-仓库)。
 
 「设备监控」支持本地刷新和远程查询，CPU 使用率为约 1 秒窗口内的整机平均值，使用可跨语言系统和处理器组的 PDH 计数器；内存为总物理内存减去可用物理内存。网络上下行速度使用同一采样过程前后的物理网卡 64 位字节计数器差值，按实际经过时间计算，`network` 字段返回 B/s、网卡数量和可用状态；包含局域网，排除非物理、过滤、回环与隧道接口，网卡变化或计数器重置时显示暂不可用。GUI、CLI 与远程查询使用同一份指标。网络按需采样，不后台统计或保存今日累计流量；没有服务端请求时不会持续上传指标。
 

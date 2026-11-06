@@ -25,7 +25,7 @@ import Combine
     var hasSavedSession: Bool { authentication.hasSavedSession }
     var logoutPending: Bool { authentication.logoutPending }
     var busy: Bool { working || authentication.busy }
-    private var requestContext: String { authentication.requestContext }
+    var requestContext: String { authentication.requestContext }
     private var current: State { state.context == requestContext ? state : State(context: requestContext) }
     private func prepareContext() { if state.context != requestContext { state = State(context: requestContext) } }
     var agents: [ConsoleAgent] {
@@ -156,6 +156,7 @@ import Combine
         catch { if context == requestContext { httpChecks[agent.id]?.error = error.localizedDescription } }
     }
     func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
         let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST", body: ["method": method, "version": version, "params": params])
         let reply = try JSONDecoder().decode(ConsoleAgentReply<Result>.self, from: data)
         switch reply {

@@ -133,19 +133,31 @@ struct DeviceMetricsView: View {
         }
     }
     var body: some View {
-        DeviceCapabilityBoard(capabilities: (currentAgent.capabilities ?? []).filter { $0.name != "action.xkode.tasks.manage" },
+        DeviceCapabilityPages(capabilities: (currentAgent.capabilities ?? []).filter {
+                $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
+            },
             storageKey: orderKey("all"),
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
-            initialOrder: initialOrder, pinnedHeaderNames: ["query.network.listeners"],
-            title: capabilityTitle, icon: capabilityIcon, summary: capabilitySummary) {
+            initialOrder: initialOrder, title: capabilityTitle, tabTitle: capabilityTabTitle) {
             deviceOverview
         } content: { capability in
-            capabilityContent(capability)
+            if capability.name == "query.system.metrics", capability.version == 1 {
+                metricsContent(capability)
+            } else if capability.name == DeviceGitCommand.list, capability.version == 1 {
+                DeviceGitRepositoriesView(agent: currentAgent,
+                    cacheFile: DeviceGitInventory.cacheFile(server: client.serverURL, account: client.username, agent: currentAgent.id))
+                    .id(client.requestContext)
+            } else {
+                VStack(alignment: .leading, spacing: 14) { capabilityContent(capability) }
+                    .devicePagePanel()
+            }
         }
         .id(orderKey("all"))
         .refreshable { if client.authenticated { await client.query(currentAgent) } }
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(HakoStyle.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .task { if client.authenticated { await client.query(currentAgent) } }
     }
     private var deviceOverview: some View {
@@ -189,47 +201,18 @@ struct DeviceMetricsView: View {
               entry.error == nil, let value = entry.result?.decode(ConsoleCodexUsage.self), value.isValid else { return nil }
         return value
     }
-    private func capabilityIcon(_ capability: ConsoleAgentCapability) -> String {
+    private func capabilityTabTitle(_ capability: ConsoleAgentCapability) -> String {
         switch (capability.name, capability.version) {
-        case ("query.system.metrics", 1): return "cpu"
-        case ("query.codex.usage", 1): return "terminal"
-        case ("query.network.listeners", 1): return "network"
-        case ("action.network.http.check", 1): return "network"
-        default: return capability.name.hasPrefix("query.") ? "curlybraces" : "slider.horizontal.3"
+        case ("query.system.metrics", 1): return "系统"
+        case ("query.codex.usage", 1): return "Codex"
+        case ("query.network.listeners", 1): return "端口"
+        case ("action.network.http.check", 1): return "检测"
+        case (DeviceGitCommand.list, 1): return "Git"
+        default: return capability.name.split(separator: ".").last.map(String.init) ?? capability.name
         }
-    }
-    private func capabilitySummary(_ capability: ConsoleAgentCapability) -> String {
-        if capability.name.hasPrefix("query.") {
-            guard let entry = state.entries[capability.name] else {
-                return state.loading ? "正在查询…" : state.loaded ? "未返回数据" : "等待查询数据"
-            }
-            if entry.error != nil { return "查询异常 · 展开查看" }
-            if entry.version != capability.version { return "数据版本不一致" }
-            if capability.version == 1, capability.name == "query.system.metrics" {
-                guard let value = metrics(for: capability) else { return "系统指标格式无效" }
-                return String(format: "CPU %.1f%% · 内存 %.1f%%", value.cpuUsagePercent, value.memoryUsagePercent)
-            }
-            if capability.version == 1, capability.name == "query.codex.usage" {
-                guard let value = codexUsage(for: capability) else { return "Codex 统计格式无效" }
-                let sessions = value.runningSessions.map { "\($0) 个会话处理中" } ?? "会话状态暂不可用"
-                return sessions + (value.available ? "" : " · 历史数据")
-            }
-            if capability.version == 1, capability.name == "query.network.listeners" {
-                guard let value = listeners(for: capability) else { return "监听端口格式无效" }
-                return "\(value.ports.count) 个端口" + (value.warnings.isEmpty ? "" : " · 有采集提示")
-            }
-            return "只读数据 · v\(capability.version)"
-        }
-        if capability.name == "action.network.http.check", capability.version == 1 {
-            if check.loading { return "正在检测…" }
-            if check.error != nil { return "检测失败 · 展开查看" }
-            return check.result.map { $0.reachable ? "上次检测：地址可达" : "上次检测：未获得响应" } ?? "点击配置并检测"
-        }
-        return "当前客户端暂不支持此操作或版本"
     }
     @ViewBuilder private func capabilityContent(_ capability: ConsoleAgentCapability) -> some View {
         switch (capability.name, capability.version) {
-        case ("query.system.metrics", 1): metricsContent(capability)
         case ("query.codex.usage", 1): codexContent(capability)
         case ("query.network.listeners", 1): listenersContent(capability)
         case ("action.network.http.check", 1): httpContent
@@ -250,6 +233,7 @@ struct DeviceMetricsView: View {
         case ("query.codex.usage", 1): return "Codex 活动"
         case ("query.network.listeners", 1): return "监听端口"
         case ("action.network.http.check", 1): return "URL 连通性检测"
+        case (DeviceGitCommand.list, 1): return "Git 仓库"
         default: return capability.name + " · v\(capability.version)"
         }
     }
@@ -338,15 +322,20 @@ struct DeviceMetricsView: View {
     private func metricsContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]
         let metrics = metrics(for: capability)
-        return Group {
+        return VStack(alignment: .leading, spacing: 10) {
             queryStatus(capability)
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 18) { resourceMetrics(metrics) }
+                    .devicePagePanel()
             } else {
                 HStack(alignment: .top, spacing: 18) { resourceMetrics(metrics) }
+                    .devicePagePanel()
             }
-            Divider()
-            networkContent(metrics)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("网卡实时速率").font(.subheadline.weight(.semibold))
+                networkContent(metrics)
+            }
+            .devicePagePanel()
             Text(metrics.map { "\(sampleTime($0.sampledAt)) 采样 · 窗口 \($0.sampleWindowMs) ms" } ?? "尚无采样信息")
                 .font(.caption2).foregroundStyle(.secondary)
             if entry?.result != nil && metrics == nil && entry?.error == nil && entry?.version == 1 {
@@ -355,20 +344,11 @@ struct DeviceMetricsView: View {
         }
     }
     @ViewBuilder private func resourceMetrics(_ metrics: ConsoleMetrics?) -> some View {
-        resourceMetric("CPU 使用率", value: metrics?.cpuUsagePercent, detail: "处理器使用率", color: .blue)
-        resourceMetric("内存使用率", value: metrics?.memoryUsagePercent,
+        HakoUsageGauge(title: "CPU 使用率", percent: metrics?.cpuUsagePercent, color: .blue,
+            detail: metrics.map { "采样窗口 \($0.sampleWindowMs) ms" } ?? "—")
+        HakoUsageGauge(title: "内存使用率", percent: metrics?.memoryUsagePercent, color: .purple,
             detail: metrics.map { String(format: "%.1f / %.1f GiB", Double($0.memoryUsedBytes) / 1_073_741_824,
-                                         Double($0.memoryTotalBytes) / 1_073_741_824) } ?? "已用 / 总容量", color: .purple)
-    }
-    private func resourceMetric(_ title: String, value: Double?, detail: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value.map { String(format: "%.1f%%", $0) } ?? "—")
-                .font(.title.weight(.semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
-            ProgressView(value: value ?? 0, total: 100).tint(color).opacity(value == nil ? 0.3 : 1)
-                .accessibilityHidden(true)
-            Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.frame(maxWidth: .infinity, alignment: .leading).accessibilityElement(children: .combine)
+                                         Double($0.memoryTotalBytes) / 1_073_741_824) } ?? "已用 / 总容量")
     }
     @ViewBuilder private func networkContent(_ metrics: ConsoleMetrics?) -> some View {
         if let network = metrics?.network, network.isValid {

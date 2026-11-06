@@ -120,11 +120,11 @@ struct CloudServersView: View {
         let usage = ECSOverviewUsage(snapshot: store.overview, monitor: store.monitor)
         Section {
             HStack(alignment: .top, spacing: 12) {
-                ECSUsageGauge(title: "CPU 使用率", percent: usage.cpu, color: .blue,
+                HakoUsageGauge(title: "CPU 使用率", percent: usage.cpu, color: .blue,
                               detail: usage.cpu == nil ? "—" : usage.cpuIsSampled ? "约 1 秒采样" : "1 分钟均值")
-                ECSUsageGauge(title: "内存使用率", percent: usage.memory, color: .purple,
+                HakoUsageGauge(title: "内存使用率", percent: usage.memory, color: .purple,
                               detail: capacity(used: usage.memoryUsed, total: usage.memoryTotal))
-                ECSUsageGauge(title: "磁盘使用率", percent: usage.disk, color: .orange,
+                HakoUsageGauge(title: "磁盘使用率", percent: usage.disk, color: .orange,
                               detail: capacity(used: usage.diskUsed, total: usage.diskTotal))
             }.padding(.vertical, 8)
         }

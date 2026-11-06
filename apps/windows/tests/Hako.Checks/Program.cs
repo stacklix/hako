@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -22,6 +23,11 @@ internal static class Program
             if (args.Length == 1 && args[0] == "network-listeners")
             {
                 Console.WriteLine(JsonSerializer.Serialize(await new NetworkListeners().ReadAsync(CancellationToken.None), AgentConnection.Json));
+                return 0;
+            }
+            if (args.Length == 1 && args[0] == "git-repositories")
+            {
+                await GitRepositoryChecks.RunAsync();
                 return 0;
             }
             if (args.Length == 3 && args[0] == "codex-usage")
@@ -69,10 +75,14 @@ internal static class Program
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
-            if (dispatcher.Capabilities.Count != 4 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
-                || dispatcher.Capabilities[1] != new AgentCapability("query.codex.usage", 1)
-                || dispatcher.Capabilities[2] != new AgentCapability("query.network.listeners", 1)
-                || dispatcher.Capabilities[3] != new AgentCapability("action.network.http.check", 1))
+            if (!dispatcher.Capabilities.SequenceEqual(new[] {
+                new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
+                new AgentCapability("query.network.listeners", 1), new AgentCapability("action.network.http.check", 1),
+                new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
+                new AgentCapability("action.git.pull", 1),
+                new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
+                new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1)
+            }))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
@@ -96,6 +106,7 @@ internal static class Program
                 throw new Exception("Network metrics were not included in the system query");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CapabilityChecks.RunAsync();
+            await GitRepositoryChecks.RunAsync();
             await CodexUsageChecks.RunAsync();
             await CliChecks.RunAsync();
             return 0;

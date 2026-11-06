@@ -2,6 +2,7 @@
 DerivedData/
 build/
 /dist/
+/.test-tmp/
 *.xcuserstate
 xcuserdata/
 .env

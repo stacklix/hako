@@ -77,7 +77,8 @@ internal static class CapabilityChecks
         if (usage.Days.Sum(day => day.RequestCount) != 1 || usage.Days.Sum(day => day.TotalTokens) != 110)
             throw new Exception("query.all did not return the known fixture's user count and token usage");
         var json = JsonSerializer.SerializeToElement(data, AgentConnection.Json).GetProperty("data");
-        if (json.GetProperty("query.system.metrics").TryGetProperty("error", out _) || json.TryGetProperty("action.network.http.check", out _))
+        if (json.GetProperty("query.system.metrics").TryGetProperty("error", out _) ||
+            json.TryGetProperty("action.network.http.check", out _) || json.TryGetProperty("query.git.repositories", out _))
             throw new Exception("Query result alternatives/actions are invalid");
         var nullResult = JsonSerializer.SerializeToElement(new CapabilityData(1, JsonSerializer.SerializeToElement<object?>(null)), AgentConnection.Json);
         if (nullResult.GetProperty("result").ValueKind != JsonValueKind.Null || nullResult.TryGetProperty("error", out _))

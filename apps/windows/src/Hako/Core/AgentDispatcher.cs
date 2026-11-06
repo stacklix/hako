@@ -24,8 +24,9 @@ public sealed class AgentDispatcher
 {
     private sealed record Handler(int Version, Func<JsonElement, CancellationToken, Task<object?>> Invoke);
     private readonly Dictionary<string, Handler> queries;
+    private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
-    public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions)
+    public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
@@ -61,9 +62,20 @@ public sealed class AgentDispatcher
             })
         };
         var probe = connectivity ?? new HttpConnectivity();
+        var git = new GitRepositoryMonitor();
         actions = new()
         {
-            ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token))
+            ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
+            ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
+            ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
+            ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token))
+        };
+        onDemandQueries = new()
+        {
+            ["query.git.repositories"] = new(1, git.ListAsync),
+            ["query.git.repository"] = new(1, git.DetailAsync),
+            ["query.git.operation"] = new(1, git.OperationAsync),
+            ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token))
         };
     }
 
@@ -99,7 +111,8 @@ public sealed class AgentDispatcher
             }
             return new QueryData(data);
         }
-        if (!queries.TryGetValue(method, out var action) && !actions.TryGetValue(method, out action))
+        if (!queries.TryGetValue(method, out var action) && !onDemandQueries.TryGetValue(method, out action)
+            && !actions.TryGetValue(method, out action))
             throw new AgentActionException("unsupported_method", "设备不支持此命令或版本。");
         if (action.Version != version)
             throw new AgentActionException("unsupported_method", "设备不支持此命令或版本。");
