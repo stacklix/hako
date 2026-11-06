@@ -382,6 +382,8 @@ struct QinglongFileResourceList: View {
     let resource: QinglongResource
     @Environment(\.scenePhase) private var phase
     @State private var selected: QinglongItem?
+    @State private var creatingDependency = false
+    @State private var submittedRevision: UUID?
     private var values: [QinglongItem] { store.items[resource] ?? [] }
     private var loading: Bool { store.loading.contains(resource) }
     private var countText: String {
@@ -397,18 +399,26 @@ struct QinglongFileResourceList: View {
         let connectionID: String?
     }
     var body: some View {
-        let key = RefreshKey(revision: store.revision, active: phase == .active && selected == nil, connectionID: store.connection?.id)
+        let key = RefreshKey(revision: store.revision, active: phase == .active && selected == nil && !creatingDependency, connectionID: store.connection?.id)
         content
         .task(id: key) {
             guard key.active, key.connectionID != nil else { return }
             await store.refresh(resource)
         }
         .sheet(item: $selected) { QinglongFileEditor(store: store, item: $0) }
+        .sheet(isPresented: $creatingDependency) {
+            QinglongDependencyEditor(store: store) {
+                submittedRevision = store.revision
+            }
+        }
     }
     private var content: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 header
+                if submittedRevision == store.revision {
+                    QinglongNotice(text: "已提交安装，请刷新查看状态。", error: false)
+                }
                 if !values.isEmpty {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(values.enumerated()), id: \.element.id) { index, item in
@@ -454,6 +464,15 @@ struct QinglongFileResourceList: View {
                 Text(store.items[resource] == nil ? "等待读取" : countText).font(.system(size: 13)).foregroundStyle(QinglongStyle.muted)
             }
             Spacer(minLength: 0)
+            if resource == .dependencies {
+                Button("添加", systemImage: "plus") {
+                    submittedRevision = nil
+                    creatingDependency = true
+                }
+                .buttonStyle(QinglongPrimaryButtonStyle(compact: true))
+                .disabled(loading || store.busy || store.connection == nil)
+                .accessibilityLabel("添加依赖")
+            }
             Button { Task { await store.refresh(resource) } } label: {
                 Group {
                     if loading { ProgressView().tint(QinglongStyle.text) }
@@ -507,6 +526,80 @@ struct QinglongFileResourceList: View {
             Circle().fill(color).frame(width: 4, height: 4).accessibilityHidden(true)
             Text(status?.title ?? "未知状态").font(.caption).fixedSize(horizontal: false, vertical: true)
         }.foregroundStyle(color)
+    }
+}
+
+private struct QinglongDependencyEditor: View {
+    @ObservedObject var store: QinglongStore
+    let onSubmitted: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var openedRevision: UUID
+    @State private var type: QinglongDependencyType = .nodeJS
+    @State private var name = ""
+    @State private var error: String?
+    @State private var outcomeUnknown = false
+
+    init(store: QinglongStore, onSubmitted: @escaping () -> Void) {
+        self.store = store
+        self.onSubmitted = onSubmitted
+        _openedRevision = State(initialValue: store.revision)
+    }
+
+    private var connectionChanged: Bool { openedRevision != store.revision }
+    private var canSubmit: Bool {
+        !store.busy && !connectionChanged && !outcomeUnknown && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("依赖类型", selection: $type) {
+                        ForEach(QinglongDependencyType.allCases, id: \.self) { type in
+                            Text(type.title).tag(type)
+                        }
+                    }
+                    QinglongTextField("包名", text: $name)
+                }
+                .disabled(store.busy || connectionChanged || outcomeUnknown)
+                if connectionChanged {
+                    QinglongNotice(text: "连接已改变，请关闭后重新添加依赖。", error: true)
+                } else if let error {
+                    QinglongNotice(text: error, error: true)
+                }
+                Section {
+                    HStack(spacing: 12) {
+                        Button(outcomeUnknown ? "关闭" : "取消") { dismiss() }
+                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                            .disabled(store.busy)
+                        Button("提交安装") { Task { await submit() } }
+                            .buttonStyle(HakoActionButtonStyle())
+                            .disabled(!canSubmit)
+                    }
+                }
+            }
+            .navigationTitle("添加依赖").navigationBarTitleDisplayMode(.inline)
+        }
+        .interactiveDismissDisabled(store.busy)
+    }
+
+    private func submit() async {
+        guard canSubmit else { return }
+        error = nil
+        let submitted = await store.perform(.dependencies, success: "已提交安装。") { client in
+            do {
+                try await client.createDependency(name: name, type: type)
+            } catch let failure as QinglongFailure {
+                outcomeUnknown = failure.outcomeUnknown
+                throw failure
+            }
+        }
+        if submitted {
+            onSubmitted()
+            dismiss()
+        } else {
+            error = store.operationError
+        }
     }
 }
 

@@ -8,7 +8,7 @@
 
 主应用「设置 → GitHub 配置」分别保存公开库和私有库地址及分支。原公开库配置保持不变；两个仓库共用钥匙串中的 GitHub Token，需授予对应仓库 Contents 读写权限。加密资产只使用私有库，读取和提交前均检查 GitHub 返回的 private 标记，不回退到公开库。私有库须预先创建分支和初始提交。
 
-子应用右上角滑杆进入设置，在「交易所接口」选择 HTX 或 Binance，填写只读 API Key / Secret Key。「链上资产」直接列出观察地址，可添加、点击编辑或左滑删除；「链上浏览器」提供 TRONSCAN、Moralis 的 Token 配置入口。密钥保存到本机钥匙串，不上传归档。观察地址支持 TRON、Ethereum、BNB Smart Chain、Cosmos Hub，添加地址时可选择多个兼容网络，例如同一个 0x 地址可同时观察 Ethereum 和 BNB Smart Chain。设置中可成组编辑或移除，余额和缓存按网络及地址分别保存；同网络同地址不允许重复。TRON 查询需 TRONSCAN Token，Ethereum / BSC 需 Moralis Token。链上范围为数据服务可估值的原生币和代币。TRON 额外计入原生 TRX 的 Stake 1.0 / 2.0 质押本金（含委托给他人的部分）、Stake 2.0 解押中及已解押待提取本金；他人委托给本地址的资源不计为本地址资产。TRX 使用账户详情统一计算，不与代币列表中的 TRX 重复累加。不含 NFT、第三方 DeFi 协议质押和借贷头寸；缺少报价或接口失败不会把该来源当作零资产写入总额。
+子应用右上角滑杆进入设置，在「交易所接口」选择 HTX 或 Binance，填写只读 API Key / Secret Key。「链上资产」直接列出观察地址，可添加、点击编辑或左滑删除；「链上浏览器」提供 TRONSCAN、Moralis 的 Token 配置入口。密钥保存到本机钥匙串，不上传归档。观察地址支持 TRON、Ethereum、BNB Smart Chain、Arbitrum One、OP Mainnet 和 Cosmos Hub。同一个 0x 地址可同时观察四条 EVM 网络。设置中可成组编辑或移除，余额和缓存按网络及地址分别保存；同网络同地址不允许重复。TRON 查询需 TRONSCAN Token，四条 EVM 网络共用 Moralis Token。链上范围为数据服务可估值的原生币和代币。TRON 额外计入原生 TRX 的 Stake 1.0 / 2.0 质押本金（含委托给他人的部分）、Stake 2.0 解押中及已解押待提取本金；他人委托给本地址的资源不计为本地址资产。TRX 使用账户详情统一计算，不与代币列表中的 TRX 重复累加。不含 NFT、第三方 DeFi 协议质押和借贷头寸；缺少报价或接口失败不会把该来源当作零资产写入总额。
 
 ## 同步入口
 
@@ -45,7 +45,7 @@ HTX 资产概览另列「今日合约」，通过 TRX-USD 当前账户信息与�
 - [HTX 现货 API](https://huobiapi.github.io/docs/spot/v1/en/)：平台估值和 TRX/USDT 历史分钟行情。
 - [Binance 钱包 API](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset)：钱包总览。
 - [TRONSCAN 账户代币](https://docs.tronscan.org/en/api/account/account-tokens)与[账户详情](https://docs.tronscan.org/en/api/account/account-detail)：代币分页估值及原生 TRX 余额、质押、解押本金。
-- [Moralis 净值接口](https://moralis.com/how-to-get-the-net-worth-of-any-erc20-wallet-via-api/)。
+- [Moralis 钱包余额与估值接口](https://docs.moralis.com/data-api/evm/wallet/token-balances)。
 
 - [Binance 公共分钟行情](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#klinecandlestick-data)：按 startTime / endTime 读取结算时点的 TRXUSDT 分钟。
 

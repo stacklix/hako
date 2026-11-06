@@ -73,15 +73,21 @@ struct HomeView: View {
         }
     }
 
+    private enum Destination: Hashable {
+        case application(Application), notifications, settings
+    }
+
     @ObservedObject private var console = ConsoleClient.shared
+    @ObservedObject private var buildPush = BuildPushSubscription.shared
     @StateObject private var notifications = HakoNotificationsStore()
+    @State private var path: [Destination] = []
     @State private var loginLink: HakoLoginLink?
     @State private var category = Category.it
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -99,6 +105,13 @@ struct HomeView: View {
             .background(HakoStyle.background)
             .foregroundStyle(HakoStyle.text)
             .navigationTitle("Hako")
+            .navigationDestination(for: Destination.self) { destination in
+                switch destination {
+                case .application(let app): app.destination
+                case .notifications: NotificationsView(store: notifications)
+                case .settings: SettingsView()
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(HakoStyle.background, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
@@ -111,7 +124,7 @@ struct HomeView: View {
                 .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .principal) { Text("").accessibilityHidden(true) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    NavigationLink { NotificationsView(store: notifications) } label: {
+                    NavigationLink(value: Destination.notifications) {
                         if notifications.notifications.isEmpty {
                             Image(systemName: "bell")
                         } else {
@@ -120,10 +133,17 @@ struct HomeView: View {
                                 .foregroundStyle(.red, .primary)
                         }
                     }.accessibilityLabel("通知，\(notifications.notifications.count) 条待处理")
-                    NavigationLink { SettingsView() } label: { Image(systemName: "gearshape") }.accessibilityLabel("设置")
+                    NavigationLink(value: Destination.settings) { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }
             }
         }.tint(.primary)
+            .task(id: scenePhase == .active && buildPush.settingsRequested) {
+                guard !Task.isCancelled, scenePhase == .active, buildPush.settingsRequested else { return }
+                loginLink = nil
+                path = [.settings]
+                buildPush.settingsRequested = false
+                HakoLog.record(.hako, "从构建通知打开设置")
+            }
             .onOpenURL { url in
                 // Accept only the existing exact Hako login structure and configured HTTPS server.
                 guard let _ = try? ConsoleWebLoginPayload(url.absoluteString, origin: ConsoleClient.shared.serverURL) else { return }
@@ -190,7 +210,7 @@ struct HomeView: View {
                         if app != category.applications.first {
                             Rectangle().fill(HakoStyle.line).frame(height: 1).accessibilityHidden(true)
                         }
-                        NavigationLink { app.destination } label: {
+                        NavigationLink(value: Destination.application(app)) {
                             applicationRow(app)
                         }
                         .buttonStyle(.plain)

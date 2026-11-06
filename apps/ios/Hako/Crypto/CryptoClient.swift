@@ -123,9 +123,7 @@ struct CryptoClient {
         }
         if assets.contains(where: { $0.equitySymbol == nil && !["USDT","USD"].contains($0.symbol) }) {
             do {
-                let request=URLRequest(url:URL(string:"https://data-api.binance.vision/api/v3/ticker/price")!)
-                guard let rows=try await json(request) as? [[String:Any]] else { throw HakoError(message:"Binance 单价格式无效。") }
-                prices=try Self.binancePrices(rows)
+                prices = try await binanceSpotPrices()
             } catch {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
@@ -174,6 +172,18 @@ struct CryptoClient {
         guard bid > 0,ask > 0,bid <= ask else { return nil }
         let midpoint=bid + (ask-bid)/2
         return midpoint.isFinite ? midpoint : nil
+    }
+    func binanceSpotPrices(pairs: [String]? = nil) async throws -> [String:Double] {
+        var url = URLComponents(string:"https://data-api.binance.vision/api/v3/ticker/price")!
+        if let pairs {
+            let symbols = String(decoding:try JSONEncoder().encode(pairs),as:UTF8.self)
+            url.queryItems = [URLQueryItem(name:"symbols",value:symbols)]
+        }
+        let request = URLRequest(url:url.url!)
+        guard let rows = try await json(request) as? [[String:Any]] else {
+            throw HakoError(message:"Binance 单价格式无效。")
+        }
+        return try Self.binancePrices(rows)
     }
     static func binancePrices(_ rows:[[String:Any]]) throws -> [String:Double] {
         var prices=[String:Double]()

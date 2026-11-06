@@ -164,6 +164,13 @@ actor QinglongClient {
         _ = try await call(["scripts", "rename"], method: "PUT", body: .fields(["path": "", "filename": item.filePath, "newFilename": target]))
     }
 
+    func createDependency(name: String, type: QinglongDependencyType) async throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw QinglongFailure(message: "请输入依赖包名。") }
+        let dependency: QinglongJSON = .object(["name": .string(name), "type": .number(Double(type.rawValue))])
+        _ = try await call([QinglongResource.dependencies.rawValue], method: "POST", body: .array([dependency]))
+    }
+
     func saveEnvironment(_ item: QinglongItem?, fields: [String: String], enabled: Bool) async throws -> QinglongEnvironmentSaveResult {
         let payload = item?.editPayload(fields) ?? .fields(fields)
         let root = try await call(["envs"], method: item == nil ? "POST" : "PUT", body: item == nil ? .array([payload]) : payload)

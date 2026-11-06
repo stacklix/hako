@@ -2,6 +2,222 @@ import SwiftUI
 import Charts
 import UIKit
 
+private struct CryptoWatchlist: View {
+    private static let builtIn = ["BTC", "ETH", "SOL", "BNB", "TRX"]
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("crypto.watchlist.customSymbols") private var savedSymbols = ""
+    @State private var prices: [String: Double] = [:]
+    @State private var updatedAt: Date?
+    @State private var refreshFailed = false
+    @State private var adding = false
+    @State private var symbolInput = ""
+    @State private var addError: String?
+    @State private var saving = false
+    @State private var revealedSymbol: String?
+    @State private var pendingDeletion: String?
+    @State private var confirmingDeletion = false
+
+    private var customSymbols: [String] { savedSymbols.split(separator: ",").map(String.init) }
+    private var symbols: [String] { Self.builtIn + customSymbols }
+    private var inputSymbol: String { symbolInput.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("关注币种").font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button {
+                    revealedSymbol = nil
+                    symbolInput = ""
+                    addError = nil
+                    adding = true
+                } label: {
+                    Image(systemName: "plus").frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("添加关注币种")
+            }
+            ForEach(symbols, id: \.self) { symbol in
+                Divider()
+                if Self.builtIn.contains(symbol) {
+                    priceRow(symbol)
+                } else {
+                    customRow(symbol)
+                }
+            }
+            if refreshFailed {
+                Text(updatedAt == nil ? "行情暂不可用" : "行情更新失败，显示上次报价")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let updatedAt {
+                Text("Binance 现货 · 更新于 " + updatedAt.formatted(date: .numeric, time: .standard))
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !refreshFailed {
+                ProgressView("正在获取行情…").font(.caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).cryptoPanel()
+        .task(id: scenePhase == .active ? savedSymbols : nil) {
+            guard scenePhase == .active else { return }
+            await refreshPrices()
+        }
+        .sheet(isPresented: $adding) { addSheet }
+        .alert("删除关注币种？", isPresented: $confirmingDeletion, presenting: pendingDeletion) { symbol in
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) {
+                savedSymbols = customSymbols.filter { $0 != symbol }.joined(separator: ",")
+                prices.removeValue(forKey: symbol + "USDT")
+                revealedSymbol = nil
+            }
+        } message: { symbol in
+            Text("将 \(symbol) 从关注列表移除。")
+        }
+    }
+
+    private func priceRow(_ symbol: String) -> some View {
+        HStack {
+            Text(symbol).font(.subheadline.weight(.semibold))
+            Spacer(minLength: 8)
+            Text(prices[symbol + "USDT"].map { value in
+                let cents = (value * 100).rounded(.toNearestOrEven)
+                let digits = cents == 0 ? 4 : 2
+                return value.formatted(.number.precision(.fractionLength(digits))) + " USDT"
+            } ?? "暂无报价")
+            .font(.subheadline).monospacedDigit()
+        }
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func customRow(_ symbol: String) -> some View {
+        HStack(spacing: 12) {
+            priceRow(symbol)
+                .simultaneousGesture(DragGesture(minimumDistance: 20).onEnded { drag in
+                    let offset = drag.translation
+                    guard abs(offset.width) > abs(offset.height), abs(offset.width) >= 30 else { return }
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        if offset.width < 0 { revealedSymbol = symbol }
+                        else if revealedSymbol == symbol { revealedSymbol = nil }
+                    }
+                })
+                .accessibilityAction(named: Text("删除")) { confirmDeletion(symbol) }
+            if revealedSymbol == symbol {
+                Button(role: .destructive) { confirmDeletion(symbol) } label: {
+                    Text("删除").font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 14).frame(minHeight: 44)
+                        .foregroundStyle(.white)
+                        .background(Color.red, in: RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func confirmDeletion(_ symbol: String) {
+        pendingDeletion = symbol
+        confirmingDeletion = true
+    }
+
+    private var addSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("币种代码").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("例如 DOGE", text: $symbolInput)
+                            .keyboardType(.asciiCapable)
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .accessibilityLabel("币种代码")
+                            .disabled(saving)
+                    }
+                } footer: {
+                    if let addError { Text(addError).foregroundStyle(.red) }
+                }
+                Section {
+                    HStack(spacing: 12) {
+                        Button("取消") { adding = false }
+                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                        Button {
+                            Task { await addSymbol() }
+                        } label: {
+                            if saving { ProgressView() }
+                            else { Text("确定") }
+                        }
+                        .buttonStyle(HakoActionButtonStyle())
+                        .disabled(inputSymbol.isEmpty)
+                    }
+                    .disabled(saving)
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("添加关注币种")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled(saving)
+    }
+
+    @MainActor private func addSymbol() async {
+        guard !saving else { return }
+        let symbol = inputSymbol
+        guard symbol.range(of: "^[A-Z0-9]{1,20}$", options: .regularExpression) != nil else {
+            addError = "请输入 1 至 20 位字母或数字组成的币种代码。"
+            return
+        }
+        guard !symbols.contains(symbol) else {
+            addError = "该币种已在关注列表中。"
+            return
+        }
+        saving = true
+        addError = nil
+        defer { saving = false }
+        let pair = symbol + "USDT"
+        do {
+            let quote = try await CryptoClient().binanceSpotPrices(pairs: [pair])
+            guard let price = quote[pair] else { throw HakoError(message: "暂无报价") }
+            prices[pair] = price
+            savedSymbols = (customSymbols + [symbol]).joined(separator: ",")
+            adding = false
+        } catch {
+            addError = "未能获取 \(symbol) 的 Binance USDT 报价，请检查币种代码或网络后重试。"
+        }
+    }
+
+    @MainActor private func refreshPrices() async {
+        let requestedSymbols = savedSymbols
+        let pairs = Set(symbols.map { $0 + "USDT" })
+        let hasCustomSymbols = !customSymbols.isEmpty
+        let client = CryptoClient()
+        while !Task.isCancelled {
+            do {
+                let quotes: [String: Double]
+                do {
+                    quotes = try await client.binanceSpotPrices(pairs: pairs.sorted())
+                } catch {
+                    try Task.checkCancellation()
+                    guard hasCustomSymbols else { throw error }
+                    // A delisted custom pair can cause the exchange to reject the entire batch.
+                    quotes = try await client.binanceSpotPrices()
+                }
+                try Task.checkCancellation()
+                guard savedSymbols == requestedSymbols else { return }
+                let watched = quotes.filter { pairs.contains($0.key) }
+                guard !watched.isEmpty else { throw HakoError(message: "暂无关注币种报价。") }
+                prices = watched
+                updatedAt = .now
+                refreshFailed = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                refreshFailed = true
+            }
+            do { try await Task.sleep(for: .seconds(60)) }
+            catch { return }
+        }
+    }
+}
+
 struct CryptoView: View {
     private enum Tab: String, CaseIterable { case overview="概览",htx="HTX",binance="Binance",chain="链上资产" }
     private enum SyncPhase { case idle, syncing, succeeded, failed }
@@ -78,6 +294,7 @@ struct CryptoView: View {
                     Text("还没有采集数据。请先配置交易所只读 API、观察地址及主应用私有仓库。")
                         .font(.subheadline).foregroundStyle(.secondary).padding(.vertical,18)
                 }
+                CryptoWatchlist()
             }.padding(20)
         }
         .background(HakoStyle.background).foregroundStyle(HakoStyle.text)
@@ -269,13 +486,17 @@ struct CryptoView: View {
         let balances = [
             (isContract ? "可用保证金" : "可用", asset.available),
             (isContract ? "冻结保证金" : "冻结", asset.frozen),
-            ("借款", asset.loan), ("利息", asset.interest), ("未实现盈亏", asset.unrealized)
+            ("借款", asset.loan), ("利息", asset.interest)
         ].compactMap { label, amount -> String? in
             amount.flatMap { $0 == 0 ? nil : label + " " + exchangeAmount($0) }
         }.joined(separator:" · ")
         return exchangeAssetRow(symbol:asset.symbol,quantity:asset.quantity,unit:asset.symbol,value:value) {
             if !asset.label.isEmpty { Text(asset.label).font(.caption).foregroundStyle(.secondary) }
             if !balances.isEmpty { Text(balances).font(.caption).foregroundStyle(.secondary) }
+            if let unrealized = asset.unrealized, unrealized != 0 {
+                Text("未实现盈亏 " + exchangeAmount(unrealized))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -441,7 +662,7 @@ struct CryptoView: View {
         let component:Calendar.Component = (days == 180 || days == 365) ? .month : .day
         let offset = days == 180 ? -6 : days == 365 ? -12 : -days
         let cutoff=CryptoDay.key(CryptoDay.calendar.date(byAdding:component,value:offset,to:.now)!)
-        return CryptoTrend(title:titles[index],records:rows.filter { days==0 || $0.day>=cutoff },keys:keys[index],names:names[index],units:units[index],sharedScale:index==3)
+        return CryptoTrend(title:titles[index],records:rows.filter { days==0 || $0.day>=cutoff },keys:keys[index],names:names[index],units:units[index],sharedScale:index==3,zeroReferenceKey:index==4 ? "rate_percent" : nil)
     }
 }
 
@@ -510,6 +731,7 @@ struct CryptoTrend: View {
     let names: [String]
     let units: [String]
     var sharedScale = false
+    var zeroReferenceKey: String? = nil
     @State private var selectedDay: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -529,7 +751,11 @@ struct CryptoTrend: View {
     }
     private func range(_ key: String) -> (Double, Double) {
         let values = sharedScale ? records.flatMap { r in keys.compactMap { r.values[$0] } } : records.compactMap { $0.values[key] }
-        let low = values.min() ?? 0, high = values.max() ?? 1
+        var low = values.min() ?? 0, high = values.max() ?? 1
+        if key == zeroReferenceKey {
+            low = min(low, 0)
+            high = max(high, 0)
+        }
         let pad = max((high - low) * 0.1, abs(high) * 0.001, 0.000001)
         return (low - pad, high + pad)
     }
@@ -602,6 +828,12 @@ struct CryptoTrend: View {
 
     private var renderedChart: some View {
         Chart {
+            if let key = zeroReferenceKey {
+                RuleMark(y: .value("资金费率基准", position(0, key: key)))
+                    .foregroundStyle(Color.red)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .accessibilityLabel("资金费率 0%")
+            }
             ForEach(Array(keys.enumerated()), id: \.offset) { index, key in
                 ForEach(records) { record in
                     if let value = record.values[key] {

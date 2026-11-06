@@ -30,9 +30,6 @@ public sealed class AgentDispatcher
     public event Action<Metrics>? MetricsReceived;
 
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null)
-        : this(metrics, connectivity, codexUsage, new XkodeBuildTasks()) { }
-
-    internal AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity, CodexUsage? codexUsage, XkodeBuildTasks buildTasks)
     {
         var codex = codexUsage ?? new CodexUsage();
         queries = new()
@@ -66,8 +63,7 @@ public sealed class AgentDispatcher
         var probe = connectivity ?? new HttpConnectivity();
         actions = new()
         {
-            ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
-            [XkodeBuildTasks.Method] = new(1, buildTasks.InvokeAsync)
+            ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token))
         };
     }
 

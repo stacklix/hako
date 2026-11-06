@@ -43,9 +43,22 @@ struct BuildStatusView: View {
 }
 
 private struct LocalBuildSnapshot: Decodable {
+    struct HostUsage: Decodable {
+        let cpuPercent: Double
+        let memoryPercent: Double
+
+        var description: String? {
+            guard (0...100).contains(cpuPercent), (0...100).contains(memoryPercent) else { return nil }
+            let cpu = (cpuPercent / 100).formatted(.percent.precision(.fractionLength(1)))
+            let memory = (memoryPercent / 100).formatted(.percent.precision(.fractionLength(1)))
+            return "CPU \(cpu) · 内存 \(memory)"
+        }
+    }
+
     let updatedAt: Date
     let active: [LocalBuildTask]
     let history: [LocalBuildTask]
+    let hostUsage: HostUsage?
 
     var isStale: Bool { Date.now.timeIntervalSince(updatedAt) > 90 }
 }
@@ -74,6 +87,7 @@ private struct LocalBuildTask: Decodable, Identifiable {
     let project: String?
     let createdAt: Date
     let build: String?
+    let summary: String?
     let state: String
     let currentStage: Phase?
     let failedStage: Phase?
@@ -239,6 +253,10 @@ private struct LocalBuildTaskSheet: View {
             ?? snapshot?.history.first { $0.id == initialTask.id }
     }
     private var task: LocalBuildTask { currentTask ?? initialTask }
+    private var hostUsageDescription: String {
+        guard !unavailable, let snapshot, !snapshot.isStale, currentTask != nil else { return "暂时无法获取" }
+        return snapshot.hostUsage?.description ?? "暂时无法获取"
+    }
     private var note: String? {
         if task.state == "running", task.cancellationRequested == true {
             return "停止请求已发送，正在等待 xkode 确认任务结束。"
@@ -266,9 +284,11 @@ private struct LocalBuildTaskSheet: View {
                         field("工程", task.project ?? "暂无记录")
                         field("目标", task.target)
                         if let build = task.build { field("构建号", build) }
+                        if let summary = task.summary { field("变更摘要", summary) }
                         field("提交时间", task.submitted)
                         field("总耗时", buildDuration(task.elapsedSeconds) ?? (task.state == "queued" ? "尚未开始" : "暂无记录"))
                         if let stage = task.currentStage ?? task.failedStage { field("阶段", stage.title) }
+                        if task.state == "running" { field("构建机资源", hostUsageDescription) }
                         if let replacement = task.replacedBy { field("替代任务 ID", replacement, monospaced: true) }
                     }
                     .padding(16)

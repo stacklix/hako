@@ -9,15 +9,6 @@ struct CryptoSettingsView: View {
     @State private var cacheMessage:String?
     var body: some View {
         Form {
-            Section {
-                NavigationLink {
-                    CryptoDataExplanationView()
-                } label: {
-                    Label("数据说明",systemImage:"info.circle")
-                }
-                .cryptoSettingsRowSeparators()
-                .accessibilityHint("查看各项资产、权益、资金费与历史数据的取值逻辑")
-            }
             Section("交易所接口") {
                 CryptoCredentialLink(exchange:"htx",title:"HTX")
                 CryptoCredentialLink(exchange:"binance",title:"Binance")
@@ -62,6 +53,15 @@ struct CryptoSettingsView: View {
             Section("私有仓库归档") {
                 Text("TRX 合约：data/crypto/htx-trx/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
                 Text("总资产：data/crypto/portfolio/年份.csv").font(.caption).textSelection(.enabled).cryptoSettingsRowSeparators()
+            }
+            Section {
+                NavigationLink {
+                    CryptoDataExplanationView()
+                } label: {
+                    Label("数据说明",systemImage:"info.circle")
+                }
+                .cryptoSettingsRowSeparators()
+                .accessibilityHint("查看各项资产、权益、资金费与历史数据的取值逻辑")
             }
             Section {
                 Button("清空缓存",role:.destructive) { clearingCache=true }
@@ -130,7 +130,7 @@ private struct CryptoDataExplanationView: View {
                 explanation("明细筛选","隐藏折算绝对值不足 1 USDT 的币种及没有可展示币种的资产类型。无法估值的非零持仓继续显示。")
             }
             Section("链上资产范围") {
-                explanation("余额与估值","TRON 余额及代币的 TRX 计价来自 TRONSCAN，再用 HTX 的 TRX/USDT 报价折算。Ethereum 和 BNB Smart Chain 的余额与美元估值来自 Moralis，USD 与 USDT 按 1:1 计算。只统计所选六种资产。")
+                explanation("余额与估值","TRON 余额及代币的 TRX 计价来自 TRONSCAN，再用 HTX 的 TRX/USDT 报价折算。Ethereum、BNB Smart Chain、Arbitrum One 和 OP Mainnet 的余额与美元估值来自 Moralis，USD 与 USDT 按 1:1 计算。只统计所选六种资产。")
                 explanation("TRX 质押","TRX 包含钱包余额、Stake 1.0 / 2.0 质押本金、委托给他人的本金，以及解押中和待提取本金。他人委托给本地址的资源不算资产。")
                 explanation("ATOM 余额","Cosmos Hub 通过公开节点查询原生 ATOM，合计钱包余额、委托质押本金、解押中本金及待领取的 ATOM 奖励，再用 HTX ATOM/USDT 报价折算。转委托不重复计入；不包含其他链上的 IBC ATOM、流动性质押代币及验证者佣金。任一余额接口失败时保留上次数据。")
                 explanation("未覆盖资产","不包含 NFT、第三方 DeFi 质押和借贷头寸；明细和总额均以当前支持的资产范围为准。")

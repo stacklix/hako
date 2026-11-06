@@ -43,7 +43,7 @@ struct SettingsView: View {
     @Environment(\.openURL) private var openURL
     @ObservedObject private var buildPush = BuildPushSubscription.shared
     @State private var sheet: SheetRoute?
-    @State private var message: String?
+    @State private var alert: (title: String, message: String)?
     @State private var updates: [UpdateSource: UpdateState] = [:]
     @State private var checkingForUpdate = false
     @State private var updateCheckID = 0
@@ -136,7 +136,11 @@ struct SettingsView: View {
                 }
             }
             .task(id: updateCheckID) { await checkUpdates() }
-            .alert("Hako", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) { Button("好") { message = nil } } message: { Text(message ?? "") }
+            .alert(alert?.title ?? "Hako", isPresented: Binding(get: { alert != nil }, set: { if !$0 { alert = nil } }), presenting: alert) { _ in
+                Button("好") { alert = nil }
+            } message: { content in
+                Text(content.message)
+            }
     }
     private func settingsEntry(_ title: String, systemImage: String) -> some View {
         HStack {
@@ -164,11 +168,19 @@ struct SettingsView: View {
                         Text(state.detail(updateAvailable: updateAvailable))
                             .font(.caption)
                             .foregroundStyle(highlight ?? .secondary)
+                        if let release = state.release {
+                            Text("最近构建 \(release.builtAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 } icon: {
                     Image(systemName: "arrow.down.to.line")
+                        .foregroundStyle(updateAvailable == true ? HakoStyle.adaptive(0xffffff, 0x151517) : .primary)
+                        .frame(width: 28, height: 28)
+                        .background(highlight ?? .clear, in: RoundedRectangle(cornerRadius: 7))
                 }
-                .foregroundStyle(highlight ?? .primary)
+                .foregroundStyle(.primary)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
@@ -176,9 +188,21 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .disabled(state.release == nil)
 
+            Button {
+                alert = ("变更摘要", state.release?.summary ?? "该版本暂无变更摘要。")
+            } label: {
+                Image(systemName: "list.bullet.rectangle")
+                    .foregroundStyle(.blue)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(state.release == nil)
+            .accessibilityLabel("查看 \(source.title) 版变更摘要")
+
             Link(destination: source.pageURL) {
                 Image(systemName: "arrow.up.right.square")
-                    .foregroundStyle(highlight ?? .blue)
+                    .foregroundStyle(.blue)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
@@ -238,7 +262,7 @@ struct SettingsView: View {
         ]
         openURL(installation.url!) { accepted in
             if !accepted {
-                message = "无法打开系统安装入口，请从 \(source.title) 下载页面安装。"
+                alert = ("Hako", "无法打开系统安装入口，请从 \(source.title) 下载页面安装。")
             }
         }
     }

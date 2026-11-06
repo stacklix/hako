@@ -209,6 +209,20 @@ private final class QinglongMockProtocol: URLProtocol, @unchecked Sendable {
         }
         _ = try await client.list(.envs)
         precondition(tokenRequests == 1, "Next explicit request obtains a new token")
+        var dependencyWrites = 0
+        QinglongMockProtocol.respond { request in
+            dependencyWrites += 1
+            precondition(request.httpMethod == "POST" && request.url!.path == "/panel/open/dependencies")
+            let payload = try json(String(decoding: QinglongMockProtocol.body(request)!, as: UTF8.self))
+            precondition(payload == .array([.object(["name": .string("httpx==0.28.1"), "type": .number(1)])]))
+            return (200, #"{"code":200}"#)
+        }
+        try await client.createDependency(name: " httpx==0.28.1 ", type: .python)
+        do {
+            try await client.createDependency(name: "  ", type: .python)
+            fatalError("An empty dependency name was accepted")
+        } catch is QinglongFailure {}
+        precondition(dependencyWrites == 1)
         var bodyChecked = false
         QinglongMockProtocol.respond { request in
             precondition(request.httpMethod == "PUT" && request.url!.path.hasSuffix("scripts"))

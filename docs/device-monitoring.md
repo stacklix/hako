@@ -92,25 +92,15 @@ iOS 设备详情的「监听端口」查询卡片与 Windows 本地详情均按�
 
 `action.network.http.check` v1 只接受 `url` 字符串，最长 2048 字符，必须是完整 HTTP/S 地址，不允许 URL 用户名密码或额外参数。允许本机、局域网、端口、路径及查询参数。Agent 使用当前运行环境网络及代理发起 GET，5 秒总超时，收到响应头后结束，不读取正文、不跟随重定向、不携带 Cookie 或系统登录凭据，正常校验 TLS 证书。URL 及结果只转发，不保存为服务器历史。
 
-### 构建任务
-
-Hako iOS 在「设置 → 构建进度 → 本地」显示本机 xkode 任务，通过 chore 提供的只读进度获取。以下 Windows Agent 能力供仍使用设备构建任务接口的客户端使用。Agent 从自身进程的 PATH 查找 `xkode.exe`，需要使用与提交构建相同的 xkode 安装。
-
-`action.xkode.tasks.manage` v1 接受以下参数：
-
-| 参数 | Agent 命令 |
-| --- | --- |
-| `{"operation":"list"}` | `xkode tasks list` |
-| `{"operation":"status","id":"<完整任务 ID>"}` | `xkode tasks status <ID>` |
-| `{"operation":"cancel","id":"<完整任务 ID>"}` | `xkode tasks cancel <ID>` |
-
-列表返回 `tasks` 和 `truncated`，单任务操作返回任务对象。任务字段包括 `id`、`project`、`target`、`state`、`createdAt`、`currentStage`、`cancellationRequested`、`replacedBy` 和 `failedStage`。Agent 只传工程名称和任务状态，过滤本地绝对路径、日志正文和产物路径。运行中任务收到停止请求时保留 `state: "running"` 并返回 `cancellationRequested: true`，客户端查询状态直到 xkode 确认终态。取消结果不明时先查询状态。停滞任务需要在构建机处理。
-
 ```json
 {"result":{"url":"https://example.com/","reachable":true,"httpSuccess":true,"statusCode":200,"elapsedMs":183,"checkedAt":"2026-10-28T08:00:00Z","failure":null}}
 ```
 
 收到任何 HTTP 响应即 `reachable: true`，只有 2xx 为 `httpSuccess: true`；3xx、401、404、500 都是可达，显示实际状态码。未收到 HTTP 响应时两项为 false，`statusCode: null`，`failure` 为 `{code,message}`，代码为 `dns_failed`、`connect_failed`、`tls_failed`、`timeout` 或 `request_failed`。目标不可达仍是正常操作结果；无效参数是业务错误，Agent 离线、断开及转发超时是 HTTP 错误。
+
+### 构建进度
+
+Hako iOS 在「设置 → 构建进度 → 本地」通过 chore 的只读接口 `/chore/ios/build-status.json` 查看本机 xkode 任务。
 
 ### 客户端显示
 

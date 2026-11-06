@@ -33,6 +33,7 @@ struct AppUpdateRelease: Decodable, Sendable {
     let build: String
     let builtAt: Date
     let manifest: String?
+    let summary: String?
 
     var buildVersion: AppBuildVersion? { AppBuildVersion(version: version, build: build) }
 

@@ -37,7 +37,7 @@ struct ArcaneContainerView: View {
     private var resourceSample: ArcaneResourceSample? {
         live.sample ?? (containerID == container.id ? container.resourceSample : nil)
     }
-    private var active: Bool { visible && scenePhase == .active && !store.operationRunning }
+    private var active: Bool { visible && scenePhase == .active && operationStatus?.running != true }
     private var taskKey: String { "\(active)-\(containerID)" }
     private var status: String { details?.state?.status ?? container.state ?? "" }
     private var isRunning: Bool { details?.state?.running ?? (status == "running") }
@@ -86,6 +86,14 @@ struct ArcaneContainerView: View {
             }.listSectionSpacing(12)
             if loading && details == nil { Section { ProgressView("正在读取容器…").arcaneRowSeparators() } }
             if let error = error ?? data.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange).arcaneRowSeparators() } }
+            if tab == "commands" && store.operationRunning {
+                Section {
+                    Text("有容器操作正在执行，完成后可执行新的操作。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .arcaneRowSeparators()
+                }
+            }
             if tab == "overview" { overview }
             else if tab == "logs" { logs }
             else if tab == "files" {
@@ -465,7 +473,7 @@ struct ArcaneContainerView: View {
     }
 
     private func refreshDetails() async {
-        guard !store.operationRunning else { return }
+        guard operationStatus?.running != true else { return }
         do {
             if let value = await data.refresh(client: try store.client(), environment: environment.id, container: containerID) {
                 update = value.updateInfo?.forContainer(value.id); error = nil

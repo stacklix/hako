@@ -112,12 +112,17 @@ import Foundation
         try original.validate()
         let legacyWallet = try JSONDecoder().decode(CryptoWallet.self,from:JSONEncoder().encode(original))
         let group = CryptoWalletGroup.groups(from:[legacyWallet])[0]
-        let expanded = try group.replacing(in:[legacyWallet],name:"wallet",address:evmAddress,networks:["Ethereum","BNB Smart Chain"])
-        check(expanded.count == 2 && Set(expanded.map(\.identity)).count == 2 && expanded[0].id == original.id,
+        let networks: Set<String> = ["Ethereum", "BNB Smart Chain", "Arbitrum One", "OP Mainnet"]
+        check(Set(CryptoWallet.networks.filter { CryptoWallet.supports(address:evmAddress,on:$0) }) == networks,
+              "EVM address enables exactly the four EVM networks")
+        let expanded = try group.replacing(in:[legacyWallet],name:"wallet",address:evmAddress,networks:networks)
+        check(expanded.count == 4 && Set(expanded.map(\.identity)).count == 4 && expanded[0].id == original.id,
               "multi-network observation preserves the legacy Ethereum wallet and its cache identity")
+        check(expanded.compactMap(\.moralisChain) == ["eth", "bsc", "arbitrum", "optimism"],
+              "each EVM wallet routes to its own Moralis chain")
         let reloaded = try JSONDecoder().decode([CryptoWallet].self,from:JSONEncoder().encode(expanded))
         let groups = CryptoWalletGroup.groups(from:reloaded)
-        check(groups.count == 1 && groups[0].wallets.count == 2,"restore both networks as one editable group")
+        check(groups.count == 1 && groups[0].wallets.count == 4,"restore all networks as one editable group")
         let reduced = try groups[0].replacing(in:reloaded,name:"wallet",address:evmAddress,networks:["BNB Smart Chain"])
         check(reduced.count == 1 && reduced[0].id == expanded[1].id,"removing a network keeps the remaining wallet identity")
         do {

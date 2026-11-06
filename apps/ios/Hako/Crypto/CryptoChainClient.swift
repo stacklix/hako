@@ -15,9 +15,9 @@ extension CryptoClient {
             guard !token.isEmpty else { throw HakoError(message:"请在加密资产设置中配置 TRONSCAN API Token。") }
             return try await tronWalletSnapshot(address: wallet.address, token: token)
         }
+        guard let chain = wallet.moralisChain else { throw HakoError(message:"不支持此观察地址网络。") }
         let token = try CryptoCredential.load("moralis").key
-        guard !token.isEmpty else { throw HakoError(message:"请配置 Moralis API Token 以查询 Ethereum / BSC 资产。") }
-        let chain = wallet.network == "Ethereum" ? "eth" : "bsc"
+        guard !token.isEmpty else { throw HakoError(message:"请配置 Moralis API Token 以查询 \(wallet.network) 资产。") }
         // User-selected valuation convention: USD equals USDT.
         let assets = try await evmWalletAssets(address:wallet.address,chain:chain,token:token)
         return CryptoWalletSnapshot(total:assets.compactMap(\.value).reduce(0,+),assets:assets)

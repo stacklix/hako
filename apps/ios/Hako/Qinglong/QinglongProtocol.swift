@@ -125,6 +125,18 @@ enum QinglongResource: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum QinglongDependencyType: Int, CaseIterable, Sendable {
+    case nodeJS = 0, python = 1, linux = 2
+
+    var title: String {
+        switch self {
+        case .nodeJS: return "Node.js"
+        case .python: return "Python"
+        case .linux: return "Linux"
+        }
+    }
+}
+
 // Matches Qinglong's DependenceStatus enum; unknown values remain unknown.
 enum QinglongDependencyStatus: Int, Sendable {
     case installing, installed, installFailed, removing, removed, removeFailed, queued, cancelled
@@ -199,7 +211,7 @@ struct QinglongItem: Identifiable, Equatable, Sendable {
         case .envs: return raw["remarks"].text
         case .scripts, .configs, .logs: return directory.isEmpty ? "根目录" : directory
         case .dependencies:
-            switch raw["type"].int { case 0: return "Node.js"; case 1: return "Python"; case 2: return "Linux"; default: return "未知类型" }
+            return raw["type"].int.flatMap(QinglongDependencyType.init(rawValue:))?.title ?? "未知类型"
         }
     }
     func editPayload(_ changes: [String: String]) -> QinglongJSON {

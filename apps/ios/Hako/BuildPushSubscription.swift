@@ -17,6 +17,7 @@ final class BuildPushSubscription: ObservableObject {
     @Published private(set) var enabled = false
     @Published private(set) var busy = false
     @Published private(set) var message: String?
+    @Published var settingsRequested = false
 
     private init() {
         enabled = defaults.bool(forKey: enabledKey)
@@ -95,7 +96,7 @@ final class BuildPushSubscription: ObservableObject {
 
 final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+                     willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         return true
     }
@@ -114,12 +115,16 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            didReceive response: UNNotificationResponse) async {
-        let url = response.notification.request.content.userInfo["url"] as? String
-        await MainActor.run {
-            if url == BuildPushSubscription.installPage.absoluteString {
-                UIApplication.shared.open(BuildPushSubscription.installPage)
-            }
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
+        let opensSettings = response.actionIdentifier == UNNotificationDefaultActionIdentifier
+            && (response.notification.request.content.userInfo["type"] as? String) == "build_completed"
+        DispatchQueue.main.async {
+            // UIKit updates its scene snapshot when the response completes.
+            defer { completionHandler() }
+            guard opensSettings else { return }
+            HakoLog.record(.hako, "收到构建通知点按")
+            BuildPushSubscription.shared.settingsRequested = true
         }
     }
 }

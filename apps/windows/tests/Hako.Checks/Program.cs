@@ -69,11 +69,10 @@ internal static class Program
             try { (settings with { Url = "http://example.com" }).Validate(); throw new Exception("Insecure public URL accepted"); }
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
-            if (dispatcher.Capabilities.Count != 5 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
+            if (dispatcher.Capabilities.Count != 4 || dispatcher.Capabilities[0] != new AgentCapability("query.system.metrics", 1)
                 || dispatcher.Capabilities[1] != new AgentCapability("query.codex.usage", 1)
                 || dispatcher.Capabilities[2] != new AgentCapability("query.network.listeners", 1)
-                || dispatcher.Capabilities[3] != new AgentCapability("action.network.http.check", 1)
-                || dispatcher.Capabilities[4] != new AgentCapability(XkodeBuildTasks.Method, 1))
+                || dispatcher.Capabilities[3] != new AgentCapability("action.network.http.check", 1))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
@@ -97,7 +96,6 @@ internal static class Program
                 throw new Exception("Network metrics were not included in the system query");
             Console.WriteLine($"PASS: DPAPI tamper detection, RSA generation/public export/import, RSA-PSS, URL validation, action dispatcher/capabilities/params, real CPU {metrics.CpuUsagePercent:F1}%, memory {metrics.MemoryUsagePercent:F1}%");
             await CapabilityChecks.RunAsync();
-            await XkodeBuildTaskChecks.RunAsync();
             await CodexUsageChecks.RunAsync();
             await CliChecks.RunAsync();
             return 0;

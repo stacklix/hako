@@ -159,13 +159,20 @@ struct CryptoWalletSnapshot: Codable, Equatable {
 
 struct CryptoWallet: Codable, Identifiable, Equatable {
     static let cosmosHub = "Cosmos Hub"
-    static let networks = ["TRON", "Ethereum", "BNB Smart Chain", cosmosHub]
+    private static let evmNetworks: [(name: String, chain: String)] = [
+        ("Ethereum", "eth"),
+        ("BNB Smart Chain", "bsc"),
+        ("Arbitrum One", "arbitrum"),
+        ("OP Mainnet", "optimism")
+    ]
+    static let networks = ["TRON"] + evmNetworks.map(\.name) + [cosmosHub]
     var id = UUID()
     var name = ""
     var network = "TRON"
     var address = ""
     var groupID: UUID?
     var observationID: UUID { groupID ?? id }
+    var moralisChain: String? { Self.evmNetworks.first { $0.name == network }?.chain }
     func validate() throws {
         guard Self.networks.contains(network) else {
             throw HakoError(message: "不支持此观察地址网络。")
@@ -185,8 +192,9 @@ struct CryptoWallet: Codable, Identifiable, Equatable {
         switch network {
         case cosmosHub: return validCosmosAddress(address)
         case "TRON": return address.range(of:"^T[1-9A-HJ-NP-Za-km-z]{33}$",options:.regularExpression) != nil
-        case "Ethereum", "BNB Smart Chain": return address.range(of:"^0x[0-9a-fA-F]{40}$",options:.regularExpression) != nil
-        default: return false
+        default:
+            return evmNetworks.contains { $0.name == network } &&
+                address.range(of:"^0x[0-9a-fA-F]{40}$",options:.regularExpression) != nil
         }
     }
     // Cosmos Hub account addresses contain 20 payload bytes and a Bech32 checksum.
