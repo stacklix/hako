@@ -41,13 +41,19 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var buildPush = BuildPushSubscription.shared
     @State private var sheet: SheetRoute?
     @State private var alert: (title: String, message: String)?
     @State private var updates: [UpdateSource: UpdateState] = [:]
-    @State private var checkingForUpdate = false
+    @State private var updateRequestID: UUID?
     @State private var updateCheckID = 0
     @State private var isVisible = false
+    @State private var inForeground = false
+    private var updateTaskID: String? {
+        guard isVisible, inForeground, !buildPush.settingsRequested else { return nil }
+        return "\(updateCheckID)-\(buildPush.settingsRequestID)"
+    }
     private var currentVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
@@ -111,7 +117,7 @@ struct SettingsView: View {
                         .buttonStyle(.borderedProminent)
                         .tint(.blue)
                         .fixedSize()
-                        .disabled(checkingForUpdate)
+                        .disabled(updateRequestID != nil)
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
@@ -127,6 +133,11 @@ struct SettingsView: View {
             .background(HakoStyle.background)
             .onAppear { isVisible = true }
             .onDisappear { isVisible = false }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                // Preserve the task across brief inactive transitions in the foreground.
+                if phase == .active { inForeground = true }
+                if phase == .background { inForeground = false }
+            }
             .sheet(item: $sheet) { route in
                 switch route {
                 case .server: ServerSettingsView()
@@ -135,7 +146,10 @@ struct SettingsView: View {
                 case .github: GitHubSettingsSheet()
                 }
             }
-            .task(id: updateCheckID) { await checkUpdates() }
+            .task(id: updateTaskID) { [updateTaskID] in
+                guard updateTaskID != nil else { return }
+                await checkUpdates()
+            }
             .alert(alert?.title ?? "Hako", isPresented: Binding(get: { alert != nil }, set: { if !$0 { alert = nil } }), presenting: alert) { _ in
                 Button("好") { alert = nil }
             } message: { content in
@@ -175,10 +189,9 @@ struct SettingsView: View {
                         }
                     }
                 } icon: {
-                    Image(systemName: "arrow.down.to.line")
-                        .foregroundStyle(updateAvailable == true ? HakoStyle.adaptive(0xffffff, 0x151517) : .primary)
+                    Image(systemName: updateAvailable == true ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .foregroundStyle(highlight ?? .primary)
                         .frame(width: 28, height: 28)
-                        .background(highlight ?? .clear, in: RoundedRectangle(cornerRadius: 7))
                 }
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.leading)
@@ -215,8 +228,9 @@ struct SettingsView: View {
 
     private func checkUpdates() async {
         guard !Task.isCancelled else { return }
-        checkingForUpdate = true
-        defer { if !Task.isCancelled { checkingForUpdate = false } }
+        let request = UUID()
+        updateRequestID = request
+        defer { if updateRequestID == request { updateRequestID = nil } }
         updates = [:]
         guard installedBuild != nil else {
             updates = Dictionary(uniqueKeysWithValues: UpdateSource.allCases.map { ($0, .failed) })
@@ -227,7 +241,7 @@ struct SettingsView: View {
                 group.addTask { (source, await Self.check(source)) }
             }
             for await (source, state) in group {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, updateRequestID == request else { return }
                 updates[source] = state
             }
         }

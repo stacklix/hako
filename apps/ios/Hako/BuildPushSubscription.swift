@@ -18,9 +18,15 @@ final class BuildPushSubscription: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var message: String?
     @Published var settingsRequested = false
+    @Published private(set) var settingsRequestID = 0
 
     private init() {
         enabled = defaults.bool(forKey: enabledKey)
+    }
+
+    func requestSettings() {
+        settingsRequested = true
+        settingsRequestID += 1
     }
 
     func setEnabled(_ requested: Bool) async {
@@ -124,7 +130,7 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
             defer { completionHandler() }
             guard opensSettings else { return }
             HakoLog.record(.hako, "收到构建通知点按")
-            BuildPushSubscription.shared.settingsRequested = true
+            BuildPushSubscription.shared.requestSettings()
         }
     }
 }

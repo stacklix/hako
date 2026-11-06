@@ -88,9 +88,20 @@ struct QinglongConnectionEditor: View {
             }
             if let testResult { QinglongNotice(text: testResult) }
             if let error { QinglongNotice(text: error, error: true) }
-            Button(testing ? "正在测试…" : "测试连接") { test() }.buttonStyle(QinglongSecondaryButtonStyle())
-            if store.configuration.connections.contains(where: { $0.id == draft.id }) {
-                Button("删除此连接", role: .destructive) { deleting = true }.buttonStyle(QinglongSecondaryButtonStyle(destructive: true))
+            Section {
+                VStack(spacing: 12) {
+                    Button(testing ? "正在测试…" : "测试连接", action: test)
+                        .buttonStyle(HakoActionButtonStyle(primary: false))
+                    if store.configuration.connections.contains(where: { $0.id == draft.id }) {
+                        Button("删除此连接", role: .destructive) { deleting = true }
+                            .buttonStyle(HakoActionButtonStyle(destructive: true))
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
         }
         .disabled(testing || store.busy)
