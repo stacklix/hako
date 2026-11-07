@@ -42,7 +42,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
                     overview()
-                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 12)
+                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
                         .id("device-overview")
                     if let selected {
                         Section {

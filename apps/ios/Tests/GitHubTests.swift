@@ -289,7 +289,7 @@ final class MockProtocol: URLProtocol {
                 ["id": 458, "name": "deploy", "status": "queued"]
             ]])
         }
-        let progress = try await builds.latest()
+        let progress = try await builds.latest(workflow: .ios)
         precondition(calls == 2 && progress?.run.runNumber == 42)
         precondition(progress?.run.refreshInterval == 5)
         for status in ["queued", "waiting", "in_progress", "completed"] {
@@ -302,17 +302,36 @@ final class MockProtocol: URLProtocol {
                                            status: "completed", conclusion: conclusion, updatedAt: .now)
             precondition(run.refreshInterval == 30)
         }
-        precondition(progress?.jobs.map(\.name) == ["snapshot", "build", "test", "deploy"])
+        precondition(progress?.jobs.map(\.name) == ["snapshot", "test", "build", "deploy"])
         precondition(progress?.jobs.first { $0.name == "build" }?.activeStep == "Archive and export signed IPA")
         precondition(BuildStatusClient.statusText("completed", conclusion: "failure") == "失败")
         precondition(BuildStatusClient.statusText("completed", conclusion: "cancelled") == "已取消")
+        for workflow in [BuildStatusWorkflow.server, .windows] {
+            let names = workflow == .server ? ["build", "changes", "test"] : ["build"]
+            let runID = workflow == .server ? 321 : 654
+            calls = 0
+            MockProtocol.handler = { req in
+                calls += 1
+                if calls == 1 {
+                    precondition(req.url!.path == "/repos/stacklix/hako/actions/workflows/\(workflow.rawValue)/runs")
+                    return try json(["workflow_runs": [["id": runID, "run_number": 9, "run_attempt": 1,
+                        "status": "in_progress", "updated_at": "2026-10-22T08:30:00Z"]]])
+                }
+                precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/\(runID)/attempts/1/jobs")
+                return try json(["jobs": names.enumerated().map { ["id": $0.offset, "name": $0.element, "status": "queued"] }])
+            }
+            let snapshot = try await builds.latest(workflow: workflow)
+            precondition(calls == 2 && snapshot?.run.id == runID)
+            precondition(snapshot?.jobs.map(\.name) == Array(names.reversed()))
+        }
+        precondition(BuildStatusWorkflow.server.jobTitle("build") == "构建并发布镜像")
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try json(["workflow_runs": []]) }
-        let emptyBuild = try await builds.latest()
+        let emptyBuild = try await builds.latest(workflow: .server)
         precondition(emptyBuild == nil && calls == 1)
         for status in [401, 403, 404, 429, 500] {
             MockProtocol.handler = { _ in (status, Data()) }
-            do { _ = try await builds.latest(); fatalError("Accepted failed build status request") }
+            do { _ = try await builds.latest(workflow: .ios); fatalError("Accepted failed build status request") }
             catch is HakoError { }
         }
         print("PASS: GitHub sync; empty-local restore/multi-year union/conflicts/metadata/idempotency/failures; build status")

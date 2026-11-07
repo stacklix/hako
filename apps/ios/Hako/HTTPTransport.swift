@@ -103,9 +103,13 @@ struct HTTPLogRedactor {
             }
         }
     }
-    private static func sensitive(_ name:String) -> Bool {
+    private static func sensitive(_ name:String, value:Any? = nil) -> Bool {
         let key=name.lowercased().filter { $0.isLetter || $0.isNumber }
         if ["signaturemethod","signatureversion"].contains(key) { return false }
+        // Asset lists may also be named "tokens". Still redact credential fields within each holding.
+        if key == "tokens", let holdings = value as? [[String:Any]], holdings.allSatisfy({
+            $0["symbol"] is String && ($0["balance"] is String || $0["balance"] is NSNumber)
+        }) { return false }
         return ["key","auth","authentication","jwt","session","sessionid","sessionkey","dpop","nonce",
                 "codeverifier","websocketurl","commandcontent","output"].contains(key)
             || key.contains("token")
@@ -130,7 +134,7 @@ struct HTTPLogRedactor {
     private mutating func collect(_ object:Any) {
         if let values=object as? [String:Any] {
             for (key,value) in values {
-                if Self.sensitive(key) { collectSecret(value,field:key) } else { collect(value) }
+                if Self.sensitive(key,value:value) { collectSecret(value,field:key) } else { collect(value) }
             }
         } else if let values=object as? [Any] { for value in values { collect(value) } }
     }
@@ -161,7 +165,7 @@ struct HTTPLogRedactor {
     private func redact(_ object:Any) -> Any {
         if let values=object as? [String:Any] {
             return values.reduce(into:[String:Any]()) { result,item in
-                result[item.key]=Self.sensitive(item.key) ? hidden : redact(item.value)
+                result[item.key]=Self.sensitive(item.key,value:item.value) ? hidden : redact(item.value)
             }
         }
         if let values=object as? [Any] { return values.map(redact) }

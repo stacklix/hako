@@ -1,11 +1,46 @@
 import Foundation
 import SwiftUI
 
+enum BuildStatusWorkflow: String, CaseIterable, Identifiable {
+    case ios = "ios.yml"
+    case server = "server.yml"
+    case windows = "windows.yml"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ios: "iOS"
+        case .server: "服务端"
+        case .windows: "Windows"
+        }
+    }
+
+    private var stages: [(name: String, title: String)] {
+        switch self {
+        case .ios: [("snapshot", "Linux 测试"), ("test", "macOS 测试"), ("build", "打包 IPA"), ("deploy", "发布下载页面")]
+        case .server: [("test", "服务端测试"), ("changes", "检查发布条件"), ("build", "构建并发布镜像")]
+        case .windows: [("build", "构建和打包")]
+        }
+    }
+
+    var pageURL: URL { URL(string: "https://github.com/stacklix/hako/actions/workflows/\(rawValue)")! }
+
+    func jobTitle(_ name: String) -> String {
+        stages.first { $0.name == name }?.title ?? name
+    }
+
+    func orderedJobs(_ jobs: [BuildStatusClient.Job]) -> [BuildStatusClient.Job] {
+        let stages = self.stages.map { $0.name }
+        return jobs.sorted {
+            (stages.firstIndex(of: $0.name) ?? stages.count) < (stages.firstIndex(of: $1.name) ?? stages.count)
+        }
+    }
+}
+
 struct BuildStatusClient {
     var session: URLSession = HTTPTransport.shared
     let token: String
-
-    static let workflowFile = "ios.yml"
 
     struct Run: Decodable {
         let id: Int
@@ -67,14 +102,14 @@ struct BuildStatusClient {
         return try decoder.decode(type, from: data)
     }
 
-    func latest() async throws -> Snapshot? {
+    func latest(workflow: BuildStatusWorkflow) async throws -> Snapshot? {
         struct Runs: Decodable { let workflowRuns: [Run] }
         struct Jobs: Decodable { let jobs: [Job] }
-        let result = try await get("actions/workflows/\(Self.workflowFile)/runs?branch=master&per_page=1", as: Runs.self)
+        let result = try await get("actions/workflows/\(workflow.rawValue)/runs?branch=master&per_page=1", as: Runs.self)
         guard let run = result.workflowRuns.first else { return nil }
         // Pin jobs to this attempt so a rerun never mixes old and new steps.
         let jobs = try await get("actions/runs/\(run.id)/attempts/\(run.runAttempt)/jobs?per_page=100", as: Jobs.self)
-        return Snapshot(run: run, jobs: jobs.jobs)
+        return Snapshot(run: run, jobs: workflow.orderedJobs(jobs.jobs))
     }
 
     static func statusText(_ status: String, conclusion: String?) -> String {
@@ -102,6 +137,24 @@ struct BuildStatusClient {
 
 struct GitHubBuildStatusRows: View {
     let isSettingsVisible: Bool
+    @AppStorage("buildStatus.githubWorkflow") private var workflow = BuildStatusWorkflow.ios
+
+    var body: some View {
+        Picker("工作流", selection: $workflow) {
+            ForEach(BuildStatusWorkflow.allCases) { option in
+                Text(option.title).tag(option)
+            }
+        }
+        .pickerStyle(.menu)
+
+        GitHubWorkflowStatusRows(isSettingsVisible: isSettingsVisible, workflow: workflow)
+            .id(workflow)
+    }
+}
+
+private struct GitHubWorkflowStatusRows: View {
+    let isSettingsVisible: Bool
+    let workflow: BuildStatusWorkflow
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshot: BuildStatusClient.Snapshot?
     @State private var errorMessage: String?
@@ -114,10 +167,10 @@ struct GitHubBuildStatusRows: View {
     var body: some View {
         Group {
             if let snapshot {
-                LabeledContent("iOS #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
+                LabeledContent("\(workflow.title) #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
                 ForEach(snapshot.jobs) { job in
                     VStack(alignment: .leading, spacing: 4) {
-                        LabeledContent(jobTitle(job.name),
+                        LabeledContent(workflow.jobTitle(job.name),
                                        value: BuildStatusClient.statusText(job.status, conclusion: job.conclusion))
                         if let step = job.activeStep {
                             Text(step).font(.caption).foregroundStyle(.secondary)
@@ -125,9 +178,9 @@ struct GitHubBuildStatusRows: View {
                     }
                 }
             } else if !loaded {
-                ProgressView("读取 iOS 构建进度…")
+                ProgressView("读取\(workflow.title)构建进度…")
             } else if errorMessage == nil {
-                Text("暂无 iOS 构建记录").foregroundStyle(.secondary)
+                Text("暂无\(workflow.title)构建记录").foregroundStyle(.secondary)
             }
             if let errorMessage {
                 Text(errorMessage).font(.footnote).foregroundStyle(.secondary)
@@ -152,19 +205,9 @@ struct GitHubBuildStatusRows: View {
                     catch { return }
                 } while !Task.isCancelled
             }
-            Link("在 GitHub 查看", destination: URL(string: snapshot.map {
-                "https://github.com/stacklix/hako/actions/runs/\($0.run.id)"
-            } ?? "https://github.com/stacklix/hako/actions/workflows/\(BuildStatusClient.workflowFile)")!)
-        }
-    }
-
-    private func jobTitle(_ name: String) -> String {
-        switch name {
-        case "build": "打包"
-        case "deploy": "发布下载页面"
-        case "snapshot": "Linux 测试"
-        case "test": "macOS 测试"
-        default: name
+            Link("在 GitHub 查看", destination: snapshot.map {
+                URL(string: "https://github.com/stacklix/hako/actions/runs/\($0.run.id)")!
+            } ?? workflow.pageURL)
         }
     }
 
@@ -177,7 +220,7 @@ struct GitHubBuildStatusRows: View {
         }
         do {
             let token = try TokenStore.read()
-            let latest = try await BuildStatusClient(token: token).latest()
+            let latest = try await BuildStatusClient(token: token).latest(workflow: workflow)
             try Task.checkCancellation()
             guard loadingRequest == request else { return }
             snapshot = latest

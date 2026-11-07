@@ -178,27 +178,34 @@ struct DeviceMetricsView: View {
     private var deviceOverview: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                Text(currentAgent.name).font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                Label(currentAgent.online ? "在线" : "离线", systemImage: "circle.fill")
-                    .font(.caption).foregroundStyle(currentAgent.online ? Color.green : Color.secondary)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background((currentAgent.online ? Color.green : Color.secondary).opacity(0.1), in: Capsule())
-                    .fixedSize()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(currentAgent.name).font(.title2.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("设备 ID · \(currentAgent.id)").font(.caption.monospaced())
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .trailing, spacing: 0) {
+                    Label(currentAgent.online ? "在线" : "离线", systemImage: "circle.fill")
+                        .font(.caption).foregroundStyle(currentAgent.online ? Color.green : Color.secondary)
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background((currentAgent.online ? Color.green : Color.secondary).opacity(0.1), in: Capsule())
+                        .fixedSize()
+                    Button {
+                        liveContext = liveContext == nil ? client.requestContext : nil
+                        liveStatus = nil
+                    } label: {
+                        Label("实时刷新", systemImage: liveContext == nil ? "square" : "checkmark.square.fill")
+                            .font(.caption)
+                            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!client.authenticated || client.logoutPending)
+                    .accessibilityAddTraits(liveContext == nil ? [] : .isSelected)
+                    .accessibilityValue(liveContext == nil ? "关闭" : "开启")
+                }
             }
-            Text("设备 ID · \(currentAgent.id)").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-            Button {
-                liveContext = liveContext == nil ? client.requestContext : nil
-                liveStatus = liveContext == nil ? nil : "正在连接实时数据…"
-            } label: {
-                Label("实时刷新", systemImage: liveContext == nil ? "square" : "checkmark.square.fill")
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!client.authenticated || client.logoutPending)
-            .accessibilityAddTraits(liveContext == nil ? [] : .isSelected)
-            .accessibilityValue(liveContext == nil ? "关闭" : "开启")
             if let liveStatus { Text(liveStatus).font(.caption).foregroundStyle(.secondary) }
             if state.loading {
                 HStack(spacing: 7) { ProgressView().controlSize(.mini); Text("正在更新查询数据…") }
@@ -215,7 +222,7 @@ struct DeviceMetricsView: View {
         while !Task.isCancelled, context == liveTaskContext {
             do {
                 try await client.watchLive(currentAgent) {
-                    liveStatus = "实时刷新中"
+                    liveStatus = nil
                     retry = 1
                 }
             } catch {

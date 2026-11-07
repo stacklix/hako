@@ -122,6 +122,10 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
             precondition(!entry.text.contains(secret))
         }
         var redactor = HTTPLogRedactor(request: request, secrets: [])
+        let mixed = Data(#"{"tokens":[{"symbol":"TRX","balance":"123.45","access_token":"private-asset-token"}],"login":{"tokens":["private-token-list"]}}"#.utf8)
+        let redacted = redactor.response(response as! HTTPURLResponse, data: mixed)
+        precondition(redacted.contains("TRX") && redacted.contains("123.45"))
+        precondition(!redacted.contains("private-asset-token") && !redacted.contains("private-token-list"))
         let large = Data(repeating: 65, count: HTTPLogRedactor.bodyLimit + 1)
         precondition(redactor.response(response as! HTTPURLResponse, data: large).contains("正文已省略"))
         do {

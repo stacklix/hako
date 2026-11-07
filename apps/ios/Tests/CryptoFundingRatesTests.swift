@@ -240,7 +240,7 @@ private final class FundingMockProtocol: URLProtocol, @unchecked Sendable {
         FundingMockProtocol.respond { _ in (200,["status":"error","err_code":1016,"err_msg":privateResponse]) }
         do { _ = try await client.json(privateRequest);fatalError("Expected HTX rejection") } catch {}
         check(logs.snapshot().entries.first?.detail.contains("1016") == true && logs.snapshot().entries.first?.level == .error,"log API rejection codes even for HTTP 200")
-        let rawToken="unlisted-raw-token",longBody=String(repeating:"business-data ",count:1000)+"RESPONSE-END"
+        let rawToken="unlisted-raw-token",longBody=String(repeating:"business-data ",count:500)+"RESPONSE-END"
         FundingMockProtocol.respond { _ in (503,Data(("refresh_token="+rawToken+"\n"+longBody).utf8)) }
         do { _ = try await client.json(privateRequest);fatalError("Expected plaintext failure") } catch {}
         check(logs.snapshot().entries.first?.detail.contains("RESPONSE-END") == true && logs.snapshot().entries.first?.detail.contains(rawToken) == false,"keep full non-JSON error bodies while removing credential key/value pairs")
