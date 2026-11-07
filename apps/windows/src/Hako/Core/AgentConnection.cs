@@ -14,6 +14,7 @@ namespace Hako.Core;
 
 public sealed class AgentConnection : IAsyncDisposable
 {
+    private const int ProtocolVersion = 4;
     public sealed record ConnectionState(string State, string Message, string? AgentId = null);
     private volatile ConnectionState status = new("disconnected", "未连接");
     public ConnectionState Status => status;
@@ -69,11 +70,11 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("authenticating", "正在验证身份…");
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await SendAsync(socket, new { type = "hello", version = 3, username = settings.Username, keyId, capabilities = dispatcher.Capabilities }, authTimeout.Token);
+                    await SendAsync(socket, new { type = "hello", version = ProtocolVersion, username = settings.Username, keyId, capabilities = dispatcher.Capabilities }, authTimeout.Token);
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
-                    var expected = "hako-agent-auth/v3\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
+                    var expected = $"hako-agent-auth/v{ProtocolVersion}\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
                     if (!Encoding.UTF8.GetString(payload).StartsWith(expected, StringComparison.Ordinal)) throw new AuthenticationException("服务端认证挑战不匹配。");
                     var signature = Convert.ToBase64String(rsa.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
                     await SendAsync(socket, new { type = "authenticate", signature }, authTimeout.Token);
@@ -84,6 +85,21 @@ public sealed class AgentConnection : IAsyncDisposable
                 attempt = 0;
                 using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var workers = new List<Task>();
+                CancellationTokenSource? telemetry = null;
+                Task? telemetryWorker = null;
+                string? telemetryId = null;
+
+                async Task StopTelemetryAsync()
+                {
+                    if (telemetry is null) return;
+                    await telemetry.CancelAsync();
+                    if (telemetryWorker is not null) await telemetryWorker;
+                    telemetry.Dispose();
+                    telemetry = null;
+                    telemetryWorker = null;
+                    telemetryId = null;
+                }
+
                 try
                 {
                     while (!connection.IsCancellationRequested)
@@ -103,6 +119,17 @@ public sealed class AgentConnection : IAsyncDisposable
                                 else
                                     workers.Add(Task.Run(() => ExecuteRequestAsync(socket, request, connection.Token), connection.Token));
                                 break;
+                            case "telemetry_start":
+                                await StopTelemetryAsync();
+                                var id = root.GetProperty("id").GetString()!;
+                                telemetryId = id;
+                                telemetry = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
+                                var telemetryToken = telemetry.Token;
+                                telemetryWorker = Task.Run(() => RunTelemetryAsync(socket, id, telemetryToken, connection.Token));
+                                break;
+                            case "telemetry_stop":
+                                if (root.GetProperty("id").GetString() == telemetryId) await StopTelemetryAsync();
+                                break;
                             default: throw new InvalidDataException("未知的服务端消息。");
                         }
                     }
@@ -110,6 +137,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 finally
                 {
                     await connection.CancelAsync();
+                    await StopTelemetryAsync();
                     try { await Task.WhenAll(workers); } catch (OperationCanceledException) { }
                 }
             }
@@ -122,6 +150,30 @@ public sealed class AgentConnection : IAsyncDisposable
             try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)) + Random.Shared.NextDouble()), token); }
             catch (OperationCanceledException) { return; }
         }
+    }
+
+    private async Task RunTelemetryAsync(ClientWebSocket socket, string id, CancellationToken token, CancellationToken connection)
+    {
+        try
+        {
+            await dispatcher.RunTelemetryAsync(async (method, item) =>
+            {
+                token.ThrowIfCancellationRequested();
+                object message = item.Error is { } error
+                    ? new { type = "telemetry_update", id, method, version = item.Version, error }
+                    : new { type = "telemetry_update", id, method, version = item.Version, result = item.Result };
+                var payload = JsonSerializer.SerializeToUtf8Bytes(message, Json);
+                if (payload.Length > 64 * 1024)
+                    payload = JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        type = "telemetry_update", id, method, version = item.Version,
+                        error = new CapabilityError("result_too_large", "数据超出消息大小限制。")
+                    }, Json);
+                await SendPayloadAsync(socket, payload, connection);
+            }, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch { socket.Abort(); }
     }
 
     private async Task ExecuteRequestAsync(ClientWebSocket socket, JsonElement request, CancellationToken token)
@@ -146,10 +198,15 @@ public sealed class AgentConnection : IAsyncDisposable
         catch { socket.Abort(); }
     }
 
-    private async Task SendAsync(ClientWebSocket socket, object value, CancellationToken token)
+    private Task SendAsync(ClientWebSocket socket, object value, CancellationToken token) =>
+        SendPayloadAsync(socket, JsonSerializer.SerializeToUtf8Bytes(value, Json), token);
+
+    private async Task SendPayloadAsync(ClientWebSocket socket, byte[] payload, CancellationToken token)
     {
-        await writing.WaitAsync(token);
-        try { await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(value, Json), WebSocketMessageType.Text, true, token); }
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        await writing.WaitAsync(deadline.Token);
+        try { await socket.SendAsync(payload, WebSocketMessageType.Text, true, deadline.Token); }
         finally { writing.Release(); }
     }
     private static async Task<JsonDocument> ReceiveAsync(ClientWebSocket socket, CancellationToken token)

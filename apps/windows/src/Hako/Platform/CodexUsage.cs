@@ -194,10 +194,30 @@ public sealed class CodexUsage : IAsyncDisposable
 
     private CodexUsageSnapshot WithRunning(CodexUsageSnapshot value, CancellationToken token)
     {
-        var sessions = RunningSessions(token);
+        var sessions = ReadTaskState(token)?.Sessions;
         var warnings = value.Warnings.Where(w => w != "当前版本的 Codex 运行状态暂不可用。").ToList();
         if (sessions is null) warnings.Add("当前版本的 Codex 运行状态暂不可用。");
-        return value with { RunningSessions = sessions?.Count, RunningSessionDetails = sessions, Warnings = warnings };
+        return value with { RunningSessions = sessions?.Length, RunningSessionDetails = sessions, Warnings = warnings };
+    }
+
+    internal async Task WatchAsync(Func<CodexUsageSnapshot?, Task> publish, CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        string[]? previous = null;
+        var initial = true;
+        do
+        {
+            var changes = ReadTaskState(token, observeChanges: true)?.Changes;
+            if (initial || (changes is null ? previous is not null : previous is null || !changes.SequenceEqual(previous)))
+            {
+                CodexUsageSnapshot? value;
+                try { value = await CollectAsync(token); }
+                catch (Exception e) when (e is not OperationCanceledException) { value = null; }
+                await publish(value);
+                previous = changes;
+                initial = false;
+            }
+        } while (await timer.WaitForNextTickAsync(token));
     }
 
     private async Task ScanAsync(string path, Cursor cursor, DateTimeOffset cutoff, DateTimeOffset now, List<string> warnings, CancellationToken token)
@@ -371,7 +391,9 @@ public sealed class CodexUsage : IAsyncDisposable
         return new(input, cached, output, reasoning, total, hasInput && hasOutput && cached <= input && reasoning <= output && total == checked(input + output));
     }
 
-    private IReadOnlyList<CodexRunningSession>? RunningSessions(CancellationToken token)
+    private sealed record TaskState(CodexRunningSession[] Sessions, string[] Changes);
+
+    private TaskState? ReadTaskState(CancellationToken token, bool observeChanges = false)
     {
         try
         {
@@ -379,16 +401,25 @@ public sealed class CodexUsage : IAsyncDisposable
                 .OrderByDescending(p => int.TryParse(Path.GetFileNameWithoutExtension(p).Substring(prefix.Length + 1), out var v) ? v : -1).FirstOrDefault() : null;
             var state = Database("state"); var history = Database("thread_history");
             if (state is null || history is null || !Directory.Exists(Path.Combine(home, "thread-writer-locks"))) return null;
-            var active = ReadOnlySqlite.Query(history, "SELECT DISTINCT thread_id FROM thread_turns WHERE status='inProgress' AND completed_at IS NULL", token);
+            var turnColumns = ReadOnlySqlite.Query(history, "PRAGMA table_info(thread_turns)", token);
+            var turnKey = turnColumns.Any(row => row[1] == "turn_id") ? "turn_id" : "rowid";
+            var active = ReadOnlySqlite.Query(history, $"SELECT thread_id, {turnKey} FROM thread_turns WHERE status='inProgress' AND completed_at IS NULL", token);
+            // Keep a short completion history so a turn that starts and ends between checks still triggers a push.
+            List<string[]> completed = observeChanges
+                ? ReadOnlySqlite.Query(history, $"SELECT thread_id, {turnKey}, completed_at FROM thread_turns WHERE completed_at IS NOT NULL ORDER BY completed_at DESC, thread_id, {turnKey} LIMIT 32", token)
+                : [];
             // Only UUIDs enter the SQL literal list. Identifiers and full paths are never returned.
-            var ids = active.Select(r => r[0]).Where(id => Guid.TryParse(id, out _) && WriterAlive(id)).Distinct().ToArray();
+            var turns = active.GroupBy(row => row[0]).Where(group => Guid.TryParse(group.Key, out _) && WriterAlive(group.Key))
+                .ToDictionary(group => group.Key, group => group.ToArray());
+            var ids = turns.Keys.Concat(completed.Select(row => row[0]).Where(id => Guid.TryParse(id, out _))).Distinct().ToArray();
             var columns = ReadOnlySqlite.Query(state, "PRAGMA table_info(threads)", token).Select(r => r[1]).ToHashSet();
             if (!columns.Contains("id") || !columns.Contains("source")) return null;
-            if (ids.Length == 0) return Array.Empty<CodexRunningSession>();
+            if (ids.Length == 0) return new([], []);
             string Column(string name) => columns.Contains(name) ? name : "''";
             var rows = ReadOnlySqlite.Query(state, "SELECT id, source, " + string.Join(", ", new[] { "thread_source", "name", "cwd" }.Select(Column))
                 + " FROM threads WHERE id IN (" + string.Join(",", ids.Select(id => "'" + id + "'")) + ")", token);
-            return rows.Where(r => !InternalSource(r[1]) && !InternalSource(r[2])).Select(r =>
+            var visible = rows.Where(r => !InternalSource(r[1]) && !InternalSource(r[2])).ToArray();
+            var sessions = visible.Where(r => turns.ContainsKey(r[0])).Select(r =>
             {
                 var project = r[4].Trim().TrimEnd('\\', '/').Split('\\', '/').LastOrDefault();
                 // Only use the display name: legacy title may contain the entire initial request.
@@ -396,7 +427,14 @@ public sealed class CodexUsage : IAsyncDisposable
                 if (title.Length > 160) title = title[..160] + "…";
                 return new CodexRunningSession(title.Length == 0 ? "未命名会话" : title,
                     string.IsNullOrEmpty(project) ? "未关联项目" : project);
-            }).OrderBy(s => s.ProjectName, StringComparer.OrdinalIgnoreCase).ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToArray();
+            }).OrderBy(s => s.ProjectName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(s => s.Title, StringComparer.OrdinalIgnoreCase).ToArray();
+            if (!observeChanges) return new(sessions, []);
+            var visibleIDs = visible.Select(row => row[0]).ToHashSet();
+            var changes = turns.Values.SelectMany(activeTurns => activeTurns).Concat(completed)
+                .Where(row => visibleIDs.Contains(row[0])).Select(row => string.Join(":", row))
+                .Order(StringComparer.Ordinal).ToArray();
+            return new(sessions, changes);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException) { return null; }
     }

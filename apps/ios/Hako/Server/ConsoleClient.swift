@@ -84,11 +84,63 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     }
 
     private func receiveLoginPrompts(token: String, context: String, receive: @escaping @MainActor (Data) throws -> Void) async throws {
+        let socket = try makeWebSocket("/api/v1/auth/login-prompts/stream", token: token, context: context)
+        defer { socket.cancel(with: .goingAway, reason: nil) }
+        do {
+            try await withTaskCancellationHandler {
+                while !Task.isCancelled {
+                    let data = try await socket.receiveData()
+                    try Task.checkCancellation()
+                    guard context == requestContext else { throw CancellationError() }
+                    try receive(data)
+                }
+            } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
+        } catch {
+            guard !Task.isCancelled, context == requestContext else { throw CancellationError() }
+            throw webSocketError(error, socket: socket, logSource: .hako, rejection: "notification_stream")
+        }
+    }
+
+    func openWebSocket(_ path: String, logSource: HakoLogSource) async throws -> (URLSessionWebSocketTask, Data) {
+        let context = requestContext
+        guard authenticated, !logoutPending, !resettingKey, let session = saved else { throw CancellationError() }
+        if ConsoleSessionValidation.needsRefresh(expiresAt: session.tokens.expiresAt) { try await refresh() }
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            guard let token = saved?.tokens.accessToken else { throw CancellationError() }
+            let socket = try makeWebSocket(path, token: token, context: context)
+            let deadline = Task {
+                try await Task.sleep(for: .seconds(15))
+                socket.cancel(with: .goingAway, reason: nil)
+            }
+            defer { deadline.cancel() }
+            do {
+                let hello = try await withTaskCancellationHandler {
+                    try await socket.receiveData()
+                } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
+                try Task.checkCancellation()
+                guard context == requestContext else { throw CancellationError() }
+                return (socket, hello)
+            } catch {
+                socket.cancel(with: .goingAway, reason: nil)
+                guard !Task.isCancelled, context == requestContext else { throw CancellationError() }
+                let failure = webSocketError(error, socket: socket, logSource: logSource, rejection: "socket")
+                if attempt == 0, (failure as? ServerHTTPError)?.status == 401 {
+                    try await refresh()
+                } else {
+                    throw failure
+                }
+            }
+        }
+        throw CancellationError()
+    }
+
+    private func makeWebSocket(_ path: String, token: String, context: String) throws -> URLSessionWebSocketTask {
         guard context == requestContext, authenticated, !logoutPending, !resettingKey,
-              let url = URL(string: serverURL + "/api/v1/auth/login-prompts/stream"), url.scheme == "https",
+              let url = URL(string: serverURL + path), url.scheme == "https",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw CancellationError() }
         components.scheme = "wss"
-        guard let socketURL = components.url else { throw HakoError(message: "通知连接地址无效。") }
+        guard let socketURL = components.url else { throw HakoError(message: "WebSocket 连接地址无效。") }
         let device = try identity()
         var request = URLRequest(url: socketURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization")
@@ -97,31 +149,17 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         let socket = transport.webSocketTask(with: request)
         socket.maximumMessageSize = 2_097_152
         socket.resume()
-        defer { socket.cancel(with: .goingAway, reason: nil) }
-        do {
-            try await withTaskCancellationHandler {
-                while !Task.isCancelled {
-                    let data: Data
-                    switch try await socket.receive() {
-                    case .data(let value): data = value
-                    case .string(let value): data = Data(value.utf8)
-                    @unknown default: throw HakoError(message: "通知推送格式无效。")
-                    }
-                    try Task.checkCancellation()
-                    guard context == requestContext else { throw CancellationError() }
-                    try receive(data)
-                }
-            } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
-        } catch {
-            guard !Task.isCancelled, context == requestContext else { throw CancellationError() }
-            let status = (socket.response as? HTTPURLResponse)?.statusCode
-            HakoLog.record(.hako, .error, "登录通知连接断开",
-                           detail: "HTTP：\(status.map(String.init) ?? "未知")，关闭码：\(socket.closeCode.rawValue)")
-            if let status, status != 101 {
-                throw ServerHTTPError(status: status, code: status == 404 ? "notification_stream_unavailable" : "notification_stream_rejected")
-            }
-            throw error
+        return socket
+    }
+
+    private func webSocketError(_ error: Error, socket: URLSessionWebSocketTask, logSource: HakoLogSource, rejection: String) -> Error {
+        let status = (socket.response as? HTTPURLResponse)?.statusCode
+        HakoLog.record(logSource, .error, "WebSocket 连接断开",
+                       detail: "HTTP：\(status.map(String.init) ?? "未知")，关闭码：\(socket.closeCode.rawValue)")
+        if let status, status != 101 {
+            return ServerHTTPError(status: status, code: rejection + (status == 404 ? "_unavailable" : "_rejected"))
         }
+        return error
     }
 
     var requestContext: String { serverURL + "\n" + username + "\n" + (saved?.tokens.sessionId ?? "") + "|\(authenticated)|\(logoutPending)" }

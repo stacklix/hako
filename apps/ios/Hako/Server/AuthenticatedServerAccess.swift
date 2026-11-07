@@ -12,8 +12,19 @@ import Combine
     var message: String? { get }
     var requestContext: String { get }
     func watchLoginPrompts(_ receive: @escaping @MainActor (Data) throws -> Void) async throws
+    func openWebSocket(_ path: String, logSource: HakoLogSource) async throws -> (URLSessionWebSocketTask, Data)
     func restore() async
     func send(_ path: String, method: String, body: [String: Any]?, logSource: HakoLogSource) async throws -> Data
+}
+
+extension URLSessionWebSocketTask {
+    func receiveData() async throws -> Data {
+        switch try await receive() {
+        case .data(let value): return value
+        case .string(let value): return Data(value.utf8)
+        @unknown default: throw CocoaError(.coderReadCorrupt)
+        }
+    }
 }
 
 struct ServerHTTPError: Error, LocalizedError {

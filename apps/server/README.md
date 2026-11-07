@@ -206,7 +206,7 @@ SK 仅在创建 / 轮换响应中出现一次；列表和数据库不保存原�
 - 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
 - 正文：`{"method":"query.all","version":1,"params":{}}`。
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
-- Agent 使用 WebSocket v3，在 `hello.capabilities` 中声明动作名与版本；Console 和网页的设备列表接口返回最近一次成功认证的 `capabilities`（离线仍保留，首次连接前为 null）。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
+- Agent 使用 WebSocket v4，在 `hello.capabilities` 中声明动作名与版本；Console 和网页的设备列表接口返回最近一次成功认证的 `capabilities`（离线仍保留，首次连接前为 null）。服务端不依赖具体动作和指标模型，新增动作、参数和结果字段通常无需升级服务端。
 
 超时、断线可能发生在动作已经执行之后，有副作用的动作应先确认结果再决定是否重试。具体格式及限制见[设备监控协议](../../docs/device-monitoring.md)。
 
@@ -267,7 +267,7 @@ Windows 真实联调可将 `HAKO_WINDOWS_CHECKS` 设置为 [Windows 检查程序
 
 协议见 [设备监控协议](../../docs/device-monitoring.md)。返回 [仓库说明](../../README.md)。
 
-命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
+命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v4 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
 
 局域网 iLinker 可登记 `http://192.168.0.2:8001`（含端口）。HTTP 应用地址支持私有 IPv4、IPv6 ULA、回环、链路本地地址、localhost / .localhost 和 .local 主机；公网应用仍使用 HTTPS，地址不带路径、查询或片段。手机端需同步更新地址校验。该地址仅用于手机确认展示，Hako 不请求该地址；应用 SK 和手机认证仍发送到 HTTPS Hako 服务。
 

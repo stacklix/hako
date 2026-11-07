@@ -26,13 +26,14 @@ public sealed class AgentDispatcher
     private readonly Dictionary<string, Handler> queries;
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
+    private readonly CodexUsage codex;
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null)
     {
-        var codex = codexUsage ?? new CodexUsage();
+        codex = codexUsage ?? new CodexUsage();
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -77,6 +78,44 @@ public sealed class AgentDispatcher
             ["query.git.operation"] = new(1, git.OperationAsync),
             ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token))
         };
+    }
+
+    internal async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
+    {
+        using var streams = CancellationTokenSource.CreateLinkedTokenSource(token);
+        Task[] workers =
+        [
+            PublishPeriodicallyAsync("query.system.metrics", TimeSpan.FromSeconds(1), publish, streams.Token),
+            PublishPeriodicallyAsync("query.network.listeners", TimeSpan.FromSeconds(10), publish, streams.Token),
+            codex.WatchAsync(value => publish("query.codex.usage", value is null
+                ? new CapabilityData(1, Error: new("query_failed", "Codex 数据采集失败。"))
+                : new CapabilityData(1, JsonSerializer.SerializeToElement(value, AgentConnection.Json))), streams.Token)
+        ];
+        await Task.WhenAny(workers);
+        await streams.CancelAsync();
+        await Task.WhenAll(workers);
+    }
+
+    private async Task PublishPeriodicallyAsync(string method, TimeSpan interval,
+        Func<string, CapabilityData, Task> publish, CancellationToken token)
+    {
+        var query = queries[method];
+        using var parameters = JsonDocument.Parse("{}");
+        using var timer = new PeriodicTimer(interval);
+        do
+        {
+            token.ThrowIfCancellationRequested();
+            CapabilityData item;
+            try
+            {
+                var value = await query.Invoke(parameters.RootElement, token);
+                item = new(query.Version, JsonSerializer.SerializeToElement(value, AgentConnection.Json));
+            }
+            catch (AgentActionException e) { item = new(query.Version, Error: new(e.Code, e.Message)); }
+            catch (Exception e) when (e is not OperationCanceledException)
+            { item = new(query.Version, Error: new("query_failed", "数据采集失败。")); }
+            await publish(method, item);
+        } while (await timer.WaitForNextTickAsync(token));
     }
 
     public async Task<object?> InvokeAsync(string method, int version, JsonElement parameters, CancellationToken token)

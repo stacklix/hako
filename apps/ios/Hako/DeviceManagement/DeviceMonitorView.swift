@@ -114,6 +114,9 @@ struct DeviceMetricsView: View {
     let agent: ConsoleAgent
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var liveContext: String?
+    @State private var liveStatus: String?
     @State private var targetURL = ""
     @State private var codexTab: CodexTab = .sessions
     @State private var listenerTab: ConsoleListenerGroup = .user
@@ -121,6 +124,11 @@ struct DeviceMetricsView: View {
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
     private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
+    private var liveTaskContext: String? {
+        guard scenePhase == .active, client.authenticated, !client.logoutPending,
+              liveContext == client.requestContext else { return nil }
+        return liveContext
+    }
     private func orderKey(_ group: String) -> String {
         DeviceCardOrder.storageKey(server: client.serverURL, account: client.username, agent: agent.id,
                                   group: group)
@@ -159,6 +167,13 @@ struct DeviceMetricsView: View {
         .toolbarBackground(HakoStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task { if client.authenticated { await client.query(currentAgent) } }
+        .task(id: liveTaskContext) {
+            if let context = liveTaskContext { await refreshLive(context: context) }
+        }
+        .onChange(of: client.requestContext) { _, _ in
+            liveContext = nil
+            liveStatus = nil
+        }
     }
     private var deviceOverview: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -172,6 +187,19 @@ struct DeviceMetricsView: View {
                     .fixedSize()
             }
             Text("设备 ID · \(currentAgent.id)").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+            Button {
+                liveContext = liveContext == nil ? client.requestContext : nil
+                liveStatus = liveContext == nil ? nil : "正在连接实时数据…"
+            } label: {
+                Label("实时刷新", systemImage: liveContext == nil ? "square" : "checkmark.square.fill")
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!client.authenticated || client.logoutPending)
+            .accessibilityAddTraits(liveContext == nil ? [] : .isSelected)
+            .accessibilityValue(liveContext == nil ? "关闭" : "开启")
+            if let liveStatus { Text(liveStatus).font(.caption).foregroundStyle(.secondary) }
             if state.loading {
                 HStack(spacing: 7) { ProgressView().controlSize(.mini); Text("正在更新查询数据…") }
                     .font(.caption).foregroundStyle(.secondary)
@@ -179,6 +207,37 @@ struct DeviceMetricsView: View {
             if let error = state.error {
                 statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
             }
+        }
+    }
+
+    private func refreshLive(context: String) async {
+        var retry = 1
+        while !Task.isCancelled, context == liveTaskContext {
+            do {
+                try await client.watchLive(currentAgent) {
+                    liveStatus = "实时刷新中"
+                    retry = 1
+                }
+            } catch {
+                guard !Task.isCancelled, context == liveTaskContext else { return }
+                if let failure = error as? ServerHTTPError {
+                    switch failure.code {
+                    case "socket_unavailable":
+                        liveContext = nil
+                        liveStatus = "服务端暂不支持实时刷新，请更新服务端。"
+                        return
+                    case "agent_offline", "agent_disconnected":
+                        liveStatus = "等待设备重新连接…"
+                    default:
+                        liveStatus = "实时连接中断，正在重连…"
+                    }
+                } else {
+                    liveStatus = "实时连接中断，正在重连…"
+                }
+            }
+            do { try await Task.sleep(for: .seconds(retry)) }
+            catch { return }
+            retry = min(retry * 2, 15)
         }
     }
     private func statusMessage(_ title: String, detail: String) -> some View {
@@ -486,7 +545,7 @@ struct DeviceMetricsView: View {
                     }
                     Text("采集于 \(sampleTime(usage.collectedAt))").font(.footnote).foregroundStyle(.secondary)
                     Text("设备时区：\(usage.timeZone)").font(.footnote).foregroundStyle(.secondary)
-                    Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。设备每分钟采集，刷新可读取最新统计。")
+                    Text("每次发送任务或消息计 1 次调用，不累计内部多轮模型调用。Token 总量含缓存输入与推理输出。开启实时刷新后，设备在任务状态变化时推送数据。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding(.top, 12)
             } label: {

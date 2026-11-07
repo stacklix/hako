@@ -1,14 +1,24 @@
-# 设备监控协议 v3
+# 设备监控协议 v4
 
 单用户、多设备。Agent 是跨平台的设备代理角色，仓库当前提供 Windows 实现；iOS 为 Console，服务端为 Hako 统一后端，设备管理是其中的业务模块。三端各自实现协议，不共享代码包。
 
-本版统一使用通用设备请求，移除旧的 `/metrics/query` 接口和 Agent v1/v2 消息协议，不提供兼容层。部署时同步更新服务端、Windows Agent 和 iOS Console；应用级认证与扫码登录见 [Hako 服务器认证协议](server-authentication.md)，扫码接口与二维码协议已统一调整。
+本版在通用设备请求基础上增加实时订阅。部署时同步更新服务端、Windows Agent 和 iOS Console，Agent 连接要求 v4。应用级认证与扫码登录见 [Hako 服务器认证协议](server-authentication.md)。
 
 ## 应用级身份与认证
 
 配置、公钥登记、DPoP 登录、会话管理和 Web 扫码批准统一见 [Hako 服务器认证协议](server-authentication.md)。所有外部通信使用 HTTPS/WSS，设备接口复用主应用 Console 会话和设备签名。
 
 ## Console 设备接口
+
+iOS 使用 `wss://<服务器>/ws/console/agents`，升级请求使用主应用的 DPoP 会话认证。收到 `{"type":"ready"}` 后可发送文本 JSON 消息，每条消息带唯一 `id`。服务端返回 `{"type":"reply","id":"…","status":200,"body":{…}}`，其中 `status` 和 `body` 沿用下表 HTTP 接口的状态与响应格式。
+
+| 消息 `type` | 其他字段 | 对应 HTTP 接口 |
+| --- | --- | --- |
+| `list` | 无 | `GET /api/v1/agents` |
+| `register` | `body` 为登记参数 | `POST /api/v1/agents` |
+| `request` | `agentId` 和 `body`，后者为命令参数 | `POST /api/v1/agents/{id}/requests` |
+
+服务端继续提供以下 HTTP 接口。
 
 | 接口 | 用途 |
 | --- | --- |
@@ -34,7 +44,7 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 ## 通用设备调用
 
-Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/api/agents/{id}/requests`，分别沿用 DPoP 或 Cookie/CSRF 认证。请求必须为 JSON 对象，包含 `method`、`version`、对象 `params`，不接受额外顶层字段，正文上限 16 KiB。
+iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /admin/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证。命令参数必须为 JSON 对象，包含 `method`、`version`、对象 `params`，不接受额外顶层字段，正文上限 16 KiB。
 
 ```json
 {"method":"query.all","version":1,"params":{}}
@@ -56,7 +66,15 @@ Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/a
 
 聚合每项 `result` / `error` 二选一，一项失败不影响其他项。无查询能力返回空 `data`。单项错误或聚合顶层错误使用 `{"error":{"code":"invalid_params","message":"参数无效。"}}`；错误码匹配 `[A-Za-z0-9_-]{1,80}`，消息最多 1024 UTF-8 字节。`result` 支持对象、数组、标量或 null，不丢失大整数精度。每项结果受消息大小预算约束，超限返回 `result_too_large`。
 
-鉴权及转发失败使用 HTTP 错误和 `{"error":"错误码"}`：格式无效 400 `invalid_request`，未声明或版本不匹配 400 `unsupported_method`，离线或断开 409，并发上限 429，超时 504。每设备最多 4 个待处理请求，全局最多 32 个。服务端等待 10 秒，聚合采集预算 8 秒。断线取消 Agent 连接下的任务，超时不表示请求从未执行。客户端不自动重试操作；明确鉴权失败后的会话续期不属于操作重试。
+鉴权及转发失败使用状态码和 `{"error":"错误码"}`：格式无效 400 `invalid_request`，未声明或版本不匹配 400 `unsupported_method`，离线或断开 409，并发上限 429，超时 504。每设备最多 4 个待处理请求，全局最多 32 个。服务端等待 10 秒，聚合采集预算 8 秒。断线取消 Agent 连接下的任务，超时不表示请求从未执行。客户端不自动重试操作；明确鉴权失败后的会话续期不属于操作重试。
+
+## 实时刷新
+
+iOS 在设备详情勾选「实时刷新」后连接 `/ws/console/agents/live/{id}`，同样使用 DPoP 会话认证。服务端发送 `ready` 后，成功订阅返回 `{"type":"subscribed"}`，失败返回 `type: "error"`、`status` 和 `body`。勾选默认关闭。取消勾选、离开详情或进入后台会关闭订阅，回到前台时恢复仍勾选的订阅。设备列表定时更新、详情的进入和下拉刷新仍可发起普通 WebSocket 查询。
+
+首个订阅触发 `{"type":"telemetry_start","id":"…"}`，末个订阅结束时发送 `telemetry_stop`，使用同一个 `id`。Agent 在此期间发送 `telemetry_update`，包含订阅 `id`、已声明的查询 `method`、`version`，以及二选一的 `result` 或 `error`。服务器按设备转发给订阅方，将 `type` 改为 `update` 并省略内部订阅 ID。并发订阅共用 Agent 的采集任务，较慢的连接按能力接收最新数据。
+
+Windows Agent 开始订阅时采集初始数据。系统指标约每秒上报一次，监听端口每 10 秒上报一次。Codex 每秒检查本机任务状态，发现任务开始或结束时重新采集并上报。短任务在两次检查之间结束时，完成记录也会触发上报。其他能力按需调用。上报内容与节奏由 Agent 决定。
 
 ### 系统指标、网络与磁盘速率
 
@@ -133,10 +151,10 @@ iOS 设备列表右上角的滑杆打开「服务器与登录」，设备详情�
 端点 `/ws/agent`，JSON 文本消息，最大 64 KiB，连接后 10 秒内完成认证。三端同步升级，无 v2 兼容层。
 
 ```json
-{"type":"hello","version":3,"username":"owner","keyId":"公钥指纹","capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}]}
+{"type":"hello","version":4,"username":"owner","keyId":"公钥指纹","capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}]}
 ```
 
-`keyId=base64url(SHA256(SPKI_DER))`。服务端以预登记 RSA 公钥验证身份，返回 `{"type":"challenge","payload":"标准 Base64"}`。payload 以 `hako-agent-auth/v3\n` 开头，绑定 origin、账号、keyId、随机数；Agent 校验绑定后用 RSA-PSS/SHA-256（salt 长度 32）签原始字节，返回 `{"type":"authenticate","signature":"标准 Base64"}`。认证并保存清单成功后返回 `type=authenticated,agentId,name`，失败以 1008 关闭。最新已认证连接替换旧连接。
+`keyId=base64url(SHA256(SPKI_DER))`。服务端以预登记 RSA 公钥验证身份，返回 `{"type":"challenge","payload":"标准 Base64"}`。payload 以 `hako-agent-auth/v4\n` 开头，绑定 origin、账号、keyId、随机数；Agent 校验绑定后用 RSA-PSS/SHA-256（salt 长度 32）签原始字节，返回 `{"type":"authenticate","signature":"标准 Base64"}`。认证并保存清单成功后返回 `type=authenticated,agentId,name`，失败以 1008 关闭。最新已认证连接替换旧连接。
 
 服务端每 20 秒发 `{"type":"ping"}`，Agent 回复 `{"type":"pong"}`，60 秒未收到有效消息断开。Agent 接收循环与能力执行分离，最多同时执行 4 个请求，写入串行，检测不阻塞查询或心跳。
 

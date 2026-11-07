@@ -230,7 +230,8 @@ func TestAgentRejectsLegacyHelloAndInvalidManifest(t *testing.T) {
 	for _, hello := range []agentMessage{
 		{Type: "hello", Version: 1, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}},
 		{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}},
-		{Type: "hello", Version: 3, Username: "owner", KeyID: f.s.config.Agents[0].keyID},
+		{Type: "hello", Version: 3, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}},
+		{Type: "hello", Version: agentProtocolVersion, Username: "owner", KeyID: f.s.config.Agents[0].keyID},
 	} {
 		dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
 		ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)

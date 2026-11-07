@@ -154,6 +154,8 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
 	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
+	s.mux.HandleFunc("GET /ws/console/agents", s.consoleAgentSocket)
+	s.mux.HandleFunc("GET /ws/console/agents/live/{id}", s.consoleAgentSocket)
 	return s, nil
 }
 
@@ -201,17 +203,17 @@ func reject(w http.ResponseWriter, status int, code string) {
 	respond(w, status, map[string]string{"error": code})
 }
 func decode(w http.ResponseWriter, r *http.Request, value any) bool {
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(value) != nil {
-		reject(w, 400, "invalid_request")
-		return false
-	}
-	if d.Decode(new(any)) != io.EOF {
+	if !decodeJSON(r.Body, value) {
 		reject(w, 400, "invalid_request")
 		return false
 	}
 	return true
+}
+
+func decodeJSON(body io.Reader, value any) bool {
+	d := json.NewDecoder(body)
+	d.DisallowUnknownFields()
+	return d.Decode(value) == nil && d.Decode(new(any)) == io.EOF
 }
 
 func (s *Server) allow(key string, max int, interval time.Duration) bool {

@@ -148,16 +148,22 @@ func registryError(w http.ResponseWriter, err error) {
 	respond(w, 400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()})
 }
 
-// Both entry points authenticate before sharing registry validation and persistence.
+type agentRegistration struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	PublicKeyPEM string `json:"publicKeyPem"`
+}
+
+// Each entry point authenticates before sharing registry validation and persistence.
 func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		PublicKeyPEM string `json:"publicKeyPem"`
-	}
+	var request agentRegistration
 	if !decode(w, r, &request) {
 		return
 	}
+	s.saveAgentRegistration(request).writeHTTP(w)
+}
+
+func (s *Server) saveAgentRegistration(request agentRegistration) agentAPIReply {
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	old := s.registry.Load()
@@ -169,31 +175,26 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		var err error
 		request.ID, err = allocateAgentID(used, rand.Reader)
 		if err != nil {
-			reject(w, 503, "device_id_unavailable")
-			return
+			return agentAPIFailure(503, "device_id_unavailable")
 		}
 	}
 	a, err := parseAgent(AgentConfig{ID: request.ID, Name: request.Name, PublicKeyPEM: request.PublicKeyPEM}, false)
 	if err != nil {
-		registryError(w, err)
-		return
+		return agentAPIReply{400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()}}
 	}
 	for _, v := range old.Agents {
 		if v.ID == a.ID || v.keyID == a.keyID {
-			reject(w, 409, "duplicate_agent")
-			return
+			return agentAPIFailure(409, "duplicate_agent")
 		}
 	}
 	next, err := loadRegistry(append(append([]AgentConfig{}, old.Agents...), a), old.Consoles, false)
 	if err != nil {
-		registryError(w, err)
-		return
+		return agentAPIReply{400, map[string]string{"error": "invalid_public_key_or_device", "message": err.Error()}}
 	}
 	if err = s.saveRegistry(next); err != nil {
-		reject(w, 503, "storage_unavailable")
-		return
+		return agentAPIFailure(503, "storage_unavailable")
 	}
-	respond(w, 201, map[string]string{"id": a.ID, "keyId": a.keyID})
+	return agentAPIReply{201, map[string]string{"id": a.ID, "keyId": a.keyID}}
 }
 func (s *Server) adminDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	s.registryMu.Lock()

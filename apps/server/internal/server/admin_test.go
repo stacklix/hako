@@ -358,7 +358,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Close()
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: 3, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}})
+	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: agentProtocolVersion, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}})
 	var challenge struct {
 		Payload string `json:"payload"`
 	}

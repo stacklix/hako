@@ -362,7 +362,7 @@ func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentCapab
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": 3, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods})
+	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agentProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`

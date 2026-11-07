@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Hako.Platform;
 
@@ -231,6 +232,26 @@ internal static class CodexUsageChecks
         result = await collector.ReadAsync(CancellationToken.None);
         if (result.RunningSessionDetails?.Single() != new CodexRunningSession("未命名会话", "未关联项目"))
             throw new Exception("Older metadata schema lost live sessions or exposed the initial message as a title");
+        using var watch = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var changes = Channel.CreateUnbounded<CodexUsageSnapshot?>();
+        var watcher = collector.WatchAsync(value => changes.Writer.WriteAsync(value, watch.Token).AsTask(), watch.Token);
+        try
+        {
+            if ((await changes.Reader.ReadAsync(watch.Token))?.RunningSessions != 1)
+                throw new Exception("Real-time Codex usage did not send the initial snapshot");
+            var history = Path.Combine(home, "thread_history_1.sqlite");
+            CreateDatabase(history, $"UPDATE thread_turns SET status='completed', completed_at=1 WHERE thread_id='{active}';");
+            if ((await changes.Reader.ReadAsync(watch.Token))?.RunningSessions != 0)
+                throw new Exception("Real-time Codex usage missed a task completion");
+            CreateDatabase(history, $"INSERT INTO thread_turns VALUES('{active}','completed',2);");
+            if ((await changes.Reader.ReadAsync(watch.Token))?.RunningSessions != 0)
+                throw new Exception("Real-time Codex usage missed a task that completed between checks");
+        }
+        finally
+        {
+            await watch.CancelAsync();
+            try { await watcher; } catch (OperationCanceledException) when (watch.IsCancellationRequested) { }
+        }
         activeLock.Unlock(0, 1);
     }
     private static void CreateDatabase(string path, string sql)

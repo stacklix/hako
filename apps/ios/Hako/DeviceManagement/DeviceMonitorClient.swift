@@ -4,6 +4,7 @@ import Combine
 @MainActor final class DeviceMonitorClient: ObservableObject {
     static let shared = DeviceMonitorClient()
     private let authentication: any AuthenticatedServerAccess
+    private let socket: DeviceMonitorSocket
     private var subscription: AnyCancellable?
     private struct State {
         var context = ""
@@ -17,7 +18,11 @@ import Combine
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
-        subscription = authentication.changes.sink { [weak self] _ in self?.objectWillChange.send() }
+        self.socket = DeviceMonitorSocket(authentication: authentication)
+        subscription = authentication.changes.sink { [weak self] _ in
+            self?.objectWillChange.send()
+            Task { @MainActor [weak self] in self?.socket.resetIfContextChanged() }
+        }
     }
     var serverURL: String { authentication.serverURL }
     var username: String { authentication.username }
@@ -45,10 +50,10 @@ import Combine
         set { prepareContext(); state.message = newValue }
     }
     func restore() async { await authentication.restore() }
-    private func authorized(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> Data {
+    private func authorized(_ type: String, agentID: String? = nil, body: [String: Any]? = nil) async throws -> Data {
         let context = requestContext
         do {
-            let data = try await authentication.send(path, method: method, body: body, logSource: .devices)
+            let data = try await socket.send(type, agentID: agentID, body: body)
             guard context == requestContext else { throw CancellationError() }
             return data
         } catch let error as ServerHTTPError {
@@ -63,6 +68,7 @@ import Combine
             case "device_id_unavailable": text = "服务器暂时无法分配设备 ID，请稍后重试。"
             case "invalid_public_key_or_device": text = "设备名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥，并确认服务端已更新。"
             case "agent_busy": text = "设备繁忙，请稍后重试。"
+            case "socket_unavailable": text = "服务端尚不支持设备 WebSocket，请先更新服务端。"
             default: text = nil
             }
             if let text { throw HakoError(message: text) }
@@ -90,9 +96,7 @@ import Combine
         defer { working = false }
         let response: Data
         do {
-            response = try await authorized("/api/v1/agents", method: "POST", body: registration.body)
-        } catch let error as ServerHTTPError where error.status == 404 || error.status == 405 {
-            throw HakoError(message: "服务端尚不支持添加 Agent，请先更新服务端。")
+            response = try await authorized("register", body: registration.body)
         } catch is URLError {
             throw HakoError(message: "网络请求失败，登记结果尚未确认。请先刷新设备列表，确认后再重试。")
         }
@@ -112,17 +116,18 @@ import Combine
 
     private func fetchAgentsInternal() async throws {
         struct List: Decodable { let agents: [ConsoleAgent] }
-        agents = try JSONDecoder().decode(List.self, from: await authorized("/api/v1/agents")).agents
+        agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents
     }
     func query(_ agent: ConsoleAgent) async {
         guard authenticated, !logoutPending, deviceData[agent.id]?.loading != true else { return }
         if let capabilities = agent.capabilities, !capabilities.contains(where: { $0.name.hasPrefix("query.") }) { return }
         let context = requestContext
         deviceData[agent.id, default: ConsoleDeviceData()].loading = true
+        let liveUpdates = deviceData[agent.id]?.liveUpdates ?? [:]
         deviceData[agent.id]?.error = nil
         defer { if context == requestContext { deviceData[agent.id]?.loading = false } }
         do {
-            let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST",
+            let data = try await authorized("request", agentID: agent.id,
                                             body: ["method": "query.all", "version": 1, "params": [String: Any]()])
             let manifest = try JSONDecoder().decode(ConsoleQueryEnvelope.self, from: data)
             guard context == requestContext else { return }
@@ -135,11 +140,55 @@ import Combine
             switch reply {
             case .failure(let error): throw error
             case .result(let result):
-                deviceData[agent.id]?.entries = result.data
+                if var state = deviceData[agent.id] {
+                    state.entries = result.data.merging(state.entries.filter {
+                        state.liveUpdates[$0.key] != liveUpdates[$0.key]
+                    }) { _, live in live }
+                    deviceData[agent.id] = state
+                }
                 deviceData[agent.id]?.loaded = true
             }
         } catch is CancellationError { }
         catch { if context == requestContext { deviceData[agent.id]?.error = error.localizedDescription } }
+    }
+
+    func watchLive(_ agent: ConsoleAgent, onSubscribed: @MainActor () -> Void) async throws {
+        struct Update: Decodable {
+            let method: String
+        }
+        let context = requestContext
+        let (socket, hello) = try await authentication.openWebSocket(DeviceMonitorSocket.path + "/live/" + agent.id, logSource: .devices)
+        defer { socket.cancel(with: .goingAway, reason: nil) }
+        try DeviceMonitorFrame.requireReady(hello)
+        let decoder = JSONDecoder()
+        try await withTaskCancellationHandler {
+            var subscribed = false
+            while true {
+                let data = try await socket.receiveData()
+                try Task.checkCancellation()
+                guard context == requestContext else { throw CancellationError() }
+                let frame = try decoder.decode(DeviceMonitorFrame.self, from: data)
+                switch frame.type {
+                case "subscribed":
+                    subscribed = true
+                    onSubscribed()
+                case "update" where subscribed:
+                    let update = try decoder.decode(Update.self, from: data)
+                    let value = try decoder.decode(ConsoleCapabilityData.self, from: data)
+                    guard update.method.hasPrefix("query."), value.version > 0 else { continue }
+                    var state = deviceData[agent.id] ?? ConsoleDeviceData()
+                    state.entries[update.method] = value
+                    state.liveUpdates[update.method] = UUID()
+                    state.loaded = true
+                    deviceData[agent.id] = state
+                case "error":
+                    _ = try frame.replyData()
+                    throw CocoaError(.coderReadCorrupt)
+                default:
+                    throw CocoaError(.coderReadCorrupt)
+                }
+            }
+        } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
     }
     func checkHTTP(_ agent: ConsoleAgent, url: String) async {
         guard authenticated, !logoutPending, httpChecks[agent.id]?.loading != true else { return }
@@ -157,7 +206,7 @@ import Combine
     }
     func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
-        let data = try await authorized("/api/v1/agents/\(agent.id)/requests", method: "POST", body: ["method": method, "version": version, "params": params])
+        let data = try await authorized("request", agentID: agent.id, body: ["method": method, "version": version, "params": params])
         let reply = try JSONDecoder().decode(ConsoleAgentReply<Result>.self, from: data)
         switch reply {
         case .failure(let error): throw error

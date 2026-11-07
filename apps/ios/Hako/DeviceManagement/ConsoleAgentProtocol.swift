@@ -310,6 +310,7 @@ struct ConsoleDeviceData {
     var loaded = false
     var error: String?
     var entries: [String: ConsoleCapabilityData] = [:]
+    var liveUpdates: [String: UUID] = [:]
 }
 struct ConsoleHTTPCheck: Decodable {
     let url: String

@@ -99,6 +99,41 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
+	live := openConsoleAgentSocket(t, f, "/ws/console/agents/live/PC")
+	if subscribed := readAgentFrame[consoleAgentReply](t, live); subscribed.Type != "subscribed" {
+		t.Fatalf("real Windows telemetry subscription: %+v", subscribed)
+	}
+	firstMetric := ""
+	seen := map[string]bool{}
+	for range 8 {
+		update := readAgentFrame[agentTelemetryUpdate](t, live)
+		if update.Type != "update" || update.Error != nil {
+			t.Fatalf("real Windows telemetry: %+v", update)
+		}
+		switch update.Method {
+		case "query.system.metrics":
+			var metrics testMetrics
+			if json.Unmarshal(update.Result, &metrics) != nil || !metrics.valid() {
+				t.Fatal("real Windows live system metrics invalid")
+			}
+			if firstMetric == "" {
+				firstMetric = metrics.SampledAt
+			} else if firstMetric != metrics.SampledAt {
+				seen[update.Method] = true
+			}
+		case "query.codex.usage", "query.network.listeners":
+			seen[update.Method] = true
+		default:
+			t.Fatalf("unexpected telemetry method %q", update.Method)
+		}
+		if len(seen) == 3 {
+			break
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("missing Windows telemetry: %v", seen)
+	}
+	live.Close()
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.network.listeners", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 	var listeners struct {
 		Result struct {

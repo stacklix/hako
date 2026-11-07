@@ -19,7 +19,7 @@ Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管�
 
 EXE、窗口与系统托盘统一使用由 iOS `AppIcon.appiconset/icon.png` 转换的 Hako 图标（`src/Hako/Assets/Hako.ico`，包含 16–256 像素尺寸）。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
 
-Agent 使用 WebSocket v3，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。旧 Agent v1/v2 不兼容，部署时同步更新服务端与客户端。
+Agent 使用 WebSocket v4，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。部署时同步更新服务端与客户端。
 
 新版 Agent 的 Git 功能需要本机安装 Git，使用 Agent 当前 Windows 用户的 Git 身份与凭据。iOS 可查看 `~/Code` 下的仓库并创建提交、推送。操作仅针对手机确认的仓库、文件或分支。命令详见 [设备监控协议](../../docs/device-monitoring.md#git-仓库)。
 
@@ -110,4 +110,4 @@ CLI 冒烟检查使用独立配置目录，验证发布 EXE 的帮助、JSON、�
 
 返回 [仓库说明](../../README.md)。
 
-命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v3 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
+命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v4 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
