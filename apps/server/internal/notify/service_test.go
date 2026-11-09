@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +23,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
+func TestGoGatewayRoutesOneChannelAndReplays(t *testing.T) {
 	console := strings.Repeat("C", 43)
 	s, err := New(Config{DataDir: t.TempDir(), TrustedConsoles: []string{console}})
 	if err != nil {
@@ -106,7 +108,9 @@ func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
 		t.Fatal("push token was not encrypted")
 	}
 
-	hook := call("POST", "/webhooks", `{"name":"双渠道","botId":"`+botID+`","apnsEnabled":true,"defaultChannels":["wechat","apns"]}`, 201)
+	call("POST", "/webhooks", `{"name":"未选渠道"}`, 400)
+	call("POST", "/webhooks", `{"name":"旧配置","apnsEnabled":true,"defaultChannels":["apns"]}`, 400)
+	hook := call("POST", "/webhooks", `{"name":"双渠道","botId":"`+botID+`","apnsEnabled":true}`, 201)
 	hookID := str(hook["webhook"].(map[string]any), "id")
 	send := func(payload, key string, status int) object {
 		t.Helper()
@@ -126,12 +130,22 @@ func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
 		}
 		return payloadJSON
 	}
-	input := `{"message":{"type":"text","text":"测试通知"}}`
+	const message = `"message":{"type":"text","text":"测试通知"}`
+	for _, prefix := range []string{``, `"channel":null,`, `"channel":"",`, `"channel":"email",`,
+		`"channel":["apns"],`, `"channel":["wechat","apns"],`, `"channels":["apns"],`, `"channel":"wechat","channel":"apns",`} {
+		send(`{`+prefix+message+`}`, "", 400)
+	}
+	wechatInput := `{"channel":"wechat",` + message + `}`
+	wechatDelivery := send(wechatInput, "wechat-event", 202)["deliveries"].([]any)
+	if len(wechatDelivery) != 1 || wechatDelivery[0].(map[string]any)["code"] != windowCode {
+		t.Fatalf("expected only a WeChat failure: %v", wechatDelivery)
+	}
+	input := `{"channel":"apns",` + message + `}`
 	first := send(input, "event", 202)
 	id := str(first, "notificationId")
 	list := first["deliveries"].([]any)
-	if len(list) != 2 || list[0].(map[string]any)["code"] != windowCode {
-		t.Fatalf("missing WeChat failure: %v", list)
+	if len(list) != 1 || list[0].(map[string]any)["channel"] != "apns" {
+		t.Fatalf("expected only an Apple Push delivery: %v", list)
 	}
 	select {
 	case payload := <-received:
@@ -147,7 +161,7 @@ func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if str(data, "status") == "partial_failure" {
+		if str(data, "status") == "provider_accepted" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -155,17 +169,104 @@ func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	call("PATCH", "/webhooks/"+hookID, `{"defaultChannels":["apns"]}`, 200)
+	send(`{"channel":"apns","message":{"type":"image","image":{"url":"https://example.com/picture.png"}}}`, "", 422)
+	call("PATCH", "/webhooks/"+hookID, `{"apnsEnabled":false}`, 200)
 	if replay := send(input, "event", 202); str(replay, "notificationId") != id {
-		t.Fatal("replay selected current defaults")
+		t.Fatal("replay did not preserve the original notification")
 	}
-	send(`{"channels":["apns"],"message":{"text":"测试通知"}}`, "event", 409)
-	send(`{"channels":[],"message":{"text":"测试通知"}}`, "", 400)
-	send(`{"message":{"type":"image","image":{"url":"https://example.com/picture.png"}}}`, "", 422)
+	send(wechatInput, "event", 409)
+	send(input, "", 403)
+	call("PATCH", "/webhooks/"+hookID, `{"botId":null}`, 400)
 	select {
 	case <-received:
 		t.Fatal("replay was sent again")
 	default:
+	}
+
+	direct := call("POST", "/push/messages", `{"title":"直接推送","text":"来自消息中心"}`, 202)
+	directID := str(direct, "id")
+	select {
+	case payload := <-received:
+		if payload["notificationId"] != directID {
+			t.Fatal("unexpected direct push payload")
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("direct push was not sent")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		history := call("GET", "/push/messages", "", 200)["items"].([]any)
+		if len(history) != 2 || history[0].(map[string]any)["id"] != directID || history[1].(map[string]any)["text"] != "测试通知" {
+			t.Fatalf("history must contain both direct and webhook notifications: %v", history)
+		}
+		if history[0].(map[string]any)["status"] == "provider_accepted" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("direct push result was not saved")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	overview := call("GET", "/overview", "", 200)
+	if overview["sentToday"] != float64(2) || len(overview["channels"].([]any)) != 2 ||
+		overview["recentMessages"].([]any)[0].(map[string]any)["channel"] != "apns" {
+		t.Fatalf("Apple Push missing from overview: %v", overview)
+	}
+}
+
+func TestAPNsAdminConfigPersistsWithoutReturningPrivateKey(t *testing.T) {
+	for _, name := range []string{"APNS_TEAM_ID", "APNS_KEY_ID", "APNS_BUNDLE_ID", "APNS_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
+	config := Config{DataDir: t.TempDir()}
+	s, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	request := func(service *Service, method, path, body string, status int) string {
+		t.Helper()
+		res := httptest.NewRecorder()
+		service.ServeAdmin(res, httptest.NewRequest(method, path, strings.NewReader(body)))
+		if res.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, res.Code, res.Body.String())
+		}
+		return res.Body.String()
+	}
+	request(s, "POST", "/push/messages", `{"title":"测试","text":"未配置"}`, 409)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := strings.TrimSpace(string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})))
+	body, _ := json.Marshal(object{"teamId": "TEAM000001", "keyId": "KEY0000001", "bundleId": "me.stackli.hako", "privateKey": private})
+	request(s, "PUT", "/push/config", string(body), 200)
+	request(s, "PUT", "/push/config", strings.Replace(string(body), "BEGIN PRIVATE KEY", "INVALID KEY", 1), 400)
+	request(s, "POST", "/push/messages", `{"title":"测试","text":"未登记设备"}`, 409)
+	stored, err := one(s.db, "SELECT private_key FROM apns_config WHERE id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed := str(stored, "private_key")
+	if clear, err := s.vault.open(sealed); err != nil || clear != private || sealed == private {
+		t.Fatal("the APNs key was not encrypted at rest")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	data := request(reopened, "GET", "/push/device", "", 200)
+	if !strings.Contains(data, `"keyId":"KEY0000001"`) || !strings.Contains(data, `"source":"admin"`) ||
+		strings.Contains(data, "privateKey") || strings.Contains(data, "PRIVATE KEY") || strings.Contains(data, sealed) {
+		t.Fatal("APNs metadata is missing or the key was returned")
 	}
 }
 
@@ -271,9 +372,9 @@ func TestGoWeChatLoginAndImageDelivery(t *testing.T) {
 	if state := call("GET", botPath+"/conversation", "", 200); state["unread"] != float64(1) {
 		t.Fatal("duplicate inbound message")
 	}
-	hook := call("POST", "/webhooks", `{"name":"图片","botId":"`+str(bot, "id")+`","apnsEnabled":false,"defaultChannels":["wechat"]}`, 201)
+	hook := call("POST", "/webhooks", `{"name":"图片","botId":"`+str(bot, "id")+`"}`, 201)
 	hookID := str(hook["webhook"].(map[string]any), "id")
-	payload := `{"message":{"type":"image","image":{"base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8x8AAAAASUVORK5CYII="}}}`
+	payload := `{"channel":"wechat","message":{"type":"image","image":{"base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8x8AAAAASUVORK5CYII="}}}`
 	notification := call("POST", "/webhooks/"+hookID+"/test", payload, 202)
 	select {
 	case body := <-sent:

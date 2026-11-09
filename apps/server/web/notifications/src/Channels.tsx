@@ -85,7 +85,7 @@ export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, n
         </div>
       </div>
     </section>
-    <PushSettings revision={revision} />
+    <PushSettings revision={revision} refresh={refresh} notify={notify} />
     {loginId && <LoginModal connectionId={loginId} onClose={() => { setLoginId(null); refresh(); }}
       onConnected={() => { refresh(); notify('微信授权成功，正在建立消息连接'); }}
       onMessages={() => navigate('messages', loginId)} />}

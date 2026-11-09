@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
-	"slices"
-	"sort"
 	"strings"
 )
 
@@ -17,7 +15,7 @@ var webhookToken = regexp.MustCompile("^hk_[A-Za-z0-9_-]{43}$")
 var deviceToken = regexp.MustCompile("^[0-9a-fA-F]+$")
 
 const webhookView = `SELECT h.id,h.name,h.bot_id botId,h.enabled,h.token_hint tokenHint,h.rate_limit rateLimit,
-	h.expires_at expiresAt,h.created_at createdAt,h.apns_enabled apnsEnabled,h.default_channels defaultChannels,
+	h.expires_at expiresAt,h.created_at createdAt,h.apns_enabled apnsEnabled,
 	b.name botName,c.id conversationId,COALESCE(NULLIF(c.remark,''),c.name) conversationName,
 	(SELECT COUNT(*) FROM webhook_requests r WHERE r.webhook_id=h.id) requestCount,
 	(SELECT COUNT(*) FROM webhook_requests r WHERE r.webhook_id=h.id AND (r.status='rejected' OR EXISTS(
@@ -26,28 +24,9 @@ const webhookView = `SELECT h.id,h.name,h.bot_id botId,h.enabled,h.token_hint to
 	(SELECT MAX(created_at) FROM webhook_requests r WHERE r.webhook_id=h.id) lastUsedAt
 	FROM webhooks h LEFT JOIN bots b ON b.id=h.bot_id LEFT JOIN conversations c ON c.bot_id=h.bot_id `
 
-func renderWebhook(item object) (object, error) {
-	channels, err := readChannels([]byte(str(item, "defaultChannels")))
-	if err != nil {
-		return nil, errors.New("invalid stored channel configuration")
-	}
-	item["defaultChannels"] = channels
+func renderWebhook(item object) {
 	item["apnsEnabled"] = enabled(item, "apnsEnabled")
 	item["enabled"] = enabled(item, "enabled")
-	return item, nil
-}
-func readChannels(raw []byte) ([]string, error) {
-	var values []string
-	if json.Unmarshal(raw, &values) != nil || len(values) < 1 || len(values) > 2 {
-		return nil, invalid("请选择至少一个通知渠道")
-	}
-	for i, value := range values {
-		if !in(value, "wechat", "apns") || slices.Contains(values[:i], value) {
-			return nil, invalid("通知渠道无效或重复")
-		}
-	}
-	sort.Strings(values)
-	return values, nil
 }
 func webhookByID(db sqlRunner, id string) (object, error) {
 	return required(db, "WEBHOOK_NOT_FOUND", "Webhooks 不存在", "SELECT * FROM webhooks WHERE id=?", id)
@@ -57,7 +36,8 @@ func (s *Service) webhookView(id string) (object, error) {
 	if err != nil {
 		return nil, err
 	}
-	return renderWebhook(item)
+	renderWebhook(item)
+	return item, nil
 }
 func (s *Service) listWebhooks(_ *http.Request) (any, error) {
 	items, err := rows(s.db, webhookView+" ORDER BY h.created_at DESC")
@@ -65,29 +45,26 @@ func (s *Service) listWebhooks(_ *http.Request) (any, error) {
 		return nil, err
 	}
 	for _, item := range items {
-		if _, err := renderWebhook(item); err != nil {
-			return nil, err
-		}
+		renderWebhook(item)
 	}
 	return items, nil
 }
 
 type webhookSettings struct {
-	Name            *string         `json:"name"`
-	BotID           json.RawMessage `json:"botId"`
-	APNs            *bool           `json:"apnsEnabled"`
-	DefaultChannels json.RawMessage `json:"defaultChannels"`
-	Rate            *int64          `json:"rateLimit"`
-	Expiry          json.RawMessage `json:"expiresAt"`
-	Enabled         *bool           `json:"enabled"`
+	Name    *string         `json:"name"`
+	BotID   json.RawMessage `json:"botId"`
+	APNs    *bool           `json:"apnsEnabled"`
+	Rate    *int64          `json:"rateLimit"`
+	Expiry  json.RawMessage `json:"expiresAt"`
+	Enabled *bool           `json:"enabled"`
 }
 
 func settings(current object, input webhookSettings) (object, error) {
 	result := object{"name": str(current, "name"), "bot": current["bot_id"], "apns": enabled(current, "apns_enabled"),
-		"channels": str(current, "default_channels"), "rate": integer(current, "rate_limit"), "expires": current["expires_at"], "enabled": enabled(current, "enabled")}
+		"rate": integer(current, "rate_limit"), "expires": current["expires_at"], "enabled": enabled(current, "enabled")}
 	if current == nil {
-		if input.Name == nil || input.BotID == nil || input.APNs == nil || input.DefaultChannels == nil || input.Enabled != nil {
-			return nil, invalid("请填写 Webhook 和默认渠道")
+		if input.Name == nil || input.Enabled != nil {
+			return nil, invalid("请填写 Webhook 名称")
 		}
 		result["rate"], result["enabled"] = int64(60), true
 	}
@@ -130,18 +107,9 @@ func settings(current object, input webhookSettings) (object, error) {
 	if input.Enabled != nil {
 		result["enabled"] = *input.Enabled
 	}
-	if input.DefaultChannels != nil {
-		result["channels"] = string(input.DefaultChannels)
+	if result["bot"] == nil && result["apns"] != true {
+		return nil, invalid("请启用至少一个通知渠道")
 	}
-	channels, err := readChannels([]byte(str(result, "channels")))
-	if err != nil {
-		return nil, err
-	}
-	if (slices.Contains(channels, "wechat") && result["bot"] == nil) || (slices.Contains(channels, "apns") && result["apns"] != true) {
-		return nil, problem(400, "INVALID_DEFAULT_CHANNELS", "默认渠道必须在启用的渠道中选择")
-	}
-	data, _ := json.Marshal(channels)
-	result["channels"] = string(data)
 	return result, nil
 }
 func (s *Service) saveWebhook(r *http.Request, create bool) (any, error) {
@@ -171,11 +139,11 @@ func (s *Service) saveWebhook(r *http.Request, create bool) (any, error) {
 		}
 		if create {
 			hookID, newToken = id("webhook"), token()
-			return exec(tx, `INSERT INTO webhooks(id,name,bot_id,token_hash,token_hint,rate_limit,expires_at,created_at,apns_enabled,default_channels)
-				VALUES(?,?,?,?,?,?,?,?,?,?)`, hookID, value["name"], value["bot"], sha([]byte(newToken)), newToken[:9], value["rate"], value["expires"], nowMS(), value["apns"], value["channels"])
+			return exec(tx, `INSERT INTO webhooks(id,name,bot_id,token_hash,token_hint,rate_limit,expires_at,created_at,apns_enabled)
+				VALUES(?,?,?,?,?,?,?,?,?)`, hookID, value["name"], value["bot"], sha([]byte(newToken)), newToken[:9], value["rate"], value["expires"], nowMS(), value["apns"])
 		}
-		return exec(tx, `UPDATE webhooks SET name=?,bot_id=?,apns_enabled=?,default_channels=?,rate_limit=?,expires_at=?,enabled=? WHERE id=?`,
-			value["name"], value["bot"], value["apns"], value["channels"], value["rate"], value["expires"], value["enabled"], hookID)
+		return exec(tx, `UPDATE webhooks SET name=?,bot_id=?,apns_enabled=?,rate_limit=?,expires_at=?,enabled=? WHERE id=?`,
+			value["name"], value["bot"], value["apns"], value["rate"], value["expires"], value["enabled"], hookID)
 	})
 	if err != nil {
 		return nil, err
@@ -242,35 +210,10 @@ func authenticatedWebhook(db sqlRunner, key string) (object, error) {
 	return hook, activeWebhook(hook)
 }
 func notificationState(deliveries []object) string {
-	queued, active, unknown, accepted := 0, 0, 0, 0
-	for _, delivery := range deliveries {
-		switch str(delivery, "status") {
-		case "queued":
-			queued++
-		case "sending":
-			active++
-		case "unknown":
-			unknown++
-		case "provider_accepted":
-			accepted++
-		}
-	}
-	switch {
-	case len(deliveries) == 0:
-		return "failed"
-	case queued == len(deliveries):
-		return "queued"
-	case queued+active > 0:
-		return "sending"
-	case unknown > 0:
-		return "unknown"
-	case accepted == len(deliveries):
-		return "provider_accepted"
-	case accepted > 0:
-		return "partial_failure"
-	default:
+	if len(deliveries) == 0 {
 		return "failed"
 	}
+	return str(deliveries[0], "status")
 }
 func deliveries(db sqlRunner, id string) ([]object, error) {
 	return rows(db, `SELECT d.id,d.channel,d.target_id targetId,d.target_name targetName,d.message_id messageId,
@@ -319,9 +262,20 @@ func (s *Service) requests(r *http.Request) (any, error) {
 	return items, nil
 }
 
+type webhookChannel string
+
+func (channel *webhookChannel) UnmarshalJSON(data []byte) error {
+	var value string
+	if *channel != "" || json.Unmarshal(data, &value) != nil || !in(value, "wechat", "apns") {
+		return invalid("channel 必须为 wechat 或 apns")
+	}
+	*channel = webhookChannel(value)
+	return nil
+}
+
 type notificationInput struct {
-	Channels json.RawMessage `json:"channels"`
-	Message  messageInput    `json:"message"`
+	Channel webhookChannel `json:"channel"`
+	Message messageInput   `json:"message"`
 }
 
 func (s *Service) Submit(w http.ResponseWriter, r *http.Request, ip string) {
@@ -354,13 +308,12 @@ func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
 func (s *Service) submit(r *http.Request, hook object, key, ip string, test bool) (object, error) {
 	var input notificationInput
 	var message notification
-	var selected []string
 	parseErr := decode(r, &input)
+	if parseErr == nil && input.Channel == "" {
+		parseErr = invalid("请通过 channel 指定一个通知渠道")
+	}
 	if parseErr == nil {
 		message, parseErr = parseMessage(input.Message)
-	}
-	if parseErr == nil && input.Channels != nil {
-		selected, parseErr = readChannels(input.Channels)
 	}
 	idempotency := ""
 	if !test {
@@ -388,7 +341,7 @@ func (s *Service) submit(r *http.Request, hook object, key, ip string, test bool
 			if err != nil {
 				return err
 			}
-			id, err := s.enqueueWebhook(tx, hook, message, selected, idempotency, ip, test, at)
+			id, err := s.enqueueWebhook(tx, hook, message, string(input.Channel), idempotency, ip, test, at)
 			if err != nil {
 				return err
 			}
@@ -407,52 +360,38 @@ func (s *Service) submit(r *http.Request, hook object, key, ip string, test bool
 	s.changed()
 	return data, nil
 }
-func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, selected []string, idempotency, ip string, test bool, at int64) (string, error) {
+func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, channel, idempotency, ip string, test bool, at int64) (string, error) {
 	hookID := str(hook, "id")
 	fingerprint := message.fingerprint()
 	if idempotency != "" {
-		prior, err := one(tx, `SELECT i.fingerprint,i.notification_id,r.channels FROM idempotency i JOIN webhook_requests r ON r.id=i.notification_id
+		prior, err := one(tx, `SELECT i.fingerprint,i.notification_id,d.channel FROM idempotency i
+			JOIN notification_deliveries d ON d.notification_id=i.notification_id
 			WHERE i.webhook_id=? AND i.key=? AND i.created_at>?`, hookID, idempotency, at-windowMS)
 		if err != nil {
 			return "", err
 		}
 		if prior != nil {
-			channels, err := readChannels([]byte(str(prior, "channels")))
-			if err != nil {
-				return "", err
-			}
-			if fingerprint != str(prior, "fingerprint") || (selected != nil && !slices.Equal(channels, selected)) {
+			if fingerprint != str(prior, "fingerprint") || channel != str(prior, "channel") {
 				return "", problem(409, "IDEMPOTENCY_CONFLICT", "同一个幂等键不能用于不同消息或渠道")
 			}
 			return str(prior, "notification_id"), nil
 		}
 	}
-	if selected == nil {
-		var err error
-		selected, err = readChannels([]byte(str(hook, "default_channels")))
-		if err != nil {
-			return "", err
-		}
-	}
-	wechat, apns := slices.Contains(selected, "wechat"), slices.Contains(selected, "apns")
-	if (wechat && str(hook, "bot_id") == "") || (apns && !enabled(hook, "apns_enabled")) {
+	wechat := channel == "wechat"
+	if (wechat && str(hook, "bot_id") == "") || (!wechat && !enabled(hook, "apns_enabled")) {
 		return "", problem(403, "CHANNEL_NOT_ALLOWED", "Webhook 未授权所选通知渠道")
 	}
 	notificationID := id("ntf")
 	var payload any
-	if apns {
+	if !wechat {
 		if message.kind != "text" {
 			return "", problem(422, "CHANNEL_MESSAGE_UNSUPPORTED", "Apple Push 只支持文本消息")
 		}
-		data, err := marshalPayload(object{"aps": object{"alert": object{"title": str(hook, "name"), "body": message.text}, "sound": "default"},
-			"type": "ilinker_notification", "notificationId": notificationID})
+		data, err := apnsPayload(str(hook, "name"), message.text, notificationID)
 		if err != nil {
 			return "", err
 		}
-		if len(data) > 4096 {
-			return "", problem(422, "APNS_PAYLOAD_TOO_LARGE", "Apple Push 消息超过 4096 字节")
-		}
-		payload = string(data)
+		payload = data
 	}
 	count, err := one(tx, "SELECT COUNT(*) n FROM webhook_requests WHERE webhook_id=? AND created_at>? AND status<>'rejected'", hookID, at-60_000)
 	if err != nil {
@@ -461,12 +400,11 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 	if integer(count, "n") >= integer(hook, "rate_limit") {
 		return "", problem(429, "WEBHOOK_RATE_LIMITED", "Webhooks 调用频率超过限制")
 	}
-	channels, _ := json.Marshal(selected)
-	if err := exec(tx, `INSERT INTO webhook_requests(id,webhook_id,status,summary,ip,created_at,channels,apns_payload)
-		VALUES(?,?,'queued',?,?,?,?,?)`, notificationID, hookID, shorten(message.summary(), 120), ip, at, string(channels), payload); err != nil {
+	if err := exec(tx, `INSERT INTO webhook_requests(id,webhook_id,status,summary,ip,created_at,apns_payload)
+		VALUES(?,?,'queued',?,?,?,?)`, notificationID, hookID, shorten(message.summary(), 120), ip, at, payload); err != nil {
 		return "", err
 	}
-	insert := func(channel, target, name string, messageID any, failure *apiError) error {
+	insert := func(target, name string, messageID any, failure *apiError) error {
 		status := "queued"
 		var code, detail any
 		if failure != nil {
@@ -494,7 +432,7 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 		if messageID != "" {
 			link = messageID
 		}
-		if err := insert("wechat", botID, str(bot, "name"), link, failure); err != nil {
+		if err := insert(botID, str(bot, "name"), link, failure); err != nil {
 			return "", err
 		}
 		if link != nil {
@@ -502,8 +440,7 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 				return "", err
 			}
 		}
-	}
-	if apns {
+	} else {
 		device, err := currentDevice(tx)
 		if err != nil {
 			return "", err
@@ -516,7 +453,7 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 		if str(device, "status") != "active" {
 			failure = &apiError{409, "APNS_DEVICE_UNAVAILABLE", "Apple Push 设备未绑定或已失效"}
 		}
-		if err := insert("apns", target, name, nil, failure); err != nil {
+		if err := insert(target, name, nil, failure); err != nil {
 			return "", err
 		}
 	}
@@ -530,7 +467,7 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 }
 
 func (s *Service) RegisterDevice(w http.ResponseWriter, r *http.Request, consoleID string) {
-	if s.apns == nil {
+	if s.apnsProvider() == nil {
 		w.WriteHeader(204)
 		return
 	}
@@ -571,8 +508,4 @@ func (s *Service) RegisterDevice(w http.ResponseWriter, r *http.Request, console
 	}
 	s.changed()
 	w.WriteHeader(204)
-}
-func (s *Service) pushDevice(_ *http.Request) (any, error) {
-	item, err := one(s.db, "SELECT id,name,environment,status,updated_at updatedAt FROM push_devices WHERE status<>'revoked'")
-	return object{"configured": s.apns != nil, "device": item}, err
 }

@@ -23,7 +23,7 @@ const schema = `
         enabled INTEGER NOT NULL DEFAULT 1,
         token_hash TEXT NOT NULL UNIQUE, token_hint TEXT NOT NULL, rate_limit INTEGER NOT NULL DEFAULT 60,
         expires_at INTEGER, created_at INTEGER NOT NULL,
-        apns_enabled INTEGER NOT NULL DEFAULT 0, default_channels TEXT NOT NULL DEFAULT '["wechat"]'
+        apns_enabled INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS messages (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
@@ -48,7 +48,7 @@ const schema = `
       CREATE TABLE IF NOT EXISTS webhook_requests (
         id TEXT PRIMARY KEY, webhook_id TEXT NOT NULL REFERENCES webhooks(id), message_id TEXT,
         status TEXT NOT NULL, summary TEXT NOT NULL, error TEXT, ip TEXT NOT NULL, created_at INTEGER NOT NULL,
-        channels TEXT, apns_payload TEXT
+        apns_payload TEXT
       );
       CREATE INDEX IF NOT EXISTS requests_webhook ON webhook_requests(webhook_id, created_at);
       CREATE TABLE IF NOT EXISTS idempotency (
@@ -66,12 +66,23 @@ const schema = `
         status TEXT NOT NULL, updated_at INTEGER NOT NULL
       );
       CREATE UNIQUE INDEX IF NOT EXISTS push_devices_current ON push_devices((1)) WHERE status<>'revoked';
+      CREATE TABLE IF NOT EXISTS apns_config (
+        id INTEGER PRIMARY KEY CHECK(id=1), team_id TEXT NOT NULL, key_id TEXT NOT NULL,
+        bundle_id TEXT NOT NULL, private_key TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS direct_push (
+        id TEXT PRIMARY KEY, target_id TEXT NOT NULL, target_name TEXT NOT NULL,
+        payload TEXT NOT NULL, status TEXT NOT NULL, code TEXT, error TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS direct_push_time ON direct_push(created_at, id);
+      CREATE INDEX IF NOT EXISTS direct_push_queue ON direct_push(status, created_at);
       CREATE TABLE IF NOT EXISTS notification_deliveries (
-        id TEXT PRIMARY KEY, notification_id TEXT NOT NULL REFERENCES webhook_requests(id) ON DELETE CASCADE,
+        id TEXT PRIMARY KEY, notification_id TEXT NOT NULL UNIQUE REFERENCES webhook_requests(id) ON DELETE CASCADE,
         channel TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT NOT NULL,
         message_id TEXT REFERENCES messages(id), status TEXT NOT NULL, code TEXT, error TEXT,
         updated_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS notification_deliveries_parent ON notification_deliveries(notification_id);
       CREATE INDEX IF NOT EXISTS notification_deliveries_queue ON notification_deliveries(channel,status,updated_at);
+      CREATE INDEX IF NOT EXISTS notification_deliveries_channel ON notification_deliveries(channel,notification_id);
     `

@@ -41,3 +41,7 @@
 .hako-notification-content { margin-left: 0; min-width: 0; }
 .hako-notification-content .page-content { padding: 0 12px 20px; }
 .hako-notification-content.main-chat { height: 100dvh; }
+.push-history { min-width: 0; }
+.push-history-body { flex: 1; min-height: 0; overflow: auto; }
+.push-message-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 160px; margin-top: 5px; }
+.push-history-pages { justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--line); }

@@ -268,6 +268,7 @@ type apnsClient struct {
 	http                 *http.Client
 	key                  *ecdsa.PrivateKey
 	keyID, teamID, topic string
+	source               string
 	mu                   sync.Mutex
 	jwt                  string
 	issued               time.Time
@@ -282,15 +283,22 @@ func loadAPNs() (*apnsClient, error) {
 	if team == "" && kid == "" && topic == "" && path == "" {
 		return nil, nil
 	}
-	if !appleID.MatchString(team) || !appleID.MatchString(kid) || !bundleID.MatchString(topic) || path == "" {
+	if path == "" {
 		return nil, errors.New("invalid APNs configuration")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, errors.New("cannot read APNs key file")
 	}
-	block, _ := pem.Decode(data)
-	if block == nil {
+	return newAPNsClient(team, kid, topic, "environment", data)
+}
+
+func newAPNsClient(team, kid, topic, source string, data []byte) (*apnsClient, error) {
+	if !appleID.MatchString(team) || !appleID.MatchString(kid) || len(topic) > 255 || !bundleID.MatchString(topic) {
+		return nil, errors.New("invalid APNs configuration")
+	}
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(rest)) != 0 {
 		return nil, errors.New("invalid APNs key file")
 	}
 	value, err := x509.ParsePKCS8PrivateKey(block.Bytes)
@@ -298,7 +306,7 @@ func loadAPNs() (*apnsClient, error) {
 	if err != nil || !ok || key.Params().Name != "P-256" {
 		return nil, errors.New("APNs requires an Apple P-256 private key")
 	}
-	return &apnsClient{http: noRedirectClient(), key: key, keyID: kid, teamID: team, topic: topic}, nil
+	return &apnsClient{http: noRedirectClient(), key: key, keyID: kid, teamID: team, topic: topic, source: source}, nil
 }
 func (c *apnsClient) authorization() (string, error) {
 	c.mu.Lock()

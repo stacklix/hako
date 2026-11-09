@@ -15,6 +15,8 @@ function showNotificationFrame(visible) {
   const query = new URLSearchParams({view: notificationPage});
   const bot = new URLSearchParams(window.location.search).get('bot');
   if (bot) query.set('bot', bot);
+  const channel = new URLSearchParams(window.location.search).get('channel');
+  if (notificationPage === 'messages' && (channel === 'wechat' || channel === 'apns')) query.set('channel', channel);
   frame.setAttribute('src', '/admin/notifications-ui/?' + query);
 }
 function showPage() {

@@ -45,7 +45,10 @@ func (s *Service) adminRoutes() {
 	mux := s.admin
 	mux.HandleFunc("GET /events", s.events)
 	route(mux, "GET /overview", 200, s.overview)
-	route(mux, "GET /push/device", 200, s.pushDevice)
+	route(mux, "GET /push/device", 200, func(*http.Request) (any, error) { return s.pushDevice() })
+	route(mux, "PUT /push/config", 200, s.saveAPNsConfig)
+	route(mux, "GET /push/messages", 200, s.pushMessages)
+	route(mux, "POST /push/messages", 202, s.sendDirectPush)
 	route(mux, "GET /channels/wechat", 200, func(*http.Request) (any, error) { return wechatChannel(s.db) })
 	route(mux, "PUT /channels/wechat", 200, s.ensureWechatChannel)
 	route(mux, "GET /platforms", 200, func(*http.Request) (any, error) {
@@ -462,33 +465,50 @@ func (s *Service) hookMessages(r *http.Request) (any, error) {
 	return result, nil
 }
 
+const notificationActivity = `SELECT m.id,'wechat' channel,m.direction,m.bot_id botId,
+	COALESCE(NULLIF(c.remark,''),c.name) targetName,NULL title,m.text,m.source,m.status,m.error,m.created_at createdAt
+	FROM messages m JOIN bots b ON b.id=m.bot_id JOIN conversations c ON c.id=m.conversation_id
+	WHERE b.deleted_at IS NULL UNION ALL ` + pushHistory
+
 func (s *Service) overview(_ *http.Request) (any, error) {
 	zone := time.FixedZone("Shanghai", 8*3600)
 	now := time.Now().In(zone)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, zone)
-	result := object{}
-	totals := []struct {
-		key, query string
-		args       []any
-	}{
-		{"bots", "SELECT COUNT(*) n FROM bots WHERE deleted_at IS NULL", nil},
-		{"onlineBots", "SELECT COUNT(*) n FROM bots WHERE deleted_at IS NULL AND status='online'", nil},
-		{"receivedToday", "SELECT COUNT(*) n FROM messages WHERE direction='in' AND created_at>=?", []any{today.UnixMilli()}},
-		{"sentToday", "SELECT COUNT(*) n FROM messages WHERE direction='out' AND status='provider_accepted' AND created_at>=?", []any{today.UnixMilli()}},
-		{"failedToday", "SELECT COUNT(*) n FROM messages WHERE status IN ('failed','unknown') AND created_at>=?", []any{today.UnixMilli()}},
-		{"queued", "SELECT COUNT(*) n FROM messages WHERE status IN ('queued','sending')", nil},
-		{"webhooks", "SELECT COUNT(*) n FROM webhooks WHERE enabled=1", nil},
+	result, err := one(s.db, `WITH activity AS (`+notificationActivity+`)
+		SELECT COUNT(*) FILTER (WHERE direction='in' AND createdAt>=?1) receivedToday,
+		COUNT(*) FILTER (WHERE direction='out' AND status='provider_accepted' AND createdAt>=?1) sentToday,
+		COUNT(*) FILTER (WHERE status IN ('failed','unknown') AND createdAt>=?1) failedToday,
+		COUNT(*) FILTER (WHERE status IN ('queued','sending')) queued,
+		(SELECT COUNT(*) FROM webhooks WHERE enabled=1) webhooks
+		FROM activity WHERE createdAt>=?1 OR status IN ('queued','sending')`, today.UnixMilli())
+	if err != nil {
+		return nil, err
 	}
-	for _, metric := range totals {
-		item, err := one(s.db, metric.query, metric.args...)
-		if err != nil {
-			return nil, err
+	wechat, err := wechatChannel(s.db)
+	if err != nil {
+		return nil, err
+	}
+	connection, _ := wechat["connection"].(object)
+	wechatStatus := "not_configured"
+	if str(connection, "status") == "online" {
+		wechatStatus = "ready"
+	} else if str(connection, "accountId") != "" {
+		wechatStatus = "offline"
+	}
+	push, err := s.pushDevice()
+	if err != nil {
+		return nil, err
+	}
+	pushStatus := "not_configured"
+	if push["configured"] == true {
+		device, _ := push["device"].(object)
+		pushStatus = "device_required"
+		if str(device, "status") == "active" {
+			pushStatus = "ready"
 		}
-		result[metric.key] = integer(item, "n")
 	}
-	recent, err := rows(s.db, "SELECT "+messageView+`, b.name botName,COALESCE(NULLIF(c.remark,''),c.name) conversationName
-		FROM messages JOIN bots b ON b.id=messages.bot_id JOIN conversations c ON c.id=messages.conversation_id
-		WHERE b.deleted_at IS NULL ORDER BY messages.seq DESC LIMIT 8`)
+	result["channels"] = []object{{"id": "wechat", "status": wechatStatus}, {"id": "apns", "status": pushStatus}}
+	recent, err := rows(s.db, "SELECT * FROM ("+notificationActivity+") ORDER BY createdAt DESC,id DESC LIMIT 8")
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +518,7 @@ func (s *Service) overview(_ *http.Request) (any, error) {
 		start := today.AddDate(0, 0, -i)
 		item, err := one(s.db, `SELECT COALESCE(SUM(direction='in'),0) incoming,
 			COALESCE(SUM(direction='out' AND status='provider_accepted'),0) outgoing
-			FROM messages WHERE created_at>=? AND created_at<?`, start.UnixMilli(), start.AddDate(0, 0, 1).UnixMilli())
+			FROM (`+notificationActivity+`) WHERE createdAt>=? AND createdAt<?`, start.UnixMilli(), start.AddDate(0, 0, 1).UnixMilli())
 		if err != nil {
 			return nil, err
 		}

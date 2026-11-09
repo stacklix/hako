@@ -111,19 +111,19 @@ docker compose up -d
 登录 Hako 管理后台，打开「通知网关」。工作台、通知渠道、消息中心和 Webhooks 使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `web/notifications/` 执行 `npm ci && npm run build`。从 `apps/server/` 启动时默认加载 `web/notifications/dist/web`，也可以用 `HAKO_NOTIFICATION_WEB_DIR` 指定产物路径。
 
 - 在「通知渠道」中扫码绑定微信账号，或查看 Apple Push 接收设备。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
-- Apple Push 配置 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID=me.stackli.hako` 和 `APNS_KEY_FILE`。密钥文件须由 Hako 进程读取。Apple Push 首版支持文本。
+- 在「通知渠道 → Apple Push」配置 Apple Team ID、Key ID、Bundle ID（Hako 默认 `me.stackli.hako`）并上传 `.p8` 私钥。后台配置加密保存在通知网关数据库，保存后立即生效。未从后台保存配置时，继续读取 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID` 和 `APNS_KEY_FILE`。设备登记后可在渠道页发送测试通知，也可在「消息中心 → Apple Push」直接发送文本通知，查看直接发送与 Webhooks 的投递结果。
 - Go 通知网关使用 Hako 数据目录下的 `notification-gateway/`。首次启动后在后台配置通知渠道并创建 Webhook，调用方使用生成的 Webhook 地址。
 
-Webhook 使用 `POST /webhook/notifications/{token}`。省略 `channels` 时使用该 Webhook 的默认值，也可显式覆盖。
+Webhook 使用 `POST /webhook/notifications/{token}`。每次请求都必须通过字符串字段 `channel` 指定一个已启用的渠道，取值为 `wechat` 或 `apns`。向两个渠道发送时，分别发起请求。
 
 ```json
 {
-  "channels": ["wechat", "apns"],
+  "channel": "apns",
   "message": { "type": "text", "text": "部署成功" }
 }
 ```
 
-提交返回 `notificationId`。通过 `GET /webhook/notifications/{token}/{notificationId}` 查询各渠道状态。使用 `Idempotency-Key` 可在 24 小时内重放原任务。微信发送窗口过期时，Apple Push 仍独立投递。反向代理须允许至少 12 MB 的图片请求，并对 Webhook 路径中的 Token 脱敏或跳过访问日志。
+提交返回 `notificationId`。通过 `GET /webhook/notifications/{token}/{notificationId}` 查询投递状态。使用 `Idempotency-Key` 可在 24 小时内重放原任务，不同渠道的请求使用不同的幂等键。图片通知使用微信渠道。反向代理须允许至少 12 MB 的图片请求，并对 Webhook 路径中的 Token 脱敏或跳过访问日志。
 
 
 ## Web 管理页

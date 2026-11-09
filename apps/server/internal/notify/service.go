@@ -267,16 +267,17 @@ func New(config Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	apns, err := loadAPNs()
-	if err != nil {
-		return nil, err
-	}
 	db, err := sql.Open("sqlite", filepath.Join(config.DataDir, "notifications.sqlite"))
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	if err := exec(db, schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	apns, err := loadAPNsConfig(db, key)
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -298,8 +299,8 @@ func (s *Service) Close() error {
 	s.mu.Unlock()
 	s.workers.Wait()
 	s.wechat.http.CloseIdleConnections()
-	if s.apns != nil {
-		s.apns.http.CloseIdleConnections()
+	if apns := s.apnsProvider(); apns != nil {
+		apns.http.CloseIdleConnections()
 	}
 	return s.db.Close()
 }

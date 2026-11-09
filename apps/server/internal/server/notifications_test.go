@@ -52,13 +52,13 @@ func TestNativeNotificationGatewayUsesHakoAuthentication(t *testing.T) {
 		t.Fatalf("Console registration with APNs disabled: %d", code)
 	}
 	a.call("GET", "notifications/overview", nil, 200)
-	data := a.call("POST", "notifications/webhooks", map[string]any{"name": "部署通知", "botId": nil, "apnsEnabled": true, "defaultChannels": []string{"apns"}}, 201)
+	data := a.call("POST", "notifications/webhooks", map[string]any{"name": "部署通知", "apnsEnabled": true}, 201)
 	var hook struct{ Path string }
 	_ = json.Unmarshal(data, &hook)
 	if !strings.HasPrefix(hook.Path, "/webhook/notifications/hk_") {
 		t.Fatal("incorrect webhook path")
 	}
-	payload := map[string]any{"message": map[string]string{"type": "text", "text": "部署成功"}}
+	payload := map[string]any{"channel": "apns", "message": map[string]string{"type": "text", "text": "部署成功"}}
 	code, data, _ := external.request("POST", hook.Path, payload, "", "")
 	if code != 202 || !strings.Contains(string(data), "APNS_DEVICE_UNAVAILABLE") {
 		t.Fatalf("public webhook: %d %s", code, data)

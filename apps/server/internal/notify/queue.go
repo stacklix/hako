@@ -42,6 +42,7 @@ func (s *Service) start() error {
 	for _, stmt := range []string{
 		"UPDATE messages SET status='unknown',error='网关在发送过程中重启，请确认接收情况' WHERE status='sending'",
 		"UPDATE notification_deliveries SET status='unknown',code='APNS_OUTCOME_UNKNOWN',error='网关在发送过程中重启，请确认接收情况' WHERE channel='apns' AND status='sending'",
+		"UPDATE direct_push SET status='unknown',code='APNS_OUTCOME_UNKNOWN',error='网关在发送过程中重启，请确认接收情况' WHERE status='sending'",
 		"UPDATE bots SET status=CASE WHEN credentials IS NULL THEN 'pending' ELSE 'stopped' END WHERE enabled=0 OR status='logging_in'",
 	} {
 		if err := exec(s.db, stmt); err != nil {
@@ -821,13 +822,19 @@ func (s *Service) drainAPNs() error {
 	if s.ctx.Err() != nil || s.busyAPNs >= 8 {
 		return nil
 	}
-	items, err := rows(s.db, `SELECT d.id,d.target_id,r.apns_payload,r.created_at FROM notification_deliveries d
-		JOIN webhook_requests r ON r.id=d.notification_id WHERE d.channel='apns' AND d.status='queued' ORDER BY d.updated_at,d.rowid LIMIT ?`, 8-s.busyAPNs)
+	items, err := rows(s.db, `SELECT d.id,d.target_id,r.apns_payload,r.created_at,d.updated_at,0 direct
+		FROM notification_deliveries d JOIN webhook_requests r ON r.id=d.notification_id WHERE d.channel='apns' AND d.status='queued'
+		UNION ALL SELECT id,target_id,payload,created_at,updated_at,1 FROM direct_push WHERE status='queued'
+		ORDER BY updated_at,id LIMIT ?`, 8-s.busyAPNs)
 	if err != nil {
 		return err
 	}
 	for _, job := range items {
-		res, err := s.db.Exec("UPDATE notification_deliveries SET status='sending',updated_at=? WHERE id=? AND status='queued'", nowMS(), str(job, "id"))
+		table := "notification_deliveries"
+		if enabled(job, "direct") {
+			table = "direct_push"
+		}
+		res, err := s.db.Exec("UPDATE "+table+" SET status='sending',updated_at=? WHERE id=? AND status='queued'", nowMS(), str(job, "id"))
 		if err != nil {
 			return err
 		}
@@ -841,7 +848,7 @@ func (s *Service) drainAPNs() error {
 		s.busyAPNs++
 		s.changed()
 		s.workers.Go(func() {
-			s.deliverAPNs(job)
+			s.deliverAPNs(job, table)
 			s.mu.Lock()
 			s.busyAPNs--
 			s.mu.Unlock()
@@ -849,13 +856,13 @@ func (s *Service) drainAPNs() error {
 	}
 	return nil
 }
-func (s *Service) deliverAPNs(job object) {
+func (s *Service) deliverAPNs(job object, table string) {
 	status, code, detail := s.sendAPNs(job)
 	var failureCode, failureDetail any
 	if code != "" {
 		failureCode, failureDetail = code, detail
 	}
-	if err := exec(s.db, "UPDATE notification_deliveries SET status=?,code=?,error=?,updated_at=? WHERE id=? AND status='sending'", status, failureCode, failureDetail, nowMS(), str(job, "id")); err != nil {
+	if err := exec(s.db, "UPDATE "+table+" SET status=?,code=?,error=?,updated_at=? WHERE id=? AND status='sending'", status, failureCode, failureDetail, nowMS(), str(job, "id")); err != nil {
 		slog.Warn("could not update APNs delivery status")
 	}
 	s.changed()
@@ -865,7 +872,8 @@ func (s *Service) sendAPNs(job object) (string, string, string) {
 	if nowMS() >= expires {
 		return "failed", "APNS_DELIVERY_EXPIRED", "等待发送 Apple Push 超时"
 	}
-	if s.apns == nil {
+	provider := s.apnsProvider()
+	if provider == nil {
 		return "failed", "APNS_NOT_CONFIGURED", "网关尚未配置 APNs"
 	}
 	device, err := one(s.db, "SELECT * FROM push_devices WHERE id=? AND status='active'", str(job, "target_id"))
@@ -877,7 +885,7 @@ func (s *Service) sendAPNs(job object) (string, string, string) {
 	if err != nil {
 		return "failed", "APNS_DEVICE_UNAVAILABLE", "无法读取 Apple Push 设备凭证"
 	}
-	result, err := s.apns.send(s.ctx, str(job, "id"), str(device, "environment"), token, str(job, "apns_payload"), expires)
+	result, err := provider.send(s.ctx, str(job, "id"), str(device, "environment"), token, str(job, "apns_payload"), expires)
 	if err != nil {
 		return "unknown", "APNS_OUTCOME_UNKNOWN", "APNs 请求中断，结果待确认"
 	}

@@ -1,19 +1,50 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowUp, Radio, Info, MessageSquare, Search, Send, Webhook, X, RefreshCw, Pencil, ChevronRight } from 'lucide-react';
-import type { Bot, Conversation, Message } from '../shared/types';
+import { ArrowLeft, ArrowUp, Radio, Info, MessageSquare, Search, Send, Smartphone, Webhook, X, RefreshCw, Pencil, ChevronRight } from 'lucide-react';
+import type { Bot, Conversation, Message, PushChannel } from '../shared/types';
 import type { Navigate, Route } from './App';
 import { api, patch, post } from './api';
+import { PushMessages } from './PushMessages';
 import { Avatar, Button, Empty, ErrorLine, IconButton, Loading, Modal, Status, conversationName, fullTime, useResource } from './ui';
 
 interface Props { bots: Bot[]; revision: number; refresh: () => void; notify: (message: string) => void; route: Route; navigate: Navigate }
 export function MessagesPage({ bots, revision, refresh, notify, route, navigate }: Props) {
-  const bot = bots.find(b => b.id === route.botId) || bots[0];
+  const showPush = route.channel === 'apns';
+  const bot = showPush ? undefined : bots.find(b => b.id === route.botId) || bots[0];
+  const { data: push, error: pushError } = useResource<PushChannel>('/push/device', revision);
   const { data: conversation, error, loading } = useResource<Conversation | null>(bot ? `/bots/${bot.id}/conversation` : null, revision);
   const selected = conversation?.botId === bot?.id ? conversation : null;
   useEffect(() => { if (bot && conversation?.unread) void post(`/bots/${bot.id}/conversation/read`).then(refresh).catch(() => {}); }, [bot?.id, conversation?.id, conversation?.unread]);
-  if (!bots.length) return <div className="chat-no-bots"><Empty icon={Radio} title="先绑定微信" text="连接微信并收到第一条消息后，即可开始聊天。" action={<Button onClick={() => navigate('channels')}>配置通知渠道</Button>} /></div>;
-  return <div className={`chat-workspace ${route.botId ? 'has-bot' : ''}`}><aside className="bot-rail"><div className="rail-label">微信会话 <span>{bots.length}</span></div>{bots.map(item => <button key={item.id} className={`bot-rail-item ${bot?.id === item.id ? 'selected' : ''}`} onClick={() => navigate('messages', item.id)} title={item.name}><span className="bot-rail-icon"><MessageSquare size={20} /><i className={item.status === 'online' ? 'online' : ''} /></span><span><strong>{item.name}</strong><small>{item.status === 'online' ? '在线' : item.status === 'pending' ? '待登录' : '未连接'}</small></span>{item.unread > 0 && <b className="unread">{item.unread > 99 ? '99+' : item.unread}</b>}</button>)}<button className="rail-manage" onClick={() => navigate('channels')}><Radio size={16} />管理通知渠道<ChevronRight size={13} /></button></aside>
-    <div className="chat-area"><ErrorLine error={error} />{loading && !selected ? <Loading /> : selected && bot ? <Chat key={bot.id} bot={bot} conversation={selected} revision={revision} refresh={refresh} notify={notify} onBack={() => navigate('messages')} /> : <Empty icon={MessageSquare} title="等待第一条微信消息" text={bot?.status === 'online' ? '在微信会话中发一条消息，即可在这里查看聊天记录和发送通知。' : '请先扫码绑定微信，再在微信会话中发一条消息。'} action={bot?.status !== 'online' && <Button variant="secondary" onClick={() => navigate('channels')}>管理连接</Button>} />}</div>
+  const back = () => navigate('messages');
+  const pushReady = push?.configured && push.device?.status === 'active';
+  return <div className={`chat-workspace ${route.botId || route.channel ? 'has-bot' : ''}`}>
+    <aside className="bot-rail" aria-label="消息渠道">
+      <div className="rail-label">通知渠道</div>
+      {bots.map(item => <button key={item.id} className={`bot-rail-item ${bot?.id === item.id ? 'selected' : ''}`} onClick={() => navigate('messages', item.id)} title={item.name}>
+        <span className="bot-rail-icon"><MessageSquare size={20} /><i className={item.status === 'online' ? 'online' : ''} /></span>
+        <span><strong>{bots.length > 1 ? item.name : '微信'}</strong><small>{item.status === 'online' ? '在线' : item.status === 'pending' ? '待登录' : '未连接'}</small></span>
+        {item.unread > 0 && <b className="unread">{item.unread > 99 ? '99+' : item.unread}</b>}
+      </button>)}
+      {!bots.length && <button className={`bot-rail-item ${!showPush ? 'selected' : ''}`} onClick={() => navigate('messages', undefined, 'wechat')}>
+        <span className="bot-rail-icon"><MessageSquare size={20} /></span><span><strong>微信</strong><small>未绑定</small></span>
+      </button>}
+      <button className={`bot-rail-item ${showPush ? 'selected' : ''}`} onClick={() => navigate('messages', undefined, 'apns')}>
+        <span className="bot-rail-icon"><Smartphone size={20} /><i className={pushReady ? 'online' : ''} /></span>
+        <span><strong>Apple Push</strong><small>{pushReady ? '已就绪' : pushError ? '读取失败' : push?.configured ? '未登记设备' : '未配置'}</small></span>
+      </button>
+      <button className="rail-manage" onClick={() => navigate('channels')}><Radio size={16} />管理通知渠道<ChevronRight size={13} /></button>
+    </aside>
+    <div className="chat-area">
+      {showPush ? <><ErrorLine error={pushError} /><PushMessages channel={push} revision={revision} refresh={refresh} notify={notify} onBack={back} /></> : <>
+        <ErrorLine error={error} />
+        {loading && !selected ? <Loading /> : selected && bot ?
+          <Chat key={bot.id} bot={bot} conversation={selected} revision={revision} refresh={refresh} notify={notify} onBack={back} /> :
+          <><button type="button" className="icon-btn chat-back" aria-label="返回渠道列表" onClick={back}><ArrowLeft size={19} /></button>
+            <Empty icon={MessageSquare} title={bot ? '等待第一条微信消息' : '先绑定微信'}
+              text={bot?.status === 'online' ? '在微信会话中发一条消息，即可在这里查看聊天记录和发送通知。' : '请先扫码绑定微信，再在微信会话中发一条消息。'}
+              action={bot?.status !== 'online' && <Button variant="secondary" onClick={() => navigate('channels')}>管理连接</Button>} />
+          </>}
+      </>}
+    </div>
   </div>;
 }
 function Chat({ bot, conversation, revision, refresh, notify, onBack }: { bot: Bot; conversation: Conversation; revision: number; refresh: () => void; notify: (message: string) => void; onBack: () => void }) {
