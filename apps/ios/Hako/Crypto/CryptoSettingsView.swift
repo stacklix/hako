@@ -158,11 +158,10 @@ private struct CryptoCredentialLink: View {
     var tokenOnly=false
     @State private var configured:Bool?
     @State private var loadFailed=false
+    @State private var showingEditor = false
 
     var body: some View {
-        NavigationLink {
-            CryptoCredentialEditor(exchange:exchange,title:title,tokenOnly:tokenOnly,onSave:loadStatus)
-        } label: {
+        Button { showingEditor = true } label: {
             HStack {
                 Text(title)
                 Spacer()
@@ -172,10 +171,16 @@ private struct CryptoCredentialLink: View {
                 } else if loadFailed {
                     Text("读取失败").font(.caption).foregroundStyle(.secondary)
                 }
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .cryptoSettingsRowSeparators()
         .accessibilityValue(loadFailed ? "配置状态读取失败" : configured.map { $0 ? "已配置" : "未配置" } ?? "正在读取配置")
+        .sheet(isPresented: $showingEditor) {
+            CryptoCredentialEditor(exchange: exchange, title: title, tokenOnly: tokenOnly, onSave: loadStatus)
+        }
         .task { loadStatus() }
     }
 
@@ -197,33 +202,48 @@ private struct CryptoCredentialEditor: View {
     var onSave:()->Void = {}
     @Environment(\.dismiss) private var dismiss
     @State private var credential=CryptoCredential()
-    @State private var loaded=false
+    @State private var savedCredential: CryptoCredential?
     @State private var error:String?
-    var body: some View {
-        Form {
-            Section {
-                VStack(alignment:.leading,spacing:6) {
-                    Text(tokenOnly ? "API Token" : "API Key").font(.subheadline).foregroundStyle(.secondary)
-                    SecureField(tokenOnly ? "输入 API Token" : "输入 API Key",text:$credential.key)
-                        .accessibilityLabel(tokenOnly ? "API Token" : "API Key")
-                }
-                if !tokenOnly {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text("Secret Key").font(.subheadline).foregroundStyle(.secondary)
-                        SecureField("输入 Secret Key",text:$credential.secret).accessibilityLabel("Secret Key")
-                    }
-                    Text("使用只读权限。").font(.caption)
-                }
-            }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(!loaded)
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            HStack(spacing:12) {
-                Button("取消") { dismiss() }.buttonStyle(HakoActionButtonStyle(primary:false))
-                Button("保存配置") { save() }.buttonStyle(HakoActionButtonStyle()).disabled(!loaded)
-            }.listRowBackground(Color.clear)
-            if !loaded { Button("重试读取") { load() } }
-        }.navigationTitle(title).navigationBarTitleDisplayMode(.inline).task { load() }
+
+    private var hasChanges: Bool {
+        guard let savedCredential else { return false }
+        return credential.key != savedCredential.key || (!tokenOnly && credential.secret != savedCredential.secret)
     }
-    private func load() { do { credential=try CryptoCredential.load(exchange);loaded=true;error=nil } catch { self.error=error.localizedDescription } }
+
+    var body: some View {
+        SettingsSheet(title: title, hasChanges: hasChanges, saveEnabled: hasChanges, onSave: save) {
+            Form {
+                Section {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text(tokenOnly ? "API Token" : "API Key").font(.subheadline).foregroundStyle(.secondary)
+                        SecureField(tokenOnly ? "输入 API Token" : "输入 API Key",text:$credential.key)
+                            .accessibilityLabel(tokenOnly ? "API Token" : "API Key")
+                    }
+                    .cryptoSettingsRowSeparators()
+                    if !tokenOnly {
+                        VStack(alignment:.leading,spacing:6) {
+                            Text("Secret Key").font(.subheadline).foregroundStyle(.secondary)
+                            SecureField("输入 Secret Key",text:$credential.secret).accessibilityLabel("Secret Key")
+                        }
+                        .cryptoSettingsRowSeparators()
+                        Text("使用只读权限。").font(.caption)
+                    }
+                }
+                .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(savedCredential == nil)
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                if savedCredential == nil { Button("重试读取", action: load) }
+            }
+        }
+        .task { load() }
+    }
+
+    private func load() {
+        do {
+            credential = try CryptoCredential.load(exchange)
+            savedCredential = credential
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
     private func save() {
         do {
             credential.key=credential.key.trimmingCharacters(in:.whitespacesAndNewlines)

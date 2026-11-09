@@ -98,6 +98,26 @@ docker compose up -d
 
 编辑配置时保留 `init` 生成的 `masterKey`。容器使用非 root 用户、只读根文件系统、宿主机数据目录挂载、健康检查和自动重启。Windows Docker 或其他 UID 映射环境需要相应设置权限，确保容器 UID 10001 可读写 `data/`、可读 `config/` 中的配置与公钥。
 
+## 通知网关
+
+登录 Hako 管理后台，打开「通知网关」。工作台、机器人、消息中心、Webhooks 和系统设置使用同一个 Hako 管理会话。通知运行时随服务器镜像启动。原生运行时先在 `notifications/` 执行 `npm ci && npm run build`，再把 `HAKO_NOTIFICATION_WORKER` 指向构建生成的 `dist/server/index.js`，并使用 Node.js 24。
+
+- 微信机器人通过微信二维码授权。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
+- Apple Push 配置 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID=me.stackli.hako` 和 `APNS_KEY_FILE`。密钥文件须由 Hako 进程读取。Apple Push 首版支持文本。
+- 迁移原 iLinker 数据时，先停止旧网关，再把 SQLite 数据库和 `encryption.key` 一起复制到 Hako 数据目录下的 `notifications/`。若旧网关使用环境变量提供的加密密钥，把相同值配置到 `HAKO_NOTIFICATION_ENCRYPTION_KEY`。原有 Webhook、机器人、消息和队列随数据库迁移，调用方把 Webhook 主机改成 Hako 的对外地址。
+
+Webhook 使用 `POST /webhook/notifications/{token}`。省略 `channels` 时使用该 Webhook 的默认值，也可显式覆盖。
+
+```json
+{
+  "channels": ["wechat", "apns"],
+  "message": { "type": "text", "text": "部署成功" }
+}
+```
+
+提交返回 `notificationId`。通过 `GET /webhook/notifications/{token}/{notificationId}` 查询各渠道状态。使用 `Idempotency-Key` 可在 24 小时内重放原任务。微信发送窗口过期时，Apple Push 仍独立投递。反向代理须允许至少 12 MB 的图片请求，并对 Webhook 路径中的 Token 脱敏或跳过访问日志。
+
+
 ## Web 管理页
 
 左侧菜单分别打开独立页面：「设备代理」位于 `/admin/agents`，「访问日志」位于 `/admin/access-logs`；`/admin/` 默认显示设备代理。页面支持直接访问、刷新和浏览器前进/后退，共用管理登录状态，且只加载和定时刷新当前页面的数据。

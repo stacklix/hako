@@ -1,6 +1,5 @@
 import Foundation
 import SwiftData
-import AppIntents
 
 @MainActor final class Recorder {
     static let shared = Recorder()
@@ -57,12 +56,10 @@ import AppIntents
     }
 }
 
-struct RecordRecentWeekIntent: AppIntent {
-    static var title: LocalizedStringResource = "获取app使用时间并同步"
-    static var description = IntentDescription("读取最近7个完整自然日（不含今天）的使用时间和 Top 5 App。本地和 GitHub 均仅插入缺失日期，保留已有记录。请先在 Hako 完成授权与 GitHub 设置。")
-    static var openAppWhenRun = false
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = try await Recorder.shared.run(collect: true)
-        return .result(dialog: IntentDialog(stringLiteral: result))
+enum UsageShortcutContributor {
+    @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
+        registry.register("使用时间") {
+            try await Recorder.shared.run(collect: true)
+        }
     }
 }

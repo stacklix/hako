@@ -1,6 +1,28 @@
 import SwiftUI
 import UIKit
 
+enum HakoAppearance: String, CaseIterable {
+    case system, light, dark
+
+    static let storageKey = "hako.appearance"
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .system: "跟随系统"
+        case .light: "浅色"
+        case .dark: "深色"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
 // Shared neutral surfaces used by the home screen and sports module.
 enum HakoStyle {
     static let background = adaptive(0xf5f5f7, 0x151517)

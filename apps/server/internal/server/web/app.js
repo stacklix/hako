@@ -1,14 +1,32 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const currentPage = window.location.pathname === '/admin/applications' ? 'applications' : window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
+const notificationPages = {overview:'工作台', bots:'机器人', messages:'消息中心', webhooks:'Webhooks', settings:'系统设置'};
+const notificationPath = /^\/admin\/notifications(?:\/(overview|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
+const notificationPage = notificationPath ? notificationPath[1] || 'overview' : null;
+const currentPage = notificationPage ? 'notifications' : window.location.pathname === '/admin/applications' ? 'applications' : window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
+
+function showNotificationFrame(visible) {
+  const frame = $('notifications-frame');
+  if (!visible || !notificationPage) {
+    if (notificationPage) frame.setAttribute('src', 'about:blank');
+    return;
+  }
+  const query = new URLSearchParams({view: notificationPage});
+  const bot = new URLSearchParams(window.location.search).get('bot');
+  if (bot) query.set('bot', bot);
+  frame.setAttribute('src', '/admin/notifications-ui/?' + query);
+}
 function showPage() {
   const agents = currentPage === 'agents';
   $('agents-page').hidden = !agents;
   $('access-logs').hidden = currentPage !== 'access-logs';
   $('applications-page').hidden = currentPage !== 'applications';
-  $('nav-' + currentPage).setAttribute('aria-current', 'page');
-  $('page-title').textContent = agents ? '设备代理' : currentPage === 'applications' ? '应用管理' : '访问日志';
-  $('page-description').textContent = agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
+  $('notifications-page').hidden = !notificationPage;
+  $('notification-subnav').hidden = !notificationPage;
+  $('nav-' + currentPage).setAttribute('aria-current', notificationPage ? 'true' : 'page');
+  if (notificationPage) $('nav-notifications-' + notificationPage).setAttribute('aria-current', 'page');
+  $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] : agents ? '设备代理' : currentPage === 'applications' ? '应用管理' : '访问日志';
+  $('page-description').textContent = notificationPage ? '统一管理微信机器人、Webhook 和 Apple Push。' : agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
   document.title = $('page-title').textContent + ' · Hako 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
@@ -30,7 +48,7 @@ function expireQr() {
   $('qr-expiry').textContent = '';
   $('refresh-qr').disabled = false;
 }
-function loggedIn(yes) { document.body.classList.toggle('is-authenticated', yes); if (yes) showPage(); else document.title = 'Hako · 你的日常，收进一个盒子'; $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
+function loggedIn(yes) { document.body.classList.toggle('is-authenticated', yes); if (yes) showPage(); else document.title = 'Hako · 你的日常，收进一个盒子'; $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; showNotificationFrame(yes); if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;

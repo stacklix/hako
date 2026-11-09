@@ -9,11 +9,19 @@ REPO = APP.parents[2]
 
 
 class SubappBoundariesTests(unittest.TestCase):
+    def test_investment_navigation_does_not_push_values_into_the_home_path(self):
+        for path in (APP / "Investment").glob("*.swift"):
+            source = path.read_text(encoding="utf-8")
+            self.assertNotRegex(source, r"\bNavigationLink\s*\([^)]*\bvalue\s*:", path.name)
+            self.assertNotIn("navigationDestination(for: InvestmentRoute.self", source, path.name)
+
     def test_shell_only_registers_usage_entry(self):
         shell = (APP / "HakoApp.swift").read_text(encoding="utf-8")
-        self.assertIn("UsageEntry()", shell)
+        catalog = (APP / "HakoApplications.swift").read_text(encoding="utf-8")
+        self.assertIn("HakoApplications.Application", shell)
+        self.assertIn("UsageEntry()", catalog)
         for feature in ("DailyUsage", "UsageView", "Database", "FamilyControls", "ManagedSettings", "SwiftData", "modelContainer"):
-            self.assertNotIn(feature, shell)
+            self.assertNotIn(feature, shell + catalog)
 
     def test_usage_owns_lazy_database_and_business_files(self):
         view = (APP / "Usage/UsageView.swift").read_text(encoding="utf-8")
@@ -23,6 +31,21 @@ class SubappBoundariesTests(unittest.TestCase):
             self.assertTrue((APP / "Usage" / name).is_file(), name)
         for name in ("Models.swift", "Recorder.swift", "ScreenTime.swift", "UsageSync.swift"):
             self.assertFalse((APP / name).exists(), name)
+
+    def test_shortcuts_have_one_host_action_and_child_owned_registrations(self):
+        host = (APP / "HakoShortcuts.swift").read_text(encoding="utf-8")
+        catalog = (APP / "HakoApplications.swift").read_text(encoding="utf-8")
+        self.assertEqual(len(re.findall(r"\bAppShortcut\s*\(", host)), 1)
+        self.assertNotRegex(host, r"\b(UsageShortcutContributor|CryptoShortcutContributor|Recorder|CryptoStore)\b")
+        self.assertIn("HakoApplications.registerShortcuts(in: registry)", host)
+        self.assertNotIn("import ObjectiveC", host)
+        self.assertIn("Category.allCases.flatMap(\\.applications)", catalog)
+        for folder in ("Usage", "Crypto"):
+            self.assertIn(f"{folder}ShortcutContributor.registerShortcuts(in: registry)", catalog)
+            sources = "\n".join(path.read_text(encoding="utf-8") for path in (APP / folder).glob("*.swift"))
+            self.assertNotIn("import AppIntents", sources)
+            self.assertIn(f"enum {folder}ShortcutContributor", sources)
+            self.assertIn("registry.register(", sources)
 
     def test_common_code_contains_no_child_business_types(self):
         for name in ("GitHubRepository.swift", "GitHubService.swift", "AppServices.swift", "GitHubSettings.swift", "GitHubTokenStore.swift", "CSV.swift", "HakoError.swift"):

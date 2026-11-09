@@ -3,10 +3,12 @@ import SwiftUI
 @main struct HakoApp: App {
     @UIApplicationDelegateAdaptor(BuildPushDelegate.self) private var pushDelegate
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
 
     var body: some Scene {
         WindowGroup {
             HomeView()
+                .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .active {
                         Task { await BuildPushSubscription.shared.refresh() }
@@ -17,61 +19,8 @@ import SwiftUI
 }
 
 struct HomeView: View {
-    private enum Category: String, CaseIterable {
-        case it = "IT工具", finance = "金融", life = "生活"
-
-        var applications: [Application] {
-            switch self {
-            case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices]
-            case .finance: [.crypto]
-            case .life: [.sports, .usage]
-            }
-        }
-    }
-
-    private enum Application: String, Identifiable {
-        case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
-        case containers = "容器管理", devices = "设备监控", sports = "运动记录", usage = "使用时间"
-        case crypto = "加密资产"
-
-        var id: Self { self }
-        var subtitle: String {
-            switch self {
-            case .headplane: "Headplane · 设备 · 路由与访问控制"
-            case .qinglong: "定时任务 · 脚本 · 订阅管理"
-            case .cloudServers: "阿里云 ECS · 监控 · 进程与终端"
-            case .containers: "Arcane · 容器状态 · 日志与更新"
-            case .devices: "设备在线状态 · 能力调用"
-            case .sports: "运动趋势 · 每次记录 · GitHub 归档"
-            case .usage: "每日概览 · Top 5 · GitHub 归档"
-            case .crypto: "HTX · Binance · 链上资产与私有归档"
-            }
-        }
-        var symbol: String {
-            switch self {
-            case .headplane: "network"
-            case .qinglong: "checklist"
-            case .cloudServers: "server.rack"
-            case .containers: "shippingbox"
-            case .devices: "desktopcomputer"
-            case .sports: "figure.run"
-            case .usage: "chart.bar.xaxis"
-            case .crypto: "bitcoinsign.circle"
-            }
-        }
-        @ViewBuilder var destination: some View {
-            switch self {
-            case .headplane: HeadplaneView()
-            case .qinglong: QinglongView()
-            case .cloudServers: CloudServersView()
-            case .containers: ContainersView()
-            case .devices: DeviceMonitorView()
-            case .sports: SportsView()
-            case .usage: UsageEntry()
-            case .crypto: CryptoView()
-            }
-        }
-    }
+    private typealias Category = HakoApplications.Category
+    private typealias Application = HakoApplications.Application
 
     private enum Destination: Hashable {
         case application(Application), notifications, settings
@@ -154,6 +103,7 @@ struct HomeView: View {
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
                 await ConsoleClient.shared.restore()
+                await BuildPushSubscription.shared.syncHako()
             }
             .task(id: "\(scenePhase)-\(console.requestContext)") {
                 guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }

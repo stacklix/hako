@@ -28,15 +28,17 @@ type AgentConfig struct {
 }
 
 type Config struct {
-	Database       string
-	MasterKey      []byte
-	Username       string
-	Consoles       []ConsoleConfig
-	PublicURL      string
-	TrustedProxies string
-	Agents         []AgentConfig
-	RequestTimeout time.Duration
-	AccessLogs     AccessLogConfig
+	Database            string
+	MasterKey           []byte
+	Username            string
+	Consoles            []ConsoleConfig
+	PublicURL           string
+	TrustedProxies      string
+	Agents              []AgentConfig
+	RequestTimeout      time.Duration
+	AccessLogs          AccessLogConfig
+	NotificationWorker  string
+	NotificationDataDir string
 }
 
 type bucket struct {
@@ -62,6 +64,7 @@ type Server struct {
 	adminSessions      map[string]adminSession
 	adminLogins        map[string]*adminLoginRequest
 	accessLogs         *accessLogService
+	notifications      *notificationService
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -156,6 +159,11 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents", s.consoleAgentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents/live/{id}", s.consoleAgentSocket)
+	s.notificationRoutes()
+	if err := s.startNotifications(); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("start notifications: %w", err)
+	}
 	return s, nil
 }
 
@@ -172,7 +180,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+	limit := int64(16 * 1024)
+	if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/webhook/notifications/") ||
+		strings.HasPrefix(r.URL.Path, "/admin/api/notifications/webhooks/")) {
+		limit = notificationBodyLimit
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -185,6 +198,9 @@ func (s *Server) Close() error {
 	s.adminMu.Unlock()
 	if s.accessLogs != nil {
 		s.accessLogs.close()
+	}
+	if s.notifications != nil {
+		s.notifications.close()
 	}
 	s.mu.Lock()
 	for _, c := range s.online {

@@ -7,18 +7,23 @@ struct SettingsSheet<Content: View>: View {
     var isBusy = false
     var saveEnabled = true
     var onSave: (() -> Void)? = nil
+    private let detents: Set<PresentationDetent>
+    private let saveAccessibilityLabel: String
     private let content: Content
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDiscard = false
 
     init(title: String, hasChanges: Bool = false, isBusy: Bool = false,
          saveEnabled: Bool = true, onSave: (() -> Void)? = nil,
+         detents: Set<PresentationDetent> = [.large], saveAccessibilityLabel: String = "保存配置",
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.hasChanges = hasChanges
         self.isBusy = isBusy
         self.saveEnabled = saveEnabled
         self.onSave = onSave
+        self.detents = detents
+        self.saveAccessibilityLabel = saveAccessibilityLabel
         self.content = content()
     }
 
@@ -36,13 +41,13 @@ struct SettingsSheet<Content: View>: View {
                     if let onSave {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button(action: onSave) { Image(systemName: "checkmark") }
-                                .accessibilityLabel("保存配置")
+                                .accessibilityLabel(Text(saveAccessibilityLabel))
                                 .disabled(!saveEnabled || isBusy)
                         }
                     }
                 }
         }
-        .presentationDetents([.large])
+        .presentationDetents(detents)
         .presentationDragIndicator(.visible)
         .interactiveDismissDisabled(hasChanges || isBusy)
         .background {

@@ -97,3 +97,10 @@ body:not(.is-authenticated) .login{width:100%;max-width:none;margin:0;padding:22
 .login .qr-overlay p{font-size:13px;font-weight:600;color:var(--ink)}
 .qr-overlay button{background:var(--green);border-color:var(--green);color:white;padding:9px 12px;font-size:12px;white-space:nowrap}
 .qr-overlay button:hover{background:#1c503e}
+
+.notification-subnav { display: grid; gap: 4px; padding-left: 15px; }
+.notification-subnav a { font-size: .9em; }
+#nav-notifications[aria-current="true"] { font-weight: 650; }
+.notifications-frame { width: 100%; height: max(560px, calc(100dvh - 155px)); border: 0; display: block; }
+
+.notification-subnav[hidden] { display: none; }

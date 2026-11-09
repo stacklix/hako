@@ -207,10 +207,6 @@ struct DeviceMetricsView: View {
                 }
             }
             if let liveStatus { Text(liveStatus).font(.caption).foregroundStyle(.secondary) }
-            if state.loading {
-                HStack(spacing: 7) { ProgressView().controlSize(.mini); Text("正在更新查询数据…") }
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if let error = state.error {
                 statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
             }
@@ -389,7 +385,7 @@ struct DeviceMetricsView: View {
         let entry = state.entries[capability.name]
         let metrics = metrics(for: capability)
         return VStack(alignment: .leading, spacing: 10) {
-            queryStatus(capability)
+            if entry != nil || state.loaded { queryStatus(capability) }
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 18) { resourceMetrics(metrics) }
                     .devicePagePanel()

@@ -8,6 +8,11 @@ services:
       HAKO_DATA_DIR: /app/data
       HAKO_CONFIG_FILE: /app/config/server.json
       HAKO_TRUSTED_PROXIES: ${HAKO_TRUSTED_PROXIES:-}
+      HAKO_NOTIFICATION_ENCRYPTION_KEY: ${HAKO_NOTIFICATION_ENCRYPTION_KEY:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+      APNS_KEY_FILE: ${APNS_KEY_FILE:-}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

@@ -4,5 +4,6 @@ monitor.example.com {
         output file /var/log/caddy/access.log
         format json
     }
+    log_skip /webhook/notifications/*
     reverse_proxy 127.0.0.1:8080
 }

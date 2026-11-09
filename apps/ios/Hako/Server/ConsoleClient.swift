@@ -266,6 +266,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
             let result = try await self.request("/api/v1/auth/login", method: "POST", body: ["username": self.username, "deviceId": device.deviceId, "challengeId": challenge.challengeId], token: nil, nonce: challenge.nonce)
             try self.acceptTokens(result)
             self.authenticated = true
+            Task { await BuildPushSubscription.shared.syncHako() }
         }
     }
     private func acceptTokens(_ data: Data) throws {

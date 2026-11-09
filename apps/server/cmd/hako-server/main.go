@@ -103,7 +103,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "revoke-consoles" {
 		return server.RevokeConsoles(database, key)
 	}
-	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents, AccessLogs: configuration.AccessLogs})
+	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents, AccessLogs: configuration.AccessLogs, NotificationWorker: os.Getenv("HAKO_NOTIFICATION_WORKER"), NotificationDataDir: os.Getenv("HAKO_NOTIFICATION_DATA_DIR")})
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-app.NotificationsDone():
+		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
@@ -120,6 +123,9 @@ func run() error {
 	log.Printf("Hako listening on %s", httpServer.Addr)
 	err = httpServer.ListenAndServe()
 	if err == http.ErrServerClosed {
+		if ctx.Err() == nil {
+			return fmt.Errorf("notification worker exited")
+		}
 		return nil
 	}
 	return err

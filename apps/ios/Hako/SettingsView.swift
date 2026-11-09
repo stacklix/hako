@@ -1,3 +1,5 @@
+import CoreLocation
+import NetworkExtension
 import SwiftUI
 
 struct SettingsView: View {
@@ -38,15 +40,23 @@ struct SettingsView: View {
     }
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
+    @AppStorage("choreUpdateWiFiSSIDs") private var choreWiFiSSIDData = Data()
+    @AppStorage("choreUpdateWiFiSSID") private var legacyChoreWiFiSSID = ""
     @ObservedObject private var buildPush = BuildPushSubscription.shared
     @State private var sheet: SheetRoute?
     @State private var alert: (title: String, message: String)?
     @State private var updates: [UpdateSource: UpdateState] = [:]
     @State private var choreRoute: ChoreUpdateRoute?
+    @State private var currentWiFiSSID: String?
     @State private var updateRequestID: UUID?
     @State private var updateCheckID = 0
     @State private var isVisible = false
     @State private var inForeground = false
+    private var choreWiFiSSIDs: [String] {
+        if let saved = try? JSONDecoder().decode([String].self, from: choreWiFiSSIDData) { return saved }
+        return legacyChoreWiFiSSID.isEmpty ? [] : [legacyChoreWiFiSSID]
+    }
     private var updateTaskID: String? {
         guard isVisible, inForeground, !buildPush.settingsRequested else { return nil }
         return "\(updateCheckID)-\(buildPush.settingsRequestID)"
@@ -64,6 +74,14 @@ struct SettingsView: View {
     }
     var body: some View {
         Form {
+            Section("外观") {
+                Picker("主题", selection: $appearance) {
+                    ForEach(HakoAppearance.allCases, id: \.self) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
             Section("Hako 服务") {
                 Button { sheet = .server } label: {
                     settingsEntry("服务器与登录", systemImage: "server.rack")
@@ -108,6 +126,20 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 LabeledContent("Chore 连接", value: choreRoute == .local ? "当前在局域网" : choreRoute == nil ? "正在检测…" : "使用公网地址")
+                NavigationLink {
+                    ChoreWiFiSettingsView(
+                        ssids: Binding(get: { choreWiFiSSIDs }, set: storeChoreWiFiSSIDs),
+                        currentSSID: $currentWiFiSSID
+                    ) {
+                        await Self.check(ChoreUpdateRoute.local.appURL, timeout: 3).release != nil
+                    }
+                } label: {
+                    LabeledContent("当前 Wi-Fi", value: currentWiFiSSID ?? "未获取")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                .accessibilityHint("管理已登记的内网 Wi-Fi")
                 ForEach(UpdateSource.allCases, id: \.self) { source in
                     updateRow(source)
                 }
@@ -238,17 +270,31 @@ struct SettingsView: View {
     }
 
     private func refreshChore() async {
-        let local = await Self.check(ChoreUpdateRoute.local.appURL, timeout: 3)
+        let ssid = await NEHotspotNetwork.fetchCurrent()?.ssid
         guard !Task.isCancelled else { return }
-        if local.release != nil {
-            choreRoute = .local
-            updates[.xkode] = local
-        } else {
-            choreRoute = .publicNetwork
-            let remote = await Self.check(ChoreUpdateRoute.publicNetwork.appURL)
+        currentWiFiSSID = ssid
+        if let ssid, choreWiFiSSIDs.contains(where: { $0.utf8.elementsEqual(ssid.utf8) }) {
+            let local = await Self.check(ChoreUpdateRoute.local.appURL, timeout: 3)
             guard !Task.isCancelled else { return }
-            updates[.xkode] = remote
+            if local.release != nil {
+                choreRoute = .local
+                updates[.xkode] = local
+                return
+            }
         }
+        guard !Task.isCancelled else { return }
+        choreRoute = .publicNetwork
+        let remote = await Self.check(ChoreUpdateRoute.publicNetwork.appURL)
+        guard !Task.isCancelled else { return }
+        updates[.xkode] = remote
+    }
+
+    private func storeChoreWiFiSSIDs(_ ssids: [String]) {
+        guard let data = try? JSONEncoder().encode(ssids) else { return }
+        choreWiFiSSIDData = data
+        legacyChoreWiFiSSID = ""
+        choreRoute = .publicNetwork
+        updateCheckID += 1
     }
 
     nonisolated private static func check(_ baseURL: URL, timeout: TimeInterval = 15) async -> UpdateState {
@@ -284,6 +330,151 @@ struct SettingsView: View {
             if !accepted {
                 alert = ("Hako", "无法打开系统安装入口，请从 \(source.title) 下载页面安装。")
             }
+        }
+    }
+}
+
+private struct ChoreWiFiSettingsView: View {
+    @Binding var ssids: [String]
+    @Binding var currentSSID: String?
+    let checkLocalChore: () async -> Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var wifiLocation = ChoreWiFiLocationAuthorization()
+    @State private var addingWiFi = false
+    @State private var error: String?
+
+    private var canAddWiFi: Bool { addingWiFi && wifiLocation.status != .notDetermined }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("当前 Wi-Fi", value: currentSSID ?? "未获取")
+                Button {
+                    addingWiFi = true
+                    wifiLocation.requestIfNeeded()
+                } label: {
+                    HStack {
+                        Label("添加当前 Wi-Fi", systemImage: "plus.circle")
+                        Spacer()
+                        if addingWiFi {
+                            ProgressView().accessibilityLabel("正在验证当前 Wi-Fi")
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+            }
+            Section("已登记的 Wi-Fi") {
+                if ssids.isEmpty {
+                    Text("尚未登记 Wi-Fi").foregroundStyle(.secondary)
+                }
+                ForEach(Array(ssids.enumerated()), id: \.offset) { _, ssid in
+                    HStack {
+                        Label(ssid, systemImage: "wifi")
+                        Spacer()
+                        Button(role: .destructive) {
+                            ssids = ssids.filter { !$0.utf8.elementsEqual(ssid.utf8) }
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("移除内网 Wi-Fi \(ssid)")
+                    }
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                }
+            }
+        }
+        .navigationTitle("内网 Wi-Fi")
+        .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .background(HakoStyle.background)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { addingWiFi = false }
+        }
+        .task(id: scenePhase == .active) {
+            guard scenePhase == .active else { return }
+            await refreshCurrentSSID()
+        }
+        .task(id: canAddWiFi) { [canAddWiFi] in
+            if canAddWiFi { await addCurrentWiFi() }
+        }
+        .alert("设置内网 Wi-Fi", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("好") { error = nil }
+        } message: {
+            Text(error ?? "")
+        }
+    }
+
+    @discardableResult private func refreshCurrentSSID() async -> String? {
+        let ssid = await NEHotspotNetwork.fetchCurrent()?.ssid
+        guard !Task.isCancelled else { return nil }
+        currentSSID = ssid
+        return ssid
+    }
+
+    private func addCurrentWiFi() async {
+        defer { if !Task.isCancelled { addingWiFi = false } }
+        guard !Task.isCancelled else { return }
+        guard wifiLocation.hasPreciseLocation else {
+            error = "请在系统设置中允许 Hako 在使用期间访问位置，并打开「精确位置」。"
+            return
+        }
+        let current = await refreshCurrentSSID()
+        guard !Task.isCancelled else { return }
+        guard let ssid = current, !ssid.isEmpty else {
+            error = "未能读取 Wi-Fi 名称，请连接 Chore 所在的 Wi-Fi 后重试。"
+            return
+        }
+        guard !ssids.contains(where: { $0.utf8.elementsEqual(ssid.utf8) }) else {
+            error = "当前 Wi-Fi 已在内网列表中。"
+            return
+        }
+        let reachable = await checkLocalChore()
+        guard !Task.isCancelled else { return }
+        guard reachable else {
+            error = "当前 Wi-Fi 无法访问 Chore，请检查网络连接和 Hako 的本地网络权限。"
+            return
+        }
+        let verifiedSSID = await refreshCurrentSSID()
+        guard !Task.isCancelled else { return }
+        guard let verifiedSSID, verifiedSSID.utf8.elementsEqual(ssid.utf8) else {
+            error = "验证期间 Wi-Fi 已切换，请重新添加当前 Wi-Fi。"
+            return
+        }
+        ssids.append(ssid)
+    }
+}
+
+@MainActor
+private final class ChoreWiFiLocationAuthorization: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    @Published private(set) var status: CLAuthorizationStatus = .notDetermined
+
+    override init() {
+        super.init()
+        status = manager.authorizationStatus
+        manager.delegate = self
+    }
+
+    var hasPreciseLocation: Bool {
+        let authorization = manager.authorizationStatus
+        return (authorization == .authorizedWhenInUse || authorization == .authorizedAlways)
+            && manager.accuracyAuthorization == .fullAccuracy
+    }
+
+    func requestIfNeeded() {
+        if manager.authorizationStatus == .notDetermined { manager.requestWhenInUseAuthorization() }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            status = self.manager.authorizationStatus
         }
     }
 }

@@ -3,3 +3,6 @@ secrets
 config
 build
 *.db*
+
+notifications/node_modules
+notifications/dist

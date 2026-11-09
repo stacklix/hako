@@ -4,4 +4,5 @@
 <key>aps-environment</key><string>production</string>
 <key>com.apple.developer.family-controls</key><true/>
 <key>com.apple.developer.family-controls.app-and-website-usage</key><true/>
+<key>com.apple.developer.networking.wifi-info</key><true/>
 </dict></plist>

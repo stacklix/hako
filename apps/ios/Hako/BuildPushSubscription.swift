@@ -12,6 +12,8 @@ final class BuildPushSubscription: ObservableObject {
     private let defaults = UserDefaults.standard
     private let idKey = "hako.buildPush.id"
     private var busy = false
+    private var hakoToken: Data?
+    private var syncingHako = false
 
     @Published var settingsRequested = false
     @Published private(set) var settingsRequestID = 0
@@ -47,6 +49,29 @@ final class BuildPushSubscription: ObservableObject {
         UIApplication.shared.registerForRemoteNotifications()
     }
 
+    func registerWithHako(_ token: Data) async {
+        hakoToken = token
+        await syncHako()
+    }
+
+    func syncHako() async {
+        let console = ConsoleClient.shared
+        guard !syncingHako, console.authenticated, !console.logoutPending, let token = hakoToken else { return }
+        syncingHako = true
+        defer { syncingHako = false }
+        let hex = token.map { String(format: "%02x", $0) }.joined()
+        do {
+            // Hako's signed App uses the production APS environment.
+            _ = try await console.send("/api/v1/notifications/device", method: "PUT",
+                body: ["token": hex, "environment": "production"], logSource: .hako)
+        } catch let error as ServerHTTPError where error.status == 404 {
+            // The configured Hako server is running a release without notification registration.
+        } catch is CancellationError {
+        } catch {
+            HakoLog.record(.hako, .error, "Hako 通知设备登记暂未同步，下次打开 Hako 时会重试")
+        }
+    }
+
     func register(_ token: Data) async {
         guard !busy else { return }
         busy = true
@@ -79,6 +104,7 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Task { await BuildPushSubscription.shared.register(deviceToken) }
+        Task { await BuildPushSubscription.shared.registerWithHako(deviceToken) }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

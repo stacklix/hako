@@ -153,3 +153,15 @@ for (const [path, page, title] of [
     assert.equal(calls.length, 3, 'logout stops page polling');
   });
 }
+
+test('notification gateway opens the requested second-level menu after Hako login', async () => {
+  const {document, calls, context} = await openPage('/admin/notifications/webhooks');
+  const get = id => document.getElementById(id);
+  assert.equal(get('notification-subnav').hidden, false);
+  assert.equal(get('notifications-page').hidden, false);
+  assert.equal(get('nav-notifications-webhooks').attributes['aria-current'], 'page');
+  assert.equal(get('notifications-frame').attributes.src, '/admin/notifications-ui/?view=webhooks');
+  assert.deepEqual(calls, ['/admin/api/session']);
+  context.loggedIn(false);
+  assert.equal(get('notifications-frame').attributes.src, 'about:blank');
+});
