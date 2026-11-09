@@ -11,27 +11,41 @@ const pages = ['overview', 'channels', 'messages', 'webhooks'] as const;
 type Page = typeof pages[number];
 export interface Route { page: Page; botId?: string; channel?: NotificationChannel }
 export type Navigate = (page: Page, botId?: string, channel?: NotificationChannel) => void;
-function readRoute(): Route {
-  const params = new URLSearchParams(location.search);
-  const view = params.get('view');
+function readRoute(source = location): Route {
+  const params = new URLSearchParams(source.search);
+  const view = /^\/admin\/notifications\/([^/]+)$/.exec(source.pathname)?.[1] ?? params.get('view');
   const page = view === 'bots' || view === 'settings' ? 'channels' : pages.find(value => value === view) ?? 'overview';
   const channel = params.get('channel');
   return { page, botId: params.get('bot') || undefined, channel: channel === 'apns' || channel === 'wechat' ? channel : undefined };
 }
-const navigate: Navigate = (page, botId, channel) => {
-  const params = new URLSearchParams();
-  if (botId) params.set('bot', botId);
-  if (channel) params.set('channel', channel);
-  const url = '/admin/notifications/' + page + (params.size ? '?' + params : '');
-  (window.top ?? window).location.assign(url);
-};
-
 export function App() {
   const [active, setActive] = useState(false), [error, setError] = useState('');
-  const [route] = useState(readRoute);
+  const [route, setRoute] = useState(() => readRoute());
   const [revision, setRevision] = useState(0), [toast, setToast] = useState('');
   const refresh = useCallback(() => setRevision(value => value + 1), []);
   const notify = useCallback((message: string) => setToast(message), []);
+  const navigate: Navigate = (page, botId, channel) => {
+    const host = window.top ?? window;
+    const params = new URLSearchParams();
+    if (botId) params.set('bot', botId);
+    if (channel) params.set('channel', channel);
+    const url = '/admin/notifications/' + page + (params.size ? '?' + params : '');
+    if (page !== route.page) {
+      host.location.assign(url);
+      return;
+    }
+    // Keep the admin shell, session and event stream mounted when switching channels.
+    if (host === window) params.set('view', page);
+    const target = host === window ? location.pathname + '?' + params : url;
+    if (target !== host.location.pathname + host.location.search) host.history.pushState(null, '', target);
+    setRoute({ page, botId, channel });
+  };
+  useEffect(() => {
+    const host = window.top ?? window;
+    const onPopState = () => setRoute(readRoute(host.location));
+    host.addEventListener('popstate', onPopState);
+    return () => host.removeEventListener('popstate', onPopState);
+  }, []);
   useEffect(() => {
     let alive = true;
     const expired = () => { setActive(false); setError('Hako 管理会话已到期，请重新登录'); };

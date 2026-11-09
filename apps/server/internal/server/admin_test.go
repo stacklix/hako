@@ -387,6 +387,9 @@ func TestLegacyStateMigrationPreservesTrustedConsoleSession(t *testing.T) {
 	if err := f.s.store.update(func(st *state) error { st.Registry = nil; return nil }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.s.store.db.Exec("PRAGMA user_version = 0"); err != nil {
+		t.Fatal(err)
+	}
 	restarted, err := New(f.s.config)
 	if err != nil {
 		t.Fatal(err)
@@ -398,6 +401,18 @@ func TestLegacyStateMigrationPreservesTrustedConsoleSession(t *testing.T) {
 		}
 		if st.Sessions[f.tokens.SessionID] == nil {
 			t.Error("upgrade revoked a trusted Console session")
+		}
+	})
+	config := f.s.config
+	config.Agents = []AgentConfig{{ID: "legacy", PublicKeyFile: "does-not-exist"}}
+	afterMigration, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer afterMigration.Close()
+	afterMigration.store.inspect(func(st state) {
+		if len(st.Registry.Agents) != 1 || st.Registry.Agents[0].ID != "PC" || st.Sessions[f.tokens.SessionID] == nil {
+			t.Error("restart after migration did not preserve Agent registration and trusted session")
 		}
 	})
 }

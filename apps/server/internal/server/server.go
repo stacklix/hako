@@ -99,7 +99,7 @@ func New(config Config) (*Server, error) {
 	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
 	var registry *Registry
-	if err := st.update(func(value *state) error {
+	if err := st.initialize(func(value *state, migrating bool) error {
 		if value.Subject == "" {
 			value.Subject = randomToken()
 		}
@@ -107,9 +107,14 @@ func New(config Config) (*Server, error) {
 			value.AuthClients = map[string]AuthClientConfig{}
 		}
 		var err error
-		agents := config.Agents
-		if value.Registry != nil {
+		var agents []AgentConfig
+		switch {
+		case value.Registry != nil:
 			agents = value.Registry.Agents
+		case migrating:
+			agents = config.Agents
+		default:
+			return errors.New("main database is missing its Agent registry after migration")
 		}
 		// Agent keys are managed in the database. Console trust always comes from operator configuration.
 		registry, err = loadRegistry(agents, config.Consoles, true)

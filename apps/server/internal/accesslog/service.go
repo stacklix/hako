@@ -22,6 +22,8 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"hako/server/internal/dbschema"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -57,8 +59,25 @@ type Service struct {
 }
 
 func Open(database string, config Config) (*Service, error) {
+	path := database + ".access.db"
+	if database == ":memory:" {
+		path = ":memory:"
+	}
 	if config.Directory == "" {
-		return nil, nil
+		if path == ":memory:" {
+			return nil, nil
+		}
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		db, err := openAccessLogDatabase(path)
+		if err != nil {
+			return nil, err
+		}
+		return nil, db.Close()
 	}
 	if config.ScanIntervalSeconds == 0 {
 		config.ScanIntervalSeconds = 60
@@ -78,23 +97,12 @@ func Open(database string, config Config) (*Service, error) {
 		return nil, err
 	}
 	config.Directory = directory
-	path := database + ".access.db"
-	if database == ":memory:" {
-		path = ":memory:"
-	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openAccessLogDatabase(path)
 	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	err = initAccessLogSchema(db)
-	if err != nil {
-		db.Close()
 		return nil, err
 	}
 	// Changing timezone requires an explicit rebuild, otherwise existing buckets would mix definitions.
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS access_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-	INSERT INTO access_metadata(key,value) VALUES('timezone',?) ON CONFLICT(key) DO NOTHING`, config.Timezone)
+	_, err = db.Exec(`INSERT INTO access_metadata(key,value) VALUES('timezone',?) ON CONFLICT(key) DO NOTHING`, config.Timezone)
 	var storedTimezone string
 	if err == nil {
 		err = db.QueryRow("SELECT value FROM access_metadata WHERE key='timezone'").Scan(&storedTimezone)
@@ -143,54 +151,79 @@ const accessCountsColumns = `(
  PRIMARY KEY(hour,occurred_at,domain,status,ip,ua,url)
 ) WITHOUT ROWID`
 
+func openAccessLogDatabase(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := initAccessLogSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
 func initAccessLogSchema(db *sql.DB) error {
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
-	CREATE TABLE IF NOT EXISTS access_counts ` + accessCountsColumns + `;
-	CREATE TABLE IF NOT EXISTS access_cursors (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);`); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err != nil {
 		return err
 	}
-	rows, err := db.Query("PRAGMA table_info(access_counts)")
+	_, err := dbschema.Upgrade(db, migrateAccessLogs)
+	if err != nil {
+		return fmt.Errorf("migrate access log database: %w", err)
+	}
+	return nil
+}
+
+func migrateAccessLogs(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE TABLE access_counts_v2 ` + accessCountsColumns + `;
+		CREATE TABLE access_cursors_v2 (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);
+		CREATE TABLE access_metadata_v2 (key TEXT PRIMARY KEY, value TEXT NOT NULL);`); err != nil {
+		return err
+	}
+
+	countsExist, err := dbschema.TableExists(tx, "access_counts")
 	if err != nil {
 		return err
 	}
-	precise := false
-	for rows.Next() {
-		var cid, required, pk int
-		var name, kind string
-		var value any
-		if err = rows.Scan(&cid, &name, &kind, &required, &value, &pk); err != nil {
-			break
+	if countsExist {
+		var precise bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('access_counts') WHERE name='occurred_at')").Scan(&precise); err != nil {
+			return err
 		}
-		if name == "occurred_at" {
-			precise = true
+		timestamp := "occurred_at"
+		if !precise {
+			// The legacy table records the hour but not the time within it.
+			timestamp = "hour"
+		}
+		if _, err := tx.Exec(`INSERT INTO access_counts_v2 (hour,occurred_at,domain,status,ip,ua,url,count)
+			SELECT hour,` + timestamp + `,domain,status,ip,ua,url,count FROM access_counts`); err != nil {
+			return err
 		}
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	if !precise {
-		// Preserve old hourly totals and cursors. Only newly imported data has second-level boundaries.
-		tx, err := db.Begin()
+	for _, table := range []struct{ name, columns string }{
+		{"access_cursors", "id,offset,anchor,size,modified"},
+		{"access_metadata", "key,value"},
+	} {
+		exists, err := dbschema.TableExists(tx, table.name)
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback()
-		if _, err = tx.Exec(`CREATE TABLE access_counts_precise ` + accessCountsColumns + `;
-		INSERT INTO access_counts_precise SELECT hour,hour,domain,status,ip,ua,url,count FROM access_counts;
-		DROP TABLE access_counts; ALTER TABLE access_counts_precise RENAME TO access_counts;`); err != nil {
-			return err
-		}
-		if err = tx.Commit(); err != nil {
-			return err
+		if exists {
+			if _, err := tx.Exec("INSERT INTO " + table.name + "_v2 (" + table.columns + ") SELECT " + table.columns + " FROM " + table.name); err != nil {
+				return err
+			}
 		}
 	}
-	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS access_domain_hour ON access_counts(domain,hour);
-	CREATE INDEX IF NOT EXISTS access_time ON access_counts(occurred_at);
-	CREATE INDEX IF NOT EXISTS access_domain_time ON access_counts(domain,occurred_at);`)
+	_, err = tx.Exec(`DROP TABLE IF EXISTS access_counts;
+		DROP TABLE IF EXISTS access_cursors;
+		DROP TABLE IF EXISTS access_metadata;
+		ALTER TABLE access_counts_v2 RENAME TO access_counts;
+		ALTER TABLE access_cursors_v2 RENAME TO access_cursors;
+		ALTER TABLE access_metadata_v2 RENAME TO access_metadata;
+		CREATE INDEX access_domain_hour ON access_counts(domain,hour);
+		CREATE INDEX access_time ON access_counts(occurred_at);
+		CREATE INDEX access_domain_time ON access_counts(domain,occurred_at);`)
 	return err
 }
 

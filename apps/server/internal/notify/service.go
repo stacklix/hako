@@ -272,7 +272,7 @@ func New(config Config) (*Service, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := exec(db, schema); err != nil {
+	if err := initSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}

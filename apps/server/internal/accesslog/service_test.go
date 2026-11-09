@@ -266,9 +266,23 @@ func TestAccessLogsSevenDayCleanupAndLegacyMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := legacy.Exec(`CREATE TABLE access_cursors (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);
+		INSERT INTO access_cursors VALUES ('old-file',42,X'1234',100,1);
+		CREATE TABLE access_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+		INSERT INTO access_metadata VALUES ('timezone','Asia/Shanghai'),('legacy-marker','preserved');`); err != nil {
+		t.Fatal(err)
+	}
 	legacy.Close()
 	a := logTestService(t, database, dir, 86400)
 	logTestCount(t, a, 10)
+	var offset int
+	if err := a.db.QueryRow("SELECT offset FROM access_cursors WHERE id='old-file'").Scan(&offset); err != nil || offset != 42 {
+		t.Fatalf("cursor was not migrated: offset=%d, error=%v", offset, err)
+	}
+	var marker string
+	if err := a.db.QueryRow("SELECT value FROM access_metadata WHERE key='legacy-marker'").Scan(&marker); err != nil || marker != "preserved" {
+		t.Fatalf("metadata was not migrated: value=%q, error=%v", marker, err)
+	}
 	if a.Status().Retention != 7 {
 		t.Fatal("retention must always be seven days")
 	}

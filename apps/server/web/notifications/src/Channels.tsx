@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileText, MessageSquare, Pause, Play, QrCode, RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
+import { FileText, MessageSquare, Play, QrCode, RefreshCw, ShieldCheck, Unplug } from 'lucide-react';
 import type { Bot, BotLog, LoginSession } from '../shared/types';
 import type { Navigate } from './App';
 import { api, post, remove } from './api';
@@ -20,12 +20,20 @@ interface Props {
 export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, navigate }: Props) {
   const [loginId, setLoginId] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [confirmation, setConfirmation] = useState<'disconnect' | 'clear' | null>(null);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const connected = wechat && ['online', 'connecting', 'reconnecting'].includes(wechat.status);
   const needsLogin = !wechat?.hasCredentials || wechat.status === 'expired';
+  const canConfigure = !wechat || ['stopped', 'pending', 'expired'].includes(wechat.status);
   const logs = useResource<BotLog[]>(showLogs && wechat ? `/bots/${wechat.id}/logs` : null, revision);
 
   async function updateConnection() {
+    if (busy || !wechatReady) return;
+    if (connected) {
+      setConfirmation('disconnect');
+      return;
+    }
+    if (!canConfigure) return;
     setBusy(true);
     setError('');
     try {
@@ -34,24 +42,9 @@ export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, n
         if (!connection) throw new Error('暂时无法初始化微信渠道，请重试。');
         setLoginId(connection.id);
       } else {
-        await post(`/bots/${wechat.id}/${connected ? 'disconnect' : 'connect'}`);
+        await post(`/bots/${wechat.id}/connect`);
       }
       refresh();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function clearCredentials() {
-    if (!wechat || !confirm('清除微信授权后，需要重新扫码才能恢复连接。继续？')) return;
-    setBusy(true);
-    setError('');
-    try {
-      await remove(`/bots/${wechat.id}/credentials`);
-      refresh();
-      notify('微信授权已清除');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -75,17 +68,20 @@ export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, n
         </div>}
         <ErrorLine error={error || wechat?.lastError || ''} />
         <div className="inline-actions">
-          <Button busy={busy} disabled={!wechatReady} icon={needsLogin ? QrCode : connected ? Pause : Play} onClick={updateConnection}>
-            {needsLogin ? '扫码绑定微信' : connected ? '停止连接' : '启动连接'}
+          <Button busy={busy} disabled={!wechatReady || (!connected && !canConfigure)} icon={connected ? Unplug : needsLogin ? QrCode : Play} onClick={updateConnection}>
+            {connected ? '断开连接' : !canConfigure ? '正在扫码绑定' : needsLogin ? '扫码绑定微信' : '启动连接'}
           </Button>
-          {wechat?.hasCredentials && !needsLogin && <Button variant="secondary" disabled={busy} icon={QrCode} onClick={() => setLoginId(wechat.id)}>重新扫码</Button>}
+          {canConfigure && wechat?.hasCredentials && !needsLogin && <Button variant="secondary" disabled={busy} icon={QrCode} onClick={() => setLoginId(wechat.id)}>重新配置</Button>}
           {wechat?.conversationId && <Button variant="secondary" icon={MessageSquare} onClick={() => navigate('messages', wechat.id)}>查看会话</Button>}
           {wechat && <Button variant="ghost" icon={FileText} onClick={() => setShowLogs(true)}>连接记录</Button>}
-          {wechat?.hasCredentials && <Button variant="ghost" disabled={busy} icon={Unplug} onClick={clearCredentials}>清除授权</Button>}
+          {canConfigure && wechat?.hasCredentials && <Button variant="ghost" disabled={busy} icon={Unplug} onClick={() => setConfirmation('clear')}>清除授权</Button>}
         </div>
       </div>
     </section>
     <PushSettings revision={revision} refresh={refresh} notify={notify} />
+    {confirmation && wechat && <ConnectionConfirmation key={`${wechat.id}:${wechat.accountId}:${confirmation}`} connection={wechat} action={confirmation}
+      allowed={confirmation === 'disconnect' ? !!connected : canConfigure} onClose={() => setConfirmation(null)}
+      onConfirmed={() => { setConfirmation(null); refresh(); notify(confirmation === 'disconnect' ? '微信连接已断开，可以重新配置' : '微信授权已清除'); }} />}
     {loginId && <LoginModal connectionId={loginId} onClose={() => { setLoginId(null); refresh(); }}
       onConnected={() => { refresh(); notify('微信授权成功，正在建立消息连接'); }}
       onMessages={() => navigate('messages', loginId)} />}
@@ -97,6 +93,35 @@ export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, n
       </div>
     </Modal>}
   </div>;
+}
+
+function ConnectionConfirmation({ connection, action, allowed, onClose, onConfirmed }: {
+  connection: Bot; action: 'disconnect' | 'clear'; allowed: boolean; onClose: () => void; onConfirmed: () => void;
+}) {
+  const [account, setAccount] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const matches = !!connection.accountId && account === connection.accountId;
+  const clearing = action === 'clear';
+  return <Modal title={clearing ? '清除微信授权' : '断开微信连接'} onClose={() => { if (!busy) onClose(); }}>
+    <form className="modal-form" onSubmit={async e => {
+      e.preventDefault();
+      if (busy || !allowed || !matches) return;
+      setBusy(true); setError('');
+      try {
+        if (clearing) await remove(`/bots/${connection.id}/credentials`);
+        else await post(`/bots/${connection.id}/disconnect`);
+        onConfirmed();
+      } catch (e) { setError((e as Error).message); }
+      finally { setBusy(false); }
+    }}>
+      <p>{clearing ? '清除授权后，需要重新扫码才能恢复连接。' : '断开后将停止收发微信消息，排队中的消息会被标记为失败。断开成功后才能重新配置。'}</p>
+      <p>请输入当前绑定账号 <strong className="break-all">{connection.accountId}</strong> 以确认操作。</p>
+      <label>绑定账号<input autoFocus value={account} onChange={e => setAccount(e.target.value)} disabled={busy} autoComplete="off" spellCheck={false} required placeholder="输入完整的绑定账号" /></label>
+      {account && !matches && <p className="quiet">输入的账号与当前绑定账号不一致。</p>}
+      <ErrorLine error={error || (!allowed ? '连接状态已变化，请关闭弹窗后重试。' : '')} />
+      <div className="modal-footer"><Button type="button" variant="secondary" disabled={busy} onClick={onClose}>取消</Button>
+        <Button type="submit" variant="danger" busy={busy} disabled={!allowed || !matches}>{clearing ? '确认清除授权' : '确认断开连接'}</Button></div>
+    </form>
+  </Modal>;
 }
 
 function LoginModal({ connectionId, onClose, onConnected, onMessages }: {

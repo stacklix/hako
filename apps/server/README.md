@@ -37,6 +37,8 @@ GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性
 
 仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `hako-server`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
 
+本次数据库升级在服务启动时自动执行。主库与访问日志库保留原有数据。通知库首次升级时重建为空库，会清除微信绑定、消息、Webhooks、投递记录、APNs 设备和通过后台保存的 APNs 配置。部署环境中的 APNs 配置仍可使用。迁移成功后再次启动会保留新建的通知数据。
+
 ### 部署配置与启动
 
 以下命令从 `apps/server/` 执行，面向 Linux Docker 主机。
