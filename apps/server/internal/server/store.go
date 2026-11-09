@@ -59,6 +59,7 @@ type store struct {
 	db    *sql.DB
 	aead  cipher.AEAD
 	value state
+	empty bool
 }
 
 func openStore(path string, key []byte) (*store, error) {
@@ -75,14 +76,22 @@ func openStore(path string, key []byte) (*store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), value BLOB NOT NULL)`); err != nil {
+	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000`); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := dbschema.Initialize(db, func(tx *sql.Tx) error {
+		_, err := tx.Exec("CREATE TABLE state (id INTEGER PRIMARY KEY CHECK(id=1), value BLOB NOT NULL)")
+		return err
+	}); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open main database: %w", err)
 	}
 	s := &store{db: db, aead: aead, value: emptyState()}
 	var encrypted []byte
 	err = db.QueryRow("SELECT value FROM state WHERE id=1").Scan(&encrypted)
 	if err == sql.ErrNoRows {
+		s.empty = true
 		return s, nil
 	}
 	if err != nil {
@@ -118,42 +127,7 @@ func (s *store) update(fn func(*state) error) error {
 	if err = fn(&next); err != nil {
 		return err
 	}
-	if err := s.writeState(s.db, "state", next); err != nil {
-		return err
-	}
-	s.value = next
-	return nil
-}
-
-func (s *store) initialize(configure func(*state, bool) error) error {
-	next := s.value
-	migrated, err := dbschema.Upgrade(s.db, func(tx *sql.Tx) error {
-		if err := configure(&next, true); err != nil {
-			return err
-		}
-		if _, err := tx.Exec("CREATE TABLE state_v2 (id INTEGER PRIMARY KEY CHECK(id=1), value BLOB NOT NULL)"); err != nil {
-			return err
-		}
-		if err := s.writeState(tx, "state_v2", next); err != nil {
-			return err
-		}
-		_, err := tx.Exec("DROP TABLE state; ALTER TABLE state_v2 RENAME TO state")
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("migrate main database: %w", err)
-	}
-	if migrated {
-		s.value = next
-		return nil
-	}
-	return s.update(func(current *state) error { return configure(current, false) })
-}
-
-func (s *store) writeState(db interface {
-	Exec(string, ...any) (sql.Result, error)
-}, table string, next state) error {
-	plain, err := json.Marshal(next)
+	plain, err = json.Marshal(next)
 	if err != nil {
 		return err
 	}
@@ -162,8 +136,12 @@ func (s *store) writeState(db interface {
 		return err
 	}
 	encrypted := s.aead.Seal(nonce, nonce, plain, []byte("hako-state-v1"))
-	_, err = db.Exec("INSERT INTO "+table+"(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", encrypted)
-	return err
+	if _, err = s.db.Exec("INSERT INTO state(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", encrypted); err != nil {
+		return err
+	}
+	s.value = next
+	s.empty = false
+	return nil
 }
 
 func (s *store) inspect(fn func(state)) {

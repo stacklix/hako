@@ -5,46 +5,39 @@ import (
 	"fmt"
 )
 
-// Upgrade runs the legacy migration at most once per database file.
-func Upgrade(db *sql.DB, migrate func(*sql.Tx) error) (bool, error) {
+const CurrentVersion = 2
+
+// Initialize creates the current schema only in an empty database.
+func Initialize(db *sql.DB, create func(*sql.Tx) error) error {
 	tx, err := db.Begin()
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer tx.Rollback()
 
 	var version int
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return false, err
+		return err
 	}
 	switch version {
-	case 2:
-		return false, nil
+	case CurrentVersion:
+		return nil
 	case 0:
-		if err := migrate(tx); err != nil {
-			return false, err
+		var populated bool
+		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*')").Scan(&populated); err != nil {
+			return err
 		}
-		var check string
-		if err := tx.QueryRow("PRAGMA quick_check").Scan(&check); err != nil {
-			return false, err
+		if populated {
+			return fmt.Errorf("database has not been migrated: start Hako from migration commit 957cbb2 once before upgrading")
 		}
-		if check != "ok" {
-			return false, fmt.Errorf("database integrity check failed: %s", check)
+		if err := create(tx); err != nil {
+			return err
 		}
-		if _, err := tx.Exec("PRAGMA user_version = 2"); err != nil {
-			return false, err
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", CurrentVersion)); err != nil {
+			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return false, err
-		}
-		return true, nil
+		return tx.Commit()
 	default:
-		return false, fmt.Errorf("unsupported database schema version %d (expected 2)", version)
+		return fmt.Errorf("unsupported database schema version %d (expected %d)", version, CurrentVersion)
 	}
-}
-
-func TableExists(tx *sql.Tx, name string) (bool, error) {
-	var exists bool
-	err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?)", name).Scan(&exists)
-	return exists, err
 }

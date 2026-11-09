@@ -11,30 +11,12 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000"); err != nil {
 		return err
 	}
-	_, err := dbschema.Upgrade(db, func(tx *sql.Tx) error {
-		// Reset notification data once, dropping dependent tables before their parents.
-		if _, err := tx.Exec(`
-			DROP TABLE IF EXISTS push_pairings;
-			DROP TABLE IF EXISTS notification_deliveries;
-			DROP TABLE IF EXISTS idempotency;
-			DROP TABLE IF EXISTS webhook_requests;
-			DROP TABLE IF EXISTS message_images;
-			DROP TABLE IF EXISTS send_window_reminders;
-			DROP TABLE IF EXISTS messages;
-			DROP TABLE IF EXISTS webhooks;
-			DROP TABLE IF EXISTS conversations;
-			DROP TABLE IF EXISTS bot_logs;
-			DROP TABLE IF EXISTS bots;
-			DROP TABLE IF EXISTS direct_push;
-			DROP TABLE IF EXISTS push_devices;
-			DROP TABLE IF EXISTS apns_config;`); err != nil {
-			return err
-		}
+	err := dbschema.Initialize(db, func(tx *sql.Tx) error {
 		_, err := tx.Exec(schema)
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("migrate notification database: %w", err)
+		return fmt.Errorf("open notification database: %w", err)
 	}
 	return nil
 }

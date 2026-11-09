@@ -99,7 +99,7 @@ func New(config Config) (*Server, error) {
 	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
 	var registry *Registry
-	if err := st.initialize(func(value *state, migrating bool) error {
+	if err := st.update(func(value *state) error {
 		if value.Subject == "" {
 			value.Subject = randomToken()
 		}
@@ -111,10 +111,10 @@ func New(config Config) (*Server, error) {
 		switch {
 		case value.Registry != nil:
 			agents = value.Registry.Agents
-		case migrating:
+		case st.empty:
 			agents = config.Agents
 		default:
-			return errors.New("main database is missing its Agent registry after migration")
+			return errors.New("main database is missing its Agent registry")
 		}
 		// Agent keys are managed in the database. Console trust always comes from operator configuration.
 		registry, err = loadRegistry(agents, config.Consoles, true)
@@ -513,5 +513,11 @@ func RevokeConsoles(database string, key []byte) error {
 		return err
 	}
 	defer st.db.Close()
-	return st.update(func(v *state) error { v.Sessions = map[string]*session{}; return nil })
+	return st.update(func(v *state) error {
+		if st.empty {
+			v.Registry = &Registry{}
+		}
+		v.Sessions = map[string]*session{}
+		return nil
+	})
 }

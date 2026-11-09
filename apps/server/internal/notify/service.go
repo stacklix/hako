@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"hako/server/internal/dbschema"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -293,6 +295,10 @@ func New(config Config) (*Service, error) {
 	s.adminRoutes()
 	return s, nil
 }
+func (s *Service) DatabaseSchema(ctx context.Context) (dbschema.Schema, error) {
+	return dbschema.Inspect(ctx, s.db)
+}
+
 func (s *Service) Close() error {
 	s.mu.Lock()
 	s.cancel()

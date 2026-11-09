@@ -104,3 +104,8 @@ body:not(.is-authenticated) .login{width:100%;max-width:none;margin:0;padding:22
 .notifications-frame { width: 100%; height: max(560px, calc(100dvh - 155px)); border: 0; display: block; }
 
 .notification-subnav[hidden] { display: none; }
+
+.database-schema{padding:16px 0;border-top:1px solid var(--line);min-width:0}
+.database-schema details{margin-top:10px}
+.database-schema summary{cursor:pointer;padding:6px 0}
+.database-schema pre{margin:4px 0 12px;padding:12px;background:var(--bg);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}

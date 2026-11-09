@@ -39,6 +39,12 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
         return {ok: true, json: async () => recordPages.shift()};
       }
       const responses = {
+        '/admin/api/system/databases': {expectedVersion: 2, databases: [
+          {name: '服务端主库', file: 'hako.db', status: 'available', schema: {
+            version: 2, tables: [{name: 'state', sql: 'CREATE TABLE state(id INTEGER PRIMARY KEY)'}]
+          }},
+          {name: '访问日志', file: 'hako.db.access.db', status: 'not_created'}
+        ]},
         '/admin/api/session': {csrfToken: 'test', username: 'Admin'},
         '/admin/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
         '/admin/api/applications': {applications: []},
@@ -164,4 +170,16 @@ test('notification gateway opens the requested second-level menu after Hako logi
   assert.deepEqual(calls, ['/admin/api/session']);
   context.loggedIn(false);
   assert.equal(get('notifications-frame').attributes.src, 'about:blank');
+});
+
+test('system configuration loads database versions and table definitions', async () => {
+  const {document, calls} = await openPage('/admin/system');
+  assert.deepEqual(calls, ['/admin/api/session', '/admin/api/system/databases']);
+  assert.equal(document.getElementById('system-page').hidden, false);
+  assert.equal(document.getElementById('nav-system').attributes['aria-current'], 'page');
+  assert.equal(document.getElementById('page-title').textContent, '系统配置');
+  const text = node => [node.textContent || '', ...node.children.map(text)].join(' ');
+  const content = text(document.getElementById('system-databases'));
+  assert.match(content, /版本已就绪.*hako.db · 版本 2.*CREATE TABLE state/);
+  assert.match(content, /尚未创建/);
 });

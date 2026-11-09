@@ -168,63 +168,23 @@ func initAccessLogSchema(db *sql.DB) error {
 	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err != nil {
 		return err
 	}
-	_, err := dbschema.Upgrade(db, migrateAccessLogs)
+	err := dbschema.Initialize(db, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`CREATE TABLE access_counts ` + accessCountsColumns + `;
+			CREATE TABLE access_cursors (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);
+			CREATE TABLE access_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+			CREATE INDEX access_domain_hour ON access_counts(domain,hour);
+			CREATE INDEX access_time ON access_counts(occurred_at);
+			CREATE INDEX access_domain_time ON access_counts(domain,occurred_at);`)
+		return err
+	})
 	if err != nil {
-		return fmt.Errorf("migrate access log database: %w", err)
+		return fmt.Errorf("open access log database: %w", err)
 	}
 	return nil
 }
 
-func migrateAccessLogs(tx *sql.Tx) error {
-	if _, err := tx.Exec(`CREATE TABLE access_counts_v2 ` + accessCountsColumns + `;
-		CREATE TABLE access_cursors_v2 (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);
-		CREATE TABLE access_metadata_v2 (key TEXT PRIMARY KEY, value TEXT NOT NULL);`); err != nil {
-		return err
-	}
-
-	countsExist, err := dbschema.TableExists(tx, "access_counts")
-	if err != nil {
-		return err
-	}
-	if countsExist {
-		var precise bool
-		if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('access_counts') WHERE name='occurred_at')").Scan(&precise); err != nil {
-			return err
-		}
-		timestamp := "occurred_at"
-		if !precise {
-			// The legacy table records the hour but not the time within it.
-			timestamp = "hour"
-		}
-		if _, err := tx.Exec(`INSERT INTO access_counts_v2 (hour,occurred_at,domain,status,ip,ua,url,count)
-			SELECT hour,` + timestamp + `,domain,status,ip,ua,url,count FROM access_counts`); err != nil {
-			return err
-		}
-	}
-	for _, table := range []struct{ name, columns string }{
-		{"access_cursors", "id,offset,anchor,size,modified"},
-		{"access_metadata", "key,value"},
-	} {
-		exists, err := dbschema.TableExists(tx, table.name)
-		if err != nil {
-			return err
-		}
-		if exists {
-			if _, err := tx.Exec("INSERT INTO " + table.name + "_v2 (" + table.columns + ") SELECT " + table.columns + " FROM " + table.name); err != nil {
-				return err
-			}
-		}
-	}
-	_, err = tx.Exec(`DROP TABLE IF EXISTS access_counts;
-		DROP TABLE IF EXISTS access_cursors;
-		DROP TABLE IF EXISTS access_metadata;
-		ALTER TABLE access_counts_v2 RENAME TO access_counts;
-		ALTER TABLE access_cursors_v2 RENAME TO access_cursors;
-		ALTER TABLE access_metadata_v2 RENAME TO access_metadata;
-		CREATE INDEX access_domain_hour ON access_counts(domain,hour);
-		CREATE INDEX access_time ON access_counts(occurred_at);
-		CREATE INDEX access_domain_time ON access_counts(domain,occurred_at);`)
-	return err
+func (a *Service) DatabaseSchema(ctx context.Context) (dbschema.Schema, error) {
+	return dbschema.Inspect(ctx, a.db)
 }
 
 func (a *Service) Close() { a.cancel(); <-a.done; _ = a.db.Close() }

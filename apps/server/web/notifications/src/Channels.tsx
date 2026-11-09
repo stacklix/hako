@@ -68,7 +68,7 @@ export function ChannelsPage({ wechat, wechatReady, revision, refresh, notify, n
         </div>}
         <ErrorLine error={error || wechat?.lastError || ''} />
         <div className="inline-actions">
-          <Button busy={busy} disabled={!wechatReady || (!connected && !canConfigure)} icon={connected ? Unplug : needsLogin ? QrCode : Play} onClick={updateConnection}>
+          <Button variant={connected ? 'danger' : 'primary'} busy={busy} disabled={!wechatReady || (!connected && !canConfigure)} icon={connected ? Unplug : needsLogin ? QrCode : Play} onClick={updateConnection}>
             {connected ? '断开连接' : !canConfigure ? '正在扫码绑定' : needsLogin ? '扫码绑定微信' : '启动连接'}
           </Button>
           {canConfigure && wechat?.hasCredentials && !needsLogin && <Button variant="secondary" disabled={busy} icon={QrCode} onClick={() => setLoginId(wechat.id)}>重新配置</Button>}

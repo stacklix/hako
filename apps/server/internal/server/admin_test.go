@@ -382,37 +382,31 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 	}
 }
 
-func TestLegacyStateMigrationPreservesTrustedConsoleSession(t *testing.T) {
+func TestStartupRejectsUnmigratedMainDatabase(t *testing.T) {
 	f := newFixture(t, true)
-	if err := f.s.store.update(func(st *state) error { st.Registry = nil; return nil }); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := f.s.store.db.Exec("PRAGMA user_version = 0"); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := New(f.s.config)
+	if restarted, err := New(f.s.config); err == nil || !strings.Contains(err.Error(), "database has not been migrated") {
+		if restarted != nil {
+			restarted.Close()
+		}
+		t.Fatalf("expected an explicit migration error, got %v", err)
+	}
+	if _, err := f.s.store.db.Exec("PRAGMA user_version = 2"); err != nil {
+		t.Fatal(err)
+	}
+
+	config := f.s.config
+	config.Agents = []AgentConfig{{ID: "legacy", PublicKeyFile: "does-not-exist"}}
+	restarted, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
 	restarted.store.inspect(func(st state) {
-		if st.Registry == nil || len(st.Registry.Agents) != 1 || len(st.Registry.Consoles) != 1 {
-			t.Error("legacy keys not imported")
-		}
-		if st.Sessions[f.tokens.SessionID] == nil {
-			t.Error("upgrade revoked a trusted Console session")
-		}
-	})
-	config := f.s.config
-	config.Agents = []AgentConfig{{ID: "legacy", PublicKeyFile: "does-not-exist"}}
-	afterMigration, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer afterMigration.Close()
-	afterMigration.store.inspect(func(st state) {
 		if len(st.Registry.Agents) != 1 || st.Registry.Agents[0].ID != "PC" || st.Sessions[f.tokens.SessionID] == nil {
-			t.Error("restart after migration did not preserve Agent registration and trusted session")
+			t.Error("restart did not preserve Agent registration and trusted session")
 		}
 	})
 }

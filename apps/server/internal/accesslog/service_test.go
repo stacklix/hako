@@ -249,40 +249,24 @@ func TestAccessLogsConfiguration(t *testing.T) {
 		t.Fatal("timezone change silently mixed bucket definitions")
 	}
 }
-func TestAccessLogsSevenDayCleanupAndLegacyMigration(t *testing.T) {
+func TestAccessLogsSevenDayCleanup(t *testing.T) {
 	dir := t.TempDir()
 	database := filepath.Join(t.TempDir(), "db")
-	legacy, err := sql.Open("sqlite", database+".access.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = legacy.Exec(`CREATE TABLE access_counts(hour INTEGER NOT NULL,domain TEXT NOT NULL,status INTEGER NOT NULL,ip TEXT NOT NULL,ua TEXT NOT NULL,url TEXT NOT NULL,count INTEGER NOT NULL,PRIMARY KEY(hour,domain,status,ip,ua,url)) WITHOUT ROWID`)
+	db, err := openAccessLogDatabase(database + ".access.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().Truncate(time.Second)
 	for _, age := range []time.Duration{time.Hour, 8 * 24 * time.Hour} {
-		if _, err = legacy.Exec("INSERT INTO access_counts VALUES(?,?,?,?,?,?,?)", now.Add(-age).Unix(), "a.test", 200, "192.0.2.1", "UA", "/", 10); err != nil {
+		stamp := now.Add(-age).Unix()
+		if _, err = db.Exec("INSERT INTO access_counts VALUES(?,?,?,?,?,?,?,?)", stamp, stamp, "a.test", 200, "192.0.2.1", "UA", "/", 10); err != nil {
+			db.Close()
 			t.Fatal(err)
 		}
 	}
-	if _, err := legacy.Exec(`CREATE TABLE access_cursors (id TEXT PRIMARY KEY,offset INTEGER NOT NULL,anchor BLOB NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL);
-		INSERT INTO access_cursors VALUES ('old-file',42,X'1234',100,1);
-		CREATE TABLE access_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL);
-		INSERT INTO access_metadata VALUES ('timezone','Asia/Shanghai'),('legacy-marker','preserved');`); err != nil {
-		t.Fatal(err)
-	}
-	legacy.Close()
+	db.Close()
 	a := logTestService(t, database, dir, 86400)
 	logTestCount(t, a, 10)
-	var offset int
-	if err := a.db.QueryRow("SELECT offset FROM access_cursors WHERE id='old-file'").Scan(&offset); err != nil || offset != 42 {
-		t.Fatalf("cursor was not migrated: offset=%d, error=%v", offset, err)
-	}
-	var marker string
-	if err := a.db.QueryRow("SELECT value FROM access_metadata WHERE key='legacy-marker'").Scan(&marker); err != nil || marker != "preserved" {
-		t.Fatalf("metadata was not migrated: value=%q, error=%v", marker, err)
-	}
 	if a.Status().Retention != 7 {
 		t.Fatal("retention must always be seven days")
 	}
@@ -308,5 +292,24 @@ func TestAccessLogsSevenDayCleanupAndLegacyMigration(t *testing.T) {
 	var expired int
 	if err = a.db.QueryRow("SELECT COUNT(*) FROM access_counts WHERE domain='expired.test'").Scan(&expired); err != nil || expired != 0 {
 		t.Fatal("expired source record reimported")
+	}
+}
+
+func TestAccessLogsRejectUnmigratedDatabase(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "db")
+	legacy, err := sql.Open("sqlite", database+".access.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Close()
+	if _, err := legacy.Exec("CREATE TABLE access_counts (hour INTEGER); INSERT INTO access_counts VALUES (123)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(database, Config{}); err == nil || !strings.Contains(err.Error(), "database has not been migrated") {
+		t.Fatalf("expected an explicit migration error, got %v", err)
+	}
+	var hour int
+	if err := legacy.QueryRow("SELECT hour FROM access_counts").Scan(&hour); err != nil || hour != 123 {
+		t.Fatalf("legacy data changed: hour=%d, error=%v", hour, err)
 	}
 }
