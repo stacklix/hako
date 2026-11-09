@@ -35,8 +35,12 @@ assert v['ExpirationDate'] > datetime.datetime.now(datetime.timezone.utc).replac
 assert v.get('ProvisionedDevices'), 'Use a Development or Ad Hoc profile containing your iPhone'
 team=v['TeamIdentifier'][0]
 assert e.get('application-identifier') == team+'.me.stackli.hako', 'Profile must be for me.stackli.hako'
-for key in ['com.apple.developer.family-controls','com.apple.developer.family-controls.app-and-website-usage']:
-    assert e.get(key) is True, 'Missing entitlement: '+key
+for key in (
+    'com.apple.developer.family-controls',
+    'com.apple.developer.family-controls.app-and-website-usage',
+    'com.apple.developer.networking.wifi-info',
+):
+    assert e.get(key) is True, 'Update IOS_PROFILE_BASE64: provisioning profile is missing '+key
 entitlements = plistlib.loads(Path('Hako/Hako.entitlements').read_bytes())
 if 'aps-environment' in e:
     entitlements['aps-environment'] = e['aps-environment']
