@@ -191,50 +191,6 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
     }
 }
 
-// Shared by the editor and terminal, both placed in a zero-spacing bottom safe-area inset.
-struct ArcaneShortcutBar<Content: View>: View {
-    private let content: () -> Content
-
-    init(@ViewBuilder content: @escaping () -> Content) { self.content = content }
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) { content() }
-                .buttonStyle(.bordered).controlSize(.small).tint(.primary).padding(10)
-                .background(ArcaneShortcutScrollAxisLock())
-        }
-        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(.bar)
-    }
-}
-
-// Apply to the closest scroll view inside the shortcut bar, never the editor's scroll view.
-private struct ArcaneShortcutScrollAxisLock: UIViewRepresentable {
-    func makeUIView(context: Context) -> Probe { Probe() }
-    func updateUIView(_ view: Probe, context: Context) { view.lockAxis() }
-
-    final class Probe: UIView {
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            lockAxis()
-        }
-        func lockAxis() {
-            DispatchQueue.main.async { [weak self] in
-                var ancestor = self?.superview
-                while let view = ancestor {
-                    if let scroll = view as? UIScrollView {
-                        scroll.alwaysBounceVertical = false
-                        scroll.isDirectionalLockEnabled = true
-                        return
-                    }
-                    ancestor = view.superview
-                }
-            }
-        }
-    }
-}
-
 private final class ArcaneEditorKeyboardState: ObservableObject {
     weak var textView: UITextView?
     @Published var focused = false
@@ -272,7 +228,7 @@ private struct ArcaneEditorKeyboardKeys: View {
     let editingEnabled: Bool
     private let keys = ["Tab", "撤销", "重做", "粘贴", "覆盖粘贴", "复制全部"]
     var body: some View {
-        ArcaneShortcutBar {
+        HakoShortcutBar {
             ForEach(keys, id: \.self) { key in
                 Button(key) { state.perform(key) }
                     .accessibilityLabel(key == "Tab" ? "插入制表符" : key)

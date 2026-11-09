@@ -18,8 +18,8 @@ final class HakoTerminalView: SwiftTerm.TerminalView {
                 tap.removeTarget(self, action: NSSelectorFromString("singleTap:"))
                 tap.addTarget(self, action: #selector(toggleKeyboard(_:)))
             }
-            panGestureRecognizer.addTarget(self, action: #selector(dismissKeyboardOnScroll(_:)))
-            keyboardDismissMode = .onDrag
+            // A history drag must not also resize the terminal by hiding the keyboard.
+            keyboardDismissMode = .none
         }
         if window != nil { onWindowAttached?() }
     }
@@ -44,12 +44,6 @@ final class HakoTerminalView: SwiftTerm.TerminalView {
     @objc private func toggleKeyboard(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended else { return }
         if isFirstResponder { hideKeyboard() } else { showKeyboard() }
-    }
-
-    @objc private func dismissKeyboardOnScroll(_ gesture: UIPanGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        let velocity = gesture.velocity(in: self)
-        if abs(velocity.y) > abs(velocity.x) { hideKeyboard() }
     }
 
     override func layoutSubviews() {

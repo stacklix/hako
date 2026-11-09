@@ -10,6 +10,7 @@ struct CloudServersView: View {
     @State private var settings = false
     @State private var visible = false
     @State private var terminalPrepared = false
+    @State private var terminalFullScreen = false
     @State private var group = ECSProcessGroup.all
     @State private var memorySort = false
     @State private var monitorRange = ECSMonitorRange.hour
@@ -17,6 +18,7 @@ struct CloudServersView: View {
 
     private var taskKey: String { "\(visible && scenePhase == .active && !settings)|\(store.revision)" }
     private var accessTaskKey: String { taskKey + "|\(console.requestContext)" }
+    private var showingFullScreen: Bool { page == .terminal && store.connection != nil && terminalFullScreen }
     private var processRows: [ECSProcess] {
         (store.processes?.processes ?? []).filter { group == .all || $0.group == group }.sorted {
             let left = memorySort ? $0.memory : ($0.cpu ?? -1), right = memorySort ? $1.memory : ($1.cpu ?? -1)
@@ -26,19 +28,22 @@ struct CloudServersView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let connection = store.connection {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(connection.name).font(.title2.bold())
-                        Spacer()
-                        if let status = store.instance?.status { Text(status == "Running" ? "运行中" : status).font(.caption).foregroundStyle(.secondary) }
-                    }
-                    Text([connection.region, store.instance?.address ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }.padding(.horizontal, 18).padding(.top, 12)
-                HakoUnderlineTabs(title: "云服务器功能", options: ECSPage.allCases, selection: $page, label: { $0.rawValue })
-                    .padding(.horizontal, 18)
+                if !showingFullScreen {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(connection.name).font(.title2.bold())
+                            Spacer()
+                            if let status = store.instance?.status { Text(status == "Running" ? "运行中" : status).font(.caption).foregroundStyle(.secondary) }
+                        }
+                        Text([connection.region, store.instance?.address ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }.padding(.horizontal, 18).padding(.top, 12)
+                    HakoUnderlineTabs(title: "云服务器功能", options: ECSPage.allCases, selection: $page, label: { $0.rawValue })
+                        .padding(.horizontal, 18)
+                }
                 ZStack {
-                    ECSTerminalView(connection: connection, active: visible && !settings && page == .terminal, data: terminal)
+                    ECSTerminalView(connection: connection, active: visible && !settings && page == .terminal,
+                                    fullScreen: $terminalFullScreen, data: terminal)
                         .opacity(page == .terminal ? 1 : 0)
                         .allowsHitTesting(page == .terminal)
                         .accessibilityHidden(page != .terminal)
@@ -69,6 +74,8 @@ struct CloudServersView: View {
             }
         }
         .navigationTitle("云服务器").navigationBarTitleDisplayMode(.inline)
+        .toolbar(showingFullScreen ? .hidden : .visible, for: .navigationBar)
+        .statusBarHidden(showingFullScreen)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { settings = true } label: { Image(systemName: "slider.horizontal.3") }.accessibilityLabel("ECS 连接设置")
@@ -79,9 +86,9 @@ struct CloudServersView: View {
             ECSNetworkConnectionsView(direction: selection.direction, snapshot: selection.snapshot)
         }
         .onAppear { visible = true }
-        .onDisappear { visible = false; terminalPrepared = false; terminal.disconnect() }
+        .onDisappear { visible = false; terminalPrepared = false; terminalFullScreen = false; terminal.disconnect() }
         .onChange(of: settings) { _, showing in if showing { terminalPrepared = false; terminal.disconnect() } }
-        .onChange(of: store.revision) { _, _ in terminalPrepared = false; terminal.disconnect() }
+        .onChange(of: store.revision) { _, _ in terminalPrepared = false; terminalFullScreen = false; terminal.disconnect() }
         .task(id: taskKey) {
             store.load()
             guard visible, scenePhase == .active, !settings, store.connection != nil else { return }

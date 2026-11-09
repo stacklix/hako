@@ -133,6 +133,7 @@ struct HeadplaneSSHView: View {
     @StateObject private var session: HeadplaneSSHSession
     @State private var username = ""
     @State private var closing = false
+    @State private var fullScreen = false
     @Environment(\.dismiss) private var dismiss
 
     init(connection: HeadplaneConnection, hostname: String) {
@@ -149,6 +150,7 @@ struct HeadplaneSSHView: View {
                         Text(error).font(.footnote).foregroundStyle(HeadplaneStyle.red).padding(12)
                     }
                     HeadplaneSSHWebView(session: session)
+                    HakoShortcutBar(fullScreen: $fullScreen) { EmptyView() }
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
@@ -172,6 +174,8 @@ struct HeadplaneSSHView: View {
             }
             .background(HeadplaneStyle.background)
             .navigationTitle("SSH · \(hostname)").navigationBarTitleDisplayMode(.inline)
+            .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
+            .statusBarHidden(fullScreen)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { if session.opened { closing = true } else { dismiss() } } label: { Image(systemName: "xmark") }

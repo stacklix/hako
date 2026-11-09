@@ -3,43 +3,32 @@ import SwiftUI
 struct DeviceSSHTerminalView: View {
     let agentID: String
     let account: String
+    let selected: Bool
+    @Binding var fullScreen: Bool
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var terminal = DeviceSSHTerminal()
     @State private var credentials: DeviceSSHCredentials?
+    @State private var loadedCredentials = false
     @State private var editing = false
     @State private var storageError: String?
     private let storage = SecureStorage.namespace("me.stackli.hako.devices.ssh")
 
     var body: some View {
-        ZStack {
-            HakoNativeTerminal(data: terminal, active: terminal.connected && scenePhase == .active && !editing, logSource: .devices)
-                .allowsHitTesting(terminal.connected && !editing)
-                .accessibilityHidden(!terminal.connected)
-            if !terminal.connected { connectionOverlay }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if terminal.connected {
-                VStack(spacing: 0) {
-                    if let message = terminal.message {
-                        Text(message).font(.footnote).foregroundStyle(.secondary).padding(.top, 6)
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            Button("Ctrl") { terminal.control.toggle() }
-                                .tint(terminal.control ? .accentColor : .secondary)
-                                .accessibilityLabel("Control 修饰键").accessibilityAddTraits(terminal.control ? .isSelected : [])
-                            ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
-                                Button(key) { terminal.display.key(key) }
-                            }
-                            Button("断开") { terminal.disconnect() }
-                        }.buttonStyle(.bordered).controlSize(.small).padding(10)
-                    }
-                }.background(.bar)
+        VStack(spacing: 0) {
+            ZStack {
+                HakoNativeTerminal(data: terminal, active: selected && terminal.connected && scenePhase == .active && !editing,
+                                   logSource: .devices, allowMouseReporting: false)
+                    .allowsHitTesting(selected && terminal.connected && !editing)
+                    .accessibilityHidden(!terminal.connected)
+                if !terminal.connected { connectionOverlay }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if terminal.connected || fullScreen { shortcutBar }
         }
         .privacySensitive()
-        .task {
+        .task(id: selected) {
+            guard selected, !loadedCredentials else { return }
+            loadedCredentials = true
             do {
                 if let data = try storage.read(account: account) {
                     credentials = try JSONDecoder().decode(DeviceSSHCredentials.self, from: data)
@@ -58,6 +47,26 @@ struct DeviceSSHTerminalView: View {
                 storageError = nil
                 editing = false
                 connect()
+            }
+        }
+    }
+
+    private var shortcutBar: some View {
+        VStack(spacing: 0) {
+            if terminal.connected, let message = terminal.message {
+                Text(message).font(.footnote).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.top, 6).background(.bar)
+            }
+            HakoShortcutBar(fullScreen: $fullScreen) {
+                if terminal.connected {
+                    Button("Ctrl") { terminal.control.toggle() }
+                        .tint(terminal.control ? .accentColor : .secondary)
+                        .accessibilityLabel("Control 修饰键").accessibilityAddTraits(terminal.control ? .isSelected : [])
+                    ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
+                        Button(key) { terminal.display.key(key) }
+                    }
+                    Button("断开") { terminal.disconnect() }
+                }
             }
         }
     }
@@ -92,7 +101,7 @@ struct DeviceSSHTerminalView: View {
     }
 
     private func connect() {
-        guard scenePhase == .active, let credentials else { return }
+        guard selected, scenePhase == .active, let credentials else { return }
         terminal.connect(agentID: agentID, credentials: credentials, authentication: AuthenticatedServerService.shared)
     }
 }

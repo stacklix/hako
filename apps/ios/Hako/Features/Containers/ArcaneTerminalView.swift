@@ -251,38 +251,44 @@ struct ArcaneTerminalScreen: View {
     @State private var failure: String?
     @State private var started = false
     @State private var pendingShell: String?
+    @State private var fullScreen = false
     private var active: Bool { data.connected || data.connecting }
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    if data.connecting { ProgressView().controlSize(.small).accessibilityLabel("正在探测 Shell") }
-                    Text("Shell").font(.subheadline).foregroundStyle(.secondary)
-                    Picker("Shell", selection: Binding(get: { shell }, set: { path in
-                        if path == "__custom__" { customShell = shell; shellError = nil; editingShell = true }
-                        else if path != shell { switchShell(path) }
-                    })) {
-                        if !data.availableShells.contains(shell) { Text(shell).tag(shell) }
-                        ForEach(data.availableShells, id: \.self) { Text($0).tag($0) }
-                        Text("自定义…").tag("__custom__")
-                    }.pickerStyle(.menu).labelsHidden().disabled(data.connecting).accessibilityLabel("切换 Shell")
-                }.padding(.horizontal).padding(.top, 6)
-                Divider().padding(.bottom, 12)
+                if !fullScreen {
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        if data.connecting { ProgressView().controlSize(.small).accessibilityLabel("正在探测 Shell") }
+                        Text("Shell").font(.subheadline).foregroundStyle(.secondary)
+                        Picker("Shell", selection: Binding(get: { shell }, set: { path in
+                            if path == "__custom__" { customShell = shell; shellError = nil; editingShell = true }
+                            else if path != shell { switchShell(path) }
+                        })) {
+                            if !data.availableShells.contains(shell) { Text(shell).tag(shell) }
+                            ForEach(data.availableShells, id: \.self) { Text($0).tag($0) }
+                            Text("自定义…").tag("__custom__")
+                        }.pickerStyle(.menu).labelsHidden().disabled(data.connecting).accessibilityLabel("切换 Shell")
+                    }.padding(.horizontal).padding(.top, 6)
+                    Divider().padding(.bottom, 12)
+                }
                 ArcaneSwiftTerminal(data: data)
                     .id(data.rendererID)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                ArcaneShortcutBar {
-                    Button("Ctrl") { data.control.toggle(); (data.terminal as? HakoTerminalView)?.showKeyboard() }
-                        .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
-                    ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
-                        Button(key) { data.key(key) }.accessibilityLabel(key)
+                HakoShortcutBar(fullScreen: $fullScreen) {
+                    Group {
+                        Button("Ctrl") { data.control.toggle(); (data.terminal as? HakoTerminalView)?.showKeyboard() }
+                            .tint(data.control ? .accentColor : .secondary).accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
+                        ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
+                            Button(key) { data.key(key) }.accessibilityLabel(key)
+                        }
                     }
-                }.disabled(!data.connected)
+                    .disabled(!data.connected)
+                }
             }
             .navigationTitle(details.displayName + " · 终端").navigationBarTitleDisplayMode(.inline)
+            .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
+            .statusBarHidden(fullScreen)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { if active { confirming = true } else { dismiss() } } }
             }

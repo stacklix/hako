@@ -5,26 +5,27 @@ import SwiftTerm
 struct ECSTerminalView: View {
     let connection: ECSConnection
     let active: Bool
+    @Binding var fullScreen: Bool
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var data: ECSTerminalData
     var body: some View {
-        ZStack {
-            HakoNativeTerminal(data: data, active: active && scenePhase == .active, logSource: .cloudServers)
-                .allowsHitTesting(data.connected && active && scenePhase == .active)
-                .accessibilityHidden(!data.connected)
-            if !data.connected { connectionOverlay }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if data.connected {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+        VStack(spacing: 0) {
+            ZStack {
+                HakoNativeTerminal(data: data, active: active && scenePhase == .active, logSource: .cloudServers)
+                    .allowsHitTesting(data.connected && active && scenePhase == .active)
+                    .accessibilityHidden(!data.connected)
+                if !data.connected { connectionOverlay }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if data.connected || fullScreen {
+                HakoShortcutBar(fullScreen: $fullScreen) {
+                    if data.connected {
                         Button("Ctrl") { data.control.toggle(); data.display.key("Ctrl") }.tint(data.control ? .accentColor : .secondary)
                             .accessibilityLabel("Control 修饰键").accessibilityAddTraits(data.control ? .isSelected : [])
                         ForEach(["Esc", "Tab", "Ctrl+C", "←", "↑", "↓", "→", "粘贴"], id: \.self) { key in
                             Button(key) { keyInput(key) }
                         }
-                    }.buttonStyle(.bordered).controlSize(.small).padding(10)
-                }.background(.bar)
+                    }
+                }
             }
         }
         .privacySensitive()

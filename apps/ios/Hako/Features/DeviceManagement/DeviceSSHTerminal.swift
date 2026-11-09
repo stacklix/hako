@@ -30,6 +30,7 @@ struct DeviceSSHCredentials: Codable {
     private var generation = UUID()
     private var columns = 80
     private var rows = 24
+    private var lastWindowSize: (columns: Int, rows: Int)?
 
     func connect(agentID: String, credentials: DeviceSSHCredentials, authentication: any AuthenticatedServerAccess) {
         guard !connecting, !connected, credentials.isValid,
@@ -56,6 +57,7 @@ struct DeviceSSHCredentials: Codable {
                     "username": credentials.username, "password": credentials.password,
                     "fingerprint": credentials.fingerprint, "columns": columns, "rows": rows,
                 ]
+                lastWindowSize = (columns, rows)
                 try await socket.send(try Self.json(login))
                 while !Task.isCancelled, generation == ticket {
                     let event = try await socket.receive()
@@ -100,7 +102,11 @@ struct DeviceSSHCredentials: Codable {
     func resize(columns: Int, rows: Int) {
         self.columns = max(2, min(1000, columns))
         self.rows = max(2, min(1000, rows))
-        if connected, let frame = try? Self.json(["columns": self.columns, "rows": self.rows]) { enqueue(frame) }
+        let size = (self.columns, self.rows)
+        if let lastWindowSize, lastWindowSize == size { return }
+        guard connected, let frame = try? Self.json(["columns": self.columns, "rows": self.rows]) else { return }
+        lastWindowSize = size
+        enqueue(frame)
     }
 
     func disconnect() { end(nil) }
@@ -123,6 +129,7 @@ struct DeviceSSHCredentials: Codable {
 
     private func end(_ message: String?) {
         generation = UUID()
+        lastWindowSize = nil
         deadline?.cancel(); deadline = nil
         reader?.cancel(); reader = nil
         writer?.cancel(); writer = nil

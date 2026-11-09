@@ -13,22 +13,26 @@ struct HakoNativeTerminal<Session: HakoNativeTerminalData>: UIViewRepresentable 
     @ObservedObject var data: Session
     let active: Bool
     let logSource: HakoLogSource
+    var allowMouseReporting = true
     @Environment(\.colorScheme) private var colorScheme
     func makeCoordinator() -> Coordinator { Coordinator(data: data, logSource: logSource) }
-    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let view = HakoTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+    func makeUIView(context: Context) -> HakoTerminalViewport {
+        let viewport = HakoTerminalViewport(frame: .zero)
+        let view = viewport.terminal
         let coordinator = context.coordinator
         coordinator.active = active
         view.terminalDelegate = coordinator
         view.inputAccessoryView = nil
-        applyAppearance(view); coordinator.scheme = colorScheme
+        view.allowMouseReporting = allowMouseReporting
+        applyAppearance(viewport); coordinator.scheme = colorScheme
         view.onWindowAttached = { [weak coordinator] in coordinator?.focus() }
         coordinator.view = view
         data.display.attach(coordinator)
         if data.connected { coordinator.focus() }
-        return view
+        return viewport
     }
-    func updateUIView(_ view: SwiftTerm.TerminalView, context: Context) {
+    func updateUIView(_ viewport: HakoTerminalViewport, context: Context) {
+        let view = viewport.terminal
         let coordinator = context.coordinator
         let becameActive = active && !coordinator.active
         coordinator.active = active
@@ -36,20 +40,24 @@ struct HakoNativeTerminal<Session: HakoNativeTerminalData>: UIViewRepresentable 
         if !data.display.isAttached(coordinator) {
             coordinator.view = view; data.display.attach(coordinator)
         }
-        if coordinator.scheme != colorScheme { applyAppearance(view); coordinator.scheme = colorScheme }
+        if coordinator.scheme != colorScheme { applyAppearance(viewport); coordinator.scheme = colorScheme }
         view.keyboardAppearance = colorScheme == .dark ? .dark : .light
         if active && data.connected && (!coordinator.wasConnected || becameActive) { coordinator.focus() }
         if !active { coordinator.blur() }
         if !data.connected { coordinator.blur() }
         coordinator.wasConnected = data.connected
     }
-    private func applyAppearance(_ view: SwiftTerm.TerminalView) {
+    private func applyAppearance(_ viewport: HakoTerminalViewport) {
         let traits = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
-        view.nativeBackgroundColor = UIColor.systemBackground.resolvedColor(with: traits)
+        let background = UIColor.systemBackground.resolvedColor(with: traits)
+        viewport.backgroundColor = background
+        let view = viewport.terminal
+        view.nativeBackgroundColor = background
         view.nativeForegroundColor = UIColor.label.resolvedColor(with: traits)
         view.caretColor = UIColor.label.resolvedColor(with: traits)
     }
-    static func dismantleUIView(_ view: SwiftTerm.TerminalView, coordinator: Coordinator) {
+    static func dismantleUIView(_ viewport: HakoTerminalViewport, coordinator: Coordinator) {
+        let view = viewport.terminal
         view.terminalDelegate = nil
         coordinator.data.display.detach(coordinator)
         coordinator.blur(); coordinator.view = nil
@@ -125,5 +133,32 @@ struct HakoNativeTerminal<Session: HakoNativeTerminalData>: UIViewRepresentable 
         func scrolled(source: SwiftTerm.TerminalView, position: Double) { }
         func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) { }
         func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) { }
+    }
+}
+
+final class HakoTerminalViewport: UIView {
+    let terminal = HakoTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384),
+                                    font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        // The host already sizes the viewport around the keyboard and safe area.
+        terminal.contentInsetAdjustmentBehavior = .never
+        addSubview(terminal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let frame = CGRect(origin: .zero, size: bounds.size)
+        guard frame.width >= 32, frame.height >= 32, terminal.frame != frame else { return }
+        // Animate clipping with the keyboard while the terminal redraws at its native size.
+        UIView.performWithoutAnimation {
+            terminal.frame = frame
+        }
+        terminal.requestRedraw()
     }
 }

@@ -255,7 +255,8 @@ struct DeviceMetricsView: View {
         DeviceCapabilityPages(capabilities: currentAgent.monitorPages,
             order: order,
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
-            tabTitle: capabilityTabTitle) {
+            tabTitle: capabilityTabTitle,
+            refresh: { if currentAgent.online { await client.query(currentAgent) } }) {
             deviceOverview
         } content: { capability in
             if capability.name == "query.system.metrics", capability.version == 1 {
@@ -268,11 +269,10 @@ struct DeviceMetricsView: View {
                 VStack(alignment: .leading, spacing: 14) { capabilityContent(capability) }
                     .devicePagePanel()
             }
-        } terminal: {
-            DeviceSSHTerminalView(agentID: agent.id, account: sshAccount)
+        } terminal: { selected, fullScreen in
+            DeviceSSHTerminalView(agentID: agent.id, account: sshAccount, selected: selected, fullScreen: fullScreen)
                 .id(client.requestContext)
         }
-        .refreshable { if currentAgent.online { await client.query(currentAgent) } }
         .toolbarBackground(HakoStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .task(id: currentAgent.online) { if currentAgent.online { await client.query(currentAgent) } }

@@ -1,25 +1,32 @@
 import SwiftUI
 
 struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: View {
+    private enum TerminalTab { case unopened, visible, hidden }
     private let capabilities: [ConsoleAgentCapability]
     private let emptyMessage: String
     private let tabTitle: (ConsoleAgentCapability) -> String
+    private let refresh: @MainActor () async -> Void
     private let overview: () -> Overview
     private let content: (ConsoleAgentCapability) -> Content
-    private let terminal: () -> Terminal
+    private let terminal: (Bool, Binding<Bool>) -> Terminal
     @AppStorage private var savedOrder: Data
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedName: String?
-    @State private var showingTerminal = false
+    @State private var terminalTab = TerminalTab.unopened
+    @State private var terminalFullScreen = false
+    private var showingTerminal: Bool { terminalTab == .visible }
+    private var showingFullScreen: Bool { showingTerminal && terminalFullScreen }
 
     init(capabilities: [ConsoleAgentCapability], order: DeviceCardOrder.Storage, emptyMessage: String,
          tabTitle: @escaping (ConsoleAgentCapability) -> String,
+         refresh: @escaping @MainActor () async -> Void,
          @ViewBuilder overview: @escaping () -> Overview,
          @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content,
-         @ViewBuilder terminal: @escaping () -> Terminal) {
+         @ViewBuilder terminal: @escaping (Bool, Binding<Bool>) -> Terminal) {
         self.capabilities = capabilities
         self.emptyMessage = emptyMessage
         self.tabTitle = tabTitle
+        self.refresh = refresh
         self.overview = overview
         self.content = content
         self.terminal = terminal
@@ -29,21 +36,30 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     var body: some View {
         let pages = DeviceCardOrder.pages(capabilities, savedOrder: savedOrder)
         let selected = pages.first { $0.name == selectedName } ?? pages.first
-        Group {
-            if showingTerminal {
-                VStack(spacing: 0) {
-                    overview()
-                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
-                    tabBar(pages, selected: nil)
-                        .padding(.horizontal, 20)
-                    terminal()
-                }
-            } else {
+        ZStack {
+            if !showingTerminal {
                 scrollablePages(pages, selected: selected)
+            }
+            if terminalTab != .unopened {
+                // Keep the SSH session and its renderer mounted until the device changes.
+                VStack(spacing: 0) {
+                    if !showingFullScreen {
+                        overview()
+                            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
+                        tabBar(pages, selected: nil)
+                            .padding(.horizontal, 20)
+                    }
+                    terminal(showingTerminal, $terminalFullScreen)
+                }
+                .opacity(showingTerminal ? 1 : 0)
+                .allowsHitTesting(showingTerminal)
+                .accessibilityHidden(!showingTerminal)
             }
         }
         .background(HakoStyle.background)
         .foregroundStyle(HakoStyle.text)
+        .toolbar(showingFullScreen ? .hidden : .visible, for: .navigationBar)
+        .statusBarHidden(showingFullScreen)
     }
 
     private func scrollablePages(_ pages: [ConsoleAgentCapability], selected: ConsoleAgentCapability?) -> some View {
@@ -78,6 +94,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     }
                 }
             }
+            .refreshable { await refresh() }
             .onChange(of: selected?.name, initial: true) { previous, name in
                 // Keep the selected page when it moves between the bar and the menu.
                 selectedName = name
@@ -93,7 +110,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
         let overflowSelection = overflow.first { $0.name == selected }
         return HStack(spacing: 4) {
             if visible.isEmpty {
-                Button { showingTerminal = false } label: {
+                Button(action: hideTerminal) {
                     Text("概览").frame(maxWidth: .infinity, minHeight: 44)
                         .modifier(DevicePageTabStyle(selected: !showingTerminal))
                 }
@@ -109,7 +126,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
             } else {
                 ForEach(visible) { page in tab(page, selected: selected, expands: true) }
             }
-            Button { showingTerminal = true } label: {
+            Button { terminalTab = .visible } label: {
                 Text("终端").frame(minWidth: 44, maxWidth: dynamicTypeSize.isAccessibilitySize ? nil : .infinity, minHeight: 44)
                     .modifier(DevicePageTabStyle(selected: showingTerminal))
                     .contentShape(Rectangle())
@@ -148,7 +165,12 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
 
     private func select(_ page: ConsoleAgentCapability) {
         selectedName = page.name
-        showingTerminal = false
+        hideTerminal()
+    }
+
+    private func hideTerminal() {
+        terminalFullScreen = false
+        if showingTerminal { terminalTab = .hidden }
     }
 
     private func tab(_ page: ConsoleAgentCapability, selected: String?, expands: Bool) -> some View {
