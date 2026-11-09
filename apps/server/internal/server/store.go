@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"sync"
 
+	"hako/server/internal/dbschema"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -57,6 +59,7 @@ type store struct {
 	db    *sql.DB
 	aead  cipher.AEAD
 	value state
+	empty bool
 }
 
 func openStore(path string, key []byte) (*store, error) {
@@ -73,14 +76,22 @@ func openStore(path string, key []byte) (*store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), value BLOB NOT NULL)`); err != nil {
+	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000`); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := dbschema.Initialize(db, func(tx *sql.Tx) error {
+		_, err := tx.Exec("CREATE TABLE state (id INTEGER PRIMARY KEY CHECK(id=1), value BLOB NOT NULL)")
+		return err
+	}); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open main database: %w", err)
 	}
 	s := &store{db: db, aead: aead, value: emptyState()}
 	var encrypted []byte
 	err = db.QueryRow("SELECT value FROM state WHERE id=1").Scan(&encrypted)
 	if err == sql.ErrNoRows {
+		s.empty = true
 		return s, nil
 	}
 	if err != nil {
@@ -129,6 +140,7 @@ func (s *store) update(fn func(*state) error) error {
 		return err
 	}
 	s.value = next
+	s.empty = false
 	return nil
 }
 

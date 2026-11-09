@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"hako/server/internal/dbschema"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -272,7 +274,7 @@ func New(config Config) (*Service, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := exec(db, schema); err != nil {
+	if err := initSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -293,6 +295,10 @@ func New(config Config) (*Service, error) {
 	s.adminRoutes()
 	return s, nil
 }
+func (s *Service) DatabaseSchema(ctx context.Context) (dbschema.Schema, error) {
+	return dbschema.Inspect(ctx, s.db)
+}
+
 func (s *Service) Close() error {
 	s.mu.Lock()
 	s.cancel()

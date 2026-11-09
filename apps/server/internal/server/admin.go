@@ -24,7 +24,7 @@ type adminSession struct {
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/notifications": "index.html", "/admin/notifications/overview": "index.html", "/admin/notifications/channels": "index.html", "/admin/notifications/bots": "index.html", "/admin/notifications/messages": "index.html", "/admin/notifications/webhooks": "index.html", "/admin/notifications/settings": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/hako-logo.svg": "hako-logo.svg"} {
+	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/system": "index.html", "/admin/notifications": "index.html", "/admin/notifications/overview": "index.html", "/admin/notifications/channels": "index.html", "/admin/notifications/bots": "index.html", "/admin/notifications/messages": "index.html", "/admin/notifications/webhooks": "index.html", "/admin/notifications/settings": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/hako-logo.svg": "hako-logo.svg"} {
 		s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != path {
 				http.NotFound(w, r)
@@ -41,6 +41,7 @@ func (s *Server) adminRoutes() {
 	}
 	s.qrLoginRoutes()
 	s.applicationManagementRoutes()
+	s.mux.HandleFunc("GET /admin/api/system/databases", s.admin(s.adminDatabaseSchemas))
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
 	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))

@@ -4,7 +4,14 @@ const notificationPages = {overview:'工作台', channels:'通知渠道', messag
 const notificationPath = /^\/admin\/notifications(?:\/(overview|channels|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
 const notificationView = notificationPath?.[1] || 'overview';
 const notificationPage = notificationPath ? (['bots', 'settings'].includes(notificationView) ? 'channels' : notificationView) : null;
-const currentPage = notificationPage ? 'notifications' : window.location.pathname === '/admin/applications' ? 'applications' : window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
+const adminPages = {
+  '/admin/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
+  '/admin/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
+  '/admin/applications': {id: 'applications', title: '应用管理', description: '创建应用、管理 SK 与扫码登录授权。'},
+  '/admin/system': {id: 'system', title: '系统配置', description: '查看 SQLite 数据库版本、迁移状态和表结构。'}
+};
+const adminPage = adminPages[window.location.pathname] ?? adminPages['/admin/agents'];
+const currentPage = notificationPage ? 'notifications' : adminPage.id;
 
 function showNotificationFrame(visible) {
   const frame = $('notifications-frame');
@@ -24,12 +31,13 @@ function showPage() {
   $('agents-page').hidden = !agents;
   $('access-logs').hidden = currentPage !== 'access-logs';
   $('applications-page').hidden = currentPage !== 'applications';
+  $('system-page').hidden = currentPage !== 'system';
   $('notifications-page').hidden = !notificationPage;
   $('notification-subnav').hidden = !notificationPage;
   $('nav-' + currentPage).setAttribute('aria-current', notificationPage ? 'true' : 'page');
   if (notificationPage) $('nav-notifications-' + notificationPage).setAttribute('aria-current', 'page');
-  $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] : agents ? '设备代理' : currentPage === 'applications' ? '应用管理' : '访问日志';
-  $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' : agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
+  $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] : adminPage.title;
+  $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' : adminPage.description;
   document.title = $('page-title').textContent + ' · Hako 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
@@ -64,11 +72,14 @@ function loggedIn(yes) {
     stopQr();
     refreshAccessLogs();
     refreshApplications();
+    refreshDatabaseSchemas();
   } else {
     document.title = 'Hako · 你的日常，收进一个盒子';
     csrf = '';
     resetAccessLogs();
     resetApplications();
+    $('system-databases').replaceChildren();
+    $('system-status').textContent = '';
     agentListing = null;
     requestAgentId = null;
     $('request-dialog').close();
@@ -92,6 +103,46 @@ async function api(path, method = 'GET', data) {
   return result;
 }
 function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
+let databaseSchemasRefreshing = false;
+async function refreshDatabaseSchemas() {
+  if (currentPage !== 'system' || !csrf || databaseSchemasRefreshing) return;
+  const session = csrf;
+  databaseSchemasRefreshing = true;
+  $('system-refresh').disabled = true;
+  $('system-status').textContent = '正在读取数据库结构…';
+  try {
+    const {expectedVersion, databases} = await api('system/databases');
+    if (csrf !== session) return;
+    const cards = databases.map(db => {
+      const card = node('article', undefined, 'database-schema');
+      const title = node('div', db.name, 'device-title');
+      const schema = db.schema;
+      const ready = schema?.version === expectedVersion;
+      let status = {disabled: '未启用', not_created: '尚未创建', unreadable: '读取失败'}[db.status];
+      if (schema) status = ready ? '版本已就绪' : schema.version < expectedVersion ? '需要迁移' : '版本过高';
+      title.append(node('span', status, 'badge' + (ready ? ' online' : '')));
+      card.append(title, node('p', db.file + (schema ? ` · 版本 ${schema.version} · ${schema.tables.length} 张表` : ''), 'device-meta'));
+      for (const table of schema?.tables ?? []) {
+        const details = node('details');
+        const summary = node('summary');
+        summary.append(node('code', table.name));
+        const ddl = [table.sql, ...(table.indexes ?? [])].join(';\n\n') + ';';
+        details.append(summary, node('pre', ddl));
+        card.append(details);
+      }
+      return card;
+    });
+    $('system-databases').replaceChildren(...cards);
+    $('system-status').textContent = `当前服务要求数据库版本 ${expectedVersion}。标为「版本已就绪」的库已完成迁移或按当前版本创建。展开表名可查看字段、约束和索引。`;
+  } catch (e) {
+    if (csrf === session) $('system-status').textContent = e.message;
+  } finally {
+    databaseSchemasRefreshing = false;
+    $('system-refresh').disabled = false;
+    if (csrf && csrf !== session) void refreshDatabaseSchemas();
+  }
+}
+$('system-refresh').addEventListener('click', refreshDatabaseSchemas);
 function action(text, fn, className = '') { const el = node('button', text, className); el.type = 'button'; el.addEventListener('click', async () => { el.disabled = true; try { await fn(); } catch (e) { notice(e.message); } finally { el.disabled = false; } }); return el; }
 function date(text) { return text ? new Date(text).toLocaleString('zh-CN', { hour12:false }) : '尚未连接'; }
 function empty(target, text) { $(target).replaceChildren(node('p', text, 'empty')); }

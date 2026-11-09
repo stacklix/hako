@@ -14,7 +14,7 @@
       <a id="nav-notifications-channels" href="/admin/notifications/channels">通知渠道</a>
       <a id="nav-notifications-messages" href="/admin/notifications/messages">消息中心</a>
       <a id="nav-notifications-webhooks" href="/admin/notifications/webhooks">Webhooks</a>
-    </div></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
+    </div><a id="nav-system" href="/admin/system">系统配置 <span>System</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header class="dashboard-header"><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -71,6 +71,14 @@
         <div class="section-heading"><div><p class="eyebrow">APPLICATIONS</p><h2>应用管理</h2></div><div class="device-actions"><button id="applications-refresh" class="quiet" type="button">刷新</button><button id="application-create" class="primary" type="button">＋ 创建应用</button></div></div>
         <p class="muted">先创建应用，再将应用 ID 和 SK 配置到对应应用。SK 仅在创建或轮换时显示一次。</p>
         <div id="application-list" class="device-list"></div>
+      </section>
+      <section id="system-page" class="card" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">DATABASES</p><h2>数据库结构</h2></div>
+          <button id="system-refresh" class="quiet" type="button">刷新结构 ↻</button>
+        </div>
+        <p id="system-status" class="muted" role="status"></p>
+        <div id="system-databases"></div>
       </section>
       <section id="access-logs" class="card" hidden>
         <div class="section-heading"><div><p class="eyebrow">CADDY ACCESS LOGS</p><h2>访问日志</h2></div><button id="logs-refresh" class="quiet" type="button">刷新统计 ↻</button></div>

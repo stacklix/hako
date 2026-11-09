@@ -107,9 +107,14 @@ func New(config Config) (*Server, error) {
 			value.AuthClients = map[string]AuthClientConfig{}
 		}
 		var err error
-		agents := config.Agents
-		if value.Registry != nil {
+		var agents []AgentConfig
+		switch {
+		case value.Registry != nil:
 			agents = value.Registry.Agents
+		case st.empty:
+			agents = config.Agents
+		default:
+			return errors.New("main database is missing its Agent registry")
 		}
 		// Agent keys are managed in the database. Console trust always comes from operator configuration.
 		registry, err = loadRegistry(agents, config.Consoles, true)
@@ -508,5 +513,11 @@ func RevokeConsoles(database string, key []byte) error {
 		return err
 	}
 	defer st.db.Close()
-	return st.update(func(v *state) error { v.Sessions = map[string]*session{}; return nil })
+	return st.update(func(v *state) error {
+		if st.empty {
+			v.Registry = &Registry{}
+		}
+		v.Sessions = map[string]*session{}
+		return nil
+	})
 }
