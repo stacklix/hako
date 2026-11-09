@@ -46,6 +46,8 @@ func (s *Service) adminRoutes() {
 	mux.HandleFunc("GET /events", s.events)
 	route(mux, "GET /overview", 200, s.overview)
 	route(mux, "GET /push/device", 200, s.pushDevice)
+	route(mux, "GET /channels/wechat", 200, func(*http.Request) (any, error) { return wechatChannel(s.db) })
+	route(mux, "PUT /channels/wechat", 200, s.ensureWechatChannel)
 	route(mux, "GET /platforms", 200, func(*http.Request) (any, error) {
 		return []object{{"id": botPlatform, "name": "微信 iLink", "loginMethod": "qrcode", "capabilities": object{
 			"receive": []string{"text", "media_summary"}, "send": []string{"text", "image"}, "groups": false,
@@ -90,6 +92,33 @@ func (s *Service) adminRoutes() {
 		return result(s.db, r.PathValue("hook"), r.PathValue("notification"))
 	})
 }
+
+func wechatChannel(db sqlRunner) (object, error) {
+	// Prefer an existing binding, including one that needs to be reauthorized.
+	connection, err := one(db, botView+` AND b.platform=?
+		ORDER BY (b.account_id IS NOT NULL) DESC, b.created_at, b.id LIMIT 1`, botPlatform)
+	if err != nil {
+		return nil, err
+	}
+	if connection != nil {
+		connection["hasCredentials"] = enabled(connection, "hasCredentials")
+	}
+	return object{"connection": connection}, nil
+}
+
+func (s *Service) ensureWechatChannel(_ *http.Request) (any, error) {
+	result, err := s.db.Exec(`INSERT INTO bots(id,name,platform,created_at)
+		SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM bots WHERE platform=? AND deleted_at IS NULL)`,
+		id("bot"), "微信", botPlatform, nowMS(), botPlatform)
+	if err != nil {
+		return nil, err
+	}
+	if count, _ := result.RowsAffected(); count > 0 {
+		s.changed()
+	}
+	return wechatChannel(s.db)
+}
+
 func (s *Service) bots(_ *http.Request) (any, error) {
 	result, err := rows(s.db, botView+" ORDER BY b.created_at DESC")
 	if err != nil {

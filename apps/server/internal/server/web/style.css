@@ -46,7 +46,7 @@ body:not(.is-authenticated) .login{width:100%;max-width:none;margin:0;padding:22
 .login-instructions{font-size:10px;color:#75816a;display:flex;justify-content:center;align-items:center;gap:7px;border-top:1px solid #edf0e6;padding-top:16px}.login-instructions>span{display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:#eff3e8;color:#8b9f75;font:10px/1 Consolas,monospace}.login-instructions i{font-size:10px;color:#a9b39d;font-style:normal}
 .login .qr-copy{margin-top:10px;text-align:center}.login .qr-copy button{font-size:11px;padding:6px 8px;border:0;color:#6c8654}
 .login-footnote{font-size:8px;color:#a9b29f;text-align:center;line-height:1.7;margin:16px 0 0}
-.is-authenticated .landing-nav,.is-authenticated .landing-grid{display:none}
+#session-check{margin:auto;text-align:center}
 @media(max-width:1050px){.landing-grid{gap:38px;grid-template-columns:minmax(0,1fr) 348px}.landing-intro h1{font-size:49px}.scene-app{right:0;top:120px}.scene-agent{display:none}.scene-center{left:auto;right:24px;top:16px}.scene-caption{bottom:-3px}.tool-scene{max-width:390px}.landing-description{font-size:13px}}
 @media(max-width:760px){
   .landing-nav{padding:14px 20px;gap:10px}.landing-brand{font-size:26px}.landing-mark{width:32px;height:32px}.landing-links .landing-nav-cta{font-size:11px;padding:9px 12px;gap:12px}

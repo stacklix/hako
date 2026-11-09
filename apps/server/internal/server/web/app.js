@@ -1,8 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const notificationPages = {overview:'工作台', bots:'机器人', messages:'消息中心', webhooks:'Webhooks', settings:'系统设置'};
-const notificationPath = /^\/admin\/notifications(?:\/(overview|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
-const notificationPage = notificationPath ? notificationPath[1] || 'overview' : null;
+const notificationPages = {overview:'工作台', channels:'通知渠道', messages:'消息中心', webhooks:'Webhooks'};
+const notificationPath = /^\/admin\/notifications(?:\/(overview|channels|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
+const notificationView = notificationPath?.[1] || 'overview';
+const notificationPage = notificationPath ? (['bots', 'settings'].includes(notificationView) ? 'channels' : notificationView) : null;
 const currentPage = notificationPage ? 'notifications' : window.location.pathname === '/admin/applications' ? 'applications' : window.location.pathname === '/admin/access-logs' ? 'access-logs' : 'agents';
 
 function showNotificationFrame(visible) {
@@ -26,7 +27,7 @@ function showPage() {
   $('nav-' + currentPage).setAttribute('aria-current', notificationPage ? 'true' : 'page');
   if (notificationPage) $('nav-notifications-' + notificationPage).setAttribute('aria-current', 'page');
   $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] : agents ? '设备代理' : currentPage === 'applications' ? '应用管理' : '访问日志';
-  $('page-description').textContent = notificationPage ? '统一管理微信机器人、Webhook 和 Apple Push。' : agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
+  $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' : agents ? '管理设备、查看在线状态与调用设备能力。' : currentPage === 'applications' ? '创建应用、管理 SK 与扫码登录授权。' : '查看 Caddy 访问统计、来源与请求排行。';
   document.title = $('page-title').textContent + ' · Hako 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
@@ -48,13 +49,44 @@ function expireQr() {
   $('qr-expiry').textContent = '';
   $('refresh-qr').disabled = false;
 }
-function loggedIn(yes) { document.body.classList.toggle('is-authenticated', yes); if (yes) showPage(); else document.title = 'Hako · 你的日常，收进一个盒子'; $('login-panel').hidden = yes; $('dashboard').hidden = !yes; $('account-bar').hidden = !yes; showNotificationFrame(yes); if (yes) { stopQr(); refreshAccessLogs(); refreshApplications(); } else { csrf = ''; resetAccessLogs(); resetApplications(); agentListing = null; requestAgentId = null; $('request-dialog').close(); $('register-dialog').close(); $('key-dialog').close(); } }
+function loggedIn(yes) {
+  document.body.classList.toggle('is-authenticated', yes);
+  $('session-check').hidden = true;
+  $('landing-nav').hidden = yes;
+  $('landing-grid').hidden = yes;
+  $('dashboard').hidden = !yes;
+  $('account-bar').hidden = !yes;
+  showNotificationFrame(yes);
+  if (yes) {
+    showPage();
+    stopQr();
+    refreshAccessLogs();
+    refreshApplications();
+  } else {
+    document.title = 'Hako · 你的日常，收进一个盒子';
+    csrf = '';
+    resetAccessLogs();
+    resetApplications();
+    agentListing = null;
+    requestAgentId = null;
+    $('request-dialog').close();
+    $('register-dialog').close();
+    $('key-dialog').close();
+  }
+}
 async function api(path, method = 'GET', data) {
   const headers = { 'Content-Type':'application/json' };
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;
   const response = await fetch('/admin/api/' + path, { method, headers, credentials:'same-origin', cache:'no-store', body:data === undefined ? undefined : JSON.stringify(data), signal:AbortSignal.timeout(20000) });
   const result = await response.json();
-  if (!response.ok) { if (response.status === 401 && !path.startsWith('login/')) { loggedIn(false); if (path !== 'session') { notice(messages.admin_login_required); startQr(); } } throw new Error(messages[result.error] || result.message || '操作失败，请稍后重试。'); }
+  if (!response.ok) {
+    if (response.status === 401 && path !== 'session' && !path.startsWith('login/')) {
+      loggedIn(false);
+      notice(messages.admin_login_required);
+      startQr();
+    }
+    throw new Error(messages[result.error] || result.message || '操作失败，请稍后重试。', { cause: result.error });
+  }
   return result;
 }
 function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
@@ -183,4 +215,27 @@ $('request-form').addEventListener('submit', async event => {
   finally { button.disabled = false; }
 });
 setInterval(() => { if (!document.hidden && csrf) refresh().catch(e => notice(e.message)); },10000);
-document.addEventListener('DOMContentLoaded', async () => { showPage(); try { const result = await api('session'); csrf = result.csrfToken; $('account').textContent = result.username; loggedIn(true); await refresh(); } catch (e) { loggedIn(false); if (e.message !== messages.admin_login_required) notice(e.message); await startQr(); } }, {once:true});
+async function checkSession() {
+  $('session-status').textContent = '正在检查管理会话…';
+  $('session-retry').hidden = true;
+  let result;
+  try {
+    result = await api('session');
+  } catch (e) {
+    if (e.cause === 'admin_login_required' || e.cause === 'admin_not_configured') {
+      loggedIn(false);
+      if (e.cause === 'admin_not_configured') notice(e.message);
+      await startQr();
+    } else {
+      $('session-status').textContent = e.cause ? e.message : '暂时无法检查管理会话，请重试。';
+      $('session-retry').hidden = false;
+    }
+    return;
+  }
+  csrf = result.csrfToken;
+  $('account').textContent = result.username;
+  loggedIn(true);
+  refresh().catch(e => notice(e.message));
+}
+$('session-retry').addEventListener('click', checkSession);
+document.addEventListener('DOMContentLoaded', checkSession, {once:true});

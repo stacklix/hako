@@ -78,7 +78,7 @@ func (s *Service) connectLocked(botID string) error {
 	}
 	for _, login := range s.logins {
 		if login.BotID == botID && !in(login.Status, "confirmed", "expired", "error", "verify_code_blocked") {
-			return problem(409, "LOGIN_IN_PROGRESS", "机器人正在扫码授权")
+			return problem(409, "LOGIN_IN_PROGRESS", "微信正在扫码授权")
 		}
 	}
 	if s.polls[botID] != nil {
@@ -355,7 +355,7 @@ func (s *Service) confirmLoginLocked(entry *loginSession, result loginResult) er
 	}
 	if result.Status == "binded_redirect" {
 		if str(bot, "credentials") == "" {
-			return problem(409, "ALREADY_BOUND", "该账号已经绑定，请在原机器人中重新连接")
+			return problem(409, "ALREADY_BOUND", "该账号已有微信连接，请使用原绑定账号扫码")
 		}
 		entry.Status = "confirmed"
 		return s.connectLocked(entry.BotID)
@@ -371,7 +371,7 @@ func (s *Service) confirmLoginLocked(entry *loginSession, result loginResult) er
 		return err
 	}
 	if (str(bot, "account_id") != "" && str(bot, "account_id") != result.Account) || (str(bot, "peer_id") != "" && str(bot, "peer_id") != result.Peer) {
-		return problem(409, "BOT_ALREADY_BOUND", "机器人已绑定其他账号，请使用原账号扫码")
+		return problem(409, "BOT_ALREADY_BOUND", "微信渠道已绑定其他账号，请使用原账号扫码")
 	}
 	err = transact(s.db, func(tx *sql.Tx) error {
 		duplicate, err := one(tx, "SELECT id FROM bots WHERE platform=? AND account_id=? AND id<>? AND deleted_at IS NULL", botPlatform, result.Account, entry.BotID)
@@ -379,7 +379,7 @@ func (s *Service) confirmLoginLocked(entry *loginSession, result loginResult) er
 			return err
 		}
 		if duplicate != nil {
-			return problem(409, "ACCOUNT_ALREADY_BOUND", "该微信账号已连接到另一个机器人")
+			return problem(409, "ACCOUNT_ALREADY_BOUND", "该微信账号已有其他连接")
 		}
 		if err := exec(tx, "UPDATE bots SET credentials=?,base_url=?,account_id=?,peer_id=?,cursor='' WHERE id=?", s.vault.seal(result.Token), base, result.Account, result.Peer, entry.BotID); err != nil {
 			return err

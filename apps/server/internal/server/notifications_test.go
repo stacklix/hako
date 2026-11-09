@@ -30,6 +30,21 @@ func TestNativeNotificationGatewayUsesHakoAuthentication(t *testing.T) {
 	if code, body, response := a.request("GET", "/admin/notifications-ui/?view=webhooks", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知网关") || response.Header.Get("X-Frame-Options") != "SAMEORIGIN" {
 		t.Fatalf("embedded page: %d", code)
 	}
+	if code, body, _ := a.request("GET", "/admin/notifications/channels", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知渠道") {
+		t.Fatalf("channel page: %d", code)
+	}
+	if code, _, _ := a.request("PUT", "/admin/api/notifications/channels/wechat", map[string]any{}, f.s.config.PublicURL, "bad"); code != 403 {
+		t.Fatalf("invalid channel initialization CSRF: %d", code)
+	}
+	initial := a.call("GET", "notifications/channels/wechat", nil, 200)
+	if !strings.Contains(string(initial), `"connection":null`) {
+		t.Fatalf("new gateway has a configured channel: %s", initial)
+	}
+	first := a.call("PUT", "notifications/channels/wechat", map[string]any{}, 200)
+	second := a.call("PUT", "notifications/channels/wechat", map[string]any{}, 200)
+	if string(first) != string(second) || string(first) == string(initial) {
+		t.Fatalf("channel initialization must return the same connection: %s %s", first, second)
+	}
 	if code, _, _ := external.request("PUT", "/api/v1/notifications/device", nil, "", ""); code != 401 {
 		t.Fatalf("unauthenticated registration: %d", code)
 	}

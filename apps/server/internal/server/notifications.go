@@ -33,7 +33,7 @@ func (s *Server) startNotifications() error {
 }
 
 func (s *Server) notificationRoutes() {
-	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete} {
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		s.mux.HandleFunc(method+" /admin/api/notifications/{resource...}", s.admin(s.adminNotifications))
 	}
 	s.mux.HandleFunc("GET /admin/notifications-ui/{asset...}", s.admin(s.notificationUI))

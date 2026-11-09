@@ -90,6 +90,12 @@ func TestGoGatewayRoutesChannelsIndependentlyAndReplays(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	call("POST", "/bots", `{"name":"未绑定的旧配置"}`, 201)
+	channel := call("PUT", "/channels/wechat", `{}`, 200)
+	connection, _ := channel["connection"].(map[string]any)
+	if connection["id"] != botID || connection["hasCredentials"] != true {
+		t.Fatalf("channel did not reuse the bound connection: %v", connection)
+	}
 	registration := httptest.NewRequest("PUT", "/device", strings.NewReader(`{"token":"abcd","environment":"production"}`))
 	response := httptest.NewRecorder()
 	s.RegisterDevice(response, registration, console)
