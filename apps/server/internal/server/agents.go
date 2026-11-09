@@ -6,102 +6,14 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"regexp"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"hako/server/internal/agent"
 )
-
-type agentCapability struct {
-	Name    string `json:"name"`
-	Version int    `json:"version"`
-}
-
-const agentProtocolVersion = 4
-
-var errAgentBusy = errors.New("agent_busy")
-var methodName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
-
-func validCapabilities(methods []agentCapability) bool {
-	if methods == nil || len(methods) > 64 {
-		return false
-	}
-	seen := map[string]bool{}
-	for _, m := range methods {
-		if len(m.Name) > 100 || !methodName.MatchString(m.Name) || (!strings.HasPrefix(m.Name, "query.") && !strings.HasPrefix(m.Name, "action.")) || m.Name == "query.all" || strings.Count(m.Name, ".") < 2 || m.Version < 1 || seen[m.Name] {
-			return false
-		}
-		seen[m.Name] = true
-	}
-	return true
-}
-
-type agentError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type agentResult struct {
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *agentError     `json:"error,omitempty"`
-}
-
-func (m agentResult) valid() bool {
-	if m.Error != nil {
-		return len(m.Result) == 0 && identifier.MatchString(m.Error.Code) && len(m.Error.Message) <= 1024
-	}
-	return len(m.Result) != 0 && json.Valid(m.Result)
-}
-
-type agentRequest struct {
-	Method  string          `json:"method"`
-	Version int             `json:"version"`
-	Params  json.RawMessage `json:"params"`
-}
-
-type agentMessage struct {
-	agentResult
-	Type         string            `json:"type"`
-	ID           string            `json:"id,omitempty"`
-	Method       string            `json:"method,omitempty"`
-	Version      int               `json:"version,omitempty"`
-	Username     string            `json:"username,omitempty"`
-	KeyID        string            `json:"keyId,omitempty"`
-	Signature    string            `json:"signature,omitempty"`
-	Params       json.RawMessage   `json:"params,omitempty"`
-	Capabilities []agentCapability `json:"capabilities,omitempty"`
-	SSHTunnel    bool              `json:"sshTunnel,omitempty"`
-	Data         []byte            `json:"data,omitempty"`
-}
-
-type agentConnection struct {
-	conn            *websocket.Conn
-	writeMu         sync.Mutex
-	mu              sync.Mutex
-	pending         map[string]chan agentMessage
-	done            chan struct{}
-	once            sync.Once
-	capabilities    []agentCapability
-	sshTunnel       bool
-	ssh             *agentSSH
-	telemetryMu     sync.Mutex
-	telemetryID     string
-	subscribers     map[*agentSubscription]struct{}
-	latestTelemetry map[string]agentTelemetryUpdate
-}
-
-func (c *agentConnection) send(v any) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	return c.conn.WriteJSON(v)
-}
-func (c *agentConnection) close() { c.once.Do(func() { close(c.done); _ = c.conn.Close() }) }
 
 func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	if !s.allow("ws", 30, time.Minute) {
@@ -114,15 +26,14 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c := &agentConnection{conn: ws, pending: map[string]chan agentMessage{}, done: make(chan struct{})}
-	defer c.close()
+	defer ws.Close()
 	ws.SetReadLimit(64 * 1024)
 	_ = ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	authFail := func() {
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication failed"), time.Now().Add(time.Second))
 	}
-	var hello agentMessage
-	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != agentProtocolVersion || !validCapabilities(hello.Capabilities) {
+	var hello agent.Message
+	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != agent.ProtocolVersion || !agent.ValidCapabilities(hello.Capabilities) {
 		authFail()
 		return
 	}
@@ -139,13 +50,12 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		authFail()
 		return
 	}
-	c.capabilities = append([]agentCapability{}, hello.Capabilities...)
-	c.sshTunnel = hello.SSHTunnel
+	c := agent.NewConnection(ws, hello.Capabilities, hello.SSHTunnel, randomToken)
 	payload := []byte("hako-agent-auth/v4\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
-	if c.send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
+	if c.Send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
 		return
 	}
-	var auth agentMessage
+	var auth agent.Message
 	if ws.ReadJSON(&auth) != nil || auth.Type != "authenticate" {
 		authFail()
 		return
@@ -175,88 +85,23 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	next.Agents = append([]AgentConfig{}, next.Agents...)
 	for i := range next.Agents {
 		if next.Agents[i].ID == configured.ID {
-			next.Agents[i].Capabilities = c.capabilities
+			next.Agents[i].Capabilities = c.Capabilities()
 		}
 	}
 	if s.saveRegistry(&next) != nil {
 		s.registryMu.Unlock()
 		return
 	}
-	if c.send(map[string]string{"type": "authenticated", "agentId": configured.ID, "name": configured.Name}) != nil {
+	if c.Send(map[string]string{"type": "authenticated", "agentId": configured.ID, "name": configured.Name}) != nil {
 		s.registryMu.Unlock()
 		return
 	}
-	s.mu.Lock()
-	old := s.online[configured.ID]
-	s.online[configured.ID] = c
-	s.lastSeen[configured.ID] = time.Now().UTC().Format(time.RFC3339)
-	s.mu.Unlock()
+	old := s.agentHub.Register(configured.ID, c)
 	s.registryMu.Unlock()
 	if old != nil {
-		old.close()
+		old.Close()
 	}
-	defer func() {
-		s.mu.Lock()
-		if s.online[configured.ID] == c {
-			delete(s.online, configured.ID)
-			s.lastSeen[configured.ID] = time.Now().UTC().Format(time.RFC3339)
-		}
-		s.mu.Unlock()
-	}()
-	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if c.send(map[string]string{"type": "ping"}) != nil {
-					c.close()
-					return
-				}
-			case <-c.done:
-				return
-			}
-		}
-	}()
-	for {
-		_ = ws.SetReadDeadline(time.Now().Add(60 * time.Second))
-		var message agentMessage
-		if ws.ReadJSON(&message) != nil {
-			return
-		}
-		if message.Type == "pong" {
-			s.mu.Lock()
-			s.lastSeen[configured.ID] = time.Now().UTC().Format(time.RFC3339)
-			s.mu.Unlock()
-			continue
-		}
-		if message.Type == "telemetry_update" {
-			if !message.agentResult.valid() || !strings.HasPrefix(message.Method, "query.") || !c.supports(message.Method, message.Version) || message.Method == "query.all" {
-				return
-			}
-			c.publishTelemetry(message)
-			continue
-		}
-		if message.Type == "ssh_data" || message.Type == "ssh_closed" {
-			c.publishSSH(message)
-			continue
-		}
-		if message.Type != "response" || message.ID == "" {
-			return
-		}
-		if !message.agentResult.valid() {
-			return
-		}
-		c.mu.Lock()
-		ch := c.pending[message.ID]
-		c.mu.Unlock()
-		if ch != nil {
-			select {
-			case ch <- message:
-			default:
-			}
-		}
-	}
+	s.agentHub.Run(configured.ID, c)
 }
 
 func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
@@ -276,29 +121,27 @@ func (s *Server) addAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) agentItems(includeKey bool) []map[string]any {
 	items := []map[string]any{}
-	s.mu.Lock()
 	for _, a := range s.registry.Load().Agents {
-		c := s.online[a.ID]
+		c, lastSeen := s.agentHub.Lookup(a.ID)
 		online := c != nil
 		if online {
 			select {
-			case <-c.done:
+			case <-c.Done():
 				online = false
 			default:
 			}
 		}
 		capabilities := a.Capabilities
 		if online {
-			capabilities = c.capabilities
+			capabilities = c.Capabilities()
 		}
-		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": s.lastSeen[a.ID], "capabilities": capabilities}
+		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": lastSeen, "capabilities": capabilities}
 		if includeKey {
 			item["keyId"] = a.keyID
 			item["publicKeyPem"] = a.PublicKeyPEM
 		}
 		items = append(items, item)
 	}
-	s.mu.Unlock()
 	return items
 }
 
@@ -311,15 +154,15 @@ func (s *Server) requestAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
-	var request agentRequest
+	var request agent.Request
 	if !decode(w, r, &request) {
 		return
 	}
 	s.callAgent(r.Context(), r.PathValue("id"), request).writeHTTP(w)
 }
 
-func (s *Server) callAgent(ctx context.Context, id string, request agentRequest) agentAPIReply {
-	if len(request.Method) > 100 || !methodName.MatchString(request.Method) || request.Version < 1 || len(request.Params) == 0 || request.Params[0] != '{' {
+func (s *Server) callAgent(ctx context.Context, id string, request agent.Request) agentAPIReply {
+	if !request.Valid() {
 		return agentAPIFailure(400, "invalid_request")
 	}
 	select {
@@ -328,20 +171,18 @@ func (s *Server) callAgent(ctx context.Context, id string, request agentRequest)
 	default:
 		return agentAPIFailure(429, "too_many_requests")
 	}
-	s.mu.Lock()
-	c := s.online[id]
-	s.mu.Unlock()
+	c, _ := s.agentHub.Lookup(id)
 	if c == nil {
 		return agentAPIFailure(409, "agent_offline")
 	}
-	if !c.supports(request.Method, request.Version) {
+	if !c.Supports(request.Method, request.Version) {
 		return agentAPIFailure(400, "unsupported_method")
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
-	result, err := c.request(ctx, request)
+	result, err := c.Request(ctx, request)
 	if err != nil {
-		if errors.Is(err, errAgentBusy) {
+		if errors.Is(err, agent.ErrBusy) {
 			return agentAPIFailure(429, "agent_busy")
 		} else if errors.Is(err, context.DeadlineExceeded) {
 			return agentAPIFailure(504, "agent_timeout")
@@ -351,46 +192,9 @@ func (s *Server) callAgent(ctx context.Context, id string, request agentRequest)
 	}
 	if request.Method == "query.all" {
 		return agentAPIReply{200, struct {
-			agentResult
-			Capabilities []agentCapability `json:"capabilities"`
-		}{result.agentResult, c.capabilities}}
+			agent.Reply
+			Capabilities []agent.Capability `json:"capabilities"`
+		}{result.Reply, c.Capabilities()}}
 	}
-	return agentAPIReply{200, result.agentResult}
-}
-
-func (c *agentConnection) supports(method string, version int) bool {
-	if method == "query.all" && version == 1 {
-		return true
-	}
-	for _, capability := range c.capabilities {
-		if capability.Name == method && capability.Version == version {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *agentConnection) request(ctx context.Context, request agentRequest) (agentMessage, error) {
-	id := randomToken()
-	ch := make(chan agentMessage, 1)
-	c.mu.Lock()
-	if len(c.pending) >= 4 {
-		c.mu.Unlock()
-		return agentMessage{}, errAgentBusy
-	}
-	c.pending[id] = ch
-	c.mu.Unlock()
-	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
-	if err := c.send(agentMessage{Type: "request", ID: id, Method: request.Method, Version: request.Version, Params: request.Params}); err != nil {
-		c.close()
-		return agentMessage{}, err
-	}
-	select {
-	case result := <-ch:
-		return result, nil
-	case <-c.done:
-		return agentMessage{}, errors.New("agent_disconnected")
-	case <-ctx.Done():
-		return agentMessage{}, ctx.Err()
-	}
+	return agentAPIReply{200, result.Reply}
 }

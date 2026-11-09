@@ -9,11 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"hako/server/internal/accesslog"
 )
 
 func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
 	now := time.Now().Add(-time.Minute).Truncate(time.Second)
 	var data strings.Builder
 	// Cover every valid HTTP status, including normal exceptions 101 and 304.
@@ -24,7 +25,7 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 	data.WriteString(logTestLine(now, "b.test", "192.0.2.3", "foreign", "/foreign", 403))
 	data.WriteString(logTestLine(now.Add(-2*time.Hour), "a.test", "192.0.2.4", "old", "/old", 429))
 	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
-	a.scan()
+	a := importTestAccessLogs(t, dir)
 	s := &Server{accessLogs: a}
 	query := url.Values{"domain": {"a.test"}, "rangeHours": {"1"},
 		"from": {now.Add(-time.Minute).Format(time.RFC3339)}, "to": {now.Add(time.Second).Format(time.RFC3339)}}
@@ -32,14 +33,14 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 		query.Set("domain", domain)
 		rec := httptest.NewRecorder()
 		s.adminAccessLogs(rec, httptest.NewRequest("GET", "/?"+query.Encode(), nil))
-		var summary struct{ Totals, Hours []accessHour }
+		var summary struct{ Totals, Hours []accesslog.Hour }
 		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &summary) != nil {
 			t.Fatal(rec.Code, rec.Body.String())
 		}
 		if strings.Contains(rec.Body.String(), `"notFound"`) || strings.Contains(rec.Body.String(), `"non4xxURLs"`) {
 			t.Fatal("legacy 4xx metrics must not be returned", rec.Body.String())
 		}
-		for _, rows := range [][]accessHour{summary.Totals, summary.Hours} {
+		for _, rows := range [][]accesslog.Hour{summary.Totals, summary.Hours} {
 			found := false
 			for _, row := range rows {
 				if row.Domain == "a.test" {
@@ -57,16 +58,16 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 	query.Set("domain", "a.test")
 	for _, hourly := range []bool{false, true} {
 		if hourly {
-			query.Set("hour", time.Unix(accessHourStart(now, a.location), 0).In(a.location).Format(time.RFC3339))
+			query.Set("hour", time.Unix(testAccessHourStart(now, a.Location()), 0).In(a.Location()).Format(time.RFC3339))
 		}
 		rec := httptest.NewRecorder()
 		s.adminAccessLogDetails(rec, httptest.NewRequest("GET", "/?"+query.Encode(), nil), hourly)
 		var detail struct {
 			Visits, Success, NonSuccess         int64
-			TopClients                          []accessClient
-			SuccessURLs                         []accessRank
-			NonSuccessPages                     []accessPage
-			NonSuccessIPs, NonSuccessUserAgents []accessRank
+			TopClients                          []accesslog.Client
+			SuccessURLs                         []accesslog.Rank
+			NonSuccessPages                     []accesslog.Page
+			NonSuccessIPs, NonSuccessUserAgents []accesslog.Rank
 		}
 		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &detail) != nil || detail.Visits != 501 || detail.Success != 103 || detail.NonSuccess != 398 {
 			t.Fatal("incorrect abnormal detail totals", rec.Code, rec.Body.String())
@@ -77,17 +78,17 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 		if len(detail.TopClients) != 2 {
 			t.Fatal("incorrect clients", rec.Body.String())
 		}
-		if len(detail.SuccessURLs) != 2 || detail.SuccessURLs[0] != (accessRank{"/mixed", 102}) || detail.SuccessURLs[1] != (accessRank{"/success", 1}) {
+		if len(detail.SuccessURLs) != 2 || detail.SuccessURLs[0] != (accesslog.Rank{"/mixed", 102}) || detail.SuccessURLs[1] != (accesslog.Rank{"/success", 1}) {
 			t.Fatal("domain normal URLs must exclude all abnormal requests", rec.Body.String())
 		}
 		client := detail.TopClients[0]
-		if len(client.SuccessURLs) != 1 || client.SuccessURLs[0] != (accessRank{"/mixed", 102}) || len(client.NonSuccessURLs) != 1 || client.NonSuccessURLs[0] != (accessRank{"/mixed", 398}) {
+		if len(client.SuccessURLs) != 1 || client.SuccessURLs[0] != (accesslog.Rank{"/mixed", 102}) || len(client.NonSuccessURLs) != 1 || client.NonSuccessURLs[0] != (accesslog.Rank{"/mixed", 398}) {
 			t.Fatal("same URL must count statuses separately, including redirects and server errors as abnormal", rec.Body.String())
 		}
 		if len(detail.TopClients[1].NonSuccessURLs) != 0 || len(detail.TopClients[1].SuccessURLs) != 1 {
 			t.Fatal("client URL rankings leak across IPs", rec.Body.String())
 		}
-		for _, ranks := range [][]accessRank{detail.NonSuccessIPs, detail.NonSuccessUserAgents, detail.NonSuccessPages[0].IPs, detail.NonSuccessPages[0].UserAgents} {
+		for _, ranks := range [][]accesslog.Rank{detail.NonSuccessIPs, detail.NonSuccessUserAgents, detail.NonSuccessPages[0].IPs, detail.NonSuccessPages[0].UserAgents} {
 			if len(ranks) != 1 || ranks[0].Count != 398 {
 				t.Fatal("abnormal nested ranks must exclude other statuses/domains/windows", rec.Body.String())
 			}
@@ -97,14 +98,14 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 
 func TestAccessLogStatusClassesZeroRequests(t *testing.T) {
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
+	a := importTestAccessLogs(t, dir)
 	s := &Server{accessLogs: a}
 	rec := httptest.NewRecorder()
 	s.adminAccessLogRankings(rec, httptest.NewRequest("GET", "/?domain=empty.test", nil))
 	var detail struct {
 		Visits, Success, NonSuccess int64
-		SuccessURLs                 []accessRank
-		NonSuccessPages             []accessPage
+		SuccessURLs                 []accesslog.Rank
+		NonSuccessPages             []accesslog.Page
 	}
 	if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &detail) != nil || detail.Visits != 0 || detail.Success != 0 || detail.NonSuccess != 0 || len(detail.SuccessURLs) != 0 || len(detail.NonSuccessPages) != 0 {
 		t.Fatal("empty response must contain zero counts and empty rankings", rec.Code, rec.Body.String())
@@ -113,7 +114,6 @@ func TestAccessLogStatusClassesZeroRequests(t *testing.T) {
 
 func TestAccessLogClientURLCategoriesHaveIndependentTopTen(t *testing.T) {
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
 	now := time.Now().Add(-time.Minute).Truncate(time.Second)
 	var data strings.Builder
 	for i := 1; i <= 12; i++ {
@@ -126,7 +126,7 @@ func TestAccessLogClientURLCategoriesHaveIndependentTopTen(t *testing.T) {
 	data.WriteString(strings.Repeat(logTestLine(now, "b.test", "192.0.2.1", "UA", "/foreign", 403), 100))
 	data.WriteString(strings.Repeat(logTestLine(now.Add(-2*time.Hour), "a.test", "192.0.2.1", "UA", "/old", 200), 100))
 	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
-	a.scan()
+	a := importTestAccessLogs(t, dir)
 	s := &Server{accessLogs: a}
 	query := url.Values{"domain": {"a.test"}, "rangeHours": {"24"},
 		"from": {now.Add(-time.Minute).Format(time.RFC3339)}, "to": {now.Add(time.Second).Format(time.RFC3339)}}
@@ -134,13 +134,13 @@ func TestAccessLogClientURLCategoriesHaveIndependentTopTen(t *testing.T) {
 		if hourly {
 			// Widen the window so only the hour filter excludes the old URL.
 			query.Set("from", now.Add(-3*time.Hour).Format(time.RFC3339))
-			query.Set("hour", time.Unix(accessHourStart(now, a.location), 0).In(a.location).Format(time.RFC3339))
+			query.Set("hour", time.Unix(testAccessHourStart(now, a.Location()), 0).In(a.Location()).Format(time.RFC3339))
 		}
 		rec := httptest.NewRecorder()
 		s.adminAccessLogDetails(rec, httptest.NewRequest("GET", "/?"+query.Encode(), nil), hourly)
 		var detail struct {
-			TopClients  []accessClient
-			SuccessURLs []accessRank
+			TopClients  []accesslog.Client
+			SuccessURLs []accesslog.Rank
 		}
 		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &detail) != nil || len(detail.TopClients) != 1 {
 			t.Fatal(rec.Code, rec.Body.String())
@@ -154,7 +154,7 @@ func TestAccessLogClientURLCategoriesHaveIndependentTopTen(t *testing.T) {
 				t.Fatal("domain normal ranking or filter isolation is incorrect", rec.Body.String())
 			}
 		}
-		for category, ranks := range map[int][]accessRank{200: client.SuccessURLs, 403: client.NonSuccessURLs} {
+		for category, ranks := range map[int][]accesslog.Rank{200: client.SuccessURLs, 403: client.NonSuccessURLs} {
 			if len(ranks) != 10 {
 				t.Fatal("each category must have its own Top 10", rec.Body.String())
 			}
@@ -177,18 +177,17 @@ func TestAccessLogNormalStatusWhitelist(t *testing.T) {
 	} {
 		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
 			dir := t.TempDir()
-			a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
 			now := time.Now().Add(-time.Minute).Truncate(time.Second)
 			logTestWrite(t, filepath.Join(dir, "access.log"), logTestLine(now, "a.test", "192.0.2.1", "UA", "/status", tc.status))
-			a.scan()
+			a := importTestAccessLogs(t, dir)
 			s := &Server{accessLogs: a}
 			rec := httptest.NewRecorder()
 			s.adminAccessLogRankings(rec, httptest.NewRequest("GET", "/?domain=a.test", nil))
 			var detail struct {
 				Visits, Success, NonSuccess int64
-				SuccessURLs                 []accessRank
-				NonSuccessPages             []accessPage
-				TopClients                  []accessClient
+				SuccessURLs                 []accesslog.Rank
+				NonSuccessPages             []accesslog.Page
+				TopClients                  []accesslog.Client
 			}
 			if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &detail) != nil {
 				t.Fatal(rec.Code, rec.Body.String())

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"hako/server/internal/accesslog"
 	"hako/server/internal/server"
 )
 
@@ -24,6 +25,20 @@ func env(name, fallback string) string {
 	}
 	return fallback
 }
+func notificationWebDir() string {
+	if dir := os.Getenv("HAKO_NOTIFICATION_WEB_DIR"); dir != "" {
+		return dir
+	}
+	const current = "./web/notifications/dist/web"
+	const previous = "./notifications/dist/web"
+	if _, err := os.Stat(filepath.Join(current, "index.html")); os.IsNotExist(err) {
+		if _, err = os.Stat(filepath.Join(previous, "index.html")); err == nil {
+			return previous
+		}
+	}
+	return current
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -35,7 +50,7 @@ type fileConfig struct {
 	MasterKey  string                 `json:"masterKey"`
 	Agents     []server.AgentConfig   `json:"agents"`
 	Consoles   []server.ConsoleConfig `json:"consoles"`
-	AccessLogs server.AccessLogConfig `json:"accessLogs"`
+	AccessLogs accesslog.Config       `json:"accessLogs"`
 }
 
 func createConfig(path string) error {
@@ -103,7 +118,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "revoke-consoles" {
 		return server.RevokeConsoles(database, key)
 	}
-	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents, AccessLogs: configuration.AccessLogs, NotificationWebDir: env("HAKO_NOTIFICATION_WEB_DIR", "./notifications/dist/web"), NotificationDataDir: env("HAKO_NOTIFICATION_DATA_DIR", filepath.Join(dataDir, "notification-gateway"))})
+	app, err := server.New(server.Config{Database: database, MasterKey: key, Username: configuration.Username, Consoles: configuration.Consoles, PublicURL: env("HAKO_PUBLIC_URL", "http://localhost:8080"), TrustedProxies: os.Getenv("HAKO_TRUSTED_PROXIES"), Agents: configuration.Agents, AccessLogs: configuration.AccessLogs, NotificationWebDir: notificationWebDir(), NotificationDataDir: env("HAKO_NOTIFICATION_DATA_DIR", filepath.Join(dataDir, "notification-gateway"))})
 	if err != nil {
 		return err
 	}

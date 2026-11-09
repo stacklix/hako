@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"hako/server/internal/accesslog"
 )
 
 func TestConsoleAccessLogsRequireRegisteredSession(t *testing.T) {
@@ -26,7 +28,7 @@ func TestConsoleAccessLogsRequireRegisteredSession(t *testing.T) {
 		}
 	}
 	status, data := f.call("GET", "/api/v1/access-logs", nil, f.tokens.AccessToken)
-	var disabled struct{ Status accessLogStatus }
+	var disabled struct{ Status accesslog.Status }
 	if status != 200 || json.Unmarshal(data, &disabled) != nil || disabled.Status.Enabled {
 		t.Fatal("disabled collector response", status, string(data))
 	}
@@ -43,14 +45,13 @@ func TestConsoleAccessLogsRequireRegisteredSession(t *testing.T) {
 func TestConsoleAccessLogsReuseExactAdminQueries(t *testing.T) {
 	f := newFixture(t, true)
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "logs"), dir, 86400)
-	f.s.accessLogs = a
-	t.Cleanup(func() { f.s.accessLogs = nil })
 	now := time.Now().Add(-time.Minute).Truncate(time.Second)
 	logTestWrite(t, filepath.Join(dir, "access.log"),
 		logTestLine(now, "a.test", "192.0.2.1", "UA", "/missing?secret=hidden", 404)+
 			logTestLine(now, "b.test", "192.0.2.2", "other", "/other", 200))
-	a.scan()
+	a := importTestAccessLogs(t, dir)
+	f.s.accessLogs = a
+	t.Cleanup(func() { f.s.accessLogs = nil })
 	q := url.Values{"rangeHours": {"24"}, "domain": {"a.test"},
 		"from": {now.Add(-time.Hour).Format(time.RFC3339)}, "to": {now.Add(time.Second).Format(time.RFC3339)}}
 	for _, item := range []struct {
@@ -61,7 +62,7 @@ func TestConsoleAccessLogsReuseExactAdminQueries(t *testing.T) {
 	} {
 		query := q.Encode()
 		if item.suffix == "/hour" {
-			query += "&hour=" + url.QueryEscape(time.Unix(accessHourStart(now, a.location), 0).In(a.location).Format(time.RFC3339))
+			query += "&hour=" + url.QueryEscape(time.Unix(testAccessHourStart(now, a.Location()), 0).In(a.Location()).Format(time.RFC3339))
 		}
 		path := "/api/v1/access-logs" + item.suffix
 		r, _ := http.NewRequest("GET", f.http.URL+path+"?"+query, nil)

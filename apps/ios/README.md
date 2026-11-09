@@ -14,6 +14,12 @@
 
 所有表单字段始终显示字段名称（key），填写后也保留；占位文字只提供示例或提示。敏感值继续遮蔽显示，具体布局见同一规范。
 
+## 源码目录
+
+- `Hako/App/` 放应用入口、功能注册、主设置和应用更新。
+- `Hako/Features/` 按子应用组织业务、界面和连接协议。设备 SSH、云服务器和容器各自维护终端会话。
+- `Hako/Shared/` 放共用 UI、终端显示及输入、Hako 服务端连接、GitHub 访问和基础设施。
+
 ## 当前功能
 
 - 「青龙面板」子应用：直接连接已有青龙 OpenAPI，一级 Tab 为任务、脚本、订阅和更多；支持多面板连接、独立两行 Client ID／Client Secret 和可选自定义请求头（默认留空）。支持任务管理与日志、脚本编辑及已保存版本调试、订阅管理；环境变量位于更多，另提供配置文件编辑、只读依赖和日志文件、权限检测。连接与凭据仅存本机 Keychain，沿用黑白主色与原生设置入口。接口、边界和验证见 [青龙面板](../../docs/qinglong.md)。
@@ -22,10 +28,10 @@
 
 - 「容器管理」子应用：直接连接已有 Arcane 服务，独立配置地址和 API Key（仅保存于本机 Keychain），支持多 Docker 环境、完整分页、搜索与状态／更新筛选、Compose 分组、容器详情、CPU／内存使用率和网络上下行速率、实时日志与日志导出、启停重启及删除。点击环境卡片的主机名称行查看「主机信息」，右侧下拉按钮切换服务器；支持查看本地或远程主机的实时 CPU、内存、磁盘和可用 GPU 指标，以及系统、Docker 信息。「文件」Tab 支持浏览 Compose 项目目录及子目录，查看和修改 YAML、`.env` 及其他文本文件；二进制仅显示文件信息，保存不会自动部署或重启。更新入口为「拉取镜像并重新部署」，重建后跟随新容器 ID；写操作超时不自动重试，需先刷新状态核对。按 Arcane v2.17.1 接口实现，权限、HTTP 选项和验收说明见 [Arcane 容器管理](../../docs/arcane.md)。
 
-- 设备监控右上角滑杆图标（`slider.horizontal.3`）打开服务器与登录；有设备时在列表标题右侧用加号添加 Agent，空列表保留文字添加入口。设备详情保留下拉刷新，采用运动记录的细下划线标签栏。前五个设备页面显示在顶部，其余从右侧「更多」切换。详情右上角滑杆打开页面排序，长按行尾手柄拖动整行，点「完成」后按服务器、账号和设备保存本机顺序。系统页使用 ECS 同款 CPU 和内存仪表盘展示当前采样，并显示物理网卡实时上下行速度。Codex 页内切换处理中会话与最近 7 天统计，调用数与 Token 在同一双轴分组柱状图展示，点击日期悬浮查看当天完整数字。历史用量提示与时区、采集时间放在默认折叠的“数据说明”中。每次发送任务/消息计 1 次，不累计内部模型迭代，旧 Agent 未标明用户调用口径时提示更新。按设备时区统计，旧版估算、明细缺失和运行状态不可用均明确提示；需更新支持此能力的 Windows Agent，服务端无需新增业务接口。详见 [设备监控协议](../../docs/device-monitoring.md) 与 [Codex 用量采集](../../docs/codex-usage.md)。
+- 设备监控右上角滑杆图标（`slider.horizontal.3`）打开设备监控设置，可切换 Agent 和设置默认设备；有设备时在列表标题右侧用加号添加 Agent，空列表保留文字添加入口。设备详情保留下拉刷新，采用运动记录的细下划线标签栏。顶部显示前四个可排序页面和固定的「终端」，其余从右侧「更多」切换。在设备监控设置的「页面排序」区块拖动行尾手柄，松手即按服务器、账号和设备保存本机顺序。系统页使用 ECS 同款 CPU 和内存仪表盘展示当前采样，并显示物理网卡实时上下行速度。Codex 页内切换处理中会话与最近 7 天统计，调用数与 Token 在同一双轴分组柱状图展示，点击日期悬浮查看当天完整数字。历史用量提示与时区、采集时间放在默认折叠的“数据说明”中。每次发送任务/消息计 1 次，不累计内部模型迭代，旧 Agent 未标明用户调用口径时提示更新。按设备时区统计，旧版估算、明细缺失和运行状态不可用均明确提示；需更新支持此能力的 Windows Agent，服务端无需新增业务接口。详见 [设备监控协议](../../docs/device-monitoring.md) 与 [Codex 用量采集](../../docs/codex-usage.md)。
 
 - 设置交互：设置页只展示功能入口、应用更新和构建状态，不提供保存按钮。「服务器与登录」「扫码登录」「GitHub 配置」均以 sheet 打开；服务器和 GitHub 配置只在点击右上角勾号后保存，保存成功关闭 sheet，验证或保存失败则保留输入。点击关闭或下拉关闭有修改的配置 sheet 时，弹窗选择继续编辑或放弃并关闭；输入不会自动保存。扫码 sheet 只提供关闭按钮，网页登录仍须在核对页明确确认。设备监控与扫码页中的服务器配置快捷入口也使用同一 sheet。
-- Hako 主应用服务：在「设置 → 扫码登录」批准 Hako 网页登录；在「设置 → 服务器与登录」配置服务器、账号、本机公钥及登录管理。使用 Secure Enclave P-256 密钥，公钥在服务端文件登记后签名登录。所有 Console 都是管理员，无密码或 TOTP；本机凭据自动续期直到退出或撤销。「已登录设备」统一显示 Console 和有效网页会话，支持下拉刷新和单独移除网页登录；Console 项仅查看，不提供远程撤销入口，本机退出在「服务器与登录」操作。已登录时点击「扫码登录」打开相机，也可粘贴并解析请求；未配置、未登录或凭据待验证时先引导服务器配置与登录，验证后自动进入扫描。核对服务器、来源 IP 及两端确认码后确认或拒绝，无需额外 Face ID、Touch ID 或设备密码。相机权限只在打开扫描器时申请，相机不可用仍可粘贴；只接受当前服务器的请求，批准仅对原浏览器有效。共用连接、身份、会话及扫码代码位于 `Hako/Server/`，沿用已有 Keychain 与配置键，升级保留身份和会话。部署见 [服务端说明](../server/README.md)，协议见 [Hako 服务器认证协议](../../docs/server-authentication.md)。
+- Hako 主应用服务：在「设置 → 扫码登录」批准 Hako 网页登录；在「设置 → 服务器与登录」配置服务器、账号、本机公钥及登录管理。使用 Secure Enclave P-256 密钥，公钥在服务端文件登记后签名登录。所有 Console 都是管理员，无密码或 TOTP；本机凭据自动续期直到退出或撤销。「已登录设备」统一显示 Console 和有效网页会话，支持下拉刷新和单独移除网页登录；Console 项仅查看，不提供远程撤销入口，本机退出在「服务器与登录」操作。已登录时点击「扫码登录」打开相机，也可粘贴并解析请求；未配置、未登录或凭据待验证时先引导服务器配置与登录，验证后自动进入扫描。核对服务器、来源 IP 及两端确认码后确认或拒绝，无需额外 Face ID、Touch ID 或设备密码。相机权限只在打开扫描器时申请，相机不可用仍可粘贴；只接受当前服务器的请求，批准仅对原浏览器有效。共用连接、身份和会话位于 `Hako/Shared/HakoServer/`，扫码及登录管理位于 `Hako/Features/ServerManagement/`，沿用已有 Keychain 与配置键，升级保留身份和会话。部署见 [服务端说明](../server/README.md)，协议见 [Hako 服务器认证协议](../../docs/server-authentication.md)。
 - 「设备监控」子应用：复用主应用的 Hako 服务器登录，通过 WebSocket 登记 Agent、查询在线状态和按设备能力调用。设备详情的「实时刷新」默认关闭，勾选后接收 Agent 推送的系统指标、Codex 任务变化和监听端口。Git 标签按需查看 `~/Code` 仓库、远程地址和提交状态，支持选择文件创建提交并单独确认推送。协议见 [设备监控协议](../../docs/device-monitoring.md)。
 
 - 读取手机当前时区最近 7 个完整自然日（不含今天），按系统的总活动时长统计，汇总各 App 的时长并取前五名。本地已有日期跳过，缺失日期才读取并插入；单日读取失败不阻塞其他日期，已成功记录会保存并同步，失败日期下次重试。
@@ -118,7 +124,7 @@ Apple 文档说明：开发测试可以使用 Apple 提供的 provisioning profi
 
 ## 安装及配置
 
-「设备监控」主页进入时验证会话并更新设备列表，此后每 10 秒自动刷新设备及在线状态，不显示刷新按钮或 loading 行；离开主页、打开添加 Agent 或服务器配置 sheet，或 App 进入后台时停止轮询，返回前台主页后恢复。主页「添加 Agent」下一行保留共享的「服务器与登录」快捷入口，未配置或未登录时也可进入；扫码入口统一位于 Hako 主应用设置页。列表和详情均支持下拉刷新，保留系统原生反馈。设备详情右上角滑杆用于页面排序。刷新时保留已有数据，失败时显示错误提示。详情直接调用一次 `query.all` 获取查询数据，不再先请求设备列表。进入详情时自动执行同样的查询，离线或不支持的动作由服务端返回提示，不使用列表中的旧状态阻止刷新；设备重新上线后可直接在详情刷新，无需返回列表。
+「设备监控」主页进入时验证会话并更新设备列表，此后每 10 秒自动刷新设备及在线状态，不显示刷新按钮或 loading 行；离开主页、打开添加 Agent 或服务器配置 sheet，或 App 进入后台时停止轮询，返回前台主页后恢复。主页「添加 Agent」下一行保留共享的「服务器与登录」快捷入口，未配置或未登录时也可进入；扫码入口统一位于 Hako 主应用设置页。列表和详情均支持下拉刷新，保留系统原生反馈。设备监控设置的「页面排序」标题下显示当前设备的 ID 和名称。刷新时保留已有数据，失败时显示错误提示。详情直接调用一次 `query.all` 获取查询数据，不再先请求设备列表。进入详情时自动执行同样的查询，离线或不支持的动作由服务端返回提示，不使用列表中的旧状态阻止刷新；设备重新上线后可直接在详情刷新，无需返回列表。
 
 设备列表中的离线设备保留名称、设备 ID 和离线状态，禁用详情入口；列表刷新为在线后恢复进入详情。已进入详情后断线仍保留当前页面及刷新能力。
 
@@ -174,15 +180,15 @@ xcodebuild -project Hako.xcodeproj -scheme Hako -sdk iphoneos -configuration Deb
 在 Apple Silicon Mac 上运行核心和模拟网络测试（无真实 GitHub 写入）：
 
 ```sh
-swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
+swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/HakoError.swift Hako/Features/Usage/UsageModels.swift Hako/Shared/Infrastructure/CSV.swift Hako/Features/Usage/UsageCSV.swift Tests/CoreTests.swift -o /tmp/hako-core-tests
 /tmp/hako-core-tests
-swiftc -target arm64-apple-macos14.0 Hako/HakoError.swift Hako/Usage/UsageModels.swift Hako/CSV.swift Hako/GitHubSettings.swift Hako/GitHubTokenStore.swift Hako/GitHubRepository.swift Hako/GitHubService.swift Hako/Usage/UsageCSV.swift Hako/Usage/UsageGitHub.swift Hako/Usage/UsageSync.swift Hako/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
+swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/HakoError.swift Hako/Features/Usage/UsageModels.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/GitHub/GitHubSettings.swift Hako/Shared/GitHub/GitHubTokenStore.swift Hako/Shared/GitHub/GitHubRepository.swift Hako/Shared/GitHub/GitHubService.swift Hako/Features/Usage/UsageCSV.swift Hako/Features/Usage/UsageGitHub.swift Hako/Features/Usage/UsageSync.swift Hako/App/Updates/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
 /tmp/hako-github-tests
-swiftc Hako/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
+swiftc Hako/Features/DeviceManagement/DeviceCardPresentation.swift Tests/DeviceCardPresentationTests.swift -o /tmp/hako-device-card-tests
 /tmp/hako-device-card-tests
 ```
 
-真机验收：核对系统「屏幕使用时间」最近 7 天每天的总量与 Top 5；重跑采集确认数据库/CSV 已有日期不变；核对跨年时生成对应年份文件；点击「合并本地与 GitHub 记录」确认空本地恢复、跨年历史恢复及双方缺失日期互补，同日冲突以 GitHub 为准，重复合并不产生提交；断网运行确认本地留存，恢复网络后重试；通过快捷指令实际触发。设备详情需核对轻点与长按不冲突、拖动至边缘滚动、放下后重进保持顺序、取消拖动恢复原顺序、两分组独立，以及滚动后展开 / 收起恢复位置、底部卡片、大字号和减少动态效果。核心、模拟网络及设备卡片顺序 / 布局 / 位置计算测试已接入 GitHub Actions。无签名构建与模拟测试不代表上述真机能力已经验证。
+真机验收：核对系统「屏幕使用时间」最近 7 天每天的总量与 Top 5；重跑采集确认数据库/CSV 已有日期不变；核对跨年时生成对应年份文件；点击「合并本地与 GitHub 记录」确认空本地恢复、跨年历史恢复及双方缺失日期互补，同日冲突以 GitHub 为准，重复合并不产生提交；断网运行确认本地留存，恢复网络后重试；通过快捷指令实际触发。设备详情需核对轻点与长按不冲突、拖动至边缘滚动、放下后重进保持顺序、取消拖动恢复原顺序、切换设备后顺序独立，以及滚动后展开 / 收起恢复位置、底部卡片、大字号和减少动态效果。核心、模拟网络及设备卡片顺序 / 布局 / 位置计算测试已接入 GitHub Actions。无签名构建与模拟测试不代表上述真机能力已经验证。
 
 ## GitHub Actions 自动打包与安装页
 

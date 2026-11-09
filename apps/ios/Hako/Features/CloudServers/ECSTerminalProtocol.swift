@@ -121,14 +121,6 @@ struct ECSAXTFlow {
     }
 }
 
-@MainActor protocol ECSTerminalRendering: AnyObject {
-    func reset()
-    func feed(_ bytes: Data)
-    func focus()
-    func blur()
-    func key(_ key: String)
-}
-
 // A foreground probe must finish even if a suspended/dead socket never reports
 // its pong callback. Late and duplicate callbacks cannot resume it twice.
 enum ECSTerminalPing {
@@ -153,32 +145,4 @@ private final class ECSTerminalPingCompletion: @unchecked Sendable {
         lock.lock(); let saved = continuation; continuation = nil; lock.unlock()
         if let error { saved?.resume(throwing: error) } else { saved?.resume() }
     }
-}
-
-// Own output independently of SwiftUI's UIKit view lifetime. Nothing here is
-// persisted or logged, and output replay never sends input back to the server.
-@MainActor final class ECSTerminalDisplay {
-    private weak var renderer: (any ECSTerminalRendering)?
-    private(set) var bytes = Data()
-    private let limit: Int
-    init(limit: Int = 1_048_576) { self.limit = max(1, limit) }
-    func isAttached(_ renderer: any ECSTerminalRendering) -> Bool { self.renderer === renderer }
-    func attach(_ renderer: any ECSTerminalRendering) {
-        self.renderer = renderer
-        renderer.reset()
-        if !bytes.isEmpty { renderer.feed(bytes) }
-    }
-    func detach(_ renderer: any ECSTerminalRendering) {
-        guard isAttached(renderer) else { return }
-        renderer.blur(); self.renderer = nil
-    }
-    func beginSession() { bytes.removeAll(); renderer?.reset() }
-    func append(_ value: Data) {
-        bytes.append(value)
-        if bytes.count > limit { bytes.removeFirst(bytes.count - limit) }
-        renderer?.feed(value)
-    }
-    func focus() { renderer?.focus() }
-    func blur() { renderer?.blur() }
-    func key(_ key: String) { renderer?.key(key) }
 }

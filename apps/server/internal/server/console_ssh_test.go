@@ -15,6 +15,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/ssh"
+
+	"hako/server/internal/agent"
 )
 
 func TestConsoleSSHRelaysPowerShell(t *testing.T) {
@@ -33,7 +35,7 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 	} else {
 		response.Body.Close()
 	}
-	agent := f.connectAgentFeatures("PC", false, true)
+	peer := f.connectAgentFeatures("PC", false, true)
 	console, _, err := dialConsoleAgentSocket(f, path, true, "")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +93,7 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 		sshTerminalSize: sshTerminalSize{Columns: 80, Rows: 24},
 		Username:        "windows-user", Password: "fixture-password", Fingerprint: fingerprint,
 	})
-	open := readAgentFrame[sshFrame](t, agent)
+	open := readAgentFrame[agent.SSHFrame](t, peer)
 	if open.Type != "ssh_open" || open.ID == "" {
 		t.Fatalf("unexpected agent tunnel request: %+v", open)
 	}
@@ -99,8 +101,8 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 	go func() {
 		defer local.Close()
 		for {
-			var frame sshFrame
-			if err := agent.ReadJSON(&frame); err != nil {
+			var frame agent.SSHFrame
+			if err := peer.ReadJSON(&frame); err != nil {
 				closed <- err
 				return
 			}
@@ -119,10 +121,10 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 		}
 	}()
 	go func() {
-		buf := make([]byte, sshChunk)
+		buf := make([]byte, agent.SSHChunk)
 		for {
 			n, err := local.Read(buf)
-			if n > 0 && agent.WriteJSON(sshFrame{Type: "ssh_data", ID: open.ID, Data: buf[:n]}) != nil {
+			if n > 0 && peer.WriteJSON(agent.SSHFrame{Type: "ssh_data", ID: open.ID, Data: buf[:n]}) != nil {
 				return
 			}
 			if err != nil {

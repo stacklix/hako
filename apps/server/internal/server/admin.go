@@ -222,13 +222,6 @@ func (s *Server) adminDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		reject(w, 503, "storage_unavailable")
 		return
 	}
-	s.mu.Lock()
-	c := s.online[r.PathValue("id")]
-	delete(s.online, r.PathValue("id"))
-	delete(s.lastSeen, r.PathValue("id"))
-	s.mu.Unlock()
-	if c != nil {
-		c.close()
-	}
+	s.agentHub.Remove(r.PathValue("id"))
 	respond(w, 200, map[string]bool{"ok": true})
 }

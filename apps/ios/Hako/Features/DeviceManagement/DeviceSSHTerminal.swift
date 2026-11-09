@@ -21,7 +21,7 @@ struct DeviceSSHCredentials: Codable {
     @Published private(set) var connecting = false
     @Published private(set) var message: String?
     @Published var control = false
-    let display = ECSTerminalDisplay()
+    let display = HakoTerminalDisplay()
     private var socket: URLSessionWebSocketTask?
     private var reader: Task<Void, Never>?
     private var writer: Task<Void, Never>?

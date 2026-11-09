@@ -8,9 +8,6 @@ struct DeviceMonitorView: View {
         case addAgent, settings
         var id: String { rawValue }
     }
-    private enum PageOrderPresentation: Equatable {
-        case pending(String), presented(String)
-    }
 
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -18,7 +15,6 @@ struct DeviceMonitorView: View {
     @State private var selection = Selection.automatic
     @State private var resolvedEntryScope: String?
     @State private var sheet: Sheet?
-    @State private var pageOrderPresentation: PageOrderPresentation?
 
     private var scope: String { client.serverURL + "\n" + client.username }
     private var defaults: [String: String] {
@@ -40,27 +36,17 @@ struct DeviceMonitorView: View {
         resolvedEntryScope != scope && !client.serverURL.isEmpty && !client.logoutPending
             && (requestedAgentID != nil || client.agents.isEmpty)
     }
-    private var selectedPageOrderKey: String? { selectedAgent.map(pageOrderKey) }
-
-    private func pageOrderKey(_ agent: ConsoleAgent) -> String {
-        DeviceCardOrder.storageKey(server: client.serverURL, account: client.username, agent: agent.id, group: "all")
-    }
-
-    private func pageOrderBinding(for key: String) -> Binding<Bool> {
-        Binding(get: { pageOrderPresentation == .presented(key) }, set: { isPresented in
-            if !isPresented, pageOrderPresentation == .presented(key) {
-                pageOrderPresentation = nil
-            }
-        })
+    private func pageOrderStorage(for agent: ConsoleAgent) -> DeviceCardOrder.Storage {
+        DeviceCardOrder.Storage(server: client.serverURL, account: client.username, agent: agent.id)
     }
 
     var body: some View {
         let showsDetail = selectedAgent != nil || (awaitingEntry && requestedAgentID != nil)
         Group {
             if let agent = selectedAgent {
-                let key = pageOrderKey(agent)
-                DeviceMetricsView(agent: agent, pageOrderKey: key, showingPageOrder: pageOrderBinding(for: key))
-                    .id(key)
+                let order = pageOrderStorage(for: agent)
+                DeviceMetricsView(agent: agent, order: order)
+                    .id(order.key)
             } else if awaitingEntry {
                 HakoStyle.background
                     .toolbarBackground(HakoStyle.background, for: .navigationBar)
@@ -79,11 +65,7 @@ struct DeviceMonitorView: View {
                 }
             }
         }
-        .sheet(item: $sheet, onDismiss: {
-            if case .pending(let key) = pageOrderPresentation {
-                pageOrderPresentation = selectedPageOrderKey == key ? .presented(key) : nil
-            }
-        }) { sheet in
+        .sheet(item: $sheet) { sheet in
             switch sheet {
             case .addAgent:
                 AddAgentSheet()
@@ -95,9 +77,6 @@ struct DeviceMonitorView: View {
             selection = .automatic
             resolvedEntryScope = nil
             sheet = nil
-        }
-        .onChange(of: selectedPageOrderKey) { _, _ in
-            pageOrderPresentation = nil
         }
         .task(id: "\(scenePhase)-\(sheet == .addAgent)-\(scope)") {
             guard scenePhase == .active, sheet != .addAgent, !Task.isCancelled else { return }
@@ -171,14 +150,13 @@ struct DeviceMonitorView: View {
     }
 
     private var settings: some View {
-        NavigationStack {
+        SettingsSheet(title: "设备监控设置") {
             List {
                 Section("切换 Agent") {
                     if client.agents.isEmpty { Text("暂无登记的设备").foregroundStyle(.secondary) }
                     ForEach(client.agents) { agent in
                         Button {
                             selection = .device(agent.id)
-                            sheet = nil
                         } label: {
                             deviceRow(agent, current: agent.id == selectedAgent?.id)
                         }
@@ -201,25 +179,12 @@ struct DeviceMonitorView: View {
                     Text("下次打开设备监控时直接进入默认设备。")
                 }
                 if let agent = selectedAgent {
-                    Section {
-                        Button {
-                            pageOrderPresentation = .pending(pageOrderKey(agent))
-                            sheet = nil
-                        } label: {
-                            LabeledContent("页面排序", value: "\(agent.name) · \(agent.id)")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                        }
-                        .disabled(agent.monitorPages.count < 2)
-                    }
+                    let order = pageOrderStorage(for: agent)
+                    DevicePageOrderSection(agent: agent, capabilities: agent.monitorPages, order: order)
+                        .id(order.key)
                 }
             }
-            .navigationTitle("设备监控设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("完成") { sheet = nil } }
-            }
+            .environment(\.editMode, .constant(.active))
         }
     }
 
@@ -264,8 +229,7 @@ struct DeviceMonitorView: View {
 struct DeviceMetricsView: View {
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
-    let pageOrderKey: String
-    @Binding var showingPageOrder: Bool
+    let order: DeviceCardOrder.Storage
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
@@ -283,22 +247,15 @@ struct DeviceMetricsView: View {
               liveContext == client.requestContext else { return nil }
         return liveContext
     }
-    private func orderKey(_ group: String) -> String {
+    private var sshAccount: String {
         DeviceCardOrder.storageKey(server: client.serverURL, account: client.username, agent: agent.id,
-                                  group: group)
-    }
-    private var initialOrder: [String] {
-        ["query", "action"].flatMap { group in
-            guard let data = UserDefaults.standard.data(forKey: orderKey(group)),
-                  let names = try? JSONDecoder().decode([String].self, from: data) else { return [String]() }
-            return names
-        }
+                                  group: "ssh")
     }
     var body: some View {
         DeviceCapabilityPages(capabilities: currentAgent.monitorPages,
-            storageKey: pageOrderKey, deviceLabel: "\(currentAgent.name) · \(currentAgent.id)",
+            order: order,
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
-            initialOrder: initialOrder, showingOrder: $showingPageOrder, title: capabilityTitle, tabTitle: capabilityTabTitle) {
+            tabTitle: capabilityTabTitle) {
             deviceOverview
         } content: { capability in
             if capability.name == "query.system.metrics", capability.version == 1 {
@@ -312,7 +269,7 @@ struct DeviceMetricsView: View {
                     .devicePagePanel()
             }
         } terminal: {
-            DeviceSSHTerminalView(agentID: agent.id, account: orderKey("ssh"))
+            DeviceSSHTerminalView(agentID: agent.id, account: sshAccount)
                 .id(client.requestContext)
         }
         .refreshable { if currentAgent.online { await client.query(currentAgent) } }
@@ -439,16 +396,6 @@ struct DeviceMetricsView: View {
                     }
                 }
             } else { Text("当前客户端暂不支持此操作或版本。").font(.footnote).foregroundStyle(.secondary) }
-        }
-    }
-    private func capabilityTitle(_ capability: ConsoleAgentCapability) -> String {
-        switch (capability.name, capability.version) {
-        case ("query.system.metrics", 1): return "系统指标"
-        case ("query.codex.usage", 1): return "Codex 活动"
-        case ("query.network.listeners", 1): return "监听端口"
-        case ("action.network.http.check", 1): return "URL 连通性检测"
-        case (DeviceGitCommand.list, 1): return "Git 仓库"
-        default: return capability.name + " · v\(capability.version)"
         }
     }
     @ViewBuilder private func queryStatus(_ capability: ConsoleAgentCapability) -> some View {

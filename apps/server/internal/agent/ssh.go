@@ -1,4 +1,4 @@
-package server
+package agent
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"sync"
 )
 
-const sshChunk = 4096
+const SSHChunk = 4096
 
-type sshFrame struct {
+type SSHFrame struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 	Data []byte `json:"data,omitempty"`
@@ -20,7 +20,7 @@ type agentSSH struct {
 	input chan []byte
 }
 
-func (c *agentConnection) publishSSH(message agentMessage) {
+func (c *Connection) publishSSH(message Message) {
 	c.mu.Lock()
 	tunnel := c.ssh
 	c.mu.Unlock()
@@ -30,7 +30,7 @@ func (c *agentConnection) publishSSH(message agentMessage) {
 	var data []byte
 	if message.Type == "ssh_data" {
 		data = message.Data
-		if len(data) == 0 || len(data) > sshChunk {
+		if len(data) == 0 || len(data) > SSHChunk {
 			_ = tunnel.pipe.Close()
 			return
 		}
@@ -42,15 +42,15 @@ func (c *agentConnection) publishSSH(message agentMessage) {
 	}
 }
 
-func (c *agentConnection) openSSH(ctx context.Context) (net.Conn, func(), error) {
+func (c *Connection) OpenSSH(ctx context.Context) (net.Conn, func(), error) {
 	client, pipe := net.Pipe()
-	tunnel := &agentSSH{id: randomToken(), pipe: pipe, input: make(chan []byte, 32)}
+	tunnel := &agentSSH{id: c.newID(), pipe: pipe, input: make(chan []byte, 32)}
 	c.mu.Lock()
 	if c.ssh != nil {
 		c.mu.Unlock()
 		_ = client.Close()
 		_ = pipe.Close()
-		return nil, nil, errAgentBusy
+		return nil, nil, ErrBusy
 	}
 	c.ssh = tunnel
 	c.mu.Unlock()
@@ -66,8 +66,8 @@ func (c *agentConnection) openSSH(ctx context.Context) (net.Conn, func(), error)
 			select {
 			case <-c.done:
 			default:
-				if c.send(sshFrame{Type: "ssh_close", ID: tunnel.id}) != nil {
-					c.close()
+				if c.Send(SSHFrame{Type: "ssh_close", ID: tunnel.id}) != nil {
+					c.Close()
 				}
 			}
 			c.mu.Lock()
@@ -81,8 +81,8 @@ func (c *agentConnection) openSSH(ctx context.Context) (net.Conn, func(), error)
 		return nil, nil, net.ErrClosed
 	default:
 	}
-	if err := c.send(sshFrame{Type: "ssh_open", ID: tunnel.id}); err != nil {
-		c.close()
+	if err := c.Send(SSHFrame{Type: "ssh_open", ID: tunnel.id}); err != nil {
+		c.Close()
 		closeTunnel()
 		return nil, nil, err
 	}
@@ -111,11 +111,11 @@ func (c *agentConnection) openSSH(ctx context.Context) (net.Conn, func(), error)
 	}()
 	go func() {
 		defer pipe.Close()
-		buf := make([]byte, sshChunk)
+		buf := make([]byte, SSHChunk)
 		for {
 			n, err := pipe.Read(buf)
-			if n != 0 && c.send(sshFrame{Type: "ssh_data", ID: tunnel.id, Data: buf[:n]}) != nil {
-				c.close()
+			if n != 0 && c.Send(SSHFrame{Type: "ssh_data", ID: tunnel.id, Data: buf[:n]}) != nil {
+				c.Close()
 				return
 			}
 			if err != nil {

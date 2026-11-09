@@ -23,3 +23,5 @@ apps/server/secrets/
 apps/server/config/*
 !apps/server/config/server.example.json
 *.private.pem
+/apps/server/web/notifications/node_modules/
+/apps/server/web/notifications/dist/

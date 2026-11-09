@@ -16,7 +16,7 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
     override func stopLoading() { }
 }
 
-@MainActor private final class ECSMockRenderer: ECSTerminalRendering {
+@MainActor private final class ECSMockRenderer: HakoTerminalRendering {
     var output = Data()
     var resets = 0
     var focuses = 0
@@ -30,7 +30,7 @@ private final class ECSMockURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 @MainActor private func checkTerminalDisplay(prompt: Data) {
-    let display = ECSTerminalDisplay(limit: 16)
+    let display = HakoTerminalDisplay(limit: 16)
     display.append(prompt) // Output can arrive before UIKit is attached.
     let firstRenderer = ECSMockRenderer()
     display.attach(firstRenderer)

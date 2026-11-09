@@ -4,20 +4,22 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"hako/server/internal/agent"
 )
 
 func TestV3CapabilityRules(t *testing.T) {
 	for _, name := range []string{"system.metrics", "query.all", "query.cpu", "action.network", "Query.system.metrics", "query.system.1bad"} {
-		if validCapabilities([]agentCapability{{Name: name, Version: 1}}) {
+		if agent.ValidCapabilities([]agent.Capability{{Name: name, Version: 1}}) {
 			t.Fatal("invalid capability accepted", name)
 		}
 	}
-	if !validCapabilities([]agentCapability{}) {
+	if !agent.ValidCapabilities([]agent.Capability{}) {
 		t.Fatal("known empty manifest rejected")
 	}
 	f := newFixture(t, true)
-	ws := f.connectAgent(false, agentCapability{Name: "query.system.metrics", Version: 1}, agentCapability{Name: "action.network.http.check", Version: 2})
-	for _, request := range []agentRequest{
+	ws := f.connectAgent(false, agent.Capability{Name: "query.system.metrics", Version: 1}, agent.Capability{Name: "action.network.http.check", Version: 2})
+	for _, request := range []agent.Request{
 		{Method: "query.all", Version: 2, Params: json.RawMessage(`{}`)},
 		{Method: "query.system.metrics", Version: 2, Params: json.RawMessage(`{}`)},
 		{Method: "action.network.http.check", Version: 1, Params: json.RawMessage(`{}`)},
@@ -29,17 +31,17 @@ func TestV3CapabilityRules(t *testing.T) {
 		}
 	}
 	// Both a single query and an operation use exact declared versions.
-	for _, method := range []agentRequest{
+	for _, method := range []agent.Request{
 		{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)},
 		{Method: "action.network.http.check", Version: 2, Params: json.RawMessage(`{"url":"http://localhost"}`)},
 		{Method: "query.all", Version: 1, Params: json.RawMessage(`{}`)},
 	} {
 		done := make(chan bool, 1)
 		go func() {
-			var message agentMessage
+			var message agent.Message
 			ok := ws.ReadJSON(&message) == nil && message.Method == method.Method && message.Version == method.Version && bytes.Equal(message.Params, method.Params)
 			if ok {
-				ok = ws.WriteJSON(agentMessage{Type: "response", ID: message.ID, agentResult: agentResult{Result: json.RawMessage(`{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}}}}`)}}) == nil
+				ok = ws.WriteJSON(agent.Message{Type: "response", ID: message.ID, Reply: agent.Reply{Result: json.RawMessage(`{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}}}}`)}}) == nil
 			}
 			done <- ok
 		}()
@@ -60,16 +62,16 @@ func TestAuthenticatedCapabilitiesPersistAcrossRestart(t *testing.T) {
 	if !bytes.Contains(data, []byte(`"capabilities":null`)) {
 		t.Fatal("unseen manifest must be unknown", string(data))
 	}
-	f.connectAgent(false, agentCapability{Name: "query.system.metrics", Version: 3})
+	f.connectAgent(false, agent.Capability{Name: "query.system.metrics", Version: 3})
 	// A failed RSA authentication must never overwrite the last authenticated manifest.
-	f.connectAgent(true, agentCapability{Name: "action.future.execute", Version: 8})
+	f.connectAgent(true, agent.Capability{Name: "action.future.execute", Version: 8})
 	restarted, err := New(f.s.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
 	items := restarted.agentItems(false)
-	manifest, ok := items[0]["capabilities"].([]agentCapability)
+	manifest, ok := items[0]["capabilities"].([]agent.Capability)
 	if !ok || len(manifest) != 1 || manifest[0].Name != "query.system.metrics" || manifest[0].Version != 3 || items[0]["online"] != false {
 		t.Fatal("authenticated offline manifest not persisted", items)
 	}
@@ -77,7 +79,7 @@ func TestAuthenticatedCapabilitiesPersistAcrossRestart(t *testing.T) {
 
 func TestKnownEmptyCapabilitiesAreNotUnknown(t *testing.T) {
 	f := newFixture(t, true)
-	f.connectAgent(false, []agentCapability{}...)
+	f.connectAgent(false, []agent.Capability{}...)
 	_, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 	if !bytes.Contains(data, []byte(`"capabilities":[]`)) {
 		t.Fatal("known empty manifest changed to unknown", string(data))
@@ -87,7 +89,7 @@ func TestKnownEmptyCapabilitiesAreNotUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	manifest := restarted.agentItems(false)[0]["capabilities"].([]agentCapability)
+	manifest := restarted.agentItems(false)[0]["capabilities"].([]agent.Capability)
 	if manifest == nil || len(manifest) != 0 {
 		t.Fatal("empty manifest not preserved across restart")
 	}

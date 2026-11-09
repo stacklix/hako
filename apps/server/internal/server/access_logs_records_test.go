@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"hako/server/internal/accesslog"
 )
 
 func TestAccessLogRecordsFiltersAndPagination(t *testing.T) {
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
-	s := &Server{accessLogs: a}
 	now := time.Now().Add(-time.Minute).Truncate(time.Second)
 	var data strings.Builder
 	for i := 0; i < 12; i++ {
@@ -25,9 +25,10 @@ func TestAccessLogRecordsFiltersAndPagination(t *testing.T) {
 	data.WriteString(logTestLine(now, "b.test", "2001:db8::1", "IPv6", "/path/00", 503))
 	data.WriteString(logTestLine(now.Add(-2*time.Hour), "a.test", "192.0.2.1", "old", "/old", 404))
 	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
-	a.scan()
+	a := importTestAccessLogs(t, dir)
+	s := &Server{accessLogs: a}
 	type result struct {
-		Rows                []accessRecord
+		Rows                []accesslog.Record
 		TotalRows, Requests int64
 		HasMore             bool
 	}
@@ -68,7 +69,7 @@ func TestAccessLogRecordsFiltersAndPagination(t *testing.T) {
 			t.Fatalf("pagination: %+v", page)
 		}
 		for _, row := range page.Rows {
-			if seen[row.Path] || row.Status != 404 || row.IP != "192.0.2.1" || row.UserAgent != "UA" || row.Time != now.In(a.location).Format(time.RFC3339) {
+			if seen[row.Path] || row.Status != 404 || row.IP != "192.0.2.1" || row.UserAgent != "UA" || row.Time != now.In(a.Location()).Format(time.RFC3339) {
 				t.Fatalf("incorrect row: %+v", row)
 			}
 			seen[row.Path] = true
@@ -88,8 +89,6 @@ func TestAccessLogRecordsFiltersAndPagination(t *testing.T) {
 
 func TestAccessLogRecordsTrailingSlashEquivalence(t *testing.T) {
 	dir := t.TempDir()
-	a := logTestService(t, filepath.Join(t.TempDir(), "db"), dir, 86400)
-	s := &Server{accessLogs: a}
 	now := time.Now().Add(-time.Minute).Truncate(time.Second)
 	var data strings.Builder
 	for _, path := range []string{"/blog", "/blog/", "/blog//", "/blog/post", "/blogger", "/"} {
@@ -101,9 +100,10 @@ func TestAccessLogRecordsTrailingSlashEquivalence(t *testing.T) {
 	}
 	data.WriteString(logTestLine(now, "b.test", "192.0.2.1", "foreign", "/blog/", 404))
 	logTestWrite(t, filepath.Join(dir, "access.log"), data.String())
-	a.scan()
+	a := importTestAccessLogs(t, dir)
+	s := &Server{accessLogs: a}
 	type result struct {
-		Rows                []accessRecord
+		Rows                []accesslog.Record
 		TotalRows, Requests int64
 		HasMore             bool
 	}

@@ -16,15 +16,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"hako/server/internal/accesslog"
+	"hako/server/internal/agent"
 	"hako/server/internal/notify"
 )
 
 type AgentConfig struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	PublicKeyFile string            `json:"publicKeyFile"`
-	PublicKeyPEM  string            `json:"publicKeyPem,omitempty"`
-	Capabilities  []agentCapability `json:"capabilities"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	PublicKeyFile string             `json:"publicKeyFile"`
+	PublicKeyPEM  string             `json:"publicKeyPem,omitempty"`
+	Capabilities  []agent.Capability `json:"capabilities"`
 	key           *rsa.PublicKey
 	keyID         string
 }
@@ -38,7 +40,7 @@ type Config struct {
 	TrustedProxies      string
 	Agents              []AgentConfig
 	RequestTimeout      time.Duration
-	AccessLogs          AccessLogConfig
+	AccessLogs          accesslog.Config
 	NotificationWebDir  string
 	NotificationDataDir string
 }
@@ -55,8 +57,7 @@ type Server struct {
 	store              *store
 	mux                *http.ServeMux
 	mu                 sync.Mutex
-	online             map[string]*agentConnection
-	lastSeen           map[string]string
+	agentHub           agent.Hub
 	limits             map[string]bucket
 	requests           chan struct{}
 	registry           atomic.Pointer[Registry]
@@ -65,7 +66,7 @@ type Server struct {
 	adminMu            sync.Mutex
 	adminSessions      map[string]adminSession
 	adminLogins        map[string]*adminLoginRequest
-	accessLogs         *accessLogService
+	accessLogs         *accesslog.Service
 	notifications      *notify.Service
 }
 
@@ -95,7 +96,7 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{config: config, store: st, mux: http.NewServeMux(), online: map[string]*agentConnection{}, lastSeen: map[string]string{}, limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
+	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
 	var registry *Registry
 	if err := st.update(func(value *state) error {
@@ -133,7 +134,7 @@ func New(config Config) (*Server, error) {
 	}
 	s.registry.Store(registry)
 	s.config.Agents, s.config.Consoles = registry.Agents, registry.Consoles
-	if s.accessLogs, err = newAccessLogService(config.Database, config.AccessLogs); err != nil {
+	if s.accessLogs, err = accesslog.Open(config.Database, config.AccessLogs); err != nil {
 		st.db.Close()
 		return nil, err
 	}
@@ -143,26 +144,10 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	s.appLoginRoutes()
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"ok": true}) })
-	s.mux.HandleFunc("GET /api/v1/version", serverVersion)
-	s.mux.HandleFunc("POST /api/v1/auth/challenge", s.challenge)
-	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
-	s.mux.HandleFunc("POST /api/v1/auth/refresh", s.refresh)
-	s.mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
-	s.mux.HandleFunc("GET /api/v1/auth/session", s.currentSession)
-	s.mux.HandleFunc("GET /api/v1/sessions", s.sessions)
-	s.mux.HandleFunc("DELETE /api/v1/web-sessions/{id}", s.revokeWebSession)
-	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
-	s.mux.HandleFunc("GET /api/v1/access-logs", s.consoleAccessLogs(s.adminAccessLogs))
-	s.mux.HandleFunc("GET /api/v1/access-logs/rankings", s.consoleAccessLogs(s.adminAccessLogRankings))
-	s.mux.HandleFunc("GET /api/v1/access-logs/records", s.consoleAccessLogs(s.adminAccessLogRecords))
-	s.mux.HandleFunc("GET /api/v1/access-logs/hour", s.consoleAccessLogs(s.adminAccessLogHour))
-	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)
-	s.mux.HandleFunc("POST /api/v1/agents/{id}/requests", s.requestAgent)
-	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
-	s.mux.HandleFunc("GET /ws/console/agents", s.consoleAgentSocket)
-	s.mux.HandleFunc("GET /ws/console/agents/live/{id}", s.consoleAgentSocket)
-	s.mux.HandleFunc("GET /ws/console/agents/terminal/{terminalID}", s.consoleAgentSocket)
+	s.systemRoutes()
+	s.consoleRoutes()
+	s.accessLogRoutes()
+	s.agentRoutes()
 	s.notificationRoutes()
 	if err := s.startNotifications(); err != nil {
 		_ = s.Close()
@@ -201,17 +186,13 @@ func (s *Server) Close() error {
 	}
 	s.adminMu.Unlock()
 	if s.accessLogs != nil {
-		s.accessLogs.close()
+		s.accessLogs.Close()
 	}
 	var notificationErr error
 	if s.notifications != nil {
 		notificationErr = s.notifications.Close()
 	}
-	s.mu.Lock()
-	for _, c := range s.online {
-		c.close()
-	}
-	s.mu.Unlock()
+	s.agentHub.Close()
 	return errors.Join(notificationErr, s.store.db.Close())
 }
 

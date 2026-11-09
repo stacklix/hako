@@ -180,7 +180,7 @@ WebSocket 升级为 v3，使用 `capabilities` 替代 `methods`，请求消息�
 4. iOS 以能力构建详情页，接入统一数据查询，再加入 URL 输入与独立检测状态。
 5. 完成跨端验证后同步发布 Windows、服务端和 iOS。
 
-主要修改位置为 Windows 的 `Core/AgentDispatcher.cs`、`Core/AgentConnection.cs`，服务端的 `internal/server/agents.go` 及能力持久化模型，iOS 的 `ConsoleClient.swift`、`DeviceMonitorView.swift`。HTTP 检测实现放入独立模块，避免与系统指标采样混合。
+主要修改位置为 Windows 的 `Core/AgentDispatcher.cs`、`Core/Connection/AgentConnection.cs`，服务端的 `internal/server/agents.go` 及能力持久化模型，iOS 的 `ConsoleClient.swift`、`DeviceMonitorView.swift`。HTTP 检测实现放入独立模块，避免与系统指标采样混合。
 
 ## 验收条件
 

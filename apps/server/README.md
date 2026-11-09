@@ -8,6 +8,14 @@ Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子�
 
 两类客户端使用配置中的唯一账号及预先登记的设备公钥：Agent 使用 RSA-PSS/SHA-256，Console 使用 Secure Enclave P-256 和 DPoP。所有已登记 Console 都是管理员，可以批准网页登录。没有密码、TOTP、管理密钥登录或公开注册入口。
 
+## 源码目录
+
+- `cmd/hako-server/` 读取运行配置并启动 HTTP 服务。
+- `internal/server/` 注册路由并处理认证、OIDC、管理 API 和设备信任。随 Go 二进制嵌入的管理页资源位于 `internal/server/web/`。
+- `internal/agent/` 管理已认证的 Agent 连接、请求、遥测订阅和 SSH 通道。
+- `internal/accesslog/` 负责访问日志采集、SQLite 存储和查询。
+- `internal/notify/` 负责通知网关。单独构建的通知前端位于 `web/notifications/`。
+
 ## Docker 部署
 
 ### 自动发布镜像到 GHCR
@@ -100,7 +108,7 @@ docker compose up -d
 
 ## 通知网关
 
-登录 Hako 管理后台，打开「通知网关」。工作台、机器人、消息中心、Webhooks 和系统设置使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `notifications/` 执行 `npm ci && npm run build`，然后用 `HAKO_NOTIFICATION_WEB_DIR` 指定 `dist/web` 的路径。
+登录 Hako 管理后台，打开「通知网关」。工作台、机器人、消息中心、Webhooks 和系统设置使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `web/notifications/` 执行 `npm ci && npm run build`。从 `apps/server/` 启动时默认加载 `web/notifications/dist/web`，也可以用 `HAKO_NOTIFICATION_WEB_DIR` 指定产物路径。
 
 - 微信机器人通过微信二维码授权。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
 - Apple Push 配置 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID=me.stackli.hako` 和 `APNS_KEY_FILE`。密钥文件须由 Hako 进程读取。Apple Push 首版支持文本。

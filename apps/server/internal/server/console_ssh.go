@@ -14,6 +14,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/ssh"
+
+	"hako/server/internal/agent"
 )
 
 var errSSHHostKey = errors.New("SSH host key does not match")
@@ -21,8 +23,8 @@ var errSSHHostKey = errors.New("SSH host key does not match")
 type sshOutput func([]byte) error
 
 func (write sshOutput) Write(data []byte) (int, error) {
-	for offset := 0; offset < len(data); offset += sshChunk {
-		if err := write(data[offset:min(offset+sshChunk, len(data))]); err != nil {
+	for offset := 0; offset < len(data); offset += agent.SSHChunk {
+		if err := write(data[offset:min(offset+agent.SSHChunk, len(data))]); err != nil {
 			return offset, err
 		}
 	}
@@ -67,14 +69,12 @@ func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Co
 	if !valid() {
 		return
 	}
-	s.mu.Lock()
-	agent := s.online[agentID]
-	s.mu.Unlock()
-	if agent == nil {
+	peer, _ := s.agentHub.Lookup(agentID)
+	if peer == nil {
 		_ = control("agent_offline")
 		return
 	}
-	if !agent.sshTunnel {
+	if !peer.HasSSHTunnel() {
 		_ = control("ssh_unsupported")
 		return
 	}
@@ -109,7 +109,7 @@ func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Co
 			var next command
 			switch kind {
 			case websocket.BinaryMessage:
-				if len(data) == 0 || len(data) > sshChunk {
+				if len(data) == 0 || len(data) > agent.SSHChunk {
 					return
 				}
 				next.input = data
@@ -128,9 +128,9 @@ func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Co
 		}
 	}()
 
-	raw, closeTunnel, err := agent.openSSH(ctx)
+	raw, closeTunnel, err := peer.OpenSSH(ctx)
 	if err != nil {
-		if errors.Is(err, errAgentBusy) {
+		if errors.Is(err, agent.ErrBusy) {
 			_ = control("ssh_busy")
 		} else {
 			_ = control("ssh_unavailable")

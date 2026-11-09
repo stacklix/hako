@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"hako/server/internal/agent"
 )
 
 type agentAPIReply struct {
@@ -161,7 +163,7 @@ func (s *Server) consoleAgentCall(ctx context.Context, command consoleAgentComma
 			return s.saveAgentRegistration(request)
 		}
 	case "request":
-		var request agentRequest
+		var request agent.Request
 		if decodeJSON(bytes.NewReader(command.Body), &request) {
 			return s.callAgent(ctx, command.AgentID, request)
 		}
@@ -170,9 +172,7 @@ func (s *Server) consoleAgentCall(ctx context.Context, command consoleAgentComma
 }
 
 func (s *Server) streamAgentTelemetry(ctx context.Context, id string, heartbeat <-chan time.Time, ping, valid func() bool, write func(any) bool) {
-	s.mu.Lock()
-	c := s.online[id]
-	s.mu.Unlock()
+	c, _ := s.agentHub.Lookup(id)
 	fail := func(status int, code string) {
 		if ctx.Err() == nil && valid() {
 			write(consoleAgentReply{"error", "", status, agentAPIFailure(status, code).Body})
@@ -185,12 +185,12 @@ func (s *Server) streamAgentTelemetry(ctx context.Context, id string, heartbeat 
 	if ctx.Err() != nil || !valid() {
 		return
 	}
-	sub, err := c.subscribe()
+	sub, err := c.Subscribe()
 	if err != nil {
 		fail(409, "agent_disconnected")
 		return
 	}
-	defer c.unsubscribe(sub)
+	defer c.Unsubscribe(sub)
 	if ctx.Err() != nil || !valid() || !write(map[string]string{"type": "subscribed"}) {
 		return
 	}
@@ -198,15 +198,15 @@ func (s *Server) streamAgentTelemetry(ctx context.Context, id string, heartbeat 
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.done:
+		case <-c.Done():
 			fail(409, "agent_disconnected")
 			return
 		case <-heartbeat:
 			if !ping() {
 				return
 			}
-		case <-sub.changed:
-			for _, update := range sub.take() {
+		case <-sub.Changed():
+			for _, update := range sub.Take() {
 				if !valid() || !write(update) {
 					return
 				}

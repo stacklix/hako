@@ -77,12 +77,12 @@ API Key 能读取设备，不代表 Headplane 能读取 DNS 配置。先打开�
 
 ### 运行测试
 
-模块代码位于 `apps/ios/Hako/Headplane/`。业务客户端遵循 `HeadplaneAccess`，共享宿主的 `HTTPTransport`、`SecureStorage` 和日志设施，不依赖其他子应用。
+模块代码位于 `apps/ios/Hako/Features/Headplane/`。业务客户端遵循 `HeadplaneAccess`，共享宿主的 `HTTPTransport`、`SecureStorage` 和日志设施，不依赖其他子应用。
 
 在 `apps/ios` 下执行：
 
 ```sh
-swiftc -target arm64-apple-macos14.0 Hako/HTTPTransport.swift Hako/SecureStorage.swift Hako/Logging/HakoLog.swift Hako/Headplane/HeadplaneProtocol.swift Hako/Headplane/HeadplaneStream.swift Hako/Headplane/HeadplaneClient.swift Hako/Headplane/HeadplaneStore.swift Tests/HeadplaneTests.swift -o /tmp/hako-headplane-tests
+swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Headplane/HeadplaneProtocol.swift Hako/Features/Headplane/HeadplaneStream.swift Hako/Features/Headplane/HeadplaneClient.swift Hako/Features/Headplane/HeadplaneStore.swift Tests/HeadplaneTests.swift -o /tmp/hako-headplane-tests
 /tmp/hako-headplane-tests
 ```
 

@@ -6,3 +6,5 @@ build
 
 notifications/node_modules
 notifications/dist
+web/notifications/node_modules
+web/notifications/dist

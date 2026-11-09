@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"hako/server/internal/agent"
 )
 
 type adminClient struct {
@@ -240,9 +242,9 @@ func TestAdminAgentLifecycleMetricsAndPersistence(t *testing.T) {
 	a := loginAdmin(f)
 	ws := f.connectAgent(false)
 	go func() {
-		var req agentMessage
+		var req agent.Message
 		if ws.ReadJSON(&req) == nil {
-			_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: json.RawMessage(`{"cpuUsagePercent":25,"newMetric":{"value":42}}`)}})
+			_ = ws.WriteJSON(agent.Message{Type: "response", ID: req.ID, Reply: agent.Reply{Result: json.RawMessage(`{"cpuUsagePercent":25,"newMetric":{"value":42}}`)}})
 		}
 	}()
 	data := a.call("POST", "agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, 200)
@@ -358,7 +360,7 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.Close()
-	_ = ws.WriteJSON(agentMessage{Type: "hello", Version: agentProtocolVersion, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Capabilities: []agentCapability{{Name: "query.system.metrics", Version: 1}}})
+	_ = ws.WriteJSON(agent.Message{Type: "hello", Version: agent.ProtocolVersion, Username: "owner", KeyID: f.s.registry.Load().Agents[0].keyID, Capabilities: []agent.Capability{{Name: "query.system.metrics", Version: 1}}})
 	var challenge struct {
 		Payload string `json:"payload"`
 	}
@@ -369,15 +371,13 @@ func TestAdminRemovalDuringAgentAuthentication(t *testing.T) {
 	payload, _ := base64.StdEncoding.DecodeString(challenge.Payload)
 	hash := sha256.Sum256(payload)
 	signature, _ := rsa.SignPSS(rand.Reader, f.agentKey, crypto.SHA256, hash[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
-	_ = ws.WriteJSON(agentMessage{Type: "authenticate", Signature: base64.StdEncoding.EncodeToString(signature)})
+	_ = ws.WriteJSON(agent.Message{Type: "authenticate", Signature: base64.StdEncoding.EncodeToString(signature)})
 	_ = ws.SetReadDeadline(time.Now().Add(time.Second))
 	var ack any
 	if ws.ReadJSON(&ack) == nil {
 		t.Fatal("revoked key completed in-flight authentication")
 	}
-	f.s.mu.Lock()
-	defer f.s.mu.Unlock()
-	if f.s.online["PC"] != nil {
+	if peer, _ := f.s.agentHub.Lookup("PC"); peer != nil {
 		t.Fatal("revoked Agent registered online")
 	}
 }

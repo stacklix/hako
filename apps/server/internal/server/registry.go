@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"hako/server/internal/agent"
 )
 
 // Agent keys persist across restarts; Console keys are replaced from operator configuration at startup.
@@ -30,7 +32,7 @@ func publicBlock(text string) (*pem.Block, error) {
 }
 
 func parseAgent(a AgentConfig, fromFile bool) (AgentConfig, error) {
-	if a.Capabilities != nil && !validCapabilities(a.Capabilities) {
+	if a.Capabilities != nil && !agent.ValidCapabilities(a.Capabilities) {
 		return a, fmt.Errorf("Agent 能力清单无效")
 	}
 	if !validAgentID(a.ID) {

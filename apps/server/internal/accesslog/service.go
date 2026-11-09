@@ -1,4 +1,4 @@
-package server
+package accesslog
 
 import (
 	"bufio"
@@ -21,16 +21,18 @@ import (
 	"sync"
 	"time"
 	_ "time/tzdata"
+
+	_ "modernc.org/sqlite"
 )
 
 // An empty directory disables collection. Times are grouped in the configured timezone.
-type AccessLogConfig struct {
+type Config struct {
 	Directory           string `json:"directory"`
 	ScanIntervalSeconds int    `json:"scanIntervalSeconds"`
 	Timezone            string `json:"timezone"`
 }
 
-type accessLogStatus struct {
+type Status struct {
 	Enabled   bool   `json:"enabled"`
 	Timezone  string `json:"timezone"`
 	Interval  int    `json:"scanIntervalSeconds"`
@@ -43,18 +45,18 @@ type accessLogStatus struct {
 	Skipped   int64  `json:"skipped"`
 }
 
-type accessLogService struct {
-	config   AccessLogConfig
+type Service struct {
+	config   Config
 	location *time.Location
 	db       *sql.DB
 	ctx      context.Context
 	cancel   context.CancelFunc
 	done     chan struct{}
 	mu       sync.Mutex
-	status   accessLogStatus
+	status   Status
 }
 
-func newAccessLogService(database string, config AccessLogConfig) (*accessLogService, error) {
+func Open(database string, config Config) (*Service, error) {
 	if config.Directory == "" {
 		return nil, nil
 	}
@@ -109,8 +111,8 @@ func newAccessLogService(database string, config AccessLogConfig) (*accessLogSer
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &accessLogService{config: config, location: location, db: db, ctx: ctx, cancel: cancel, done: make(chan struct{})}
-	a.status = accessLogStatus{Enabled: true, Timezone: config.Timezone, Interval: config.ScanIntervalSeconds, Retention: 7}
+	a := &Service{config: config, location: location, db: db, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	a.status = Status{Enabled: true, Timezone: config.Timezone, Interval: config.ScanIntervalSeconds, Retention: 7}
 	go func() {
 		defer close(a.done)
 		a.scan()
@@ -128,10 +130,10 @@ func newAccessLogService(database string, config AccessLogConfig) (*accessLogSer
 	return a, nil
 }
 
-const accessLogRetention = 7 * 24 * time.Hour
+const Retention = 7 * 24 * time.Hour
 
 func pruneAccessLogs(ctx context.Context, db *sql.DB, now time.Time) error {
-	_, err := db.ExecContext(ctx, "DELETE FROM access_counts WHERE occurred_at < ?", now.Add(-accessLogRetention).Unix())
+	_, err := db.ExecContext(ctx, "DELETE FROM access_counts WHERE occurred_at < ?", now.Add(-Retention).Unix())
 	return err
 }
 
@@ -192,8 +194,8 @@ func initAccessLogSchema(db *sql.DB) error {
 	return err
 }
 
-func (a *accessLogService) close() { a.cancel(); <-a.done; _ = a.db.Close() }
-func (a *accessLogService) snapshot() accessLogStatus {
+func (a *Service) Close() { a.cancel(); <-a.done; _ = a.db.Close() }
+func (a *Service) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.status
@@ -209,13 +211,13 @@ func accessLogFilename(path string) bool {
 	return false
 }
 
-func (a *accessLogService) scan() {
+func (a *Service) scan() {
 	a.mu.Lock()
 	a.status.Scanning = true
 	a.mu.Unlock()
 	files, imported, skipped := 0, int64(0), int64(0)
 	var failures []error
-	cutoff := time.Now().Add(-accessLogRetention).Unix()
+	cutoff := time.Now().Add(-Retention).Unix()
 	err := filepath.WalkDir(a.config.Directory, func(path string, entry fs.DirEntry, walkErr error) error {
 		if a.ctx.Err() != nil {
 			return a.ctx.Err()
@@ -377,7 +379,7 @@ func (r accessLogReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func (a *accessLogService) scanFile(path string, cutoff int64) (imported, skipped int64, resultErr error) {
+func (a *Service) scanFile(path string, cutoff int64) (imported, skipped int64, resultErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, 0, err
@@ -532,3 +534,5 @@ func (a *accessLogService) scanFile(path string, cutoff int64) (imported, skippe
 	resultErr = flush(true)
 	return
 }
+
+func (a *Service) Location() *time.Location { return a.location }

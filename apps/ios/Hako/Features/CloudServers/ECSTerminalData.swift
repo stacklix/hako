@@ -7,7 +7,7 @@ import Combine
     @Published private(set) var cleaning = false
     @Published private(set) var error: String?
     @Published var control = false
-    let display = ECSTerminalDisplay()
+    let display = HakoTerminalDisplay()
     private var socket: URLSessionWebSocketTask?
     private var client: ECSClient?
     private var sessionID: String?

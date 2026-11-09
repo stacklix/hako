@@ -2,9 +2,7 @@ import SwiftUI
 
 struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: View {
     private let capabilities: [ConsoleAgentCapability]
-    private let deviceLabel: String
     private let emptyMessage: String
-    private let title: (ConsoleAgentCapability) -> String
     private let tabTitle: (ConsoleAgentCapability) -> String
     private let overview: () -> Overview
     private let content: (ConsoleAgentCapability) -> Content
@@ -13,37 +11,23 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedName: String?
     @State private var showingTerminal = false
-    @Binding private var showingOrder: Bool
 
-    init(capabilities: [ConsoleAgentCapability], storageKey: String, deviceLabel: String, emptyMessage: String,
-         initialOrder: [String], showingOrder: Binding<Bool>, title: @escaping (ConsoleAgentCapability) -> String,
+    init(capabilities: [ConsoleAgentCapability], order: DeviceCardOrder.Storage, emptyMessage: String,
          tabTitle: @escaping (ConsoleAgentCapability) -> String,
          @ViewBuilder overview: @escaping () -> Overview,
          @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content,
          @ViewBuilder terminal: @escaping () -> Terminal) {
         self.capabilities = capabilities
-        self.deviceLabel = deviceLabel
         self.emptyMessage = emptyMessage
-        self.title = title
         self.tabTitle = tabTitle
         self.overview = overview
         self.content = content
         self.terminal = terminal
-        _showingOrder = showingOrder
-        _savedOrder = AppStorage(wrappedValue: (try? JSONEncoder().encode(initialOrder)) ?? Data(), storageKey)
-    }
-
-    private var persistedNames: [String] {
-        (try? JSONDecoder().decode([String].self, from: savedOrder)) ?? []
-    }
-    private var orderedPages: [ConsoleAgentCapability] {
-        let byName = Dictionary(capabilities.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        return DeviceCardOrder.arranged(available: capabilities.map(\.name), saved: persistedNames)
-            .compactMap { byName[$0] }
+        _savedOrder = AppStorage(wrappedValue: order.initialData, order.key)
     }
 
     var body: some View {
-        let pages = orderedPages
+        let pages = DeviceCardOrder.pages(capabilities, savedOrder: savedOrder)
         let selected = pages.first { $0.name == selectedName } ?? pages.first
         Group {
             if showingTerminal {
@@ -60,13 +44,6 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
         }
         .background(HakoStyle.background)
         .foregroundStyle(HakoStyle.text)
-        .sheet(isPresented: $showingOrder) {
-            DevicePageOrderEditor(pages: pages, deviceLabel: deviceLabel, title: title) { names in
-                let current = DeviceCardOrder.arranged(available: capabilities.map(\.name), saved: names)
-                let merged = DeviceCardOrder.saving(visible: current, previous: persistedNames)
-                if let encoded = try? JSONEncoder().encode(merged) { savedOrder = encoded }
-            }
-        }
     }
 
     private func scrollablePages(_ pages: [ConsoleAgentCapability], selected: ConsoleAgentCapability?) -> some View {
@@ -79,7 +56,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     if let selected {
                         Section {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(title(selected)).font(.headline).accessibilityAddTraits(.isHeader)
+                                Text(selected.pageTitle).font(.headline).accessibilityAddTraits(.isHeader)
                                 content(selected)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,8 +88,8 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     }
 
     private func tabBar(_ pages: [ConsoleAgentCapability], selected: String?) -> some View {
-        let visible = pages.prefix(DeviceCardOrder.tabLimit - 1)
-        let overflow = pages.dropFirst(DeviceCardOrder.tabLimit - 1)
+        let visible = pages.prefix(DeviceCardOrder.visiblePageLimit)
+        let overflow = pages.dropFirst(DeviceCardOrder.visiblePageLimit)
         let overflowSelection = overflow.first { $0.name == selected }
         return HStack(spacing: 4) {
             if visible.isEmpty {
@@ -144,9 +121,9 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     ForEach(overflow) { page in
                         Button { select(page) } label: {
                             if page.name == selected {
-                                Label(title(page), systemImage: "checkmark")
+                                Label(page.pageTitle, systemImage: "checkmark")
                             } else {
-                                Text(title(page))
+                                Text(page.pageTitle)
                             }
                         }
                     }
@@ -160,7 +137,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     .modifier(DevicePageTabStyle(selected: overflowSelection != nil))
                 }
                 .menuOrder(.fixed)
-                .accessibilityLabel(overflowSelection.map { "更多页面，当前为\(title($0))" } ?? "更多设备页面")
+                .accessibilityLabel(overflowSelection.map { "更多页面，当前为\($0.pageTitle)" } ?? "更多设备页面")
                 .accessibilityAddTraits(overflowSelection == nil ? [] : .isSelected)
             }
         }
@@ -182,7 +159,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title(page))
+        .accessibilityLabel(page.pageTitle)
         .accessibilityAddTraits(selected == page.name ? .isSelected : [])
     }
 }
@@ -200,60 +177,76 @@ private struct DevicePageTabStyle: ViewModifier {
     }
 }
 
-private struct DevicePageOrderEditor: View {
-    let pages: [ConsoleAgentCapability]
-    let deviceLabel: String
-    let title: (ConsoleAgentCapability) -> String
-    let save: ([String]) -> Void
-    @State private var draft: [String]
-    @Environment(\.dismiss) private var dismiss
+struct DevicePageOrderSection: View {
+    private let agent: ConsoleAgent
+    private let capabilities: [ConsoleAgentCapability]
+    @AppStorage private var savedOrder: Data
 
-    init(pages: [ConsoleAgentCapability], deviceLabel: String, title: @escaping (ConsoleAgentCapability) -> String,
-         save: @escaping ([String]) -> Void) {
-        self.pages = pages
-        self.deviceLabel = deviceLabel
-        self.title = title
-        self.save = save
-        _draft = State(initialValue: pages.map(\.name))
+    init(agent: ConsoleAgent, capabilities: [ConsoleAgentCapability], order: DeviceCardOrder.Storage) {
+        self.agent = agent
+        self.capabilities = capabilities
+        _savedOrder = AppStorage(wrappedValue: order.initialData, order.key)
     }
 
     var body: some View {
-        let titles = Dictionary(uniqueKeysWithValues: pages.map { ($0.name, title($0)) })
-        let hasChanges = draft != pages.map(\.name)
-        SettingsSheet(title: "页面排序", hasChanges: hasChanges, saveEnabled: hasChanges,
-                      onSave: { save(draft); dismiss() }, saveAccessibilityLabel: "保存页面顺序") {
-            List {
-                Section { LabeledContent("设备", value: deviceLabel) }
-                Section {
-                    // One native reorder group lets the handle cross the fifth position.
-                    ForEach(draft, id: \.self) { name in
-                        let position = (draft.firstIndex(of: name) ?? 0) + 1
-                        HStack(spacing: 10) {
-                            Text(position.formatted()).font(.caption.monospacedDigit())
-                                .foregroundStyle(HakoStyle.muted).frame(minWidth: 18, alignment: .leading)
-                            Text(titles[name] ?? name).fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                            if position > DeviceCardOrder.tabLimit {
-                                Text("更多").font(.caption).foregroundStyle(HakoStyle.muted)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                        .listRowBackground(HakoStyle.card)
-                    }
-                    .onMove { source, destination in draft.move(fromOffsets: source, toOffset: destination) }
-                } header: {
-                    Text("长按右侧手柄拖动整行。前五项显示在顶部，其余放入更多菜单。")
-                        .textCase(nil)
-                }
+        let pages = DeviceCardOrder.pages(capabilities, savedOrder: savedOrder)
+        Section {
+            if pages.isEmpty {
+                Text(agent.capabilities == nil ? "尚未获取设备页面。" : "此设备暂无可排序的页面。")
+                    .foregroundStyle(.secondary)
             }
-            .environment(\.editMode, .constant(.active))
-            .scrollContentBackground(.hidden)
-            .background(HakoStyle.background)
+            ForEach(Array(pages.enumerated()), id: \.element.id) { index, page in
+                HStack(spacing: 10) {
+                    Text((index + 1).formatted()).font(.caption.monospacedDigit())
+                        .foregroundStyle(HakoStyle.muted).frame(minWidth: 18, alignment: .leading)
+                    Text(page.pageTitle).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if index >= DeviceCardOrder.visiblePageLimit {
+                        Text("更多").font(.caption).foregroundStyle(HakoStyle.muted)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                .moveDisabled(pages.count < 2)
+            }
+            .onMove { source, destination in
+                var names = pages.map(\.name)
+                guard source.allSatisfy(names.indices.contains), (0...names.count).contains(destination) else { return }
+                names.move(fromOffsets: source, toOffset: destination)
+                let merged = DeviceCardOrder.saving(visible: names, previous: DeviceCardOrder.names(from: savedOrder))
+                if let encoded = try? JSONEncoder().encode(merged) { savedOrder = encoded }
+            }
+        } header: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("页面排序").accessibilityAddTraits(.isHeader)
+                Text("设备 ID \(agent.id) · 设备名 \(agent.name)").font(.caption)
+            }
+            .textCase(nil)
+        } footer: {
+            if pages.count > 1 {
+                Text("拖动右侧手柄，松手后自动保存。")
+            }
         }
-        .onChange(of: pages.map(\.name)) { _, names in
-            draft = DeviceCardOrder.arranged(available: names, saved: draft)
+    }
+}
+
+private extension DeviceCardOrder {
+    static func pages(_ capabilities: [ConsoleAgentCapability], savedOrder: Data) -> [ConsoleAgentCapability] {
+        let byName = Dictionary(capabilities.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        return arranged(available: capabilities.map(\.name), saved: names(from: savedOrder)).compactMap { byName[$0] }
+    }
+}
+
+private extension ConsoleAgentCapability {
+    var pageTitle: String {
+        switch (name, version) {
+        case ("query.system.metrics", 1): "系统指标"
+        case ("query.codex.usage", 1): "Codex 活动"
+        case ("query.network.listeners", 1): "监听端口"
+        case ("action.network.http.check", 1): "URL 连通性检测"
+        case (DeviceGitCommand.list, 1): "Git 仓库"
+        default: name + " · v\(version)"
         }
     }
 }

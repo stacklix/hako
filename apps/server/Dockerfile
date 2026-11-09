@@ -1,8 +1,8 @@
 FROM node:24-alpine AS notification-build
 WORKDIR /app/notifications
-COPY notifications/package.json notifications/package-lock.json ./
+COPY web/notifications/package.json web/notifications/package-lock.json ./
 RUN npm ci
-COPY notifications/ ./
+COPY web/notifications/ ./
 RUN npm run build
 
 FROM golang:1.26-alpine AS build

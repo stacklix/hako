@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"hako/server/internal/agent"
 )
 
 type fixture struct {
@@ -363,30 +365,28 @@ func TestRefreshProofReplayDoesNotDestroyRecoverableSession(t *testing.T) {
 	}
 }
 
-func (f *fixture) connectAgent(wrongKey bool, methods ...agentCapability) *websocket.Conn {
+func (f *fixture) connectAgent(wrongKey bool, methods ...agent.Capability) *websocket.Conn {
 	f.t.Helper()
 	return f.connectAgentID("PC", wrongKey, methods...)
 }
 
-func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentCapability) *websocket.Conn {
+func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agent.Capability) *websocket.Conn {
 	return f.connectAgentFeatures(id, wrongKey, false, methods...)
 }
 
-func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, methods ...agentCapability) *websocket.Conn {
+func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, methods ...agent.Capability) *websocket.Conn {
 	if methods == nil {
-		methods = []agentCapability{{Name: "query.system.metrics", Version: 1}}
+		methods = []agent.Capability{{Name: "query.system.metrics", Version: 1}}
 	}
 	f.t.Helper()
-	f.s.mu.Lock()
-	previous := f.s.online[id]
-	f.s.mu.Unlock()
+	previous, _ := f.s.agentHub.Lookup(id)
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
 	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agentProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods, "sshTunnel": sshTunnel})
+	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agent.ProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods, "sshTunnel": sshTunnel})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`
@@ -401,7 +401,7 @@ func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, meth
 		key, _ = rsa.GenerateKey(rand.Reader, 2048)
 	}
 	sig, _ := rsa.SignPSS(rand.Reader, key, crypto.SHA256, hash[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash})
-	_ = ws.WriteJSON(agentMessage{Type: "authenticate", Signature: base64.StdEncoding.EncodeToString(sig)})
+	_ = ws.WriteJSON(agent.Message{Type: "authenticate", Signature: base64.StdEncoding.EncodeToString(sig)})
 	var ack map[string]any
 	err = ws.ReadJSON(&ack)
 	if wrongKey {
@@ -415,9 +415,8 @@ func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, meth
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		f.s.mu.Lock()
-		online := f.s.online[id] != nil && f.s.online[id] != previous
-		f.s.mu.Unlock()
+		peer, _ := f.s.agentHub.Lookup(id)
+		online := peer != nil && peer != previous
 		if online {
 			return ws
 		}
@@ -433,12 +432,12 @@ func TestAgentQueryForwarding(t *testing.T) {
 	f := newFixture(t, true)
 	ws := f.connectAgent(false)
 	go func() {
-		var req agentMessage
+		var req agent.Message
 		if ws.ReadJSON(&req) != nil {
 			return
 		}
 		m := json.RawMessage(`{"cpuUsagePercent":25,"memoryUsagePercent":50,"memoryUsedBytes":4294967296,"memoryTotalBytes":8589934592,"sampledAt":"2026-10-25T10:00:00Z","sampleWindowMs":1000,"gpu":{"usage":42}}`)
-		_ = ws.WriteJSON(agentMessage{Type: "response", ID: req.ID, agentResult: agentResult{Result: m}})
+		_ = ws.WriteJSON(agent.Message{Type: "response", ID: req.ID, Reply: agent.Reply{Result: m}})
 	}()
 	status, data := f.call("POST", "/api/v1/agents/PC/requests", map[string]any{"method": "query.system.metrics", "version": 1, "params": map[string]any{}}, f.tokens.AccessToken)
 	if status != 200 {

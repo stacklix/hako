@@ -2,7 +2,7 @@
 
 首页入口使用青龙龙形单色矢量 Logo，按[官方面板原图](https://qn.whyour.cn/logo.png)描摹为 SVG 路径，保留龙形和外圈。资源位于 `Assets.xcassets/QinglongLogo.imageset`，以模板和 `.primary` 渲染，随浅色／深色模式显示黑色／白色。
 
-Hako iOS 首页的「青龙面板」直接连接已有青龙面板，不依赖 Hako 服务端。模块源码位于 `apps/ios/Hako/Qinglong/`，使用主应用提供的 `HTTPTransport`、`SecretStorage` 和日志服务，不引用其他子应用的业务代码。
+Hako iOS 首页的「青龙面板」直接连接已有青龙面板，不依赖 Hako 服务端。模块源码位于 `apps/ios/Hako/Features/Qinglong/`，使用主应用提供的 `HTTPTransport`、`SecretStorage` 和日志服务，不引用其他子应用的业务代码。
 
 文件编辑页复用容器模块的纯 UI 代码编辑器，不依赖容器连接、文件接口或状态。布局沿用容器文件编辑：顶部路径和状态、原生返回与保存按钮、占满剩余空间的代码区、行号及键盘快捷栏；支持的文件类型提供语法高亮。重新读取、运行已保存脚本及删除集中在文件操作菜单；保存未改动的内容时按钮禁用，退出或重新读取有草稿的文件时可保存并继续、放弃修改或继续编辑。
 
@@ -67,7 +67,7 @@ Cron 按青龙面板自身的时区解释；任务状态使用接口实际的运
 
 ```sh
 cd apps/ios
-swiftc Hako/HTTPTransport.swift Hako/Logging/HakoLog.swift Hako/Qinglong/QinglongProtocol.swift Hako/Qinglong/QinglongRefresh.swift Hako/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
+swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
 /tmp/hako-qinglong-tests
 ```
 

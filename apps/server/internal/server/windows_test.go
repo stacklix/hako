@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"hako/server/internal/agent"
 )
 
 func newLocalHTTP(t *testing.T, s *Server) *httptest.Server {
@@ -67,9 +69,8 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = command.Process.Kill(); _ = command.Wait() })
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		f.s.mu.Lock()
-		online := f.s.online["PC"] != nil
-		f.s.mu.Unlock()
+		peer, _ := f.s.agentHub.Lookup("PC")
+		online := peer != nil
 		if online {
 			break
 		}
@@ -84,7 +85,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		!bytes.Contains(data, []byte(`{"name":"query.git.repositories","version":1}`)) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{
 		Method: "query.git.repository", Version: 1, Params: json.RawMessage(`{"repository":3}`),
 	}, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"invalid_params"`)) {
@@ -106,7 +107,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	firstMetric := ""
 	seen := map[string]bool{}
 	for range 8 {
-		update := readAgentFrame[agentTelemetryUpdate](t, live)
+		update := readAgentFrame[agent.TelemetryUpdate](t, live)
 		if update.Type != "update" || update.Error != nil {
 			t.Fatalf("real Windows telemetry: %+v", update)
 		}
@@ -134,7 +135,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatalf("missing Windows telemetry: %v", seen)
 	}
 	live.Close()
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.network.listeners", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.network.listeners", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 	var listeners struct {
 		Result struct {
 			CollectedAt string
@@ -174,7 +175,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	if !foundListener {
 		t.Fatal("Windows listener query did not preserve the local server port, process and uptime")
 	}
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.codex.usage", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.codex.usage", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 	var usage struct {
 		Result struct {
 			Days []struct {
@@ -214,7 +215,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}))
 	defer target.Close()
 	check := func(url string) (int, []byte) {
-		return f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "action.network.http.check", Version: 1, Params: json.RawMessage(`{"url":` + string(mustJSON(url)) + `}`)}, f.tokens.AccessToken)
+		return f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "action.network.http.check", Version: 1, Params: json.RawMessage(`{"url":` + string(mustJSON(url)) + `}`)}, f.tokens.AccessToken)
 	}
 	for _, path := range []string{"/redirect", "/error", "/body"} {
 		started := time.Now()
@@ -240,7 +241,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("probe did not start")
 	}
-	status, data = f.call("POST", "/api/v1/agents/PC/requests", agentRequest{Method: "query.all", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.all", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
 	var aggregate struct {
 		Result struct {
 			Data map[string]struct {
@@ -248,11 +249,11 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 				Result  testMetrics
 			}
 		}
-		Capabilities []agentCapability
+		Capabilities []agent.Capability
 	}
 	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() ||
 		len(aggregate.Result.Data) != 3 || aggregate.Result.Data["query.network.listeners"].Version != 1 ||
-		!slices.Contains(aggregate.Capabilities, agentCapability{Name: "query.git.repositories", Version: 1}) {
+		!slices.Contains(aggregate.Capabilities, agent.Capability{Name: "query.git.repositories", Version: 1}) {
 		t.Fatalf("real aggregate query failed: status=%d, result count=%d, capability count=%d",
 			status, len(aggregate.Result.Data), len(aggregate.Capabilities))
 	}

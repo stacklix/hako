@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"hako/server/internal/agent"
 )
 
 func dialConsoleAgentSocket(f *fixture, path string, authorized bool, origin string) (*websocket.Conn, *http.Response, error) {
@@ -74,7 +76,7 @@ func TestConsoleAgentSocketRequestsAndAuthentication(t *testing.T) {
 			t.Fatalf("unexpected upgrade result: %v, %v", response, err)
 		}
 	}
-	agent := f.connectAgent(false)
+	peer := f.connectAgent(false)
 	console := openConsoleAgentSocket(t, f, path)
 	writeAgentFrame(t, console, consoleAgentCommand{Type: "list", ID: "list"})
 	list := readAgentFrame[consoleAgentReply](t, console)
@@ -83,11 +85,11 @@ func TestConsoleAgentSocketRequestsAndAuthentication(t *testing.T) {
 	}
 	writeAgentFrame(t, console, consoleAgentCommand{Type: "request", ID: "query", AgentID: "PC",
 		Body: json.RawMessage(`{"method":"query.all","version":1,"params":{}}`)})
-	request := readAgentFrame[agentMessage](t, agent)
+	request := readAgentFrame[agent.Message](t, peer)
 	if request.Type != "request" || request.Method != "query.all" {
 		t.Fatalf("agent request: %+v", request)
 	}
-	writeAgentFrame(t, agent, agentMessage{Type: "response", ID: request.ID, agentResult: agentResult{Result: json.RawMessage(`{"data":{}}`)}})
+	writeAgentFrame(t, peer, agent.Message{Type: "response", ID: request.ID, Reply: agent.Reply{Result: json.RawMessage(`{"data":{}}`)}})
 	reply := readAgentFrame[consoleAgentReply](t, console)
 	body, ok := reply.Body.(map[string]any)
 	if reply.ID != "query" || reply.Status != 200 || !ok || body["capabilities"] == nil || body["result"] == nil {
@@ -97,24 +99,24 @@ func TestConsoleAgentSocketRequestsAndAuthentication(t *testing.T) {
 
 func TestConsoleAgentSocketSharesAndStopsTelemetry(t *testing.T) {
 	f := newFixture(t, true)
-	agent := f.connectAgent(false)
+	peer := f.connectAgent(false)
 	const path = "/ws/console/agents/live/PC"
 	first := openConsoleAgentSocket(t, f, path)
 	if reply := readAgentFrame[consoleAgentReply](t, first); reply.Type != "subscribed" {
 		t.Fatalf("first subscriber: %+v", reply)
 	}
-	start := readAgentFrame[agentMessage](t, agent)
+	start := readAgentFrame[agent.Message](t, peer)
 	if start.Type != "telemetry_start" || start.ID == "" {
 		t.Fatalf("telemetry start: %+v", start)
 	}
 	send := func(result string) {
 		t.Helper()
-		writeAgentFrame(t, agent, agentMessage{Type: "telemetry_update", ID: start.ID, Method: "query.system.metrics", Version: 1,
-			agentResult: agentResult{Result: json.RawMessage(result)}})
+		writeAgentFrame(t, peer, agent.Message{Type: "telemetry_update", ID: start.ID, Method: "query.system.metrics", Version: 1,
+			Reply: agent.Reply{Result: json.RawMessage(result)}})
 	}
 	expect := func(ws *websocket.Conn, result string) {
 		t.Helper()
-		update := readAgentFrame[agentTelemetryUpdate](t, ws)
+		update := readAgentFrame[agent.TelemetryUpdate](t, ws)
 		if update.Type != "update" || update.Method != "query.system.metrics" || string(update.Result) != result {
 			t.Fatalf("telemetry update: %+v", update)
 		}
@@ -130,7 +132,7 @@ func TestConsoleAgentSocketSharesAndStopsTelemetry(t *testing.T) {
 	send(`{"cpuUsagePercent":30}`)
 	expect(second, `{"cpuUsagePercent":30}`)
 	second.Close()
-	stop := readAgentFrame[agentMessage](t, agent)
+	stop := readAgentFrame[agent.Message](t, peer)
 	if stop.Type != "telemetry_stop" || stop.ID != start.ID {
 		t.Fatalf("telemetry stop: %+v", stop)
 	}

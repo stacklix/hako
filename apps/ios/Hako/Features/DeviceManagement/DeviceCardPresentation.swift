@@ -3,7 +3,25 @@ import Foundation
 // Stored per server, account, device and command group. Missing commands retain their
 // saved place; newly advertised commands are appended in the Agent's manifest order.
 enum DeviceCardOrder {
-    static let tabLimit = 5
+    static let visiblePageLimit = 4
+
+    struct Storage {
+        let key: String
+        let initialData: Data
+
+        init(server: String, account: String, agent: String, defaults: UserDefaults = .standard) {
+            key = DeviceCardOrder.storageKey(server: server, account: account, agent: agent, group: "all")
+            let legacyNames = ["query", "action"].flatMap { group in
+                let key = DeviceCardOrder.storageKey(server: server, account: account, agent: agent, group: group)
+                return defaults.data(forKey: key).map(DeviceCardOrder.names) ?? []
+            }
+            initialData = (try? JSONEncoder().encode(legacyNames)) ?? Data()
+        }
+    }
+
+    static func names(from data: Data) -> [String] {
+        (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
 
     static func arranged(available: [String], saved: [String]) -> [String] {
         let availableSet = Set(available)

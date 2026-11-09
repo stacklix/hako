@@ -79,6 +79,15 @@ Python / pythonw 在端口列表中显示正在运行的脚本名或 `-m` 模块
 
 `--data-dir <目录>` 可为任意命令选择独立配置和实例，默认仍为 `%LOCALAPPDATA%/Hako`。本机控制使用仅允许当前 Windows 用户的命名管道，不监听 TCP 端口；CLI 和运行中的应用应使用相同的用户和权限级别。
 
+## 源码目录
+
+- `src/Hako/App/` 放主窗口、托盘和服务器设置界面。WPF 应用入口 `App.xaml` 位于项目根目录。
+- `src/Hako/Core/` 管理 Agent 生命周期和能力分发。`Connection/` 放 WebSocket、版本检查和 SSH 隧道，`Configuration/` 放配置和密钥。
+- `src/Hako/Cli/` 放命令解析、帮助、本地消息格式和命名管道。
+- `src/Hako/Features/` 按功能组织系统监控、网络诊断、Git 仓库和 Codex 用量。
+- `src/Hako/Platform/` 放 Windows 系统适配，例如加密存储、开机启动、控制台和进程检查。
+- `tests/Hako.Checks/` 链接这些目录中的非界面源码，验证 Agent 能力和协议。
+
 ## 构建和验证
 
 在 Windows 安装 .NET 10 SDK，从本目录执行：

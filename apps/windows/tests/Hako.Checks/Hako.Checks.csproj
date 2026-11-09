@@ -6,7 +6,10 @@
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/Hako/Core/*.cs" Link="Core/%(Filename)%(Extension)"/>
+    <Compile Include="../../src/Hako/Core/**/*.cs" Link="Core/%(RecursiveDir)%(Filename)%(Extension)"/>
+    <Compile Include="../../src/Hako/Cli/*.cs" Link="Cli/%(Filename)%(Extension)"/>
+    <Compile Include="../../src/Hako/Features/**/*.cs" Exclude="../../src/Hako/Features/**/*.xaml.cs"
+             Link="Features/%(RecursiveDir)%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Platform/*.cs" Link="Platform/%(Filename)%(Extension)"/>
   </ItemGroup>
 </Project>
