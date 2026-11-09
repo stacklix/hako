@@ -32,6 +32,8 @@ struct HomeView: View {
     @State private var path: [Destination] = []
     @State private var loginLink: HakoLoginLink?
     @State private var category = Category.it
+    @State private var versionWarning: String?
+    @State private var lastVersionWarning: String?
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
     @Environment(\.scenePhase) private var scenePhase
 
@@ -99,6 +101,18 @@ struct HomeView: View {
                 loginLink = HakoLoginLink(payload: url.absoluteString)
             }
             .sheet(item: $loginLink) { link in ConsoleWebLoginView(initialPayload: link.payload) }
+            .alert("Hako 版本兼容性", isPresented: Binding(
+                get: { versionWarning != nil },
+                set: { if !$0 { versionWarning = nil } }
+            )) {
+                Button("知道了", role: .cancel) {}
+            } message: {
+                Text(versionWarning ?? "")
+            }
+            .task(id: scenePhase == .active ? console.serverURL : nil) {
+                guard scenePhase == .active, !console.serverURL.isEmpty else { return }
+                await checkServerVersion(origin: console.serverURL)
+            }
             .toggleStyle(SwitchToggleStyle(tint: .green))
             .task(id: scenePhase) {
                 guard scenePhase == .active else { return }
@@ -109,6 +123,16 @@ struct HomeView: View {
                 guard scenePhase == .active, console.authenticated, !console.logoutPending else { return }
                 await notifications.run()
             }
+    }
+
+    private func checkServerVersion(origin: String) async {
+        guard let result = await console.checkServerVersion(origin: origin),
+              !Task.isCancelled, console.serverURL == origin, scenePhase == .active else { return }
+        let warningKey = result.warning.map { origin + "\n" + $0 }
+        if warningKey != lastVersionWarning {
+            lastVersionWarning = warningKey
+            versionWarning = result.warning
+        }
     }
 
     private var categoryTabs: some View {

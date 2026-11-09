@@ -10,6 +10,33 @@ using Hako.Platform;
 
 internal static class Program
 {
+    private static void CheckServerCompatibility()
+    {
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.1.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
+            throw new Exception("Agent rejected matching version floors");
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.1.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
+            throw new Exception("Agent did not compare compatible patch versions numerically");
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.1.0","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+            throw new Exception("Agent accepted a patch version below the required floor");
+        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.1.0","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+            throw new Exception("Agent did not warn about its own version floor");
+        var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
+        if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
+            throw new Exception("Agent did not warn about the server version floor");
+        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.1.0","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
+        if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
+            throw new Exception("Agent accepted a newer minor version than the server supports");
+        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
+        if (newerServer?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+            throw new Exception("Agent accepted a newer server minor version");
+        var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        if (both != outdatedAgent + "\n\n" + outdatedServer)
+            throw new Exception("Agent did not report both incompatible versions together");
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.1.0"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
+            throw new Exception("Agent accepted incomplete version metadata");
+    }
+
     private static async Task<int> Main(string[] args)
     {
         try
@@ -44,6 +71,7 @@ internal static class Program
                 await Task.Delay(TimeSpan.FromSeconds(30));
                 return 0;
             }
+            CheckServerCompatibility();
             StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();

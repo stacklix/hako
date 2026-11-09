@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -19,6 +20,7 @@ public sealed class AgentConnection : IAsyncDisposable
     private volatile ConnectionState status = new("disconnected", "未连接");
     public ConnectionState Status => status;
     public event Action<string>? StatusChanged;
+    public event Action<string>? VersionWarning;
     public event Action<Metrics>? MetricsReceived;
     private readonly AgentDispatcher dispatcher;
     private readonly SemaphoreSlim writing = new(1, 1);
@@ -55,14 +57,26 @@ public sealed class AgentConnection : IAsyncDisposable
 
     private async Task RunAsync(AgentSettings settings, CancellationToken token)
     {
+        var origin = settings.Origin();
+        var uri = new UriBuilder(origin) { Scheme = origin.Scheme == "https" ? "wss" : "ws", Path = "/ws/agent" }.Uri;
+        string? lastVersionWarning = null;
         var attempt = 0;
         while (!token.IsCancellationRequested)
         {
             try
             {
                 SetStatus("connecting", "正在连接…");
+                // A version check is advisory. Keep attempting the WebSocket if the probe is unavailable.
+                try
+                {
+                    var warning = await ServerCompatibility.CheckAsync(origin, token);
+                    token.ThrowIfCancellationRequested();
+                    if (warning is not null && warning != lastVersionWarning) VersionWarning?.Invoke(warning);
+                    lastVersionWarning = warning;
+                }
+                catch (HttpRequestException) { }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
                 using var socket = new ClientWebSocket();
-                var uri = new UriBuilder(settings.Origin()) { Scheme = settings.Origin().Scheme == "https" ? "wss" : "ws", Path = "/ws/agent" }.Uri;
                 using (var authTimeout = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
                     authTimeout.CancelAfter(TimeSpan.FromSeconds(10));
@@ -74,7 +88,7 @@ public sealed class AgentConnection : IAsyncDisposable
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
-                    var expected = $"hako-agent-auth/v{ProtocolVersion}\n" + settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
+                    var expected = $"hako-agent-auth/v{ProtocolVersion}\n" + origin.GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + keyId + "\n";
                     if (!Encoding.UTF8.GetString(payload).StartsWith(expected, StringComparison.Ordinal)) throw new AuthenticationException("服务端认证挑战不匹配。");
                     var signature = Convert.ToBase64String(rsa.SignData(payload, HashAlgorithmName.SHA256, RSASignaturePadding.Pss));
                     await SendAsync(socket, new { type = "authenticate", signature }, authTimeout.Token);

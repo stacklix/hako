@@ -40,6 +40,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     @Published private(set) var busy = false
     @Published private(set) var resettingKey = false
     @Published var message: String?
+    @Published private var versionCheck: (origin: String, version: String?)?
     private var saved: ConsoleSession?
     private let restoration = ConsoleSessionRestoration()
     private var sessionValidation = ConsoleSessionValidation()
@@ -221,12 +222,26 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         guard origin != serverURL || account != self.username else { return }
         self.username = account
         UserDefaults.standard.set(account, forKey: "console.username")
+        if origin != self.serverURL { versionCheck = nil }
         self.serverURL = origin
         UserDefaults.standard.set(origin, forKey: "console.serverURL")
         self.saved = nil; self.authenticated = false; self.hasSavedSession = false; self.logoutPending = false
         self.remoteSessions = []
         self.deviceId = ""; self.publicKeyPEM = ""
         message = "服务器配置已保存。"
+    }
+
+    var serverVersionLabel: String {
+        if serverURL.isEmpty { return "未配置" }
+        guard let versionCheck, versionCheck.origin == serverURL else { return "正在获取…" }
+        return versionCheck.version ?? "无法获取"
+    }
+
+    func checkServerVersion(origin: String) async -> HakoServerCompatibility.Result? {
+        let result = try? await HakoServerCompatibility.check(origin: origin)
+        guard !Task.isCancelled, serverURL == origin else { return nil }
+        versionCheck = (origin, result?.serverVersion)
+        return result
     }
 
     func restore() async {

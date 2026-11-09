@@ -58,6 +58,7 @@ public partial class App : Application
             }
             runtime = new AgentRuntime(invocation.Profile.Store, true);
             runtime.ShowRequested += () => Dispatcher.InvokeAsync(ShowMainWindow);
+            runtime.Connection.VersionWarning += ShowVersionWarning;
             await runtime.InitializeAsync(autoConnect: true);
             pipe = new AgentPipeServer(invocation.Profile, runtime, () => Dispatcher.InvokeAsync(async () => await ExitHostedAsync()));
             window = new MainWindow(runtime, () => ExitHostedAsync());
@@ -140,6 +141,18 @@ public partial class App : Application
         if (runtime is null || exiting) return;
         if (window is null) window = new MainWindow(runtime, () => ExitHostedAsync());
         window.ShowWindow();
+    }
+    private void ShowVersionWarning(string message)
+    {
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (exiting) return;
+            const string title = "Hako 版本兼容性";
+            if (window is { IsVisible: true })
+                MessageBox.Show(window, message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            else
+                MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+        });
     }
     private async Task ExitHostedAsync(int exitCode = 0)
     {

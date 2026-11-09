@@ -121,6 +121,26 @@ func (f *fixture) call(method, path string, body any, token string, nonce ...str
 	return response.StatusCode, result
 }
 
+func TestPublicVersion(t *testing.T) {
+	f := newFixture(t, false)
+	response, err := f.http.Client().Get(f.http.URL + "/api/v1/version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("unexpected response: %s %v", response.Status, response.Header)
+	}
+	var versions map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if versions["serverVersion"] != releaseVersion || versions["minimumIosVersion"] != minimumIOSVersion ||
+		versions["minimumAgentVersion"] != minimumAgentVersion {
+		t.Fatalf("unexpected version metadata: %v", versions)
+	}
+}
+
 func TestConsoleRequiresConfiguredPublicKeyAndChallenge(t *testing.T) {
 	f := newFixture(t, false)
 	body := map[string]string{"username": "wrong", "deviceId": f.deviceID}

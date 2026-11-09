@@ -144,6 +144,7 @@ func New(config Config) (*Server, error) {
 	}
 	s.appLoginRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, 200, map[string]bool{"ok": true}) })
+	s.mux.HandleFunc("GET /api/v1/version", serverVersion)
 	s.mux.HandleFunc("POST /api/v1/auth/challenge", s.challenge)
 	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	s.mux.HandleFunc("POST /api/v1/auth/refresh", s.refresh)
