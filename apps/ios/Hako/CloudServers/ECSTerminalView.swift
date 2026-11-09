@@ -9,7 +9,7 @@ struct ECSTerminalView: View {
     @ObservedObject var data: ECSTerminalData
     var body: some View {
         ZStack {
-            ECSNativeTerminal(data: data, active: active && scenePhase == .active)
+            HakoNativeTerminal(data: data, active: active && scenePhase == .active, logSource: .cloudServers)
                 .allowsHitTesting(data.connected && active && scenePhase == .active)
                 .accessibilityHidden(!data.connected)
             if !data.connected { connectionOverlay }
@@ -95,11 +95,21 @@ struct ECSTerminalView: View {
     }
 }
 
-private struct ECSNativeTerminal: UIViewRepresentable {
-    @ObservedObject var data: ECSTerminalData
+@MainActor protocol HakoNativeTerminalData: ObservableObject {
+    var connected: Bool { get }
+    var display: ECSTerminalDisplay { get }
+    func send(_ bytes: Data)
+    func resize(columns: Int, rows: Int)
+}
+
+extension ECSTerminalData: HakoNativeTerminalData {}
+
+struct HakoNativeTerminal<Session: HakoNativeTerminalData>: UIViewRepresentable {
+    @ObservedObject var data: Session
     let active: Bool
+    let logSource: HakoLogSource
     @Environment(\.colorScheme) private var colorScheme
-    func makeCoordinator() -> Coordinator { Coordinator(data: data) }
+    func makeCoordinator() -> Coordinator { Coordinator(data: data, logSource: logSource) }
     func makeUIView(context: Context) -> SwiftTerm.TerminalView {
         let view = HakoTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 384), font: .monospacedSystemFont(ofSize: 13, weight: .regular))
         let coordinator = context.coordinator
@@ -141,14 +151,18 @@ private struct ECSNativeTerminal: UIViewRepresentable {
         view.updateUiClosed()
     }
     @MainActor final class Coordinator: NSObject, TerminalViewDelegate, ECSTerminalRendering {
-        let data: ECSTerminalData
+        let data: Session
+        let logSource: HakoLogSource
         weak var view: SwiftTerm.TerminalView?
         var scheme: ColorScheme?
         var wasConnected = false
         var active = false
         private var focusTask: Task<Void, Never>?
         private var focusID = UUID()
-        init(data: ECSTerminalData) { self.data = data }
+        init(data: Session, logSource: HakoLogSource) {
+            self.data = data
+            self.logSource = logSource
+        }
         func reset() { view?.resetToInitialState() }
         func feed(_ bytes: Data) { view?.feed(byteArray: Array(bytes)[...]) }
         func focus() {
@@ -169,7 +183,7 @@ private struct ECSNativeTerminal: UIViewRepresentable {
                         if view.becomeFirstResponder() { view.reloadInputViews(); return }
                     }
                 }
-                HakoLog.record(.cloudServers, .warning, "终端键盘焦点未就绪", detail: "请轻点终端内容区重新获取输入焦点。")
+                HakoLog.record(self?.logSource ?? .cloudServers, .warning, "终端键盘焦点未就绪", detail: "请轻点终端内容区重新获取输入焦点。")
             }
         }
         func blur() {

@@ -1,28 +1,33 @@
 import SwiftUI
 
-struct DeviceCapabilityPages<Overview: View, Content: View>: View {
+struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: View {
     private let capabilities: [ConsoleAgentCapability]
     private let emptyMessage: String
     private let title: (ConsoleAgentCapability) -> String
     private let tabTitle: (ConsoleAgentCapability) -> String
     private let overview: () -> Overview
     private let content: (ConsoleAgentCapability) -> Content
+    private let terminal: () -> Terminal
     @AppStorage private var savedOrder: Data
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedName: String?
-    @State private var showingOrder = false
+    @State private var showingTerminal = false
+    @Binding private var showingOrder: Bool
 
     init(capabilities: [ConsoleAgentCapability], storageKey: String, emptyMessage: String,
-         initialOrder: [String], title: @escaping (ConsoleAgentCapability) -> String,
+         initialOrder: [String], showingOrder: Binding<Bool>, title: @escaping (ConsoleAgentCapability) -> String,
          tabTitle: @escaping (ConsoleAgentCapability) -> String,
          @ViewBuilder overview: @escaping () -> Overview,
-         @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content) {
+         @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content,
+         @ViewBuilder terminal: @escaping () -> Terminal) {
         self.capabilities = capabilities
         self.emptyMessage = emptyMessage
         self.title = title
         self.tabTitle = tabTitle
         self.overview = overview
         self.content = content
+        self.terminal = terminal
+        _showingOrder = showingOrder
         _savedOrder = AppStorage(wrappedValue: (try? JSONEncoder().encode(initialOrder)) ?? Data(), storageKey)
     }
 
@@ -38,6 +43,31 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
     var body: some View {
         let pages = orderedPages
         let selected = pages.first { $0.name == selectedName } ?? pages.first
+        Group {
+            if showingTerminal {
+                VStack(spacing: 0) {
+                    overview()
+                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
+                    tabBar(pages, selected: nil)
+                        .padding(.horizontal, 20)
+                    terminal()
+                }
+            } else {
+                scrollablePages(pages, selected: selected)
+            }
+        }
+        .background(HakoStyle.background)
+        .foregroundStyle(HakoStyle.text)
+        .sheet(isPresented: $showingOrder) {
+            DevicePageOrderEditor(pages: pages, title: title) { names in
+                let current = DeviceCardOrder.arranged(available: capabilities.map(\.name), saved: names)
+                let merged = DeviceCardOrder.saving(visible: current, previous: persistedNames)
+                if let encoded = try? JSONEncoder().encode(merged) { savedOrder = encoded }
+            }
+        }
+    }
+
+    private func scrollablePages(_ pages: [ConsoleAgentCapability], selected: ConsoleAgentCapability?) -> some View {
         ScrollViewReader { scroll in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
@@ -59,8 +89,13 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
                                 .background(HakoStyle.background)
                         }
                     } else {
-                        Text(emptyMessage).font(.subheadline).foregroundStyle(HakoStyle.muted)
-                            .frame(maxWidth: .infinity).padding(20)
+                        Section {
+                            Text(emptyMessage).font(.subheadline).foregroundStyle(HakoStyle.muted)
+                                .frame(maxWidth: .infinity).padding(20)
+                        } header: {
+                            tabBar(pages, selected: nil).padding(.horizontal, 20)
+                                .background(HakoStyle.background)
+                        }
                     }
                 }
             }
@@ -70,31 +105,22 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
                 if previous != name { scroll.scrollTo("device-overview", anchor: .top) }
             }
         }
-        .background(HakoStyle.background)
-        .foregroundStyle(HakoStyle.text)
         .scrollDismissesKeyboard(.interactively)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showingOrder = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("设备页面排序设置")
-                    .disabled(pages.count < 2)
-            }
-        }
-        .sheet(isPresented: $showingOrder) {
-            DevicePageOrderEditor(pages: pages, title: title) { names in
-                let current = DeviceCardOrder.arranged(available: capabilities.map(\.name), saved: names)
-                let merged = DeviceCardOrder.saving(visible: current, previous: persistedNames)
-                if let encoded = try? JSONEncoder().encode(merged) { savedOrder = encoded }
-            }
-        }
     }
 
-    private func tabBar(_ pages: [ConsoleAgentCapability], selected: String) -> some View {
-        let visible = pages.prefix(DeviceCardOrder.tabLimit)
-        let overflow = pages.dropFirst(DeviceCardOrder.tabLimit)
+    private func tabBar(_ pages: [ConsoleAgentCapability], selected: String?) -> some View {
+        let visible = pages.prefix(DeviceCardOrder.tabLimit - 1)
+        let overflow = pages.dropFirst(DeviceCardOrder.tabLimit - 1)
         let overflowSelection = overflow.first { $0.name == selected }
         return HStack(spacing: 4) {
-            if dynamicTypeSize.isAccessibilitySize {
+            if visible.isEmpty {
+                Button { showingTerminal = false } label: {
+                    Text("概览").frame(maxWidth: .infinity, minHeight: 44)
+                        .modifier(DevicePageTabStyle(selected: !showingTerminal))
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(showingTerminal ? [] : .isSelected)
+            } else if dynamicTypeSize.isAccessibilitySize {
                 ScrollView(.horizontal) {
                     HStack(spacing: 12) {
                         ForEach(visible) { page in tab(page, selected: selected, expands: false) }
@@ -104,10 +130,17 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
             } else {
                 ForEach(visible) { page in tab(page, selected: selected, expands: true) }
             }
+            Button { showingTerminal = true } label: {
+                Text("终端").frame(minWidth: 44, maxWidth: dynamicTypeSize.isAccessibilitySize ? nil : .infinity, minHeight: 44)
+                    .modifier(DevicePageTabStyle(selected: showingTerminal))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(showingTerminal ? .isSelected : [])
             if !overflow.isEmpty {
                 Menu {
                     ForEach(overflow) { page in
-                        Button { selectedName = page.name } label: {
+                        Button { select(page) } label: {
                             if page.name == selected {
                                 Label(title(page), systemImage: "checkmark")
                             } else {
@@ -134,8 +167,13 @@ struct DeviceCapabilityPages<Overview: View, Content: View>: View {
         .accessibilityLabel("设备页面")
     }
 
-    private func tab(_ page: ConsoleAgentCapability, selected: String, expands: Bool) -> some View {
-        Button { selectedName = page.name } label: {
+    private func select(_ page: ConsoleAgentCapability) {
+        selectedName = page.name
+        showingTerminal = false
+    }
+
+    private func tab(_ page: ConsoleAgentCapability, selected: String?, expands: Bool) -> some View {
+        Button { select(page) } label: {
             Text(tabTitle(page)).lineLimit(1).minimumScaleFactor(0.85)
                 .frame(minWidth: expands ? nil : 44, maxWidth: expands ? .infinity : nil, minHeight: 44)
                 .modifier(DevicePageTabStyle(selected: selected == page.name))

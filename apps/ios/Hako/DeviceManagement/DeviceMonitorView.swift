@@ -1,43 +1,104 @@
 import SwiftUI
 
 struct DeviceMonitorView: View {
-    private enum SheetRoute: String, Identifiable {
-        case addAgent, server
+    private enum Selection {
+        case automatic, list, device(String)
+    }
+    private enum Sheet: String, Identifiable {
+        case addAgent, settings
         var id: String { rawValue }
     }
+
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var sheet: SheetRoute?
-    @State private var isVisible = false
+    @AppStorage("hako.deviceMonitor.defaultAgents") private var savedDefaults = Data()
+    @State private var selection = Selection.automatic
+    @State private var sheet: Sheet?
+    @State private var openingPageOrder = false
+    @State private var showingPageOrder = false
+
+    private var scope: String { client.serverURL + "\n" + client.username }
+    private var defaults: [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: savedDefaults)) ?? [:]
+    }
+    private var defaultAgentID: String? { defaults[scope] }
+    private var selectedAgent: ConsoleAgent? {
+        guard client.authenticated, !client.logoutPending else { return nil }
+        let id: String?
+        switch selection {
+        case .automatic: id = defaultAgentID
+        case .list: id = nil
+        case .device(let selectedID): id = selectedID
+        }
+        return client.agents.first { $0.id == id }
+    }
 
     var body: some View {
+        Group {
+            if let agent = selectedAgent {
+                DeviceMetricsView(agent: agent, showingPageOrder: $showingPageOrder)
+                    .id(agent.id)
+            } else {
+                deviceList
+            }
+        }
+        .navigationTitle(selectedAgent == nil ? "设备监控" : "设备详情")
+        .navigationBarTitleDisplayMode(selectedAgent == nil ? .automatic : .inline)
+        .toolbar {
+            if client.authenticated, !client.logoutPending {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
+                        .accessibilityLabel("切换 Agent 与默认设备设置")
+                }
+            }
+        }
+        .sheet(item: $sheet, onDismiss: {
+            if openingPageOrder {
+                openingPageOrder = false
+                showingPageOrder = true
+            }
+        }) { sheet in
+            switch sheet {
+            case .addAgent:
+                AddAgentSheet()
+            case .settings:
+                settings
+            }
+        }
+        .onChange(of: scope) { _, _ in
+            selection = .automatic
+            sheet = nil
+        }
+        .onChange(of: selectedAgent?.id) { _, _ in
+            openingPageOrder = false
+            showingPageOrder = false
+        }
+        .task(id: "\(scenePhase)-\(sheet == .addAgent)-\(scope)") {
+            guard scenePhase == .active, sheet != .addAgent, !Task.isCancelled else { return }
+            await client.restore()
+            if client.authenticated { await refreshDevices() }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(10)) }
+                catch { return }
+                await refreshDevices()
+            }
+        }
+    }
+
+    private var deviceList: some View {
         List {
             if client.serverURL.isEmpty {
                 Section {
-                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("点击右上角设置，在“服务器与登录”中导出本机公钥并填写连接信息。"))
+                    ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("请前往 Hako 首页的「设置 → 服务器与登录」，导出本机公钥并填写连接信息。"))
                 }
             } else if client.authenticated {
                 Section {
                     if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary) }
                     ForEach(client.agents) { agent in
-                        NavigationLink { DeviceMetricsView(agent: agent) } label: {
-                            HStack {
-                                Image(systemName: "desktopcomputer")
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(agent.name)
-                                    HStack(spacing: 10) {
-                                        Text("设备 ID：" + agent.id)
-                                            .font(.caption.monospaced()).foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Text(agent.online ? "在线" : "离线")
-                                            .font(.caption).foregroundStyle(agent.online ? Color.green : Color.secondary)
-                                            .fixedSize()
-                                    }
-                                }
-                            }.padding(.vertical, 5)
+                        Button { selection = .device(agent.id) } label: {
+                            deviceRow(agent, current: false)
                         }
-                        .disabled(!agent.online)
-                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                        .buttonStyle(.plain)
                     }
                     if client.agents.isEmpty {
                         Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
@@ -62,44 +123,101 @@ struct DeviceMonitorView: View {
                     Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
                         .foregroundStyle(.secondary)
                     Button("验证并继续") { Task { await refreshDevices() } }
-                    Text("可在右上角设置中检查服务器与登录。").font(.footnote).foregroundStyle(.secondary)
+                    Text("可在 Hako 首页的「设置 → 服务器与登录」中检查连接。").font(.footnote).foregroundStyle(.secondary)
                 }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
-                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在右上角设置的“服务器与登录”中重试。" : "在右上角设置的“服务器与登录”中导出本机公钥，手工登记到服务端后登录。")
+                    Text(client.logoutPending ? "本机已退出，等待联网后撤销服务端会话。可在 Hako 首页的「设置 → 服务器与登录」中重试。" : "请前往 Hako 首页的「设置 → 服务器与登录」，导出本机公钥并在服务端登记后登录。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             if let message = client.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
         }
-        .navigationTitle("设备监控")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { sheet = .server } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("服务器与登录设置")
-            }
-        }
         .refreshable { await refreshDevices() }
-        .sheet(item: $sheet) { route in
-            switch route {
-            case .addAgent: AddAgentSheet()
-            case .server: ServerSettingsView()
+    }
+
+    private var settings: some View {
+        NavigationStack {
+            List {
+                Section("切换 Agent") {
+                    if client.agents.isEmpty { Text("暂无登记的设备").foregroundStyle(.secondary) }
+                    ForEach(client.agents) { agent in
+                        Button {
+                            selection = .device(agent.id)
+                            sheet = nil
+                        } label: {
+                            deviceRow(agent, current: agent.id == selectedAgent?.id)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(agent.id == selectedAgent?.id ? .isSelected : [])
+                    }
+                }
+                Section {
+                    Picker("默认 Agent", selection: Binding(get: { defaultAgentID }, set: saveDefaultAgent)) {
+                        Text("不自动进入").tag(nil as String?)
+                        ForEach(client.agents) { agent in
+                            Text("\(agent.name) · \(agent.id)").tag(Optional(agent.id))
+                        }
+                        if let defaultAgentID, !client.agents.contains(where: { $0.id == defaultAgentID }) {
+                            Text("设备不可用 · \(defaultAgentID)").tag(Optional(defaultAgentID))
+                        }
+                    }
+                    .pickerStyle(.navigationLink)
+                } footer: {
+                    Text("下次打开设备监控时直接进入默认设备。")
+                }
+                if let agent = selectedAgent {
+                    Section {
+                        Button("设备列表") {
+                            selection = .list
+                            sheet = nil
+                        }
+                        Button("页面排序") {
+                            openingPageOrder = true
+                            sheet = nil
+                        }
+                        .disabled(agent.monitorPages.count < 2)
+                    }
+                }
+            }
+            .navigationTitle("设备监控设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { sheet = nil } }
             }
         }
-        .onAppear { isVisible = true }
-        .onDisappear { isVisible = false }
-        .task(id: "\(isVisible)-\(scenePhase)-\(sheet?.rawValue ?? "none")") {
-            guard isVisible, scenePhase == .active, sheet == nil, !Task.isCancelled else { return }
-            await client.restore()
-            if client.authenticated { await refreshDevices() }
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(10)) }
-                catch { return }
-                guard !Task.isCancelled else { return }
-                await refreshDevices()
+    }
+
+    private func deviceRow(_ agent: ConsoleAgent, current: Bool) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "desktopcomputer").accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(agent.name)
+                Text("设备 ID · " + agent.id).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
+            Spacer()
+            if agent.id == defaultAgentID { Text("默认").font(.caption).foregroundStyle(.secondary) }
+            Text(agent.online ? "在线" : "离线").font(.caption)
+                .foregroundStyle(agent.online ? Color.green : Color.secondary)
+            if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityHidden(true) }
         }
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+    }
+
+    private func saveDefaultAgent(_ id: String?) {
+        guard id != defaultAgentID else { return }
+        var values = defaults
+        values[scope] = id
+        guard let data = try? JSONEncoder().encode(values) else { return }
+        if case .automatic = selection {
+            selection = selectedAgent.map { .device($0.id) } ?? .list
+        }
+        savedDefaults = data
     }
 
     @MainActor private func refreshDevices() async {
@@ -112,6 +230,7 @@ struct DeviceMonitorView: View {
 struct DeviceMetricsView: View {
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
+    @Binding var showingPageOrder: Bool
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
@@ -141,12 +260,10 @@ struct DeviceMetricsView: View {
         }
     }
     var body: some View {
-        DeviceCapabilityPages(capabilities: (currentAgent.capabilities ?? []).filter {
-                $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
-            },
+        DeviceCapabilityPages(capabilities: currentAgent.monitorPages,
             storageKey: orderKey("all"),
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
-            initialOrder: initialOrder, title: capabilityTitle, tabTitle: capabilityTabTitle) {
+            initialOrder: initialOrder, showingOrder: $showingPageOrder, title: capabilityTitle, tabTitle: capabilityTabTitle) {
             deviceOverview
         } content: { capability in
             if capability.name == "query.system.metrics", capability.version == 1 {
@@ -159,14 +276,15 @@ struct DeviceMetricsView: View {
                 VStack(alignment: .leading, spacing: 14) { capabilityContent(capability) }
                     .devicePagePanel()
             }
+        } terminal: {
+            DeviceSSHTerminalView(agentID: agent.id, account: orderKey("ssh"))
+                .id(client.requestContext)
         }
         .id(orderKey("all"))
-        .refreshable { if client.authenticated { await client.query(currentAgent) } }
-        .navigationTitle("设备详情")
-        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { if currentAgent.online { await client.query(currentAgent) } }
         .toolbarBackground(HakoStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .task { if client.authenticated { await client.query(currentAgent) } }
+        .task(id: currentAgent.online) { if currentAgent.online { await client.query(currentAgent) } }
         .task(id: liveTaskContext) {
             if let context = liveTaskContext { await refreshLive(context: context) }
         }
@@ -612,5 +730,13 @@ struct DeviceMetricsView: View {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
         return date?.formatted(date: .numeric, time: .standard) ?? value
+    }
+}
+
+private extension ConsoleAgent {
+    var monitorPages: [ConsoleAgentCapability] {
+        (capabilities ?? []).filter {
+            $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
+        }
     }
 }

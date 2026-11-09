@@ -84,7 +84,7 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("authenticating", "正在验证身份…");
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await SendAsync(socket, new { type = "hello", version = ProtocolVersion, username = settings.Username, keyId, capabilities = dispatcher.Capabilities }, authTimeout.Token);
+                    await SendAsync(socket, new { type = "hello", version = ProtocolVersion, username = settings.Username, keyId, capabilities = dispatcher.Capabilities, sshTunnel = true }, authTimeout.Token);
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
@@ -102,6 +102,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 CancellationTokenSource? telemetry = null;
                 Task? telemetryWorker = null;
                 string? telemetryId = null;
+                AgentSshTunnel? ssh = null;
 
                 async Task StopTelemetryAsync()
                 {
@@ -144,6 +145,28 @@ public sealed class AgentConnection : IAsyncDisposable
                             case "telemetry_stop":
                                 if (root.GetProperty("id").GetString() == telemetryId) await StopTelemetryAsync();
                                 break;
+                            case "ssh_open":
+                                if (ssh is not null) await ssh.DisposeAsync();
+                                ssh = new AgentSshTunnel(root.GetProperty("id").GetString()!,
+                                    (frame, cancellation) => SendAsync(socket, frame, cancellation), connection.Token);
+                                break;
+                            case "ssh_data":
+                                if (ssh is not null && root.GetProperty("id").GetString() == ssh.Id &&
+                                    !ssh.TryWrite(root.GetProperty("data").GetBytesFromBase64()))
+                                {
+                                    var closedID = ssh.Id;
+                                    await ssh.DisposeAsync();
+                                    ssh = null;
+                                    await SendAsync(socket, new { type = "ssh_closed", id = closedID }, connection.Token);
+                                }
+                                break;
+                            case "ssh_close":
+                                if (ssh is not null && root.GetProperty("id").GetString() == ssh.Id)
+                                {
+                                    await ssh.DisposeAsync();
+                                    ssh = null;
+                                }
+                                break;
                             default: throw new InvalidDataException("未知的服务端消息。");
                         }
                     }
@@ -151,6 +174,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 finally
                 {
                     await connection.CancelAsync();
+                    if (ssh is not null) await ssh.DisposeAsync();
                     await StopTelemetryAsync();
                     try { await Task.WhenAll(workers); } catch (OperationCanceledException) { }
                 }

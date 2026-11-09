@@ -162,6 +162,7 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents", s.consoleAgentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents/live/{id}", s.consoleAgentSocket)
+	s.mux.HandleFunc("GET /ws/console/agents/terminal/{terminalID}", s.consoleAgentSocket)
 	s.notificationRoutes()
 	if err := s.startNotifications(); err != nil {
 		_ = s.Close()

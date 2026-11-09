@@ -42,6 +42,14 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 `query.codex.usage` v1 是 Windows Agent 新增的数据提供器，返回本机最近 7 天每日用户发送调用数、token 用量和当前处理中会话数、项目名与显示标题，参数 `{}`，同时加入 `query.all`；详细口径、隐私边界及缓存策略见 [Codex 用量采集](codex-usage.md)。服务端继续通用转发，无新增业务路由。
 
+## Windows SSH 终端
+
+iOS 在「设备监控 → 设备详情 → 终端」中配置 Windows OpenSSH 账号、密码和主机密钥 SHA256 指纹。可在 Windows 上运行 `ssh-keygen -lf "$env:ProgramData\ssh\ssh_host_ed25519_key.pub"` 核对默认 Ed25519 主机密钥指纹。配置保存在 iPhone 的设备专属钥匙串条目中。连接时先核对指纹，再进行 SSH 密码认证。
+
+Console 通过 DPoP 认证访问 `GET /ws/console/agents/terminal/{id}`。服务端经已认证的 Windows Agent 连接目标设备的 `127.0.0.1:22`，申请交互式 PTY 并执行固定命令 `powershell.exe -NoLogo`。SSH 登录信息仅用于本次连接，服务端不持久化登录信息或终端内容。每台设备同时只支持一个终端，离开标签、客户端断线或 Agent 下线时关闭会话。
+
+支持此功能的 Agent 在 v4 `hello` 中发送可选字段 `sshTunnel: true`。部署该功能需更新服务端、Windows Agent 和 iOS，并在 Windows 上启用允许该账号登录的 OpenSSH 服务。
+
 ## 通用设备调用
 
 iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /admin/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证。命令参数必须为 JSON 对象，包含 `method`、`version`、对象 `params`，不接受额外顶层字段，正文上限 16 KiB。

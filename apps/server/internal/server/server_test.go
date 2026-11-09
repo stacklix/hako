@@ -369,6 +369,10 @@ func (f *fixture) connectAgent(wrongKey bool, methods ...agentCapability) *webso
 }
 
 func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentCapability) *websocket.Conn {
+	return f.connectAgentFeatures(id, wrongKey, false, methods...)
+}
+
+func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, methods ...agentCapability) *websocket.Conn {
 	if methods == nil {
 		methods = []agentCapability{{Name: "query.system.metrics", Version: 1}}
 	}
@@ -382,7 +386,7 @@ func (f *fixture) connectAgentID(id string, wrongKey bool, methods ...agentCapab
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agentProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods})
+	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agentProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods, "sshTunnel": sshTunnel})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`

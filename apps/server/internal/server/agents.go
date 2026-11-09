@@ -75,6 +75,8 @@ type agentMessage struct {
 	Signature    string            `json:"signature,omitempty"`
 	Params       json.RawMessage   `json:"params,omitempty"`
 	Capabilities []agentCapability `json:"capabilities,omitempty"`
+	SSHTunnel    bool              `json:"sshTunnel,omitempty"`
+	Data         []byte            `json:"data,omitempty"`
 }
 
 type agentConnection struct {
@@ -85,6 +87,8 @@ type agentConnection struct {
 	done            chan struct{}
 	once            sync.Once
 	capabilities    []agentCapability
+	sshTunnel       bool
+	ssh             *agentSSH
 	telemetryMu     sync.Mutex
 	telemetryID     string
 	subscribers     map[*agentSubscription]struct{}
@@ -136,6 +140,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.capabilities = append([]agentCapability{}, hello.Capabilities...)
+	c.sshTunnel = hello.SSHTunnel
 	payload := []byte("hako-agent-auth/v4\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
 	if c.send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
 		return
@@ -230,6 +235,10 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			c.publishTelemetry(message)
+			continue
+		}
+		if message.Type == "ssh_data" || message.Type == "ssh_closed" {
+			c.publishSSH(message)
 			continue
 		}
 		if message.Type != "response" || message.ID == "" {

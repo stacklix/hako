@@ -72,6 +72,10 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		return ws.WriteJSON(value) == nil
 	}
+	if id := r.PathValue("terminalID"); id != "" {
+		s.streamSSH(ctx, id, ws, valid)
+		return
+	}
 	if !valid() || !write(map[string]string{"type": "ready"}) {
 		return
 	}
