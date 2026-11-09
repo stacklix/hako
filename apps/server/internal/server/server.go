@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"hako/server/internal/notify"
 )
 
 type AgentConfig struct {
@@ -37,7 +39,7 @@ type Config struct {
 	Agents              []AgentConfig
 	RequestTimeout      time.Duration
 	AccessLogs          AccessLogConfig
-	NotificationWorker  string
+	NotificationWebDir  string
 	NotificationDataDir string
 }
 
@@ -64,7 +66,7 @@ type Server struct {
 	adminSessions      map[string]adminSession
 	adminLogins        map[string]*adminLoginRequest
 	accessLogs         *accessLogService
-	notifications      *notificationService
+	notifications      *notify.Service
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -199,15 +201,16 @@ func (s *Server) Close() error {
 	if s.accessLogs != nil {
 		s.accessLogs.close()
 	}
+	var notificationErr error
 	if s.notifications != nil {
-		s.notifications.close()
+		notificationErr = s.notifications.Close()
 	}
 	s.mu.Lock()
 	for _, c := range s.online {
 		c.close()
 	}
 	s.mu.Unlock()
-	return s.store.db.Close()
+	return errors.Join(notificationErr, s.store.db.Close())
 }
 
 func respond(w http.ResponseWriter, status int, value any) {

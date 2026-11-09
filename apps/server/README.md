@@ -100,11 +100,11 @@ docker compose up -d
 
 ## 通知网关
 
-登录 Hako 管理后台，打开「通知网关」。工作台、机器人、消息中心、Webhooks 和系统设置使用同一个 Hako 管理会话。通知运行时随服务器镜像启动。原生运行时先在 `notifications/` 执行 `npm ci && npm run build`，再把 `HAKO_NOTIFICATION_WORKER` 指向构建生成的 `dist/server/index.js`，并使用 Node.js 24。
+登录 Hako 管理后台，打开「通知网关」。工作台、机器人、消息中心、Webhooks 和系统设置使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `notifications/` 执行 `npm ci && npm run build`，然后用 `HAKO_NOTIFICATION_WEB_DIR` 指定 `dist/web` 的路径。
 
 - 微信机器人通过微信二维码授权。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
 - Apple Push 配置 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID=me.stackli.hako` 和 `APNS_KEY_FILE`。密钥文件须由 Hako 进程读取。Apple Push 首版支持文本。
-- 迁移原 iLinker 数据时，先停止旧网关，再把 SQLite 数据库和 `encryption.key` 一起复制到 Hako 数据目录下的 `notifications/`。若旧网关使用环境变量提供的加密密钥，把相同值配置到 `HAKO_NOTIFICATION_ENCRYPTION_KEY`。原有 Webhook、机器人、消息和队列随数据库迁移，调用方把 Webhook 主机改成 Hako 的对外地址。
+- Go 通知网关使用 Hako 数据目录下的 `notification-gateway/`。首次启动后在后台重新配置机器人和 Webhook，调用方使用新生成的 Webhook 地址。
 
 Webhook 使用 `POST /webhook/notifications/{token}`。省略 `channels` 时使用该 Webhook 的默认值，也可显式覆盖。
 
