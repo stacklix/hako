@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: View {
     private let capabilities: [ConsoleAgentCapability]
+    private let deviceLabel: String
     private let emptyMessage: String
     private let title: (ConsoleAgentCapability) -> String
     private let tabTitle: (ConsoleAgentCapability) -> String
@@ -14,13 +15,14 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     @State private var showingTerminal = false
     @Binding private var showingOrder: Bool
 
-    init(capabilities: [ConsoleAgentCapability], storageKey: String, emptyMessage: String,
+    init(capabilities: [ConsoleAgentCapability], storageKey: String, deviceLabel: String, emptyMessage: String,
          initialOrder: [String], showingOrder: Binding<Bool>, title: @escaping (ConsoleAgentCapability) -> String,
          tabTitle: @escaping (ConsoleAgentCapability) -> String,
          @ViewBuilder overview: @escaping () -> Overview,
          @ViewBuilder content: @escaping (ConsoleAgentCapability) -> Content,
          @ViewBuilder terminal: @escaping () -> Terminal) {
         self.capabilities = capabilities
+        self.deviceLabel = deviceLabel
         self.emptyMessage = emptyMessage
         self.title = title
         self.tabTitle = tabTitle
@@ -59,7 +61,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
         .background(HakoStyle.background)
         .foregroundStyle(HakoStyle.text)
         .sheet(isPresented: $showingOrder) {
-            DevicePageOrderEditor(pages: pages, title: title) { names in
+            DevicePageOrderEditor(pages: pages, deviceLabel: deviceLabel, title: title) { names in
                 let current = DeviceCardOrder.arranged(available: capabilities.map(\.name), saved: names)
                 let merged = DeviceCardOrder.saving(visible: current, previous: persistedNames)
                 if let encoded = try? JSONEncoder().encode(merged) { savedOrder = encoded }
@@ -200,14 +202,16 @@ private struct DevicePageTabStyle: ViewModifier {
 
 private struct DevicePageOrderEditor: View {
     let pages: [ConsoleAgentCapability]
+    let deviceLabel: String
     let title: (ConsoleAgentCapability) -> String
     let save: ([String]) -> Void
     @State private var draft: [String]
     @Environment(\.dismiss) private var dismiss
 
-    init(pages: [ConsoleAgentCapability], title: @escaping (ConsoleAgentCapability) -> String,
+    init(pages: [ConsoleAgentCapability], deviceLabel: String, title: @escaping (ConsoleAgentCapability) -> String,
          save: @escaping ([String]) -> Void) {
         self.pages = pages
+        self.deviceLabel = deviceLabel
         self.title = title
         self.save = save
         _draft = State(initialValue: pages.map(\.name))
@@ -215,8 +219,11 @@ private struct DevicePageOrderEditor: View {
 
     var body: some View {
         let titles = Dictionary(uniqueKeysWithValues: pages.map { ($0.name, title($0)) })
-        NavigationStack {
+        let hasChanges = draft != pages.map(\.name)
+        SettingsSheet(title: "页面排序", hasChanges: hasChanges, saveEnabled: hasChanges,
+                      onSave: { save(draft); dismiss() }, saveAccessibilityLabel: "保存页面顺序") {
             List {
+                Section { LabeledContent("设备", value: deviceLabel) }
                 Section {
                     // One native reorder group lets the handle cross the fifth position.
                     ForEach(draft, id: \.self) { name in
@@ -244,14 +251,6 @@ private struct DevicePageOrderEditor: View {
             .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
             .background(HakoStyle.background)
-            .navigationTitle("页面排序")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { save(draft); dismiss() }.fontWeight(.semibold)
-                }
-            }
         }
         .onChange(of: pages.map(\.name)) { _, names in
             draft = DeviceCardOrder.arranged(available: names, saved: draft)

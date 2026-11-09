@@ -8,42 +8,69 @@ struct DeviceMonitorView: View {
         case addAgent, settings
         var id: String { rawValue }
     }
+    private enum PageOrderPresentation: Equatable {
+        case pending(String), presented(String)
+    }
 
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("hako.deviceMonitor.defaultAgents") private var savedDefaults = Data()
     @State private var selection = Selection.automatic
+    @State private var resolvedEntryScope: String?
     @State private var sheet: Sheet?
-    @State private var openingPageOrder = false
-    @State private var showingPageOrder = false
+    @State private var pageOrderPresentation: PageOrderPresentation?
 
     private var scope: String { client.serverURL + "\n" + client.username }
     private var defaults: [String: String] {
         (try? JSONDecoder().decode([String: String].self, from: savedDefaults)) ?? [:]
     }
     private var defaultAgentID: String? { defaults[scope] }
-    private var selectedAgent: ConsoleAgent? {
-        guard client.authenticated, !client.logoutPending else { return nil }
-        let id: String?
+    private var requestedAgentID: String? {
         switch selection {
-        case .automatic: id = defaultAgentID
-        case .list: id = nil
-        case .device(let selectedID): id = selectedID
+        case .automatic: defaultAgentID
+        case .list: nil
+        case .device(let id): id
         }
+    }
+    private var selectedAgent: ConsoleAgent? {
+        guard client.authenticated, !client.logoutPending, let id = requestedAgentID else { return nil }
         return client.agents.first { $0.id == id }
+    }
+    private var awaitingEntry: Bool {
+        resolvedEntryScope != scope && !client.serverURL.isEmpty && !client.logoutPending
+            && (requestedAgentID != nil || client.agents.isEmpty)
+    }
+    private var selectedPageOrderKey: String? { selectedAgent.map(pageOrderKey) }
+
+    private func pageOrderKey(_ agent: ConsoleAgent) -> String {
+        DeviceCardOrder.storageKey(server: client.serverURL, account: client.username, agent: agent.id, group: "all")
+    }
+
+    private func pageOrderBinding(for key: String) -> Binding<Bool> {
+        Binding(get: { pageOrderPresentation == .presented(key) }, set: { isPresented in
+            if !isPresented, pageOrderPresentation == .presented(key) {
+                pageOrderPresentation = nil
+            }
+        })
     }
 
     var body: some View {
+        let showsDetail = selectedAgent != nil || (awaitingEntry && requestedAgentID != nil)
         Group {
             if let agent = selectedAgent {
-                DeviceMetricsView(agent: agent, showingPageOrder: $showingPageOrder)
-                    .id(agent.id)
+                let key = pageOrderKey(agent)
+                DeviceMetricsView(agent: agent, pageOrderKey: key, showingPageOrder: pageOrderBinding(for: key))
+                    .id(key)
+            } else if awaitingEntry {
+                HakoStyle.background
+                    .toolbarBackground(HakoStyle.background, for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
             } else {
                 deviceList
             }
         }
-        .navigationTitle(selectedAgent == nil ? "设备监控" : "设备详情")
-        .navigationBarTitleDisplayMode(selectedAgent == nil ? .automatic : .inline)
+        .navigationTitle(showsDetail ? "设备详情" : "设备监控")
+        .navigationBarTitleDisplayMode(showsDetail ? .inline : .automatic)
         .toolbar {
             if client.authenticated, !client.logoutPending {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -53,9 +80,8 @@ struct DeviceMonitorView: View {
             }
         }
         .sheet(item: $sheet, onDismiss: {
-            if openingPageOrder {
-                openingPageOrder = false
-                showingPageOrder = true
+            if case .pending(let key) = pageOrderPresentation {
+                pageOrderPresentation = selectedPageOrderKey == key ? .presented(key) : nil
             }
         }) { sheet in
             switch sheet {
@@ -67,17 +93,22 @@ struct DeviceMonitorView: View {
         }
         .onChange(of: scope) { _, _ in
             selection = .automatic
+            resolvedEntryScope = nil
             sheet = nil
         }
-        .onChange(of: selectedAgent?.id) { _, _ in
-            openingPageOrder = false
-            showingPageOrder = false
+        .onChange(of: selectedPageOrderKey) { _, _ in
+            pageOrderPresentation = nil
         }
         .task(id: "\(scenePhase)-\(sheet == .addAgent)-\(scope)") {
             guard scenePhase == .active, sheet != .addAgent, !Task.isCancelled else { return }
+            let entryScope = scope
             await client.restore()
+            guard !Task.isCancelled, scope == entryScope else { return }
             if client.authenticated { await refreshDevices() }
-            while !Task.isCancelled {
+            while !Task.isCancelled, scope == entryScope {
+                if resolvedEntryScope != entryScope, !client.busy {
+                    resolvedEntryScope = entryScope
+                }
                 do { try await Task.sleep(for: .seconds(10)) }
                 catch { return }
                 await refreshDevices()
@@ -93,7 +124,9 @@ struct DeviceMonitorView: View {
                 }
             } else if client.authenticated {
                 Section {
-                    if client.agents.isEmpty { Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary) }
+                    if client.agents.isEmpty, client.message == nil {
+                        Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary)
+                    }
                     ForEach(client.agents) { agent in
                         Button { selection = .device(agent.id) } label: {
                             deviceRow(agent, current: false)
@@ -169,13 +202,14 @@ struct DeviceMonitorView: View {
                 }
                 if let agent = selectedAgent {
                     Section {
-                        Button("设备列表") {
-                            selection = .list
+                        Button {
+                            pageOrderPresentation = .pending(pageOrderKey(agent))
                             sheet = nil
-                        }
-                        Button("页面排序") {
-                            openingPageOrder = true
-                            sheet = nil
+                        } label: {
+                            LabeledContent("页面排序", value: "\(agent.name) · \(agent.id)")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                         }
                         .disabled(agent.monitorPages.count < 2)
                     }
@@ -230,6 +264,7 @@ struct DeviceMonitorView: View {
 struct DeviceMetricsView: View {
     private enum CodexTab: String, CaseIterable { case sessions = "处理中会话", usage = "最近 7 天" }
     let agent: ConsoleAgent
+    let pageOrderKey: String
     @Binding var showingPageOrder: Bool
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -261,7 +296,7 @@ struct DeviceMetricsView: View {
     }
     var body: some View {
         DeviceCapabilityPages(capabilities: currentAgent.monitorPages,
-            storageKey: orderKey("all"),
+            storageKey: pageOrderKey, deviceLabel: "\(currentAgent.name) · \(currentAgent.id)",
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
             initialOrder: initialOrder, showingOrder: $showingPageOrder, title: capabilityTitle, tabTitle: capabilityTabTitle) {
             deviceOverview
@@ -280,7 +315,6 @@ struct DeviceMetricsView: View {
             DeviceSSHTerminalView(agentID: agent.id, account: orderKey("ssh"))
                 .id(client.requestContext)
         }
-        .id(orderKey("all"))
         .refreshable { if currentAgent.online { await client.query(currentAgent) } }
         .toolbarBackground(HakoStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)

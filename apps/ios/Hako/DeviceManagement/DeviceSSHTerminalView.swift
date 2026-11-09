@@ -98,18 +98,33 @@ struct DeviceSSHTerminalView: View {
 }
 
 private struct DeviceSSHSettingsView: View {
-    @Environment(\.dismiss) private var dismiss
-    @State var credentials: DeviceSSHCredentials
-    let save: (DeviceSSHCredentials) throws -> Void
+    @State private var credentials: DeviceSSHCredentials
+    private let original: DeviceSSHCredentials
+    private let save: (DeviceSSHCredentials) throws -> Void
     @State private var error: String?
+
+    init(credentials: DeviceSSHCredentials, save: @escaping (DeviceSSHCredentials) throws -> Void) {
+        _credentials = State(initialValue: credentials)
+        original = credentials
+        self.save = save
+    }
+
     private var normalized: DeviceSSHCredentials {
         DeviceSSHCredentials(username: credentials.username.trimmingCharacters(in: .whitespacesAndNewlines),
                              password: credentials.password,
                              fingerprint: credentials.fingerprint.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    private var hasChanges: Bool {
+        credentials.username != original.username ||
+        credentials.password != original.password ||
+        credentials.fingerprint != original.fingerprint
+    }
+
     var body: some View {
-        NavigationStack {
+        SettingsSheet(title: "SSH 设置", hasChanges: hasChanges,
+                      saveEnabled: normalized.isValid, onSave: saveAndConnect,
+                      saveAccessibilityLabel: "保存并连接") {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
@@ -133,17 +148,13 @@ private struct DeviceSSHSettingsView: View {
                     Text("使用 Windows OpenSSH 的 22 端口。请从可信来源核对并填入主机密钥的 SHA256 指纹。")
                 }
                 if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
-                HStack(spacing: 12) {
-                    Button("取消") { dismiss() }.buttonStyle(HakoActionButtonStyle(primary: false))
-                    Button("保存并连接") {
-                        do { try save(normalized) }
-                        catch { self.error = "SSH 配置无法保存，请解锁设备后重试。" }
-                    }.buttonStyle(HakoActionButtonStyle()).disabled(!normalized.isValid)
-                }
             }
-            .navigationTitle("SSH 设置")
-            .navigationBarTitleDisplayMode(.inline)
             .privacySensitive()
         }
+    }
+
+    private func saveAndConnect() {
+        do { try save(normalized) }
+        catch { self.error = "SSH 配置无法保存，请解锁设备后重试。" }
     }
 }
