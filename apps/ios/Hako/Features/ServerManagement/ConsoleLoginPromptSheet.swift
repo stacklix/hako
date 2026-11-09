@@ -45,9 +45,13 @@ struct ConsoleLoginPromptSheet: View {
     @State private var now = Date.now
     private var prompt: ConsoleLoginPrompt { session.prompt }
     private var expired: Bool { (prompt.expiry ?? .distantPast) <= now }
+    private var canRespond: Bool { session.active && !session.busy && !session.blocked && !expired }
 
     var body: some View {
-        SettingsSheet(title: "确认登录请求", isBusy: session.busy) {
+        SettingsSheet(title: "确认登录请求", isBusy: session.busy,
+                      saveEnabled: canRespond && ConsoleLoginPrompt.validCode(code),
+                      onSave: session.outcome == nil ? { Task { await submit(approve: true) } } : nil,
+                      saveAccessibilityLabel: prompt.effectivePurpose == "bind" ? "确认绑定" : "确认登录") {
             Group {
                 if let approved = session.outcome {
                     ContentUnavailableView {
@@ -90,19 +94,14 @@ struct ConsoleLoginPromptSheet: View {
                                 .font(.footnote).foregroundStyle(.secondary)
                             Text(expired ? "请求已过期，请重新发起。" : "\(max(0, Int(ceil((prompt.expiry ?? now).timeIntervalSince(now))))) 秒后过期")
                                 .font(.footnote).foregroundStyle(.secondary)
-                        }.disabled(session.busy || session.blocked || expired)
+                        }.disabled(!canRespond)
                         Section {
-                            HStack(spacing: 12) {
-                                Button(prompt.effectivePurpose == "bind" ? "取消绑定" : "取消登录", role: .destructive) { Task { await submit(approve: false) } }
-                                    .buttonStyle(HakoActionButtonStyle(primary: false))
-                                    .accessibilityHint("拒绝此次请求")
-                                Button(prompt.effectivePurpose == "bind" ? "确认绑定" : "确认登录") { Task { await submit(approve: true) } }
-                                    .buttonStyle(HakoActionButtonStyle())
-                                    .disabled(!ConsoleLoginPrompt.validCode(code))
-                            }
-                            .disabled(session.busy || session.blocked || expired)
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
+                            Button(prompt.effectivePurpose == "bind" ? "取消绑定" : "取消登录", role: .destructive) { Task { await submit(approve: false) } }
+                                .buttonStyle(HakoActionButtonStyle(primary: false))
+                                .accessibilityHint("拒绝此次请求")
+                                .disabled(!canRespond)
+                                .listRowInsets(EdgeInsets())
+                                .listRowBackground(Color.clear)
                         }
                         if session.busy { Section { Text("正在处理，请稍候…").font(.footnote).foregroundStyle(.secondary) } }
                         if let message = session.message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }

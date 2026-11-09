@@ -9,7 +9,7 @@ Hako 统一后端为主应用和子应用提供服务。服务器配置、设备
 `GET /api/v1/version` 无需登录，返回当前服务端版本和两类客户端各自的最低版本。
 
 ```json
-{"serverVersion":"0.1.2","minimumIosVersion":"0.1.0","minimumAgentVersion":"1.0.0"}
+{"serverVersion":"0.1.3","minimumIosVersion":"0.1.0","minimumAgentVersion":"1.0.0"}
 ```
 
 版本使用 `主版本.次版本.补丁版本` 三段非负整数。最低版本的前两段指定兼容版本线。实际版本的前两段必须与之相同，第三段按数值比较且须达到最低要求。比如要求 `0.1.2` 时，`0.1.10` 兼容，`0.1.1`、`0.2.0` 和 `1.1.0` 均不兼容。升级中间段时，应同步更新对端所要求的版本线。
@@ -74,6 +74,7 @@ Console 的会话列表新增 `type=application`，含 `application,origin,brows
 | `GET /api/v1/applications` | 返回 `applications,issuer`，不返回 Secret 或哈希 |
 | `POST /api/v1/applications` | `name,origin` 和可选完整 `oidc`；返回应用与仅此一次的 Secret |
 | `PATCH /api/v1/applications/{id}` | 修改 `enabled` 或完整 `oidc` 配置 |
+| `DELETE /api/v1/applications/{id}` | JSON `{}`，移除应用登记并使该应用的待授权请求、授权码及 Hako 访问授权失效；已移除时仍返回 `{"ok":true}` |
 | `POST /api/v1/applications/{id}/rotate` | JSON `{}`，轮换 Secret，返回新的一次性凭据 |
 
 全部要求当前可信 Console 会话、`X-Hako-Device` 及绑定路径/方法/令牌的 DPoP，每次消耗防重放 jti；写请求要求 JSON，按 Console 会话限制每分钟 30 次。带浏览器 Origin/Sec-Fetch-Site 的调用被拒绝。管理 Cookie、第三方 Secret、扫码 sessionToken 和 OIDC Access Token 均不能认证这些接口。Web 原有 `/admin/api/applications` 的 Cookie/CSRF 边界保持不变。

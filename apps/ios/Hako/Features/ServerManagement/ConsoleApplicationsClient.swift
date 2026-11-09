@@ -5,6 +5,8 @@ import Combine
     private let authentication: any AuthenticatedServerAccess
     private var subscription: AnyCancellable?
     private struct Snapshot { var context = ""; var applications: [ConsoleApplication] = []; var loaded = false }
+    private struct DeletionResult: Decodable { let ok: Bool }
+    private static let unconfirmedDeletion = HakoError(message: "删除结果尚未确认，请先刷新应用列表核对。")
     @Published private var snapshot = Snapshot()
     @Published private(set) var working = false
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
@@ -31,16 +33,21 @@ import Combine
             return data
         } catch {
             guard expected == context else { throw CancellationError() }
+            if method == "DELETE", error is CancellationError { throw error }
             if let failure = error as? ServerHTTPError {
                 switch failure.code {
                 case "invalid_application_details": throw HakoError(message: "应用信息或 OIDC 配置无效，请检查来源、精确回调地址和认证选项。")
                 case "too_many_applications": throw HakoError(message: "最多支持 64 个应用。")
                 case "application_not_found": throw HakoError(message: "应用已不存在，请返回并刷新列表。")
                 default:
+                    if method == "DELETE", failure.status == 404 || failure.status == 405 {
+                        throw HakoError(message: "服务端尚不支持删除应用，请先更新 Hako 服务端。")
+                    }
                     if failure.status == 404 { throw HakoError(message: "服务端尚不支持原生应用管理，请先更新 Hako 服务端。") }
                     throw failure
                 }
             }
+            if method == "DELETE" { throw Self.unconfirmedDeletion }
             if method != "GET" { throw HakoError(message: "请求结果尚未确认，请先刷新应用列表核对，再决定是否重试。若 Secret 响应遗失，需要轮换生成新值。") }
             throw error
         }
@@ -85,6 +92,17 @@ import Combine
     }
     func setEnabled(_ application: ConsoleApplication, enabled: Bool) async throws {
         try await update(application, body: ["enabled": enabled])
+    }
+    func remove(_ application: ConsoleApplication) async throws {
+        guard !busy else { throw ConsoleApplicationError.busy }
+        working = true; defer { working = false }
+        let expected = context
+        let data = try await request("/\(application.id)", method: "DELETE", body: [:])
+        guard (try? JSONDecoder().decode(DeletionResult.self, from: data))?.ok == true else {
+            throw Self.unconfirmedDeletion
+        }
+        try requireContext(expected)
+        snapshot.applications.removeAll { $0.id == application.id }
     }
     private func update(_ application: ConsoleApplication, body: [String: Any]) async throws {
         guard !busy else { throw ConsoleApplicationError.busy }

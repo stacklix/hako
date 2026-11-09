@@ -14,11 +14,15 @@ import Foundation
         callbacks[name] = run
     }
 
-    static func run() async throws -> String {
-        try await shared.runCallbacks()
+    static func run(_ title: String) async throws -> String {
+        try await shared.runCallbacks(title: title)
     }
 
-    private func runCallbacks() async throws -> String {
+    private func runCallbacks(title: String) async throws -> String {
+        let history = HakoShortcutHistory.shared
+        let runID = history.start(title)
+        var status = HakoShortcutRun.Status.failed
+        defer { history.finish(runID, status: Task.isCancelled ? .cancelled : status) }
         guard !callbacks.isEmpty else { throw HakoError(message: "没有已注册的同步任务。") }
         var results: [String] = []
         var failed = false
@@ -26,16 +30,21 @@ import Foundation
             try Task.checkCancellation()
             do {
                 results.append("\(name)：\(try await run())")
+                history.recordStep(name, status: .succeeded, runID: runID)
             } catch is CancellationError {
+                status = .cancelled
+                history.recordStep(name, status: .cancelled, runID: runID)
                 throw CancellationError()
             } catch {
                 failed = true
                 results.append("\(name)失败：\(error.localizedDescription)")
+                history.recordStep(name, status: .failed, runID: runID)
             }
         }
         try Task.checkCancellation()
         let summary = results.joined(separator: "\n")
         if failed { throw HakoError(message: summary) }
+        status = .succeeded
         return summary
     }
 }
@@ -46,7 +55,7 @@ struct SyncHakoDataIntent: AppIntent {
     static var openAppWhenRun = false
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = try await HakoShortcutRegistry.run()
+        let result = try await HakoShortcutRegistry.run("同步 Hako 数据")
         return .result(dialog: IntentDialog(stringLiteral: result))
     }
 }

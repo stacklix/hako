@@ -278,7 +278,7 @@ final class MockProtocol: URLProtocol {
                 precondition(req.url!.path == "/repos/stacklix/hako/actions/workflows/ios.yml/runs")
                 precondition(req.url!.query == "branch=master&per_page=1")
                 return try json(["workflow_runs": [["id": 123, "run_number": 42, "run_attempt": 2,
-                    "status": "in_progress", "updated_at": "2026-10-22T08:30:00Z"]]])
+                    "status": "in_progress", "created_at": "2026-10-22T08:25:00Z", "updated_at": "2026-10-22T08:30:00Z"]]])
             }
             precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/123/attempts/2/jobs")
             return try json(["jobs": [
@@ -291,16 +291,17 @@ final class MockProtocol: URLProtocol {
         }
         let progress = try await builds.latest(workflow: .ios)
         precondition(calls == 2 && progress?.run.runNumber == 42)
-        precondition(progress?.run.refreshInterval == 5)
-        for status in ["queued", "waiting", "in_progress", "completed"] {
+        precondition(progress?.run.createdAt == ISO8601DateFormatter().date(from: "2026-10-22T08:25:00Z"))
+        precondition(progress?.run.isActive == true)
+        for status in ["queued", "waiting", "pending", "requested", "in_progress", "completed", "unknown"] {
             let run = BuildStatusClient.Run(id: 123, runNumber: 42, runAttempt: 1,
-                                           status: status, conclusion: nil, updatedAt: .now)
-            precondition(run.refreshInterval == (status == "completed" ? 30 : 5))
+                                           status: status, conclusion: nil, createdAt: .now)
+            precondition(run.isActive == ["queued", "waiting", "pending", "requested", "in_progress"].contains(status))
         }
         for conclusion in ["success", "failure", "cancelled"] {
             let run = BuildStatusClient.Run(id: 123, runNumber: 42, runAttempt: 1,
-                                           status: "completed", conclusion: conclusion, updatedAt: .now)
-            precondition(run.refreshInterval == 30)
+                                           status: "completed", conclusion: conclusion, createdAt: .now)
+            precondition(!run.isActive)
         }
         precondition(progress?.jobs.map(\.name) == ["snapshot", "test", "build", "deploy"])
         precondition(progress?.jobs.first { $0.name == "build" }?.activeStep == "Archive and export signed IPA")
@@ -315,7 +316,7 @@ final class MockProtocol: URLProtocol {
                 if calls == 1 {
                     precondition(req.url!.path == "/repos/stacklix/hako/actions/workflows/\(workflow.rawValue)/runs")
                     return try json(["workflow_runs": [["id": runID, "run_number": 9, "run_attempt": 1,
-                        "status": "in_progress", "updated_at": "2026-10-22T08:30:00Z"]]])
+                        "status": "in_progress", "created_at": "2026-10-22T08:25:00Z"]]])
                 }
                 precondition(req.url!.path == "/repos/stacklix/hako/actions/runs/\(runID)/attempts/1/jobs")
                 return try json(["jobs": names.enumerated().map { ["id": $0.offset, "name": $0.element, "status": "queued"] }])

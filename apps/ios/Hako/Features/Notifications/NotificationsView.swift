@@ -35,6 +35,9 @@ struct NotificationsView: View {
                             ForEach(items) { notification in
                                 Button { open(notification) } label: { notificationRow(notification) }
                                     .buttonStyle(.plain)
+                                    .listRowInsets(EdgeInsets())
+                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                         Button(role: .destructive) {
                                             store.clear(notification)
@@ -120,7 +123,11 @@ struct NotificationsView: View {
                 Text(notification.summary).font(.subheadline).foregroundStyle(.secondary)
             }
             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).padding(.top, 5)
-        }.padding(.vertical, 6)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
     }
 
     private func open(_ notification: HakoNotification) {

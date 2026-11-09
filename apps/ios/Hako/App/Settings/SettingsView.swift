@@ -104,10 +104,18 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
             Section("工具") {
+                NavigationLink { HakoShortcutHistoryView() } label: {
+                    Label("快捷指令执行历史", systemImage: "clock.arrow.circlepath")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 NavigationLink { HakoLogsView() } label: {
                     Label("日志", systemImage: "doc.text.magnifyingglass")
                 }
-                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section {
                 HStack(spacing: 16) {

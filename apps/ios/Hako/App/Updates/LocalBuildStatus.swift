@@ -9,13 +9,40 @@ struct BuildStatusView: View {
 
     let isSettingsVisible: Bool
     let choreRoute: ChoreUpdateRoute?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("buildStatus.githubWorkflow") private var githubWorkflow = BuildStatusWorkflow.ios
     @State private var source = Source.local
+    @State private var refreshID = 0
+    @State private var pendingRefreshID: Int?
+    @State private var refreshSucceeded: Bool?
 
     var body: some View {
-        Section("构建进度") {
+        Section {
+            switch source {
+            case .local:
+                LocalBuildStatusRows(isSettingsVisible: isSettingsVisible, choreRoute: choreRoute ?? .publicNetwork,
+                                     refreshID: refreshID, requestRefresh: requestRefresh,
+                                     onRefreshFinished: finishRefresh) { sourceRow }
+            case .github:
+                GitHubBuildStatusRows(isSettingsVisible: isSettingsVisible, workflow: $githubWorkflow,
+                                      refreshID: refreshID, onRefreshFinished: finishRefresh) { sourceRow }
+                    .id(githubWorkflow)
+            }
+        } header: {
+            Text("构建进度")
+        }
+        .onChange(of: githubWorkflow) { _, _ in clearRefreshFeedback() }
+    }
+
+    private var sourceRow: some View {
+        HStack {
             HStack(spacing: 25) {
                 ForEach(Source.allCases, id: \.self) { option in
-                    Button { source = option } label: {
+                    Button {
+                        guard source != option else { return }
+                        clearRefreshFeedback()
+                        source = option
+                    } label: {
                         Text(option.rawValue)
                             .font(.system(size: 14, weight: source == option ? .semibold : .regular))
                             .foregroundStyle(source == option ? HakoStyle.text : HakoStyle.muted)
@@ -28,18 +55,54 @@ struct BuildStatusView: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(source == option ? .isSelected : [])
                 }
-                Spacer(minLength: 0)
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("构建来源")
-            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
 
-            switch source {
-            case .local: LocalBuildStatusRows(isSettingsVisible: isSettingsVisible, choreRoute: choreRoute)
-            case .github: GitHubBuildStatusRows(isSettingsVisible: isSettingsVisible)
+            Spacer(minLength: 0)
+            Button(action: requestRefresh) {
+                HStack(spacing: 6) {
+                    if let refreshSucceeded {
+                        Text(refreshSucceeded ? "已刷新" : "刷新失败")
+                            .font(.caption)
+                            .foregroundStyle(refreshSucceeded ? Color.secondary : Color.red)
+                    } else if source == .local, pendingRefreshID != nil {
+                        Text("刷新中…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "arrow.clockwise")
+                        .font(.body)
+                        .rotationEffect(.degrees(Double(refreshID) * 360))
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: refreshID)
+                }
+                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityLabel("刷新\(source.rawValue)构建进度")
+            .accessibilityValue(refreshSucceeded.map { $0 ? "已刷新" : "刷新失败" } ?? "")
         }
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+    }
+
+    private func requestRefresh() {
+        refreshID += 1
+        pendingRefreshID = refreshID
+        refreshSucceeded = nil
+    }
+
+    private func finishRefresh(_ id: Int, _ succeeded: Bool) {
+        guard pendingRefreshID == id else { return }
+        pendingRefreshID = nil
+        refreshSucceeded = succeeded
+    }
+
+    private func clearRefreshFeedback() {
+        pendingRefreshID = nil
+        refreshSucceeded = nil
     }
 }
 
@@ -62,6 +125,7 @@ private struct LocalBuildSnapshot: Decodable {
     let hostUsage: HostUsage?
 
     var isStale: Bool { Date.now.timeIntervalSince(updatedAt) > 90 }
+    var shouldPoll: Bool { !isStale && active.contains { $0.state == "queued" || $0.state == "running" } }
 }
 
 private struct LocalBuildTask: Decodable, Identifiable {
@@ -139,31 +203,36 @@ private struct LocalBuildTask: Decodable, Identifiable {
     }
 }
 
-struct LocalBuildStatusRows: View {
+private struct LocalBuildStatusRows<SourceRow: View>: View {
     let isSettingsVisible: Bool
-    let choreRoute: ChoreUpdateRoute?
+    let choreRoute: ChoreUpdateRoute
+    let refreshID: Int
+    let requestRefresh: () -> Void
+    let onRefreshFinished: (Int, Bool) -> Void
+    @ViewBuilder let sourceRow: () -> SourceRow
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshot: LocalBuildSnapshot?
     @State private var unavailable = false
     @State private var selectedTask: LocalBuildTask?
-    @State private var refreshID = 0
 
     var body: some View {
         Group {
-            heading("当前构建")
-                .sheet(item: $selectedTask) { task in
-                    LocalBuildTaskSheet(initialTask: task, snapshot: $snapshot, unavailable: $unavailable) {
-                        refreshID += 1
+            sourceRow()
+                .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(choreRoute.rawValue)") {
+                    guard isSettingsVisible, scenePhase == .active else { return }
+                    await refresh(using: choreRoute)
+                    guard !Task.isCancelled else { return }
+                    onRefreshFinished(refreshID, !unavailable && snapshot?.isStale == false)
+                    while !Task.isCancelled, snapshot?.shouldPoll == true {
+                        do { try await Task.sleep(for: .seconds(unavailable ? 30 : 5)) }
+                        catch { return }
+                        await refresh(using: choreRoute)
                     }
                 }
-                .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)-\(choreRoute?.rawValue ?? "")") {
-                    guard isSettingsVisible, scenePhase == .active, let choreRoute else { return }
-                    while !Task.isCancelled {
-                        await refresh(using: choreRoute)
-                        let interval = unavailable || snapshot?.active.isEmpty != false ? 30 : 5
-                        do { try await Task.sleep(for: .seconds(interval)) }
-                        catch { return }
-                    }
+            heading("当前构建")
+                .sheet(item: $selectedTask) { task in
+                    LocalBuildTaskSheet(initialTask: task, snapshot: $snapshot, unavailable: $unavailable,
+                                        onRefresh: requestRefresh)
                 }
             if let snapshot {
                 if unavailable || snapshot.isStale {

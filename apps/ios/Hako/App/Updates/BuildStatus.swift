@@ -48,10 +48,10 @@ struct BuildStatusClient {
         let runAttempt: Int
         let status: String
         let conclusion: String?
-        let updatedAt: Date
+        let createdAt: Date
 
-        var refreshInterval: Int {
-            status == "completed" || conclusion != nil ? 30 : 5
+        var isActive: Bool {
+            conclusion == nil && ["queued", "in_progress", "waiting", "pending", "requested"].contains(status)
         }
     }
     struct Job: Decodable, Identifiable {
@@ -135,39 +135,42 @@ struct BuildStatusClient {
     }
 }
 
-struct GitHubBuildStatusRows: View {
+struct GitHubBuildStatusRows<SourceRow: View>: View {
     let isSettingsVisible: Bool
-    @AppStorage("buildStatus.githubWorkflow") private var workflow = BuildStatusWorkflow.ios
-
-    var body: some View {
-        Picker("工作流", selection: $workflow) {
-            ForEach(BuildStatusWorkflow.allCases) { option in
-                Text(option.title).tag(option)
-            }
-        }
-        .pickerStyle(.menu)
-
-        GitHubWorkflowStatusRows(isSettingsVisible: isSettingsVisible, workflow: workflow)
-            .id(workflow)
-    }
-}
-
-private struct GitHubWorkflowStatusRows: View {
-    let isSettingsVisible: Bool
-    let workflow: BuildStatusWorkflow
+    @Binding var workflow: BuildStatusWorkflow
+    let refreshID: Int
+    let onRefreshFinished: (Int, Bool) -> Void
+    @ViewBuilder let sourceRow: () -> SourceRow
     @Environment(\.scenePhase) private var scenePhase
     @State private var snapshot: BuildStatusClient.Snapshot?
     @State private var errorMessage: String?
     @State private var loadingRequest: UUID?
     @State private var loaded = false
-    @State private var refreshID = 0
-    @State private var checkedAt: Date?
 
-    private var loading: Bool { loadingRequest != nil }
     var body: some View {
         Group {
+            sourceRow()
+                .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)") {
+                    guard isSettingsVisible, scenePhase == .active else { return }
+                    let selected = workflow
+                    await refresh(workflow: selected)
+                    guard !Task.isCancelled, workflow == selected else { return }
+                    onRefreshFinished(refreshID, errorMessage == nil)
+                    while !Task.isCancelled, workflow == selected, snapshot?.run.isActive == true {
+                        do { try await Task.sleep(for: .seconds(errorMessage == nil ? 5 : 120)) }
+                        catch { return }
+                        await refresh(workflow: selected)
+                    }
+                }
+            Picker("工作流", selection: $workflow) {
+                ForEach(BuildStatusWorkflow.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.menu)
             if let snapshot {
                 LabeledContent("\(workflow.title) #\(snapshot.run.runNumber)", value: BuildStatusClient.statusText(snapshot.run.status, conclusion: snapshot.run.conclusion))
+                LabeledContent("触发时间", value: snapshot.run.createdAt.formatted(date: .abbreviated, time: .standard))
                 ForEach(snapshot.jobs) { job in
                     VStack(alignment: .leading, spacing: 4) {
                         LabeledContent(workflow.jobTitle(job.name),
@@ -178,32 +181,12 @@ private struct GitHubWorkflowStatusRows: View {
                     }
                 }
             } else if !loaded {
-                ProgressView("读取\(workflow.title)构建进度…")
+                Text("正在读取\(workflow.title)构建记录…").foregroundStyle(.secondary)
             } else if errorMessage == nil {
                 Text("暂无\(workflow.title)构建记录").foregroundStyle(.secondary)
             }
             if let errorMessage {
                 Text(errorMessage).font(.footnote).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("刷新进度") { refreshID += 1 }.disabled(loading)
-                Spacer()
-                if loading { ProgressView() }
-                else if let checkedAt {
-                    Text("更新于 \(checkedAt.formatted(date: .omitted, time: .standard))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .task(id: "\(isSettingsVisible)-\(scenePhase)-\(refreshID)") {
-                guard isSettingsVisible, scenePhase == .active, !Task.isCancelled else { return }
-                repeat {
-                    await refresh()
-                    guard !Task.isCancelled else { return }
-                    // Back off after errors instead of repeatedly hitting a rate limit.
-                    let interval = errorMessage == nil ? (snapshot?.run.refreshInterval ?? 30) : 120
-                    do { try await Task.sleep(for: .seconds(interval)) }
-                    catch { return }
-                } while !Task.isCancelled
             }
             Link("在 GitHub 查看", destination: snapshot.map {
                 URL(string: "https://github.com/stacklix/hako/actions/runs/\($0.run.id)")!
@@ -211,7 +194,7 @@ private struct GitHubWorkflowStatusRows: View {
         }
     }
 
-    @MainActor private func refresh() async {
+    @MainActor private func refresh(workflow selected: BuildStatusWorkflow) async {
         guard !Task.isCancelled else { return }
         let request = UUID()
         loadingRequest = request
@@ -220,15 +203,14 @@ private struct GitHubWorkflowStatusRows: View {
         }
         do {
             let token = try TokenStore.read()
-            let latest = try await BuildStatusClient(token: token).latest(workflow: workflow)
+            let latest = try await BuildStatusClient(token: token).latest(workflow: selected)
             try Task.checkCancellation()
-            guard loadingRequest == request else { return }
+            guard loadingRequest == request, workflow == selected else { return }
             snapshot = latest
             errorMessage = nil
-            checkedAt = .now
             loaded = true
         } catch {
-            guard !Task.isCancelled, loadingRequest == request else { return }
+            guard !Task.isCancelled, loadingRequest == request, workflow == selected else { return }
             errorMessage = error.localizedDescription
             loaded = true
         }

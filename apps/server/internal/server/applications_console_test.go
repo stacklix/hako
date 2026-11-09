@@ -74,13 +74,57 @@ func TestConsoleApplicationManagementSharesWebRecords(t *testing.T) {
 	}
 }
 
+func TestConsoleApplicationDeletionRevokesLoginAndPersists(t *testing.T) {
+	f := newFixture(t, true)
+	admin := loginAdmin(f)
+	c, secret := oidcTestClient(f, "to-delete")
+	other, otherSecret := appTestClient(f, "other-app")
+	pending := startApp(f, c, secret, "login")
+	otherPending := startApp(f, other, otherSecret, "login")
+	_, usedCode := approvedOIDCCode(f, c)
+	access := oidcAccess(f, exchangeOIDC(f, c, secret, usedCode))
+	_, unusedCode := approvedOIDCCode(f, c)
+
+	path := "/api/v1/applications/" + c.ID
+	for range 2 {
+		status, data := consoleApplicationCall(f, "DELETE", path, struct{}{}, f.tokens.AccessToken)
+		var result map[string]bool
+		if status != 200 || json.Unmarshal(data, &result) != nil || !result["ok"] {
+			t.Fatalf("Console delete: %d %s", status, data)
+		}
+	}
+	list := string(admin.call("GET", "applications", nil, 200))
+	if strings.Contains(list, c.ID) || !strings.Contains(list, other.ID) {
+		t.Fatal("Web list did not reflect the deletion")
+	}
+	if status, _ := f.call("GET", "/api/v1/auth/web-login/requests/"+pending.ID, nil, f.tokens.AccessToken); status != 404 {
+		t.Fatalf("deleted application's request survived: %d", status)
+	}
+	if appCall(f, other, otherSecret, "GET", "/requests/"+otherPending.ID, otherPending.Redeem, "", nil).Code != 200 {
+		t.Fatal("unrelated application's request was affected")
+	}
+	if exchangeOIDC(f, c, secret, unusedCode).Code == 200 || oidcRequest(f, "GET", "/oidc/userinfo", "", nil, "", "", access).Code != 401 {
+		t.Fatal("deleted application's OIDC grants survived")
+	}
+	persisted, err := openStore(f.s.config.Database, f.s.config.MasterKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer persisted.db.Close()
+	persisted.inspect(func(st state) {
+		if _, ok := st.AuthClients[c.ID]; ok {
+			t.Fatal("deletion was not persisted")
+		}
+	})
+}
+
 func TestConsoleApplicationManagementCredentialIsolationAndReplay(t *testing.T) {
 	f := newFixture(t, true)
 	admin := loginAdmin(f)
 	c, secret := appTestClient(f, "ordinary-app")
-	for _, method := range []string{"GET", "POST", "PATCH"} {
+	for _, method := range []string{"GET", "POST", "PATCH", "DELETE"} {
 		path := "/api/v1/applications"
-		if method == "PATCH" {
+		if method == "PATCH" || method == "DELETE" {
 			path += "/" + c.ID
 		}
 		for _, credential := range []string{"", secret} {

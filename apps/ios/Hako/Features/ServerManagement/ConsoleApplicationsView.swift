@@ -124,12 +124,15 @@ struct ConsoleApplicationsView: View {
 }
 
 private struct ConsoleApplicationDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var client: ConsoleApplicationsClient
     let applicationID: String
     let edit: (ConsoleApplication) -> Void
     let showCredential: (ConsoleApplicationCredential) -> Void
     @State private var errorMessage: String?
     @State private var confirmation: Action?
+    @State private var confirmingDeletion = false
+    @State private var deletionContext: String?
     @State private var copied = false
     private enum Action { case disable, rotate }
     private var application: ConsoleApplication? { client.applications.first { $0.id == applicationID } }
@@ -179,6 +182,15 @@ private struct ConsoleApplicationDetailView: View {
                 }
                 if client.busy { Section { ProgressView("正在更新应用…") } }
                 if let errorMessage { Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) } }
+                Section {
+                    Button("删除应用", role: .destructive) {
+                        deletionContext = client.context
+                        confirmingDeletion = true
+                    }
+                    .buttonStyle(HakoActionButtonStyle(destructive: true))
+                    .listRowBackground(Color.clear)
+                    .disabled(client.busy)
+                }
             } else {
                 ContentUnavailableView("应用暂不可用", systemImage: "square.stack.3d.up", description: Text("请返回并刷新列表，或验证当前 Hako 登录。"))
             }
@@ -201,7 +213,33 @@ private struct ConsoleApplicationDetailView: View {
         } message: {
             Text(confirmation == .rotate ? "旧 Secret 会立即失效，已有的待授权请求、授权码和 Hako 访问授权也会失效。请同步更新应用后端配置。" : "该应用无法再发起新的 Hako 登录，已有的待授权请求、授权码和 Hako 访问授权将失效。第三方应用自己的登录会话由它管理。")
         }
-        .onChange(of: client.context) { _, _ in errorMessage = nil; confirmation = nil; copied = false }
+        .hakoDeleteConfirmation(
+            application.map { Text("删除「\($0.name)」？") } ?? Text("删除应用？"),
+            isPresented: $confirmingDeletion,
+            message: Text("应用登记将被永久删除，待处理的登录请求、授权码和已有 Hako 授权会失效。"),
+            confirmTitle: Text("确认删除"),
+            disabled: client.busy || application == nil || deletionContext != client.context,
+            onDismiss: { deletionContext = nil }
+        ) {
+            guard let application, let expected = deletionContext else { return }
+            Task { await delete(application, context: expected) }
+        }
+        .onChange(of: client.context) { _, _ in
+            errorMessage = nil
+            confirmation = nil
+            confirmingDeletion = false
+            deletionContext = nil
+            copied = false
+        }
+    }
+    @MainActor private func delete(_ application: ConsoleApplication, context: String) async {
+        guard client.context == context else { return }
+        errorMessage = nil
+        do {
+            try await client.remove(application)
+            dismiss()
+        } catch is CancellationError { }
+        catch { errorMessage = error.localizedDescription }
     }
     @MainActor private func setEnabled(_ application: ConsoleApplication, _ enabled: Bool) async {
         errorMessage = nil

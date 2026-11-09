@@ -30,6 +30,7 @@ func (s *Server) applicationManagementRoutes() {
 	s.mux.HandleFunc("GET /api/v1/applications", s.consoleApplications(s.listApplications))
 	s.mux.HandleFunc("POST /api/v1/applications", s.consoleApplications(s.createApplication))
 	s.mux.HandleFunc("PATCH /api/v1/applications/{id}", s.consoleApplications(s.updateApplication))
+	s.mux.HandleFunc("DELETE /api/v1/applications/{id}", s.consoleApplications(s.deleteApplication))
 	s.mux.HandleFunc("POST /api/v1/applications/{id}/rotate", s.consoleApplications(s.rotateApplication))
 }
 
@@ -130,6 +131,23 @@ func (s *Server) invalidateApplication(id string) {
 			delete(s.adminSessions, key)
 		}
 	}
+}
+
+func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
+	var body struct{}
+	if !decode(w, r, &body) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.update(func(st *state) error {
+		delete(st.AuthClients, id)
+		return nil
+	}); err != nil {
+		reject(w, 503, "storage_unavailable")
+		return
+	}
+	s.invalidateApplication(id)
+	respond(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) updateApplication(w http.ResponseWriter, r *http.Request) {
