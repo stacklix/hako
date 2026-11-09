@@ -78,11 +78,11 @@ func TestAccessLogsPartitionAllHTTPStatuses(t *testing.T) {
 		if len(detail.TopClients) != 2 {
 			t.Fatal("incorrect clients", rec.Body.String())
 		}
-		if len(detail.SuccessURLs) != 2 || detail.SuccessURLs[0] != (accesslog.Rank{"/mixed", 102}) || detail.SuccessURLs[1] != (accesslog.Rank{"/success", 1}) {
+		if len(detail.SuccessURLs) != 2 || detail.SuccessURLs[0] != (accesslog.Rank{Value: "/mixed", Count: 102}) || detail.SuccessURLs[1] != (accesslog.Rank{Value: "/success", Count: 1}) {
 			t.Fatal("domain normal URLs must exclude all abnormal requests", rec.Body.String())
 		}
 		client := detail.TopClients[0]
-		if len(client.SuccessURLs) != 1 || client.SuccessURLs[0] != (accesslog.Rank{"/mixed", 102}) || len(client.NonSuccessURLs) != 1 || client.NonSuccessURLs[0] != (accesslog.Rank{"/mixed", 398}) {
+		if len(client.SuccessURLs) != 1 || client.SuccessURLs[0] != (accesslog.Rank{Value: "/mixed", Count: 102}) || len(client.NonSuccessURLs) != 1 || client.NonSuccessURLs[0] != (accesslog.Rank{Value: "/mixed", Count: 398}) {
 			t.Fatal("same URL must count statuses separately, including redirects and server errors as abnormal", rec.Body.String())
 		}
 		if len(detail.TopClients[1].NonSuccessURLs) != 0 || len(detail.TopClients[1].SuccessURLs) != 1 {
