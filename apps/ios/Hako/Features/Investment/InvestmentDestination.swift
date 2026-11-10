@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct InvestmentLink<Label: View>: View {
     let route: InvestmentRoute
@@ -174,6 +175,11 @@ struct InvestmentPlansView: View {
 }
 
 struct InvestmentHoldingView: View {
+    private struct DepositAction: Identifiable {
+        let kind: InvestmentEventKind
+        var id: String { kind.rawValue }
+    }
+
     @ObservedObject var store: InvestmentStore
     let account: InvestmentAccount
     let asset: InvestmentAsset
@@ -181,6 +187,8 @@ struct InvestmentHoldingView: View {
     @State private var showsMarginTransfer = false
     @State private var showsFuturesSettlement = false
     @State private var editing: InvestmentEvent?
+    @State private var depositAction: DepositAction?
+    @State private var showsDepositTerms = false
 
     private var offersAdjustment: Bool { asset.kind.supportsCashDividends || [.crypto, .cryptoContract].contains(asset.kind) }
 
@@ -216,8 +224,15 @@ struct InvestmentHoldingView: View {
                                 case .bonusShares, .stakingReward, .spotAdjustment:
                                     let unit = asset.kind == .crypto ? asset.code : asset.kind.unit
                                     Text((event.quantity > 0 ? "+" : "") + InvestmentText.number(event.quantity) + " " + unit)
+                                case .opening where asset.kind.isTermDeposit,
+                                     .buy where asset.kind.isTermDeposit,
+                                     .sell where asset.kind.isTermDeposit:
+                                    Text(InvestmentText.money(event.kind == .sell ? -event.price : event.price,
+                                                              account.currency, signed: true))
+                                case .adjustment where asset.kind.isTermDeposit:
+                                    EmptyView()
                                 default:
-                                    if asset.kind != .insurance && !asset.kind.isTermDeposit {
+                                    if asset.kind != .insurance {
                                         Text(InvestmentText.number(event.quantity) + " " + asset.kind.unit)
                                     }
                                     Text(InvestmentText.number(event.price) + " " + store.book.quoteUnit(for: asset))
@@ -232,7 +247,8 @@ struct InvestmentHoldingView: View {
                                         .font(.caption).foregroundStyle(InvestmentText.tint(change))
                                 }
                                 if let amount = event.settledAmount {
-                                    Text(InvestmentText.money(amount, account.currency)).font(.caption).foregroundStyle(.secondary)
+                                    Text((asset.kind.isTermDeposit ? "余额 " : "") + InvestmentText.money(amount, account.currency))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                             }.monospacedDigit()
                             InvestmentChevron()
@@ -246,6 +262,12 @@ struct InvestmentHoldingView: View {
         .navigationTitle(asset.name)
         .sheet(item: $editing) { event in
             InvestmentEventEditor(store: store, accountID: account.id, event: event)
+        }
+        .sheet(item: $depositAction) { action in
+            InvestmentTradeEditor(store: store, account: account, asset: asset, kind: action.kind)
+        }
+        .sheet(isPresented: $showsDepositTerms) {
+            InvestmentDepositTermsEditor(store: store, accountID: account.id, asset: asset)
         }
         .sheet(isPresented: $showsAdjustment) {
             if asset.kind == .cryptoContract {
@@ -281,8 +303,8 @@ struct InvestmentHoldingView: View {
         let sinceEntry = position.lastEntry.flatMap { entry in quote.map { ($0.price / entry - 1) * asset.priceDirection } }
         return InvestmentCard {
             let description = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-            InvestmentTitle("持仓概况", subtitle: termDeposit ? description : asset.code + " · " + description)
-            InvestmentMetric(title: nativeContract || cashContract ? "未实现盈亏" : (termDeposit ? "存款本金" : (insurance ? "保单现金价值" : "持仓估值")),
+            InvestmentTitle("持仓概况", subtitle: termDeposit ? asset.kindLabel : asset.code + " · " + description)
+            InvestmentMetric(title: nativeContract || cashContract ? "未实现盈亏" : (termDeposit ? "存款余额" : (insurance ? "保单现金价值" : "持仓估值")),
                              value: InvestmentText.money(unrealized, account.currency), prominent: true)
             HStack(alignment: .top) {
                 InvestmentMetric(title: "累计盈亏", value: InvestmentText.money(gain, account.currency, signed: true), color: InvestmentText.tint(gain))
@@ -294,9 +316,21 @@ struct InvestmentHoldingView: View {
                                      value: InvestmentText.percent(sinceEntry), color: InvestmentText.tint(sinceEntry))
                 }
             }
-            if let terms = asset.depositTerms {
-                let annualRate = terms.annualRate.formatted(.percent)
-                Text("年利率 \(annualRate) · 到期日 \(InvestmentText.date(terms.maturity))")
+            if termDeposit {
+                Button { showsDepositTerms = true } label: {
+                    HStack {
+                        if let terms = asset.depositTerms {
+                            let annualRate = terms.annualRate.formatted(.percent)
+                            Text("年利率 \(annualRate) · 到期日 \(InvestmentText.date(terms.maturity))")
+                        } else {
+                            Text("填写年利率和到期日")
+                        }
+                        Spacer(minLength: 4)
+                        InvestmentChevron()
+                    }.font(.caption).foregroundStyle(.secondary).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityHint("编辑存款信息")
+                Text("存款本金 " + InvestmentText.money(max(0, position.netCost), account.currency))
                     .font(.caption).foregroundStyle(.secondary)
             }
             if position.quantity > 0, asset.kind == .cryptoContract {
@@ -326,13 +360,20 @@ struct InvestmentHoldingView: View {
                 Text(insurance ? "待录入现金价值。" : "缺少报价。").font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
-                if !termDeposit && (!insurance || position.quantity > 0) {
-                    InvestmentLink(route: .trade(account.id, asset.id, .buy)) { Text(asset.transactionTitle(.buy)) }
-                        .buttonStyle(HakoActionButtonStyle())
-                }
-                if position.quantity > 0 {
-                    InvestmentLink(route: .trade(account.id, asset.id, .sell)) { Text(asset.transactionTitle(.sell)) }
-                        .buttonStyle(HakoActionButtonStyle(primary: false))
+                if termDeposit {
+                    Button("存入") { depositAction = .init(kind: .buy) }.buttonStyle(HakoActionButtonStyle())
+                    if position.quantity > 0 {
+                        Button("支取") { depositAction = .init(kind: .sell) }.buttonStyle(HakoActionButtonStyle(primary: false))
+                    }
+                } else {
+                    if !insurance || position.quantity > 0 {
+                        InvestmentLink(route: .trade(account.id, asset.id, .buy)) { Text(asset.transactionTitle(.buy)) }
+                            .buttonStyle(HakoActionButtonStyle())
+                    }
+                    if position.quantity > 0 {
+                        InvestmentLink(route: .trade(account.id, asset.id, .sell)) { Text(asset.transactionTitle(.sell)) }
+                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                    }
                 }
             }
             if asset.kind.usesMargin, position.quantity > 0 {
@@ -348,13 +389,21 @@ struct InvestmentHoldingView: View {
                 }.buttonStyle(.plain)
             }
             adjustmentAction
-            if asset.kind == .wealth || termDeposit {
+            if asset.kind == .wealth {
                 Divider()
-                InvestmentPageLink(title: termDeposit ? "记录实收利息" : "记录实收收益", symbol: "plus.circle",
+                InvestmentPageLink(title: "记录实收收益", symbol: "plus.circle",
                                    route: .trade(account.id, asset.id, .income))
             }
-            if !termDeposit {
+            Divider()
+            if termDeposit {
+                Button { depositAction = .init(kind: .income) } label: {
+                    InvestmentPageRow(title: "支取利息", symbol: "banknote")
+                }.buttonStyle(.plain)
                 Divider()
+                Button { depositAction = .init(kind: .adjustment) } label: {
+                    InvestmentPageRow(title: "调整余额", symbol: "slider.horizontal.3")
+                }.buttonStyle(.plain)
+            } else {
                 InvestmentPageLink(title: insurance ? "更新现金价值" : (asset.kind == .wealth ? "更新单位净值" : "行情与手动报价"),
                                    symbol: "chart.xyaxis.line", route: .quote(asset.id))
             }
@@ -385,6 +434,9 @@ private struct InvestmentSettings: View {
     @State private var sheet: Sheet?
     @State private var recalculatingSnapshots = false
     @State private var snapshotReport: InvestmentDailySnapshotReport?
+    @State private var preparingExport = false
+    @State private var showingExporter = false
+    @State private var exportDocument: InvestmentExportDocument?
 
     var body: some View {
         Form {
@@ -428,6 +480,17 @@ private struct InvestmentSettings: View {
             } footer: {
                 Text("按北京时间截日，快照保存到服务端。重算复用已保存的历史行情和汇率，仅补查缺失数据。自动化可使用「同步 Hako 数据」快捷指令。")
             }
+            Section {
+                Button { preparingExport = true } label: {
+                    Label(preparingExport ? "正在准备导出…" : "导出账本", systemImage: "square.and.arrow.up")
+                }
+                .disabled(preparingExport || showingExporter)
+                .investmentListRow()
+            } header: {
+                Text("数据导出")
+            } footer: {
+                Text("将服务端已保存的全部记账数据导出为 CSV 压缩包，内含 SQLite 建表语句。")
+            }
         }
         .navigationTitle("投资记账设置")
         .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton().accessibilityLabel("调整账户顺序") } }
@@ -436,6 +499,16 @@ private struct InvestmentSettings: View {
             case .addAccount: InvestmentAccountEditor(store: store)
             case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
             }
+        }
+        .task(id: preparingExport) {
+            if preparingExport { await prepareExport() }
+        }
+        .fileExporter(isPresented: $showingExporter, document: exportDocument, contentTypes: [.zip],
+                      defaultFilename: "投资记账-" + InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())) { result in
+            exportDocument = nil
+            if case .failure(let failure) = result { error = failure.localizedDescription }
+        } onCancellation: {
+            exportDocument = nil
         }
         .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
@@ -465,6 +538,19 @@ private struct InvestmentSettings: View {
         do { try await action() } catch { self.error = error.localizedDescription }
     }
 
+    private func prepareExport() async {
+        defer { preparingExport = false }
+        do {
+            let data = try await store.exportLedger()
+            exportDocument = InvestmentExportDocument(data: data)
+            showingExporter = true
+        } catch is CancellationError {
+            return
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     private func rebuildSnapshots() async {
         guard !recalculatingSnapshots else { return }
         recalculatingSnapshots = true
@@ -478,6 +564,24 @@ private struct InvestmentSettings: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+private struct InvestmentExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.zip] }
+    let data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

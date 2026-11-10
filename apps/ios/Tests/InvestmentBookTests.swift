@@ -24,7 +24,7 @@ struct InvestmentBookTests {
         try insuranceKeepsOnePolicyPosition()
         try typedAccountsFilterAssets()
         try transfersMoveCashAsOneOperation()
-        try depositsKeepPrincipalAndInterestSeparate()
+        try depositsUseRecordedBalancesAndCashMovements()
         try balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation()
         try investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth()
         try dailyGainsRequireCompleteMarketPrices()
@@ -712,21 +712,41 @@ struct InvestmentBookTests {
         precondition(book.portfolio(on: second)?.value == 1000 && book.portfolio(on: second)?.gain == 0)
     }
 
-    static func depositsKeepPrincipalAndInterestSeparate() throws {
+    static func depositsUseRecordedBalancesAndCashMovements() throws {
         let account = InvestmentAccount(name: "存款", currency: .cny, type: .deposits)
         var book = InvestmentBook(accounts: [account])
-        let first = date(1), maturity = date(3)
+        let first = date(1), adjustment = date(2), interest = date(3), withdrawal = date(4), maturity = date(5)
         let asset = InvestmentAsset(name: "大额存单", code: "UNIQUE", market: "", kind: .certificate, currency: .cny,
                                     depositTerms: .init(annualRate: Decimal(string: "0.02")!, maturity: maturity))
         let id = try book.register(asset)
         try book.post(.init(day: first, kind: .deposit, amount: 200), accountID: account.id)
-        try book.post(.init(day: first, kind: .buy, assetID: id, quantity: 1, price: 100), accountID: account.id)
-        precondition(book.portfolio(on: first)?.value == 200)
-        try book.post(.init(day: maturity, kind: .sell, assetID: id, quantity: 1, price: 100), accountID: account.id)
-        try book.post(.init(day: maturity, kind: .income, assetID: id, amount: 2), accountID: account.id)
+        try book.post(.init(day: first, kind: .buy, assetID: id, quantity: 1, price: 100, settledAmount: 100), accountID: account.id)
+        try book.post(.init(day: first, kind: .buy, assetID: id, quantity: 1, price: 30, settledAmount: 130), accountID: account.id)
+        try book.post(.init(day: adjustment, kind: .adjustment, assetID: id, settledAmount: 133), accountID: account.id)
+        try book.post(.init(day: interest, kind: .income, assetID: id, amount: 3, settledAmount: 130), accountID: account.id)
+        try book.post(.init(day: withdrawal, kind: .sell, assetID: id, quantity: 1, price: 40, settledAmount: 92), accountID: account.id)
+        precondition(book.portfolio(on: first)?.gain == 0)
+        precondition(book.portfolio(on: adjustment, requiresDailyPrices: true)?.gain == 3)
+        let interestLedger = try book.ledger(book.accounts[0], through: interest)
+        precondition(interestLedger.cash == 73 && interestLedger.positions[id]?.netCost == 130)
+        precondition(book.portfolio(on: interest)?.gain == 3)
+        precondition(book.portfolio(on: withdrawal)?.gain == 5)
+        try book.post(.init(day: maturity, kind: .sell, assetID: id, quantity: 1, price: 93, settledAmount: 0), accountID: account.id)
         let ledger = try book.ledger(book.accounts[0], through: maturity, includeRows: true)
-        precondition(ledger.cashRows.map(\.change) == [200, -100, 100, 2])
-        precondition(book.portfolio(on: maturity)?.gain == 2 && ledger.positions[id]?.realized == 2)
+        precondition(ledger.cashRows.map(\.change) == [200, -100, -30, 3, 40, 93])
+        precondition(book.portfolio(on: maturity)?.gain == 6 && ledger.positions[id]?.realized == 6)
+
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        var reloaded = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: tables))
+        precondition(reloaded.asset(id)?.depositTerms == asset.depositTerms)
+        precondition(reloaded.portfolio(on: withdrawal)?.gain == 5)
+        let original = reloaded.accounts[0].events.first { $0.kind == .adjustment }!
+        var edited = original
+        edited.settledAmount = 132
+        try reloaded.replaceEvent(original, with: edited, accountID: account.id)
+        precondition(reloaded.portfolio(on: adjustment)?.gain == 2)
+        precondition(reloaded.portfolio(on: maturity)?.gain == 6)
     }
 
     static func dailyGainsRequireCompleteMarketPrices() throws {

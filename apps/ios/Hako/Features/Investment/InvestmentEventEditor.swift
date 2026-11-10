@@ -77,12 +77,14 @@ struct InvestmentEventEditor: View {
         let currency = account?.currency.rawValue ?? ""
         switch event.kind {
         case .opening, .buy, .sell:
-            if let asset {
+            if asset?.kind.isTermDeposit == true {
+                field(event.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）", .price)
+                field("变动后余额（CNY）", .settlement)
+            } else if let asset {
                 let unit = asset.basis == .coin ? "张" : asset.kind.unit
-                let priceTitle = asset.kind == .insurance ? (event.kind == .sell ? "退保到账金额" : "保费金额") :
-                    (asset.kind.isTermDeposit ? "本金" : "成交价")
+                let priceTitle = asset.kind == .insurance ? (event.kind == .sell ? "退保到账金额" : "保费金额") : "成交价"
                 let settlement = store.book.settlementUnit(for: asset)
-                if !asset.kind.isTermDeposit && asset.kind != .insurance { field("数量（\(unit)）", .quantity) }
+                if asset.kind != .insurance { field("数量（\(unit)）", .quantity) }
                 field("\(priceTitle)（\(store.book.quoteUnit(for: asset))）", .price)
                 if asset.kind.usesMargin && event.kind != .sell { field("保证金（\(settlement)）", .margin) }
                 if asset.isStockConnect { field("实际交收金额（CNY）", .settlement) }
@@ -91,6 +93,11 @@ struct InvestmentEventEditor: View {
                 }
                 if asset.collateralAssetID != nil { field("\(settlement) 兑美元单价", .rate) }
             }
+        case .adjustment where asset?.kind.isTermDeposit == true:
+            field("变动后余额（CNY）", .settlement)
+        case .income where asset?.kind.isTermDeposit == true:
+            field("利息到账金额（CNY）", .amount)
+            field("变动后余额（CNY）", .settlement)
         case .bonusShares, .stakingReward, .spotAdjustment:
             field(event.kind == .spotAdjustment ? "减少数量" : "增加数量", .quantity)
         case .funding, .marginTransfer, .adjustment, .derivativeSettlement:
@@ -129,7 +136,12 @@ struct InvestmentEventEditor: View {
             switch event.kind {
             case .opening, .buy, .sell:
                 guard let asset else { throw InvestmentError.invalid("找不到流水对应的标的。") }
-                if !asset.kind.isTermDeposit && asset.kind != .insurance { edited.quantity = try number(.quantity, "数量") }
+                if asset.kind.isTermDeposit {
+                    edited.price = try number(.price, "变动金额")
+                    edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
+                    break
+                }
+                if asset.kind != .insurance { edited.quantity = try number(.quantity, "数量") }
                 if asset.basis == .coin {
                     _ = try InvestmentCoinContractQuantity.contracts(edited.quantity).contractCount(faceValue: asset.multiplier)
                 } else if [.stock, .option, .future].contains(asset.kind),
@@ -144,6 +156,11 @@ struct InvestmentEventEditor: View {
                         nil : try number(.fee, "交易费用", allowZero: true)
                 }
                 if asset.collateralAssetID != nil { edited.settlementRate = try number(.rate, "结算币兑美元单价") }
+            case .adjustment where asset?.kind.isTermDeposit == true:
+                edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
+            case .income where asset?.kind.isTermDeposit == true:
+                edited.amount = try number(.amount, "利息到账金额")
+                edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
             case .bonusShares, .stakingReward, .spotAdjustment:
                 edited.quantity = try number(.quantity, "变动数量") * (event.kind == .spotAdjustment ? -1 : 1)
             default:

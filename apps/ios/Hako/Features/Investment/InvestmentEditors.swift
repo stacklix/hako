@@ -935,11 +935,20 @@ private struct InvestmentTradeFields: View {
         DatePicker(dateTitle, selection: $date, in: ...Date.now, displayedComponents: .date)
         if kind == .insurance {
             InvestmentField(insuranceAmountTitle + "（HKD）", text: $price, keyboard: .decimalPad)
-        } else if event == .income {
-            InvestmentField((kind.isTermDeposit ? "实收利息" : "实收收益") + "（" + currency.rawValue + "）",
-                            text: $price, keyboard: .decimalPad)
         } else if kind.isTermDeposit {
-            InvestmentField((event == .sell ? "收回本金" : "本金") + "（CNY）", text: $price, keyboard: .decimalPad)
+            switch event {
+            case .adjustment: EmptyView()
+            case .income: InvestmentField("利息到账金额（CNY）", text: $price, keyboard: .decimalPad)
+            case .sell: InvestmentField("支取金额（CNY）", text: $price, keyboard: .decimalPad)
+            default: InvestmentField("存入金额（CNY）", text: $price, keyboard: .decimalPad)
+            }
+            InvestmentField("变动后余额（CNY）", text: $settlement, keyboard: .decimalPad)
+            if event == .adjustment {
+                Text("按实际余额估值，余额差额计入存款盈亏。").font(.footnote).foregroundStyle(.secondary)
+            }
+        } else if event == .income {
+            InvestmentField("实收收益（" + currency.rawValue + "）",
+                            text: $price, keyboard: .decimalPad)
         } else {
             if isCoinContract {
                 coinContractQuantityFields
@@ -1011,7 +1020,7 @@ private struct InvestmentTradeFields: View {
 
     private var dateTitle: String {
         if event == .income { return "到账日期" }
-        if kind.isTermDeposit { return event == .sell ? "本金到账日期" : "存入日期" }
+        if kind.isTermDeposit { return "记账日期" }
         return "成交日期"
     }
 
@@ -1026,13 +1035,21 @@ private struct InvestmentTradeFields: View {
     private func record(assetID: UUID, book: InvestmentBook) throws -> InvestmentEvent {
         let day = InvestmentBook.day(date)
         if event == .income {
-            return InvestmentEvent(day: day, kind: event, assetID: assetID, amount: try investmentDecimal(price, "实收金额"))
+            let amount = try investmentDecimal(price, "实收金额")
+            let balance = kind.isTermDeposit ? try investmentDecimal(settlement, "变动后余额", allowZero: true) : nil
+            return InvestmentEvent(day: day, kind: event, assetID: assetID, amount: amount, settledAmount: balance)
+        }
+        if kind.isTermDeposit {
+            let change = event == .adjustment ? 0 : try investmentDecimal(price, "变动金额")
+            let balance = try investmentDecimal(settlement, "变动后余额", allowZero: true)
+            return InvestmentEvent(day: day, kind: event, assetID: assetID, quantity: event == .adjustment ? 0 : 1,
+                                   price: change, settledAmount: balance)
         }
         let quantity: Decimal
         if isCoinContract, let asset = book.asset(assetID) {
             quantity = try coinQuantity.contractCount(faceValue: asset.multiplier)
         } else {
-            quantity = kind == .insurance || kind.isTermDeposit ? 1 : try investmentDecimal(self.quantity, "数量")
+            quantity = kind == .insurance ? 1 : try investmentDecimal(self.quantity, "数量")
         }
         if ![.fund, .etf, .wealth, .crypto, .cryptoContract].contains(kind),
            quantity != Decimal(NSDecimalNumber(decimal: quantity).int64Value) {
@@ -1231,6 +1248,9 @@ struct InvestmentAssetEditor: View {
                 }
                 if asset.kind.isTermDeposit {
                     let rate = try investmentDecimal(annualRate, "年利率", allowZero: true) / 100
+                    guard InvestmentBook.day(maturity) >= InvestmentBook.day(date) else {
+                        throw InvestmentError.invalid("到期日不能早于首次存入日期。")
+                    }
                     asset.depositTerms = .init(annualRate: rate, maturity: InvestmentBook.day(maturity))
                 }
                 let id = try book.register(asset)
@@ -1326,7 +1346,6 @@ struct InvestmentTradeEditor: View {
     @State private var margin = ""
     @State private var settlement = ""
     @State private var settlementRate = ""
-    @State private var depositInterest = ""
 
     var body: some View {
         let trade = InvestmentTradeFields(kind: asset.kind, currency: asset.currency, event: kind,
@@ -1335,22 +1354,15 @@ struct InvestmentTradeEditor: View {
             contractFaceValue: asset.multiplier, coinQuantity: $coinQuantity,
             date: $date, quantity: $quantity, price: $price, fee: $fee, margin: $margin,
             settlement: $settlement, settlementRate: $settlementRate)
-        return InvestmentEditor(title: "记" + asset.transactionTitle(kind)) {
+        let title = asset.kind.isTermDeposit ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
+        let hasChanges = !price.isEmpty || !settlement.isEmpty || date != InvestmentBook.day()
+        return InvestmentEditor(title: title, inSheet: asset.kind.isTermDeposit, hasChanges: hasChanges) {
             Section(asset.name + " · " + account.name) {
                 trade
-                if asset.kind.isTermDeposit && kind == .sell {
-                    InvestmentField("实收利息（CNY，可选）", text: $depositInterest, keyboard: .decimalPad)
-                }
             }
         } save: {
             try await store.update { book in
-                let event = try trade.post(assetID: asset.id, accountID: account.id, to: &book)
-                if asset.kind.isTermDeposit, kind == .sell, !investmentTrim(depositInterest).isEmpty {
-                    let interest = try investmentDecimal(depositInterest, "实收利息", allowZero: true)
-                    if interest > 0 {
-                        try book.post(.init(day: event.day, kind: .income, assetID: asset.id, amount: interest), accountID: account.id)
-                    }
-                }
+                _ = try trade.post(assetID: asset.id, accountID: account.id, to: &book)
             }
         }
         .environment(\.investmentFieldPlaceholders, false)
@@ -1360,13 +1372,48 @@ struct InvestmentTradeEditor: View {
                 await store.prepareSettlementQuote(token)
             }
         }
-        .onAppear {
-            if asset.kind.isTermDeposit, kind == .sell, price.isEmpty,
-               let current = store.book.account(account.id),
-               let principal = (try? store.book.ledger(current))?.positions[asset.id]?.netCost {
-                price = principal.formatted(.number.grouping(.never))
+    }
+}
+
+struct InvestmentDepositTermsEditor: View {
+    @ObservedObject var store: InvestmentStore
+    let accountID: UUID
+    let asset: InvestmentAsset
+    @State private var annualRate: String
+    @State private var maturity: Date
+
+    init(store: InvestmentStore, accountID: UUID, asset: InvestmentAsset) {
+        self.store = store
+        self.accountID = accountID
+        self.asset = asset
+        let rate = asset.depositTerms.map { ($0.annualRate * 100).formatted(.number.grouping(.never).precision(.fractionLength(0...38))) }
+        _annualRate = State(initialValue: rate ?? "")
+        _maturity = State(initialValue: asset.depositTerms?.maturity ?? InvestmentBook.day())
+    }
+
+    var body: some View {
+        let rate = try? investmentDecimal(annualRate, "年利率", allowZero: true) / 100
+        let changed = rate != asset.depositTerms?.annualRate || maturity != asset.depositTerms?.maturity
+        return InvestmentEditor(title: "编辑存款信息", inSheet: true, hasChanges: changed, saveEnabled: changed && rate != nil) {
+            Section(asset.name) {
+                InvestmentField("年利率（%）", text: $annualRate, keyboard: .decimalPad)
+                DatePicker("到期日", selection: $maturity, displayedComponents: .date)
+            }
+        } save: {
+            guard let rate else { throw InvestmentError.invalid("请输入有效的年利率。") }
+            let day = InvestmentBook.day(maturity)
+            try await store.update { book in
+                guard var current = book.asset(asset.id), let account = book.account(accountID) else {
+                    throw InvestmentError.invalid("找不到该存款。")
+                }
+                let first = account.events.filter { $0.assetID == asset.id && ($0.kind == .opening || $0.kind == .buy) }
+                    .map(\.day).min()
+                if let first, day < first { throw InvestmentError.invalid("到期日不能早于首次存入日期。") }
+                current.depositTerms = .init(annualRate: rate, maturity: day)
+                book.assets[asset.id] = current
             }
         }
+        .environment(\.investmentFieldPlaceholders, false)
     }
 }
 

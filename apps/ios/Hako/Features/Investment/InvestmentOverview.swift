@@ -192,11 +192,9 @@ private struct InvestmentAssetHistory: View {
         } ?? points.last
         return InvestmentCard {
             Text("资产变化").font(.headline)
-            Picker("资产变化范围", selection: $range) {
-                ForEach(InvestmentRange.chart) { item in Text(item.rawValue).tag(item) }
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: range) { chartDay = nil }
+            HakoUnderlineTabs(title: "资产变化范围", options: InvestmentRange.chart, selection: $range) { $0.rawValue }
+                .background(alignment: .bottom) { Divider() }
+                .onChange(of: range) { chartDay = nil }
             if let selected {
                 Chart {
                     ForEach(points) { point in

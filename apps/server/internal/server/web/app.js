@@ -4,6 +4,9 @@ const notificationPages = {overview:'工作台', channels:'通知渠道', messag
 const notificationPath = /^\/admin\/notifications(?:\/(overview|channels|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
 const notificationView = notificationPath?.[1] || 'overview';
 const notificationPage = notificationPath ? (['bots', 'settings'].includes(notificationView) ? 'channels' : notificationView) : null;
+const investmentPages = {overview:'总览', accounts:'账户', watchlist:'关注', 'balance-sheet':'资产负债'};
+const investmentPath = /^\/admin\/investment(?:\/(overview|accounts|watchlist|balance-sheet))?$/.exec(window.location.pathname);
+const investmentPage = investmentPath ? investmentPath[1] || 'overview' : null;
 const adminPages = {
   '/admin/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
   '/admin/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
@@ -11,7 +14,7 @@ const adminPages = {
   '/admin/system': {id: 'system', title: '系统配置', description: '查看 SQLite 数据库版本、迁移状态和表结构。'}
 };
 const adminPage = adminPages[window.location.pathname] ?? adminPages['/admin/agents'];
-const currentPage = notificationPage ? 'notifications' : adminPage.id;
+const currentPage = notificationPage ? 'notifications' : investmentPage ? 'investment' : adminPage.id;
 
 function showNotificationFrame(visible) {
   const frame = $('notifications-frame');
@@ -34,10 +37,15 @@ function showPage() {
   $('system-page').hidden = currentPage !== 'system';
   $('notifications-page').hidden = !notificationPage;
   $('notification-subnav').hidden = !notificationPage;
-  $('nav-' + currentPage).setAttribute('aria-current', notificationPage ? 'true' : 'page');
+  $('investment-page').hidden = !investmentPage;
+  $('investment-subnav').hidden = !investmentPage;
+  $('nav-' + currentPage).setAttribute('aria-current', notificationPage || investmentPage ? 'true' : 'page');
   if (notificationPage) $('nav-notifications-' + notificationPage).setAttribute('aria-current', 'page');
-  $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] : adminPage.title;
-  $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' : adminPage.description;
+  if (investmentPage) $('nav-investment-' + investmentPage).setAttribute('aria-current', 'page');
+  $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] :
+    investmentPage ? '投资记账 · ' + investmentPages[investmentPage] : adminPage.title;
+  $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' :
+    investmentPage ? '查看 iOS 已同步的投资账本。' : adminPage.description;
   document.title = $('page-title').textContent + ' · Hako 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
@@ -73,6 +81,7 @@ function loggedIn(yes) {
     refreshAccessLogs();
     refreshApplications();
     refreshDatabaseSchemas();
+    if (investmentPage) refreshInvestment();
   } else {
     document.title = 'Hako · 你的日常，收进一个盒子';
     csrf = '';
@@ -80,6 +89,7 @@ function loggedIn(yes) {
     resetApplications();
     $('system-databases').replaceChildren();
     $('system-status').textContent = '';
+    if (investmentPage) resetInvestment();
     agentListing = null;
     requestAgentId = null;
     $('request-dialog').close();

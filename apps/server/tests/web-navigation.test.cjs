@@ -3,7 +3,7 @@ const {test} = require('node:test');
 const {readFileSync} = require('node:fs');
 const vm = require('node:vm');
 
-async function openPage(pathname, logs = {status: {enabled: false}}, recordPages = []) {
+async function openPage(pathname, logs = {status: {enabled: false}}, recordPages = [], investmentData) {
   const elements = new Map(), calls = [], timers = [];
   let ready;
   class TestNode {
@@ -24,6 +24,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
       return elements.get(id);
     },
     createElement: element,
+    createElementNS(namespaceURI) { return Object.assign(element(), {namespaceURI}); },
     createTextNode(text) { const result = element(); result.textContent = text; return result; },
     querySelectorAll() { return []; },
     addEventListener(event, callback) { if (event === 'DOMContentLoaded') ready = callback; }
@@ -37,6 +38,9 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
       if (url.startsWith('/admin/api/access-logs/records?')) {
         assert.ok(recordPages.length, 'unexpected records request');
         return {ok: true, json: async () => recordPages.shift()};
+      }
+      if (url.startsWith('/admin/api/investment/') && investmentData) {
+        return {ok: true, json: async () => investmentData};
       }
       const responses = {
         '/admin/api/system/databases': {expectedVersion: 2, databases: [
@@ -57,7 +61,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
       return {ok: true, json: async () => responses[url]};
     }
   });
-  for (const file of ['app.js', 'access-logs.js', 'applications.js']) {
+  for (const file of ['app.js', 'access-logs.js', 'applications.js', 'investment.js']) {
     vm.runInContext(readFileSync(new URL(`../internal/server/web/${file}`, `file://${__filename}`), 'utf8'), context);
   }
   await ready();
@@ -170,6 +174,70 @@ test('notification gateway opens the requested second-level menu after Hako logi
   assert.deepEqual(calls, ['/admin/api/session']);
   context.loggedIn(false);
   assert.equal(get('notifications-frame').attributes.src, 'about:blank');
+});
+
+const investmentData = {tables: {
+  investment_accounts: [{id: 'bank', name: '测试银行', account_type: 'deposits', currency: 'CNY', sort_order: '0'}],
+  investment_assets: [
+    {id: 'deposit', name: '测试存单', asset_type: 'certificate', quote_currency: 'CNY'},
+    {id: 'watch', name: '测试股票', symbol: '600519', asset_type: 'stock', instrument_id: 'stock', quote_currency: 'CNY'}
+  ],
+  investment_events: [{id: '1', account_id: 'bank', asset_id: 'deposit', event_type: 'income',
+    effective_date: '2026-11-09', sequence: '0', amount: '20', settled_amount: '400'}],
+  investment_daily_snapshots: [
+    {snapshot_date: '2026-11-08', total_cny: '990', total_usd: '139', cumulative_gain_cny: '90', status: 'complete'},
+    {snapshot_date: '2026-11-09', total_cny: '1000', total_usd: '140', cumulative_gain_cny: '100', daily_gain_cny: '10', status: 'complete'}
+  ],
+  investment_account_daily_snapshots: [{account_id: 'bank', snapshot_date: '2026-11-09', cash_native: '600', holdings_native: '400', gain_native: '100'}],
+  investment_watchlist: [{asset_id: 'watch', instrument_id: 'stock', sort_order: '0'}],
+  market_daily_prices: [
+    {instrument_id: 'stock', session_date: '2026-11-02', price: '50', is_final: '1', source: '测试行情'},
+    {instrument_id: 'stock', session_date: '2026-11-09', price: '55', is_final: '1', source: '测试行情'}
+  ],
+  investment_balance_accounts: [{id: 'cash', category: 'cash', name: '现金钱包', currency: 'CNY', sort_order: '0'}],
+  investment_balance_records: [{balance_account_id: 'cash', amount: '50', recorded_at: '2026-11-09T01:00:00Z'}],
+  investment_month_snapshots: [{snapshot_date: '2026-10-31', total_cny: '950'}]
+}};
+
+for (const [view, title, contents] of [
+  ['overview', '总览', [/日终总览.*1,000\.00/, /资产变化曲线/, /盈亏日历/, /测试银行/]],
+  ['accounts', '账户', [/测试银行.*1,000\.00/, /测试存单/, /支取利息.*20\.00.*400\.00/]],
+  ['watchlist', '关注', [/测试股票.*600519/, /近1周.*近1年/, /55 CNY.*\+10%/]],
+  ['balance-sheet', '资产负债', [/总资产.*1,050\.00/, /较上月底.*\+[^\d]*100\.00/, /资产构成/, /资产趋势.*净资产趋势/, /资产月历.*11 月.*1,050\.00/,
+    /现金钱包/, /2026-10-31.*950\.00/]]
+]) {
+  test(`investment ${view} displays saved values under its read-only menu`, async () => {
+    const path = view === 'overview' ? '/admin/investment' : '/admin/investment/' + view;
+    const {document, calls, context} = await openPage(path, undefined, [], investmentData);
+    const get = id => document.getElementById(id);
+    const text = node => [node.textContent || '', ...node.children.map(text)].join(' ');
+    assert.deepEqual(calls, ['/admin/api/session', '/admin/api/investment/' + view]);
+    assert.equal(get('investment-subnav').hidden, false);
+    assert.equal(get('investment-page').hidden, false);
+    assert.equal(get('nav-investment-' + view).attributes['aria-current'], 'page');
+    assert.equal(get('page-title').textContent, '投资记账 · ' + title);
+    assert.match(get('investment-status').textContent, /只读/);
+    for (const pattern of contents) assert.match(text(get('investment-content')), pattern);
+    context.loggedIn(false);
+    assert.equal(get('investment-content').children.length, 0);
+  });
+}
+
+test('balance charts align recorded balances to Beijing dates and leave missing valuation days open', async () => {
+  const {context} = await openPage('/admin/investment/balance-sheet', undefined, [], investmentData);
+  const {points, monthEnds} = vm.runInContext(`investmentBalanceHistory(
+    [{balance_account_id: 'cash', amount: '50', recorded_at: '2026-10-31T16:15:00Z'}],
+    new Map([['cash', {category: 'cash'}]]),
+    [{snapshot_date: '2026-11-01', total_cny: '1000'}, {snapshot_date: '2026-11-02', status: 'missing'}],
+    [{snapshot_date: '2026-10-31', total_cny: '950'}], '1000', true)`, context);
+  assert.equal(monthEnds[0].day, '2026-10-31');
+  assert.equal(monthEnds[0].assets, '950');
+  assert.equal(points.find(point => point.day === '2026-11-01').assets, '1050');
+  assert.equal(monthEnds.at(-1).net, undefined);
+  const deficit = vm.runInContext(`investmentBalanceTotals({cash: '50', fixed: '0', receivables: '0', liabilities: '10'}, '-80')`, context);
+  assert.equal(deficit.assets, '50');
+  assert.equal(deficit.liabilities, '90');
+  assert.equal(deficit.net, '-40');
 });
 
 test('system configuration loads database versions and table definitions', async () => {

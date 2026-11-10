@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -156,15 +157,20 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 func (s *Server) investmentRoutes() {
 	s.mux.HandleFunc("GET /api/v1/investment/book", s.readInvestment)
 	s.mux.HandleFunc("PUT /api/v1/investment/book", s.writeInvestment)
+	s.mux.HandleFunc("GET /api/v1/investment/export", s.exportInvestment)
 }
 
 func (s *Server) investmentOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if _, ok := s.authorized(w, r); !ok {
 		return "", false
 	}
+	return s.investmentSubject(), true
+}
+
+func (s *Server) investmentSubject() string {
 	var owner string
 	s.store.inspect(func(state state) { owner = state.Subject })
-	return owner, true
+	return owner
 }
 
 func (s *Server) readInvestment(w http.ResponseWriter, r *http.Request) {
@@ -172,13 +178,17 @@ func (s *Server) readInvestment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.readInvestmentBook(w, r, owner, nil)
+}
+
+func (s *Server) readInvestmentBook(w http.ResponseWriter, r *http.Request, owner string, tables []string) {
 	tx, err := s.investment.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		reject(w, 503, "storage_unavailable")
 		return
 	}
 	defer tx.Rollback()
-	state, err := readInvestmentState(r.Context(), tx, owner)
+	state, err := readInvestmentState(r.Context(), tx, owner, tables)
 	if err != nil {
 		reject(w, 503, "storage_unavailable")
 		return
@@ -186,7 +196,7 @@ func (s *Server) readInvestment(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, state)
 }
 
-func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string) (investmentState, error) {
+func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string, tables []string) (investmentState, error) {
 	state := investmentState{Tables: investmentRows{}}
 	var bookID string
 	err := tx.QueryRowContext(ctx, "SELECT id,generation,revision,snapshot_dirty_from,snapshot_through FROM investment_books WHERE owner_id=?", owner).
@@ -198,6 +208,9 @@ func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string) (investm
 		return state, err
 	}
 	for _, table := range investmentTables {
+		if tables != nil && !slices.Contains(tables, table.name) {
+			continue
+		}
 		rows, err := table.read(ctx, tx, bookID)
 		if err != nil {
 			return state, err

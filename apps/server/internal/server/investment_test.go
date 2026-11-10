@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -85,4 +86,45 @@ func TestInvestmentBookRequiresAuthAndCommitsAtomically(t *testing.T) {
 	if snapshots := got.Tables["investment_daily_snapshots"]; len(snapshots) != 1 || snapshots[0]["total_usd"] != "150" {
 		t.Fatalf("same-day snapshot was not replaced: %+v", snapshots)
 	}
+}
+
+func TestAdminInvestmentIsReadOnlyAndUsesTheIOSBook(t *testing.T) {
+	f := newFixture(t, true)
+	const path = "/admin/api/investment/"
+	guest := &adminClient{f: f}
+	if status, _, _ := guest.request(http.MethodGet, path+"accounts", nil, "", ""); status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated investment read = %d", status)
+	}
+	write := investmentWrite{Tables: investmentRows{
+		"investment_accounts": {{"id": "account", "name": "测试账户", "currency": "CNY", "account_type": "securities", "sort_order": "0"}},
+		"investment_events":   {{"id": "event", "account_id": "account", "event_type": "deposit", "effective_date": "2026-11-09", "sequence": "0", "amount": "100.25"}},
+	}}
+	if status, body := f.call(http.MethodPut, "/api/v1/investment/book", write, f.tokens.AccessToken); status != http.StatusOK {
+		t.Fatalf("iOS investment write = %d %s", status, body)
+	}
+	admin := loginAdmin(f)
+	for _, view := range []string{"overview", "accounts", "watchlist", "balance-sheet"} {
+		status, html, _ := guest.request(http.MethodGet, "/admin/investment/"+view, nil, "", "")
+		if status != 200 || !strings.Contains(string(html), "investment-subnav") || strings.Contains(string(html), "测试账户") {
+			t.Fatalf("investment shell %s = %d", view, status)
+		}
+		status, body, response := admin.request(http.MethodGet, path+view, nil, f.s.config.PublicURL, "")
+		var book investmentState
+		if err := json.Unmarshal(body, &book); err != nil || status != 200 || response.Header.Get("Cache-Control") != "no-store" ||
+			book.Generation != 1 || len(book.Tables) != len(investmentAdminTables[view]) {
+			t.Fatalf("investment view %s = %d %s (%v)", view, status, body, err)
+		}
+		for _, table := range investmentAdminTables[view] {
+			if _, exists := book.Tables[table]; !exists {
+				t.Fatalf("%s did not include %s", view, table)
+			}
+		}
+		if view == "accounts" && book.Tables["investment_events"][0]["amount"] != "100.25" {
+			t.Fatalf("admin read did not match the saved ledger: %s", body)
+		}
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		admin.call(method, "investment/accounts", write, http.StatusMethodNotAllowed)
+	}
+	admin.call(http.MethodGet, "investment/unknown", nil, http.StatusNotFound)
 }

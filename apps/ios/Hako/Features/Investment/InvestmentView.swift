@@ -257,6 +257,8 @@ struct InvestmentView: View {
 }
 
 struct InvestmentAccountView: View {
+    private static let sectionTitleFont: Font = .headline
+
     private enum AccountSheet: Hashable, Identifiable {
         case cash(InvestmentEventKind), transfer, history, plans, addAsset
         var id: Self { self }
@@ -362,7 +364,7 @@ struct InvestmentAccountView: View {
                 .padding(.top, 8)
             } label: {
                 HStack(spacing: 8) {
-                    Text("现金管理").font(.headline)
+                    Text("现金管理").font(Self.sectionTitleFont)
                     Spacer(minLength: 0)
                     Text(balance)
                         .font(.subheadline.weight(.semibold))
@@ -386,11 +388,16 @@ struct InvestmentAccountView: View {
         let assets = ledger.positions.keys.compactMap { book.asset($0) }.sorted { $0.code < $1.code }
         return InvestmentCard {
             HStack {
-                Text("持仓").font(.headline)
+                Text("持仓").font(Self.sectionTitleFont)
                 Spacer()
-                Button { sheet = .addAsset } label: { Label("录入资产", systemImage: "plus") }
-                    .font(.subheadline)
+                Button { sheet = .addAsset } label: {
+                    Label("录入资产", systemImage: "plus")
+                        .font(.footnote)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
             }
+            Divider()
             if assets.isEmpty {
                 Text("这个账户目前只有现金。").font(.subheadline).foregroundStyle(.secondary)
             }
@@ -401,7 +408,7 @@ struct InvestmentAccountView: View {
                     InvestmentLink(route: .asset(account.id, asset.id)) {
                         HStack(alignment: .top, spacing: 8) {
                             let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                            InvestmentTitle(asset.name, subtitle: asset.kind.isTermDeposit ? details : asset.code + " · " + details)
+                            InvestmentTitle(asset.name, subtitle: asset.kind.isTermDeposit ? asset.kindLabel : asset.code + " · " + details)
                             Spacer(minLength: 0)
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))

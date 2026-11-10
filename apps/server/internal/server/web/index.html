@@ -2,18 +2,25 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script>
 </head>
 <body>
 <nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
 <div class="shell">
   <aside><a class="brand" href="/admin/"><span class="mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a>
     <a id="nav-notifications" href="/admin/notifications">通知网关 <span>Push</span></a>
-    <div id="notification-subnav" class="notification-subnav" aria-label="通知网关二级菜单" hidden>
+    <div id="notification-subnav" class="admin-subnav" role="group" aria-label="通知网关二级菜单" hidden>
       <a id="nav-notifications-overview" href="/admin/notifications/overview">工作台</a>
       <a id="nav-notifications-channels" href="/admin/notifications/channels">通知渠道</a>
       <a id="nav-notifications-messages" href="/admin/notifications/messages">消息中心</a>
       <a id="nav-notifications-webhooks" href="/admin/notifications/webhooks">Webhooks</a>
+    </div>
+    <a id="nav-investment" href="/admin/investment">投资记账 <span>Invest</span></a>
+    <div id="investment-subnav" class="admin-subnav" role="group" aria-label="投资记账二级菜单" hidden>
+      <a id="nav-investment-overview" href="/admin/investment/overview">总览</a>
+      <a id="nav-investment-accounts" href="/admin/investment/accounts">账户</a>
+      <a id="nav-investment-watchlist" href="/admin/investment/watchlist">关注</a>
+      <a id="nav-investment-balance-sheet" href="/admin/investment/balance-sheet">资产负债</a>
     </div><a id="nav-system" href="/admin/system">系统配置 <span>System</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header class="dashboard-header"><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
@@ -58,6 +65,13 @@
       </section>
     </div>
     <div id="dashboard" hidden>
+      <section id="investment-page" hidden>
+        <div class="refresh-row">
+          <p id="investment-status" class="muted" role="status" aria-live="polite"></p>
+          <button id="investment-refresh" type="button">刷新数据</button>
+        </div>
+        <div id="investment-content"></div>
+      </section>
       <section id="notifications-page" hidden>
         <iframe id="notifications-frame" class="notifications-frame" title="通知网关"></iframe>
       </section>

@@ -107,6 +107,27 @@ final class InvestmentStore: ObservableObject {
         }
     }
 
+    func exportLedger() async throws -> Data {
+        await authentication.restore()
+        guard authentication.authenticated else {
+            throw InvestmentError.invalid("请先在 Hako 设置中登录服务端。")
+        }
+        let context = authentication.requestContext
+        do {
+            let data = try await authentication.send("/api/v1/investment/export", method: "GET", body: nil, logSource: .hako)
+            try Task.checkCancellation()
+            guard context == authentication.requestContext else { throw CancellationError() }
+            guard data.starts(with: [0x50, 0x4B, 0x03, 0x04]) else {
+                throw InvestmentError.invalid("服务端返回的账本压缩包无效。")
+            }
+            return data
+        } catch let error as ServerHTTPError where error.status == 404 {
+            throw InvestmentError.invalid("请先升级 Hako 服务端，再导出账本。")
+        } catch let error as ServerHTTPError where error.code == "storage_unavailable" {
+            throw InvestmentError.invalid("暂时无法读取服务端账本，请稍后重试。")
+        }
+    }
+
     func update(scheduleSnapshots: Bool = true, _ change: (inout InvestmentBook) throws -> Void) async throws {
         while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
         try Task.checkCancellation()

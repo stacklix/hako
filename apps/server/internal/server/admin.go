@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -24,23 +25,29 @@ type adminSession struct {
 
 func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	for path, file := range map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/system": "index.html", "/admin/notifications": "index.html", "/admin/notifications/overview": "index.html", "/admin/notifications/channels": "index.html", "/admin/notifications/bots": "index.html", "/admin/notifications/messages": "index.html", "/admin/notifications/webhooks": "index.html", "/admin/notifications/settings": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/hako-logo.svg": "hako-logo.svg"} {
-		s.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != path {
+	pages := map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/system": "index.html", "/admin/notifications": "index.html", "/admin/notifications/overview": "index.html", "/admin/notifications/channels": "index.html", "/admin/notifications/bots": "index.html", "/admin/notifications/messages": "index.html", "/admin/notifications/webhooks": "index.html", "/admin/notifications/settings": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/hako-logo.svg": "hako-logo.svg",
+		"/admin/investment": "index.html", "/admin/investment.js": "investment.js"}
+	for view := range investmentAdminTables {
+		pages["/admin/investment/"+view] = "index.html"
+	}
+	for route, file := range pages {
+		s.mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != route {
 				http.NotFound(w, r)
 				return
 			}
 			adminHeaders(w)
-			if path == "/admin/notifications" || strings.HasPrefix(path, "/admin/notifications/") {
+			if route == "/admin/notifications" || strings.HasPrefix(route, "/admin/notifications/") {
 				w.Header().Set("Content-Security-Policy", w.Header().Get("Content-Security-Policy")+"; frame-src 'self'")
 			}
 			data, _ := adminFiles.ReadFile("web/" + file)
-			w.Header().Set("Content-Type", map[string]string{"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "access-logs.js": "text/javascript; charset=utf-8", "applications.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8", "hako-logo.svg": "image/svg+xml"}[file])
+			w.Header().Set("Content-Type", map[string]string{".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}[path.Ext(file)])
 			_, _ = w.Write(data)
 		})
 	}
 	s.qrLoginRoutes()
 	s.applicationManagementRoutes()
+	s.mux.HandleFunc("GET /admin/api/investment/{view}", s.admin(s.adminInvestment))
 	s.mux.HandleFunc("GET /admin/api/system/databases", s.admin(s.adminDatabaseSchemas))
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))

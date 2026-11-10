@@ -193,9 +193,10 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
             if event == .sell { return "赎回" }
         }
         if kind.isTermDeposit {
-            if event == .buy { return "存入本金" }
-            if event == .sell { return "收回本金" }
-            if event == .income { return "实收利息" }
+            if event == .buy { return "存入" }
+            if event == .sell { return "支取" }
+            if event == .adjustment { return "调整余额" }
+            if event == .income { return "支取利息" }
         }
         guard kind == .insurance else { return event.rawValue }
         switch event {
@@ -381,6 +382,7 @@ struct InvestmentEvent: Codable, Equatable, Identifiable {
     var quantity: Decimal = 0
     var price: Decimal = 0
     var margin: Decimal = 0
+    // For deposits, the reported product balance after a cash movement or valuation update.
     var settledAmount: Decimal?
     var fee: Decimal?
     var settlementRate: Decimal?
@@ -437,6 +439,7 @@ struct InvestmentPosition {
     var margin: Decimal = 0
     var contractEntry: Decimal = 0
     var lastEntry: Decimal?
+    var depositBalance: Decimal?
     var settledDay: Date?
     var settledPrice: Decimal?
 
@@ -657,6 +660,15 @@ struct InvestmentBook: Codable {
                 ledger.cash += event.amount
                 ledger.flows += event.amount
             case .adjustment:
+                if let id = event.assetID, assets[id]?.kind.isTermDeposit == true {
+                    guard var position = ledger.positions[id], let balance = event.settledAmount, balance >= 0 else {
+                        throw InvestmentError.invalid("找不到存款记录，或调整后余额无效。")
+                    }
+                    position.depositBalance = balance
+                    position.quantity = balance > 0 ? 1 : 0
+                    ledger.positions[id] = position
+                    continue
+                }
                 ledger.cash += event.amount
                 ledger.cashIncome += event.amount
             case .funding:
@@ -688,6 +700,10 @@ struct InvestmentBook: Codable {
                 }
                 ledger.cash += event.amount
                 position.realized += event.amount
+                if event.kind == .income, assets[id]?.kind.isTermDeposit == true, let balance = event.settledAmount {
+                    position.depositBalance = balance
+                    position.quantity = balance > 0 ? 1 : 0
+                }
                 ledger.positions[id] = position
             case .bonusShares, .stakingReward, .spotAdjustment:
                 guard let id = event.assetID, var position = ledger.positions[id] else {
@@ -708,7 +724,21 @@ struct InvestmentBook: Codable {
                 guard let id = event.assetID, let asset = assets[id], asset.settlementCurrency == currency else {
                     throw InvestmentError.invalid("标的与账户币种不一致。")
                 }
-                if asset.kind == .cryptoContract, asset.basis != .usd {
+                if asset.kind.isTermDeposit {
+                    var position = ledger.positions[id] ?? InvestmentPosition()
+                    if event.kind == .sell && position.quantity == 0 { throw InvestmentError.insufficientPosition }
+                    let change = event.kind == .sell ? -event.price : event.price
+                    let balance = event.settledAmount ?? (event.kind == .sell ? 0 : (position.depositBalance ?? 0) + change)
+                    if event.kind == .opening { ledger.flows += change } else { ledger.cash -= change }
+                    position.netCost += change
+                    position.depositBalance = balance
+                    position.quantity = balance > 0 ? 1 : 0
+                    if event.kind == .sell, balance == 0 {
+                        position.realized -= position.netCost
+                        position.netCost = 0
+                    }
+                    ledger.positions[id] = position
+                } else if asset.kind == .cryptoContract, asset.basis != .usd {
                     let collateral = self.asset(asset.collateralAssetID)
                     let usesSharedCash = asset.basis == .stablecoin && asset.settlementStablecoin != nil && asset.collateralAssetID == nil
                     guard event.kind != .opening, usesSharedCash || collateral.map(asset.basis.accepts) == true else {
@@ -745,9 +775,6 @@ struct InvestmentBook: Codable {
                         }
                     } else {
                         let purchase = try cashPurchase(event, asset: asset)
-                        if asset.kind.isTermDeposit, position.quantity > 0 {
-                            throw InvestmentError.invalid("定期存款和大额存单请逐笔录入。")
-                        }
                         if asset.kind == .insurance, event.kind == .opening, position.quantity > 0 {
                             throw InvestmentError.invalid("该保单已录入，请记一笔续缴保费。")
                         }
@@ -819,6 +846,11 @@ struct InvestmentBook: Codable {
             guard let asset = asset(event.assetID), asset.kind == .wealth || asset.kind.isTermDeposit, event.amount > 0 else {
                 throw InvestmentError.invalid("请输入有效的收益金额。")
             }
+            if asset.kind.isTermDeposit {
+                guard let balance = event.settledAmount, balance >= 0 else {
+                    throw InvestmentError.invalid("请输入支取利息后的存款余额。")
+                }
+            }
             try asset.validateEntry(in: accounts[index])
         case .funding:
             guard let asset = asset(event.assetID), asset.kind == .cryptoContract, let target = event.fundingTarget,
@@ -855,6 +887,12 @@ struct InvestmentBook: Codable {
                 throw InvestmentError.invalid("请选择现货并填写有效的调整数量。")
             }
             try asset.validateEntry(in: accounts[index])
+        case .adjustment where event.assetID != nil:
+            guard let asset = asset(event.assetID), asset.kind.isTermDeposit, event.amount == 0,
+                  let balance = event.settledAmount, balance >= 0 else {
+                throw InvestmentError.invalid("请输入有效的存款余额。")
+            }
+            try asset.validateEntry(in: accounts[index])
         case .deposit, .withdrawal, .adjustment:
             guard event.amount != 0,
                   event.kind != .deposit || event.amount > 0,
@@ -872,9 +910,9 @@ struct InvestmentBook: Codable {
             if event.kind != .sell, asset.kind == .crypto, InvestmentStablecoin.isCashCode(asset.code) {
                 throw InvestmentError.invalid("USD、USDC 和 USDT 统一计入 USD 现金余额，请在现金管理中记账。")
             }
-            if asset.kind.isTermDeposit, event.kind != .sell {
-                guard let terms = asset.depositTerms, terms.annualRate >= 0, terms.maturity >= event.day else {
-                    throw InvestmentError.invalid("请填写存款利率和有效到期日。")
+            if asset.kind.isTermDeposit {
+                guard let balance = event.settledAmount, balance >= 0 else {
+                    throw InvestmentError.invalid("请输入操作后的存款余额。")
                 }
             }
             if autoFundCash, event.kind == .buy, asset.kind != .cryptoContract || asset.basis == .usd {
@@ -1105,7 +1143,7 @@ struct InvestmentBook: Codable {
     func positionValue(_ position: InvestmentPosition, asset: InvestmentAsset, on day: Date = Self.day(),
                        requiresDailyPrices: Bool = false) -> Decimal? {
         if position.quantity == 0 { return 0 }
-        if asset.kind.isTermDeposit { return position.netCost }
+        if asset.kind.isTermDeposit { return position.depositBalance }
         if asset.kind == .future, requiresDailyPrices, position.settledDay == day, let price = position.settledPrice {
             return position.value(at: price, asset: asset)
         }

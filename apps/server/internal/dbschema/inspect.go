@@ -18,13 +18,17 @@ type Schema struct {
 
 // Inspect reads SQLite metadata without querying application rows.
 func Inspect(ctx context.Context, db *sql.DB) (Schema, error) {
-	schema := Schema{Tables: []Table{}}
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return Schema{}, err
 	}
 	defer tx.Rollback()
+	return InspectTx(ctx, tx)
+}
 
+// InspectTx reads the schema in the same SQLite snapshot as a caller's data queries.
+func InspectTx(ctx context.Context, tx *sql.Tx) (Schema, error) {
+	schema := Schema{Tables: []Table{}}
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema.Version); err != nil {
 		return Schema{}, err
 	}
