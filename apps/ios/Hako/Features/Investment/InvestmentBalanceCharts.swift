@@ -10,6 +10,8 @@ struct InvestmentBalanceSankey: View {
         let title: String
         let amount: Decimal
         let color: Color
+
+        var label: Text { Text(title).font(.caption2).foregroundStyle(.secondary) }
     }
 
     var body: some View {
@@ -28,18 +30,23 @@ struct InvestmentBalanceSankey: View {
             let leftX = min(62, size.width * 0.23)
             let rightX = size.width - min(65, size.width * 0.23)
             let center = size.width / 2
-            let top: CGFloat = 24
+            let heading = Text("总资产").font(.caption2).foregroundStyle(.secondary)
+            let labelHeight = (left + right).reduce(context.resolve(heading).measure(in: size).height) { height, band in
+                max(height, context.resolve(band.label).measure(in: size).height)
+            }
+            let top = max(24, labelHeight + 8)
+            let bottom = size.height - labelHeight / 2 - 6
             let total = NSDecimalNumber(decimal: max(assets, snapshot.liabilities)).doubleValue
-            let scale = max(0, size.height - top - 44) / max(total, 1)
-            let centerTop = (size.height + top - total * scale) / 2
+            let scale = max(0, bottom - top - 44) / max(total, 1)
+            let centerTop = (bottom + top - total * scale) / 2
             draw(left, in: context, from: leftX, to: center - 3,
-                 leftSide: true, top: top, bottom: size.height, centerTop: centerTop, scale: scale)
+                 leftSide: true, top: top, bottom: bottom, centerTop: centerTop, scale: scale)
             draw(right, in: context, from: center + 3, to: rightX,
-                 leftSide: false, top: top, bottom: size.height, centerTop: centerTop, scale: scale)
+                 leftSide: false, top: top, bottom: bottom, centerTop: centerTop, scale: scale)
             let node = Path(CGRect(x: center - 3, y: centerTop, width: 6, height: total * scale))
             context.fill(node, with: .color(negative ? InvestmentBalanceStyle.debt : InvestmentBalanceStyle.asset))
             if !negative {
-                context.draw(Text("总资产").font(.caption2).foregroundStyle(.secondary), at: CGPoint(x: center, y: 11))
+                context.draw(heading, at: CGPoint(x: center, y: labelHeight / 2 + 4))
             }
         }
         .frame(height: height)
@@ -75,8 +82,7 @@ struct InvestmentBalanceSankey: View {
                 let node = CGRect(x: leftSide ? x0 - 3 : x1, y: outer, width: 3, height: width)
                 context.fill(Path(node), with: .color(band.color))
             }
-            let label = Text(band.title).font(.caption2).foregroundStyle(.secondary)
-            context.draw(label, at: CGPoint(x: leftSide ? x0 - 6 : x1 + 6, y: outer + width / 2),
+            context.draw(band.label, at: CGPoint(x: leftSide ? x0 - 6 : x1 + 6, y: outer + width / 2),
                          anchor: leftSide ? .trailing : .leading)
             inner += width
             outerEnd = outer + width + spacing
@@ -141,6 +147,7 @@ struct InvestmentBalanceTrend: View {
             tabs
             if let selected, !valid.isEmpty {
                 chart(valid, selected: selected, from: points.first?.id ?? selected.id)
+                    .padding(.top, 7)
                 legend
                 selection(selected.snapshot)
             } else {
@@ -165,12 +172,15 @@ struct InvestmentBalanceTrend: View {
                         .padding(.horizontal, 4)
                         .contentShape(Rectangle())
                         .overlay(alignment: .bottom) {
-                            if mode == item { Capsule().fill(InvestmentBalanceStyle.accent).frame(height: 2) }
+                            if mode == item {
+                                Capsule().fill(InvestmentBalanceStyle.accent).frame(width: 26, height: 2.5)
+                                    .accessibilityHidden(true)
+                            }
                         }
                 }.buttonStyle(.plain).accessibilityAddTraits(mode == item ? .isSelected : [])
             }
             Spacer(minLength: 0)
-        }.background(alignment: .bottom) { Divider() }
+        }
     }
 
     private func history() -> [Point] {
@@ -244,8 +254,12 @@ struct InvestmentBalanceTrend: View {
         }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
-                AxisGridLine()
-                if !hidesAmounts, let amount = axis.as(Double.self) {
+                let amount = axis.as(Double.self)
+                if amount != 0 {
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                        .foregroundStyle(Color.secondary.opacity(0.25))
+                }
+                if !hidesAmounts, let amount {
                     AxisValueLabel {
                         Text(amount == 0 ? "0" : (amount / 10_000).formatted(.number.precision(.fractionLength(0...2))) + "万")
                             .font(.caption2)

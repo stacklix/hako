@@ -474,6 +474,12 @@ struct InvestmentBookTests {
         let after = book.balanceSnapshot(on: third, today: third)
         precondition(after.investment == book.portfolio(on: third)?.value && after.assets == 1000)
         precondition(after.liabilities == 0 && after.net == 1000)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let confirmed = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: tables))
+        let liability = confirmed.balanceSheet?.accounts.first { $0.category == .liabilities }
+        precondition(liability?.latest(on: first)?.amount == 500)
+        precondition(liability?.latest(on: InvestmentBook.addDays(-1, to: first)) == nil)
         let changes = book.balanceChanges(through: third, limit: 5)
         precondition(changes.count == 4 && changes.first?.before == 450 && changes.first?.after == 0)
         precondition(changes[1].before == 500 && changes[1].after == 450)

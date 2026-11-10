@@ -123,8 +123,10 @@ private struct InvestmentBalanceAccountEditor: View {
     let hidesAmounts: Bool
     let onSaved: (String) -> Void
     private let initialAmount: String
+    private let initialDay: Date
     @State private var name = ""
     @State private var amount: String
+    @State private var recordDay: Date
     @State private var error: String?
 
     init(store: InvestmentStore, category: InvestmentBalanceCategory, account: InvestmentBalanceAccount?,
@@ -138,23 +140,33 @@ private struct InvestmentBalanceAccountEditor: View {
         let initial = hidesAmounts ? "" : previous?.formatted(.number.grouping(.never)) ?? ""
         initialAmount = initial
         _amount = State(initialValue: initial)
+        let day = InvestmentBook.day()
+        initialDay = day
+        _recordDay = State(initialValue: day)
     }
 
     var body: some View {
         let editing = account != nil
         let title = editing ? "更新余额" : "添加账户"
         let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        SettingsSheet(title: title, hasChanges: !name.isEmpty || amount != initialAmount,
+        let hasChanges = !name.isEmpty || amount != initialAmount || (!editing && recordDay != initialDay)
+        SettingsSheet(title: title, hasChanges: hasChanges,
                       isBusy: store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
                       detents: [.medium, .large], saveAccessibilityLabel: editing ? "保存余额" : "添加账户") {
             Form {
                 Section {
                     if !editing {
-                        InvestmentField("账户名称", text: $name)
+                        InvestmentField("账户名称", text: $name, focusesOnRowTap: true)
                             .listRowBackground(HakoStyle.card)
                     }
-                    InvestmentField(editing ? "更新后余额（元）" : "初始余额（元）", text: $amount, keyboard: .decimalPad)
+                    InvestmentField(editing ? "更新后余额（元）" : "初始余额（元）", text: $amount,
+                                    keyboard: .decimalPad, focusesOnRowTap: true)
                         .listRowBackground(HakoStyle.card)
+                    if !editing {
+                        DatePicker("记账日期", selection: $recordDay, in: ...InvestmentBook.day(), displayedComponents: .date)
+                            .investmentListRow()
+                            .listRowBackground(HakoStyle.card)
+                    }
                     if editing {
                         let previous = account?.records.last?.amount
                         let next = try? investmentDecimal(amount, "余额", allowZero: true)
@@ -183,6 +195,8 @@ private struct InvestmentBalanceAccountEditor: View {
             .background(HakoStyle.background)
         }
         .presentationBackground(HakoStyle.background)
+        .environment(\.calendar, InvestmentBook.calendar)
+        .environment(\.timeZone, InvestmentBook.calendar.timeZone)
     }
 
     private func save() async {
@@ -196,7 +210,10 @@ private struct InvestmentBalanceAccountEditor: View {
                     try sheet.update(account.id, amount: value)
                     message = previous == value ? "余额无变化" : "已更新余额"
                 } else {
-                    try sheet.add(name, category: category, amount: value)
+                    let now = Date.now
+                    let day = InvestmentBook.day(recordDay)
+                    let recordedAt = day == InvestmentBook.day(now) ? now : day
+                    try sheet.add(name, category: category, amount: value, at: recordedAt)
                 }
                 book.balanceSheet = sheet
             }

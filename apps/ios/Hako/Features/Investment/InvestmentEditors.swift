@@ -13,22 +13,38 @@ extension EnvironmentValues {
 
 struct InvestmentField: View {
     @Environment(\.investmentFieldPlaceholders) private var showsPlaceholder
+    @FocusState private var focused: Bool
     let title: String
     @Binding var text: String
     var axis: Axis
     var keyboard: UIKeyboardType
     let help: String?
+    let focusesOnRowTap: Bool
 
     init(_ title: String, text: Binding<String>, axis: Axis = .horizontal, keyboard: UIKeyboardType = .default,
-         help: String? = nil) {
+         help: String? = nil, focusesOnRowTap: Bool = false) {
         self.title = title
         _text = text
         self.axis = axis
         self.keyboard = keyboard
         self.help = help
+        self.focusesOnRowTap = focusesOnRowTap
     }
 
     var body: some View {
+        if focusesOnRowTap {
+            field
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { _ in focused = true })
+                .listRowInsets(EdgeInsets())
+        } else {
+            field
+        }
+    }
+
+    private var field: some View {
         VStack(alignment: .leading, spacing: 6) {
             Group {
                 if let help { InvestmentFieldKey(title: title, help: help) }
@@ -38,6 +54,7 @@ struct InvestmentField: View {
             TextField(showsPlaceholder ? title : "", text: $text, axis: axis)
                 .keyboardType(keyboard)
                 .accessibilityLabel(title)
+                .focused($focused)
         }.investmentListRow()
     }
 }
