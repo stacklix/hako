@@ -14,8 +14,11 @@ enum HTTPTransport {
     static let shared = makeSession()
 
     static func data(for request: URLRequest, using session: URLSession = shared,
-                     source: HakoLogSource = .hako, secrets: [String] = []) async throws -> (Data, URLResponse) {
-        try await perform(request, source: source, secrets: secrets, body: { $0 }) {
+                     source: HakoLogSource = .hako, secrets: [String] = [],
+                     logBody: Bool = true) async throws -> (Data, URLResponse) {
+        var logRequest = request
+        if !logBody { logRequest.httpBody = nil }
+        return try await perform(logRequest, source: source, secrets: secrets, body: { logBody ? $0 : nil }) {
             try await session.data(for: request)
         }
     }

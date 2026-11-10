@@ -315,7 +315,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         let response: URLResponse
         do {
             (data, response) = try await HTTPTransport.data(for: request, using: transport, source: logSource,
-                                                        secrets: [token ?? "", nonce ?? ""])
+                                                        secrets: [token ?? "", nonce ?? ""],
+                                                        logBody: !path.hasPrefix("/api/v1/investment/"))
         } catch {
             // URLSession uses URLError.cancelled for task cancellation; callers
             // already handle CancellationError silently and retain credentials.

@@ -4,7 +4,7 @@ private struct InvestmentFieldPlaceholders: EnvironmentKey {
     static let defaultValue = true
 }
 
-private extension EnvironmentValues {
+extension EnvironmentValues {
     var investmentFieldPlaceholders: Bool {
         get { self[InvestmentFieldPlaceholders.self] }
         set { self[InvestmentFieldPlaceholders.self] = newValue }
@@ -103,18 +103,19 @@ private struct InvestmentSaveError: Identifiable {
 private struct InvestmentEditor<Content: View>: View {
     @Environment(\.dismiss) private var dismiss
     @State private var error: String?
+    @State private var saving = false
     let title: String
     var inSheet = false
     var hasChanges = false
     var saveEnabled: Bool? = nil
     var inlineError: Binding<InvestmentSaveError?>?
     @ViewBuilder let content: Content
-    let save: () throws -> Void
+    let save: () async throws -> Void
 
     var body: some View {
         Group {
             if inSheet {
-                SettingsSheet(title: title, hasChanges: hasChanges, saveEnabled: saveEnabled ?? hasChanges, onSave: commit) { form }
+                SettingsSheet(title: title, hasChanges: hasChanges, isBusy: saving, saveEnabled: saveEnabled ?? hasChanges, onSave: commit) { form }
             } else {
                 form.navigationTitle(title)
             }
@@ -132,7 +133,7 @@ private struct InvestmentEditor<Content: View>: View {
                         HStack(spacing: 12) {
                             Button("取消") { dismiss() }.buttonStyle(HakoActionButtonStyle(primary: false))
                             Button("保存", action: commit).buttonStyle(HakoActionButtonStyle())
-                        }.investmentListRow()
+                        }.disabled(saving).investmentListRow()
                     }
                     if let error { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
@@ -145,12 +146,17 @@ private struct InvestmentEditor<Content: View>: View {
     }
 
     private func commit() {
-        do { try save(); dismiss() }
-        catch {
-            if let inlineError {
-                inlineError.wrappedValue = InvestmentSaveError(message: error.localizedDescription)
-            } else {
-                self.error = error.localizedDescription
+        guard !saving else { return }
+        saving = true
+        Task {
+            defer { saving = false }
+            do { try await save(); dismiss() }
+            catch {
+                if let inlineError {
+                    inlineError.wrappedValue = InvestmentSaveError(message: error.localizedDescription)
+                } else {
+                    self.error = error.localizedDescription
+                }
             }
         }
     }
@@ -204,7 +210,7 @@ struct InvestmentAccountEditor: View {
             guard !name.isEmpty, let currency, let type, InvestmentAccountType.available(in: currency).contains(type) else {
                 throw InvestmentError.invalid("请填写账户名称，并选择账户币种和类型。")
             }
-            try store.update { book in
+            try await store.update { book in
                 guard !book.accounts.contains(where: {
                     $0.name == name && $0.currency == currency && $0.type == type
                 }) else {
@@ -250,7 +256,7 @@ struct InvestmentTransferEditor: View {
             let amount = try investmentDecimal(amount, "划出金额")
             let remaining = try investmentDecimal(remaining, "划出后剩余金额", allowZero: true)
             let received = target.currency == account.currency ? nil : try investmentDecimal(received, "实际到账金额")
-            try store.update { try $0.transfer(from: account.id, to: targetID, amount: amount, remaining: remaining, received: received) }
+            try await store.update { try $0.transfer(from: account.id, to: targetID, amount: amount, remaining: remaining, received: received) }
         }
     }
 }
@@ -281,7 +287,7 @@ struct InvestmentCashEditor: View {
         } save: {
             let value = try investmentDecimal(amount, "金额", allowZero: kind == .adjustment)
             let day = InvestmentBook.day(date)
-            try store.update { book in
+            try await store.update { book in
                 guard let account = book.account(account.id) else { return }
                 let delta: Decimal
                 switch kind {
@@ -333,7 +339,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
                 }
             }
         } save: {
-            try store.update { book in
+            try await store.update { book in
                 if supportsDividends {
                     let cash = investmentTrim(cash).isEmpty ? 0 : try investmentDecimal(cash, "分红金额", allowZero: true)
                     let shares = investmentTrim(shares).isEmpty ? 0 : try investmentDecimal(shares, "送股股数", allowZero: true)
@@ -342,6 +348,38 @@ struct InvestmentHoldingAdjustmentEditor: View {
                     let balance = try investmentDecimal(balance, "调整后余额", allowZero: true)
                     try book.adjustSpotBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
                 }
+            }
+        }
+    }
+}
+
+struct InvestmentFuturesSettlementEditor: View {
+    let store: InvestmentStore
+    let account: InvestmentAccount
+    let asset: InvestmentAsset
+    @State private var date = InvestmentBook.day()
+    @State private var price = ""
+    @State private var amount = ""
+    @State private var isLoss = false
+
+    var body: some View {
+        InvestmentEditor(title: "记实际结算", inSheet: true, hasChanges: !price.isEmpty || !amount.isEmpty,
+                         saveEnabled: !price.isEmpty && !amount.isEmpty) {
+            Section(asset.name) {
+                DatePicker("结算日期", selection: $date, in: ...InvestmentBook.day(), displayedComponents: .date)
+                InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad)
+                Picker("资金方向", selection: $isLoss) {
+                    Text("入账").tag(false)
+                    Text("扣款").tag(true)
+                }
+                InvestmentField("实际结算盈亏金额（CNY）", text: $amount, keyboard: .decimalPad)
+            }
+        } save: {
+            let value = try investmentDecimal(amount, "实际结算金额", allowZero: true)
+            let price = try investmentDecimal(price, "结算价")
+            try await store.update {
+                try $0.post(.init(day: InvestmentBook.day(date), kind: .derivativeSettlement,
+                    assetID: asset.id, amount: isLoss ? -value : value, price: price), accountID: account.id)
             }
         }
     }
@@ -389,7 +427,7 @@ struct InvestmentMarginTransferEditor: View {
         } save: {
             guard margin != nil else { throw InvestmentError.invalid("该日期没有可调整保证金的仓位。") }
             let value = try investmentDecimal(amount, "保证金划转金额")
-            try store.update {
+            try await store.update {
                 try $0.post(.init(day: day, kind: .marginTransfer, assetID: asset.id,
                                   amount: direction == .increase ? value : -value), accountID: account.id)
             }
@@ -440,7 +478,7 @@ struct InvestmentFundingAdjustmentEditor: View {
         } save: {
             let balance = try investmentDecimal(balance, "调整后余额", allowZero: true)
             let rate = investmentTrim(settlementRate).isEmpty ? nil : try investmentDecimal(settlementRate, "结算币兑美元单价")
-            try store.update {
+            try await store.update {
                 try $0.adjustFundingBalance(assetID: asset.id, accountID: account.id, target: target, balance: balance,
                                             rate: rate, attributeToContract: attributeToContract, on: day)
             }
@@ -498,7 +536,7 @@ private struct InvestmentAssetDraft: Equatable {
     }
 
     var venue: String { stockConnect ? InvestmentAsset.stockConnectMarket : investmentTrim(market).uppercased() }
-    var assetSide: InvestmentContractSide? { kind == .cryptoContract ? contractSide : nil }
+    var assetSide: InvestmentContractSide? { kind.usesMargin ? contractSide : nil }
     var selected: Bool { selectedAsset != nil }
 
     mutating func select(_ asset: InvestmentAsset) {
@@ -536,7 +574,8 @@ private struct InvestmentAssetDraft: Equatable {
                                       contractSide: assetSide, contractBasis: kind == .cryptoContract ? contractBasis : nil,
                                       collateralAssetID: collateralAssetID, settlementStablecoin: settlementStablecoin)
         if asset.matches(entered) { return true }
-        guard asset.kind == kind, asset.currency == currency else { return false }
+        guard asset.kind == kind, asset.currency == currency,
+              !kind.usesMargin || (asset.contractSide ?? .long) == contractSide else { return false }
         guard !stockConnect, !asset.isStockConnect else { return false }
         let known = InvestmentQuoteSymbol(asset)
         let candidate = InvestmentQuoteSymbol(entered)
@@ -685,6 +724,8 @@ private struct InvestmentAssetFields: View {
                         Text("请先在此账户录入对应币种的现货余额。").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
+            }
+            if draft.kind.usesMargin, !watchOnly {
                 Picker("开仓方向", selection: $draft.contractSide) {
                     ForEach(InvestmentContractSide.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -772,14 +813,9 @@ private struct InvestmentAssetFields: View {
     @ViewBuilder private var manualFields: some View {
         InvestmentField(draft.kind == .cryptoContract ? "合约代码" : "标的代码", text: $draft.code)
             .textInputAutocapitalization(.characters).autocorrectionDisabled()
-        if draft.kind.derivative && draft.kind != .cryptoContract {
-            if currency == .cny {
-                Text("中国期货、期权请填写带交易所后缀的完整合约代码，例如 CU1811.SHF 或 10001313.SH。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            } else if currency == .usd {
-                Text("请填写美股期权合约代码和交易所，例如 XCBO。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
+        if draft.kind == .future {
+            Text("中国期货请填写带交易所后缀的完整合约代码，例如 CU1811.SHF。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
         if !draft.stockConnect {
             DisclosureGroup("交易所（可选）", isExpanded: $showsExchange) {
@@ -1178,7 +1214,7 @@ struct InvestmentAssetEditor: View {
                 guard let watchAsset, let quotes = watchResult?.quotes, !quotes.isEmpty else {
                     throw InvestmentError.invalid("请选择能够获取报价的标的。")
                 }
-                try store.update { book in
+                try await store.update { book in
                     let id = try book.register(watchAsset)
                     book.addQuotes(quotes, assetID: id)
                     if !book.watched.contains(id) { book.watched.append(id) }
@@ -1186,7 +1222,7 @@ struct InvestmentAssetEditor: View {
                 return
             }
             guard let account else { throw InvestmentError.invalid("找不到该投资账户。") }
-            try store.update { book in
+            try await store.update { book in
                 var asset = try existing ?? draft.asset(currency: currency)
                 if var tracked = watchOnlyDerivative {
                     tracked.multiplier = asset.multiplier
@@ -1307,7 +1343,7 @@ struct InvestmentTradeEditor: View {
                 }
             }
         } save: {
-            try store.update { book in
+            try await store.update { book in
                 let event = try trade.post(assetID: asset.id, accountID: account.id, to: &book)
                 if asset.kind.isTermDeposit, kind == .sell, !investmentTrim(depositInterest).isEmpty {
                     let interest = try investmentDecimal(depositInterest, "实收利息", allowZero: true)
@@ -1373,13 +1409,13 @@ struct InvestmentQuoteEditor: View {
             if store.book.watched.contains(asset.id) {
                 Section {
                     Button("移出关注", role: .destructive) {
-                        removeWatch()
+                        Task { await removeWatch() }
                     }
                 }
             }
         } save: {
             let price = try investmentDecimal(price, insurance ? "现金价值" : "报价", allowZero: insurance)
-            try store.update { book in
+            try await store.update { book in
                 book.addQuotes([InvestmentQuote(day: InvestmentBook.day(date), price: price, source: "手动录入")], assetID: asset.id)
                 book.runPlans()
             }
@@ -1391,9 +1427,9 @@ struct InvestmentQuoteEditor: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var error: String?
-    private func removeWatch() {
+    private func removeWatch() async {
         do {
-            try store.update { $0.watched.removeAll { $0 == asset.id } }
+            try await store.update { $0.watched.removeAll { $0 == asset.id } }
             dismiss()
         } catch { self.error = error.localizedDescription }
     }
@@ -1478,7 +1514,7 @@ struct InvestmentPlanEditor: View {
             }
         } save: {
             let amount = try investmentDecimal(amount, "金额")
-            try store.update { book in
+            try await store.update { book in
                 var target = buy ? assetID : nil
                 if buy, target == nil {
                     guard !kinds.isEmpty else { throw InvestmentError.invalid("此账户只支持定期转入。") }
@@ -1499,16 +1535,16 @@ struct InvestmentPlanEditor: View {
             }
         }
         .confirmationDialog("删除这项定投任务？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除任务", role: .destructive) { remove() }
+            Button("删除任务", role: .destructive) { Task { await remove() } }
         }
         .alert("无法删除", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("好", role: .cancel) { deleteError = nil }
         } message: { Text(deleteError ?? "") }
     }
 
-    private func remove() {
+    private func remove() async {
         do {
-            try store.update { $0.plans.removeAll { $0.id == plan?.id } }
+            try await store.update { $0.plans.removeAll { $0.id == plan?.id } }
             dismiss()
         } catch { deleteError = error.localizedDescription }
     }

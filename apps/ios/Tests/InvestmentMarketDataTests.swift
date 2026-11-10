@@ -9,11 +9,13 @@ struct InvestmentMarketDataTests {
         mapping()
         try await alternateAfterUnavailableQuote()
         try await watchRequiresRecentQuotes()
+        try await usDailyBarWaitsForExchangeClose()
         try await stockConnectUsesHKDQuotes()
         try await instrumentSearchReturnsMatchingChoices()
         try await cryptocurrencyUsesUSDPair()
         try await binanceSpotCatalogFindsTRX()
         try await publicSpotPricesAreConvertedToDollars()
+        try await cryptoDailyClosesUseTheLedgerDay()
         try await exchangeContractsUseTheirOwnMultipliersAndMarkPrices()
         try await domesticFundNAV()
         try await referenceRates()
@@ -61,7 +63,7 @@ struct InvestmentMarketDataTests {
     }
 
     static func watchRequiresRecentQuotes() async throws {
-        precondition(InvestmentKind.watchKinds(in: .cny) == [.stock, .etf, .fund, .future, .option])
+        precondition(InvestmentKind.watchKinds(in: .cny) == [.stock, .etf, .fund, .future])
         precondition(InvestmentKind.watchKinds(in: .usd) == [.stock, .etf, .crypto])
         precondition(InvestmentKind.watchKinds(in: .hkd) == [.stock, .etf])
         let provider = InvestmentQuoteProvider { request, _ in
@@ -85,6 +87,21 @@ struct InvestmentMarketDataTests {
             _ = try await provider.watchQuotes(for: asset("VOO", .etf, .usd), keys: [:], through: day(30))
             preconditionFailure("A non-crypto watch requires a working quote source")
         } catch InvestmentError.invalid {}
+    }
+
+    static func usDailyBarWaitsForExchangeClose() async throws {
+        let provider = InvestmentQuoteProvider { request, _ in
+            response(request, #"{"meta":{"currency":"USD"},"values":[{"datetime":"2026-10-30","close":"500.20"}]}"#)
+        }
+        let session = day(30)
+        let close = InvestmentBook.usEquityClose(on: session)
+        let symbol = asset("VOO", .etf, .usd)
+        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
+        let early = try await provider.history(asset: symbol, start: session, through: session, cached: nil,
+                                               keys: keys, now: close.addingTimeInterval(-60))
+        let complete = try await provider.history(asset: symbol, start: session, through: session, cached: nil,
+                                                  keys: keys, now: close)
+        precondition(early.last?.isDailyClose == false && complete.last?.isDailyClose == true)
     }
 
     static func domesticFundNAV() async throws {
@@ -303,6 +320,45 @@ struct InvestmentMarketDataTests {
         precondition(usd.price == Decimal(string: "0.998615"))
         let stale = try? await provider.contractMark(binance[0].asset, now: now.addingTimeInterval(301))
         precondition(stale == nil)
+    }
+
+    static func cryptoDailyClosesUseTheLedgerDay() async throws {
+        let first = day(29), next = day(30)
+        let start = Int64(first.timeIntervalSince1970)
+        let end = Int64(next.timeIntervalSince1970)
+        let provider = InvestmentQuoteProvider { request, secrets in
+            precondition(secrets.isEmpty)
+            let url = request.url!
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            switch url.path {
+            case "/api/v3/brokerage/market/products/USDT-USD/candles":
+                precondition(query.contains(.init(name: "granularity", value: "FOUR_HOUR")))
+                return response(request, #"{"candles":[{"start":"\#(start)","close":"0.8"},{"start":"\#(end - 14_400)","close":"0.99"}]}"#)
+            case "/api/v3/klines":
+                precondition(query.contains(.init(name: "timeZone", value: "8")))
+                return response(request, #"[[\#(start * 1000),"1","1","1","0.32","1",\#(end * 1000 - 1)]]"#)
+            case "/fapi/v1/markPriceKlines":
+                precondition(query.contains(.init(name: "interval", value: "8h")))
+                return response(request, #"[[\#(start * 1000),"1","1","1","0.3","0",\#((start + 28_800) * 1000 - 1)],[\#((end - 28_800) * 1000),"1","1","1","0.34","0",\#(end * 1000 - 1)]]"#)
+            case "/index/market/history/swap_mark_price_kline":
+                precondition(query.contains(.init(name: "period", value: "1day")))
+                return response(request, #"{"status":"ok","ch":"market.TRX-USD.mark_price.1day","data":[{"id":\#(start),"close":"0.35"},{"id":\#(end),"close":"0.36"}]}"#)
+            default:
+                throw URLError(.unsupportedURL)
+            }
+        }
+        let rates = try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: first, through: first)
+        precondition(rates.count == 1 && rates[0].day == first && rates[0].price == Decimal(string: "0.99"))
+        let spot = try await provider.binanceSpotDailyQuotes(for: "TRX", from: first, through: first, usdtUSD: [first: rates[0].price])
+        precondition(spot.count == 1 && spot[0].price == Decimal(string: "0.3168") && spot[0].isDailyClose == true)
+        var contract = asset("TRXUSDT", .cryptoContract, .usd, market: "BINANCE")
+        contract.contractBasis = .stablecoin
+        let binance = try await provider.contractDailyQuotes(for: contract, from: first, through: first)
+        precondition(binance.count == 1 && binance[0].day == first && binance[0].price == Decimal(string: "0.34"))
+        contract = asset("TRX-USD", .cryptoContract, .usd, market: "HTX")
+        contract.contractBasis = .coin
+        let htx = try await provider.contractDailyQuotes(for: contract, from: first, through: first)
+        precondition(htx.count == 1 && htx[0].day == first && htx[0].price == Decimal(string: "0.35"))
     }
 
     static func asset(_ code: String, _ kind: InvestmentKind, _ currency: InvestmentCurrency, market: String = "") -> InvestmentAsset {

@@ -23,6 +23,13 @@ struct InvestmentBalanceAccount: Codable, Identifiable {
     let category: InvestmentBalanceCategory
     fileprivate(set) var records: [InvestmentBalanceRecord]
 
+    init(id: UUID = UUID(), name: String, category: InvestmentBalanceCategory, records: [InvestmentBalanceRecord]) {
+        self.id = id
+        self.name = name
+        self.category = category
+        self.records = records
+    }
+
     func latest(on day: Date) -> InvestmentBalanceRecord? {
         records.last { InvestmentBook.day($0.recordedAt) <= day }
     }
@@ -31,6 +38,11 @@ struct InvestmentBalanceAccount: Codable, Identifiable {
 struct InvestmentBalanceLedger: Codable {
     private(set) var accounts: [InvestmentBalanceAccount] = []
     fileprivate var investmentMonthEnds: [Date: Decimal]? = nil
+
+    init(accounts: [InvestmentBalanceAccount] = [], investmentMonthEnds: [Date: Decimal]? = nil) {
+        self.accounts = accounts
+        self.investmentMonthEnds = investmentMonthEnds
+    }
 
     var earliest: Date? { accounts.compactMap { $0.records.first?.recordedAt }.min().map(InvestmentBook.day) }
     var investmentSnapshots: [Date: Decimal] { investmentMonthEnds ?? [:] }

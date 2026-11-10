@@ -63,6 +63,7 @@ enum HakoApplications {
             switch self {
             case .usage: UsageShortcutContributor.registerShortcuts(in: registry)
             case .crypto: CryptoShortcutContributor.registerShortcuts(in: registry)
+            case .investment: InvestmentShortcutContributor.registerShortcuts(in: registry)
             default: break
             }
         }

@@ -36,18 +36,28 @@ struct InvestmentDestination: View {
 }
 
 struct InvestmentCashHistory: View {
-    let book: InvestmentBook
-    let account: InvestmentAccount
+    @ObservedObject var store: InvestmentStore
+    let accountID: UUID
+    @State private var editing: InvestmentEvent?
 
     var body: some View {
-        let rows = (try? book.ledger(account, includeRows: true))?.cashRows ?? []
-        let sharedFunding = book.orderedEvents(account, through: InvestmentBook.day()).filter {
-            $0.kind == .funding && $0.unallocatedFunding == true && book.asset($0.assetID)?.collateralAssetID != nil
-        }
         SettingsSheet(title: "现金流水") {
-            List {
-                Section(account.name + " · " + account.currency.rawValue) {
-                    ForEach(rows.reversed()) { row in
+            if let account = store.book.account(accountID) { history(account) }
+        }
+        .sheet(item: $editing) { event in
+            InvestmentEventEditor(store: store, accountID: accountID, event: event)
+        }
+    }
+
+    private func history(_ account: InvestmentAccount) -> some View {
+        let book = store.book
+        let rows = (try? book.ledger(account, includeRows: true))?.cashRows ?? []
+        let cashIDs = Set(rows.map(\.id))
+        let otherEvents = book.orderedEvents(account, through: InvestmentBook.day()).filter { !cashIDs.contains($0.id) }
+        return List {
+            Section(account.name + " · " + account.currency.rawValue) {
+                ForEach(rows.reversed()) { row in
+                    Button { editing = row.event } label: {
                         HStack(alignment: .top) {
                             let asset = book.asset(row.event.assetID)
                             let otherAccount = row.event.transferAccountID.flatMap { book.account($0)?.name }
@@ -61,24 +71,34 @@ struct InvestmentCashHistory: View {
                                 Text("余额 " + InvestmentText.money(row.balance, account.currency))
                                     .font(.caption).foregroundStyle(.secondary)
                             }.monospacedDigit()
-                        }.investmentListRow()
+                            InvestmentChevron()
+                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
                     }
-                    if rows.isEmpty { Text("暂无现金流水").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).investmentListRow()
                 }
-                if !sharedFunding.isEmpty {
-                    Section("账户资金费") {
-                        ForEach(sharedFunding.reversed()) { event in
-                            if let asset = book.asset(event.assetID) {
-                                LabeledContent(InvestmentText.date(event.day),
-                                    value: (event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount)
-                                    + " " + book.settlementUnit(for: asset))
-                            }
+                if rows.isEmpty { Text("暂无现金流水").foregroundStyle(.secondary) }
+            }
+            if !otherEvents.isEmpty {
+                Section("其他流水") {
+                    ForEach(otherEvents.reversed()) { event in
+                        let asset = book.asset(event.assetID)
+                        let name = event.unallocatedFunding == true ? "" : asset.map { " · " + $0.name } ?? ""
+                        Button { editing = event } label: {
+                            HStack {
+                                InvestmentTitle(event.title(for: asset) + name, subtitle: InvestmentText.date(event.day))
+                                Spacer()
+                                if let asset, event.amount != 0 {
+                                    Text((event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount)
+                                         + " " + book.settlementUnit(for: asset)).monospacedDigit()
+                                }
+                                InvestmentChevron()
+                            }.frame(maxWidth: .infinity).contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain).investmentListRow()
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-        }
+        }.listStyle(.insetGrouped)
     }
 }
 
@@ -159,6 +179,8 @@ struct InvestmentHoldingView: View {
     let asset: InvestmentAsset
     @State private var showsAdjustment = false
     @State private var showsMarginTransfer = false
+    @State private var showsFuturesSettlement = false
+    @State private var editing: InvestmentEvent?
 
     private var offersAdjustment: Bool { asset.kind.supportsCashDividends || [.crypto, .cryptoContract].contains(asset.kind) }
 
@@ -173,6 +195,7 @@ struct InvestmentHoldingView: View {
                     ForEach(store.book.orderedEvents(current, through: InvestmentBook.day()).filter {
                         $0.assetID == asset.id && $0.unallocatedFunding != true
                     }.reversed()) { event in
+                        Button { editing = event } label: {
                         HStack {
                             let target = event.fundingTarget.map { " · " + $0.rawValue } ?? ""
                             InvestmentTitle(event.title(for: asset), subtitle: InvestmentText.date(event.day) + target)
@@ -187,7 +210,7 @@ struct InvestmentHoldingView: View {
                                     Text((event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount)
                                          + " " + unit)
                                         .foregroundStyle(InvestmentText.tint(event.amount))
-                                case .marginTransfer:
+                                case .marginTransfer, .derivativeSettlement:
                                     let unit = store.book.fundingUnit(for: asset, target: .available)
                                     Text((event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount) + " " + unit)
                                 case .bonusShares, .stakingReward, .spotAdjustment:
@@ -212,14 +235,18 @@ struct InvestmentHoldingView: View {
                                     Text(InvestmentText.money(amount, account.currency)).font(.caption).foregroundStyle(.secondary)
                                 }
                             }.monospacedDigit()
-                        }
+                            InvestmentChevron()
+                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
                         Divider()
                     }
                 }
-                InvestmentNoteEditor(store: store, accountID: account.id, assetID: asset.id, note: current.notes[asset.id] ?? "")
             }
         }
         .navigationTitle(asset.name)
+        .sheet(item: $editing) { event in
+            InvestmentEventEditor(store: store, accountID: account.id, event: event)
+        }
         .sheet(isPresented: $showsAdjustment) {
             if asset.kind == .cryptoContract {
                 InvestmentFundingAdjustmentEditor(store: store, account: account, asset: asset)
@@ -229,6 +256,9 @@ struct InvestmentHoldingView: View {
         }
         .sheet(isPresented: $showsMarginTransfer) {
             InvestmentMarginTransferEditor(store: store, account: account, asset: asset)
+        }
+        .sheet(isPresented: $showsFuturesSettlement) {
+            InvestmentFuturesSettlementEditor(store: store, account: account, asset: asset)
         }
     }
 
@@ -305,10 +335,16 @@ struct InvestmentHoldingView: View {
                         .buttonStyle(HakoActionButtonStyle(primary: false))
                 }
             }
-            if asset.kind == .cryptoContract, position.quantity > 0 {
+            if asset.kind.usesMargin, position.quantity > 0 {
                 Divider()
                 Button { showsMarginTransfer = true } label: {
                     InvestmentPageRow(title: "调整保证金", symbol: "arrow.left.arrow.right")
+                }.buttonStyle(.plain)
+            }
+            if asset.kind == .future, position.quantity > 0 {
+                Divider()
+                Button { showsFuturesSettlement = true } label: {
+                    InvestmentPageRow(title: "记实际结算", symbol: "calendar.badge.checkmark")
                 }.buttonStyle(.plain)
             }
             adjustmentAction
@@ -338,30 +374,6 @@ struct InvestmentHoldingView: View {
     }
 }
 
-private struct InvestmentNoteEditor: View {
-    @ObservedObject var store: InvestmentStore
-    let accountID: UUID
-    let assetID: UUID
-    @State var note: String
-    @State private var message = ""
-
-    var body: some View {
-        InvestmentCard {
-            InvestmentField("盈亏笔记", text: $note, axis: .vertical)
-            Button("保存笔记") {
-                do {
-                    try store.update { book in
-                        guard let index = book.accounts.firstIndex(where: { $0.id == accountID }) else { return }
-                        book.accounts[index].notes[assetID] = note
-                    }
-                    message = "已保存"
-                } catch { message = error.localizedDescription }
-            }.buttonStyle(HakoActionButtonStyle())
-            if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-}
-
 private struct InvestmentSettings: View {
     private enum Sheet: Hashable, Identifiable {
         case addAccount, credential(InvestmentQuoteSource)
@@ -371,8 +383,8 @@ private struct InvestmentSettings: View {
     @ObservedObject var store: InvestmentStore
     @State private var error: String?
     @State private var sheet: Sheet?
-    @State private var confirmsReset = false
-    @State private var didReset = false
+    @State private var recalculatingSnapshots = false
+    @State private var snapshotReport: InvestmentDailySnapshotReport?
 
     var body: some View {
         Form {
@@ -382,7 +394,7 @@ private struct InvestmentSettings: View {
                     InvestmentTitle(account.name, subtitle: subtitle).investmentListRow()
                 }
                 .onMove { offsets, destination in
-                    perform { try store.update { $0.accounts.move(fromOffsets: offsets, toOffset: destination) } }
+                    Task { await perform { try await store.update { $0.accounts.move(fromOffsets: offsets, toOffset: destination) } } }
                 }
                 Button { sheet = .addAccount } label: {
                     Label("添加账户", systemImage: "plus")
@@ -390,7 +402,7 @@ private struct InvestmentSettings: View {
                 .investmentListRow()
             }
             Section("行情与汇率") {
-                Text("A 股与中国基金、期货、期权优先使用 Tushare Pro，港股通与美股优先使用 Twelve Data。加密现货使用 Binance 公开报价，加密合约使用所选交易所的标记价格。汇率可由欧洲央行补充。")
+                Text("A 股与中国基金、期货优先使用 Tushare Pro，港股通与美股优先使用 Twelve Data。加密现货使用 Binance 公开报价，加密合约使用所选交易所的标记价格。汇率可由欧洲央行补充。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button(store.refreshing ? "正在刷新…" : "刷新行情与汇率") { Task { await store.refresh() } }
                     .disabled(!store.canRefresh || store.refreshing)
@@ -399,11 +411,22 @@ private struct InvestmentSettings: View {
             Section("行情接口") {
                 ForEach(InvestmentQuoteSource.allCases) { source in credentialLink(source) }
             }
-            Section("本地数据") {
-                Button("清理本地账本", role: .destructive) { confirmsReset = true }
-                if didReset {
-                    Text("本地账本已清理。").font(.footnote).foregroundStyle(.secondary)
+            Section {
+                Button(recalculatingSnapshots ? "正在查询并重算…" : "重新计算历史快照") {
+                    Task { await rebuildSnapshots() }
                 }
+                .disabled(recalculatingSnapshots || store.book.earliest == nil)
+                if let snapshotReport {
+                    Text(snapshotReport.message).font(.footnote).foregroundStyle(.secondary)
+                    SectionReportTotals(report: snapshotReport)
+                }
+                if let snapshotSaveError = store.snapshotSaveError {
+                    Text(snapshotSaveError).font(.footnote).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("日终快照")
+            } footer: {
+                Text("按北京时间截日，快照保存到服务端。重算复用已保存的历史行情和汇率，仅补查缺失数据。自动化可使用「同步 Hako 数据」快捷指令。")
             }
         }
         .navigationTitle("投资记账设置")
@@ -413,17 +436,6 @@ private struct InvestmentSettings: View {
             case .addAccount: InvestmentAccountEditor(store: store)
             case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
             }
-        }
-        .confirmationDialog("清理本地账本？", isPresented: $confirmsReset, titleVisibility: .visible) {
-            Button("清理本地账本", role: .destructive) {
-                perform {
-                    try store.resetLedger()
-                    didReset = true
-                }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("账户、流水、持仓、关注、定投、资产负债和本地行情记录将被清除。已保存的行情凭据会继续使用。")
         }
         .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
@@ -449,8 +461,33 @@ private struct InvestmentSettings: View {
         .accessibilityValue(configured ? "已配置" : "未配置")
     }
 
-    private func perform(_ action: () throws -> Void) {
-        do { try action() } catch { self.error = error.localizedDescription }
+    private func perform(_ action: () async throws -> Void) async {
+        do { try await action() } catch { self.error = error.localizedDescription }
+    }
+
+    private func rebuildSnapshots() async {
+        guard !recalculatingSnapshots else { return }
+        recalculatingSnapshots = true
+        snapshotReport = nil
+        defer { recalculatingSnapshots = false }
+        do {
+            try await store.refreshSnapshotHistory()
+            snapshotReport = try await store.saveDailySnapshots(rebuild: true)
+        } catch is CancellationError {
+            return
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct SectionReportTotals: View {
+    let report: InvestmentDailySnapshotReport
+
+    var body: some View {
+        LabeledContent("快照日期", value: InvestmentText.date(report.day)).investmentListRow()
+        LabeledContent("折算人民币总额", value: InvestmentText.money(report.latest?.value, .cny)).investmentListRow()
+        LabeledContent("折算美元总额", value: InvestmentText.money(report.latest?.valueUSD, .usd)).investmentListRow()
     }
 }
 

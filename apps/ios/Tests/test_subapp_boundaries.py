@@ -42,7 +42,7 @@ class SubappBoundariesTests(unittest.TestCase):
         self.assertIn("HakoApplications.registerShortcuts(in: registry)", host)
         self.assertNotIn("import ObjectiveC", host)
         self.assertIn("Category.allCases.flatMap(\\.applications)", catalog)
-        for folder in ("Usage", "Crypto"):
+        for folder in ("Usage", "Crypto", "Investment"):
             self.assertIn(f"{folder}ShortcutContributor.registerShortcuts(in: registry)", catalog)
             sources = "\n".join(path.read_text(encoding="utf-8") for path in (FEATURES / folder).glob("*.swift"))
             self.assertNotIn("import AppIntents", sources)

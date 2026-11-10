@@ -27,6 +27,13 @@ struct InvestmentBookTests {
         try depositsKeepPrincipalAndInterestSeparate()
         try balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation()
         try investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth()
+        try dailyGainsRequireCompleteMarketPrices()
+        try portfolioHistoryMatchesIndividualValuations()
+        try dailySnapshotsUseBeijingCloseAndDatedRates()
+        try changingHistoricalEntriesInvalidatesOnlyTheAffectedDays()
+        try changingTransfersIsAtomic()
+        try dailyQuotesReuseCachedMarketCloses()
+        try serverRoundTripPreservesShortFuturesAndSnapshots()
         print("Investment ledger checks passed")
     }
 
@@ -665,9 +672,9 @@ struct InvestmentBookTests {
         precondition(allows(.securities, .cny, .etf, "510300"))
         precondition(allows(.securities, .cny, .stock, "00700.HK", market: InvestmentAsset.stockConnectMarket))
         precondition(!allows(.fund, .cny, .stock, "00700.HK", market: InvestmentAsset.stockConnectMarket))
-        precondition(allows(.securities, .cny, .option, "10001313.SH"))
+        precondition(!allows(.securities, .cny, .option, "10001313.SH"))
         precondition(!allows(.securities, .cny, .option, "IO2611-C-4000.CFX"))
-        precondition(allows(.futures, .cny, .option, "IO2611-C-4000.CFX"))
+        precondition(!allows(.futures, .cny, .option, "IO2611-C-4000.CFX"))
         precondition(!allows(.futures, .cny, .option, "10001313.SH"))
         precondition(allows(.fund, .cny, .fund, "110022.OF"))
         precondition(!allows(.fund, .cny, .fund, "501018.SH"))
@@ -720,6 +727,221 @@ struct InvestmentBookTests {
         let ledger = try book.ledger(book.accounts[0], through: maturity, includeRows: true)
         precondition(ledger.cashRows.map(\.change) == [200, -100, 100, 2])
         precondition(book.portfolio(on: maturity)?.gain == 2 && ledger.positions[id]?.realized == 2)
+    }
+
+    static func dailyGainsRequireCompleteMarketPrices() throws {
+        let friday = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 10, day: 30))!
+        let saturday = InvestmentBook.addDays(1, to: friday)
+        let sunday = InvestmentBook.addDays(2, to: friday)
+        let monday = InvestmentBook.addDays(3, to: friday)
+        let stockAccount = InvestmentAccount(name: "股票", currency: .cny, type: .securities)
+        var stocks = InvestmentBook(accounts: [stockAccount])
+        let stock = try stocks.register(.init(name: "测试股票", code: "600000", market: "", kind: .stock, currency: .cny))
+        try stocks.post(.init(day: friday, kind: .deposit, amount: 100), accountID: stockAccount.id)
+        try stocks.post(.init(day: friday, kind: .buy, assetID: stock, quantity: 10, price: 2), accountID: stockAccount.id)
+        stocks.addQuotes([.init(day: friday, price: 3)], assetID: stock)
+        let stockGains = stocks.dailyGains(from: friday, through: monday)
+        precondition(stockGains[friday] == 10 && stockGains[saturday] == 0 && stockGains[sunday] == 0)
+        precondition(stockGains[monday] == nil)
+
+        let cryptoAccount = InvestmentAccount(name: "现货", currency: .usd, type: .crypto)
+        var crypto = InvestmentBook(accounts: [cryptoAccount])
+        let token = try crypto.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        try crypto.post(.init(day: friday, kind: .deposit, amount: 100), accountID: cryptoAccount.id)
+        try crypto.post(.init(day: friday, kind: .buy, assetID: token, quantity: 10, price: 2), accountID: cryptoAccount.id)
+        crypto.fx[.usd] = [.init(day: friday, price: 7)]
+        crypto.addQuotes([.init(day: friday, price: 3, isDailyClose: true),
+                          .init(day: saturday, price: 4, source: "盘中报价"),
+                          .init(day: sunday, price: 5, isDailyClose: true)], assetID: token)
+        let incomplete = crypto.dailyGains(from: friday, through: sunday)
+        precondition(incomplete[friday] == 70 && incomplete[saturday] == nil && incomplete[sunday] == nil)
+        crypto.addQuotes([.init(day: saturday, price: 4, isDailyClose: true)], assetID: token)
+        crypto.addQuotes([.init(day: saturday, price: 99, source: "盘中报价")], assetID: token)
+        let completed = crypto.dailyGains(from: friday, through: sunday)
+        precondition(completed[friday] == 70 && completed[saturday] == 70 && completed[sunday] == 70)
+    }
+
+    static func portfolioHistoryMatchesIndividualValuations() throws {
+        let cny = InvestmentAccount(name: "境内", currency: .cny, type: .securities)
+        let usd = InvestmentAccount(name: "境外", currency: .usd, type: .securities)
+        var book = InvestmentBook(accounts: [cny, usd])
+        let stock = try book.register(.init(name: "测试股票", code: "600000", market: "", kind: .stock, currency: .cny))
+        try book.post(.init(day: date(2), kind: .deposit, amount: 100), accountID: cny.id)
+        try book.post(.init(day: date(2), kind: .buy, assetID: stock, quantity: 10, price: 5), accountID: cny.id)
+        try book.post(.init(day: date(4), kind: .sell, assetID: stock, quantity: 3, price: 8, fee: 1), accountID: cny.id)
+        try book.post(.init(day: date(1), kind: .deposit, amount: 20), accountID: cny.id)
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: usd.id)
+        book.addQuotes([.init(day: date(3), price: 7), .init(day: date(4), price: 8)], assetID: stock)
+        book.fx[.usd] = [.init(day: date(2), price: 7), .init(day: date(4), price: Decimal(string: "7.1")!)]
+        let days = [date(5), date(3), date(1), date(2), date(3), date(4)]
+
+        for currency in [InvestmentCurrency.cny, .usd] {
+            let history = book.portfolioHistory(on: days, currency: currency)
+            for day in days {
+                let individual = book.portfolio(on: day, currency: currency)
+                precondition(history[day]?.value == individual?.value && history[day]?.gain == individual?.gain)
+            }
+        }
+        book.accounts[0].events.append(.init(day: date(4), kind: .withdrawal, amount: -1000))
+        let history = book.portfolioHistory(on: days)
+        precondition(history[date(3)] != nil && history[date(4)] == nil && history[date(5)] == nil)
+    }
+
+    static func dailySnapshotsUseBeijingCloseAndDatedRates() throws {
+        let summer = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 7, day: 6))!
+        let winter = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 1, day: 5))!
+        let calendar = InvestmentBook.calendar
+        precondition(calendar.component(.hour, from: InvestmentBook.usEquityClose(on: summer)) == 4)
+        precondition(calendar.component(.hour, from: InvestmentBook.usEquityClose(on: winter)) == 5)
+
+        let thursday = calendar.date(from: DateComponents(year: 2026, month: 10, day: 29))!
+        let friday = InvestmentBook.addDays(1, to: thursday)
+        let saturday = InvestmentBook.addDays(2, to: thursday)
+        let monday = InvestmentBook.addDays(4, to: thursday)
+        let usd = InvestmentAccount(name: "美元账户", currency: .usd, type: .securities)
+        var book = InvestmentBook(accounts: [usd])
+        let stock = try book.register(.init(name: "美股", code: "AAPL", market: "", kind: .stock, currency: .usd))
+        try book.post(.init(day: friday, kind: .deposit, amount: 100), accountID: usd.id)
+        try book.post(.init(day: friday, kind: .buy, assetID: stock, quantity: 10, price: 5), accountID: usd.id)
+        book.addExchangeRates([.init(day: friday, price: 7), .init(day: monday, price: 8)], for: .usd)
+        book.addQuotes([.init(day: thursday, price: 6, isDailyClose: true),
+                        .init(day: friday, price: 9, isDailyClose: false)], assetID: stock)
+        book.dailySnapshots = book.makeDailySnapshots(through: monday, rebuild: true)
+        precondition(book.dailySnapshots?.values[friday]?.value == 770)
+        precondition(book.dailySnapshots?.values[friday]?.gain == 70)
+        precondition(book.dailySnapshots?.values[saturday] == nil && book.dailySnapshots?.values[monday] == nil)
+
+        book.addQuotes([.init(day: friday, price: 7, isDailyClose: true)], assetID: stock)
+        precondition(book.dailySnapshots?.values[friday] == nil)
+        book.dailySnapshots = book.makeDailySnapshots(through: monday, rebuild: false)
+        precondition(book.dailySnapshots?.values[saturday]?.value == 840)
+        precondition(book.dailySnapshots?.values[monday]?.value == 960)
+        precondition(book.dailyGains(from: friday, through: saturday)[saturday] == 70)
+        book.addExchangeRates([.init(day: monday, price: 9)], for: .usd)
+        precondition(book.dailySnapshots?.values[saturday]?.value == 840 && book.dailySnapshots?.values[monday] == nil)
+        try book.post(.init(day: monday, kind: .deposit, amount: 20), accountID: usd.id)
+        book.dailySnapshots = book.makeDailySnapshots(through: monday, rebuild: false)
+        let restored = try JSONDecoder().decode(InvestmentBook.self, from: JSONEncoder().encode(book))
+        precondition(restored.dailyPortfolio(on: [monday])[monday]?.value == 1260)
+        precondition(restored.dailySnapshotReport(through: monday).latest?.valueUSD == 140)
+        precondition(restored.dailySnapshotReport(through: monday).includesDay)
+        precondition(restored.makeDailySnapshots(through: monday, rebuild: false) == nil)
+    }
+
+    static func changingHistoricalEntriesInvalidatesOnlyTheAffectedDays() throws {
+        let account = InvestmentAccount(name: "证券", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: date(3), kind: .adjustment, amount: 30), accountID: account.id)
+        let first = try require(book.account(account.id)?.events.first)
+        let later = try require(book.account(account.id)?.events.last)
+        book.addExchangeRates([.init(day: date(1), price: 5), .init(day: date(2), price: 10),
+                               .init(day: date(3), price: 10), .init(day: date(4), price: 10)], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: true)
+        precondition(book.dailySnapshots?.values[date(1)]?.valueUSD == 20)
+
+        var earlier = later
+        earlier.day = date(2)
+        earlier.amount = 50
+        try book.replaceEvent(later, with: earlier, accountID: account.id)
+        precondition(book.snapshotStart(rebuild: false) == date(2))
+        precondition(book.dailySnapshots?.values[date(1)]?.value == 100)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(book.dailySnapshots?.values[date(2)]?.valueUSD == 15)
+
+        let confirmedEarlier = try require(book.account(account.id)?.events.last)
+        var moved = confirmedEarlier
+        moved.day = date(4)
+        try book.replaceEvent(confirmedEarlier, with: moved, accountID: account.id)
+        precondition(book.snapshotStart(rebuild: false) == date(2))
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(book.dailySnapshots?.values[date(2)]?.valueUSD == 10)
+        try book.deleteEvent(try require(book.account(account.id)?.events.last), accountID: account.id)
+        precondition(book.snapshotStart(rebuild: false) == date(4))
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        try book.deleteEvent(first, accountID: account.id)
+        precondition(book.earliest == nil && book.dailySnapshots?.values.isEmpty == true)
+    }
+
+    static func changingTransfersIsAtomic() throws {
+        let source = InvestmentAccount(name: "人民币", currency: .cny, type: .securities)
+        let target = InvestmentAccount(name: "美元", currency: .usd, type: .securities)
+        var book = InvestmentBook(accounts: [source, target])
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: source.id)
+        try book.transfer(from: source.id, to: target.id, amount: 70, remaining: 30, received: 10, on: date(2))
+        let incoming = try require(book.account(target.id)?.events.first)
+        var edited = incoming
+        edited.day = date(3)
+        edited.amount = 12
+        try book.replaceEvent(incoming, with: edited, accountID: target.id, counterpartAmount: -84)
+        let outgoing = try require(book.account(source.id)?.events.last)
+        precondition(outgoing.day == date(3) && outgoing.amount == -84)
+        try book.post(.init(day: date(4), kind: .withdrawal, amount: -10), accountID: target.id)
+        do {
+            try book.deleteEvent(outgoing, accountID: source.id)
+            preconditionFailure("A transfer that funds a later withdrawal must remain intact")
+        } catch InvestmentError.insufficientCash {}
+        precondition(book.account(source.id)?.events.contains(outgoing) == true)
+        precondition(book.account(target.id)?.events.contains(where: { $0.id == edited.id && $0.amount == edited.amount }) == true)
+        try book.deleteEvent(try require(book.account(target.id)?.events.last), accountID: target.id)
+        try book.deleteEvent(outgoing, accountID: source.id)
+        precondition(book.account(source.id)?.events.count == 1 && book.account(target.id)?.events.isEmpty == true)
+    }
+
+    static func dailyQuotesReuseCachedMarketCloses() throws {
+        let monday = InvestmentBook.calendar.date(from: DateComponents(year: 2025, month: 10, day: 6))!
+        let friday = InvestmentBook.addDays(-3, to: monday)
+        let saturday = InvestmentBook.addDays(-2, to: monday)
+        let tuesday = InvestmentBook.addDays(1, to: monday)
+        let account = InvestmentAccount(name: "美元", currency: .usd, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let id = try book.register(.init(name: "测试", code: "AAPL", market: "", kind: .stock, currency: .usd))
+        try book.post(.init(day: saturday, kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: saturday, kind: .buy, assetID: id, quantity: 1, price: 100), accountID: account.id)
+        let historyStart = InvestmentBook.addDays(-30, to: friday)
+        let missing = book.missingDailyMarketData(in: historyStart...tuesday)
+        precondition(missing.assets[id] == [friday...friday, monday...monday])
+        precondition(missing.rates[.usd] == [friday...tuesday])
+        book.addQuotes([.init(day: friday, price: 100, isDailyClose: true),
+                        .init(day: monday, price: 110, isDailyClose: false)], assetID: id)
+        precondition(book.missingDailyMarketData(in: monday...tuesday).assets[id] == [monday...monday])
+        book.addQuotes([.init(day: monday, price: 110, isDailyClose: true)], assetID: id)
+        book.addExchangeRates([.init(day: friday, price: 7), .init(day: monday, price: 7), .init(day: tuesday, price: 7)], for: .usd)
+        let complete = book.missingDailyMarketData(in: historyStart...tuesday)
+        precondition(complete.assets.isEmpty && complete.rates.isEmpty)
+        book.dailySnapshots = book.makeDailySnapshots(through: tuesday, rebuild: true)
+        precondition(book.dailyQuoteWindow(through: tuesday) == nil)
+    }
+
+    static func serverRoundTripPreservesShortFuturesAndSnapshots() throws {
+        let account = InvestmentAccount(name: "期货", currency: .cny, type: .futures)
+        var book = InvestmentBook(accounts: [account])
+        let long = InvestmentAsset(name: "沪铜", code: "CU2612.SHF", market: "SHFE", kind: .future,
+                                   currency: .cny, multiplier: 5, contractSide: .long)
+        var short = long
+        short.id = UUID()
+        short.contractSide = .short
+        let longID = try book.register(long)
+        let shortID = try book.register(short)
+        precondition(longID != shortID)
+        try book.post(.init(day: date(1), kind: .deposit, amount: 1_000), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: shortID, quantity: 2, price: 100, margin: 50), accountID: account.id)
+        try book.post(.init(day: date(2), kind: .derivativeSettlement, assetID: shortID, amount: 100, price: 90), accountID: account.id)
+        book.addQuotes([.init(day: date(3), price: 85, source: "test", isDailyClose: true)], assetID: shortID)
+        book.addExchangeRates([.init(day: date(2), price: 5), .init(day: date(3), price: 5)], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(3), rebuild: true)
+        precondition(book.dailySnapshots?.values[date(2)]?.value == 1_100)
+        precondition(book.dailySnapshots?.values[date(3)]?.value == 1_150)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 3)
+        precondition(tables["market_derivative_specs"]?.count == 1)
+        precondition(tables["investment_derivative_event_details"]?.contains { $0["trade_action"] == "open_short" } == true)
+        let state = InvestmentServerState(generation: 4, revision: 3, through: records.day.string(from: date(3)), tables: tables)
+        let restored = try records.decode(state)
+        precondition(restored.usesServerSnapshots)
+        precondition(restored.assets[shortID]?.contractSide == .short)
+        precondition(restored.dailySnapshots?.values[date(3)]?.valueUSD == 230)
+        precondition(restored.dailySnapshots?.accountValues?[account.id]?[date(3)]?.gain == 150)
     }
 
     static func date(_ day: Int) -> Date {

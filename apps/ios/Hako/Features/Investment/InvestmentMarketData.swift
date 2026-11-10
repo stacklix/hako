@@ -363,7 +363,7 @@ struct InvestmentQuoteProvider {
     }
 
     func history(asset: InvestmentAsset, start: Date, through today: Date, cached: Date?,
-                 keys: [InvestmentQuoteSource: String]) async throws -> [InvestmentQuote] {
+                 keys: [InvestmentQuoteSource: String], now: Date = .now) async throws -> [InvestmentQuote] {
         let symbol = InvestmentQuoteSymbol(asset)
         let cutoff = max(cached ?? start, InvestmentBook.addDays(-7, to: today))
         var best: [InvestmentQuote] = []
@@ -371,7 +371,7 @@ struct InvestmentQuoteProvider {
         for source in Self.order(for: asset.currency) {
             guard let key = keys[source] else { continue }
             do {
-                let result: [InvestmentQuote]
+                var result: [InvestmentQuote]
                 switch source {
                 case .tushare:
                     guard let api = symbol.tushareAPI, let code = symbol.tushareSymbol else { continue }
@@ -380,6 +380,16 @@ struct InvestmentQuoteProvider {
                     guard let code = symbol.twelveSymbol else { continue }
                     result = try await twelve(symbol: code, market: symbol.twelveMIC, currency: asset.currency,
                                               kind: asset.kind, start: start, end: today, key: key)
+                }
+                if asset.kind != .crypto {
+                    let usEquity = asset.usesUSEquityClose
+                    let ledgerDay = InvestmentBook.day(now)
+                    for index in result.indices {
+                        let day = result[index].day
+                        result[index].isDailyClose = usEquity
+                            ? InvestmentBook.usEquityClose(on: day) <= now
+                            : day < ledgerDay || asset.kind == .fund
+                    }
                 }
                 if let day = result.last?.day {
                     if day >= cutoff { return result }
@@ -442,10 +452,12 @@ struct InvestmentQuoteProvider {
         if kind == .fund, payload?.meta?.type?.lowercased() != "mutual fund" {
             throw InvestmentError.invalid("没有核实到该基金的净值序列")
         }
+        let ledgerDay = InvestmentBook.day()
         let quotes: [InvestmentQuote] = bars.compactMap { bar in
             guard let day = format.date(from: bar.datetime), let close = bar.close,
                   let price = Decimal(string: close, locale: format.locale), price > 0 else { return nil }
-            return InvestmentQuote(day: day, price: price, source: InvestmentQuoteSource.twelveData.title)
+            return InvestmentQuote(day: day, price: price, source: InvestmentQuoteSource.twelveData.title,
+                                   isDailyClose: currency == nil ? day < ledgerDay : nil)
         }
         return try Self.valid(quotes, start: start, end: end)
     }

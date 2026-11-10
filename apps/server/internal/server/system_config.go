@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"hako/server/internal/dbschema"
 )
@@ -51,9 +52,11 @@ func (s *Server) adminDatabaseSchemas(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	investmentSchema, err := dbschema.Inspect(ctx, s.investment)
+	investment := describe("投资记账", "investment.sqlite", investmentSchema, err)
 	respond(w, http.StatusOK, map[string]any{
 		"expectedVersion": dbschema.CurrentVersion,
-		"databases":       []databaseInfo{main, notifications, access},
+		"databases":       []databaseInfo{main, notifications, access, investment},
 	})
 }
 
@@ -65,7 +68,11 @@ func inspectInactiveDatabase(r *http.Request, path string) (dbschema.Schema, err
 	if _, err := os.Stat(absolute); err != nil {
 		return dbschema.Schema{}, err
 	}
-	dsn := url.URL{Scheme: "file", Path: absolute, RawQuery: "mode=ro"}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=ro"}
 	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {
 		return dbschema.Schema{}, err

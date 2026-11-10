@@ -39,7 +39,7 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
 
     static func watchKinds(in currency: InvestmentCurrency) -> [Self] {
         switch currency {
-        case .cny: [.stock, .etf, .fund, .future, .option]
+        case .cny: [.stock, .etf, .fund, .future]
         case .usd: [.stock, .etf, .crypto]
         case .hkd: [.stock, .etf]
         }
@@ -125,9 +125,9 @@ enum InvestmentAccountType: String, Codable, CaseIterable, Identifiable {
     func kinds(in currency: InvestmentCurrency) -> [InvestmentKind] {
         guard Self.available(in: currency).contains(self) else { return [] }
         return switch self {
-        case .securities: [.stock, .etf, .option]
+        case .securities: [.stock, .etf]
         case .fund: [.fund]
-        case .futures: [.future, .option]
+        case .futures: [.future]
         case .wealth: [.wealth]
         case .deposits: [.deposit, .certificate]
         case .crypto: [.crypto, .cryptoContract]
@@ -143,6 +143,7 @@ struct InvestmentDepositTerms: Codable, Hashable {
 
 struct InvestmentAsset: Codable, Identifiable, Hashable {
     var id = UUID()
+    var instrumentID: UUID?
     var name: String
     var code: String
     var market: String
@@ -170,7 +171,7 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         if let contractSide { return kind.title + " · " + basis.rawValue + " · " + contractSide.rawValue }
         return kind.title
     }
-    var priceDirection: Decimal { kind == .cryptoContract && contractSide == .short ? -1 : 1 }
+    var priceDirection: Decimal { kind.usesMargin && contractSide == .short ? -1 : 1 }
     var basis: InvestmentContractBasis { contractBasis ?? .usd }
 
     func contractExposure(quantity: Decimal, price: Decimal) -> Decimal {
@@ -183,9 +184,9 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     }
 
     func transactionTitle(_ event: InvestmentEventKind) -> String {
-        if kind == .cryptoContract {
-            if event == .buy { return "开仓" }
-            if event == .sell { return "平仓" }
+        if kind.usesMargin {
+            if event == .buy { return contractSide == .short ? "开空" : "开多" }
+            if event == .sell { return contractSide == .short ? "平空" : "平多" }
         }
         if kind == .wealth {
             if event == .buy { return "申购" }
@@ -279,12 +280,6 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
             throw InvestmentError.invalid("此账户类型不支持该资产。")
         }
         try validateMarket(settlingIn: account.currency)
-        if account.currency == .cny, kind == .option, let venue = mainlandSymbol?.venue {
-            let exchangeTradedETF = venue == "SH" || venue == "SZ"
-            guard exchangeTradedETF == (type == .securities) else {
-                throw InvestmentError.invalid("ETF 期权归证券账户，商品期权和股指期权归期货账户。")
-            }
-        }
         if type == .fund, mainlandSymbol?.venue != "OF" {
             throw InvestmentError.invalid("基金账户只录入场外基金。")
         }
@@ -330,7 +325,7 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         switch accountCurrency {
         case .cny:
             guard mainlandSymbol != nil else {
-                throw InvestmentError.invalid("请输入境内标的代码，期货和期权请带交易所后缀。")
+                throw InvestmentError.invalid("请输入境内标的代码，期货请带交易所后缀。")
             }
             return
         case .hkd:
@@ -353,10 +348,11 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     }
 }
 
-struct InvestmentQuote: Codable, Identifiable {
+struct InvestmentQuote: Codable, Equatable, Identifiable {
     var day: Date
     var price: Decimal
     var source: String?
+    var isDailyClose: Bool? = nil
     var id: Date { day }
 }
 
@@ -367,6 +363,7 @@ enum InvestmentEventKind: String, Codable {
     case dividend = "现金分红", bonusShares = "送股"
     case stakingReward = "质押奖励", spotAdjustment = "现货余额调整"
     case funding = "资金费", marginTransfer = "保证金划转"
+    case derivativeSettlement = "实际结算"
 }
 
 enum InvestmentFundingTarget: String, Codable, CaseIterable, Identifiable {
@@ -375,7 +372,7 @@ enum InvestmentFundingTarget: String, Codable, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-struct InvestmentEvent: Codable, Identifiable {
+struct InvestmentEvent: Codable, Equatable, Identifiable {
     var id = UUID()
     var day: Date
     var kind: InvestmentEventKind
@@ -391,6 +388,9 @@ struct InvestmentEvent: Codable, Identifiable {
     var unallocatedFunding: Bool?
     var transferAccountID: UUID?
     var transferID: UUID?
+    var version: Int?
+    var createdAt: Date?
+    var updatedAt: Date?
 
     func title(for asset: InvestmentAsset?) -> String {
         if kind == .marginTransfer { return amount > 0 ? "增加保证金" : "减少保证金" }
@@ -404,7 +404,6 @@ struct InvestmentAccount: Codable, Identifiable {
     var name: String
     var currency: InvestmentCurrency
     var events: [InvestmentEvent] = []
-    var notes: [UUID: String] = [:]
     var type: InvestmentAccountType
 
     var kinds: [InvestmentKind] { type.kinds(in: currency) }
@@ -422,6 +421,15 @@ struct InvestmentPlan: Codable, Identifiable {
     var lastResult: String?
 }
 
+struct InvestmentPlanRun: Codable {
+    let planID: UUID
+    let day: Date
+    let status: String
+    let eventID: UUID?
+    let executedAt: Date?
+    let detail: String?
+}
+
 struct InvestmentPosition {
     var quantity: Decimal = 0
     var netCost: Decimal = 0
@@ -429,6 +437,8 @@ struct InvestmentPosition {
     var margin: Decimal = 0
     var contractEntry: Decimal = 0
     var lastEntry: Decimal?
+    var settledDay: Date?
+    var settledPrice: Decimal?
 
     func value(at price: Decimal, asset: InvestmentAsset) -> Decimal {
         let face = price * quantity * asset.multiplier
@@ -560,9 +570,10 @@ struct InvestmentLedger {
     }
 }
 
-struct InvestmentValuation {
+struct InvestmentValuation: Codable {
     var value: Decimal
     var gain: Decimal
+    var valueUSD: Decimal? = nil
 }
 
 enum InvestmentError: LocalizedError {
@@ -588,7 +599,10 @@ struct InvestmentBook: Codable {
     var fx: [InvestmentCurrency: [InvestmentQuote]] = [:]
     var watched: [UUID] = []
     var plans: [InvestmentPlan] = []
+    var planRuns: [InvestmentPlanRun] = []
     var balanceSheet: InvestmentBalanceLedger? = nil
+    var dailySnapshots: InvestmentDailySnapshots? = nil
+    var usesServerSnapshots = false
 
     // Use one accounting day across the ledger and date-only market data.
     static var calendar: Calendar {
@@ -629,7 +643,14 @@ struct InvestmentBook: Codable {
 
     func ledger(_ account: InvestmentAccount, through day: Date = Self.day(), includeRows: Bool = false) throws -> InvestmentLedger {
         var ledger = InvestmentLedger()
-        for event in orderedEvents(account, through: day) {
+        let events = orderedEvents(account, through: day)
+        try replay(events[...], currency: account.currency, into: &ledger, includeRows: includeRows)
+        return ledger
+    }
+
+    private func replay(_ events: ArraySlice<InvestmentEvent>, currency: InvestmentCurrency,
+                        into ledger: inout InvestmentLedger, includeRows: Bool = false) throws {
+        for event in events {
             let before = ledger.cash
             switch event.kind {
             case .deposit, .withdrawal, .transferOut, .transferIn:
@@ -645,11 +666,22 @@ struct InvestmentBook: Codable {
                 try ledger.applyFunding(event, asset: asset)
                 if asset.collateralAssetID != nil || event.fundingTarget == .margin { continue }
             case .marginTransfer:
-                guard let asset = asset(event.assetID), asset.kind == .cryptoContract else {
+                guard let asset = asset(event.assetID), asset.kind.usesMargin else {
                     throw InvestmentError.invalid("找不到保证金划转对应的合约。")
                 }
                 try ledger.transferMargin(event.amount, for: asset)
                 if asset.collateralAssetID != nil { continue }
+            case .derivativeSettlement:
+                guard let asset = asset(event.assetID), asset.kind == .future,
+                      var position = ledger.positions[asset.id], position.quantity > 0 else {
+                    throw InvestmentError.invalid("该日期没有可以日结的期货仓位。")
+                }
+                ledger.cash += event.amount
+                position.realized += event.amount
+                position.contractEntry = asset.contractExposure(quantity: position.quantity, price: event.price)
+                position.settledDay = event.day
+                position.settledPrice = event.price
+                ledger.positions[asset.id] = position
             case .income, .dividend:
                 guard let id = event.assetID, var position = ledger.positions[id] else {
                     throw InvestmentError.invalid("找不到该产品的持仓记录。")
@@ -673,7 +705,7 @@ struct InvestmentBook: Codable {
                 ledger.positions[id] = position
                 continue
             case .opening, .buy, .sell:
-                guard let id = event.assetID, let asset = assets[id], asset.settlementCurrency == account.currency else {
+                guard let id = event.assetID, let asset = assets[id], asset.settlementCurrency == currency else {
                     throw InvestmentError.invalid("标的与账户币种不一致。")
                 }
                 if asset.kind == .cryptoContract, asset.basis != .usd {
@@ -740,7 +772,6 @@ struct InvestmentBook: Codable {
                 ledger.cashRows.append(InvestmentCashRow(event: event, change: ledger.cash - before, balance: ledger.cash))
             }
         }
-        return ledger
     }
 
     private func cashTradeValue(_ event: InvestmentEvent, asset: InvestmentAsset) throws -> Decimal {
@@ -761,6 +792,13 @@ struct InvestmentBook: Codable {
     }
 
     mutating func post(_ event: InvestmentEvent, accountID: UUID, today: Date = Self.day(), autoFundCash: Bool = false) throws {
+        try write(event, accountID: accountID, today: today, autoFundCash: autoFundCash, replacing: false)
+    }
+
+    private mutating func write(_ input: InvestmentEvent, accountID: UUID, today: Date,
+                                autoFundCash: Bool = false, replacing: Bool) throws {
+        var event = input
+        let now = Date.now
         guard let index = accounts.firstIndex(where: { $0.id == accountID }), event.day <= today else {
             throw InvestmentError.invalid("请选择有效的账户和记账日期。")
         }
@@ -789,8 +827,13 @@ struct InvestmentBook: Codable {
             }
             try asset.validateEntry(in: accounts[index])
         case .marginTransfer:
-            guard let asset = asset(event.assetID), asset.kind == .cryptoContract, event.amount != 0 else {
+            guard let asset = asset(event.assetID), asset.kind.usesMargin, event.amount != 0 else {
                 throw InvestmentError.invalid("请选择合约并填写有效的保证金划转金额。")
+            }
+            try asset.validateEntry(in: accounts[index])
+        case .derivativeSettlement:
+            guard let asset = asset(event.assetID), asset.kind == .future, event.price > 0 else {
+                throw InvestmentError.invalid("请填写有效的期货结算价。")
             }
             try asset.validateEntry(in: accounts[index])
         case .dividend, .bonusShares:
@@ -838,13 +881,87 @@ struct InvestmentBook: Codable {
                 let purchase = try cashPurchase(event, asset: asset)
                 let cash = try ledger(draft, through: event.day).cash
                 if purchase.debit > cash {
-                    draft.events.append(.init(day: event.day, kind: .deposit, amount: purchase.debit - cash))
+                    draft.events.append(.init(day: event.day, kind: .deposit, amount: purchase.debit - cash,
+                                              version: 1, createdAt: now, updatedAt: now))
                 }
             }
         }
-        draft.events.append(event)
+        var changedDay = event.day
+        if replacing {
+            guard let offset = draft.events.firstIndex(where: { $0.id == event.id }) else {
+                throw InvestmentError.invalid("找不到原流水。")
+            }
+            changedDay = min(changedDay, draft.events[offset].day)
+            event.createdAt = draft.events[offset].createdAt ?? now
+            event.updatedAt = now
+            event.version = (draft.events[offset].version ?? 1) + 1
+            draft.events[offset] = event
+        } else {
+            event.createdAt = now
+            event.updatedAt = now
+            event.version = 1
+            draft.events.append(event)
+        }
         _ = try ledger(draft, through: today)
         accounts[index] = draft
+        invalidateDailySnapshots(from: changedDay)
+    }
+
+    func transferCounterpart(of event: InvestmentEvent, accountID: UUID) -> (InvestmentAccount, InvestmentEvent)? {
+        guard let transferID = event.transferID, let targetID = event.transferAccountID,
+              let target = account(targetID),
+              let other = target.events.first(where: {
+                  $0.transferID == transferID && $0.transferAccountID == accountID &&
+                  (($0.kind == .transferOut && event.kind == .transferIn) ||
+                   ($0.kind == .transferIn && event.kind == .transferOut))
+              }) else { return nil }
+        return (target, other)
+    }
+
+    mutating func replaceEvent(_ original: InvestmentEvent, with edited: InvestmentEvent, accountID: UUID,
+                               counterpartAmount: Decimal? = nil, today: Date = Self.day()) throws {
+        guard let owner = account(accountID), owner.events.contains(where: { $0.id == original.id && $0.version == original.version }),
+              original.id == edited.id, original.kind == edited.kind, original.assetID == edited.assetID,
+              original.transferID == edited.transferID, original.transferAccountID == edited.transferAccountID else {
+            throw InvestmentError.invalid("原流水已变更，请重新打开。")
+        }
+        var draft = self
+        if edited.kind == .transferIn || edited.kind == .transferOut {
+            guard let (target, existing) = transferCounterpart(of: original, accountID: accountID) else {
+                throw InvestmentError.invalid("找不到划转的另一笔流水。")
+            }
+            var other = existing
+            other.day = edited.day
+            if owner.currency == target.currency {
+                other.amount = -edited.amount
+            } else if let counterpartAmount {
+                other.amount = counterpartAmount
+            }
+            try draft.write(other, accountID: target.id, today: today, replacing: true)
+        }
+        try draft.write(edited, accountID: accountID, today: today, replacing: true)
+        self = draft
+    }
+
+    mutating func deleteEvent(_ event: InvestmentEvent, accountID: UUID, today: Date = Self.day()) throws {
+        guard account(accountID)?.events.contains(where: { $0.id == event.id && $0.version == event.version }) == true else {
+            throw InvestmentError.invalid("原流水已变更，请重新打开。")
+        }
+        var draft = self
+        var removed = [(accountID, event)]
+        if event.kind == .transferIn || event.kind == .transferOut {
+            guard let (target, other) = transferCounterpart(of: event, accountID: accountID) else {
+                throw InvestmentError.invalid("找不到划转的另一笔流水。")
+            }
+            removed.append((target.id, other))
+        }
+        for (id, entry) in removed {
+            guard let index = draft.accounts.firstIndex(where: { $0.id == id }) else { continue }
+            draft.accounts[index].events.removeAll { $0.id == entry.id }
+            _ = try draft.ledger(draft.accounts[index], through: today)
+            draft.invalidateDailySnapshots(from: entry.day)
+        }
+        self = draft
     }
 
     mutating func recordDistribution(assetID: UUID, accountID: UUID, cash: Decimal, shares: Decimal = 0, on date: Date) throws {
@@ -937,51 +1054,102 @@ struct InvestmentBook: Codable {
     }
 
     mutating func addQuotes(_ values: [InvestmentQuote], assetID: UUID) {
-        quotes[assetID] = Self.merge(quotes[assetID] ?? [], values, allowZero: assets[assetID]?.kind == .insurance)
+        let previous = quotes[assetID] ?? []
+        let updated = Self.merge(previous, values, allowZero: assets[assetID]?.kind == .insurance)
+        quotes[assetID] = updated
+        if dailySnapshots != nil, let changed = Self.firstChangedQuoteDay(previous, updated) {
+            invalidateDailySnapshots(from: changed)
+        }
+    }
+
+    mutating func addExchangeRates(_ values: [InvestmentQuote], for currency: InvestmentCurrency) {
+        let previous = fx[currency] ?? []
+        let updated = Self.merge(previous, values)
+        fx[currency] = updated
+        if dailySnapshots != nil, let changed = Self.firstChangedQuoteDay(previous, updated) {
+            invalidateDailySnapshots(from: changed)
+        }
+    }
+
+    private static func firstChangedQuoteDay(_ old: [InvestmentQuote], _ new: [InvestmentQuote]) -> Date? {
+        for (oldQuote, newQuote) in zip(old, new) where oldQuote != newQuote {
+            return min(oldQuote.day, newQuote.day)
+        }
+        return old.count > new.count ? old[new.count].day : new.dropFirst(old.count).first?.day
     }
 
     static func merge(_ old: [InvestmentQuote], _ new: [InvestmentQuote], allowZero: Bool = false) -> [InvestmentQuote] {
         var days: [Date: InvestmentQuote] = [:]
-        for quote in old + new where quote.price > 0 || (allowZero && quote.price == 0) { days[quote.day] = quote }
+        for quote in old + new where quote.price > 0 || (allowZero && quote.price == 0) {
+            if days[quote.day]?.isDailyClose == true, quote.isDailyClose != true, quote.source != "手动录入" { continue }
+            days[quote.day] = quote
+        }
         return days.values.sorted { $0.day < $1.day }
     }
 
-    func value(_ account: InvestmentAccount, on day: Date = Self.day()) -> InvestmentValuation? {
+    func value(_ account: InvestmentAccount, on day: Date = Self.day(), requiresDailyPrices: Bool = false) -> InvestmentValuation? {
         guard let ledger = try? ledger(account, through: day) else { return nil }
+        return value(ledger, on: day, requiresDailyPrices: requiresDailyPrices)
+    }
+
+    private func value(_ ledger: InvestmentLedger, on day: Date, requiresDailyPrices: Bool) -> InvestmentValuation? {
         var equity = ledger.cash
         for (id, position) in ledger.positions where position.quantity > 0 {
-            guard let asset = assets[id], let value = positionValue(position, asset: asset, on: day) else { return nil }
+            guard let asset = assets[id],
+                  let value = positionValue(position, asset: asset, on: day, requiresDailyPrices: requiresDailyPrices) else { return nil }
             equity += value
         }
         return InvestmentValuation(value: equity, gain: equity - ledger.flows)
     }
 
-    func positionValue(_ position: InvestmentPosition, asset: InvestmentAsset, on day: Date = Self.day()) -> Decimal? {
+    func positionValue(_ position: InvestmentPosition, asset: InvestmentAsset, on day: Date = Self.day(),
+                       requiresDailyPrices: Bool = false) -> Decimal? {
         if position.quantity == 0 { return 0 }
         if asset.kind.isTermDeposit { return position.netCost }
-        guard let quote = quote(asset.id, on: day) else { return nil }
+        if asset.kind == .future, requiresDailyPrices, position.settledDay == day, let price = position.settledPrice {
+            return position.value(at: price, asset: asset)
+        }
+        guard let quote = positionQuote(for: asset, on: day, requiresDailyPrices: requiresDailyPrices) else { return nil }
         if asset.kind == .cryptoContract, let collateral = asset.collateralAssetID {
-            guard let rate = self.quote(collateral, on: day)?.price else { return nil }
+            guard let rate = valuationQuote(quotes[collateral], on: day, requiresDailyPrice: requiresDailyPrices,
+                                            continuous: true)?.price else { return nil }
             let exposure = asset.contractExposure(quantity: position.quantity, price: quote.price)
             return asset.contractProfit(entry: position.contractEntry, exit: exposure) * rate
         }
         let value = position.value(at: quote.price, asset: asset)
         if !asset.isStockConnect { return value }
-        return rateToCNY(.hkd, on: day).map { value * $0 }
+        return rateToCNY(.hkd, on: day, requiresDailyPrice: requiresDailyPrices).map { value * $0 }
     }
 
-    func portfolio(on day: Date, currency: InvestmentCurrency = .cny) -> InvestmentValuation? {
-        let destinationRate = rateToCNY(currency, on: day)
+    func positionQuote(for asset: InvestmentAsset, on day: Date, requiresDailyPrices: Bool) -> InvestmentQuote? {
+        let continuous = asset.kind == .crypto || asset.kind == .cryptoContract
+        let isMarketAsset = continuous || !asset.kind.isManual
+        if requiresDailyPrices, asset.usesUSEquityClose {
+            return usEquityQuote(quotes[asset.id], on: day)
+        }
+        return valuationQuote(quotes[asset.id], on: day,
+                              requiresDailyPrice: requiresDailyPrices && isMarketAsset, continuous: continuous)
+    }
+
+    func portfolio(on day: Date, currency: InvestmentCurrency = .cny, requiresDailyPrices: Bool = false) -> InvestmentValuation? {
+        portfolio(on: day, currency: currency, requiresDailyPrices: requiresDailyPrices) { index in
+            value(accounts[index], on: day, requiresDailyPrices: requiresDailyPrices)
+        }
+    }
+
+    private func portfolio(on day: Date, currency: InvestmentCurrency, requiresDailyPrices: Bool,
+                           accountValue: (Int) -> InvestmentValuation?) -> InvestmentValuation? {
+        let destinationRate = rateToCNY(currency, on: day, requiresDailyPrice: requiresDailyPrices)
         var native = InvestmentValuation(value: 0, gain: 0)
         var converted = InvestmentValuation(value: 0, gain: 0)
-        for account in accounts {
-            guard let local = value(account, on: day) else { return nil }
+        for (index, account) in accounts.enumerated() {
+            guard let local = accountValue(index) else { return nil }
             if local.value == 0, local.gain == 0 { continue }
             if account.currency == currency {
                 native.value += local.value
                 native.gain += local.gain
             } else {
-                guard let rate = rateToCNY(account.currency, on: day),
+                guard let rate = rateToCNY(account.currency, on: day, requiresDailyPrice: requiresDailyPrices),
                       destinationRate != nil else { return nil }
                 converted.value += local.value * rate
                 converted.gain += local.gain * rate
@@ -992,6 +1160,71 @@ struct InvestmentBook: Codable {
                                    gain: native.gain + converted.gain / rate)
     }
 
+    func portfolioHistory(on dates: [Date], currency: InvestmentCurrency = .cny, requiresDailyPrices: Bool = false,
+                          accountValues: ((Date, UUID, InvestmentAccountDay) -> Void)? = nil) -> [Date: InvestmentValuation] {
+        var history: [Date: InvestmentValuation] = [:]
+        history.reserveCapacity(dates.count)
+        visitDailyLedgers(on: dates) { day, ledgers in
+            let values = ledgers.map { value($0, on: day, requiresDailyPrices: requiresDailyPrices) }
+            if let accountValues {
+                for index in accounts.indices {
+                    let cash = ledgers[index].cash
+                    accountValues(day, accounts[index].id, InvestmentAccountDay(
+                        cash: cash, holdings: values[index].map { $0.value - cash }, gain: values[index]?.gain))
+                }
+            }
+            history[day] = portfolio(on: day, currency: currency, requiresDailyPrices: requiresDailyPrices) { index in
+                values[index]
+            }
+        }
+        return Task.isCancelled ? [:] : history
+    }
+
+    func visitDailyLedgers(on dates: [Date], visit: (Date, [InvestmentLedger]) -> Void) {
+        let days = Set(dates).sorted()
+        guard let last = days.last, !Task.isCancelled else { return }
+        let histories = accounts.map { orderedEvents($0, through: last) }
+        var cursors = Array(repeating: 0, count: accounts.count)
+        var ledgers = Array(repeating: InvestmentLedger(), count: accounts.count)
+        for day in days {
+            guard !Task.isCancelled else { return }
+            do {
+                for index in accounts.indices {
+                    let events = histories[index]
+                    let first = cursors[index]
+                    var end = first
+                    while end < events.count, events[end].day <= day { end += 1 }
+                    if end > first {
+                        try replay(events[first..<end], currency: accounts[index].currency, into: &ledgers[index])
+                        cursors[index] = end
+                    }
+                }
+            } catch {
+                // The same invalid event also prevents valuation on subsequent days.
+                break
+            }
+            visit(day, ledgers)
+        }
+    }
+
+    func dailyGains(from first: Date, through last: Date) -> [Date: Decimal] {
+        guard let earliest, last >= max(first, earliest) else { return [:] }
+        var day = Self.addDays(-1, to: max(first, earliest))
+        var days: [Date] = []
+        while day <= last {
+            days.append(day)
+            day = Self.addDays(1, to: day)
+        }
+        let history = dailyPortfolio(on: days)
+        var gains: [Date: Decimal] = [:]
+        for (previous, current) in zip(days, days.dropFirst()) {
+            if let previousGain = history[previous]?.gain, let currentGain = history[current]?.gain {
+                gains[current] = currentGain - previousGain
+            }
+        }
+        return gains
+    }
+
     func convert(_ amount: Decimal, from source: InvestmentCurrency, to destination: InvestmentCurrency,
                  on day: Date = Self.day()) -> Decimal? {
         if source == destination || amount == 0 { return amount }
@@ -1000,9 +1233,42 @@ struct InvestmentBook: Codable {
         return amount * sourceRate / destinationRate
     }
 
-    private func rateToCNY(_ currency: InvestmentCurrency, on day: Date) -> Decimal? {
+    private func valuationQuote(_ quotes: [InvestmentQuote]?, on day: Date, requiresDailyPrice: Bool,
+                                continuous: Bool = false) -> InvestmentQuote? {
+        guard let quote = quotes?.last(where: { $0.day <= day }) else { return nil }
+        guard requiresDailyPrice else { return quote }
+        if continuous {
+            guard quote.day == day, day == Self.day() || quote.isDailyClose == true else { return nil }
+            return quote
+        }
+        guard day == Self.day() || quote.isDailyClose != false else { return nil }
+        return isCurrentMarketQuote(quote, on: day) ? quote : nil
+    }
+
+    private func usEquityQuote(_ quotes: [InvestmentQuote]?, on day: Date) -> InvestmentQuote? {
+        // A US trading session closes on the following Beijing day in both standard time and daylight time.
+        let sessionDay = Self.addDays(-1, to: day)
+        let market = quotes?.last { $0.day <= sessionDay && $0.source != "手动录入" && $0.isDailyClose == true }
+            .flatMap { isCurrentMarketQuote($0, on: sessionDay) ? $0 : nil }
+        let manual = quotes?.last { $0.day <= day && $0.source == "手动录入" }
+            .flatMap { isCurrentMarketQuote($0, on: day) ? $0 : nil }
+        if let manual, market.map({ manual.day >= Self.addDays(1, to: $0.day) }) ?? true { return manual }
+        return market
+    }
+
+    private func isCurrentMarketQuote(_ quote: InvestmentQuote, on day: Date) -> Bool {
+        let weekday = Self.calendar.component(.weekday, from: day)
+        let daysSinceFriday = weekday == 1 ? 2 : (weekday == 7 ? 1 : 0)
+        return quote.day >= Self.addDays(-daysSinceFriday, to: day)
+    }
+
+    func rateToCNY(_ currency: InvestmentCurrency, on day: Date, requiresDailyPrice: Bool = false) -> Decimal? {
         if currency == .cny { return 1 }
-        return fx[currency]?.last { $0.day <= day && $0.price > 0 }?.price
+        guard let quote = fx[currency]?.last(where: { $0.day <= day && $0.price > 0 }) else { return nil }
+        if requiresDailyPrice, day < Self.day(), quote.isDailyClose == false || !isCurrentMarketQuote(quote, on: day) {
+            return nil
+        }
+        return quote.price
     }
 
     static func nextRun(_ monthDay: Int, after date: Date) -> Date {
@@ -1022,16 +1288,24 @@ struct InvestmentBook: Codable {
                 plans[index].lastResult = "执行日期无效，任务已暂停。"
                 continue
             }
+            var status = due.waiting ? "waiting" : "skipped"
+            var eventID: UUID?
             if let event = due.event {
                 do {
                     try post(event, accountID: due.plan.accountID, today: today)
                     plans[index].lastResult = "已记账"
+                    status = "executed"
+                    eventID = event.id
                 } catch {
                     plans[index].lastResult = "已跳过 · " + error.localizedDescription
                 }
             } else {
                 plans[index].lastResult = due.message
             }
+            let key = planRuns.firstIndex { $0.planID == due.plan.id && $0.day == due.plan.nextDay }
+            let entry = InvestmentPlanRun(planID: due.plan.id, day: due.plan.nextDay, status: status, eventID: eventID,
+                                          executedAt: due.waiting ? nil : .now, detail: plans[index].lastResult)
+            if let key { planRuns[key] = entry } else { planRuns.append(entry) }
             if due.waiting { waiting.insert(due.plan.id) }
             else { plans[index].nextDay = due.next }
         }

@@ -145,7 +145,7 @@ private struct InvestmentBalanceAccountEditor: View {
         let title = editing ? "更新余额" : "添加账户"
         let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         SettingsSheet(title: title, hasChanges: !name.isEmpty || amount != initialAmount,
-                      saveEnabled: !amount.isEmpty && (editing || hasName), onSave: save,
+                      isBusy: store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
                       detents: [.medium, .large], saveAccessibilityLabel: editing ? "保存余额" : "添加账户") {
             Form {
                 Section {
@@ -185,11 +185,11 @@ private struct InvestmentBalanceAccountEditor: View {
         .presentationBackground(HakoStyle.background)
     }
 
-    private func save() {
+    private func save() async {
         do {
             let value = try investmentDecimal(amount, "余额", allowZero: true)
             var message = "已添加账户"
-            try store.update { book in
+            try await store.update { book in
                 var sheet = book.balanceSheet ?? InvestmentBalanceLedger()
                 if let account {
                     let previous = sheet.accounts.first { $0.id == account.id }?.records.last?.amount

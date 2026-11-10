@@ -38,13 +38,19 @@ struct InvestmentView: View {
             if let error = store.loadError {
                 InvestmentScroll {
                     Text(error)
-                    Button("重试") { store.load() }.buttonStyle(HakoActionButtonStyle())
+                    Button("重试") { Task { await store.load(force: true) } }.buttonStyle(HakoActionButtonStyle())
                     Button("打开设置") { showsSettings = true }.buttonStyle(HakoActionButtonStyle(primary: false))
                 }
+            } else if !store.hasLoaded {
+                ProgressView("正在读取投资账本…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 switch tab {
                 case .overview:
-                    InvestmentOverview(book: store.book) { id in selectedAccount = id; tab = .accounts }
+                    InvestmentOverview(book: store.book, bookVersion: store.bookVersion) { id in
+                        selectedAccount = id
+                        tab = .accounts
+                    }
                         .refreshable { await store.refresh() }
                 case .accounts: accounts
                 case .watch: watch
@@ -74,12 +80,13 @@ struct InvestmentView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            store.load()
-            store.settleDuePlans()
+            await store.load(force: true)
+            await store.settleDuePlans()
             await store.refreshIfNeeded()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(300)) }
                 catch { return }
+                await store.load(force: true)
                 await store.refreshIfNeeded()
             }
         }
@@ -275,7 +282,7 @@ struct InvestmentAccountView: View {
             switch item {
             case .cash(let kind): InvestmentCashEditor(store: store, account: account, kind: kind)
             case .transfer: InvestmentTransferEditor(store: store, account: account)
-            case .history: InvestmentCashHistory(book: store.book, account: account)
+            case .history: InvestmentCashHistory(store: store, accountID: account.id)
             case .plans: InvestmentPlansView(store: store, selectedAccount: account.id)
             case .addAsset: InvestmentAssetEditor(store: store, accountID: account.id)
             }
@@ -393,13 +400,8 @@ struct InvestmentAccountView: View {
                     let gain = value.map { $0 - position.netCost + position.realized }
                     InvestmentLink(route: .asset(account.id, asset.id)) {
                         HStack(alignment: .top, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                                InvestmentTitle(asset.name, subtitle: asset.kind.isTermDeposit ? details : asset.code + " · " + details)
-                                if let note = account.notes[asset.id], !note.isEmpty {
-                                    Text(note).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                            }
+                            let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
+                            InvestmentTitle(asset.name, subtitle: asset.kind.isTermDeposit ? details : asset.code + " · " + details)
                             Spacer(minLength: 0)
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))

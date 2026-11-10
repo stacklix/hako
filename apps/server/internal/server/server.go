@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rsa"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +56,7 @@ type Server struct {
 	config             Config
 	trustedProxies     proxyTrust
 	store              *store
+	investment         *sql.DB
 	mux                *http.ServeMux
 	mu                 sync.Mutex
 	agentHub           agent.Hub
@@ -154,6 +156,11 @@ func New(config Config) (*Server, error) {
 	s.accessLogRoutes()
 	s.agentRoutes()
 	s.notificationRoutes()
+	if s.investment, err = openInvestmentDB(config.Database); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("open investment database: %w", err)
+	}
+	s.investmentRoutes()
 	if err := s.startNotifications(); err != nil {
 		_ = s.Close()
 		return nil, fmt.Errorf("start notifications: %w", err)
@@ -175,6 +182,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	limit := int64(16 * 1024)
+	if r.Method == http.MethodPut && r.URL.Path == "/api/v1/investment/book" {
+		limit = 32 * 1024 * 1024
+	}
 	if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/webhook/notifications/") ||
 		strings.HasPrefix(r.URL.Path, "/admin/api/notifications/webhooks/")) {
 		limit = notificationBodyLimit
@@ -198,7 +208,11 @@ func (s *Server) Close() error {
 		notificationErr = s.notifications.Close()
 	}
 	s.agentHub.Close()
-	return errors.Join(notificationErr, s.store.db.Close())
+	var investmentErr error
+	if s.investment != nil {
+		investmentErr = s.investment.Close()
+	}
+	return errors.Join(notificationErr, investmentErr, s.store.db.Close())
 }
 
 func respond(w http.ResponseWriter, status int, value any) {
