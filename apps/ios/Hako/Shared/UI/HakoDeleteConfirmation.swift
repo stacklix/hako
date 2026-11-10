@@ -1,9 +1,28 @@
 import SwiftUI
 
+struct HakoDeleteButton: View {
+    let title: LocalizedStringKey
+    var systemImage: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: .destructive, action: action) {
+            Group {
+                if let systemImage { Label(title, systemImage: systemImage) }
+                else { Text(title) }
+            }
+            .frame(maxWidth: .infinity, minHeight: 28)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+    }
+}
+
 struct HakoDeleteConfirmation: View {
     let title: Text
     var message: Text? = nil
-    let confirmTitle: Text
     var disabled = false
     var busy = false
     let confirm: () -> Void
@@ -23,12 +42,9 @@ struct HakoDeleteConfirmation: View {
                 if let message { message.font(.subheadline).foregroundStyle(.secondary) }
 
                 VStack(spacing: 9) {
-                    Button(role: .destructive, action: confirm) {
-                        (busy ? Text("正在处理…") : confirmTitle).frame(maxWidth: .infinity, minHeight: 28)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(disabled || busy)
+                    HakoDeleteButton(title: "确认删除", action: confirm)
+                        .accessibilityValue(busy ? Text("正在处理…") : Text(""))
+                        .disabled(disabled || busy)
 
                     Button(role: .cancel) { dismiss() } label: {
                         Text("取消").frame(maxWidth: .infinity, minHeight: 28)
@@ -55,11 +71,11 @@ struct HakoDeleteConfirmation: View {
 
 extension View {
     func hakoDeleteConfirmation(
-        _ title: Text, isPresented: Binding<Bool>, message: Text? = nil, confirmTitle: Text,
+        _ title: Text, isPresented: Binding<Bool>, message: Text? = nil,
         disabled: Bool = false, onDismiss: (() -> Void)? = nil, confirm: @escaping () -> Void
     ) -> some View {
         modifier(HakoDeleteConfirmationModifier(title: title, isPresented: isPresented, message: message,
-            confirmTitle: confirmTitle, disabled: disabled, onDismiss: onDismiss, confirm: confirm))
+            disabled: disabled, onDismiss: onDismiss, confirm: confirm))
     }
 }
 
@@ -67,7 +83,6 @@ private struct HakoDeleteConfirmationModifier: ViewModifier {
     let title: Text
     @Binding var isPresented: Bool
     let message: Text?
-    let confirmTitle: Text
     let disabled: Bool
     let onDismiss: (() -> Void)?
     let confirm: () -> Void
@@ -82,8 +97,7 @@ private struct HakoDeleteConfirmationModifier: ViewModifier {
             }
             onDismiss?()
         }) {
-            HakoDeleteConfirmation(title: title, message: message, confirmTitle: confirmTitle,
-                                   disabled: disabled || confirmed) {
+            HakoDeleteConfirmation(title: title, message: message, disabled: disabled || confirmed) {
                 confirmed = true
                 isPresented = false
             }

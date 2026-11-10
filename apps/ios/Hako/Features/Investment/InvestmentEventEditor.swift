@@ -47,7 +47,7 @@ struct InvestmentEventEditor: View {
                     LabeledContent("流水类型", value: event.kind == .marginTransfer ? "保证金划转" : event.title(for: asset))
                     if let asset { LabeledContent("标的", value: asset.name) }
                     if let (other, _) = counterpart { LabeledContent("对方账户", value: other.name) }
-                    DatePicker("记账日期", selection: $date, in: ...InvestmentBook.day(), displayedComponents: .date)
+                    InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
                     fields
                 } header: {
                     Text(account?.name ?? "流水")
@@ -56,16 +56,16 @@ struct InvestmentEventEditor: View {
                     Section { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
                 Section {
-                    Button("删除流水", role: .destructive) { confirmsDeletion = true }
-                        .buttonStyle(HakoActionButtonStyle(destructive: true)).investmentListRow()
+                    HakoDeleteButton(title: "删除流水") { confirmsDeletion = true }
+                        .disabled(store.saving).investmentListRow()
+                        .listRowBackground(Color.clear)
                 }
             }
-            .confirmationDialog("删除这笔流水？", isPresented: $confirmsDeletion, titleVisibility: .visible) {
-                Button("删除流水", role: .destructive, action: { Task { await delete() } })
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text(counterpart == nil ? "删除后将重新计算受影响的日终快照。" :
-                    "两个账户中的对应划转流水会同时删除，并重新计算受影响的日终快照。")
+            .hakoDeleteConfirmation(Text("删除这笔流水？"), isPresented: $confirmsDeletion,
+                                    message: Text(counterpart == nil ? "删除后将重新计算受影响的日终快照。" :
+                                        "两个账户中的对应划转流水会同时删除，并重新计算受影响的日终快照。"),
+                                    disabled: store.saving) {
+                Task { await delete() }
             }
         }
         .environment(\.calendar, InvestmentBook.calendar)

@@ -93,8 +93,7 @@ struct QinglongConnectionEditor: View {
                     Button(testing ? "正在测试…" : "测试连接", action: test)
                         .buttonStyle(HakoActionButtonStyle(primary: false))
                     if store.configuration.connections.contains(where: { $0.id == draft.id }) {
-                        Button("删除此连接", role: .destructive) { deleting = true }
-                            .buttonStyle(HakoActionButtonStyle(destructive: true))
+                        HakoDeleteButton(title: "删除此连接") { deleting = true }
                     }
                 }
                 .padding(.horizontal, 12)
@@ -106,7 +105,7 @@ struct QinglongConnectionEditor: View {
         }
         .disabled(testing || store.busy)
         .onChange(of: draft) { _, _ in testResult = nil; error = nil }
-        .hakoDeleteConfirmation(Text("删除此连接？"), isPresented: $deleting, confirmTitle: Text("删除"),
+        .hakoDeleteConfirmation(Text("删除此连接？"), isPresented: $deleting,
                                 disabled: testing || store.busy) {
             do { try store.remove(draft.id); dismiss() } catch { self.error = error.localizedDescription }
         }

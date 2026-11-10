@@ -35,7 +35,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, applications, github
+        case server, scanner, applications, github, languageModel
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -102,6 +102,13 @@ struct SettingsView: View {
                     settingsEntry("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+            }
+            Section("大模型") {
+                Button { sheet = .languageModel } label: {
+                    settingsEntry("大模型配置", systemImage: "sparkles")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section("工具") {
                 NavigationLink { HakoShortcutHistoryView() } label: {
@@ -180,6 +187,7 @@ struct SettingsView: View {
                 case .scanner: ConsoleWebLoginView()
                 case .applications: ConsoleApplicationsView()
                 case .github: GitHubSettingsSheet()
+                case .languageModel: LanguageModelSettingsSheet()
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in

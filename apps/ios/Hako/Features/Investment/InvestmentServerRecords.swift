@@ -351,7 +351,7 @@ struct InvestmentServerRecords {
         let balance = Dictionary(grouping: records("investment_balance_records")) { $0["balance_account_id"] ?? "" }
         let balanceAccounts = try records("investment_balance_accounts").sorted { ordering($0) < ordering($1) }.map { row in
             let id = try uuid(row, "id")
-            let entries = try (balance[id.uuidString] ?? []).sorted { ($0["recorded_at"] ?? "") < ($1["recorded_at"] ?? "") }.map {
+            let entries = try (balance[id.uuidString] ?? []).map {
                 guard let stamp = $0["recorded_at"].flatMap(timestamp.date(from:)), let amount = decimal($0["amount"]) else {
                     throw invalid("recorded_at")
                 }

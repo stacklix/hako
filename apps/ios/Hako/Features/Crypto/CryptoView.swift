@@ -65,7 +65,7 @@ private struct CryptoWatchlist: View {
         .sheet(isPresented: $adding) { addSheet }
         .hakoDeleteConfirmation(Text("删除关注币种？"), isPresented: $confirmingDeletion,
                                 message: pendingDeletion.map { Text("将 \($0) 从关注列表移除。") },
-                                confirmTitle: Text("删除"), onDismiss: { pendingDeletion = nil }) {
+                                onDismiss: { pendingDeletion = nil }) {
             guard let symbol = pendingDeletion else { return }
             savedSymbols = customSymbols.filter { $0 != symbol }.joined(separator: ",")
             prices.removeValue(forKey: symbol + "USDT")

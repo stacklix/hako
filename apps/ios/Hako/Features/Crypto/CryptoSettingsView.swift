@@ -64,10 +64,10 @@ struct CryptoSettingsView: View {
                 .accessibilityHint("查看各项资产、权益、资金费与历史数据的取值逻辑")
             }
             Section {
-                Button("清空缓存",role:.destructive) { clearingCache=true }
-                    .buttonStyle(.automatic)
+                HakoDeleteButton(title: "清空缓存") { clearingCache = true }
                     .disabled(store.busy)
                     .cryptoSettingsRowSeparators()
+                    .listRowBackground(Color.clear)
                 if let cacheMessage {
                     Text(cacheMessage).font(.caption).cryptoSettingsRowSeparators()
                 }
@@ -79,7 +79,7 @@ struct CryptoSettingsView: View {
         }.navigationTitle("资产设置").navigationBarTitleDisplayMode(.inline)
             .hakoDeleteConfirmation(Text("清空资产缓存？"), isPresented: $clearingCache,
                                     message: Text("将删除本机资产历史、实时快照及 \(store.pendingCount) 条待同步记录。未同步数据无法恢复；GitHub 数据、接口配置和观察地址均保留。"),
-                                    confirmTitle: Text("清空缓存"), disabled: store.busy) {
+                                    disabled: store.busy) {
                 do { try store.clearCache();cacheMessage="缓存已清空，再次进入加密资产时将从 GitHub 重建。" }
                 catch { cacheMessage=error.localizedDescription }
             }

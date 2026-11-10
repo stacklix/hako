@@ -57,10 +57,8 @@ struct QinglongRecordDetail: View {
                 QinglongMenuRow(title: "执行日志", symbol: "doc.text") { logging = true }
                 QinglongMenuRow(title: "编辑任务", symbol: "pencil", last: true) { editing = true }
             }.qinglongCard(padding: 0, cornerRadius: 16).disabled(controlsDisabled)
-            Button(role: .destructive) { action = "delete" } label: {
-                Label("删除任务", systemImage: "trash").font(.subheadline)
-                    .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).foregroundStyle(QinglongStyle.failure).disabled(controlsDisabled)
+            HakoDeleteButton(title: "删除任务", systemImage: "trash") { action = "delete" }
+                .disabled(controlsDisabled)
         }
         .qinglongTaskAction(store: store, request: $taskAction)
         .sheet(isPresented: $editing) { QinglongRecordEditor(store: store, resource: item.resource, item: current) }
@@ -171,9 +169,7 @@ struct QinglongRecordEditor: View {
             if let error { QinglongNotice(text: error, error: true) }
             if let item = persistedItem {
                 if resource != .envs { Button(item.disabled ? "启用" : "禁用") { action = item.disabled ? "enable" : "disable" }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy) }
-                Button(role: .destructive) { action = "delete" } label: {
-                    Text("删除\(resource.title)").font(.subheadline).frame(maxWidth: .infinity, minHeight: 46).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(QinglongStyle.failure)
+                HakoDeleteButton(title: "删除\(resource.title)") { action = "delete" }
                     .listRowBackground(Color.clear).listRowSeparator(.hidden).disabled(store.busy)
             }
         }
@@ -269,10 +265,7 @@ private struct QinglongTaskEditor: View {
                 if connectionChanged { QinglongNotice(text: "连接已改变，请关闭后重新编辑。", error: true) }
                 else if let error { QinglongNotice(text: error, error: true) }
                 if persistedItem != nil {
-                    Button(role: .destructive) { deleting = true } label: {
-                        Label("删除任务", systemImage: "trash").font(.subheadline)
-                            .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).foregroundStyle(QinglongStyle.failure)
+                    HakoDeleteButton(title: "删除任务", systemImage: "trash") { deleting = true }
                 }
             }.disabled(store.busy || connectionChanged)
         }
@@ -282,7 +275,7 @@ private struct QinglongTaskEditor: View {
             Button("放弃修改", role: .destructive) { dismiss() }
         } message: { Text("当前修改尚未保存。") }
         .hakoDeleteConfirmation(Text("删除任务？"), isPresented: $deleting, message: Text("此操作无法撤销。"),
-                                confirmTitle: Text("删除任务"), disabled: connectionChanged || store.busy) {
+                                disabled: connectionChanged || store.busy) {
             Task {
                 guard !connectionChanged, !store.busy, let saved = persistedItem else { return }
                 if await store.delete(saved) { dismiss() } else { error = store.message }

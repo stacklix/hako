@@ -32,7 +32,7 @@ final class InvestmentStore: ObservableObject {
     }
     private let secrets = SecureStorage.namespace("me.stackli.hako.investment")
     private var loaded = false
-    private var ledgerRevision = UUID()
+    @Published private(set) var ledgerRevision = UUID()
     private var dailySnapshotTask: Task<Void, Never>?
     private var lastAutomaticRefresh: Date?
     private var lastAutomaticCurrencies: Set<InvestmentCurrency> = []
@@ -144,6 +144,72 @@ final class InvestmentStore: ObservableObject {
         if scheduleSnapshots { scheduleDailySnapshots() }
     }
 
+    func agentSnapshot() throws -> InvestmentAgentSnapshot {
+        discardExpiredSession()
+        guard loaded, let state = serverState, let context = serverContext, context == authentication.requestContext else {
+            throw InvestmentError.invalid(loadError ?? "请先读取服务端投资账本。")
+        }
+        return InvestmentAgentSnapshot(book: book, session: ledgerRevision, generation: state.generation, revision: state.revision,
+                                       dirtyFrom: state.dirtyFrom.flatMap(records.day.date(from:)), tables: state.tables)
+    }
+
+    var agentConversationKey: String {
+        (authentication.serverURL + "\n" + authentication.username).consoleDigest
+    }
+
+    func commitAgent(_ proposal: InvestmentAgentProposal) async throws {
+        while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
+        try Task.checkCancellation()
+        let current = try agentSnapshot()
+        guard current.session == proposal.session else { throw CancellationError() }
+        guard current.generation == proposal.generation else { throw InvestmentAgentCommitError.stale }
+        do {
+            if proposal.snapshotsOnly {
+                try await write(proposal.book, dirtyFrom: nil, includeInputs: false, includeSnapshots: true)
+                snapshotSaveError = nil
+            } else {
+                try await update(scheduleSnapshots: false) { draft in
+                    let live = try agentSnapshot()
+                    guard live.session == proposal.session else { throw CancellationError() }
+                    guard live.generation == proposal.generation else { throw InvestmentAgentCommitError.stale }
+                    draft = proposal.book
+                }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as InvestmentAgentCommitError {
+            throw error
+        } catch {
+            if case .invalid(let message)? = error as? InvestmentError,
+               message.contains("账本已重新读取") || message.contains("账本版本已变更") {
+                throw InvestmentAgentCommitError.stale
+            }
+            throw InvestmentAgentCommitError.unverified
+        }
+    }
+
+    func prepareAgentMarket(_ base: InvestmentAgentSnapshot) async throws -> InvestmentBook {
+        while refreshing { try await Task.sleep(for: .milliseconds(150)) }
+        try Task.checkCancellation()
+        var prepared: InvestmentBook?
+        await refreshQuotes(preview: { prepared = $0 })
+        try Task.checkCancellation()
+        let current = try agentSnapshot()
+        guard current.session == base.session, current.generation == base.generation else { throw InvestmentAgentCommitError.stale }
+        guard let prepared else { throw InvestmentError.invalid(quoteStatus.isEmpty ? "未找到可更新的行情。" : quoteStatus) }
+        return prepared
+    }
+
+    func prepareAgentSnapshots(_ base: InvestmentAgentSnapshot) async throws -> InvestmentBook {
+        var source = base.book
+        if let dirty = base.dirtyFrom { source.invalidateDailySnapshots(from: dirty) }
+        let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
+        source = try await calculatedSnapshots(source, through: end, rebuild: true)
+        let current = try agentSnapshot()
+        guard current.session == base.session, current.generation == base.generation else { throw InvestmentAgentCommitError.stale }
+        return source
+    }
+
     private func checkWritable() throws {
         discardExpiredSession()
         guard loaded, serverState != nil else {
@@ -224,24 +290,27 @@ final class InvestmentStore: ObservableObject {
                 return source.dailySnapshotReport(through: end)
             }
             let version = bookVersion
-            let valuationSource = source
-            let worker = Task.detached(priority: .utility) { valuationSource.makeDailySnapshots(through: end, rebuild: rebuild) }
-            let snapshots = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
-            }
-            try Task.checkCancellation()
+            source = try await calculatedSnapshots(source, through: end, rebuild: rebuild)
             guard ledgerRevision == resetVersion else { throw CancellationError() }
             guard version == bookVersion else { continue }
-            if let snapshots { source.dailySnapshots = snapshots }
-            if source.earliest == nil { source.dailySnapshots = nil }
-            _ = source.recordCompletedInvestmentMonths()
             try await write(source, dirtyFrom: nil, includeInputs: false, includeSnapshots: true)
             snapshotSaveError = nil
             return book.dailySnapshotReport(through: end)
         }
         throw InvestmentError.invalid("账本正在更新，请稍后重新计算快照。")
+    }
+
+    private func calculatedSnapshots(_ source: InvestmentBook, through end: Date, rebuild: Bool) async throws -> InvestmentBook {
+        let worker = Task.detached(priority: .utility) {
+            var result = source
+            if let snapshots = source.makeDailySnapshots(through: end, rebuild: rebuild) { result.dailySnapshots = snapshots }
+            if source.earliest == nil { result.dailySnapshots = nil }
+            _ = result.recordCompletedInvestmentMonths()
+            return result
+        }
+        let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        try Task.checkCancellation()
+        return result
     }
 
     private func scheduleDailySnapshots() {
@@ -446,7 +515,8 @@ final class InvestmentStore: ObservableObject {
         await refreshQuotes(publicQuotesOnly: publicQuotesOnly)
     }
 
-    private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil) async {
+    private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil,
+                               preview: ((InvestmentBook) -> Void)? = nil) async {
         guard loaded, !refreshing else { return }
         let revision = ledgerRevision
         func checkRefresh() throws {
@@ -582,11 +652,18 @@ final class InvestmentStore: ObservableObject {
             for currency in Set(rateWindows.keys).subtracting(rates.keys) { failures.append(currency.rawValue + "/CNY") }
             try checkRefresh()
             guard publicQuotesOnly || self.keys() == keys else { return }
-            try await update(scheduleSnapshots: !snapshotRefresh) { draft in
+            let apply: (inout InvestmentBook) -> Void = { draft in
                 for (id, values) in prices { draft.addQuotes(values, assetID: id) }
                 for (currency, values) in rates { draft.addExchangeRates(values, for: currency) }
                 draft.runPlans(through: today)
             }
+            if let preview {
+                var draft = book
+                apply(&draft)
+                preview(draft)
+                return
+            }
+            try await update(scheduleSnapshots: !snapshotRefresh, apply)
             if refreshPublicHistory, !snapshotRefresh { lastPublicHistoryDay = today }
             if !publicIDs.isEmpty {
                 lastPublicQuoteRefresh = .now

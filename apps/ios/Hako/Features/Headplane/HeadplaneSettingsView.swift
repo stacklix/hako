@@ -42,14 +42,14 @@ struct HeadplaneSettingsView: View {
                 if draft != original {
                     Text("服务器检查使用已保存的连接。修改地址或密钥后，请先验证并保存。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
                 }
-                Button("移除此连接", role: .destructive) { disconnect = true }
-                    .frame(maxWidth: .infinity).padding(.top, 10).disabled(store.busy || store.pending != nil)
+                HakoDeleteButton(title: "移除此连接") { disconnect = true }
+                    .padding(.top, 10).disabled(store.busy || store.pending != nil)
             }
         }
         .onAppear { draft = store.connection ?? HeadplaneConnection(); original = draft }
         .sheet(isPresented: $diagnostics) { HeadplaneDiagnosticsView(store: store, revision: store.revision) }
         .hakoDeleteConfirmation(Text("移除本机保存的连接和凭据？"), isPresented: $disconnect,
-                                confirmTitle: Text("移除连接"), disabled: store.busy || store.pending != nil) {
+                                disabled: store.busy || store.pending != nil) {
             do { try store.disconnect(); dismiss() } catch { self.error = error.localizedDescription }
         }
     }
@@ -99,7 +99,7 @@ struct HeadplaneDeviceView: View {
                         Button("重命名") { editingNode = node; editing = "rename" }.buttonStyle(HeadplaneButtonStyle())
                         Button("修改标签") { editingNode = node; editing = "tags" }.buttonStyle(HeadplaneButtonStyle())
                         Button("使设备过期") { confirmingExpiration = true }.buttonStyle(HeadplaneButtonStyle())
-                        Button("删除设备") { confirmingDeletion = true }.buttonStyle(HeadplaneButtonStyle(destructive: true))
+                        HakoDeleteButton(title: "删除设备") { confirmingDeletion = true }
                     }.disabled(disabled)
                     Text("设备信息").font(.headline)
                     HeadplaneFact(title: "设备编号", value: node.id)
@@ -138,7 +138,7 @@ struct HeadplaneDeviceView: View {
         } message: { Text("设备需要重新认证才能继续连接网络。") }
         .hakoDeleteConfirmation(Text("删除此设备？"), isPresented: $confirmingDeletion,
                                 message: Text("设备将从网络移除，需要重新注册才能加入。"),
-                                confirmTitle: Text("确认删除"), disabled: disabled) {
+                                disabled: disabled) {
             Task { await mutateDevice("delete") }
         }
     }

@@ -291,7 +291,7 @@ struct InvestmentCashEditor: View {
             Section(account.name) {
                 InvestmentField((kind == .adjustment ? "调整后余额" : "金额") + "（" + account.currency.rawValue + "）",
                                 text: $amount, keyboard: .decimalPad)
-                DatePicker("记账日期", selection: $date, in: ...Date.now, displayedComponents: .date)
+                InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
                 if account.type == .crypto {
                     Text("USD、USDC 和 USDT 按 1:1 计入 USD 现金余额。")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -335,7 +335,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
         return InvestmentEditor(title: supportsDividends ? "记分红" : "调整余额", inSheet: true,
                                 hasChanges: !cash.isEmpty || !shares.isEmpty || !balance.isEmpty) {
             Section(asset.name + " · " + asset.code) {
-                DatePicker(supportsDividends ? "到账日期" : "调整日期", selection: $date, in: ...Date.now, displayedComponents: .date)
+                InvestmentDatePicker(supportsDividends ? "到账日期" : "调整日期", selection: $date, latest: InvestmentBook.day())
                 if supportsDividends {
                     let suffix = stock ? "，选填）" : "）"
                     InvestmentField("实际到账金额（" + account.currency.rawValue + suffix, text: $cash, keyboard: .decimalPad)
@@ -383,7 +383,7 @@ struct InvestmentFuturesSettlementEditor: View {
         InvestmentEditor(title: "记实际结算", inSheet: true, hasChanges: !price.isEmpty || !amount.isEmpty,
                          saveEnabled: !price.isEmpty && !amount.isEmpty) {
             Section(asset.name) {
-                DatePicker("结算日期", selection: $date, in: ...InvestmentBook.day(), displayedComponents: .date)
+                InvestmentDatePicker("结算日期", selection: $date, latest: InvestmentBook.day())
                 InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad)
                 Picker("资金方向", selection: $isLoss) {
                     Text("入账").tag(false)
@@ -424,7 +424,7 @@ struct InvestmentMarginTransferEditor: View {
         let available = ledger?.fundingBalance(for: asset, target: .available)
         return InvestmentEditor(title: "调整保证金", inSheet: true, hasChanges: !amount.isEmpty) {
             Section {
-                DatePicker("划转日期", selection: $date, in: ...Date.now, displayedComponents: .date)
+                InvestmentDatePicker("划转日期", selection: $date, latest: InvestmentBook.day())
                 if let margin, let available {
                     LabeledContent("已占用保证金", value: InvestmentText.number(margin) + " " + unit)
                     LabeledContent(balanceTitle, value: InvestmentText.number(available) + " " + unit)
@@ -470,7 +470,7 @@ struct InvestmentFundingAdjustmentEditor: View {
         let current = ledger?.fundingBalance(for: asset, target: target)
         return InvestmentEditor(title: "调整余额", inSheet: true, hasChanges: !balance.isEmpty) {
             Section {
-                DatePicker("对账日期", selection: $date, in: ...Date.now, displayedComponents: .date)
+                InvestmentDatePicker("对账日期", selection: $date, latest: InvestmentBook.day())
                 Picker("调整项目", selection: $target) {
                     ForEach(InvestmentFundingTarget.allCases) { Text($0.rawValue).tag($0) }
                 }.onChange(of: target) { balance = "" }
@@ -949,7 +949,7 @@ private struct InvestmentTradeFields: View {
     }
 
     var body: some View {
-        DatePicker(dateTitle, selection: $date, in: ...Date.now, displayedComponents: .date)
+        InvestmentDatePicker(dateTitle, selection: $date, latest: InvestmentBook.day())
         if kind == .insurance {
             InvestmentField(insuranceAmountTitle + "（HKD）", text: $price, keyboard: .decimalPad)
         } else if kind.isTermDeposit {
@@ -1230,7 +1230,7 @@ struct InvestmentAssetEditor: View {
                     trade
                     if draft.kind.isTermDeposit {
                         InvestmentField("年利率（%）", text: $annualRate, keyboard: .decimalPad)
-                        DatePicker("到期日", selection: $maturity, in: InvestmentBook.day(date)..., displayedComponents: .date)
+                        InvestmentDatePicker("到期日", selection: $maturity, earliest: date)
                     }
                     if draft.kind == .insurance {
                         InvestmentField("当前现金价值（HKD，可选）", text: $manualValue, keyboard: .decimalPad)
@@ -1414,7 +1414,7 @@ struct InvestmentDepositTermsEditor: View {
         return InvestmentEditor(title: "编辑存款信息", inSheet: true, hasChanges: changed, saveEnabled: changed && rate != nil) {
             Section(asset.name) {
                 InvestmentField("年利率（%）", text: $annualRate, keyboard: .decimalPad)
-                DatePicker("到期日", selection: $maturity, displayedComponents: .date)
+                InvestmentDatePicker("到期日", selection: $maturity)
             }
         } save: {
             guard let rate else { throw InvestmentError.invalid("请输入有效的年利率。") }
@@ -1466,15 +1466,17 @@ struct InvestmentQuoteEditor: View {
                 }
             }
             Section(insurance ? "更新现金价值" : "手动报价") {
-                DatePicker(insurance ? "估值日期" : "报价日期", selection: $date, in: ...Date.now, displayedComponents: .date)
+                InvestmentDatePicker(insurance ? "估值日期" : "报价日期", selection: $date, latest: InvestmentBook.day())
                 let label = insurance ? "现金价值（HKD）" : (asset.kind == .wealth ? "单位净值（CNY）" : "价格（" + unit + "）")
                 InvestmentField(label, text: $price, keyboard: .decimalPad)
             }
             if store.book.watched.contains(asset.id) {
                 Section {
-                    Button("移出关注", role: .destructive) {
+                    HakoDeleteButton(title: "移出关注") {
                         Task { await removeWatch() }
                     }
+                    .disabled(store.saving).investmentListRow()
+                    .listRowBackground(Color.clear)
                 }
             }
         } save: {
@@ -1574,7 +1576,11 @@ struct InvestmentPlanEditor: View {
                 if buy { Text("定期买入从该账户的现金余额扣款，按可用报价补记。港股通按交割单手动记账。") }
             }
             if plan != nil {
-                Section { Button("删除任务", role: .destructive) { confirmDelete = true } }
+                Section {
+                    HakoDeleteButton(title: "删除任务") { confirmDelete = true }
+                        .disabled(store.saving).investmentListRow()
+                        .listRowBackground(Color.clear)
+                }
             }
         } save: {
             let amount = try investmentDecimal(amount, "金额")
@@ -1598,8 +1604,8 @@ struct InvestmentPlanEditor: View {
                 else { book.plans.append(item) }
             }
         }
-        .confirmationDialog("删除这项定投任务？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除任务", role: .destructive) { Task { await remove() } }
+        .hakoDeleteConfirmation(Text("删除这项定投任务？"), isPresented: $confirmDelete, disabled: store.saving) {
+            Task { await remove() }
         }
         .alert("无法删除", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("好", role: .cancel) { deleteError = nil }

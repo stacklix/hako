@@ -107,7 +107,7 @@ struct QinglongFileEditor: View {
             else if loadedRevision == nil { await load() }
         }
         .hakoDeleteConfirmation(Text("删除「\(item.title)」？"), isPresented: $deleting,
-                                message: Text("此操作无法撤销。"), confirmTitle: Text("删除脚本"),
+                                message: Text("此操作无法撤销。"),
                                 disabled: store.busy || openedRevision != store.revision) {
             Task {
                 guard openedRevision == store.revision else { error = "连接已改变，请重新打开文件。"; return }

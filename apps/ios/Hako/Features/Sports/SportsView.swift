@@ -285,10 +285,7 @@ private struct SportsDetail: View {
                             Text(store.isPending(id) ? "待同步" : "已同步").font(.system(size: 13)).foregroundStyle(SportsStyle.muted)
                         }
                     }.sportsPanel(padding: 20)
-                    Button("删除运动记录", role: .destructive) { deleting = true }
-                        .foregroundStyle(.red)
-                        .font(.system(size: 14)).frame(maxWidth: .infinity, minHeight: 48)
-                        .background(SportsStyle.card, in: RoundedRectangle(cornerRadius: 10))
+                    HakoDeleteButton(title: "删除运动记录") { deleting = true }
                         .disabled(store.syncing)
                     Text("编辑和删除保存在本地后立即同步到 GitHub。")
                         .font(.system(size: 11)).foregroundStyle(SportsStyle.muted).multilineTextAlignment(.center)
@@ -309,7 +306,7 @@ private struct SportsDetail: View {
     private var deleteConfirmation: some View {
         HakoDeleteConfirmation(title: Text("删除这条运动记录？"),
                                message: Text("删除后将从列表和图表中移除，并立即同步到 GitHub。"),
-                               confirmTitle: Text("删除运动记录"), disabled: didDelete || store.syncing,
+                               disabled: didDelete || store.syncing,
                                confirm: deleteRecord)
         .alert("无法删除记录", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好") { error = nil }

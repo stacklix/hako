@@ -27,9 +27,8 @@ extension View {
 
 struct HeadplaneButtonStyle: ButtonStyle {
     var primary = false
-    var destructive = false
     func makeBody(configuration: Configuration) -> some View {
-        HakoActionButtonStyle(primary: primary, destructive: destructive).makeBody(configuration: configuration)
+        HakoActionButtonStyle(primary: primary).makeBody(configuration: configuration)
     }
 }
 

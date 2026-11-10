@@ -183,11 +183,10 @@ private struct ConsoleApplicationDetailView: View {
                 if client.busy { Section { ProgressView("正在更新应用…") } }
                 if let errorMessage { Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) } }
                 Section {
-                    Button("删除应用", role: .destructive) {
+                    HakoDeleteButton(title: "删除应用") {
                         deletionContext = client.context
                         confirmingDeletion = true
                     }
-                    .buttonStyle(HakoActionButtonStyle(destructive: true))
                     .listRowBackground(Color.clear)
                     .disabled(client.busy)
                 }
@@ -217,7 +216,6 @@ private struct ConsoleApplicationDetailView: View {
             application.map { Text("删除「\($0.name)」？") } ?? Text("删除应用？"),
             isPresented: $confirmingDeletion,
             message: Text("应用登记将被永久删除，待处理的登录请求、授权码和已有 Hako 授权会失效。"),
-            confirmTitle: Text("确认删除"),
             disabled: client.busy || application == nil || deletionContext != client.context,
             onDismiss: { deletionContext = nil }
         ) {

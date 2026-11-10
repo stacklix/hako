@@ -90,6 +90,81 @@ struct InvestmentBalanceSankey: View {
     }
 }
 
+struct InvestmentBalanceAccountTrend: View {
+    let account: InvestmentBalanceAccount
+    let today: Date
+    let hidesAmounts: Bool
+    @State private var selectedDay: Date?
+
+    private struct Point: Identifiable {
+        let day: Date
+        let balance: Decimal
+        var id: Date { day }
+        var value: Double { NSDecimalNumber(decimal: balance).doubleValue }
+    }
+
+    var body: some View {
+        let balances = account.records.reduce(into: [Date: Decimal]()) { balances, record in
+            let day = InvestmentBook.day(record.recordedAt)
+            if day <= today { balances[day] = record.amount }
+        }
+        let points = balances.map { Point(day: $0.key, balance: $0.value) }.sorted { $0.day < $1.day }
+        InvestmentCard {
+            Text("余额变化").font(.headline)
+            if let first = points.first, let last = points.last {
+                let selected = selectedDay.flatMap { day in
+                    points.min { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) }
+                } ?? last
+                chart(points, selected: selected, dates: first.id == last.id ? [first.day] : [first.day, last.day])
+                HStack {
+                    Text(InvestmentText.date(selected.day))
+                    Spacer(minLength: 8)
+                    Text(InvestmentBalanceStyle.amount(selected.balance, hidden: hidesAmounts)).monospacedDigit()
+                }.font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("暂无余额记录。").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func chart(_ points: [Point], selected: Point, dates: [Date]) -> some View {
+        Chart {
+            ForEach(points) { point in
+                LineMark(x: .value("日期", point.day), y: .value("余额（元）", point.value))
+                    .interpolationMethod(.stepEnd)
+                    .foregroundStyle(account.category.color)
+            }
+            PointMark(x: .value("日期", selected.day), y: .value("余额（元）", selected.value))
+                .foregroundStyle(account.category.color)
+        }
+        .chartXAxis {
+            AxisMarks(values: dates) { axis in
+                if let day = axis.as(Date.self) {
+                    AxisValueLabel { Text(InvestmentText.date(day)).font(.caption2) }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.secondary.opacity(0.25))
+                if !hidesAmounts, let value = axis.as(Double.self) {
+                    AxisValueLabel {
+                        let large = abs(value) >= 10_000
+                        let label = (large ? value / 10_000 : value).formatted(.number.precision(.fractionLength(0...2)))
+                        Text(large ? label + "万" : label).font(.caption2)
+                    }
+                }
+            }
+        }
+        .chartYScale(domain: .automatic(includesZero: false))
+        .chartXSelection(value: $selectedDay)
+        .environment(\.calendar, InvestmentBook.calendar)
+        .environment(\.timeZone, InvestmentBook.calendar.timeZone)
+        .frame(height: 163)
+        .accessibilityHidden(hidesAmounts)
+    }
+}
+
 struct InvestmentBalanceTrend: View {
     let book: InvestmentBook
     let today: Date
@@ -168,15 +243,15 @@ struct InvestmentBalanceTrend: View {
                     Text(item.rawValue)
                         .font(.caption.weight(mode == item ? .semibold : .regular))
                         .foregroundStyle(mode == item ? InvestmentBalanceStyle.accent : Color.secondary)
-                        .frame(minHeight: 44)
                         .padding(.horizontal, 4)
-                        .contentShape(Rectangle())
-                        .overlay(alignment: .bottom) {
+                        .padding(.vertical, 5)
+                        .background {
                             if mode == item {
-                                Capsule().fill(InvestmentBalanceStyle.accent).frame(width: 26, height: 2.5)
-                                    .accessibilityHidden(true)
+                                RoundedRectangle(cornerRadius: 7).fill(InvestmentBalanceStyle.summary)
                             }
                         }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityAddTraits(mode == item ? .isSelected : [])
             }
             Spacer(minLength: 0)

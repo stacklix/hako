@@ -11,10 +11,14 @@ enum InvestmentBalanceCategory: String, Codable, CaseIterable, Identifiable {
     static let assets: [Self] = [.cash, .investments, .fixed, .receivables]
 }
 
-struct InvestmentBalanceRecord: Codable, Identifiable {
+struct InvestmentBalanceRecord: Codable, Equatable, Identifiable {
     var id = UUID()
     let recordedAt: Date
     let amount: Decimal
+
+    static func chronological(_ lhs: Self, _ rhs: Self) -> Bool {
+        lhs.recordedAt == rhs.recordedAt ? lhs.id.uuidString < rhs.id.uuidString : lhs.recordedAt < rhs.recordedAt
+    }
 }
 
 struct InvestmentBalanceAccount: Codable, Identifiable {
@@ -27,7 +31,7 @@ struct InvestmentBalanceAccount: Codable, Identifiable {
         self.id = id
         self.name = name
         self.category = category
-        self.records = records
+        self.records = records.sorted(by: InvestmentBalanceRecord.chronological)
     }
 
     func latest(on day: Date) -> InvestmentBalanceRecord? {
@@ -71,6 +75,32 @@ struct InvestmentBalanceLedger: Codable {
         accounts[index].records.append(InvestmentBalanceRecord(recordedAt: date, amount: amount))
     }
 
+    mutating func replaceRecord(_ original: InvestmentBalanceRecord, accountID: UUID, amount: Decimal,
+                                on date: Date, now: Date = .now) throws {
+        try validate(amount)
+        let day = InvestmentBook.day(date)
+        guard day <= InvestmentBook.day(now) else { throw InvestmentError.invalid("记账日期不能晚于今天。") }
+        let (accountIndex, recordIndex) = try location(of: original, accountID: accountID)
+        let originalDay = InvestmentBook.day(original.recordedAt)
+        let stamp = day == originalDay ? original.recordedAt :
+            min(now, day.addingTimeInterval(original.recordedAt.timeIntervalSince(originalDay)))
+        accounts[accountIndex].records[recordIndex] = InvestmentBalanceRecord(id: original.id, recordedAt: stamp, amount: amount)
+        accounts[accountIndex].records.sort(by: InvestmentBalanceRecord.chronological)
+    }
+
+    mutating func deleteRecord(_ original: InvestmentBalanceRecord, accountID: UUID) throws {
+        let (accountIndex, recordIndex) = try location(of: original, accountID: accountID)
+        accounts[accountIndex].records.remove(at: recordIndex)
+    }
+
+    private func location(of record: InvestmentBalanceRecord, accountID: UUID) throws -> (Int, Int) {
+        guard let accountIndex = accounts.firstIndex(where: { $0.id == accountID }),
+              let recordIndex = accounts[accountIndex].records.firstIndex(of: record) else {
+            throw InvestmentError.invalid("这笔余额记录已变更，请重新打开后再操作。")
+        }
+        return (accountIndex, recordIndex)
+    }
+
     private func validate(_ amount: Decimal) throws {
         var value = amount
         var rounded = Decimal()
@@ -109,9 +139,13 @@ struct InvestmentBalanceSnapshot {
     var debtRatio: Decimal? { assets.flatMap { $0 > 0 ? liabilities / $0 : nil } }
 }
 
+enum InvestmentBalanceHistoryFilter: Hashable {
+    case all, account(UUID), investment
+}
+
 struct InvestmentBalanceChange: Identifiable {
     enum ID: Hashable {
-        case manual(UUID)
+        case manual(accountID: UUID, recordID: UUID)
         case investment(Date)
     }
 
@@ -123,6 +157,11 @@ struct InvestmentBalanceChange: Identifiable {
     let after: Decimal
 
     var day: Date { InvestmentBook.day(recordedAt) }
+
+    var manualRecord: (accountID: UUID, record: InvestmentBalanceRecord)? {
+        guard case let .manual(accountID, recordID) = id else { return nil }
+        return (accountID, InvestmentBalanceRecord(id: recordID, recordedAt: recordedAt, amount: after))
+    }
 }
 
 extension InvestmentBook {
@@ -201,13 +240,13 @@ extension InvestmentBook {
         return updates
     }
 
-    func balanceChanges(through day: Date, limit: Int) -> [InvestmentBalanceChange] {
+    func balanceChanges(through day: Date, limit: Int, filter: InvestmentBalanceHistoryFilter = .all) -> [InvestmentBalanceChange] {
         guard limit > 0 else { return [] }
         var changesByDay: [Date: [InvestmentBalanceChange]] = [:]
-        for account in balanceSheet?.accounts ?? [] {
+        for account in balanceSheet?.accounts ?? [] where filter == .all || filter == .account(account.id) {
             var previous: Decimal?
             for record in account.records {
-                let change = InvestmentBalanceChange(id: .manual(record.id), name: account.name, category: account.category,
+                let change = InvestmentBalanceChange(id: .manual(accountID: account.id, recordID: record.id), name: account.name, category: account.category,
                                                      recordedAt: record.recordedAt, before: previous, after: record.amount)
                 guard change.day <= day else { break }
                 changesByDay[change.day, default: []].append(change)
@@ -215,7 +254,7 @@ extension InvestmentBook {
             }
         }
         let snapshots = investmentSnapshots
-        for (date, amount) in snapshots where date <= day {
+        for (date, amount) in snapshots where (filter == .all || filter == .investment) && date <= day {
             let prior = snapshots[Self.previousMonthEnd(before: date)]
             let endOfDay = Self.addDays(1, to: date).addingTimeInterval(-1)
             changesByDay[date, default: []].append(

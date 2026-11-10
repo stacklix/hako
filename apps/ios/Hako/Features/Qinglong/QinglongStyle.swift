@@ -194,7 +194,7 @@ struct QinglongActionSheet: View {
         Group {
             if action == "delete" {
                 HakoDeleteConfirmation(title: Text("删除「\(item.title)」？"), message: Text("此操作无法撤销。"),
-                                       confirmTitle: Text("确认删除"), busy: store.busy, confirm: perform)
+                                       busy: store.busy, confirm: perform)
                     .alert("无法删除", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                         Button("好", role: .cancel) { error = nil }
                     } message: { Text(error ?? "") }

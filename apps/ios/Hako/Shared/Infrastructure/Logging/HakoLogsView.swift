@@ -65,8 +65,7 @@ struct HakoLogsView: View {
                 .accessibilityLabel("日志操作")
             }
         }
-        .hakoDeleteConfirmation(Text("清空本机全部日志？"), isPresented: $confirmingClear,
-                                confirmTitle: Text("清空全部日志")) {
+        .hakoDeleteConfirmation(Text("清空本机全部日志？"), isPresented: $confirmingClear) {
             HakoLogStore.shared.clear()
             reload()
         }

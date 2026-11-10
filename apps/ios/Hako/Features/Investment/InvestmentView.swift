@@ -26,6 +26,7 @@ struct InvestmentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = Tab.overview
     @State private var selectedAccount: UUID?
+    @State private var showsAgent = false
     @State private var showsSettings = false
     @State private var showsWatchEditor = false
     @State private var showsBalanceAccounts = false
@@ -66,11 +67,17 @@ struct InvestmentView: View {
         .toolbarBackground(HakoStyle.background, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showsAgent = true } label: {
+                    Image(systemName: "bubble.left")
+                }.accessibilityLabel("记账助手")
                 Button { showsSettings = true } label: {
                     Image(systemName: "slider.horizontal.3")
                 }.accessibilityLabel("投资记账设置")
             }
+        }
+        .sheet(isPresented: $showsAgent) {
+            InvestmentAgentSheet(store: store, agent: .shared)
         }
         .navigationDestination(isPresented: $showsSettings) {
             InvestmentDestination(store: store, route: .settings)
@@ -495,8 +502,9 @@ struct InvestmentMetric: View {
     let value: String
     var color: Color = .primary
     var prominent = false
+    var alignment: HorizontalAlignment = .leading
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: alignment, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(prominent ? .title2.weight(.semibold) : .subheadline.weight(.semibold))
                 .foregroundStyle(color).monospacedDigit()

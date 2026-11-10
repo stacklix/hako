@@ -3,7 +3,6 @@ import SwiftUI
 enum InvestmentBalanceStyle {
     static let accent = HakoStyle.adaptive(0x514298, 0xc5b7ff)
     static let summary = HakoStyle.adaptive(0xf0eef8, 0x2b2936)
-    static let panel = HakoStyle.adaptive(0xf5f4fa, 0x1c1c20)
     static let asset = HakoStyle.adaptive(0x307c69, 0x82cbb8)
     static let debt = HakoStyle.adaptive(0x737689, 0xa5a8bb)
     static let equity = HakoStyle.adaptive(0x4765ae, 0x9eafff)
@@ -59,6 +58,7 @@ struct InvestmentBalanceView: View {
     @State private var excludesFixed = false
     @State private var showsCalendar = false
     @State private var showsHistory = false
+    @State private var editingBalanceRecord: InvestmentBalanceChange?
 
     var body: some View {
         let book = store.book
@@ -69,7 +69,8 @@ struct InvestmentBalanceView: View {
             $0.category == .liabilities && ($0.latest(on: today)?.amount ?? 0) > 0
         }
         InvestmentScroll {
-            summary(snapshot, comparison: previousMonth(book, today: today))
+            summary(snapshot)
+            comparisonPanel(snapshot, comparison: previousMonth(book, today: today))
             structure(snapshot, debts: debts)
             InvestmentBalanceTrend(book: book, today: today, hidesAmounts: hidesAmounts)
             history(changes)
@@ -80,6 +81,9 @@ struct InvestmentBalanceView: View {
         .navigationDestination(isPresented: $showsHistory) {
             InvestmentBalanceHistory(store: store, hidesAmounts: hidesAmounts)
         }
+        .sheet(item: $editingBalanceRecord) { change in
+            InvestmentBalanceRecordEditor(store: store, change: change, hidesAmounts: hidesAmounts)
+        }
     }
 
     private func previousMonth(_ book: InvestmentBook, today: Date) -> (day: Date, snapshot: InvestmentBalanceSnapshot?) {
@@ -88,8 +92,7 @@ struct InvestmentBalanceView: View {
         return (day, snapshot)
     }
 
-    private func summary(_ snapshot: InvestmentBalanceSnapshot,
-                         comparison: (day: Date, snapshot: InvestmentBalanceSnapshot?)) -> some View {
+    private func summary(_ snapshot: InvestmentBalanceSnapshot) -> some View {
         let mainAmount = snapshot.assets.map { $0 - (excludesFixed ? snapshot.manual[.fixed, default: 0] : 0) }
         return VStack(alignment: .leading, spacing: 10) {
             ViewThatFits(in: .horizontal) {
@@ -99,28 +102,24 @@ struct InvestmentBalanceView: View {
             Text(InvestmentBalanceStyle.amount(mainAmount, hidden: hidesAmounts))
                 .font(.largeTitle.weight(.semibold)).tracking(-0.8).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.55)
-            HStack {
+            Group {
                 if let updated = snapshot.updatedAt {
                     Text(InvestmentText.date(updated) + " 更新")
                 } else {
                     Text("暂无更新")
                 }
-                Spacer()
-                Text(excludesFixed ? "不含固定资产" : "总资产")
             }
             .font(.caption).foregroundStyle(.secondary)
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
                 metric("净资产", snapshot.net)
                 metric("总负债", snapshot.liabilities)
-                InvestmentMetric(title: "负债率", value: ratio(snapshot.debtRatio))
+                InvestmentMetric(title: "负债率", value: ratio(snapshot.debtRatio), alignment: .trailing)
                     .lineLimit(1).minimumScaleFactor(0.7)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if snapshot.investment == nil {
                 Text("部分持仓缺少报价或汇率，暂无法汇总全部资产。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            comparisonPanel(snapshot, comparison: comparison)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(15)
@@ -170,10 +169,11 @@ struct InvestmentBalanceView: View {
             difference(snapshot.amount(category), previous?.amount(category))
         }
         let maximum = changes.compactMap { $0.map(abs) }.max() ?? 0
-        return VStack(alignment: .leading, spacing: 7) {
+        return InvestmentCard {
             HStack {
-                Text("较上月底 · " + InvestmentBalanceStyle.shortDay(comparison.day))
-                    .font(.caption.weight(.semibold))
+                Text("较上月底").font(.headline)
+                Text(InvestmentBalanceStyle.shortDay(comparison.day))
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 Button {
                     showsCalendar = true
@@ -194,8 +194,6 @@ struct InvestmentBalanceView: View {
                 }
             }
         }
-        .padding(.horizontal, 9).padding(.bottom, 9)
-        .background(InvestmentBalanceStyle.panel, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func difference(_ lhs: Decimal?, _ rhs: Decimal?) -> Decimal? {
@@ -235,8 +233,22 @@ struct InvestmentBalanceView: View {
         let assets = InvestmentBalanceCategory.assets.filter { category in
             snapshot.amount(category).map { $0 != 0 } ?? false
         }
+        let manualAccounts = Dictionary(grouping: store.book.balanceSheet?.accounts ?? [], by: \.category)
         return InvestmentCard {
-            Text("资产构成").font(.headline)
+            HStack {
+                Text("资产构成").font(.headline)
+                Spacer(minLength: 4)
+                NavigationLink {
+                    InvestmentBalanceAccountsView(store: store, hidesAmounts: hidesAmounts, mode: .composition)
+                } label: {
+                    HStack(spacing: 4) { Text("查看详情"); InvestmentChevron() }
+                        .font(.caption.weight(.medium))
+                        .frame(minHeight: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
+                .accessibilityLabel("查看资产构成详情")
+            }
             HStack(spacing: 5) {
                 equationMetric("总资产", snapshot.assets, background: InvestmentBalanceStyle.assetBackground)
                 Text("=").foregroundStyle(.secondary)
@@ -260,7 +272,11 @@ struct InvestmentBalanceView: View {
                         ForEach(assets) { category in
                             let hint = category == .investments
                                 ? (snapshot.investmentDeficit > 0 ? "负值计入负债" : "来自投资记账 · 只读") : nil
-                            detail(category.rawValue, snapshot.amount(category), color: category.color, hint: hint)
+                            if let accounts = manualAccounts[category], accounts.count == 1, let account = accounts.first {
+                                accountLink(account, name: category.rawValue, amount: snapshot.amount(category))
+                            } else {
+                                detail(category.rawValue, snapshot.amount(category), color: category.color, hint: hint)
+                            }
                         }
                     }
                 }
@@ -269,12 +285,11 @@ struct InvestmentBalanceView: View {
                         if hasDebt {
                             bucket("负债（元）", background: InvestmentBalanceStyle.debtBackground) {
                                 ForEach(debts) { account in
-                                    detail(account.name, account.latest(on: snapshot.day)?.amount, color: InvestmentBalanceStyle.debt)
+                                    accountLink(account, name: account.name, amount: account.latest(on: snapshot.day)?.amount)
                                 }
                                 if snapshot.investmentDeficit > 0 {
                                     detail("投资账户缺口", snapshot.investmentDeficit, color: InvestmentBalanceStyle.debt)
                                 }
-                                detail("总负债", snapshot.liabilities, color: InvestmentBalanceStyle.debt)
                             }
                         }
                         if hasEquity {
@@ -287,6 +302,18 @@ struct InvestmentBalanceView: View {
                 }
             }
         }
+    }
+
+    private func accountLink(_ account: InvestmentBalanceAccount, name: String, amount: Decimal?) -> some View {
+        NavigationLink {
+            InvestmentBalanceAccountDetail(store: store, accountID: account.id, hidesAmounts: hidesAmounts)
+        } label: {
+            detail(name, amount, color: account.category.color, showsChevron: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("查看" + account.name + "详情")
     }
 
     private func equationMetric(_ title: String, _ amount: Decimal?, background: Color) -> some View {
@@ -312,16 +339,22 @@ struct InvestmentBalanceView: View {
         .background(background, in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private func detail(_ name: String, _ amount: Decimal?, color: Color, hint: String? = nil) -> some View {
+    private func detail(_ name: String, _ amount: Decimal?, color: Color, hint: String? = nil, showsChevron: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Divider()
             HStack(spacing: 4) {
-                RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
-                Text(name).font(.caption)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 7, height: 7).accessibilityHidden(true)
+                        Text(name).font(.caption)
+                    }
+                    Text(InvestmentBalanceStyle.amount(amount, hidden: hidesAmounts))
+                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                    if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if showsChevron { InvestmentChevron() }
             }
-            Text(InvestmentBalanceStyle.amount(amount, hidden: hidesAmounts))
-                .font(.subheadline.weight(.semibold)).monospacedDigit()
-            if let hint { Text(hint).font(.caption2).foregroundStyle(.secondary) }
         }.accessibilityElement(children: .combine)
     }
 
@@ -344,7 +377,7 @@ struct InvestmentBalanceView: View {
             }
             ForEach(changes) { change in
                 Divider()
-                InvestmentBalanceChangeRow(change: change, showsDate: true, hidesAmounts: hidesAmounts)
+                InvestmentBalanceChangeRow(change: change, showsDate: true, hidesAmounts: hidesAmounts) { editingBalanceRecord = change }
             }
         }
     }

@@ -33,6 +33,10 @@ jobs:
           /tmp/hako-app-update-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Tests/HakoServerCompatibilityTests.swift -o /tmp/hako-server-compatibility-tests
           /tmp/hako-server-compatibility-tests
+      - name: Test investment assistant proposals and model protocols
+        run: |
+          swiftc Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentAgentActions.swift Hako/Features/Investment/InvestmentAgentProposal.swift Hako/Features/Investment/InvestmentAgentHTML.swift Hako/Features/Investment/InvestmentAgentConversation.swift Tests/InvestmentAgentTests.swift -o /tmp/hako-investment-agent-tests
+          /tmp/hako-investment-agent-tests
       - name: Typecheck Console client without signing
         run: |
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/HakoServer/AuthenticatedServerAccess.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Shared/HakoServer/ConsoleSessionRestoration.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/ConsoleClient.swift

@@ -74,7 +74,7 @@ struct NotificationsView: View {
         }
         .hakoDeleteConfirmation(Text("清除全部通知？"), isPresented: $confirmingClearAll,
                                 message: Text("将移除当前列表中的 \(store.notifications.count) 条通知。不会批准或拒绝任何登录请求。"),
-                                confirmTitle: Text("清除全部"), disabled: store.notifications.isEmpty,
+                                disabled: store.notifications.isEmpty,
                                 onDismiss: { clearAllContext = nil }) {
             guard clearAllContext == store.context else { return }
             store.clearAll()

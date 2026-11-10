@@ -109,7 +109,7 @@ struct QinglongScriptBrowser: View {
         } message: { Text("名称") }
         .hakoDeleteConfirmation(deleteItem?.isDirectory == true ? Text("删除文件夹及其中的全部内容？") : Text("删除此脚本？"),
                                 isPresented: $showDelete, message: deleteItem.map { Text($0.filePath) },
-                                confirmTitle: Text("删除"), disabled: store.busy,
+                                disabled: store.busy,
                                 onDismiss: { deleteItem = nil }, confirm: remove)
         .alert("操作未完成", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("好", role: .cancel) {} } message: { Text(error ?? "") }
     }

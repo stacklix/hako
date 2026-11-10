@@ -567,7 +567,7 @@ private struct InvestmentSettings: View {
     }
 }
 
-private struct InvestmentExportDocument: FileDocument {
+struct InvestmentExportDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.zip] }
     let data: Data
 

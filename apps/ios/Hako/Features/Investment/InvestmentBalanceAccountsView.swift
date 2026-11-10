@@ -1,8 +1,11 @@
 import SwiftUI
 
 struct InvestmentBalanceAccountsView: View {
+    enum Mode: Equatable { case update, composition }
+
     @ObservedObject var store: InvestmentStore
     let hidesAmounts: Bool
+    var mode: Mode = .update
     @State private var edit: Edit?
     @State private var feedback = ""
 
@@ -17,13 +20,19 @@ struct InvestmentBalanceAccountsView: View {
         let today = InvestmentBook.day()
         let snapshot = book.balanceSnapshot(on: today, today: today)
         let accounts = book.balanceSheet?.accounts ?? []
+        let categories = InvestmentBalanceCategory.allCases.filter { category in
+            mode == .update || (category == .investments ? !book.accounts.isEmpty : accounts.contains { $0.category == category })
+        }
         InvestmentScroll {
             HStack(alignment: .top) {
                 Text("账户余额（CNY）").foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 if !feedback.isEmpty { Text(feedback).foregroundStyle(InvestmentBalanceStyle.accent) }
             }.font(.caption)
-            ForEach(InvestmentBalanceCategory.allCases) { category in
+            if categories.isEmpty {
+                ContentUnavailableView("暂无账户", systemImage: "list.bullet.rectangle")
+            }
+            ForEach(categories) { category in
                 if category == .investments {
                     investments(book, total: snapshot.investment, today: today)
                 } else {
@@ -32,7 +41,7 @@ struct InvestmentBalanceAccountsView: View {
                 }
             }
         }
-        .navigationTitle("更新余额")
+        .navigationTitle(mode == .update ? "更新余额" : "资产构成详情")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $edit) { route in
             InvestmentBalanceAccountEditor(store: store, category: route.category, account: route.account,
@@ -68,14 +77,16 @@ struct InvestmentBalanceAccountsView: View {
             HStack {
                 Text(category.rawValue).font(.headline)
                 Spacer(minLength: 4)
-                Button {
-                    edit = Edit(category: category, account: nil)
-                } label: {
-                    Label("添加账户", systemImage: "plus").font(.caption.weight(.medium)).frame(minHeight: 44)
-                        .contentShape(Rectangle())
+                if mode == .update {
+                    Button {
+                        edit = Edit(category: category, account: nil)
+                    } label: {
+                        Label("添加账户", systemImage: "plus").font(.caption.weight(.medium)).frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
+                    .accessibilityLabel("添加" + category.rawValue + "账户")
                 }
-                .buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
-                .accessibilityLabel("添加" + category.rawValue + "账户")
             }
             totalText(total)
             if accounts.isEmpty {
@@ -83,16 +94,30 @@ struct InvestmentBalanceAccountsView: View {
             }
             ForEach(accounts) { account in
                 Divider()
-                HStack(spacing: 8) {
-                    accountRow(account.name, amount: account.latest(on: today)?.amount)
-                    Button {
-                        edit = Edit(category: category, account: account)
+                let amount = account.latest(on: today)?.amount
+                if mode == .composition {
+                    NavigationLink {
+                        InvestmentBalanceAccountDetail(store: store, accountID: account.id, hidesAmounts: hidesAmounts)
                     } label: {
-                        Text("更新").font(.caption.weight(.medium)).frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
+                        HStack(spacing: 8) {
+                            accountRow(account.name, amount: amount)
+                            InvestmentChevron()
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                } else {
+                    HStack(spacing: 8) {
+                        accountRow(account.name, amount: amount)
+                        Button {
+                            edit = Edit(category: category, account: account)
+                        } label: {
+                            Text("更新").font(.caption.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
+                        .accessibilityLabel("更新" + account.name + "余额")
                     }
-                    .buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
-                    .accessibilityLabel("更新" + account.name + "余额")
                 }
             }
         }
@@ -112,6 +137,88 @@ struct InvestmentBalanceAccountsView: View {
                 .lineLimit(1).minimumScaleFactor(0.65)
         }
         .frame(minHeight: 32)
+    }
+}
+
+struct InvestmentBalanceAccountDetail: View {
+    @ObservedObject var store: InvestmentStore
+    let accountID: UUID
+    let hidesAmounts: Bool
+    @State private var showsUpdate = false
+    @State private var editing: InvestmentBalanceChange?
+    @State private var feedback = ""
+    @State private var limit = 30
+
+    var body: some View {
+        let book = store.book
+        let today = InvestmentBook.day()
+        let account = book.balanceSheet?.accounts.first { $0.id == accountID }
+        let changes = book.balanceChanges(through: today, limit: limit + 1, filter: .account(accountID))
+        InvestmentScroll {
+            if let account {
+                summary(account, balance: account.latest(on: today))
+                InvestmentBalanceAccountTrend(account: account, today: today, hidesAmounts: hidesAmounts)
+                InvestmentCard {
+                    Text("更新历史").font(.headline)
+                    if changes.isEmpty {
+                        Text("暂无余额记录。").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    ForEach(changes.prefix(limit)) { change in
+                        Divider()
+                        InvestmentBalanceChangeRow(change: change, showsDate: false, hidesAmounts: hidesAmounts,
+                                                   showsAccount: false) { editing = change }
+                    }
+                    if changes.count > limit {
+                        Button("显示更早记录") { limit += 30 }.buttonStyle(HakoActionButtonStyle(primary: false))
+                    }
+                }
+            } else {
+                ContentUnavailableView("找不到账户", systemImage: "wallet.bifold")
+            }
+        }
+        .navigationTitle(account?.name ?? "账户详情")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showsUpdate) {
+            if let account {
+                InvestmentBalanceAccountEditor(store: store, category: account.category, account: account,
+                                               hidesAmounts: hidesAmounts) { feedback = $0 }
+            }
+        }
+        .sheet(item: $editing) { change in
+            InvestmentBalanceRecordEditor(store: store, change: change, hidesAmounts: hidesAmounts)
+        }
+    }
+
+    private func summary(_ account: InvestmentBalanceAccount, balance: InvestmentBalanceRecord?) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(account.category.rawValue)
+                    Text("当前余额（元）")
+                }.font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    showsUpdate = true
+                } label: {
+                    Label("更新余额", systemImage: "square.and.pencil")
+                        .font(.caption.weight(.medium)).frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(InvestmentBalanceStyle.accent)
+            }
+            Text(InvestmentBalanceStyle.amount(balance?.amount, hidden: hidesAmounts))
+                .font(.largeTitle.weight(.semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.55)
+            if let balance {
+                Text("记账日期 · " + InvestmentText.date(balance.recordedAt))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !feedback.isEmpty {
+                Text(feedback).font(.caption).foregroundStyle(InvestmentBalanceStyle.accent)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(15)
+        .background(InvestmentBalanceStyle.summary, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -163,8 +270,7 @@ private struct InvestmentBalanceAccountEditor: View {
                                     keyboard: .decimalPad, focusesOnRowTap: true)
                         .listRowBackground(HakoStyle.card)
                     if !editing {
-                        DatePicker("记账日期", selection: $recordDay, in: ...InvestmentBook.day(), displayedComponents: .date)
-                            .investmentListRow()
+                        InvestmentDatePicker("记账日期", selection: $recordDay, latest: InvestmentBook.day())
                             .listRowBackground(HakoStyle.card)
                     }
                     if editing {
@@ -229,35 +335,72 @@ struct InvestmentBalanceChangeRow: View {
     let change: InvestmentBalanceChange
     let showsDate: Bool
     let hidesAmounts: Bool
+    var showsAccount = true
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
-        let source = change.category == .investments ? "月末快照" : change.category.rawValue
-        let label = showsDate ? InvestmentBalanceStyle.shortDay(change.day) + " · " + source : source
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .top, spacing: 8) {
-                Text(change.name).font(.subheadline.weight(.medium))
-                Spacer(minLength: 2)
-                Text(label).font(.caption2).foregroundStyle(.secondary)
-            }
-            if let before = change.before {
-                let difference = change.after - before
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(InvestmentBalanceStyle.amount(before, hidden: hidesAmounts) + " → " +
-                         InvestmentBalanceStyle.amount(change.after, hidden: hidesAmounts))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 2)
-                    Text(InvestmentBalanceStyle.amount(difference, hidden: hidesAmounts, signed: true))
-                        .fontWeight(.semibold)
-                        .foregroundStyle(InvestmentBalanceStyle.changeColor(difference, liability: change.category == .liabilities,
-                                                                            hidden: hidesAmounts))
+        if let onEdit, change.manualRecord != nil {
+            Button(action: onEdit) {
+                HStack(spacing: 8) {
+                    content
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    InvestmentChevron()
                 }
-            } else {
-                let prefix = change.category == .investments ? "月末余额 " : "初始余额 "
-                Text(prefix + InvestmentBalanceStyle.amount(change.after, hidden: hidesAmounts)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("编辑余额记录")
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        let source = change.category == .investments ? "月末快照" : change.category.rawValue
+        let showsDateBelow = showsAccount && showsDate
+        let difference = change.before.map { change.after - $0 }
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(showsAccount ? change.name : InvestmentText.date(change.day)).font(.subheadline.weight(.medium))
+                if showsAccount {
+                    Spacer(minLength: 2)
+                    if showsDateBelow {
+                        if let difference { changeAmount(difference) }
+                    } else {
+                        Text(source).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(balanceDescription).foregroundStyle(.secondary)
+                if showsDateBelow {
+                    Spacer(minLength: 2)
+                    Text(InvestmentBalanceStyle.shortDay(change.day) + " · " + source)
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if let difference {
+                    Spacer(minLength: 2)
+                    changeAmount(difference)
+                }
             }
         }
         .font(.caption).monospacedDigit()
         .accessibilityElement(children: .combine)
+    }
+
+    private var balanceDescription: String {
+        let after = InvestmentBalanceStyle.amount(change.after, hidden: hidesAmounts)
+        if let before = change.before {
+            return InvestmentBalanceStyle.amount(before, hidden: hidesAmounts) + " → " + after
+        }
+        return (change.category == .investments ? "月末余额 " : "初始余额 ") + after
+    }
+
+    private func changeAmount(_ difference: Decimal) -> some View {
+        Text(InvestmentBalanceStyle.amount(difference, hidden: hidesAmounts, signed: true))
+            .fontWeight(.semibold)
+            .foregroundStyle(InvestmentBalanceStyle.changeColor(difference, liability: change.category == .liabilities,
+                                                                hidden: hidesAmounts))
     }
 }
 
@@ -265,11 +408,27 @@ struct InvestmentBalanceHistory: View {
     @ObservedObject var store: InvestmentStore
     let hidesAmounts: Bool
     @State private var limit = 30
+    @State private var filter = InvestmentBalanceHistoryFilter.all
+    @State private var editing: InvestmentBalanceChange?
 
     var body: some View {
-        let changes = store.book.balanceChanges(through: InvestmentBook.day(), limit: limit + 1)
+        let book = store.book
+        let changes = book.balanceChanges(through: InvestmentBook.day(), limit: limit + 1, filter: filter)
         let groups = Dictionary(grouping: changes.prefix(limit), by: \.day)
         InvestmentScroll {
+            InvestmentCard {
+                Picker("账户筛选", selection: $filter) {
+                    Text("全部账户").tag(InvestmentBalanceHistoryFilter.all)
+                    ForEach(book.balanceSheet?.accounts ?? []) { account in
+                        Text(account.name + " · " + account.category.rawValue)
+                            .tag(InvestmentBalanceHistoryFilter.account(account.id))
+                    }
+                    if book.balanceSheet?.investmentSnapshots.isEmpty == false {
+                        Text("投资理财 · 月末快照").tag(InvestmentBalanceHistoryFilter.investment)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
             if groups.isEmpty {
                 ContentUnavailableView("暂无更新记录", systemImage: "clock")
             }
@@ -278,7 +437,7 @@ struct InvestmentBalanceHistory: View {
                     Text(InvestmentText.date(day)).font(.subheadline.weight(.semibold))
                     ForEach(groups[day] ?? []) { change in
                         Divider()
-                        InvestmentBalanceChangeRow(change: change, showsDate: false, hidesAmounts: hidesAmounts)
+                        InvestmentBalanceChangeRow(change: change, showsDate: false, hidesAmounts: hidesAmounts) { editing = change }
                     }
                 }
             }
@@ -288,5 +447,91 @@ struct InvestmentBalanceHistory: View {
         }
         .navigationTitle("更新历史")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: filter) { limit = 30 }
+        .sheet(item: $editing) { change in
+            InvestmentBalanceRecordEditor(store: store, change: change, hidesAmounts: hidesAmounts)
+        }
+    }
+}
+
+struct InvestmentBalanceRecordEditor: View {
+    @ObservedObject var store: InvestmentStore
+    @Environment(\.dismiss) private var dismiss
+    let change: InvestmentBalanceChange
+    let hidesAmounts: Bool
+    private let initialAmount: String
+    @State private var date: Date
+    @State private var amount: String
+    @State private var saving = false
+    @State private var confirmsDeletion = false
+    @State private var error: String?
+
+    init(store: InvestmentStore, change: InvestmentBalanceChange, hidesAmounts: Bool) {
+        self.store = store
+        self.change = change
+        self.hidesAmounts = hidesAmounts
+        let initial = hidesAmounts ? "" : change.after.formatted(.number.grouping(.never))
+        initialAmount = initial
+        _amount = State(initialValue: initial)
+        _date = State(initialValue: change.day)
+    }
+
+    var body: some View {
+        let hasChanges = date != change.day || amount != initialAmount
+        let hasAmount = !amount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        SettingsSheet(title: "编辑余额记录", hasChanges: hasChanges, isBusy: saving || store.saving,
+                      saveEnabled: hasChanges && (hidesAmounts || hasAmount), onSave: {
+            Task {
+                await persist { ledger, accountID, original in
+                    let value = hasAmount ? try investmentDecimal(amount, "余额", allowZero: true) : original.amount
+                    try ledger.replaceRecord(original, accountID: accountID, amount: value, on: date)
+                }
+            }
+        }, saveAccessibilityLabel: "保存余额记录") {
+            Form {
+                Section(change.name + " · " + change.category.rawValue) {
+                    InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
+                    InvestmentField("变动后余额（元）", text: $amount, keyboard: .decimalPad, focusesOnRowTap: true)
+                }
+                if let error {
+                    Section { Text(error).font(.footnote).foregroundStyle(.red) }
+                }
+                Section {
+                    HakoDeleteButton(title: "删除余额记录") { confirmsDeletion = true }
+                        .investmentListRow()
+                        .listRowBackground(Color.clear)
+                }
+            }
+            .disabled(saving || store.saving)
+            .hakoDeleteConfirmation(Text("删除这笔余额记录？"), isPresented: $confirmsDeletion,
+                                    message: Text("删除后，历史余额会按剩余记录重新显示。"),
+                                    disabled: saving || store.saving) {
+                Task {
+                    await persist { ledger, accountID, original in
+                        try ledger.deleteRecord(original, accountID: accountID)
+                    }
+                }
+            }
+        }
+        .environment(\.investmentFieldPlaceholders, false)
+    }
+
+    private func persist(_ operation: (inout InvestmentBalanceLedger, UUID, InvestmentBalanceRecord) throws -> Void) async {
+        guard !saving, let (accountID, record) = change.manualRecord else { return }
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            try await store.update { book in
+                guard var ledger = book.balanceSheet else { throw InvestmentError.invalid("找不到资产负债账本。") }
+                try operation(&ledger, accountID, record)
+                book.balanceSheet = ledger
+            }
+            dismiss()
+        } catch is CancellationError {
+            return
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

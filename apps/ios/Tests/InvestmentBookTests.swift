@@ -26,6 +26,7 @@ struct InvestmentBookTests {
         try transfersMoveCashAsOneOperation()
         try depositsUseRecordedBalancesAndCashMovements()
         try balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation()
+        try balanceHistoryFiltersAndReplaysEditedRecords()
         try investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth()
         try dailyGainsRequireCompleteMarketPrices()
         try portfolioHistoryMatchesIndividualValuations()
@@ -487,6 +488,45 @@ struct InvestmentBookTests {
         let deficit = InvestmentBalanceSnapshot(day: third, manual: [.cash: 300, .liabilities: 500],
                                                 investment: -50, updatedAt: nil)
         precondition(deficit.assets == 300 && deficit.liabilities == 550 && deficit.net == -250)
+    }
+
+    static func balanceHistoryFiltersAndReplaysEditedRecords() throws {
+        let first = date(1), second = date(2), third = date(3), end = date(31)
+        var ledger = InvestmentBalanceLedger(investmentMonthEnds: [end: 800])
+        try ledger.add("储蓄卡", category: .cash, amount: 100, at: first)
+        try ledger.add("储蓄卡", category: .receivables, amount: 700, at: third)
+        let accountID = ledger.accounts[0].id
+        try ledger.update(accountID, amount: 120, at: second)
+        try ledger.update(accountID, amount: 180, at: third.addingTimeInterval(3600))
+        var book = InvestmentBook()
+        book.balanceSheet = ledger
+
+        let recent = book.balanceChanges(through: end, limit: 1, filter: .account(accountID))
+        precondition(recent.count == 1 && recent[0].after == 180)
+        let months = book.balanceChanges(through: end, limit: 10, filter: .investment)
+        precondition(months.count == 1 && months[0].manualRecord == nil)
+        let original = recent[0].manualRecord!.record
+        try ledger.replaceRecord(original, accountID: accountID, amount: 150, on: first, now: end)
+        do {
+            try ledger.deleteRecord(original, accountID: accountID)
+            preconditionFailure("An older editor must not delete the changed record")
+        } catch InvestmentError.invalid {}
+        book.balanceSheet = ledger
+        let changes = book.balanceChanges(through: end, limit: 10, filter: .account(accountID))
+        precondition(changes.map(\.after) == [120, 150, 100] && changes[0].before == 150)
+        precondition(changes[1].manualRecord?.record.id == original.id && changes[1].day == first)
+        precondition(book.balanceSnapshot(on: first).manual[.cash] == 150)
+
+        try ledger.deleteRecord(changes[0].manualRecord!.record, accountID: accountID)
+        book.balanceSheet = ledger
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let saved = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: tables))
+        precondition(saved.balanceSnapshot(on: second).manual[.cash] == 150)
+        let remaining = saved.balanceChanges(through: end, limit: 10, filter: .account(accountID))
+        precondition(remaining.map(\.after) == [150, 100])
+        for change in remaining { try ledger.deleteRecord(change.manualRecord!.record, accountID: accountID) }
+        precondition(ledger.accounts[0].id == accountID && ledger.accounts[0].records.isEmpty)
     }
 
     static func investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth() throws {
