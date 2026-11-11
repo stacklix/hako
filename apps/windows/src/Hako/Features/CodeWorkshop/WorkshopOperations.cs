@@ -57,8 +57,8 @@ internal sealed partial class CodeWorkshop
     private WorkshopJob GetJob(string id)
     {
         if (jobs.TryGetValue(id, out var existing)) return existing;
-        if (!File.Exists(JobPath(id))) throw new AgentActionException("codex_operation_missing", "任务记录不存在，请查看会话历史确认发送结果。");
-        var job = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(JobPath(id)), AgentConnection.Json)
+        if (!File.Exists(JobPath(id))) throw new WorkshopException("codex_operation_missing", "任务记录不存在，请查看会话历史确认发送结果。");
+        var job = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(JobPath(id)), WorkshopProtocol.Json)
             ?? throw new InvalidDataException("代码工坊任务记录损坏。");
         if (job.Id != id) throw new InvalidDataException("代码工坊任务 ID 无效。");
         if (job.Active)
@@ -82,7 +82,7 @@ internal sealed partial class CodeWorkshop
     {
         Directory.CreateDirectory(storage);
         var temporary = JobPath(job.Id) + ".tmp";
-        File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(job, AgentConnection.Json));
+        File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(job, WorkshopProtocol.Json));
         File.Move(temporary, JobPath(job.Id), true);
         SignalChange();
     }
@@ -90,7 +90,7 @@ internal sealed partial class CodeWorkshop
     private void Append(WorkshopJob job, WorkshopEvent entry)
     {
         Directory.CreateDirectory(storage);
-        File.AppendAllText(EventPath(job.RootId ?? job.Id), JsonSerializer.Serialize(entry, AgentConnection.Json) + "\n", new UTF8Encoding(false));
+        File.AppendAllText(EventPath(job.RootId ?? job.Id), JsonSerializer.Serialize(entry, WorkshopProtocol.Json) + "\n", new UTF8Encoding(false));
         if (job.ThreadId is not null) DiscoverArtifacts(job.ThreadId, job.Cwd, [entry]);
         SignalChange();
     }
@@ -126,14 +126,14 @@ internal sealed partial class CodeWorkshop
             if (jobs.ContainsKey(id) || File.Exists(JobPath(id)))
             {
                 var old = GetJob(id);
-                if (old.Fingerprint != fingerprint) throw new AgentActionException("codex_request_conflict", "请求 ID 已用于其他消息，请先确认原消息结果。");
+                if (old.Fingerprint != fingerprint) throw new WorkshopException("codex_request_conflict", "请求 ID 已用于其他消息，请先确认原消息结果。");
                 return Task.FromResult<object?>(Summary(old));
             }
             if (threadId.Length > 0 && changingArchive.Contains(threadId) || jobs.Values.Count(job => job.Active) >= 3 ||
                 threadId.Length > 0 && jobs.Values.Any(job => (job.Active || job.State is "queued" or "paused" or "steering") && job.ThreadId == threadId))
-                throw new AgentActionException("codex_busy", "此会话已有任务，或电脑的 Codex 并发任务已满。");
+                throw new WorkshopException("codex_busy", "此会话已有任务，或电脑的 Codex 并发任务已满。");
             if (images.Any(image => !File.Exists(UploadPath(image))))
-                throw new AgentActionException("codex_image_missing", "图片尚未上传完成，请重新发送。");
+                throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重新发送。");
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
                 Model = model, Permission = permission, ServiceTier = serviceTier, QueueOrder = DateTime.UtcNow.Ticks };
@@ -145,7 +145,7 @@ internal sealed partial class CodeWorkshop
                 job.State = "failed";
                 job.Message = "电脑无法保存消息，任务尚未发送，请检查磁盘空间和目录权限。";
                 try { Persist(job); } catch (IOException) { }
-                throw new AgentActionException("codex_storage_failed", job.Message);
+                throw new WorkshopException("codex_storage_failed", job.Message);
             }
             job.Worker = Task.Run(() => ExecuteAsync(job, name, message, model, permission, images, serviceTier));
             return Task.FromResult<object?>(Summary(job));
@@ -181,7 +181,7 @@ internal sealed partial class CodeWorkshop
                 {
                     var thread = await ThreadAsync(job.ThreadId, false, stopping.Token);
                     var cwd = CodexJson.Text(thread, "cwd");
-                    if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new AgentActionException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
+                    if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new WorkshopException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
                     job.Cwd = cwd;
                     options["threadId"] = job.ThreadId;
                     options["excludeTurns"] = true;
@@ -232,7 +232,7 @@ internal sealed partial class CodeWorkshop
                 job.State = writerConflict || !job.Submitted ? "failed" : "unknown";
                 job.Outcome = job.State;
                 job.Message = writerConflict ? "桌面版仍占用此会话。释放会话后，再发送新消息。" :
-                    e is AgentActionException action ? action.Message :
+                    e is WorkshopException action ? action.Message :
                     job.Submitted ? "任务结果尚未确认，请先刷新会话历史。此消息不会自动重发。" :
                     e is OperationCanceledException ? "任务已在发送前停止。" : "Codex 未能开始任务，请检查本机登录和配置后重试。";
                 try
@@ -336,7 +336,7 @@ internal sealed partial class CodeWorkshop
             {
                 var size = Encoding.UTF8.GetByteCount(line) + 1;
                 if (bytes + size > 35 * 1024 && events.Count > 0) break;
-                events.Add(JsonSerializer.Deserialize<WorkshopEvent>(line, AgentConnection.Json) ?? throw new InvalidDataException());
+                events.Add(JsonSerializer.Deserialize<WorkshopEvent>(line, WorkshopProtocol.Json) ?? throw new InvalidDataException());
                 lineSizes.Add(size);
                 cursor += size; bytes += size;
             }
@@ -347,10 +347,10 @@ internal sealed partial class CodeWorkshop
                 operation = GroupSummary(root), events, cursor, hasMore = cursor < stream.Length,
                 approvals, artifacts = files, followups = FollowupSummaries(root)
             };
-            while (JsonSerializer.SerializeToUtf8Bytes(Page(), AgentConnection.Json).Length > 56 * 1024)
+            while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024)
             {
                 if (files.Length > 0) { files = files[..^1]; continue; }
-                if (events.Count == 0) throw new AgentActionException("codex_response_large", "Codex 的交互请求超出消息限制，请在电脑上处理该请求。");
+                if (events.Count == 0) throw new WorkshopException("codex_response_large", "Codex 的交互请求超出消息限制，请在电脑上处理该请求。");
                 cursor -= lineSizes[^1];
                 lineSizes.RemoveAt(lineSizes.Count - 1);
                 events.RemoveAt(events.Count - 1);
@@ -378,7 +378,7 @@ internal sealed partial class CodeWorkshop
             {
                 if (job.Answered.Contains(approvalId)) return Summary(job);
                 if (!job.Approvals.TryGetValue(approvalId, out pending) || job.Server is null)
-                    throw new AgentActionException("codex_approval_expired", "此请求已结束，请刷新任务状态。");
+                    throw new WorkshopException("codex_approval_expired", "此请求已结束，请刷新任务状态。");
             }
             object response;
             if (pending.Approval.Kind == "question")
@@ -405,7 +405,7 @@ internal sealed partial class CodeWorkshop
             catch (Exception)
             {
                 lock (gate) job.Message = "审批回复的发送结果尚未确认，请查看任务进度。";
-                throw new AgentActionException("codex_approval_unknown", "审批结果尚未确认，请查看任务进度。");
+                throw new WorkshopException("codex_approval_unknown", "审批结果尚未确认，请查看任务进度。");
             }
             lock (gate) { Persist(job); return Summary(job); }
         }
@@ -431,7 +431,7 @@ internal sealed partial class CodeWorkshop
         catch (Exception)
         {
             lock (gate) { job.StopRequested = false; Persist(job); }
-            throw new AgentActionException("codex_stop_unknown", "停止请求结果尚未确认，请检查任务进度后重试。");
+            throw new WorkshopException("codex_stop_unknown", "停止请求结果尚未确认，请检查任务进度后重试。");
         }
         lock (gate) { Persist(job); return Summary(job); }
     }

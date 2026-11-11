@@ -7,26 +7,21 @@ namespace Hako.Core;
 internal sealed class AgentRequestSlots
 {
     internal const int Limit = 16;
-    internal const int WorkshopLimit = 12;
     private readonly object gate = new();
     private int active;
-    private int workshop;
 
-    public IDisposable? TryAcquire(string method)
+    public IDisposable? TryAcquire()
     {
-        var isWorkshop = method.StartsWith("action.codex.", StringComparison.Ordinal) ||
-            (method.StartsWith("query.codex.", StringComparison.Ordinal) && method != "query.codex.usage");
         lock (gate)
         {
-            // Background conversation reads must leave room for device monitoring.
-            if (active >= Limit || isWorkshop && workshop >= WorkshopLimit) return null;
+            // Code Workshop owns a different connection and does not consume these slots.
+            if (active >= Limit) return null;
             active++;
-            if (isWorkshop) workshop++;
-            return new Lease(this, isWorkshop);
+            return new Lease(this);
         }
     }
 
-    private sealed class Lease(AgentRequestSlots owner, bool workshop) : IDisposable
+    private sealed class Lease(AgentRequestSlots owner) : IDisposable
     {
         private AgentRequestSlots? owner = owner;
         public void Dispose()
@@ -36,7 +31,6 @@ internal sealed class AgentRequestSlots
             lock (current.gate)
             {
                 current.active--;
-                if (workshop) current.workshop--;
             }
         }
     }

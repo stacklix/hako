@@ -53,15 +53,15 @@ internal sealed partial class CodeWorkshop
             {
                 var existing = GetJob(id);
                 if (existing.RootId != root.Id || existing.Fingerprint != fingerprint)
-                    throw new AgentActionException("codex_request_conflict", "请求 ID 已用于其他消息。");
+                    throw new WorkshopException("codex_request_conflict", "请求 ID 已用于其他消息。");
                 return Task.FromResult<object?>(FollowupSummary(existing));
             }
             if (root.ThreadId is not null && changingArchive.Contains(root.ThreadId))
-                throw new AgentActionException("codex_busy", "会话正在归档，请稍后再发送消息。");
+                throw new WorkshopException("codex_busy", "会话正在归档，请稍后再发送消息。");
             if (Group(root).Count(value => value.RootId is not null) >= 30)
-                throw new AgentActionException("codex_queue_full", "本轮后续消息过多，请等待本轮完成后再发送。");
+                throw new WorkshopException("codex_queue_full", "本轮后续消息过多，请等待本轮完成后再发送。");
             if (images.Any(image => !File.Exists(UploadPath(image))))
-                throw new AgentActionException("codex_image_missing", "图片尚未上传完成，请重试原消息。");
+                throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重试原消息。");
             var current = CurrentJob(root);
             var predecessor = Group(root).Where(value => value.Worker is not null && value.State is not ("paused" or "cancelled"))
                 .OrderByDescending(value => value.QueueOrder).FirstOrDefault() ?? root;
@@ -125,18 +125,18 @@ internal sealed partial class CodeWorkshop
             if (job.RootId != root.Id) throw CodexJson.Invalid();
             if (job.Commands.TryGetValue(requestId, out var previous))
             {
-                if (previous != identity) throw new AgentActionException("codex_request_conflict", "操作请求 ID 已用于其他内容。");
+                if (previous != identity) throw new WorkshopException("codex_request_conflict", "操作请求 ID 已用于其他内容。");
                 return FollowupSummary(job);
             }
             if (job.Revision != revision || job.State is not ("queued" or "paused"))
-                throw new AgentActionException("codex_message_changed", "消息状态已经变化，请刷新后再操作。");
+                throw new WorkshopException("codex_message_changed", "消息状态已经变化，请刷新后再操作。");
             if (action == "update" && string.IsNullOrWhiteSpace(text) && job.ImageIds.Length == 0) throw CodexJson.Invalid();
             current = CurrentJob(root);
             if (action == "steer" && !current.Active && current.State is "completed" or "interrupted" or "failed")
             {
                 if (root.ThreadId is null || jobs.Values.Any(value => value.Active && value.ThreadId == root.ThreadId) ||
                     jobs.Values.Count(value => value.Active) >= 3 || Group(root).Any(value => value.State is "unknown" or "steering"))
-                    throw new AgentActionException("codex_busy", "请先核对已有任务的状态。");
+                    throw new WorkshopException("codex_busy", "请先核对已有任务的状态。");
                 var previousWorker = job.Worker;
                 root.StopRequested = false; Persist(root);
                 job.Commands[requestId] = identity; job.Revision++; job.State = "starting";
@@ -152,7 +152,7 @@ internal sealed partial class CodeWorkshop
                 return FollowupSummary(job);
             }
             if (action == "steer" && (!current.Active || current.State is "starting" or "finishing" || current.StopRequested || current.TurnId is null))
-                throw new AgentActionException("codex_turn_finished", "当前任务已结束或正在收尾，消息仍保留在队列中。");
+                throw new WorkshopException("codex_turn_finished", "当前任务已结束或正在收尾，消息仍保留在队列中。");
             job.Commands[requestId] = identity; job.Revision++;
             if (action == "update") job.InputMessage = text;
             if (action == "cancel") job.State = "cancelled";

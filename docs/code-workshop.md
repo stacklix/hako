@@ -1,10 +1,10 @@
 # 代码工坊
 
-代码工坊通过已登记的 Windows Agent 使用本机 Codex CLI 的 App Server。iOS 沿用 Hako 登录和 Agent WebSocket 转发，服务端继续通用转发。电脑需要在运行 Agent 的 Windows 用户下安装并登录 Codex CLI。
+代码工坊通过 Windows 应用中的独立工坊服务使用本机 Codex CLI App Server。它拥有独立的 hako.workshop/1 协议、WebSocket 连接、请求池和在线状态，不借用设备监控协议或 Agent 连接。账号登录和已登记的电脑公钥仍由 Hako 主应用管理。电脑需要在当前 Windows 用户下安装并登录 Codex CLI。
 
-当前按 Codex CLI 0.164.0 的本机协议验证；消息队列与 Steer 需要 Windows Agent 1.0.6 和 Hako iOS 0.1.9。
+当前按 Codex CLI 0.164.0 的本机协议验证。独立工坊协议需要服务端 0.2.0、Windows 1.1.0 和 iOS 0.2.0，三端需协同升级，不回退到设备监控通道。
 
-Windows Agent 1.0.9 与 Hako iOS 0.1.12 支持最新消息摘要、进行中标记和未读标记。列表读取最新轮次的摘要，跳过工具记录，按最近更新时间倒序排列。未读按电脑、会话及完成轮次在手机本地保存，最后更新超过 12 小时后不再显示标记；列表停留期间也会定时更新过期状态。会话位于前台、最新消息可见时清除未读，上滑阅读历史、查看弹出详情或切到后台时保留标记。
+代码工坊支持最新消息摘要、进行中标记和未读标记。列表读取最新轮次的摘要，跳过工具记录，按最近更新时间倒序排列。未读按电脑、会话及完成轮次在手机本地保存，最后更新超过 12 小时后不再显示标记；列表停留期间也会定时更新过期状态。会话位于前台、最新消息可见时清除未读，上滑阅读历史、查看弹出详情或切到后台时保留标记。
 
 列表状态由最新轮次和 Agent 实际执行中的任务决定。线程本身的 `active` 标记不会覆盖最新轮次的完成、失败或中断结果；本机任务仍在等待确认或释放写锁时，继续显示实际任务状态。
 
@@ -20,9 +20,9 @@ iOS 主应用「设置 → 网络 → 网络配置」统一管理内网 Wi-Fi �
 
 代码工坊在进入、回到前台和网络配置变化时获取地址。取得地址后，电脑发现、列表、历史、模型、消息、图片与实时事件订阅全部使用该 Agent 的局域网 WebSocket，不需要登录 Hako 服务器，也不经服务器转发或认证。没有内网地址时使用原服务器连接。发送前再次核对网络，路由变化时取消旧请求并重新加载列表；不将未确认的写入自动重发到另一条路径。两种路径的本机缓存按连接上下文隔离。
 
-Windows Agent 1.0.11 的「服务器设置 → 局域网直连端口 → 保存局域网配置」可独立启用直连，不要求先配置服务器或密钥。端口默认 `0`，表示关闭；也可用 `Hako.exe config set --direct-port <端口> --json` 修改，用 `status --json` 查询实际监听状态。监听器只接收本机和本地网段的原生客户端，当前只开放代码工坊方法。请求和服务器路径共享同一套任务、队列与游标；关闭直连客户端不终止电脑任务。
+Windows 1.1.0 的「服务器设置 → 局域网直连端口 → 保存局域网配置」可独立启用直连，不要求先配置服务器或密钥。端口默认 `0`，表示关闭；也可用 `Hako.exe config set --direct-port <端口> --json` 修改，用 `status --json` 查询实际监听状态。监听器只接收本机和本地网段的原生客户端，当前只开放代码工坊方法。请求和服务器路径共享同一套任务、队列与游标；关闭直连客户端不终止电脑任务。
 
-直连接口为 `ws://<IP>:<端口>/agents`（请求与电脑信息）及 `/workshop/<operationId>/<cursor>`（增量订阅），使用与服务器连接相同的 JSON 回复和事件页格式。此功能需要 iOS 0.1.14；公网转发仍要求已兼容的服务端与 Agent。
+直连接口为 `ws://<IP>:<端口>/workshop/v1`（请求与电脑信息）及 `/workshop/v1/events/<operationId>/<cursor>`（增量订阅）。云端由 Windows 独立连接 `/ws/workshop/agent`，iOS 独立连接 `/ws/workshop/client` 与 `/ws/workshop/events/<computerId>/<operationId>/<cursor>`。所有工坊端点使用 `hako.workshop/1`，拒绝设备监控的握手和请求帧。
 
 Agent 从 `~/Code` 的一级 Git 项目构建应用列表，按会话实际工作目录关联应用。同一应用的会话放在同一个 Tab。显示不下的应用进入最后一个 Tab 的下拉菜单；发现新会话时，将其应用移到首位。聊天页顶部使用会话名称，正文只保留应用名和项目目录，应用名右侧显示模型；执行电脑在更多页面的会话信息中查看。
 
@@ -30,7 +30,7 @@ iOS 按登录上下文和执行电脑缓存应用、会话列表。进入页面�
 
 同步由代码工坊服务持有，不随对话页面关闭。返回会话列表后，最近打开的会话继续读取进度；离开整个代码工坊后，列表和会话继续同步一分钟，期间返回会直接复用原连接、对象、草稿、图片和事件游标。超过一分钟取消事件订阅，传输连接按空闲策略回收；五分钟未返回时释放保留的会话对象，最多保留六个。首次进入、离开较久、任务或完成轮次发生变化、连接异常或发送结果待确认时重新核对；切换登录上下文会停止旧任务并清空保留对象。主应用进入系统后台时暂停网络读取，回到前台按状态恢复，持续执行受 iOS 系统调度限制。
 
-执行中的回复通过专用、已认证的 WebSocket 事件订阅推送：Agent 在文字增量、工具记录、审批或队列状态变化时唤醒订阅，合并 25 毫秒内的事件突发，服务端直接转发到 iOS，不再每秒查询任务。首次订阅及断线重连均携带最后已应用的事件文件字节游标，逐页补齐后继续等待新事件。手机按游标去重并保留正式轮次顺序；慢连接缓冲溢出时明确断开并从游标恢复，取消订阅只停止读取，不停止电脑任务。没有运行任务时仍定期核对会话历史，以发现其他客户端发起的变化。此功能需要服务端 0.1.6、Windows Agent 1.0.10（query.codex.stream v1）及 iOS 0.1.13；旧 Agent 显示更新提示。
+执行中的回复通过专用、已认证的 WebSocket 事件订阅推送：Agent 在文字增量、工具记录、审批或队列状态变化时唤醒订阅，合并 25 毫秒内的事件突发，服务端直接转发到 iOS，不再每秒查询任务。首次订阅及断线重连均携带最后已应用的事件文件字节游标，逐页补齐后继续等待新事件。手机按游标去重并保留正式轮次顺序；慢连接缓冲溢出时明确断开并从游标恢复，取消订阅只停止读取，不停止电脑任务。没有运行任务时仍定期核对会话历史，以发现其他客户端发起的变化。工坊查询和事件订阅不占用设备监控的请求槽；各自最多 16 个并发请求，拥有独立的心跳和重连。
 
 列表、历史和原型读取不恢复线程。发送时启动独立的 `codex app-server --listen stdio://`，恢复原 `threadId` 后开始一轮。新会话在发送第一条消息时创建。模型默认沿用 Codex 配置或原会话设置，可在会话右上角「更多 → 会话设置」选择。模型列表来自 App Server 的 `model/list`，实际可用性仍取决于本机账号和服务提供方。
 
@@ -62,29 +62,35 @@ iOS 按登录上下文和执行电脑缓存应用、会话列表。进入页面�
 
 | 方法 | 用途 |
 | --- | --- |
-| `query.codex.applications` | 应用列表和分页会话，`archived: true` 查看已归档会话 |
-| `action.codex.thread.archive` | 按 `threadId` 和 `archived` 归档或取消归档会话 |
-| `query.codex.models` | 本机 Codex 模型列表及图片输入能力 |
-| `action.codex.image.upload` | 分片上传 JPEG 附件 |
-| `query.codex.image` | 按会话、用户消息 ID 和图片序号分片读取附件，校验 SHA-256 |
-| `query.codex.history` | 分页历史、原型卡片和最近任务 ID |
-| `action.codex.turn.start` | 用客户端请求 ID 提交一轮 |
-| `query.codex.operation` | 用字节游标读取持久化的回复增量、执行记录、状态和审批 |
-| `action.codex.turn.stop` | 中断本轮 |
-| `action.codex.message.queue` | 持久化后续消息并按顺序续发 |
-| `action.codex.message.update` | 按消息修订号修改排队文字 |
-| `action.codex.message.cancel` | 取消尚未发送的消息 |
-| `action.codex.message.steer` | 将排队消息引导到当前轮次，或手动发送暂停的消息 |
-| `action.codex.approval.reply` | 回复命令、文件修改审批或用户问题 |
-| `query.codex.artifact` | 按修订哈希分块读取会话关联的 HTML 原型 |
+| `applications.list` | 应用列表和分页会话，`archived: true` 查看已归档会话 |
+| `thread.archive` | 按 `threadId` 和 `archived` 归档或取消归档会话 |
+| `models.list` | 本机 Codex 模型列表及图片输入能力 |
+| `image.upload` | 分片上传 JPEG 附件 |
+| `image.read` | 按会话、用户消息 ID 和图片序号分片读取附件，校验 SHA-256 |
+| `history.read` | 分页历史、原型卡片和最近任务 ID |
+| `turn.start` | 用客户端请求 ID 提交一轮 |
+| `operation.read` | 用字节游标读取持久化的回复增量、执行记录、状态和审批 |
+| `turn.stop` | 中断本轮 |
+| `message.queue` | 持久化后续消息并按顺序续发 |
+| `message.update` | 按消息修订号修改排队文字 |
+| `message.cancel` | 取消尚未发送的消息 |
+| `message.steer` | 将排队消息引导到当前轮次，或手动发送暂停的消息 |
+| `approval.reply` | 回复命令、文件修改审批或用户问题 |
+| `artifact.read` | 按修订哈希分块读取会话关联的 HTML 原型 |
 
-提交立即返回任务 ID，执行生命周期属于 Windows Agent。手机断网、后台挂起和服务端连接重建不会取消已提交任务。iOS 在前台通过现有 WebSocket 大约每秒读取一次新增事件，回到前台后沿用游标继续读取。
+提交立即返回任务 ID，执行生命周期属于 Windows Agent。手机断网、后台挂起和服务端连接重建不会取消已提交任务。iOS 在前台通过工坊专用事件连接接收增量，回到前台后沿用游标继续读取。
 
 本版尚未接入任务完成的后台推送，设置页不展示未生效的通知开关。
 
 iOS 在发送前持久化原请求 ID 和原参数。重复的同一请求返回原任务，复用 ID 提交不同内容会报错。新线程取得 `threadId` 后，重试仍保留原来未指定线程的参数。网络结果不确定时先查询原任务，用户可显式重试原消息；不会自动重发。
 
 Agent 按自身配置目录持久化任务元数据和事件。Agent 重新启动后，未确认完成的旧任务标为结果未知，要求读取 Codex 会话核对。审批回复只授予本次操作。未支持的交互请求会明确拒绝并在会话显示提示。
+
+## 工坊帧格式
+
+握手返回 `{"kind":"welcome","protocol":"hako.workshop/1"}`。查询采用 `{"kind":"call","id":"请求ID","computerId":"电脑ID","method":"history.read","params":{}}`，成功返回 `kind=result` 和 `result`，失败返回 `kind=failure` 和 `error={code,message}`。事件帧为 `kind=event` 和 `result`，不使用设备监控的 `type/request/version/body` 格式。
+
+Windows 云端连接使用独立 RSA-PSS 挑战，签名绑定 `hako-workshop-auth/v1`、服务器 origin、账号、公钥指纹和随机数。只为工坊登记在线状态；设备监控连接的建立、断开或请求满载不会修改该状态。电脑撤销信任时，两项服务各自断开自己的连接。
 
 ## 原型预览
 
@@ -96,4 +102,4 @@ iOS 使用独立的临时 WebKit 数据存储预览 HTML。HTML 片段补齐页�
 
 Windows `Hako.Checks code-workshop` 使用真实 stdio 子进程夹具验证线程关联、重复请求、断连后继续执行、审批、停止、持久化、事件游标、写锁冲突和原型修订校验。`code-workshop-local <状态目录>` 只读验证已安装的 Codex；`code-workshop-local-turn <状态目录>` 提交固定短回复并归档测试会话，仅用于明确授权的本机联调。
 
-iOS `WorkshopModelTests.swift` 验证请求身份和恢复参数；共享传输继续由原有设备协议与架构检查覆盖。iOS 工程编译验证全部 SwiftUI 与 WebKit 页面。
+iOS `WorkshopModelTests.swift` 验证请求身份和恢复参数；`WorkshopRequestSocketTests.swift` 与 `WorkshopEventStreamTests.swift` 独立验证握手、帧格式、回复关联、推送和取消，不依赖设备监控传输。服务端验证工坊满载和任一连接关闭时，另一应用仍可请求。iOS 工程编译验证全部 SwiftUI 与 WebKit 页面。

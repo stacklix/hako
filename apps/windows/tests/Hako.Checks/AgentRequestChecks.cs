@@ -9,24 +9,17 @@ internal static class AgentRequestChecks
     internal static async Task RunAsync()
     {
         var slots = new AgentRequestSlots();
-        var workshop = new List<IDisposable>();
-        for (var i = 0; i < 12; i++)
-            workshop.Add(slots.TryAcquire(i % 2 == 0 ? "query.codex.history" : "action.codex.turn.start")
-                ?? throw new Exception("Workshop capacity below twelve"));
-        if (slots.TryAcquire("query.codex.history") is not null) throw new Exception("Workshop occupied the monitoring reserve");
-        var monitors = new List<IDisposable>();
-        for (var i = 0; i < 3; i++)
-            monitors.Add(slots.TryAcquire("query.all") ?? throw new Exception("Monitoring reserve below four"));
-        var monitoring = slots.TryAcquire("query.codex.usage") ?? throw new Exception("Monitoring starved behind workshop reads");
-        if (slots.TryAcquire("query.all") is not null) throw new Exception("Total request bound exceeded");
-        monitoring.Dispose();
-        monitoring.Dispose();
-        using (slots.TryAcquire("query.all") ?? throw new Exception("Monitoring slot was not released"))
-            if (slots.TryAcquire("query.system.metrics") is not null) throw new Exception("Double disposal freed an extra slot");
-        workshop[0].Dispose();
-        using var replacement = slots.TryAcquire("query.codex.history") ?? throw new Exception("Workshop slot was not released");
-        foreach (var lease in workshop) lease.Dispose();
-        foreach (var lease in monitors) lease.Dispose();
+        var requests = new List<IDisposable>();
+        for (var i = 0; i < 16; i++) requests.Add(slots.TryAcquire() ?? throw new Exception("Device capacity below sixteen"));
+        if (slots.TryAcquire() is not null) throw new Exception("Device request bound exceeded");
+        requests[0].Dispose(); requests[0].Dispose();
+        using var replacement = slots.TryAcquire() ?? throw new Exception("Device slot was not released");
+        if (slots.TryAcquire() is not null) throw new Exception("Double disposal released an extra slot");
+        foreach (var lease in requests) lease.Dispose();
+        await using var dispatcher = new AgentDispatcher(new Hako.Platform.SystemMetrics());
+        using var empty = System.Text.Json.JsonDocument.Parse("{}");
+        try { await dispatcher.InvokeAsync("action.codex.turn.start",1,empty.RootElement,default); throw new Exception("Device dispatcher exposed Code Workshop"); }
+        catch (AgentActionException error) when (error.Code == "unsupported_method") { }
 
         var stalled = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         CancellationToken queryToken = default;
@@ -52,6 +45,6 @@ internal static class AgentRequestChecks
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         if (!Equals(await AgentRequestSlots.ReadAsync(_ => Task.FromResult<object?>(42), default), 42))
             throw new Exception("Successful query result changed");
-        Console.WriteLine("PASS: workshop concurrency reserves monitoring capacity; query deadlines and cancellation release blocked reads");
+        Console.WriteLine("PASS: independent device capacity excludes Code Workshop; query deadlines and cancellation release blocked reads");
     }
 }

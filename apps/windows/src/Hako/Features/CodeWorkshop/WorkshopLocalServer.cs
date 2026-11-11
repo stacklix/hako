@@ -12,15 +12,15 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Hako.Core;
+namespace Hako.Platform;
 
 // A separate, explicitly enabled LAN endpoint. It shares the dispatcher and
 // durable Workshop workers with the cloud transport; closing a socket never
 // cancels an execution. Native LAN clients intentionally do not authenticate.
-internal sealed class AgentDirectServer : IAsyncDisposable
+internal sealed class WorkshopLocalServer : IAsyncDisposable
 {
-    private readonly AgentDispatcher dispatcher;
-    private readonly Func<string?> agentId;
+    private readonly WorkshopDispatcher dispatcher;
+    private readonly Func<string?> computerId;
     private readonly string localId;
     private readonly TcpListener listener;
     private readonly CancellationTokenSource stopping = new();
@@ -30,9 +30,9 @@ internal sealed class AgentDirectServer : IAsyncDisposable
     private readonly Task accepting;
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    internal AgentDirectServer(AgentDispatcher dispatcher, int port, Func<string?> agentId, string identity)
+    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity)
     {
-        this.dispatcher = dispatcher; this.agentId = agentId;
+        this.dispatcher = dispatcher; this.computerId = computerId;
         localId = "lan-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16].ToLowerInvariant();
         listener = new TcpListener(IPAddress.IPv6Any, port);
         listener.Server.DualMode = true;
@@ -109,7 +109,7 @@ internal sealed class AgentDirectServer : IAsyncDisposable
                 using var writing = new SemaphoreSlim(1, 1);
                 async Task Send(object frame)
                 {
-                    var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, AgentConnection.Json);
+                    var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, WorkshopProtocol.Json);
                     if (bytes.Length > 64 * 1024) throw new InvalidDataException("Direct reply is too large.");
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                     timeout.CancelAfter(TimeSpan.FromSeconds(5));
@@ -117,25 +117,25 @@ internal sealed class AgentDirectServer : IAsyncDisposable
                     try { await socket.SendAsync(bytes, WebSocketMessageType.Text, true, timeout.Token); }
                     finally { writing.Release(); }
                 }
-                await Send(new { type = "ready" });
+                await Send(WorkshopProtocol.Welcome(computerId() ?? localId));
                 var workers = new List<Task>();
                 var reading = ReadAsync(socket, lifetime.Token);
                 try
                 {
-                    if (path.StartsWith("/workshop/", StringComparison.Ordinal))
+                    if (path.StartsWith("/workshop/v1/events/", StringComparison.Ordinal))
                     {
                         var parts = path.Split('/');
-                        if (parts.Length != 4 || !Guid.TryParse(parts[2], out _) || !long.TryParse(parts[3], out var cursor) || cursor < 0)
+                        if (parts.Length != 6 || !Guid.TryParse(parts[4], out _) || !long.TryParse(parts[5], out var cursor) || cursor < 0)
                             throw new InvalidDataException("Invalid subscription.");
-                        var parameters = JsonSerializer.SerializeToElement(new { operationId = parts[2], cursor });
+                        var parameters = JsonSerializer.SerializeToElement(new { operationId = parts[4], cursor });
                         var pushing = Task.Run(async () =>
                         {
-                            try { await dispatcher.WatchWorkshopAsync(parameters, page => Send(new { type = "update", body = new { result = page } }), lifetime.Token); }
+                            try { await dispatcher.WatchAsync(parameters, page => Send(new { kind = "event", result = page }), lifetime.Token); }
                             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
                             catch (Exception e)
                             {
-                                var error = Failure(e);
-                                await Send(new { type = "update", body = new { error } });
+                                var error = WorkshopProtocol.Failure(e);
+                                await Send(new { kind = "failure", error });
                             }
                         });
                         workers.Add(pushing);
@@ -144,7 +144,7 @@ internal sealed class AgentDirectServer : IAsyncDisposable
                         await Task.WhenAny(reading, pushing);
                         return;
                     }
-                    if (path != "/agents") throw new InvalidDataException("Unknown direct endpoint.");
+                    if (path != "/workshop/v1") throw new InvalidDataException("Unknown direct endpoint.");
                     while (!lifetime.IsCancellationRequested)
                     {
                         using var message = await reading;
@@ -153,34 +153,31 @@ internal sealed class AgentDirectServer : IAsyncDisposable
                         var id = command.GetProperty("id").GetString()!;
                         if (id.Length is 0 or > 80) throw new InvalidDataException("Invalid request ID.");
                         workers.RemoveAll(value => value.IsCompleted);
-                        if (workers.Count >= 4)
+                        if (workers.Count >= WorkshopProtocol.RequestLimit)
                         {
-                            await Send(new { type = "reply", id, status = 429, body = new { error = "agent_busy" } });
+                            await Send(new { kind = "failure", id, error = new WorkshopError("workshop_busy", "代码工坊请求已满。") });
                             continue;
                         }
                         workers.Add(Task.Run(async () =>
                         {
                             try
                             {
-                                if (command.GetProperty("type").GetString() == "list")
+                                if (CodexJson.Text(command, "kind") != "call") throw new WorkshopException("invalid_request", "无效的代码工坊请求。");
+                                var method = command.GetProperty("method").GetString()!;
+                                if (method == "computers.list")
                                 {
-                                    await Send(new { type = "reply", id, status = 200, body = new { agents = new[] {
-                                        new { id = agentId() ?? localId, name = Environment.MachineName, online = true, capabilities = dispatcher.Capabilities }
+                                    await Send(new { kind = "result", id, result = new { computers = new[] {
+                                        new { id = computerId() ?? localId, name = Environment.MachineName, online = true, protocolVersion = 1 }
                                     } } });
                                     return;
                                 }
-                                if (command.GetProperty("type").GetString() != "request") throw new AgentActionException("invalid_request", "不支持的直连请求。");
-                                if (command.TryGetProperty("agentId", out var target) && target.GetString() is { Length: > 0 } requested && requested != (agentId() ?? localId))
-                                    throw new AgentActionException("agent_changed", "局域网地址对应的电脑已改变，请返回列表重新选择电脑。");
-                                var body = command.GetProperty("body");
-                                var method = body.GetProperty("method").GetString()!;
-                                if (!method.StartsWith("query.codex.", StringComparison.Ordinal) && !method.StartsWith("action.codex.", StringComparison.Ordinal))
-                                    throw new AgentActionException("unsupported_method", "局域网直连当前仅支持代码工坊。");
-                                var result = await dispatcher.InvokeAsync(method, body.GetProperty("version").GetInt32(), body.GetProperty("params"), lifetime.Token);
-                                await Send(new { type = "reply", id, status = 200, body = new { result } });
+                                if (command.TryGetProperty("computerId", out var target) && target.GetString() is { Length: > 0 } requested && requested != (computerId() ?? localId))
+                                    throw new WorkshopException("computer_changed", "局域网地址对应的电脑已改变，请返回列表重新选择电脑。");
+                                var result = await dispatcher.CallAsync(method, command.GetProperty("params"), lifetime.Token);
+                                await Send(new { kind = "result", id, result });
                             }
                             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-                            catch (Exception e) { await Send(new { type = "reply", id, status = 200, body = new { error = Failure(e) } }); }
+                            catch (Exception e) { await Send(new { kind = "failure", id, error = WorkshopProtocol.Failure(e) }); }
                         }));
                     }
                 }
@@ -194,9 +191,6 @@ internal sealed class AgentDirectServer : IAsyncDisposable
             catch (Exception e) when (e is IOException or SocketException or WebSocketException or OperationCanceledException or InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException) { }
         }
     }
-
-    private static CapabilityError Failure(Exception error) => error is AgentActionException action
-        ? new(action.Code, action.Message) : new("execution_failed", "直连请求失败，请检查电脑端状态。");
 
     private static async Task<JsonDocument> ReadAsync(WebSocket socket, CancellationToken token)
     {
@@ -237,7 +231,7 @@ internal sealed class AgentDirectServer : IAsyncDisposable
             !headers.TryGetValue("Connection", out var connection) || !connection.Split(',').Any(value => value.Trim().Equals("Upgrade", StringComparison.OrdinalIgnoreCase)) ||
             !headers.TryGetValue("Sec-WebSocket-Version", out var version) || version != "13" ||
             !headers.TryGetValue("Sec-WebSocket-Key", out var key) || Convert.FromBase64String(key).Length != 16 ||
-            (request[1] != "/agents" && !request[1].StartsWith("/workshop/", StringComparison.Ordinal)))
+            (request[1] != "/workshop/v1" && !request[1].StartsWith("/workshop/v1/events/", StringComparison.Ordinal)))
             throw new InvalidDataException("Invalid WebSocket upgrade.");
         var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         var response = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");

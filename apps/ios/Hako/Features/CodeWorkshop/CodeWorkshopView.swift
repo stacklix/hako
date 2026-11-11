@@ -232,6 +232,7 @@ struct CodeWorkshopView: View {
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: "terminal").font(.subheadline).padding(.top, 3)
+                                .foregroundStyle(session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack(alignment: .top) {
                                     Text(session.title).font(.subheadline.weight(.medium))
@@ -239,17 +240,8 @@ struct CodeWorkshopView: View {
                                     Text(Date(timeIntervalSince1970: Double(session.updatedAt)), style: .relative)
                                         .font(.caption2).foregroundStyle(HakoStyle.muted)
                                 }
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                    if session.inProgress {
-                                        Label(session.state == "waiting" ? "等待确认" : "进行中", systemImage: "circle.dotted")
-                                            .font(.caption2).foregroundStyle(session.state == "waiting" ? Color.orange : Color.green).fixedSize()
-                                    } else if store.isUnread(session, at: date) {
-                                        Label("未读", systemImage: "circle.fill")
-                                            .font(.caption2).foregroundStyle(Color.blue).fixedSize()
-                                    }
-                                }
+                                Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             if store.archivingSessionID == session.id {
                                 ProgressView().accessibilityLabel(store.showingArchived ? "正在取消归档" : "正在归档")
@@ -257,6 +249,7 @@ struct CodeWorkshopView: View {
                         }
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    .accessibilityValue(session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读")
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(HakoStyle.card)
                     .listRowSeparatorTint(HakoStyle.line)

@@ -34,8 +34,8 @@ internal sealed partial class CodeWorkshop
             lock (gate)
             {
                 signal = changed.Task;
-                var request = JsonSerializer.SerializeToElement(new { operationId = id, cursor }, AgentConnection.Json);
-                page = JsonSerializer.SerializeToElement(OperationAsync(request, lifetime.Token).GetAwaiter().GetResult(), AgentConnection.Json);
+                var request = JsonSerializer.SerializeToElement(new { operationId = id, cursor }, WorkshopProtocol.Json);
+                page = JsonSerializer.SerializeToElement(OperationAsync(request, lifetime.Token).GetAwaiter().GetResult(), WorkshopProtocol.Json);
             }
             var payload = page.GetRawText();
             if (payload != previous) { await publish(page); previous = payload; }

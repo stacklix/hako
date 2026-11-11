@@ -66,7 +66,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             catch (Exception e) when (e is IOException or TimeoutException)
             {
                 await metadata.DisposeAsync(); metadata = null;
-                throw new AgentActionException("codex_connection_closed", "Codex 连接中断，请重新读取会话。");
+                throw new WorkshopException("codex_connection_closed", "Codex 连接中断，请重新读取会话。");
             }
         }
         finally { metadataGate.Release(); }
@@ -158,14 +158,14 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             RecoverJobs();
             if (changingArchive.Contains(id) || archived && jobs.Values.Any(job => job.ThreadId == id &&
                 (job.Active || job.State is "queued" or "paused" or "steering")))
-                throw new AgentActionException("codex_busy", "请先结束任务并处理排队消息，再归档会话。");
+                throw new WorkshopException("codex_busy", "请先结束任务并处理排队消息，再归档会话。");
             changingArchive.Add(id);
         }
         try
         {
             var thread = await ThreadAsync(id, false, token);
             if (archived && CodexJson.Text(CodexJson.Field(thread, "status"), "type") == "active")
-                throw new AgentActionException("codex_busy", "会话仍在执行任务，请结束后再归档。");
+                throw new WorkshopException("codex_busy", "会话仍在执行任务，请结束后再归档。");
             await ReadAsync(archived ? "thread/archive" : "thread/unarchive", new { threadId = id }, token);
             return new { threadId = id, archived };
         }
@@ -196,14 +196,14 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     }
 
     private string ResolveApplication(string id) => DiscoverApplications().FirstOrDefault(value => value.Id == id)?.Path
-        ?? throw new AgentActionException("codex_application_missing", "项目目录已变化，请刷新应用列表。");
+        ?? throw new WorkshopException("codex_application_missing", "项目目录已变化，请刷新应用列表。");
 
     private async Task<JsonElement> ThreadAsync(string id, bool history, CancellationToken token)
     {
         var response = await ReadAsync("thread/read", new { threadId = id, includeTurns = history }, token);
         var thread = CodexJson.Field(response, "thread");
         if (ApplicationFor(CodexJson.Text(thread, "cwd")) is null)
-            throw new AgentActionException("codex_workspace_invalid", "此会话不在当前电脑的 Code 项目目录中。");
+            throw new WorkshopException("codex_workspace_invalid", "此会话不在当前电脑的 Code 项目目录中。");
         return thread;
     }
 
@@ -232,7 +232,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         while (start > 0 && page.Count < 12)
         {
             var entry = events[start - 1];
-            var size = JsonSerializer.SerializeToUtf8Bytes(entry, AgentConnection.Json).Length;
+            var size = JsonSerializer.SerializeToUtf8Bytes(entry, WorkshopProtocol.Json).Length;
             if (bytes + size > 38 * 1024 && page.Count > 0) break;
             page.Insert(0, entry); bytes += size; start--;
         }
@@ -246,7 +246,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         }
         var completionId = turns.Length == 0 ? null : SummarizeTurn(turns[^1]).CompletionId;
         object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor = start > 0 ? start.ToString() : null, operationId, completionId };
-        while (JsonSerializer.SerializeToUtf8Bytes(Page(), AgentConnection.Json).Length > 56 * 1024 && files.Length > 0)
+        while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];
         return Page();
     }
@@ -348,14 +348,14 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             await HistoryAsync(JsonSerializer.SerializeToElement(new { threadId = thread }), token);
             lock (gate) artifacts.TryGetValue(id, out artifact);
         }
-        if (artifact is null || artifact.ThreadId != thread) throw new AgentActionException("codex_artifact_missing", "原型文件已变化，请刷新会话。");
+        if (artifact is null || artifact.ThreadId != thread) throw new WorkshopException("codex_artifact_missing", "原型文件已变化，请刷新会话。");
         var cwd = CodexJson.Text(await ThreadAsync(thread, false, token), "cwd");
         if (!SafePath(artifact.Path, cwd) && !SafePath(artifact.Path, Path.Combine(home, "visualizations"))) throw CodexJson.Invalid();
-        if (new FileInfo(artifact.Path).Length > 2 * 1024 * 1024) throw new AgentActionException("codex_artifact_large", "原型超过 2 MB，无法在手机中预览。");
+        if (new FileInfo(artifact.Path).Length > 2 * 1024 * 1024) throw new WorkshopException("codex_artifact_large", "原型超过 2 MB，无法在手机中预览。");
         var data = await File.ReadAllBytesAsync(artifact.Path, token);
         var revision = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var expected = CodexJson.Text(parameters, "revision");
-        if (expected.Length > 0 && expected != revision) throw new AgentActionException("codex_artifact_changed", "原型在加载期间已更新，请重新打开。");
+        if (expected.Length > 0 && expected != revision) throw new WorkshopException("codex_artifact_changed", "原型在加载期间已更新，请重新打开。");
         var offsetValue = CodexJson.Field(parameters, "offset");
         var offset = offsetValue.ValueKind == JsonValueKind.Undefined ? 0 : offsetValue.TryGetInt32(out var number) ? number : -1;
         if (offset < 0 || offset > data.Length) throw CodexJson.Invalid();

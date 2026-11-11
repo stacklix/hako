@@ -13,7 +13,6 @@ import (
 var ErrBusy = errors.New("agent_busy")
 
 const MaxConcurrentRequests = 16
-const MaxWorkshopRequests = 12
 
 type Connection struct {
 	newID           func() string
@@ -21,7 +20,6 @@ type Connection struct {
 	writeMu         sync.Mutex
 	mu              sync.Mutex
 	pending         map[string]chan Message
-	pendingWorkshop int
 	done            chan struct{}
 	once            sync.Once
 	capabilities    []Capability
@@ -31,8 +29,6 @@ type Connection struct {
 	telemetryID     string
 	subscribers     map[*Subscription]struct{}
 	latestTelemetry map[string]TelemetryUpdate
-	workshopMu      sync.Mutex
-	workshop        map[string]*WorkshopSubscription
 }
 
 func (c *Connection) Send(v any) error {
@@ -91,13 +87,6 @@ func (c *Connection) run(onPong func()) {
 			c.publishSSH(message)
 			continue
 		}
-		if message.Type == "workshop_update" {
-			if !message.Reply.valid() || message.ID == "" || !c.Supports("query.codex.stream", 1) {
-				return
-			}
-			c.publishWorkshop(message)
-			continue
-		}
 		if message.Type != "response" || message.ID == "" {
 			return
 		}
@@ -117,6 +106,9 @@ func (c *Connection) run(onPong func()) {
 }
 
 func (c *Connection) Supports(method string, version int) bool {
+	if (strings.HasPrefix(method, "query.codex.") && method != "query.codex.usage") || strings.HasPrefix(method, "action.codex.") {
+		return false
+	}
 	if method == "query.all" && version == 1 {
 		return true
 	}
@@ -131,25 +123,17 @@ func (c *Connection) Supports(method string, version int) bool {
 func (c *Connection) Request(ctx context.Context, request Request) (Message, error) {
 	id := c.newID()
 	ch := make(chan Message, 1)
-	workshop := strings.HasPrefix(request.Method, "action.codex.") ||
-		(strings.HasPrefix(request.Method, "query.codex.") && request.Method != "query.codex.usage")
 	c.mu.Lock()
-	// Reserve four request slots for device monitoring.
-	if len(c.pending) >= MaxConcurrentRequests || (workshop && c.pendingWorkshop >= MaxWorkshopRequests) {
+	// Device monitoring has its own sixteen request slots.
+	if len(c.pending) >= MaxConcurrentRequests {
 		c.mu.Unlock()
 		return Message{}, ErrBusy
 	}
 	c.pending[id] = ch
-	if workshop {
-		c.pendingWorkshop++
-	}
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		delete(c.pending, id)
-		if workshop {
-			c.pendingWorkshop--
-		}
 		c.mu.Unlock()
 	}()
 	if err := c.Send(Message{Type: "request", ID: id, Method: request.Method, Version: request.Version, Params: request.Params}); err != nil {

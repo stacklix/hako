@@ -13,6 +13,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     public AgentSettingsStore Store { get; }
     public SystemMetrics Metrics { get; } = new();
     public AgentConnection Connection { get; }
+    internal WorkshopService Workshop { get; }
     public event Action<string>? StatusChanged;
     public event Action<AgentSettings, bool>? SettingsChanged;
     public event Action<Metrics>? MetricsReceived;
@@ -27,6 +28,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         Store = store; this.running = running;
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
         Connection = new AgentConnection(Metrics, codexUsage, store.DirectoryPath);
+        Workshop = new WorkshopService(store.DirectoryPath);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
         Connection.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
@@ -37,8 +39,12 @@ public sealed class AgentRuntime : IAsyncDisposable
         {
             var saved = Store.Load();
             saved.ValidateDirectPort();
-            if (running) await Connection.ConfigureDirectAsync(saved.DirectPort);
-            if (autoConnect && saved.Url.Length > 0) { saved.Validate(); await Connection.StartAsync(saved); }
+            if (running)
+            {
+                try { await Workshop.ConfigureLocalAsync(saved.DirectPort); Workshop.ConfigurationError = null; }
+                catch (Exception) { Workshop.ConfigurationError = "代码工坊局域网端口启动失败，请检查端口配置。"; }
+            }
+            if (autoConnect && saved.Url.Length > 0) { saved.Validate(); await Connection.StartAsync(saved); await Workshop.StartAsync(saved); }
         }
         catch (Exception) { configurationError = "配置读取失败或配置不完整，请检查服务器设置。"; StatusChanged?.Invoke(configurationError); }
     }
@@ -54,7 +60,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         var connection = Connection.Status;
         return new { running, processId = running ? Environment.ProcessId : (int?)null,
             connectionState = !running ? "stopped" : configurationError is not null ? "configuration_error" : connection.State,
-            message = configurationError ?? (!running ? "后台实例未运行。" : connection.Message), agentId = connection.AgentId, direct = Connection.DirectStatus, configuration = PublicSettings() };
+            message = configurationError ?? (!running ? "后台实例未运行。" : connection.Message), agentId = connection.AgentId, direct = Workshop.DirectStatus, workshop = Workshop.Status, configuration = PublicSettings() };
     }
     public async Task UpdateConfigurationAsync(string? url, string? account, bool connect, bool reloadForm = true, CancellationToken token = default, int? directPort = null)
     {
@@ -66,12 +72,12 @@ public sealed class AgentRuntime : IAsyncDisposable
             if (url != null || account != null || connect) next.ValidateConnectionSettings();
             else next.ValidateDirectPort();
             if (connect) next.Validate();
-            if (url != null || account != null || connect) await Connection.StopAsync();
+            if (url != null || account != null || connect) { await Connection.StopAsync(); await Workshop.StopAsync(); }
             token.ThrowIfCancellationRequested();
-            if (running) await Connection.ConfigureDirectAsync(next.DirectPort);
+            if (running) await Workshop.ConfigureLocalAsync(next.DirectPort);
             Store.Save(next); configurationError = null;
             SettingsChanged?.Invoke(next, reloadForm);
-            if (connect) await Connection.StartAsync(next);
+            if (connect) { await Connection.StartAsync(next); await Workshop.StartAsync(next); }
         }
         finally { operations.Release(); }
     }
@@ -84,7 +90,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     private async Task SaveKeyLockedAsync(string pem, bool reloadForm, CancellationToken token)
     {
         var current = Store.Load();
-        await Connection.StopAsync();
+        await Connection.StopAsync(); await Workshop.StopAsync();
         token.ThrowIfCancellationRequested();
         var next = current with { PrivateKey = pem };
         Store.Save(next); configurationError = null;
@@ -96,7 +102,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         await operations.WaitAsync();
         try
         {
-            await Connection.StopAsync(); await Connection.ConfigureDirectAsync(0); Store.Save(new()); configurationError = null;
+            await Connection.StopAsync(); await Workshop.StopAsync(); await Workshop.ConfigureLocalAsync(0); Store.Save(new()); configurationError = null;
             SettingsChanged?.Invoke(new(), true);
         }
         finally { operations.Release(); }
@@ -155,10 +161,10 @@ public sealed class AgentRuntime : IAsyncDisposable
                     case "connect":
                         if (!running) return CommandReply.Failure(3, "instance_unavailable", "需要后台实例保持连接。");
                         var connectionSettings = Store.Load(); connectionSettings.Validate(); configurationError = null;
-                        await Connection.StartAsync(connectionSettings);
+                        await Connection.StartAsync(connectionSettings); await Workshop.StartAsync(connectionSettings);
                         return CommandReply.Success(Status(), "已发起连接；请使用 status 查看身份验证结果。");
                     case "disconnect":
-                        await Connection.StopAsync(); return CommandReply.Success(Status(), "已断开连接，并停止自动重试。");
+                        await Connection.StopAsync(); await Workshop.StopAsync(); return CommandReply.Success(Status(), "已断开连接，并停止自动重试。");
                     case "exit": return CommandReply.Success(new { exiting = running }, running ? "正在退出后台实例。" : "后台实例未运行。");
                     case "show": ShowRequested?.Invoke(); return CommandReply.Success(Status(), "已请求打开 Hako 窗口。");
                     default: throw new CliUsageException("未知命令。");
@@ -173,6 +179,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await Connection.DisposeAsync();
+        await Workshop.DisposeAsync();
         await codexUsage.DisposeAsync();
     }
 }

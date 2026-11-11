@@ -1,14 +1,13 @@
 import Foundation
 
 struct WorkshopAgent: Codable, Identifiable {
-    struct Capability: Codable { let name: String; let version: Int }
     let id: String
     let name: String
     let online: Bool
-    let capabilities: [Capability]?
-    var supported: Bool { capabilities?.contains { $0.name == "action.codex.message.queue" && $0.version == 1 } == true &&
-        capabilities?.contains { $0.name == "query.codex.stream" && $0.version == 1 } == true }
-    var supportsArchiving: Bool { capabilities?.contains { $0.name == "action.codex.thread.archive" && $0.version == 1 } == true }
+    let protocolVersion: Int
+    var supported: Bool { protocolVersion == 1 }
+    var supportsArchiving: Bool { protocolVersion == 1 }
+
 }
 
 struct WorkshopApplication: Codable, Identifiable, Equatable {

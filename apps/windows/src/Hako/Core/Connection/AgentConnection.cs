@@ -23,20 +23,12 @@ public sealed class AgentConnection : IAsyncDisposable
     public event Action<string>? VersionWarning;
     public event Action<Metrics>? MetricsReceived;
     private readonly AgentDispatcher dispatcher;
-    private readonly string directIdentityPath;
-    private readonly string dataDirectory;
-    private string? knownAgentId;
-    private AgentDirectServer? direct;
-    public object DirectStatus => new { listening = direct != null, port = direct?.Port ?? 0 };
     private readonly SemaphoreSlim writing = new(1, 1);
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
-        this.dataDirectory = dataDirectory ?? AgentSettingsStore.DefaultDirectory;
-        directIdentityPath = Path.Combine(this.dataDirectory, "direct-agent-id.txt");
-        if (File.Exists(directIdentityPath)) knownAgentId = File.ReadAllText(directIdentityPath).Trim();
         dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage, dataDirectory: dataDirectory);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
@@ -59,17 +51,9 @@ public sealed class AgentConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
-        if (direct != null) await direct.DisposeAsync();
         await dispatcher.DisposeAsync();
     }
 
-    public async Task ConfigureDirectAsync(int port)
-    {
-        if (port is < 0 or > 65535) throw new ArgumentException("直连端口无效。");
-        if ((direct?.Port ?? 0) == port) return;
-        if (direct != null) { await direct.DisposeAsync(); direct = null; }
-        if (port != 0) direct = new AgentDirectServer(dispatcher, port, () => Status.AgentId ?? knownAgentId, dataDirectory);
-    }
     private void SetStatus(string state, string message, string? agentId = null)
     {
         status = new ConnectionState(state, message, agentId);
@@ -116,14 +100,11 @@ public sealed class AgentConnection : IAsyncDisposable
                     using var ack = await ReceiveAsync(socket, authTimeout.Token);
                     if (ack.RootElement.GetProperty("type").GetString() != "authenticated") throw new AuthenticationException("认证失败。");
                     SetStatus("connected", "已连接 · 身份验证通过", ack.RootElement.GetProperty("agentId").GetString());
-                    knownAgentId = Status.AgentId;
-                    try { Directory.CreateDirectory(dataDirectory); File.WriteAllText(directIdentityPath, knownAgentId); } catch (IOException) { }
                 }
                 attempt = 0;
                 using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var workers = new List<Task>();
                 var requestSlots = new AgentRequestSlots();
-                var workshopStreams = new Dictionary<string, (CancellationTokenSource Lifetime, Task Worker)>();
                 CancellationTokenSource? telemetry = null;
                 Task? telemetryWorker = null;
                 string? telemetryId = null;
@@ -154,7 +135,7 @@ public sealed class AgentConnection : IAsyncDisposable
                             case "request":
                                 workers.RemoveAll(task => task.IsCompleted);
                                 var request = root.Clone();
-                                var slot = requestSlots.TryAcquire(request.GetProperty("method").GetString()!);
+                                var slot = requestSlots.TryAcquire();
                                 if (slot is null)
                                     await SendAsync(socket, new { type = "response", id = request.GetProperty("id").GetString(), error = new { code = "agent_busy", message = "设备繁忙，请稍后重试。" } }, connection.Token);
                                 else
@@ -173,26 +154,6 @@ public sealed class AgentConnection : IAsyncDisposable
                                 break;
                             case "telemetry_stop":
                                 if (root.GetProperty("id").GetString() == telemetryId) await StopTelemetryAsync();
-                                break;
-                            case "workshop_start":
-                                var streamId = root.GetProperty("id").GetString()!;
-                                foreach (var finished in new List<string>(workshopStreams.Keys))
-                                    if (workshopStreams[finished].Worker.IsCompleted)
-                                    { workshopStreams[finished].Lifetime.Dispose(); workshopStreams.Remove(finished); }
-                                if (workshopStreams.ContainsKey(streamId) || workshopStreams.Count >= 16)
-                                {
-                                    await SendAsync(socket, new { type = "workshop_update", id = streamId,
-                                        error = new CapabilityError("agent_busy", "实时订阅数量已满。") }, connection.Token);
-                                    break;
-                                }
-                                var streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
-                                var streamParameters = root.GetProperty("params").Clone();
-                                workshopStreams.Add(streamId, (streamLifetime,
-                                    Task.Run(() => RunWorkshopAsync(socket, streamId, streamParameters, streamLifetime.Token))));
-                                break;
-                            case "workshop_stop":
-                                if (workshopStreams.TryGetValue(root.GetProperty("id").GetString()!, out var stream))
-                                    stream.Lifetime.Cancel();
                                 break;
                             case "ssh_open":
                                 if (ssh is not null) await ssh.DisposeAsync();
@@ -223,8 +184,6 @@ public sealed class AgentConnection : IAsyncDisposable
                 finally
                 {
                     await connection.CancelAsync();
-                    foreach (var stream in workshopStreams.Values)
-                    { try { await stream.Worker; } finally { stream.Lifetime.Dispose(); } }
                     if (ssh is not null) await ssh.DisposeAsync();
                     await StopTelemetryAsync();
                     try { await Task.WhenAll(workers); } catch (OperationCanceledException) { }
@@ -263,26 +222,6 @@ public sealed class AgentConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { socket.Abort(); }
-    }
-
-    private async Task RunWorkshopAsync(ClientWebSocket socket, string id, JsonElement parameters, CancellationToken token)
-    {
-        try
-        {
-            await dispatcher.WatchWorkshopAsync(parameters,
-                page => SendAsync(socket, new { type = "workshop_update", id, result = page }, token), token);
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (Exception e)
-        {
-            try
-            {
-                var error = e is AgentActionException action ? new CapabilityError(action.Code, action.Message)
-                    : new CapabilityError("stream_failed", "实时订阅中断，请重新连接。");
-                await SendAsync(socket, new { type = "workshop_update", id, error }, token);
-            }
-            catch { socket.Abort(); }
-        }
     }
 
     private async Task ExecuteRequestAsync(ClientWebSocket socket, JsonElement request, CancellationToken token)

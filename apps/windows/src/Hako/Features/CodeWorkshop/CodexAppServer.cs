@@ -49,7 +49,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
         CodexAppServer server;
         try { server = new(fixture ?? Executable()); }
         catch (Exception e) when (e is IOException or Win32Exception)
-        { throw new AgentActionException("codex_unavailable", "无法启动 Codex，请在当前 Windows 用户下安装并登录 Codex CLI。"); }
+        { throw new WorkshopException("codex_unavailable", "无法启动 Codex，请在当前 Windows 用户下安装并登录 Codex CLI。"); }
         try
         {
             await server.RequestAsync("initialize", new
@@ -118,7 +118,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
         await writing.WaitAsync(token);
         try
         {
-            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(message, AgentConnection.Json).AsMemory(), token);
+            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(message, WorkshopProtocol.Json).AsMemory(), token);
             await process.StandardInput.FlushAsync(token);
         }
         finally { writing.Release(); }
@@ -184,7 +184,7 @@ internal static class CodexJson
         if (char.IsHighSurrogate(value[count - 1])) count--;
         return value[..count];
     }
-    public static AgentActionException Invalid() => new("invalid_params", "代码工坊请求参数无效。");
+    public static WorkshopException Invalid() => new("invalid_params", "代码工坊请求参数无效。");
     public static void Keys(JsonElement value, params string[] allowed)
     {
         if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Any(field => !allowed.Contains(field.Name))) throw Invalid();

@@ -20,6 +20,7 @@ import (
 	"hako/server/internal/accesslog"
 	"hako/server/internal/agent"
 	"hako/server/internal/notify"
+	"hako/server/internal/workshop"
 )
 
 type AgentConfig struct {
@@ -60,6 +61,8 @@ type Server struct {
 	mux                *http.ServeMux
 	mu                 sync.Mutex
 	agentHub           agent.Hub
+	workshopHub        workshop.Hub
+	workshopRequests   chan struct{}
 	limits             map[string]bucket
 	requests           chan struct{}
 	registry           atomic.Pointer[Registry]
@@ -98,7 +101,7 @@ func New(config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
+	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), workshopRequests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
 	var registry *Registry
 	if err := st.update(func(value *state) error {
@@ -155,6 +158,7 @@ func New(config Config) (*Server, error) {
 	s.consoleRoutes()
 	s.accessLogRoutes()
 	s.agentRoutes()
+	s.workshopRoutes()
 	s.notificationRoutes()
 	if s.investment, err = openInvestmentDB(config.Database); err != nil {
 		_ = s.Close()
@@ -208,6 +212,7 @@ func (s *Server) Close() error {
 		notificationErr = s.notifications.Close()
 	}
 	s.agentHub.Close()
+	s.workshopHub.Close()
 	var investmentErr error
 	if s.investment != nil {
 		investmentErr = s.investment.Close()

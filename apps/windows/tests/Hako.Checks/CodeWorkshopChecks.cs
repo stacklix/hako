@@ -13,7 +13,7 @@ using Hako.Platform;
 internal static class CodeWorkshopChecks
 {
     private const string FixtureThread = "11111111-1111-4111-8111-111111111111";
-    private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, AgentConnection.Json);
+    private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, WorkshopProtocol.Json);
     private static JsonElement Result(object? value) => Json(value!);
     private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 
@@ -93,7 +93,7 @@ internal static class CodeWorkshopChecks
                 var archiveInFlight = service.ArchiveAsync(Json(new { threadId = FixtureThread, archived = true }), default);
                 for (var attempt = 0; attempt < 100 && !File.Exists(Path.Combine(project, ".archive-entered")); attempt++) await Task.Delay(5);
                 try { await service.StartAsync(Json(new { requestId = Guid.NewGuid().ToString(), applicationId, threadId = FixtureThread, message = "Blocked while archiving" }), default); throw new Exception("A turn started during archive"); }
-                catch (AgentActionException e) when (e.Code == "codex_busy") { }
+                catch (WorkshopException e) when (e.Code == "codex_busy") { }
                 Check(Result(await archiveInFlight).GetProperty("archived").GetBoolean(), "Archive response lost its state");
                 Check(Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions").GetArrayLength() == 0, "Archived thread stayed in the active list");
                 Check(Result(await service.CatalogAsync(Json(new { archived = true }), default)).GetProperty("sessions").GetArrayLength() == 1, "Archived filter did not reach Codex");
@@ -102,9 +102,9 @@ internal static class CodeWorkshopChecks
                 Check(Result(await service.CatalogAsync(Json(new { archived = true }), default)).GetProperty("sessions").GetArrayLength() == 0, "Restored thread stayed in archives");
                 Check(Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions").GetArrayLength() == 1, "Restored thread did not return to active list");
                 try { await service.ArchiveAsync(Json(new { threadId = "22222222-2222-4222-8222-222222222222", archived = true }), default); throw new Exception("Thread outside Code root was archived"); }
-                catch (AgentActionException e) when (e.Code == "codex_workspace_invalid") { }
+                catch (WorkshopException e) when (e.Code == "codex_workspace_invalid") { }
                 try { await service.CatalogAsync(Json(new { archived = "true" }), default); throw new Exception("Non-boolean archive filter accepted"); }
-                catch (AgentActionException e) when (e.Code == "invalid_params") { }
+                catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 var models = Result(await service.ModelsAsync(Json(new { }), default));
                 Check(models.GetProperty("models")[0].GetProperty("supportsImages").GetBoolean(), "Model image capability was lost");
                 Check(models.GetProperty("models")[0].GetProperty("serviceTiers")[0].GetProperty("id").GetString() == "priority", "Fast service tier identity was lost");
@@ -118,7 +118,7 @@ internal static class CodeWorkshopChecks
                 Check(Result(await service.UploadImageAsync(lastChunk, default)).GetProperty("complete").GetBoolean(), "Image upload did not finish");
                 await service.UploadImageAsync(lastChunk, default);
                 try { await service.UploadImageAsync(Json(new { uploadId = imageId, offset = 0, total = imageBytes.Length, sha256 = digest, content = Convert.ToBase64String(new byte[] { 1, 2, 3, 4 }) }), default); throw new Exception("Conflicting image bytes accepted"); }
-                catch (AgentActionException e) when (e.Code == "codex_upload_conflict") { }
+                catch (WorkshopException e) when (e.Code == "codex_upload_conflict") { }
                 Check((string)CodeWorkshop.ThreadOptions("auto")["approvalsReviewer"] == "auto_review" &&
                     (string)CodeWorkshop.ThreadOptions("full")["sandbox"] == "danger-full-access" &&
                     (string)CodeWorkshop.ThreadOptions("ask")["approvalsReviewer"] == "user" && CodeWorkshop.ThreadOptions("custom").Count == 0,
@@ -128,7 +128,7 @@ internal static class CodeWorkshopChecks
                 var artifact = Result(await service.ArtifactAsync(Json(new { threadId = FixtureThread, artifactId, offset = 0 }), default));
                 Check(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(artifact.GetProperty("content").GetString()!)).Contains("interactive prototype"), "Artifact retrieval failed");
                 try { await service.ArtifactAsync(Json(new { threadId = FixtureThread, artifactId, offset = 0, revision = "changed" }), default); throw new Exception("Changed artifact accepted"); }
-                catch (AgentActionException e) when (e.Code == "codex_artifact_changed") { }
+                catch (WorkshopException e) when (e.Code == "codex_artifact_changed") { }
                 requestId = Guid.NewGuid().ToString();
                 var parameters = Json(new { requestId, applicationId, threadId = FixtureThread, name = "Fixture", message = "Run fixture" });
                 using var requestLife = new CancellationTokenSource();
@@ -136,12 +136,12 @@ internal static class CodeWorkshopChecks
                 requestLife.Cancel();
                 Check(Result(await service.StartAsync(parameters, default)).GetProperty("id").GetString() == started.GetProperty("id").GetString(), "Request deduplication failed");
                 try { await service.StartAsync(Json(new { requestId, applicationId, threadId = FixtureThread, message = "different" }), default); throw new Exception("Request ID reused for different payload"); }
-                catch (AgentActionException e) when (e.Code == "codex_request_conflict") { }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var waiting = await WaitAsync(service, requestId, "waiting");
                 Check(CodexJson.Text(Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0], "state") == "waiting",
                     "An executing job awaiting approval must take precedence over older completed history");
                 try { await service.ArchiveAsync(Json(new { threadId = FixtureThread, archived = true }), default); throw new Exception("Running turn was archived"); }
-                catch (AgentActionException e) when (e.Code == "codex_busy") { }
+                catch (WorkshopException e) when (e.Code == "codex_busy") { }
                 Check(!Result(await service.ArchiveAsync(Json(new { threadId = FixtureThread, archived = false }), default)).GetProperty("archived").GetBoolean(),
                     "Restoring a session must remain possible when pending work exists");
                 var queuedId = Guid.NewGuid().ToString();
@@ -181,7 +181,7 @@ internal static class CodeWorkshopChecks
                 Check(CodexJson.Text(edited, "message") == "Edited follow-up" && edited.GetProperty("revision").GetInt32() == 1, "Queued edit was lost");
                 await service.UpdateMessageAsync(edit, default);
                 try { await service.CancelMessageAsync(Json(new { operationId = requestId, messageId = queuedId, requestId = Guid.NewGuid().ToString(), revision = 0 }), default); throw new Exception("Stale revision accepted"); }
-                catch (AgentActionException e) when (e.Code == "codex_message_changed") { }
+                catch (WorkshopException e) when (e.Code == "codex_message_changed") { }
                 var steerId = Guid.NewGuid().ToString();
                 var steerRequest = Json(new { operationId = requestId, messageId = queuedId, requestId = steerId, revision = 1 });
                 Check(CodexJson.Text(Result(await service.SteerMessageAsync(steerRequest, default)), "state") == "steered", "Queued message was not steered");
@@ -193,7 +193,7 @@ internal static class CodeWorkshopChecks
                 await service.QueueAsync(Json(new { operationId = requestId, requestId = automaticId, message = "Automatic follow-up" }), default);
                 var approval = waiting.GetProperty("approvals")[0].GetProperty("id").GetString();
                 try { await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "invalid" }), default); throw new Exception("Invalid approval accepted"); }
-                catch (AgentActionException e) when (e.Code == "invalid_params") { }
+                catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 Check(Result(await service.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("approvals").GetArrayLength() == 1, "Invalid response consumed approval");
                 var liveCursor = Result(await service.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("cursor").GetInt64();
                 using var liveLife = new CancellationTokenSource();
@@ -253,18 +253,18 @@ internal static class CodeWorkshopChecks
                 Check(Convert.FromBase64String(CodexJson.Text(downloaded, "content")).SequenceEqual(imageBytes), "Message image bytes did not round trip");
                 Check(CodexJson.Text(downloaded, "revision") == digest.ToLowerInvariant(), "Message image integrity hash was lost");
                 try { await service.ImageAsync(Json(new { threadId = FixtureThread, messageId = imageRequest, index = 0, offset = 0, revision = "changed" }), default); throw new Exception("Changed image revision accepted"); }
-                catch (AgentActionException e) when (e.Code == "codex_image_changed") { }
+                catch (WorkshopException e) when (e.Code == "codex_image_changed") { }
                 try { await service.ImageAsync(Json(new { threadId = Guid.NewGuid().ToString(), messageId = imageRequest, index = 0, offset = 0 }), default); throw new Exception("Image leaked across threads"); }
-                catch (AgentActionException e) when (e.Code == "codex_image_missing") { }
+                catch (WorkshopException e) when (e.Code == "codex_image_missing") { }
                 var imageApproval = imageWaiting.GetProperty("approvals")[0].GetProperty("id").GetString();
                 await service.AnswerAsync(Json(new { operationId = imageRequest, approvalId = imageApproval, decision = "accept" }), default);
                 await WaitAsync(service, imageRequest, "completed");
                 try { await service.StartAsync(Json(new { requestId = imageRequest, applicationId, threadId = FixtureThread,
                     message = "Image fixture", model = "other-model", permission = "auto", imageIds = new[] { imageId } }), default); throw new Exception("Model change reused an existing request ID"); }
-                catch (AgentActionException e) when (e.Code == "codex_request_conflict") { }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 try { await service.StartAsync(Json(new { requestId = imageRequest, applicationId, threadId = FixtureThread,
                     message = "Image fixture", model = "fixture-vision", permission = "auto", imageIds = new[] { imageId }, serviceTier = "default" }), default); throw new Exception("Speed change reused an existing request ID"); }
-                catch (AgentActionException e) when (e.Code == "codex_request_conflict") { }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var standardId = Guid.NewGuid().ToString();
                 await service.StartAsync(Json(new { requestId = standardId, applicationId, message = "Standard fixture", serviceTier = "default" }), default);
                 var standardWaiting = await WaitAsync(service, standardId, "waiting");
@@ -279,7 +279,7 @@ internal static class CodeWorkshopChecks
                     "Structured questions and selectable options did not reach the phone");
                 var questionApproval = question.GetProperty("id").GetString();
                 try { await service.AnswerAsync(Json(new { operationId = questionId, approvalId = questionApproval, answers = new { network = "" } }), default); throw new Exception("An unanswered question was accepted"); }
-                catch (AgentActionException e) when (e.Code == "invalid_params") { }
+                catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 Check(Result(await service.OperationAsync(Json(new { operationId = questionId }), default)).GetProperty("approvals").GetArrayLength() == 1,
                     "Validation consumed the question before explicit confirmation");
                 await service.AnswerAsync(Json(new { operationId = questionId, approvalId = questionApproval, answers = new { network = "服务器认证" } }), default);
@@ -343,7 +343,7 @@ internal static class CodeWorkshopChecks
         var project = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_PROJECT")!;
         var turnId = "fixture-turn";
         var archived = false;
-        void Write(object message) { Console.WriteLine(JsonSerializer.Serialize(message, AgentConnection.Json)); Console.Out.Flush(); }
+        void Write(object message) { Console.WriteLine(JsonSerializer.Serialize(message, WorkshopProtocol.Json)); Console.Out.Flush(); }
         while (await Console.In.ReadLineAsync() is { } line)
         {
             using var json = JsonDocument.Parse(line);

@@ -31,6 +31,11 @@ func (s *Server) agentRoutes() {
 	s.mux.HandleFunc("GET /ws/agent", s.agentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents", s.consoleAgentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents/live/{id}", s.consoleAgentSocket)
-	s.mux.HandleFunc("GET /ws/console/agents/workshop/{workshopAgentID}/{operationID}/{cursor}", s.consoleAgentSocket)
 	s.mux.HandleFunc("GET /ws/console/agents/terminal/{terminalID}", s.consoleAgentSocket)
+}
+
+func (s *Server) workshopRoutes() {
+	s.mux.HandleFunc("GET /ws/workshop/agent", s.workshopAgentSocket)
+	s.mux.HandleFunc("GET /ws/workshop/client", s.workshopClientSocket)
+	s.mux.HandleFunc("GET /ws/workshop/events/{computerID}/{operationID}/{cursor}", s.workshopClientSocket)
 }

@@ -104,7 +104,7 @@ import Combine
         loadingModels = true; modelError = nil
         defer { loadingModels = false }
         do {
-            let result: WorkshopModelList = try await store.call(agent, "query.codex.models")
+            let result: WorkshopModelList = try await store.call(agent, "models.list")
             guard scope == store.scope else { return }
             models = result.models
         } catch is CancellationError { }
@@ -159,7 +159,7 @@ import Combine
             let previousCursor = historyCursor
             var params: [String: Any] = ["threadId": threadId]
             if more { params["cursor"] = historyCursor }
-            var result: WorkshopHistory = try await store.call(agent, "query.codex.history", params)
+            var result: WorkshopHistory = try await store.call(agent, "history.read", params)
             guard scope == store.scope, result.threadId == threadId else { return false }
             let newestOperation = result.operationId
             let newestArtifacts = result.artifacts
@@ -171,7 +171,7 @@ import Combine
                   more ? result.entries.allSatisfy({ existingIDs.contains($0.id) }) :
                     (!existingIDs.isEmpty && !page.contains(where: { existingIDs.contains($0.id) })) {
                 try Task.checkCancellation()
-                let next: WorkshopHistory = try await store.call(agent, "query.codex.history", ["threadId": threadId, "cursor": cursor])
+                let next: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": threadId, "cursor": cursor])
                 guard scope == store.scope, next.threadId == threadId, next.nextCursor != cursor else { break }
                 result = next; page = next.entries + page; pages += 1
             }
@@ -289,7 +289,7 @@ import Combine
         guard !polling, eventStream == nil else { return }
         polling = true
         defer { polling = false }
-        let result: WorkshopOperationPage = try await store.call(agent, "query.codex.operation", ["operationId": id, "cursor": eventCursor])
+        let result: WorkshopOperationPage = try await store.call(agent, "operation.read", ["operationId": id, "cursor": eventCursor])
         try await accept(result, id: id)
     }
 
@@ -390,7 +390,7 @@ import Combine
                 uploadProgress = 0
                 try await store.uploadImages(ids, agent: agent) { uploadProgress = $0 }
             }
-            let result: WorkshopOperation = try await store.call(agent, "action.codex.turn.start", receipt.parameters)
+            let result: WorkshopOperation = try await store.call(agent, "turn.start", receipt.parameters)
             guard scope == store.scope, result.id == receipt.id else { throw CancellationError() }
             operation = result; uncertain = false; photos = []; error = nil
             if let id = result.threadId {
@@ -449,7 +449,7 @@ import Combine
                 uploadProgress = 0
                 try await store.uploadImages(queued.imageIds, agent: agent) { uploadProgress = $0 }
             }
-            let result: WorkshopFollowupReply = try await store.call(agent, "action.codex.message.queue", queued.parameters)
+            let result: WorkshopFollowupReply = try await store.call(agent, "message.queue", queued.parameters)
             guard scope == store.scope, operationId == queued.operationId, result.id == queued.id else { throw CancellationError() }
             acceptFollowup(result)
             try store.saveQueuedSend(nil, removing: queued.id)
@@ -500,7 +500,7 @@ import Combine
             "requestId": UUID().uuidString.lowercased(), "revision": status.revision]
         parameters["message"] = message
         do {
-            let result: WorkshopFollowupReply = try await store.call(agent, "action.codex.message.\(action)", parameters)
+            let result: WorkshopFollowupReply = try await store.call(agent, "message.\(action)", parameters)
             guard scope == store.scope, self.operationId == operationId else { throw CancellationError() }
             acceptFollowup(result)
             if editingMessageID == id { cancelEditing() }
@@ -515,7 +515,7 @@ import Combine
         busy = true
         defer { busy = false }
         do {
-            let _: WorkshopOperation = try await store.call(agent, "action.codex.turn.stop", ["operationId": operationId])
+            let _: WorkshopOperation = try await store.call(agent, "turn.stop", ["operationId": operationId])
             try await poll(operationId)
         } catch { self.error = error.localizedDescription }
     }
@@ -528,7 +528,7 @@ import Combine
         params["decision"] = decision
         if !answers.isEmpty { params["answers"] = answers }
         do {
-            let _: WorkshopOperation = try await store.call(agent, "action.codex.approval.reply", params)
+            let _: WorkshopOperation = try await store.call(agent, "approval.reply", params)
             try await poll(operationId)
         } catch { self.error = error.localizedDescription }
     }

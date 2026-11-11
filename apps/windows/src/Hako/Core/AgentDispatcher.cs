@@ -27,7 +27,6 @@ public sealed class AgentDispatcher : IAsyncDisposable
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
-    private readonly CodeWorkshop workshop;
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
@@ -35,7 +34,6 @@ public sealed class AgentDispatcher : IAsyncDisposable
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
-        workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory ?? AgentSettingsStore.DefaultDirectory, "code-workshop"));
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -72,15 +70,6 @@ public sealed class AgentDispatcher : IAsyncDisposable
             ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
             ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
             ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token)),
-            ["action.codex.turn.start"] = new(1, workshop.StartAsync),
-            ["action.codex.turn.stop"] = new(1, workshop.StopAsync),
-            ["action.codex.thread.archive"] = new(1, workshop.ArchiveAsync),
-            ["action.codex.message.queue"] = new(1, workshop.QueueAsync),
-            ["action.codex.message.update"] = new(1, workshop.UpdateMessageAsync),
-            ["action.codex.message.cancel"] = new(1, workshop.CancelMessageAsync),
-            ["action.codex.message.steer"] = new(1, workshop.SteerMessageAsync),
-            ["action.codex.image.upload"] = new(1, workshop.UploadImageAsync),
-            ["action.codex.approval.reply"] = new(1, workshop.AnswerAsync)
         };
         onDemandQueries = new()
         {
@@ -88,20 +77,10 @@ public sealed class AgentDispatcher : IAsyncDisposable
             ["query.git.repository"] = new(1, git.DetailAsync),
             ["query.git.operation"] = new(1, git.OperationAsync),
             ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token)),
-            ["query.codex.applications"] = new(1, workshop.CatalogAsync),
-            ["query.codex.models"] = new(1, workshop.ModelsAsync),
-            ["query.codex.image"] = new(1, workshop.ImageAsync),
-            ["query.codex.history"] = new(1, workshop.HistoryAsync),
-            ["query.codex.operation"] = new(1, workshop.OperationAsync),
-            ["query.codex.stream"] = new(1, workshop.OperationAsync),
-            ["query.codex.artifact"] = new(1, workshop.ArtifactAsync)
         };
     }
 
-    public ValueTask DisposeAsync() => workshop.DisposeAsync();
-
-    internal Task WatchWorkshopAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
-        workshop.WatchOperationAsync(parameters, publish, token);
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     internal async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {

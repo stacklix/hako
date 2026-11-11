@@ -9,14 +9,70 @@ struct WorkshopMessageView: View {
             ForEach(Array(WorkshopMessage.parts(text).enumerated()), id: \.offset) { _, part in
                 switch part {
                 case .text(let prose):
-                    Text(LocalizedStringKey(prose.trimmingCharacters(in: .newlines)))
-                        .font(.subheadline).lineSpacing(5).textSelection(.enabled)
+                    WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines))
                 case .code(let code, let language):
                     WorkshopCodeSnippet(code: code, language: language)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(WorkshopMessageCopy(text: text))
+    }
+}
+
+private struct WorkshopMessageCopy: ViewModifier {
+    let text: String
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            // Give the whole-message double tap precedence over inline links
+            // and the system's word-selection gesture. Single taps still pass through.
+            .highPriorityGesture(TapGesture(count: 2).onEnded { copy() })
+            .accessibilityAction(named: Text("复制整条消息")) { copy() }
+    }
+
+    private func copy() {
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        UIAccessibility.post(notification: .announcement, argument: "已复制整条消息")
+    }
+}
+
+private struct WorkshopInlineProse: View {
+    let source: String
+
+    var body: some View {
+        let rendered = render()
+        Text(rendered.text)
+            .font(.subheadline).lineSpacing(5).textSelection(.enabled)
+            .accessibilityHint(rendered.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
+            .environment(\.openURL, OpenURLAction { url in
+                guard let code = rendered.copies[url] else { return .systemAction }
+                UIPasteboard.general.string = code
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                UIAccessibility.post(notification: .announcement, argument: "已复制")
+                return .handled
+            })
+    }
+
+    private func render() -> (text: AttributedString, copies: [URL: String]) {
+        var text = (try? AttributedString(markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+        var copies: [URL: String] = [:]
+        // Keep one Text layout so code wraps naturally with the surrounding prose.
+        let spans = text.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }
+            .map { (range: $0.range, value: String(text[$0.range].characters)) }
+        for (index, span) in spans.enumerated() {
+            guard let url = URL(string: "hako-inline-copy://snippet/\(index)") else { continue }
+            copies[url] = span.value
+            text[span.range].font = .system(.subheadline, design: .monospaced)
+            text[span.range].foregroundColor = HakoStyle.text
+            text[span.range].backgroundColor = HakoStyle.line
+            text[span.range].link = url
+        }
+        return (text, copies)
     }
 }
 
@@ -76,7 +132,11 @@ struct WorkshopUserMessage: View {
     var body: some View {
         let caption = WorkshopImageCaption(entry.text)
         VStack(alignment: .leading, spacing: 10) {
-            if !caption.text.isEmpty { Text(caption.text).font(.subheadline).textSelection(.enabled) }
+            if !caption.text.isEmpty {
+                Text(caption.text).font(.subheadline).textSelection(.enabled)
+                    .modifier(WorkshopMessageCopy(text: caption.text))
+                    .accessibilityHint("双击复制整条消息，长按可选择文本")
+            }
             ForEach(photos) { photo in
                 if let image = UIImage(data: photo.data) {
                     Button { selected = photo } label: {

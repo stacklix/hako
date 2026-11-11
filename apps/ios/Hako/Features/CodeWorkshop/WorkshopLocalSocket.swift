@@ -3,7 +3,7 @@ import Foundation
 @MainActor enum WorkshopLocalSocket {
     private static let session = HTTPTransport.makeSession(requestTimeout: 8)
 
-    static func open(_ endpoint: LocalNetworkEndpoint, path: String) async throws -> (any AgentSocketConnection, Data) {
+    static func open(_ endpoint: LocalNetworkEndpoint, path: String) async throws -> (any WorkshopSocketConnection, Data) {
         guard endpoint.isValid, let url = endpoint.url(scheme: "ws", path: path) else { throw CocoaError(.coderReadCorrupt) }
         let socket = session.webSocketTask(with: url)
         socket.resume()
@@ -11,17 +11,17 @@ import Foundation
         let deadline = Task {
             do { try await Task.sleep(for: .seconds(8)) } catch { return }
             timedOut = true
-            socket.close()
+            socket.closeWorkshop()
         }
         defer { deadline.cancel() }
         return try await withTaskCancellationHandler {
             do {
                 try Task.checkCancellation()
-                let hello = try await socket.receiveData()
+                let hello = try await socket.receiveWorkshopData()
                 try Task.checkCancellation()
-                try AgentSocketFrame.requireReady(hello)
+                try WorkshopSocketFrame.requireWelcome(hello)
                 return (socket, hello)
-            } catch { socket.close(); if timedOut { throw URLError(.timedOut) }; throw error }
+            } catch { socket.closeWorkshop(); if timedOut { throw URLError(.timedOut) }; throw error }
         } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
     }
 }

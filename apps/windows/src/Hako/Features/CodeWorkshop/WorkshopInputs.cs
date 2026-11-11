@@ -42,7 +42,7 @@ internal sealed partial class CodeWorkshop
                 .FirstOrDefault(item => CodexJson.Text(item, "type") == "userMessage" && CodexJson.Text(item, "id") == messageId);
             var images = CodexJson.Items(CodexJson.Field(item, "content"))
                 .Where(value => CodexJson.Text(value, "type") is "localImage" or "image").ToArray();
-            if (imageIndex >= images.Length) throw new AgentActionException("codex_image_missing", "找不到这条消息的图片。");
+            if (imageIndex >= images.Length) throw new WorkshopException("codex_image_missing", "找不到这条消息的图片。");
             source = CodexJson.Text(images[imageIndex], "type") == "localImage"
                 ? CodexJson.Text(images[imageIndex], "path") : CodexJson.Text(images[imageIndex], "url");
         }
@@ -64,14 +64,14 @@ internal sealed partial class CodeWorkshop
         {
             // Only paths taken from the authorized thread or its saved upload are read.
             if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || new FileInfo(source).Length > 2_000_000)
-                throw new AgentActionException("codex_image_missing", "图片不在电脑上，或超过 2 MB。");
+                throw new WorkshopException("codex_image_missing", "图片不在电脑上，或超过 2 MB。");
             data = await File.ReadAllBytesAsync(source, token);
         }
         if (data.Length == 0 || data.Length > 2_000_000 || offset > data.Length) throw CodexJson.Invalid();
         var revision = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var expected = CodexJson.Text(parameters, "revision");
         if (expected.Length > 0 && expected != revision)
-            throw new AgentActionException("codex_image_changed", "图片已更新，请重新打开。");
+            throw new WorkshopException("codex_image_changed", "图片已更新，请重新打开。");
         var count = Math.Min(24 * 1024, data.Length - offset);
         return new { id = messageId, name = "图片", revision, offset, total = data.Length,
             content = Convert.ToBase64String(data, offset, count), nextOffset = offset + count };
@@ -127,26 +127,26 @@ internal sealed partial class CodeWorkshop
             var identity = total + "\n" + digest;
             if (File.Exists(metadata))
             {
-                if (File.ReadAllText(metadata) != identity) throw new AgentActionException("codex_upload_conflict", "图片上传 ID 已用于其他内容。");
+                if (File.ReadAllText(metadata) != identity) throw new WorkshopException("codex_upload_conflict", "图片上传 ID 已用于其他内容。");
             }
             else
             {
-                if (offset != 0) throw new AgentActionException("codex_upload_offset", "图片尚未开始上传，请重新发送。");
+                if (offset != 0) throw new WorkshopException("codex_upload_offset", "图片尚未开始上传，请重新发送。");
                 if (Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.part").Count() >= 20)
-                    throw new AgentActionException("codex_upload_busy", "未完成的图片上传过多，请先完成已有上传。");
+                    throw new WorkshopException("codex_upload_busy", "未完成的图片上传过多，请先完成已有上传。");
                 File.WriteAllText(metadata, identity);
             }
             var complete = File.Exists(path);
             using (var stream = new FileStream(complete ? path : part, complete ? FileMode.Open : FileMode.OpenOrCreate,
                 complete ? FileAccess.Read : FileAccess.ReadWrite, FileShare.Read))
             {
-                if (offset > stream.Length) throw new AgentActionException("codex_upload_offset", "图片上传进度不一致，请重试原消息。");
+                if (offset > stream.Length) throw new WorkshopException("codex_upload_offset", "图片上传进度不一致，请重试原消息。");
                 stream.Position = offset;
                 if (offset < stream.Length)
                 {
                     var previous = new byte[bytes.Length];
                     if (stream.Read(previous) != bytes.Length || !previous.AsSpan().SequenceEqual(bytes))
-                        throw new AgentActionException("codex_upload_conflict", "重复图片分片与原内容不一致。");
+                        throw new WorkshopException("codex_upload_conflict", "重复图片分片与原内容不一致。");
                 }
                 else if (!complete) { stream.Write(bytes); stream.Flush(true); }
             }
@@ -155,7 +155,7 @@ internal sealed partial class CodeWorkshop
                 var image = File.ReadAllBytes(part);
                 if (image[0] != 0xff || image[1] != 0xd8 || image[^2] != 0xff || image[^1] != 0xd9 ||
                     !Convert.ToHexString(SHA256.HashData(image)).Equals(digest, StringComparison.OrdinalIgnoreCase))
-                    throw new AgentActionException("codex_image_invalid", "图片格式或校验值不正确，请重新选择图片。");
+                    throw new WorkshopException("codex_image_invalid", "图片格式或校验值不正确，请重新选择图片。");
                 File.Move(part, path);
                 complete = true;
             }

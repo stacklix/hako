@@ -62,13 +62,8 @@ enum WorkshopMessage {
     }
 
     private static func inlineParts(_ source: String) -> [WorkshopMessagePart] {
-        var result: [WorkshopMessagePart] = []
         var prose = ""
         var cursor = source.startIndex
-        func flush() {
-            if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.text(prose)) }
-            prose = ""
-        }
         while cursor < source.endIndex {
             // The native prototype card renders this host control reference.
             // Keep the original transcript intact for artifact discovery, and
@@ -102,18 +97,12 @@ enum WorkshopMessage {
                 cursor = end
                 continue
             }
-            flush()
-            var code = String(source[end..<closing.lowerBound]).replacingOccurrences(of: "\n", with: " ")
-            // Markdown removes one surrounding space from nonblank code spans.
-            if code.hasPrefix(" "), code.hasSuffix(" "), code.contains(where: { $0 != " " }) {
-                code.removeFirst()
-                code.removeLast()
-            }
-            result.append(.code(code, language: nil))
+            // Leave code spans inside the Markdown paragraph. Only fenced code
+            // becomes a separate snippet with a copy button.
+            prose += source[cursor..<closing.upperBound]
             cursor = closing.upperBound
         }
-        flush()
-        return result
+        return prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.text(prose)]
     }
 
     private static func delimiterEnd(_ start: String.Index, in source: String) -> String.Index {
