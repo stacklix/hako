@@ -86,7 +86,14 @@ import Combine
         catch is CancellationError { }
         catch { message = error.localizedDescription }
     }
-    func fetchAgents() async { await execute { try await self.fetchAgentsInternal() } }
+    @discardableResult func fetchAgents() async -> Bool {
+        var fetched = false
+        await execute {
+            try await self.fetchAgentsInternal()
+            fetched = true
+        }
+        return fetched
+    }
 
     func addAgent(name: String, publicKeyPEM: String) async throws {
         guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }

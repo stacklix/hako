@@ -84,6 +84,7 @@ internal sealed partial class CodeWorkshop
         var temporary = JobPath(job.Id) + ".tmp";
         File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(job, AgentConnection.Json));
         File.Move(temporary, JobPath(job.Id), true);
+        SignalChange();
     }
 
     private void Append(WorkshopJob job, WorkshopEvent entry)
@@ -91,6 +92,7 @@ internal sealed partial class CodeWorkshop
         Directory.CreateDirectory(storage);
         File.AppendAllText(EventPath(job.RootId ?? job.Id), JsonSerializer.Serialize(entry, AgentConnection.Json) + "\n", new UTF8Encoding(false));
         if (job.ThreadId is not null) DiscoverArtifacts(job.ThreadId, job.Cwd, [entry]);
+        SignalChange();
     }
 
     public Task<object?> StartAsync(JsonElement parameters, CancellationToken token)

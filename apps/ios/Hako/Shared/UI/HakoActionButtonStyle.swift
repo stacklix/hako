@@ -5,6 +5,7 @@ struct HakoActionButtonStyle: ButtonStyle {
     var primary = true
     var destructive = false
     var outlined = false
+    var backgroundColor: Color? = nil
     @Environment(\.isEnabled) private var enabled
 
     private static let text = HakoStyle.adaptive(0x18191b, 0xf1f2f3)
@@ -21,7 +22,7 @@ struct HakoActionButtonStyle: ButtonStyle {
             .padding(.horizontal, 15).frame(minHeight: 44)
             .frame(maxWidth: .infinity)
             .foregroundStyle(destructive ? Self.destructiveText : primary ? Self.primaryText : Self.text)
-            .background(destructive ? Self.destructiveFill : primary ? Self.text : Self.secondaryFill, in: shape)
+            .background(backgroundColor ?? (destructive ? Self.destructiveFill : primary ? Self.text : Self.secondaryFill), in: shape)
             .overlay {
                 if destructive {
                     shape.strokeBorder(Self.destructiveBorder, lineWidth: 1)

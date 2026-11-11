@@ -14,6 +14,45 @@ import Foundation
         precondition(WorkshopWatchStep.next(operationId: "live", observedTerminal: "previous", needsRecovery: false, busy: false) == .poll("live"))
         precondition(WorkshopWatchStep.next(operationId: "done", observedTerminal: "done", needsRecovery: false, busy: false) == .idle)
         precondition(WorkshopWatchStep.next(operationId: "live", observedTerminal: nil, needsRecovery: true, busy: true) == .idle)
+        let resumeNow = Date(timeIntervalSince1970: 1000)
+        precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: resumeNow.addingTimeInterval(-59), now: resumeNow,
+            operationId: "live", observedTerminal: nil, needsRecovery: false, busy: false) == .poll("live"),
+            "Reopening a recently verified running conversation must resume incremental polling without full history synchronization")
+        precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: resumeNow, now: resumeNow,
+            operationId: "done", observedTerminal: "done", needsRecovery: false, busy: false) == .idle,
+            "An unchanged completed conversation must be immediately usable on a quick return")
+        for verified in [Date?.none, resumeNow.addingTimeInterval(-60), resumeNow.addingTimeInterval(1)] {
+            precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: verified, now: resumeNow,
+                operationId: "live", observedTerminal: nil, needsRecovery: false, busy: false) == .synchronize,
+                "Cold, expired or clock-adjusted conversations must verify history before trusting cached operation state")
+        }
+        precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: resumeNow, now: resumeNow,
+            operationId: "live", observedTerminal: nil, needsRecovery: true, busy: false) == .synchronize,
+            "A recent timestamp must not bypass connection recovery or an uncertain send result")
+        precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: nil, now: resumeNow,
+            operationId: "live", observedTerminal: nil, needsRecovery: true, busy: true) == .idle,
+            "Reentry must not start overlapping reads while a send or synchronization is already running")
+        func session(_ time: Int64, state: String = "running", operation: String = "live", completion: String? = nil) -> WorkshopSession {
+            WorkshopSession(id: "thread", title: "Session", applicationId: "app", cwd: "project", preview: "Reply",
+                updatedAt: time, state: state, operationId: operation, completionId: completion)
+        }
+        let catalogBefore = session(1)
+        precondition(!WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore, current: session(2),
+            operationId: "live", operationActive: true, completionId: nil),
+            "Updates from the same live worker can be read from the saved event cursor")
+        precondition(WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore, current: session(2, operation: "other"),
+            operationId: "live", operationActive: true, completionId: nil), "A different worker must force history reconciliation")
+        let finishedCatalog = session(2, state: "completed", completion: "turn-two")
+        precondition(!WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore, current: finishedCatalog,
+            operationId: "live", operationActive: false, completionId: "turn-two"),
+            "A completion already read inside the conversation must not cause another full sync on return")
+        precondition(WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore, current: finishedCatalog,
+            operationId: "live", operationActive: false, completionId: "turn-one"),
+            "A completion received while away must be reconciled before reusing the conversation")
+        precondition(WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore,
+            current: session(2, state: "completed", operation: "new-worker", completion: "turn-two"),
+            operationId: "live", operationActive: false, completionId: "turn-two"),
+            "A changed worker cannot be ignored even when the last completion is unchanged")
         var scrolling = WorkshopScrollFollowing()
         scrolling.observe(nearBottom: false)
         precondition(scrolling.followsBottom, "A growing reply must not disable its own bottom anchor")
@@ -99,6 +138,49 @@ import Foundation
         precondition(older.map(\.id) == ["0", "a", "b", "c", "d"])
         precondition(WorkshopTranscriptMerge.history(older, page: older).count == older.count)
 
+        let oldPrompt = entry("old-prompt", "First request", role: "user")
+        let oldProgress = entry("old-progress", "Working on the first request")
+        let oldTool = entry("old-tool", "Run command", kind: "commandExecution", role: "")
+        let oldFinal = entry("old-final", "First request completed")
+        let nextPrompt = entry("next-prompt", "Second request", kind: "followup", role: "user", state: "queued")
+        let lastPrompt = entry("last-prompt", "Third request", kind: "followup", role: "user", state: "queued")
+        var turns = [oldPrompt, oldProgress]
+        var turnStream: [String: String] = [:]
+        WorkshopTranscriptMerge.apply(nextPrompt, entries: &turns, streamText: &turnStream)
+        WorkshopTranscriptMerge.apply(oldTool, entries: &turns, streamText: &turnStream)
+        WorkshopTranscriptMerge.apply(lastPrompt, entries: &turns, streamText: &turnStream)
+        WorkshopTranscriptMerge.apply(oldFinal, entries: &turns, streamText: &turnStream)
+        precondition(turns.map(\.id) == [oldPrompt.id, oldProgress.id, oldTool.id, oldFinal.id, nextPrompt.id, lastPrompt.id],
+            "Tools and the final reply of the current request must precede later queued requests")
+        let startingPrompt = entry(nextPrompt.id, nextPrompt.text, kind: "followup", role: "user", state: "starting")
+        WorkshopTranscriptMerge.apply(startingPrompt, entries: &turns, streamText: &turnStream)
+        WorkshopTranscriptMerge.apply(entry("next-reply", "Second response", kind: "delta"), entries: &turns, streamText: &turnStream)
+        precondition(turns.map(\.id) == [oldPrompt.id, oldProgress.id, oldTool.id, oldFinal.id, nextPrompt.id, "next-reply", lastPrompt.id],
+            "Consuming a queued request must place it after the previous complete response and before its own response")
+        let canonicalPrompt = entry(nextPrompt.id, nextPrompt.text, role: "user")
+        let interleaved = [oldPrompt, oldProgress, nextPrompt, oldTool, oldFinal, entry("next-reply", "Second response, streamed further")]
+        let reconciled = WorkshopTranscriptMerge.history(interleaved,
+            page: [oldFinal, canonicalPrompt, entry("next-reply", "Second response")])
+        precondition(reconciled.map(\.id) == [oldPrompt.id, oldProgress.id, oldTool.id, oldFinal.id, nextPrompt.id, "next-reply"],
+            "Canonical turn order must move an optimistic request out of the middle of the preceding response")
+        precondition(reconciled.last?.text == "Second response, streamed further", "Correcting turn order must not shorten a live response")
+        precondition(WorkshopTranscriptMerge.history(reconciled,
+            page: [oldFinal, canonicalPrompt, entry("next-reply", "Second response")]).map(\.id) == reconciled.map(\.id),
+            "Repeated history refreshes must keep corrected turn order stable")
+        var replayedTurns = reconciled
+        WorkshopTranscriptMerge.apply(nextPrompt, entries: &replayedTurns, streamText: &turnStream)
+        WorkshopTranscriptMerge.apply(startingPrompt, entries: &replayedTurns, streamText: &turnStream)
+        precondition(replayedTurns == reconciled,
+            "Replayed queue/start events must not move a canonical sent request behind its already-rendered reply")
+        var startedTurns = [oldPrompt, oldFinal, startingPrompt, entry("next-reply", "Partial second response")]
+        WorkshopTranscriptMerge.apply(nextPrompt, entries: &startedTurns, streamText: &turnStream)
+        precondition(startedTurns[2] == startingPrompt && startedTurns[3].id == "next-reply",
+            "An older queued receipt cannot downgrade a request that has already started")
+        var consumedWithoutHistory = interleaved
+        WorkshopTranscriptMerge.apply(canonicalPrompt, entries: &consumedWithoutHistory, streamText: &turnStream)
+        precondition(consumedWithoutHistory.firstIndex { $0.id == nextPrompt.id }! > consumedWithoutHistory.firstIndex { $0.id == oldFinal.id }!,
+            "A canonical user event must never restore the old optimistic insertion position")
+
         var entries = [entry("answer", "Hello")]
         var stream: [String: String] = [:]
         WorkshopTranscriptMerge.apply(entry("answer", "He", kind: "delta"), entries: &entries, streamText: &stream)
@@ -152,6 +234,6 @@ import Foundation
         precondition(disk.read(newest, key: key) != nil, "Eviction must retain the just-written conversation")
         let retained = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         precondition(retained.filter { $0.pathExtension == "json" }.count <= 50)
-        print("PASS: queued messages at bottom, queue state transitions, transcript merge, resumed streams, atomic snapshots and cache isolation")
+        print("PASS: complete turn ordering, queued-request consumption, canonical/replay stability, warm resume and cache isolation")
     }
 }

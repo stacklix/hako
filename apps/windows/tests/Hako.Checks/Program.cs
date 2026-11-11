@@ -190,7 +190,7 @@ internal static class Program
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
                 new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1),
                 new AgentCapability("query.codex.applications", 1), new AgentCapability("query.codex.models", 1), new AgentCapability("query.codex.image", 1), new AgentCapability("query.codex.history", 1),
-                new AgentCapability("query.codex.operation", 1), new AgentCapability("query.codex.artifact", 1)
+                new AgentCapability("query.codex.operation", 1), new AgentCapability("query.codex.stream", 1), new AgentCapability("query.codex.artifact", 1)
             }))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");

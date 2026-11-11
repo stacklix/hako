@@ -441,6 +441,22 @@ import CryptoKit
         }
     }
 
+    func watchOperation(_ agent: WorkshopAgent, id: String, cursor: Int64,
+                        receive: (WorkshopOperationPage) async throws -> Bool) async throws {
+        let ticket = scope
+        guard authenticated, UUID(uuidString: id) != nil, cursor >= 0,
+              let agentID = agent.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
+        try await WorkshopEventStream.watch(open: {
+            guard ticket == self.scope else { throw CancellationError() }
+            return try await self.authentication.openWebSocket(
+                "/ws/console/agents/workshop/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
+        }, receive: { (page: WorkshopOperationPage) in
+            guard ticket == self.scope else { throw CancellationError() }
+            return try await receive(page)
+        })
+    }
+
     func call<Result: Decodable>(_ agent: WorkshopAgent, _ method: String, _ params: [String: Any] = [:]) async throws -> Result {
         let ticket = scope
         guard authenticated else { throw HakoError(message: "请先在 Hako 设置中登录服务器。") }

@@ -85,7 +85,7 @@ struct WorkshopConversationSettings: View {
 
 private extension View {
     func workshopSettingsRow() -> some View {
-        frame(maxWidth: .infinity, minHeight: 44)
+        frame(maxWidth: .infinity)
             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }

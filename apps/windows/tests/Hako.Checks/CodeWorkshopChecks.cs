@@ -142,8 +142,34 @@ internal static class CodeWorkshopChecks
                 Check(!Result(await service.ArchiveAsync(Json(new { threadId = FixtureThread, archived = false }), default)).GetProperty("archived").GetBoolean(),
                     "Restoring a session must remain possible when pending work exists");
                 var queuedId = Guid.NewGuid().ToString();
+                using var watchLife = new CancellationTokenSource();
+                var firstPush = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var queuedPush = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var watch = service.WatchOperationAsync(Json(new { operationId = requestId, cursor = 0L }), page =>
+                {
+                    firstPush.TrySetResult(page);
+                    if (page.GetProperty("followups").EnumerateArray().Any(value => CodexJson.Text(value, "id") == queuedId))
+                        queuedPush.TrySetResult(page);
+                    return Task.CompletedTask;
+                }, watchLife.Token);
+                var initialPush = await firstPush.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                Check(initialPush.GetProperty("events").GetArrayLength() > 0, "Subscribe did not replay missed events");
                 var queueRequest = Json(new { operationId = requestId, requestId = queuedId, message = "Follow-up fixture" });
                 var queued = Result(await service.QueueAsync(queueRequest, default));
+                var pushedQueue = await queuedPush.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                Check(pushedQueue.GetProperty("cursor").GetInt64() > initialPush.GetProperty("cursor").GetInt64(),
+                    "A queue mutation did not push a new cursor without a phone query");
+                watchLife.Cancel();
+                try { await watch; throw new Exception("Cancelled subscription remained active"); }
+                catch (OperationCanceledException) { }
+                var resumePush = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var resumeLife = new CancellationTokenSource();
+                var resumedStream = service.WatchOperationAsync(Json(new { operationId = requestId, cursor = pushedQueue.GetProperty("cursor").GetInt64() }),
+                    page => { resumePush.TrySetResult(page); return Task.CompletedTask; }, resumeLife.Token);
+                Check((await resumePush.Task.WaitAsync(TimeSpan.FromSeconds(3))).GetProperty("events").GetArrayLength() == 0,
+                    "Reconnection replayed already consumed deltas");
+                resumeLife.Cancel();
+                try { await resumedStream; } catch (OperationCanceledException) { }
                 Check(CodexJson.Text(queued, "state") == "queued", "Follow-up did not enter queue");
                 await service.QueueAsync(queueRequest, default);
                 var editId = Guid.NewGuid().ToString();
@@ -166,7 +192,19 @@ internal static class CodeWorkshopChecks
                 try { await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "invalid" }), default); throw new Exception("Invalid approval accepted"); }
                 catch (AgentActionException e) when (e.Code == "invalid_params") { }
                 Check(Result(await service.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("approvals").GetArrayLength() == 1, "Invalid response consumed approval");
+                var liveCursor = Result(await service.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("cursor").GetInt64();
+                using var liveLife = new CancellationTokenSource();
+                var liveDelta = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var liveDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var liveStream = service.WatchOperationAsync(Json(new { operationId = requestId, cursor = liveCursor }), page =>
+                {
+                    if (page.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "kind") == "delta"))
+                        liveDelta.TrySetResult(true);
+                    if (CodexJson.Text(page.GetProperty("operation"), "state") == "completed") liveDone.TrySetResult(true);
+                    return Task.CompletedTask;
+                }, liveLife.Token);
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "accept" }), default);
+                await liveDelta.Task.WaitAsync(TimeSpan.FromSeconds(3));
                 JsonElement nextTurn = default;
                 for (var attempt = 0; attempt < 100; attempt++)
                 {
@@ -178,6 +216,9 @@ internal static class CodeWorkshopChecks
                 Check(nextTurn.GetProperty("operation").GetProperty("id").GetString() == requestId && nextTurn.GetProperty("approvals").GetArrayLength() == 1, "Queued turn did not keep root operation and approvals");
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = nextTurn.GetProperty("approvals")[0].GetProperty("id").GetString(), decision = "accept" }), default);
                 var completed = await WaitAsync(service, requestId, "completed");
+                await liveDone.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                liveLife.Cancel();
+                try { await liveStream; } catch (OperationCanceledException) { }
                 var completedSession = Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0];
                 Check(CodexJson.Text(completedSession, "state") == "completed" && CodexJson.Text(completedSession, "completionId").Length > 0,
                     "A finished worker stayed running in the catalog or lost its unread completion identity");

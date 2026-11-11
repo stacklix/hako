@@ -83,6 +83,7 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	liveID := r.PathValue("id")
+	workshopID := r.PathValue("workshopAgentID")
 	commands := make(chan consoleAgentCommand, 4)
 	ws.SetReadLimit(17 * 1024)
 	_ = ws.SetReadDeadline(time.Now().Add(45 * time.Second))
@@ -91,7 +92,7 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		for {
 			kind, data, err := ws.ReadMessage()
-			if err != nil || liveID != "" || kind != websocket.TextMessage {
+			if err != nil || liveID != "" || workshopID != "" || kind != websocket.TextMessage {
 				return
 			}
 			var command consoleAgentCommand
@@ -112,6 +113,10 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	if liveID != "" {
 		s.streamAgentTelemetry(ctx, liveID, heartbeat.C, ping, valid, write)
+		return
+	}
+	if workshopID != "" {
+		s.streamWorkshop(ctx, workshopID, r.PathValue("operationID"), r.PathValue("cursor"), heartbeat.C, ping, valid, write)
 		return
 	}
 

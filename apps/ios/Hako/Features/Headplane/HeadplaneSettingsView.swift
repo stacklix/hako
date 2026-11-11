@@ -99,7 +99,8 @@ struct HeadplaneDeviceView: View {
                         Button("重命名") { editingNode = node; editing = "rename" }.buttonStyle(HeadplaneButtonStyle())
                         Button("修改标签") { editingNode = node; editing = "tags" }.buttonStyle(HeadplaneButtonStyle())
                         Button("使设备过期") { confirmingExpiration = true }.buttonStyle(HeadplaneButtonStyle())
-                        HakoDeleteButton(title: "删除设备") { confirmingDeletion = true }
+                        Button("删除设备", role: .destructive) { confirmingDeletion = true }
+                            .buttonStyle(HakoActionButtonStyle(primary: false, backgroundColor: .red))
                     }.disabled(disabled)
                     Text("设备信息").font(.headline)
                     HeadplaneFact(title: "设备编号", value: node.id)

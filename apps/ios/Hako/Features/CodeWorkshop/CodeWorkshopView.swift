@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct CodeWorkshopView: View {
-    @StateObject private var store = WorkshopStore()
-    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var store = WorkshopRuntime.shared.store
+    @State private var synchronizationOwner = UUID()
     @State private var settingsPresented = false
     @State private var creating = false
     @State private var conversation: WorkshopConversation?
@@ -94,22 +94,18 @@ struct CodeWorkshopView: View {
             if let application = store.selectedApplication, let agent = store.selectedAgent {
                 WorkshopNewSessionView(application: application) { name in
                     creating = false
-                    conversation = WorkshopConversation(store: store, agent: agent, application: application, title: name)
+                    conversation = WorkshopRuntime.shared.create(agent: agent, application: application, title: name)
                 }
             }
         }
         .navigationDestination(isPresented: Binding(get: { conversation != nil }, set: { if !$0 { conversation = nil } })) {
             if let conversation { WorkshopConversationView(conversation: conversation) }
         }
-        .onChange(of: store.scope) { _, _ in conversation = nil; creating = false; settingsPresented = false }
-        .task(id: scenePhase == .active && conversation == nil) {
-            guard scenePhase == .active, conversation == nil else { return }
-            await store.restore()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(3)) } catch { return }
-                await store.refresh()
-            }
+        .onChange(of: store.scope) { _, _ in
+            conversation = nil; creating = false; settingsPresented = false
         }
+        .onAppear { WorkshopRuntime.shared.enter(synchronizationOwner) }
+        .onDisappear { WorkshopRuntime.shared.leave(synchronizationOwner) }
     }
 
     private var heading: some View {
@@ -210,7 +206,8 @@ struct CodeWorkshopView: View {
                 ForEach(sessions) { session in
                     Button {
                         guard let application = store.applications.first(where: { $0.id == session.applicationId }) else { return }
-                        conversation = WorkshopConversation(store: store, agent: agent, application: application, session: session, archived: store.showingArchived)
+                        conversation = WorkshopRuntime.shared.open(session, agent: agent,
+                            application: application, archived: store.showingArchived)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: "terminal").font(.subheadline).padding(.top, 3)

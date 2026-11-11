@@ -8,10 +8,11 @@ import Foundation
                 """.utf8), iosVersion: installed).warning
         }
 
-        precondition(warning(server: "0.1.0", minimumIOS: "0.1.0", installed: "0.1.0") == nil)
+        precondition(warning(server: "0.1.6", minimumIOS: "0.1.0", installed: "0.1.0") == nil)
+        precondition(warning(server: "0.1.5", minimumIOS: "0.1.0", installed: "0.1.13")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.1.10", minimumIOS: "0.1.9", installed: "0.1.10") == nil)
-        precondition(warning(server: "0.1.0", minimumIOS: "0.1.2", installed: "0.1.1")?.hasSuffix("请升级 Hako iOS。") == true)
-        precondition(warning(server: "0.1.0", minimumIOS: "0.2.0", installed: "0.1.0")?.hasSuffix("请升级 Hako iOS。") == true)
+        precondition(warning(server: "0.1.6", minimumIOS: "0.1.2", installed: "0.1.1")?.hasSuffix("请升级 Hako iOS。") == true)
+        precondition(warning(server: "0.1.6", minimumIOS: "0.2.0", installed: "0.1.0")?.hasSuffix("请升级 Hako iOS。") == true)
         precondition(warning(server: "0.0.9", minimumIOS: "0.1.0", installed: "0.1.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.1.0", minimumIOS: "0.9.0", installed: "0.10.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.2.0", minimumIOS: "0.1.0", installed: "0.1.0")?.hasSuffix("请升级 Hako iOS。") == true)

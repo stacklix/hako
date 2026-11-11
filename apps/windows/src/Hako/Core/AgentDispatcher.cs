@@ -93,11 +93,15 @@ public sealed class AgentDispatcher : IAsyncDisposable
             ["query.codex.image"] = new(1, workshop.ImageAsync),
             ["query.codex.history"] = new(1, workshop.HistoryAsync),
             ["query.codex.operation"] = new(1, workshop.OperationAsync),
+            ["query.codex.stream"] = new(1, workshop.OperationAsync),
             ["query.codex.artifact"] = new(1, workshop.ArtifactAsync)
         };
     }
 
     public ValueTask DisposeAsync() => workshop.DisposeAsync();
+
+    internal Task WatchWorkshopAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
+        workshop.WatchOperationAsync(parameters, publish, token);
 
     internal async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {

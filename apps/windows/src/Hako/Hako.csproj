@@ -9,7 +9,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\Hako.ico</ApplicationIcon>
     <AssemblyName>Hako</AssemblyName>
-    <Version>1.0.9</Version>
+    <Version>1.0.10</Version>
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\Hako.ico"/>

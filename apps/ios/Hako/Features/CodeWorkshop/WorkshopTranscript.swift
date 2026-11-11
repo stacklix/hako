@@ -47,6 +47,24 @@ struct WorkshopTranscript: Codable, Equatable, Sendable {
 enum WorkshopWatchStep: Equatable {
     case synchronize, poll(String), idle
 
+    static func catalogNeedsSynchronization(previous: WorkshopSession?, current: WorkshopSession,
+                                             operationId: String?, operationActive: Bool, completionId: String?) -> Bool {
+        guard previous != current else { return false }
+        if current.operationId != operationId { return true }
+        let sameActiveOperation = operationActive && current.inProgress && current.operationId == operationId
+        let sameCompletion = current.state == "completed" && current.completionId != nil && current.completionId == completionId
+        return !sameActiveOperation && !sameCompletion
+    }
+
+    static func onEntry(lastVerifiedAt: Date?, now: Date = .now, operationId: String?, observedTerminal: String?,
+                        needsRecovery: Bool, busy: Bool) -> Self {
+        if busy { return .idle }
+        guard let lastVerifiedAt, (0..<60).contains(now.timeIntervalSince(lastVerifiedAt)), !needsRecovery else {
+            return .synchronize
+        }
+        return next(operationId: operationId, observedTerminal: observedTerminal, needsRecovery: false, busy: false)
+    }
+
     static func next(operationId: String?, observedTerminal: String?, needsRecovery: Bool, busy: Bool) -> Self {
         if busy { return .idle }
         // Recovery also runs after a completed operation, or before a new
@@ -55,6 +73,14 @@ enum WorkshopWatchStep: Equatable {
         if let operationId, observedTerminal != operationId { return .poll(operationId) }
         return .idle
     }
+}
+
+struct WorkshopConversationReuseKey: Hashable {
+    let scope: String
+    let agentId: String
+    let applicationId: String
+    let sessionId: String
+    let archived: Bool
 }
 
 struct WorkshopScrollFollowing {
@@ -81,14 +107,18 @@ struct WorkshopScrollFollowing {
 struct WorkshopTranscriptPresentation {
     let history: [WorkshopEntry]
     let queued: [WorkshopEntry]
+    private static let waitingStates: Set<String> = ["pending", "queued", "paused", "steering", "unknown"]
+
+    static func isQueued(_ entry: WorkshopEntry, state: String? = nil) -> Bool {
+        entry.kind == "followup" && waitingStates.contains(state ?? entry.state)
+    }
 
     init(entries: [WorkshopEntry], followups: [WorkshopFollowupState]) {
         var history: [WorkshopEntry] = []
         var queued: [WorkshopEntry] = []
-        let waitingStates: Set<String> = ["pending", "queued", "paused", "steering", "unknown"]
         for entry in entries {
             let state = followups.first { $0.id == entry.id }?.state ?? entry.state
-            if entry.kind == "followup", waitingStates.contains(state) { queued.append(entry) }
+            if Self.isQueued(entry, state: state) { queued.append(entry) }
             else { history.append(entry) }
         }
         self.history = history
@@ -142,12 +172,31 @@ enum WorkshopTranscriptMerge {
             } else { result.append(entry) }
             nextID = entry.id
         }
-        return result
+        // Canonical history defines turn order. An optimistic queued message
+        // may already exist earlier in the live array; move it forward instead
+        // of leaving the next request inside the preceding response.
+        var previousID: String?
+        for entry in page {
+            if let previousID, let previousIndex = result.firstIndex(where: { $0.id == previousID }),
+               let index = result.firstIndex(where: { $0.id == entry.id }), index < previousIndex {
+                let value = result.remove(at: index)
+                if let anchor = result.firstIndex(where: { $0.id == previousID }) { result.insert(value, at: anchor + 1) }
+            }
+            previousID = entry.id
+        }
+        return queueAtEnd(result)
     }
 
     static func apply(_ event: WorkshopEntry, entries: inout [WorkshopEntry], streamText: inout [String: String]) {
         if let replaced = event.replacesId, replaced != event.id {
             entries.removeAll { $0.id == replaced }; streamText[replaced] = nil
+        }
+        if event.kind == "followup", let old = entries.first(where: { $0.id == event.id }) {
+            // Replaying a queue receipt must not downgrade a canonical sent
+            // user message or move an already-started request past its reply.
+            if old.kind != "followup", old.role == "user" { return }
+            if ["starting", "running", "waiting", "finishing", "sent", "completed", "steered"].contains(old.state),
+               ["pending", "queued", "paused", "steering"].contains(event.state) { return }
         }
         if event.kind == "followup" && event.state == "cancelled" {
             entries.removeAll { $0.id == event.id }; streamText[event.id] = nil; return
@@ -164,8 +213,22 @@ enum WorkshopTranscriptMerge {
             streamText[event.id] = event.text
             if event.text.isEmpty, entries.contains(where: { $0.id == event.id && !$0.text.isEmpty }) { return }
         }
-        if let index = entries.firstIndex(where: { $0.id == entry.id }) { entries[index] = entry }
-        else { entries.append(entry) }
+        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+            if WorkshopTranscriptPresentation.isQueued(entries[index]), !WorkshopTranscriptPresentation.isQueued(entry) {
+                entries.remove(at: index)
+                entries = queueAtEnd(entries)
+                let tail = entries.firstIndex(where: { WorkshopTranscriptPresentation.isQueued($0) }) ?? entries.endIndex
+                entries.insert(entry, at: tail)
+            } else { entries[index] = entry }
+        } else {
+            entries.append(entry)
+        }
+        if entry.kind == "followup" || entries.last?.id == entry.id { entries = queueAtEnd(entries) }
+    }
+
+    private static func queueAtEnd(_ entries: [WorkshopEntry]) -> [WorkshopEntry] {
+        let presentation = WorkshopTranscriptPresentation(entries: entries, followups: [])
+        return presentation.history + presentation.queued
     }
 }
 

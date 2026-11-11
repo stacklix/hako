@@ -182,9 +182,9 @@ struct DeviceMonitorView: View {
                     let order = pageOrderStorage(for: agent)
                     DevicePageOrderSection(agent: agent, capabilities: agent.monitorPages, order: order)
                         .id(order.key)
+                        .environment(\.editMode, .constant(.active))
                 }
             }
-            .environment(\.editMode, .constant(.active))
         }
     }
 
@@ -222,7 +222,14 @@ struct DeviceMonitorView: View {
     @MainActor private func refreshDevices() async {
         guard !Task.isCancelled, !client.busy, !client.serverURL.isEmpty, !client.logoutPending else { return }
         if !client.authenticated, client.hasSavedSession { await client.restore() }
-        if client.authenticated { await client.fetchAgents() }
+        let context = client.requestContext
+        guard client.authenticated, await client.fetchAgents(),
+              !Task.isCancelled, context == client.requestContext else { return }
+        // Only a successful list can establish that a device was removed.
+        // Offline registered devices keep their default selection.
+        if let defaultAgentID, !client.agents.contains(where: { $0.id == defaultAgentID }) {
+            saveDefaultAgent(nil)
+        }
     }
 }
 

@@ -6,7 +6,8 @@ struct WorkshopAgent: Codable, Identifiable {
     let name: String
     let online: Bool
     let capabilities: [Capability]?
-    var supported: Bool { capabilities?.contains { $0.name == "action.codex.message.queue" && $0.version == 1 } == true }
+    var supported: Bool { capabilities?.contains { $0.name == "action.codex.message.queue" && $0.version == 1 } == true &&
+        capabilities?.contains { $0.name == "query.codex.stream" && $0.version == 1 } == true }
     var supportsArchiving: Bool { capabilities?.contains { $0.name == "action.codex.thread.archive" && $0.version == 1 } == true }
 }
 

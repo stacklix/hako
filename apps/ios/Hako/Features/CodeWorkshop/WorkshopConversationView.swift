@@ -15,6 +15,7 @@ struct WorkshopConversationView: View {
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
     @State private var scrollFollowing = WorkshopScrollFollowing()
+    @State private var synchronizationOwner = UUID()
 
     private enum ScrollTarget: Hashable { case bottom }
     private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo }
@@ -88,6 +89,7 @@ struct WorkshopConversationView: View {
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(scrollFollowing.followsBottom ? .bottom : nil, for: .sizeChanges)
         .onAppear {
+            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation)
             scrollFollowing = WorkshopScrollFollowing()
             conversation.setReadingLatest(scenePhase == .active && transcriptVisible)
             proxy.scrollTo(ScrollTarget.bottom, anchor: .bottom)
@@ -98,7 +100,10 @@ struct WorkshopConversationView: View {
             scrollFollowing.observe(nearBottom: nearBottom)
             conversation.setReadingLatest(nearBottom && scenePhase == .active && transcriptVisible)
         }
-        .onDisappear { conversation.setReadingLatest(false) }
+        .onDisappear {
+            conversation.setReadingLatest(false)
+            WorkshopRuntime.shared.leave(synchronizationOwner, conversation: conversation)
+        }
         .onChange(of: scenePhase) { _, phase in
             conversation.setReadingLatest(phase == .active && scrollFollowing.followsBottom && transcriptVisible)
         }
@@ -154,9 +159,8 @@ struct WorkshopConversationView: View {
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
         .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo) }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
-        .task(id: scenePhase) { if scenePhase == .active { await conversation.watch() } }
         .task(id: selectedPhoto) { await loadPhoto(selectedPhoto) }
-        .task { await conversation.loadModels() }
+        .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
         }
     }
 

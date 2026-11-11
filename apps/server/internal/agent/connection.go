@@ -27,6 +27,8 @@ type Connection struct {
 	telemetryID     string
 	subscribers     map[*Subscription]struct{}
 	latestTelemetry map[string]TelemetryUpdate
+	workshopMu      sync.Mutex
+	workshop        map[string]*WorkshopSubscription
 }
 
 func (c *Connection) Send(v any) error {
@@ -83,6 +85,13 @@ func (c *Connection) run(onPong func()) {
 		}
 		if message.Type == "ssh_data" || message.Type == "ssh_closed" {
 			c.publishSSH(message)
+			continue
+		}
+		if message.Type == "workshop_update" {
+			if !message.Reply.valid() || message.ID == "" || !c.Supports("query.codex.stream", 1) {
+				return
+			}
+			c.publishWorkshop(message)
 			continue
 		}
 		if message.Type != "response" || message.ID == "" {

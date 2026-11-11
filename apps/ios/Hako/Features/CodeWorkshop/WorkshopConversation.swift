@@ -34,7 +34,10 @@ import Combine
     @Published private(set) var synchronizing = false
     private var editingDraft: (text: String, photos: [WorkshopPhoto])?
     private var receipt: WorkshopReceipt?
-    private var operationId: String?
+    private var operationId: String? {
+        didSet { if oldValue != operationId { eventStream?.cancel() } }
+    }
+    private var eventStream: Task<Void, Error>?
     private var eventCursor: Int64 = 0
     private var observedTerminal: String?
     private var hasMoreEvents = false
@@ -43,11 +46,15 @@ import Combine
     private var savedTranscript: WorkshopTranscript?
     private var readingLatest = false
     private var latestCompletionID: String?
+    private var lastVerifiedAt: Date?
+    private var catalogHint: WorkshopSession?
+    private var needsHistoryRefresh = false
 
     init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, session: WorkshopSession? = nil, title: String? = nil, archived: Bool = false) {
         self.store = store; self.agent = agent; self.application = application
         self.title = title ?? session?.title ?? "新会话"
         scope = store.scope
+        catalogHint = session
         isArchived = archived
         threadId = session.flatMap { UUID(uuidString: $0.id) == nil ? nil : $0.id }
         receipt = store.receipt(for: session, agent: agent)
@@ -75,6 +82,22 @@ import Combine
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
     var canRetry: Bool { !isArchived && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
     var modelLabel: String { models.first { $0.id == choice.model }?.name ?? choice.model ?? "跟随会话设置" }
+
+    var reuseKey: WorkshopConversationReuseKey? {
+        guard let sessionId = threadId ?? operationId.map({ "pending-" + $0 }) else { return nil }
+        return WorkshopConversationReuseKey(scope: scope, agentId: agent.id, applicationId: application.id,
+            sessionId: sessionId, archived: isArchived)
+    }
+
+    func prepareForReentry(_ session: WorkshopSession) {
+        if WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogHint, current: session,
+            operationId: operationId, operationActive: operation?.active == true, completionId: latestCompletionID) {
+            lastVerifiedAt = nil
+            needsHistoryRefresh = true
+            eventStream?.cancel()
+        }
+        catalogHint = session
+    }
 
     func loadModels() async {
         guard !loadingModels else { return }
@@ -126,8 +149,8 @@ import Combine
         } else { error = store.error ?? "暂时无法取消归档，请稍后重试。" }
     }
 
-    func loadHistory(more: Bool = false) async {
-        guard let threadId, !loadingHistory, scope == store.scope else { return }
+    @discardableResult func loadHistory(more: Bool = false) async -> Bool {
+        guard let threadId, !loadingHistory, scope == store.scope else { return false }
         loadingHistory = true
         defer { loadingHistory = false }
         do {
@@ -137,7 +160,7 @@ import Combine
             var params: [String: Any] = ["threadId": threadId]
             if more { params["cursor"] = historyCursor }
             var result: WorkshopHistory = try await store.call(agent, "query.codex.history", params)
-            guard scope == store.scope, result.threadId == threadId else { return }
+            guard scope == store.scope, result.threadId == threadId else { return false }
             let newestOperation = result.operationId
             let newestArtifacts = result.artifacts
             let newestCursor = result.nextCursor
@@ -152,7 +175,7 @@ import Combine
                 guard scope == store.scope, next.threadId == threadId, next.nextCursor != cursor else { break }
                 result = next; page = next.entries + page; pages += 1
             }
-            guard scope == store.scope else { return }
+            guard scope == store.scope else { return false }
             entries = WorkshopTranscriptMerge.history(entries, page: page)
             if more {
                 historyCursor = result.nextCursor
@@ -176,18 +199,26 @@ import Combine
                     for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) { entries.append(pending.entry) }
                 }
             }
+            if !more, !uncertain, operationId == nil || observedTerminal == operationId { lastVerifiedAt = .now }
             saveTranscript()
-        } catch { readFailed(error) }
+            return true
+        } catch { readFailed(error); return false }
     }
 
     func watch() async {
-        guard scope == store.scope else { return }
-        await synchronize()
+        guard !Task.isCancelled, scope == store.scope else { return }
+        let entryStep = WorkshopWatchStep.onEntry(lastVerifiedAt: lastVerifiedAt,
+            operationId: operationId, observedTerminal: observedTerminal,
+            needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing)
+        if entryStep == .synchronize { await synchronize() }
+        // A completed/external conversation only needs its latest history page;
+        // keep the verified composer usable while checking for changes.
+        else if entryStep == .idle, !busy, !synchronizing, threadId != nil { await loadHistory() }
         var failures = 0
         var idleChecks = 0
         while !Task.isCancelled, scope == store.scope {
             switch WorkshopWatchStep.next(operationId: operationId, observedTerminal: observedTerminal,
-                needsRecovery: connectionIssue != nil || uncertain, busy: busy || synchronizing) {
+                needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing) {
             case .synchronize:
                 idleChecks = 0
                 await synchronize()
@@ -195,10 +226,22 @@ import Combine
             case .poll(let operationId):
                 idleChecks = 0
                 do {
-                    try await poll(operationId)
+                    let stream = Task {
+                        try await store.watchOperation(agent, id: operationId, cursor: eventCursor) { page in
+                            try Task.checkCancellation()
+                            guard self.operationId == operationId else { throw CancellationError() }
+                            try await self.accept(page, id: operationId)
+                            return self.observedTerminal != operationId
+                        }
+                    }
+                    eventStream = stream
+                    defer { eventStream = nil }
+                    try await withTaskCancellationHandler { try await stream.value } onCancel: { stream.cancel() }
                     failures = 0
                 } catch {
                     guard !Task.isCancelled, scope == store.scope else { return }
+                    if self.operationId != operationId { continue }
+                    if error is CancellationError || (error as NSError).code == NSURLErrorCancelled { continue }
                     failures += 1
                     readFailed(error)
                 }
@@ -217,12 +260,19 @@ import Combine
         guard !synchronizing, scope == store.scope else { return }
         synchronizing = true
         defer { synchronizing = false }
-        await loadHistory()
-        guard !Task.isCancelled, scope == store.scope else { return }
-        if let operationId {
-            do { try await poll(operationId) }
-            catch { readFailed(error) }
+        if let stream = eventStream {
+            stream.cancel()
+            _ = try? await stream.value
+            eventStream = nil
         }
+        if operationId != nil { uncertain = true }
+        let loadedHistory = await loadHistory()
+        guard !Task.isCancelled, scope == store.scope else { return }
+        guard threadId == nil || loadedHistory else { return }
+        if let operationId {
+            do { try await poll(operationId); needsHistoryRefresh = false }
+            catch { readFailed(error) }
+        } else { needsHistoryRefresh = false }
     }
 
     private func saveTranscript() {
@@ -236,17 +286,21 @@ import Combine
     }
 
     private func poll(_ id: String) async throws {
-        guard !polling else { return }
+        guard !polling, eventStream == nil else { return }
         polling = true
         defer { polling = false }
         let result: WorkshopOperationPage = try await store.call(agent, "query.codex.operation", ["operationId": id, "cursor": eventCursor])
+        try await accept(result, id: id)
+    }
+
+    private func accept(_ result: WorkshopOperationPage, id: String) async throws {
         guard scope == store.scope, operationId == id, result.operation.id == id, result.cursor >= eventCursor else { throw CancellationError() }
         operation = result.operation
         connectionIssue = nil
         uncertain = false
         cachedAt = nil
         followups = result.followups
-        for event in result.events { apply(event) }
+        if result.cursor > eventCursor { for event in result.events { apply(event) } }
         for followup in followups {
             try store.saveQueuedSend(nil, removing: followup.id)
             if followup.state == "cancelled" { entries.removeAll { $0.id == followup.id }; continue }
@@ -271,6 +325,7 @@ import Combine
             self.receipt = receipt
         }
         saveTranscript()
+        lastVerifiedAt = .now
         if !result.operation.active && !result.hasMore {
             observedTerminal = id
             if result.operation.state == "completed" { latestCompletionID = result.operation.turnId; markLatestRead() }
@@ -363,6 +418,7 @@ import Combine
 
     private func readFailed(_ failure: Error) {
         guard !Task.isCancelled, scope == store.scope else { return }
+        lastVerifiedAt = nil
         let underlying = failure as NSError
         if failure is CancellationError || underlying.domain == NSURLErrorDomain || underlying.domain == NSPOSIXErrorDomain {
             connectionIssue = "与服务器的连接已中断，正在重新连接。电脑上的任务会继续执行。"

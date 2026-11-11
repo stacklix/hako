@@ -103,6 +103,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 attempt = 0;
                 using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var workers = new List<Task>();
+                var workshopStreams = new Dictionary<string, (CancellationTokenSource Lifetime, Task Worker)>();
                 CancellationTokenSource? telemetry = null;
                 Task? telemetryWorker = null;
                 string? telemetryId = null;
@@ -149,6 +150,26 @@ public sealed class AgentConnection : IAsyncDisposable
                             case "telemetry_stop":
                                 if (root.GetProperty("id").GetString() == telemetryId) await StopTelemetryAsync();
                                 break;
+                            case "workshop_start":
+                                var streamId = root.GetProperty("id").GetString()!;
+                                foreach (var finished in new List<string>(workshopStreams.Keys))
+                                    if (workshopStreams[finished].Worker.IsCompleted)
+                                    { workshopStreams[finished].Lifetime.Dispose(); workshopStreams.Remove(finished); }
+                                if (workshopStreams.ContainsKey(streamId) || workshopStreams.Count >= 16)
+                                {
+                                    await SendAsync(socket, new { type = "workshop_update", id = streamId,
+                                        error = new CapabilityError("agent_busy", "实时订阅数量已满。") }, connection.Token);
+                                    break;
+                                }
+                                var streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
+                                var streamParameters = root.GetProperty("params").Clone();
+                                workshopStreams.Add(streamId, (streamLifetime,
+                                    Task.Run(() => RunWorkshopAsync(socket, streamId, streamParameters, streamLifetime.Token))));
+                                break;
+                            case "workshop_stop":
+                                if (workshopStreams.TryGetValue(root.GetProperty("id").GetString()!, out var stream))
+                                    stream.Lifetime.Cancel();
+                                break;
                             case "ssh_open":
                                 if (ssh is not null) await ssh.DisposeAsync();
                                 ssh = new AgentSshTunnel(root.GetProperty("id").GetString()!,
@@ -178,6 +199,8 @@ public sealed class AgentConnection : IAsyncDisposable
                 finally
                 {
                     await connection.CancelAsync();
+                    foreach (var stream in workshopStreams.Values)
+                    { try { await stream.Worker; } finally { stream.Lifetime.Dispose(); } }
                     if (ssh is not null) await ssh.DisposeAsync();
                     await StopTelemetryAsync();
                     try { await Task.WhenAll(workers); } catch (OperationCanceledException) { }
@@ -216,6 +239,26 @@ public sealed class AgentConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { socket.Abort(); }
+    }
+
+    private async Task RunWorkshopAsync(ClientWebSocket socket, string id, JsonElement parameters, CancellationToken token)
+    {
+        try
+        {
+            await dispatcher.WatchWorkshopAsync(parameters,
+                page => SendAsync(socket, new { type = "workshop_update", id, result = page }, token), token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e)
+        {
+            try
+            {
+                var error = e is AgentActionException action ? new CapabilityError(action.Code, action.Message)
+                    : new CapabilityError("stream_failed", "实时订阅中断，请重新连接。");
+                await SendAsync(socket, new { type = "workshop_update", id, error }, token);
+            }
+            catch { socket.Abort(); }
+        }
     }
 
     private async Task ExecuteRequestAsync(ClientWebSocket socket, JsonElement request, CancellationToken token)
