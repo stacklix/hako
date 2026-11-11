@@ -4,7 +4,7 @@ import Combine
 @MainActor final class DeviceMonitorClient: ObservableObject {
     static let shared = DeviceMonitorClient()
     private let authentication: any AuthenticatedServerAccess
-    private let socket: DeviceMonitorSocket
+    private let socket: AgentRequestSocket
     private var subscription: AnyCancellable?
     private struct State {
         var context = ""
@@ -18,7 +18,7 @@ import Combine
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
-        self.socket = DeviceMonitorSocket(authentication: authentication)
+        self.socket = AgentRequestSocket(authentication: authentication, logSource: .devices)
         subscription = authentication.changes.sink { [weak self] _ in
             self?.objectWillChange.send()
             Task { @MainActor [weak self] in self?.socket.resetIfContextChanged() }
@@ -157,9 +157,9 @@ import Combine
             let method: String
         }
         let context = requestContext
-        let (socket, hello) = try await authentication.openWebSocket(DeviceMonitorSocket.path + "/live/" + agent.id, logSource: .devices)
+        let (socket, hello) = try await authentication.openWebSocket(AgentRequestSocket.path + "/live/" + agent.id, logSource: .devices)
         defer { socket.cancel(with: .goingAway, reason: nil) }
-        try DeviceMonitorFrame.requireReady(hello)
+        try AgentSocketFrame.requireReady(hello)
         let decoder = JSONDecoder()
         try await withTaskCancellationHandler {
             var subscribed = false
@@ -167,7 +167,7 @@ import Combine
                 let data = try await socket.receiveData()
                 try Task.checkCancellation()
                 guard context == requestContext else { throw CancellationError() }
-                let frame = try decoder.decode(DeviceMonitorFrame.self, from: data)
+                let frame = try decoder.decode(AgentSocketFrame.self, from: data)
                 switch frame.type {
                 case "subscribed":
                     subscribed = true

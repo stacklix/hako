@@ -20,20 +20,22 @@ public sealed class AgentActionException(string code, string message) : Exceptio
 }
 
 // Queries are data providers; actions are invoked explicitly and never by query.all.
-public sealed class AgentDispatcher
+public sealed class AgentDispatcher : IAsyncDisposable
 {
     private sealed record Handler(int Version, Func<JsonElement, CancellationToken, Task<object?>> Invoke);
     private readonly Dictionary<string, Handler> queries;
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
+    private readonly CodeWorkshop workshop;
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
-    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null)
+    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
+        workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory ?? AgentSettingsStore.DefaultDirectory, "code-workshop"));
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -69,16 +71,33 @@ public sealed class AgentDispatcher
             ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
             ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
             ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
-            ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token))
+            ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token)),
+            ["action.codex.turn.start"] = new(1, workshop.StartAsync),
+            ["action.codex.turn.stop"] = new(1, workshop.StopAsync),
+            ["action.codex.thread.archive"] = new(1, workshop.ArchiveAsync),
+            ["action.codex.message.queue"] = new(1, workshop.QueueAsync),
+            ["action.codex.message.update"] = new(1, workshop.UpdateMessageAsync),
+            ["action.codex.message.cancel"] = new(1, workshop.CancelMessageAsync),
+            ["action.codex.message.steer"] = new(1, workshop.SteerMessageAsync),
+            ["action.codex.image.upload"] = new(1, workshop.UploadImageAsync),
+            ["action.codex.approval.reply"] = new(1, workshop.AnswerAsync)
         };
         onDemandQueries = new()
         {
             ["query.git.repositories"] = new(1, git.ListAsync),
             ["query.git.repository"] = new(1, git.DetailAsync),
             ["query.git.operation"] = new(1, git.OperationAsync),
-            ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token))
+            ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token)),
+            ["query.codex.applications"] = new(1, workshop.CatalogAsync),
+            ["query.codex.models"] = new(1, workshop.ModelsAsync),
+            ["query.codex.image"] = new(1, workshop.ImageAsync),
+            ["query.codex.history"] = new(1, workshop.HistoryAsync),
+            ["query.codex.operation"] = new(1, workshop.OperationAsync),
+            ["query.codex.artifact"] = new(1, workshop.ArtifactAsync)
         };
     }
+
+    public ValueTask DisposeAsync() => workshop.DisposeAsync();
 
     internal async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {

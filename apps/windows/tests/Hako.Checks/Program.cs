@@ -41,6 +41,79 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
+            if (args.Length == 2 && args[0] == "code-workshop-local")
+            {
+                await using var workshop = new CodeWorkshop(args[1]);
+                var catalog = JsonSerializer.SerializeToElement(await workshop.CatalogAsync(JsonSerializer.SerializeToElement(new { }), default), AgentConnection.Json);
+                var sessions = catalog.GetProperty("sessions");
+                var count = 0;
+                var compared = 0;
+                foreach (var session in sessions.EnumerateArray().Take(2))
+                {
+                    var history = JsonSerializer.SerializeToElement(await workshop.HistoryAsync(JsonSerializer.SerializeToElement(new { threadId = session.GetProperty("id").GetString() }), default), AgentConnection.Json);
+                    count += history.GetProperty("entries").GetArrayLength();
+                    var last = history.GetProperty("entries").EnumerateArray().LastOrDefault(entry => CodexJson.Text(entry, "role") is "user" or "assistant");
+                    if (CodexJson.Text(session, "state") == "completed" && last.ValueKind == JsonValueKind.Object &&
+                        CodexJson.Text(session, "completionId") == CodexJson.Text(history, "completionId"))
+                    {
+                        var expected = CodexJson.Clip(string.Join(" ", CodexJson.Text(last, "text").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), 240);
+                        if (CodexJson.Text(session, "preview") != expected) throw new Exception("Real catalog preview differs from the last chat message in history.");
+                        compared++;
+                    }
+                }
+                Console.WriteLine($"PASS: real Codex catalog ({catalog.GetProperty("applications").GetArrayLength()} applications, {sessions.GetArrayLength()} sessions); read {count} history entries, verified {compared} stable latest-message previews without sending a turn");
+                return 0;
+            }
+            if (args.Length == 2 && args[0] == "code-workshop-local-turn" || args.Length == 3 && args[0] == "code-workshop-local-image-turn")
+            {
+                await using var workshop = new CodeWorkshop(args[1]);
+                var catalog = JsonSerializer.SerializeToElement(await workshop.CatalogAsync(JsonSerializer.SerializeToElement(new { }), default), AgentConnection.Json);
+                var application = catalog.GetProperty("applications").EnumerateArray().First(value => value.GetProperty("name").GetString() == "hako");
+                var requestId = Guid.NewGuid().ToString();
+                var input = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["requestId"] = requestId, ["applicationId"] = application.GetProperty("id").GetString()!, ["name"] = "代码工坊接入验证",
+                    ["message"] = "这是代码工坊接入验证。只回复 HAKO_WORKSHOP_OK，不读取或修改文件，不调用任何工具。"
+                };
+                if (args.Length == 3)
+                {
+                    var modelList = JsonSerializer.SerializeToElement(await workshop.ModelsAsync(JsonSerializer.SerializeToElement(new { }), default), AgentConnection.Json);
+                    var model = modelList.GetProperty("models").EnumerateArray().First(value => value.GetProperty("isDefault").GetBoolean() && value.GetProperty("supportsImages").GetBoolean());
+                    var bytes = File.ReadAllBytes(args[2]);
+                    var digest = Convert.ToHexString(SHA256.HashData(bytes));
+                    var imageId = Guid.NewGuid().ToString();
+                    for (var offset = 0; offset < bytes.Length; offset += 9 * 1024)
+                        await workshop.UploadImageAsync(JsonSerializer.SerializeToElement(new { uploadId = imageId, offset, total = bytes.Length, sha256 = digest,
+                            content = Convert.ToBase64String(bytes, offset, Math.Min(9 * 1024, bytes.Length - offset)) }), default);
+                    input["model"] = model.GetProperty("id").GetString()!;
+                    input["permission"] = "auto";
+                    input["imageIds"] = new[] { imageId };
+                    input["message"] = "这是图片接入验证。看图判断背景主色，只回复 HAKO_IMAGE_BLUE 或 HAKO_IMAGE_RED，不调用工具、不读取或修改文件。";
+                }
+                await workshop.StartAsync(JsonSerializer.SerializeToElement(input), default);
+                var deadline = DateTime.UtcNow.AddMinutes(2);
+                while (DateTime.UtcNow < deadline)
+                {
+                    var page = JsonSerializer.SerializeToElement(await workshop.OperationAsync(JsonSerializer.SerializeToElement(new { operationId = requestId }), default), AgentConnection.Json);
+                    var operation = page.GetProperty("operation");
+                    var state = operation.GetProperty("state").GetString();
+                    if (state == "completed")
+                    {
+                        if (!page.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "text").Contains(args.Length == 3 ? "HAKO_IMAGE_BLUE" : "HAKO_WORKSHOP_OK")))
+                            throw new Exception("Real Codex turn completed without the expected answer");
+                        await using var metadata = await CodexAppServer.StartAsync(default);
+                        await metadata.RequestAsync("thread/archive", new { threadId = operation.GetProperty("threadId").GetString() }, default);
+                        Console.WriteLine("PASS: real Codex new thread, selected model/automatic review, image recognition or text, streamed answer, completion and writer release; test thread archived");
+                        return 0;
+                    }
+                    if (state is "failed" or "unknown") throw new Exception("Real Codex turn failed: " + CodexJson.Text(operation, "message"));
+                    if (state == "waiting") throw new Exception("Real Codex smoke test requested approval");
+                    await Task.Delay(500);
+                }
+                throw new TimeoutException("Real Codex smoke turn did not complete");
+            }
             if (args.Length > 0 && Path.GetFileName(args[0]) == "hako-launch-fixture.py")
             {
                 Console.WriteLine("ready");
@@ -108,8 +181,16 @@ internal static class Program
                 new AgentCapability("query.network.listeners", 1), new AgentCapability("action.network.http.check", 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
+                new AgentCapability("action.codex.turn.start", 1), new AgentCapability("action.codex.turn.stop", 1),
+                new AgentCapability("action.codex.thread.archive", 1),
+                new AgentCapability("action.codex.message.queue", 1), new AgentCapability("action.codex.message.update", 1),
+                new AgentCapability("action.codex.message.cancel", 1), new AgentCapability("action.codex.message.steer", 1),
+                new AgentCapability("action.codex.image.upload", 1),
+                new AgentCapability("action.codex.approval.reply", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
-                new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1)
+                new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1),
+                new AgentCapability("query.codex.applications", 1), new AgentCapability("query.codex.models", 1), new AgentCapability("query.codex.image", 1), new AgentCapability("query.codex.history", 1),
+                new AgentCapability("query.codex.operation", 1), new AgentCapability("query.codex.artifact", 1)
             }))
                 throw new Exception("Agent capabilities do not match registered actions");
             using var emptyParams = JsonDocument.Parse("{}");

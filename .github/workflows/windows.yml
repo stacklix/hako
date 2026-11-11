@@ -20,6 +20,7 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet build src/Hako/Hako.csproj -c Release
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
+      - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- code-workshop
       - uses: actions/setup-go@v6
         with:
           go-version-file: apps/server/go.mod

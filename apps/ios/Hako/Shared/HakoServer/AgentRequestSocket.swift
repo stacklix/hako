@@ -1,6 +1,21 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
-struct DeviceMonitorFrame: Decodable {
+@MainActor protocol AgentSocketConnection: AnyObject {
+    var usable: Bool { get }
+    func send(_ message: URLSessionWebSocketTask.Message) async throws
+    func receiveData() async throws -> Data
+    func close()
+}
+
+extension URLSessionWebSocketTask: AgentSocketConnection {
+    var usable: Bool { state == .running && closeCode == .invalid }
+    func close() { cancel(with: .goingAway, reason: nil) }
+}
+
+struct AgentSocketFrame: Decodable {
     let type: String
     let id: String?
     let status: Int?
@@ -23,24 +38,38 @@ struct DeviceMonitorFrame: Decodable {
     }
 }
 
-@MainActor final class DeviceMonitorSocket {
+@MainActor final class AgentRequestSocket {
     static let path = "/ws/console/agents"
 
-    private let authentication: any AuthenticatedServerAccess
+    private let requestContext: () -> String
+    private let openSocket: () async throws -> (any AgentSocketConnection, Data)
+    private let requestTimeout: Duration
+    private let idleTimeout: Duration
     private var context: String?
     private var generation = UUID()
-    private var socket: URLSessionWebSocketTask?
-    private var opening: Task<URLSessionWebSocketTask, Error>?
+    private var socket: (any AgentSocketConnection)?
+    private var opening: Task<any AgentSocketConnection, Error>?
     private var reader: Task<Void, Never>?
     private var idle: Task<Void, Never>?
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
 
-    init(authentication: any AuthenticatedServerAccess) { self.authentication = authentication }
+    convenience init(authentication: any AuthenticatedServerAccess, logSource: HakoLogSource) {
+        self.init(context: { authentication.requestContext }, open: {
+            let (socket, hello) = try await authentication.openWebSocket(Self.path, logSource: logSource)
+            return (socket, hello)
+        })
+    }
+
+    init(context: @escaping () -> String, open: @escaping () async throws -> (any AgentSocketConnection, Data),
+         requestTimeout: Duration = .seconds(15), idleTimeout: Duration = .seconds(45)) {
+        requestContext = context; openSocket = open
+        self.requestTimeout = requestTimeout; self.idleTimeout = idleTimeout
+    }
 
     func resetIfContextChanged() {
-        if context != authentication.requestContext {
+        if context != requestContext() {
             disconnect(CancellationError())
-            context = authentication.requestContext
+            context = requestContext()
         }
     }
 
@@ -54,15 +83,21 @@ struct DeviceMonitorFrame: Decodable {
         try Task.checkCancellation()
         idle?.cancel()
         let deadline = Task {
-            try await Task.sleep(for: .seconds(15))
-            finish(id, with: .failure(HakoError(message: "设备请求超时，请先确认结果。")))
+            try await Task.sleep(for: requestTimeout)
+            guard pending[id] != nil else { return }
+            if self.socket === socket { disconnect(URLError(.timedOut)) }
+            else { finish(id, with: .failure(URLError(.timedOut))) }
         }
         defer { deadline.cancel() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[id] = continuation
                 Task {
-                    guard pending[id] != nil, self.socket === socket else { return }
+                    guard pending[id] != nil else { return }
+                    guard self.socket === socket else {
+                        finish(id, with: .failure(URLError(.networkConnectionLost)))
+                        return
+                    }
                     do { try await socket.send(message) }
                     catch { if self.socket === socket { disconnect(error) } }
                 }
@@ -72,26 +107,29 @@ struct DeviceMonitorFrame: Decodable {
         }
     }
 
-    private func connection() async throws -> URLSessionWebSocketTask {
+    private func connection() async throws -> any AgentSocketConnection {
         resetIfContextChanged()
-        if let socket { return socket }
+        if let socket {
+            if socket.usable { return socket }
+            disconnect(URLError(.networkConnectionLost))
+        }
         let generation = self.generation
-        let task = opening ?? Task {
-            let (socket, hello) = try await authentication.openWebSocket(Self.path, logSource: .devices)
+        let task = opening ?? Task<any AgentSocketConnection, Error> {
+            let (socket, hello) = try await openSocket()
             do {
                 try Task.checkCancellation()
-                try DeviceMonitorFrame.requireReady(hello)
+                try AgentSocketFrame.requireReady(hello)
                 return socket
             } catch {
-                socket.cancel(with: .goingAway, reason: nil)
+                socket.close()
                 throw error
             }
         }
         opening = task
         do {
             let opened = try await task.value
-            guard generation == self.generation, context == authentication.requestContext else {
-                opened.cancel(with: .goingAway, reason: nil)
+            guard generation == self.generation, context == requestContext() else {
+                opened.close()
                 throw CancellationError()
             }
             if socket == nil {
@@ -103,7 +141,7 @@ struct DeviceMonitorFrame: Decodable {
                         while !Task.isCancelled {
                             let data = try await opened.receiveData()
                             guard let self, self.socket === opened else { return }
-                            let frame = try JSONDecoder().decode(DeviceMonitorFrame.self, from: data)
+                            let frame = try JSONDecoder().decode(AgentSocketFrame.self, from: data)
                             guard frame.type == "reply", let id = frame.id else { throw CocoaError(.coderReadCorrupt) }
                             if self.pending[id] != nil { self.finish(id, with: Result { try frame.replyData() }) }
                         }
@@ -127,8 +165,9 @@ struct DeviceMonitorFrame: Decodable {
 
     private func scheduleIdle() {
         idle?.cancel()
+        let timeout = idleTimeout
         idle = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(45)) }
+            do { try await Task.sleep(for: timeout) }
             catch { return }
             self?.disconnect(CancellationError())
         }
@@ -139,7 +178,7 @@ struct DeviceMonitorFrame: Decodable {
         idle?.cancel(); idle = nil
         opening?.cancel(); opening = nil
         reader?.cancel(); reader = nil
-        socket?.cancel(with: .goingAway, reason: nil); socket = nil
+        socket?.close(); socket = nil
         let cancelled = pending
         pending.removeAll()
         for continuation in cancelled.values { continuation.resume(throwing: error) }

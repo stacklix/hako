@@ -6,7 +6,7 @@ enum HakoApplications {
 
         var applications: [Application] {
             switch self {
-            case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices]
+            case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices, .codeWorkshop]
             case .finance: [.investment, .crypto]
             case .life: [.sports, .usage]
             }
@@ -17,6 +17,7 @@ enum HakoApplications {
         case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
         case containers = "容器管理", devices = "设备监控", sports = "运动记录", usage = "使用时间"
         case investment = "投资记账", crypto = "加密资产"
+        case codeWorkshop = "代码工坊"
 
         var id: Self { self }
         var subtitle: String {
@@ -26,6 +27,7 @@ enum HakoApplications {
             case .cloudServers: "阿里云 ECS · 监控 · 进程与终端"
             case .containers: "Arcane · 容器状态 · 日志与更新"
             case .devices: "设备在线状态 · 能力调用"
+            case .codeWorkshop: "Codex 会话 · 编程任务 · 原型预览"
             case .sports: "运动趋势 · 每次记录 · GitHub 归档"
             case .usage: "每日概览 · Top 5 · GitHub 归档"
             case .investment: "账户 · 持仓 · 定投"
@@ -39,6 +41,7 @@ enum HakoApplications {
             case .cloudServers: "server.rack"
             case .containers: "shippingbox"
             case .devices: "desktopcomputer"
+            case .codeWorkshop: "terminal"
             case .sports: "figure.run"
             case .usage: "chart.bar.xaxis"
             case .investment: "chart.line.uptrend.xyaxis"
@@ -52,6 +55,7 @@ enum HakoApplications {
             case .cloudServers: CloudServersView()
             case .containers: ContainersView()
             case .devices: DeviceMonitorView()
+            case .codeWorkshop: CodeWorkshopView()
             case .sports: SportsView()
             case .usage: UsageEntry()
             case .investment: InvestmentView()
@@ -74,4 +78,5 @@ enum HakoApplications {
             application.registerShortcuts(in: registry)
         }
     }
+
 }

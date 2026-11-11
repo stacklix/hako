@@ -1,0 +1,172 @@
+<div id="hako-message-queue">
+  <style>
+    #hako-message-queue {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    #hako-message-queue * {box-sizing:border-box}
+    #hako-message-queue [hidden] {display:none!important}
+    #hako-message-queue .stage {display:flex;flex-direction:column;align-items:center;gap:16px;padding:20px 8px}
+    #hako-message-queue .phone {
+      --hk-bg:light-dark(#f5f5f7,#151517);--hk-card:light-dark(#fff,#242427);--hk-text:light-dark(#202124,#f2f2f4);
+      --hk-muted:light-dark(#76777d,#aaaab0);--hk-line:light-dark(#e9e9ee,#38383c);--hk-red:light-dark(#d52738,#ff8392);
+      width:100%;max-width:414px;min-height:760px;display:flex;flex-direction:column;position:relative;
+      border:1px solid var(--hk-line);border-radius:28px;background:var(--hk-bg);color:var(--hk-text);
+      font-size:15px;line-height:1.55;
+    }
+    #hako-message-queue .phone :where(button,textarea) {font:inherit;color:inherit}
+    #hako-message-queue button {border:0;background:none}
+    #hako-message-queue button:disabled {opacity:.35}
+    #hako-message-queue p {margin:0}
+    #hako-message-queue .statusbar {display:flex;justify-content:space-between;padding:14px 25px 4px;font-size:12px;font-weight:500}
+    #hako-message-queue .navigation {display:grid;grid-template-columns:44px 1fr 44px;align-items:center;padding:2px 12px}
+    #hako-message-queue .navigation strong {text-align:center;font-weight:500}
+    #hako-message-queue .icon {min-width:44px;min-height:44px;padding:0;display:inline-grid;place-items:center;font-size:23px}
+    #hako-message-queue .project {display:flex;justify-content:space-between;gap:12px;padding:10px 20px 12px;border-bottom:1px solid var(--hk-line);font-size:12px;color:var(--hk-muted)}
+    #hako-message-queue .history {padding:22px 20px 16px;display:flex;flex-direction:column;gap:23px;flex:1;overflow-wrap:anywhere}
+    #hako-message-queue .user {align-self:flex-end;max-width:90%;background:var(--hk-line);border-radius:16px;padding:12px 14px;white-space:pre-wrap}
+    #hako-message-queue .author {display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:12px;font-weight:500}
+    #hako-message-queue .mark {display:inline-grid;place-items:center;width:21px;height:21px;border:1px solid var(--hk-line);border-radius:6px;font-family:monospace}
+    #hako-message-queue .record {background:var(--hk-card);border-radius:12px;padding:12px 14px;font-size:13px}
+    #hako-message-queue .record small {color:var(--hk-muted);display:block;margin-top:4px;font-family:ui-monospace,monospace}
+    #hako-message-queue .followups {display:flex;flex-direction:column;gap:19px}
+    #hako-message-queue .followup {display:flex;flex-direction:column;align-items:flex-end;position:relative;min-width:0}
+    #hako-message-queue .message-status {display:flex;align-items:center;justify-content:flex-end;gap:5px;font-size:12px;color:var(--hk-muted);min-height:38px}
+    #hako-message-queue .message-status .icon {font-size:19px;min-height:44px;min-width:36px}
+    #hako-message-queue .queued-bubble {max-width:90%;padding:11px 15px;border:1px solid var(--hk-line);border-radius:20px;background:var(--hk-card);white-space:pre-wrap;overflow-wrap:anywhere}
+    #hako-message-queue .followup[data-state="applied"] .queued-bubble,#hako-message-queue .followup[data-state="sent"] .queued-bubble {background:var(--hk-line);border-color:transparent}
+    #hako-message-queue .message-menu {position:absolute;right:0;bottom:calc(100% - 30px);width:min(268px,100%);padding:9px 10px 10px;border:1px solid var(--hk-line);border-radius:26px;background:var(--hk-card);box-shadow:0 14px 35px #0002;z-index:5}
+    #hako-message-queue .menu-preview {font-size:12px;color:var(--hk-muted);padding:4px 13px 9px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+    #hako-message-queue .menu-item {display:flex;align-items:center;gap:14px;min-height:47px;width:100%;text-align:left;padding:8px 13px;border-radius:12px;font-size:15px}
+    #hako-message-queue .menu-icon {width:21px;text-align:center;font-size:21px;flex:none}
+    #hako-message-queue .phone .destructive {color:var(--hk-red)}
+    #hako-message-queue .footer {padding:0 16px 12px}
+    #hako-message-queue .run {display:flex;align-items:center;justify-content:space-between;min-height:44px;gap:8px;color:var(--hk-muted);font-size:12px}
+    #hako-message-queue .stop {min-height:44px;padding:0 4px 0 12px;font-size:12px}
+    #hako-message-queue .draft-label {display:block;font-size:12px;color:var(--hk-muted);margin-bottom:6px}
+    #hako-message-queue .composer {display:flex;align-items:flex-end;gap:2px;padding:4px;border:1px solid var(--hk-line);border-radius:27px;background:var(--hk-card)}
+    #hako-message-queue textarea {width:100%;min-width:0;min-height:44px;max-height:130px;resize:vertical;border:0;background:none;padding:10px 2px;font-size:16px!important;line-height:1.5}
+    #hako-message-queue textarea::placeholder {color:var(--hk-muted)}
+    #hako-message-queue .plus {font-size:26px;font-weight:500}
+    #hako-message-queue .phone .send {display:grid;place-items:center;flex:none;width:44px;height:44px;padding:0;border-radius:50%;background:var(--hk-text);color:var(--hk-bg);font-size:23px}
+    #hako-message-queue .phone .send:disabled {background:var(--hk-line);color:var(--hk-muted);opacity:1}
+    #hako-message-queue .edit-bar {display:flex;justify-content:space-between;align-items:center;gap:8px;padding-left:10px;font-size:12px;color:var(--hk-muted)}
+    #hako-message-queue .feedback {font-size:12px;color:var(--hk-muted);margin:8px 2px 0}
+    #hako-message-queue .home {width:112px;height:4px;background:var(--hk-text);border-radius:8px;margin:18px auto 0}
+    #hako-message-queue .demo {display:flex;align-items:center;flex-wrap:wrap;justify-content:center;gap:8px;font:12px -apple-system,sans-serif;color:light-dark(#76777d,#aaaab0)}
+    #hako-message-queue .demo select {font:inherit;min-height:36px;padding:6px 9px;border:1px solid light-dark(#e9e9ee,#38383c);border-radius:8px;background:light-dark(#fff,#242427);color:light-dark(#202124,#f2f2f4)}
+    #hako-message-queue .text-button {min-height:44px;padding:0;font-size:12px}
+    @media(max-width:380px) {#hako-message-queue .stage{padding:10px 0}#hako-message-queue .phone{border-radius:20px}#hako-message-queue .history{padding-inline:16px}}
+  </style>
+  <div class="stage viz-dotted-background">
+    <div class="phone" aria-label="Hako 消息排队与引导原型">
+      <div class="statusbar"><span>9:41</span><span>5G · 100%</span></div>
+      <div class="navigation"><span aria-hidden="true">‹</span><strong>支持 Steer 发送</strong><button class="icon cursor-interaction" data-action="info" aria-label="查看发送说明">···</button></div>
+      <div class="project"><span>▱ hako</span><span>跟随会话设置</span></div>
+      <div class="history">
+        <div class="user">代码工坊要支持在 Codex 执行中追加指令。</div>
+        <div><div class="author"><span class="mark" aria-hidden="true">&gt;_</span>Codex</div><p>我先查看现有输入框和任务状态，设计执行中的消息发送方式。</p></div>
+        <div class="record">执行记录<small>读取 WorkshopConversationView.swift</small></div>
+        <div class="followups" aria-label="已发送的后续消息"></div>
+        <div class="response" hidden><div class="author"><span class="mark" aria-hidden="true">&gt;_</span>Codex</div><p></p></div>
+      </div>
+      <div class="footer">
+        <div class="run"><span class="run-label">任务在电脑上执行中</span><button class="stop cursor-interaction" data-action="stop">■ 停止</button></div>
+        <div class="edit-bar" hidden><span>修改排队消息</span><button class="icon cursor-interaction" data-action="cancel-edit" aria-label="取消修改">×</button></div>
+        <label class="draft-label" for="hako-queued-draft">发给 Codex 的消息</label>
+        <div class="composer"><button class="icon plus cursor-interaction" data-action="attach" aria-label="添加图片">+</button><textarea id="hako-queued-draft" rows="1" maxlength="4000" placeholder="继续补充…"></textarea><button class="send cursor-interaction" data-action="send" aria-label="发送消息">↑</button></div>
+        <div class="feedback" role="status" aria-live="polite" hidden></div><button class="text-button cursor-interaction" data-action="check" hidden>检查原引导结果</button><button class="text-button cursor-interaction" data-action="retry" hidden>重试引导</button><div class="home" aria-hidden="true"></div>
+      </div>
+    </div>
+    <label class="demo">演示状态 <select aria-label="切换演示状态"><option value="running">执行中</option><option value="finishing">正在收尾</option><option value="offline">连接断开</option><option value="unknown">引导结果待确认</option><option value="failed">引导发送失败</option><option value="idle">本轮完成</option></select></label>
+  </div>
+  <script>
+  (() => {
+    const root=document.getElementById('hako-message-queue');
+    const $=selector=>root.querySelector(selector), draft=$('textarea');
+    const state={status:'running',messages:[{id:'sample-queue',text:'就像这样',status:'queue'}],editing:null,notice:'',response:'',activeId:null};
+    let menuId=null, timer, sequence=0, heldDraft='';
+    const taskLabels={running:'任务在电脑上执行中',finishing:'当前任务正在收尾',offline:'连接已断开',unknown:'引导结果待确认',failed:'引导发送失败',idle:'本轮已完成'};
+    const messageLabels={queue:'Queued',submitting:'Steer · 正在提交',accepted:'Steer · 等待应用',applied:'Steer · 已应用',sent:'已发送',unknown:'Steer · 结果待确认',failed:'Steer · 未发送'};
+    function save(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{prototype:'Hako 消息级 Queue / Steer',queued:state.messages.filter(x=>x.status==='queue').length},privateContent:{schema:'message-queue-v1',...state,draft:draft.value,editing:null}}).catch(()=>{});}
+    function restore(value){
+      if(value?.schema!=='message-queue-v1')return;clearTimeout(timer);menuId=null;
+      state.status=Object.hasOwn(taskLabels,value.status)?value.status:'running';
+      state.messages=Array.isArray(value.messages)?value.messages.filter(x=>typeof x?.id==='string'&&typeof x.text==='string'&&Object.hasOwn(messageLabels,x.status)).slice(-20):[];
+      state.messages.forEach(item=>{if(['submitting','accepted'].includes(item.status)){item.status='unknown';state.status='unknown';state.activeId=item.id;}});
+      state.editing=null;state.notice='';state.response=typeof value.response==='string'?value.response:'';draft.value=typeof value.draft==='string'?value.draft.slice(0,4000):'';render();
+    }
+    function render(){
+      const unavailable=['offline','unknown','failed'].includes(state.status), busy=state.messages.some(x=>x.status==='submitting');
+      $('.run-label').textContent=taskLabels[state.status];$('[data-action="stop"]').hidden=state.status==='idle';$('[data-action="stop"]').disabled=unavailable||busy;
+      $('[data-action="send"]').disabled=!draft.value.trim()||(!state.editing&&unavailable);$('[data-action="send"]').textContent=state.editing?'✓':'↑';$('[data-action="send"]').setAttribute('aria-label',state.editing?'保存修改':'发送消息');
+      $('.edit-bar').hidden=!state.editing;$('.feedback').hidden=!state.notice;$('.feedback').textContent=state.notice;
+      $('[data-action="check"]').hidden=state.status!=='unknown';$('[data-action="retry"]').hidden=state.status!=='failed';
+      $('.response').hidden=!state.response;$('.response p').textContent=state.response;$('.followups').replaceChildren();
+      state.messages.forEach(item=>{
+        const row=document.createElement('div');row.className='followup';row.dataset.id=item.id;row.dataset.state=item.status;
+        const status=document.createElement('div');status.className='message-status';
+        const label=document.createElement('span');label.textContent=(item.status==='queue'?'↳ ':'')+messageLabels[item.status];status.append(label);
+        if(item.status==='queue'){
+          const trigger=document.createElement('button');trigger.className='icon cursor-interaction';trigger.dataset.action='menu';trigger.dataset.id=item.id;trigger.textContent='···';trigger.setAttribute('aria-label','排队消息操作');trigger.setAttribute('aria-expanded',String(menuId===item.id));trigger.setAttribute('aria-controls','menu-'+item.id);status.append(trigger);
+        }
+        const bubble=document.createElement('div');bubble.className='queued-bubble';bubble.textContent=item.text;row.append(status,bubble);
+        if(menuId===item.id&&item.status==='queue'){
+          const menu=document.createElement('div');menu.className='message-menu';menu.id='menu-'+item.id;menu.setAttribute('role','menu');menu.setAttribute('aria-label','排队消息操作');
+          const preview=document.createElement('div');preview.className='menu-preview';preview.textContent=item.text;menu.append(preview);
+          [['edit','✎','修改消息'],['steer','↳',state.status==='idle'?'立即发送':'Steer instead'],['delete','×','取消消息']].forEach(([action,icon,text])=>{
+            const button=document.createElement('button');button.className='menu-item cursor-interaction'+(action==='delete'?' destructive':'');button.dataset.action=action;button.dataset.id=item.id;button.setAttribute('role','menuitem');
+            const mark=document.createElement('span');mark.className='menu-icon';mark.textContent=icon;mark.setAttribute('aria-hidden','true');const copy=document.createElement('span');copy.textContent=text;button.append(mark,copy);
+            button.disabled=action==='steer'&&(unavailable||busy||state.status==='finishing');menu.append(button);
+          });row.append(menu);
+        }
+        $('.followups').append(row);
+      });$('select').value=state.status;
+    }
+    function notify(text){state.notice=text;render();save();}
+    function closeMenu(focus=false){const id=menuId;menuId=null;render();if(focus&&id)$('[data-action="menu"][data-id="'+id+'"]')?.focus();}
+    function startNext(item){item.status='sent';state.status='running';state.activeId=item.id;state.response='收到，我会按这条消息开始新一轮。';render();save();}
+    function steer(item){
+      if(state.status==='idle'){startNext(item);return;}if(state.status!=='running'||state.messages.some(x=>x.status==='submitting'))return;
+      clearTimeout(timer);item.status='submitting';state.activeId=item.id;state.response='';state.notice='';render();save();
+      timer=setTimeout(()=>{item.status='accepted';render();save();timer=setTimeout(()=>{item.status='applied';state.response='收到，我会把这条补充加入当前任务，继续处理。';render();save();},1000);},650);
+    }
+    function cancelEdit(){state.editing=null;draft.value=heldDraft;heldDraft='';render();draft.focus();}
+    root.addEventListener('click',event=>{
+      const button=event.target.closest('button[data-action]');
+      if(!button){if(menuId&&!event.target.closest('.message-menu'))closeMenu();return;}if(button.disabled)return;
+      const action=button.dataset.action;
+      if(action==='send'){
+        const text=draft.value.trim();if(!text)return;
+        if(state.editing){const item=state.messages.find(x=>x.id===state.editing&&x.status==='queue');if(item)item.text=text;state.editing=null;draft.value=heldDraft;heldDraft='';notify('排队消息已更新');return;}
+        const item={id:'message-'+Date.now()+'-'+(++sequence),text,status:'queue'};state.messages.push(item);draft.value='';menuId=null;state.notice='';
+        if(state.status==='idle')startNext(item);else{render();save();}return;
+      }
+      if(action==='menu'){menuId=menuId===button.dataset.id?null:button.dataset.id;render();if(menuId)$('.message-menu [role="menuitem"]')?.focus();return;}
+      if(action==='cancel-edit'){cancelEdit();save();return;}
+      if(action==='stop'){clearTimeout(timer);state.messages.forEach(x=>{if(x.status==='accepted')x.status='unknown';});state.status='idle';menuId=null;notify('已停止；Queued 消息保留，等待手动发送。');return;}
+      if(action==='check'){state.status='running';state.messages.forEach(x=>{if(x.status==='unknown')x.status='applied';});notify('已核对：原引导已应用');return;}
+      if(action==='retry'){const item=state.messages.find(x=>x.status==='failed');if(item){state.status='running';steer(item);}return;}
+      if(action==='info'){notify('执行中发送的消息立即出现在会话中，标记 Queued；点击消息右上角 ··· 可修改、Steer 或取消。');return;}
+      if(action==='attach'){notify('附件沿用现有图片入口；此原型演示文字消息。');return;}
+      const item=state.messages.find(x=>x.id===button.dataset.id&&x.status==='queue');if(!item)return;menuId=null;
+      if(action==='steer'){steer(item);return;}
+      if(action==='edit'){
+        if(!state.editing)heldDraft=draft.value;state.editing=item.id;draft.value=item.text;state.notice='';render();draft.focus();return;
+      }
+      if(action==='delete'){
+        state.messages=state.messages.filter(x=>x.id!==item.id);if(state.editing===item.id)cancelEdit();notify('排队消息已取消');
+      }
+    });
+    draft.addEventListener('input',()=>{render();save();});
+    root.addEventListener('keydown',event=>{if(event.key==='Escape'){if(menuId)closeMenu(true);else if(state.editing){cancelEdit();save();}}});
+    $('select').addEventListener('change',event=>{
+      clearTimeout(timer);menuId=null;state.status=event.target.value;state.notice='';
+      state.messages.forEach(x=>{if(['submitting','accepted'].includes(x.status))x.status='unknown';});
+      if(state.status==='idle'){const first=state.messages.find(x=>x.status==='queue');if(first){if(state.editing===first.id)cancelEdit();startNext(first);return;}}
+      if(['unknown','failed'].includes(state.status)){let item=state.messages.find(x=>x.id===state.activeId)||state.messages.find(x=>x.status==='queue');if(item){item.status=state.status;state.activeId=item.id;}}
+      render();save();
+    });
+    render();restore(window.openai?.widgetState?.privateContent);
+    window.addEventListener('openai:set_globals',event=>restore(event.detail?.globals?.widgetState?.privateContent));
+    if(globalThis.Tweak){const design={showRecord:true};const tweak=new Tweak({container:$('.phone'),onChange:()=>{$('.record').hidden=!design.showRecord;}});tweak.addToggle(design,'showRecord',{label:'显示执行记录'});}
+  })();
+  </script>
+</div>

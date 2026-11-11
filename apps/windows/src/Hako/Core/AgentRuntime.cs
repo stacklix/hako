@@ -26,7 +26,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     {
         Store = store; this.running = running;
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
-        Connection = new AgentConnection(Metrics, codexUsage);
+        Connection = new AgentConnection(Metrics, codexUsage, store.DirectoryPath);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
         Connection.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }

@@ -1,0 +1,157 @@
+<div id="hako-swipe-archive">
+  <style>
+    #hako-swipe-archive {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    #hako-swipe-archive * {box-sizing:border-box}
+    #hako-swipe-archive [hidden] {display:none!important}
+    #hako-swipe-archive .stage {padding:18px 0;display:flex;justify-content:center}
+    #hako-swipe-archive .phone {
+      --hk-bg:light-dark(#f5f5f7,#151517);--hk-card:light-dark(#fff,#242427);
+      --hk-text:light-dark(#151517,#f3f3f5);--hk-muted:light-dark(#79797e,#a5a5ad);
+      --hk-line:light-dark(#e4e4e9,#3b3b40);--hk-green:light-dark(#218547,#69d68b);
+      --hk-blue:light-dark(#176bd1,#72b2ff);--hk-orange:light-dark(#b86500,#ffb95c);
+      --hk-action:light-dark(#c67a1c,#955c16);--hk-action-text:light-dark(#fff,#fff7eb);
+      width:100%;max-width:414px;min-height:730px;padding:14px 20px 12px;border:1px solid var(--hk-line);
+      border-radius:28px;background:var(--hk-bg);color:var(--hk-text);font-size:15px;line-height:1.5;
+      display:flex;flex-direction:column;position:relative;
+    }
+    #hako-swipe-archive button {font:inherit;color:inherit;border:0;background:none;padding:0}
+    #hako-swipe-archive button:disabled {opacity:.45}
+    #hako-swipe-archive svg {width:19px;height:19px;flex:none}
+    #hako-swipe-archive .statusbar {display:flex;justify-content:space-between;font-size:12px;padding:0 7px}
+    #hako-swipe-archive .navigation {display:flex;justify-content:space-between;align-items:center;margin:15px -3px 23px}
+    #hako-swipe-archive .round {width:44px;height:44px;border:1px solid var(--hk-line);border-radius:50%;display:grid;place-items:center;background:var(--hk-card)}
+    #hako-swipe-archive .heading {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:22px}
+    #hako-swipe-archive h2 {margin:0;font-size:28px;font-weight:500;letter-spacing:-1px}
+    #hako-swipe-archive .device {text-align:right;font-size:12px}
+    #hako-swipe-archive .device-top {display:flex;align-items:center;gap:6px;justify-content:flex-end}
+    #hako-swipe-archive .device-top svg {width:16px;height:16px}
+    #hako-swipe-archive .dot {display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--hk-green)}
+    #hako-swipe-archive .muted {color:var(--hk-muted)}
+    #hako-swipe-archive .tabs {display:flex;align-items:center;border-bottom:1px solid var(--hk-line);color:var(--hk-muted)}
+    #hako-swipe-archive .tabs span {display:flex;align-items:center;justify-content:center;gap:4px;min-height:44px;flex:1}
+    #hako-swipe-archive .tabs .selected {color:var(--hk-text);border-bottom:2px solid var(--hk-text);font-weight:500}
+    #hako-swipe-archive .toolbar {display:flex;align-items:center;justify-content:space-between;min-height:52px;gap:10px;position:relative}
+    #hako-swipe-archive .toolbar button {min-height:44px;display:flex;align-items:center;gap:5px}
+    #hako-swipe-archive .filter {color:var(--hk-muted);font-size:12px}
+    #hako-swipe-archive .filter svg {width:12px;height:12px}
+    #hako-swipe-archive .filter-menu {position:absolute;z-index:5;top:46px;left:0;width:180px;padding:6px;background:var(--hk-card);border:1px solid var(--hk-line);border-radius:14px;box-shadow:0 8px 24px light-dark(#0002,#0006)}
+    #hako-swipe-archive .filter-menu button {padding:0 10px;width:100%;justify-content:space-between;font-size:14px}
+    #hako-swipe-archive .sessions {border-radius:17px;overflow:hidden;background:var(--hk-card)}
+    #hako-swipe-archive .row {position:relative;overflow:hidden;border-bottom:1px solid var(--hk-line);touch-action:pan-y}
+    #hako-swipe-archive .row:last-child {border-bottom:0}
+    #hako-swipe-archive .content {width:100%;min-height:95px;padding:15px 16px;display:flex;align-items:flex-start;gap:11px;position:relative;z-index:1;background:var(--hk-card);text-align:left;transition:transform .2s ease;user-select:none;touch-action:pan-y}
+    #hako-swipe-archive .content > svg {margin-top:3px}
+    #hako-swipe-archive .content-copy {min-width:0;flex:1}
+    #hako-swipe-archive .row-title {display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:7px}
+    #hako-swipe-archive .title {font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    #hako-swipe-archive .time {color:var(--hk-muted);font-size:11px;white-space:nowrap}
+    #hako-swipe-archive .preview {color:var(--hk-muted);font-size:12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    #hako-swipe-archive .summary {display:flex;align-items:center;gap:8px}
+    #hako-swipe-archive .summary .preview {flex:1;min-width:0}
+    #hako-swipe-archive .badge {font-size:11px;white-space:nowrap;display:flex;align-items:center;gap:4px}
+    #hako-swipe-archive .running {color:var(--hk-green)}
+    #hako-swipe-archive .unread {color:var(--hk-blue)}
+    #hako-swipe-archive .badge svg {width:10px;height:10px}
+    #hako-swipe-archive .archive {position:absolute;right:0;top:0;bottom:0;width:80px;display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center;background:var(--hk-action);color:var(--hk-action-text);font-size:12px}
+    #hako-swipe-archive .archive:disabled {opacity:1;background:var(--hk-line);color:var(--hk-muted)}
+    #hako-swipe-archive .empty {padding:32px 16px;text-align:center;color:var(--hk-muted)}
+    #hako-swipe-archive .notice {margin:16px 0 0;padding:10px 12px;border-radius:12px;background:var(--hk-text);color:var(--hk-bg);font-size:12px;text-align:center}
+    #hako-swipe-archive .home {width:112px;height:4px;border-radius:5px;background:var(--hk-text);margin:28px auto 0}
+    #hako-swipe-archive .spacer {flex:1;min-height:20px}
+    @media(prefers-reduced-motion:reduce) {#hako-swipe-archive .content {transition:none}}
+    @media(max-width:360px) {#hako-swipe-archive .phone {padding-inline:14px}#hako-swipe-archive .summary {align-items:flex-start;flex-direction:column;gap:3px}}
+  </style>
+  <div class="stage viz-dotted-background">
+    <section class="phone" aria-label="代码工坊会话左滑归档原型">
+      <div class="statusbar"><span>9:41</span><span>5G · 100%</span></div>
+      <div class="navigation" aria-hidden="true"><span class="round"><i data-lucide="chevron-left"></i></span><span class="round"><i data-lucide="sliders-horizontal"></i></span></div>
+      <div class="heading"><h2>代码工坊</h2><div class="device"><div class="device-top"><i data-lucide="monitor" aria-hidden="true"></i><span>Windows</span><span class="dot"></span></div><span class="muted">已连接</span></div></div>
+      <div class="tabs" aria-label="应用"><span class="selected">hako</span><span>ilinker</span><span>xkode</span><span>更多<i data-lucide="chevron-down" aria-hidden="true"></i></span></div>
+      <div class="toolbar">
+        <button class="filter cursor-interaction" aria-label="切换会话与已归档列表" aria-expanded="false"><span class="count"></span><i data-lucide="chevron-down" aria-hidden="true"></i></button>
+        <button class="new cursor-interaction"><i data-lucide="plus" aria-hidden="true"></i>新建会话</button>
+        <div class="filter-menu" hidden><button class="cursor-interaction" data-mode="active">会话<span class="active-check">✓</span></button><button class="cursor-interaction" data-mode="archived">已归档<span class="archive-check" hidden>✓</span></button></div>
+      </div>
+      <div class="sessions" aria-label="会话列表"></div>
+      <div class="notice" role="status" aria-live="polite" hidden></div>
+      <div class="spacer"></div><div class="home" aria-hidden="true"></div>
+    </section>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('hako-swipe-archive');
+      const list = root.querySelector('.sessions'), filter = root.querySelector('.filter'), menu = root.querySelector('.filter-menu');
+      const sessions = [
+        {id:'updating',title:'代码工坊更新',preview:'正在检查会话列表与归档交互。',time:'刚刚',state:'running',archived:false},
+        {id:'codex',title:'让 Hako 对接 Codex 编程',preview:'已完成 Codex 接入，可以继续在手机上编程。',time:'12分钟前',state:'unread',archived:false},
+        {id:'workshop',title:'代码工坊开发',preview:'图片现在支持上传前预览和放大查看。',time:'35分钟前',state:'read',archived:false},
+        {id:'planning',title:'代码工坊方案分析',preview:'方案已整理完成，接口定义也已更新。',time:'1小时前',state:'read',archived:false},
+        {id:'steer',title:'了解 steer 并支持代码工坊',preview:'执行中可以继续追加指令，已验证生效。',time:'2小时前',state:'read',archived:false},
+        {id:'pushed',title:'推送全部代码',preview:'相关改动已推送。',time:'昨天',state:'read',archived:true}
+      ];
+      let archived = false, opened = 'codex', noticeTimer, drag = null, suppressClick = false;
+      const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
+      function persist() {
+        window.openai?.setWidgetState?.({modelContent:{prototype:'会话左滑归档',list:archived?'已归档':'会话'},privateContent:{schema:'swipe-archive-v1',archived,opened,archivedIds:sessions.filter(s=>s.archived).map(s=>s.id)}})?.catch(()=>{});
+      }
+      function restore(snapshot) {
+        const value=snapshot?.privateContent;
+        if(value?.schema!=='swipe-archive-v1'||!Array.isArray(value.archivedIds)) return;
+        archived=!!value.archived;opened=typeof value.opened==='string'?value.opened:null;
+        sessions.forEach(s=>s.archived=s.state!=='running'&&value.archivedIds.includes(s.id));
+      }
+      function notice(text) {clearTimeout(noticeTimer);const el=root.querySelector('.notice');el.textContent=text;el.hidden=false;noticeTimer=setTimeout(()=>el.hidden=true,3500)}
+      function render() {
+        const visible=sessions.filter(s=>s.archived===archived);
+        root.querySelector('.count').textContent=`${archived?'已归档 · ':''}${visible.length} 个会话`;
+        root.querySelector('.new').hidden=archived;
+        root.querySelector('.active-check').hidden=archived;root.querySelector('.archive-check').hidden=!archived;
+        list.innerHTML=visible.map(s=>`<div class="row" data-id="${s.id}">
+          <button class="archive cursor-interaction" ${opened===s.id?'':'hidden'} ${s.state==='running'?'disabled':''} aria-label="${archived?'取消归档':'归档'}：${s.title}">${icon(archived?'archive-restore':'archive')}<span>${s.state==='running'?'进行中':archived?'取消归档':'归档'}</span></button>
+          <button class="content cursor-interaction" style="transform:translateX(${opened===s.id?-80:0}px)" aria-label="${s.title}，左滑或按左方向键显示${archived?'取消归档':'归档'}按钮" aria-expanded="${opened===s.id}">
+            ${icon('square-terminal')}<span class="content-copy"><span class="row-title"><span class="title">${s.title}</span><span class="time">${s.time}</span></span>
+            <span class="summary"><span class="preview">${s.preview}</span>${s.state==='running'?`<span class="badge running">${icon('loader-circle')}进行中</span>`:s.state==='unread'?`<span class="badge unread">${icon('circle-dot')}已完成未读</span>`:''}</span></span>
+          </button></div>`).join('')||'<div class="empty">暂无已归档会话</div>';
+        globalThis.lucide?.createIcons({attrs:{width:19,height:19}});
+      }
+      function reveal(id) {opened=id;render();persist()}
+      function showMenu(show) {menu.hidden=!show;filter.setAttribute('aria-expanded',String(show))}
+      filter.addEventListener('click',()=>showMenu(menu.hidden));
+      menu.addEventListener('click',e=>{const b=e.target.closest('[data-mode]');if(!b)return;archived=b.dataset.mode==='archived';opened=null;showMenu(false);root.querySelector('.notice').hidden=true;render();persist()});
+      root.querySelector('.new').addEventListener('click',()=>notice('原型演示：新建会话'));
+      list.addEventListener('click',e=>{
+        if(suppressClick){suppressClick=false;return}
+        const row=e.target.closest('.row');if(!row)return;
+        const session=sessions.find(s=>s.id===row.dataset.id);
+        if(e.target.closest('.archive')) {
+          if(session.state==='running')return;
+          session.archived=!session.archived;opened=null;render();persist();notice(session.archived?'已归档，可在左上角切换到已归档列表查看。':'已取消归档');
+        } else if(opened) {reveal(null)} else {notice(`打开会话：${session.title}`)}
+      });
+      list.addEventListener('keydown',e=>{
+        const row=e.target.closest('.row');if(!row)return;
+        if(e.key==='ArrowLeft'||e.key==='ArrowRight'||e.key==='Escape') {e.preventDefault();const id=row.dataset.id;reveal(e.key==='ArrowLeft'?id:null);list.querySelector(`[data-id="${id}"] ${e.key==='ArrowLeft'?'.archive':'.content'}`)?.focus()}
+      });
+      list.addEventListener('pointerdown',e=>{
+        const content=e.target.closest('.content');if(!content||e.button!==0)return;
+        drag={id:content.closest('.row').dataset.id,content,x:e.clientX,y:e.clientY,base:opened===content.closest('.row').dataset.id?-80:0,moved:false};
+      });
+      list.addEventListener('pointermove',e=>{
+        if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+        if(!drag.moved&&Math.abs(dy)>Math.abs(dx)+5){drag=null;return}
+        if(!drag.moved&&Math.abs(dx)<8)return;
+        if(!drag.moved){drag.moved=true;drag.content.setPointerCapture(e.pointerId)}
+        const offset=Math.max(-80,Math.min(0,drag.base+dx));
+        drag.content.style.transition='none';drag.content.style.transform=`translateX(${offset}px)`;
+        drag.content.closest('.row').querySelector('.archive').hidden=offset===0;
+      });
+      function endDrag(e) {
+        if(!drag)return;const d=drag;drag=null;
+        if(d.moved){suppressClick=true;reveal(d.base+e.clientX-d.x < -30?d.id:null);setTimeout(()=>suppressClick=false,300)}
+      }
+      list.addEventListener('pointerup',endDrag);list.addEventListener('pointercancel',()=>{drag=null;render()});
+      window.addEventListener('openai:set_globals',e=>{if(e.detail?.globals?.widgetState){restore(e.detail.globals.widgetState);render()}});
+      restore(window.openai?.widgetState);render();
+    })();
+  </script>
+</div>

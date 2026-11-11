@@ -146,10 +146,13 @@ struct ArcaneContainerView: View {
                     .disabled(!canAct || details.redeployDisabled == true)
                     .arcaneRowSeparators()
                     .listRowSeparator(.visible, edges: .bottom)
-                    HakoDeleteButton(title: "删除容器", systemImage: "trash") { confirmingDeletion = true }
+                    Button(role: .destructive) { confirmingDeletion = true } label: {
+                        Label("删除容器", systemImage: "trash")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                        .buttonStyle(ArcaneActionButtonStyle(destructive: true))
                         .disabled(!canAct || !["exited", "created", "dead"].contains(details.state?.status ?? ""))
                         .arcaneRowSeparators()
-                        .listRowBackground(Color.clear)
                 } header: {
                     Text("管理")
                 } footer: {

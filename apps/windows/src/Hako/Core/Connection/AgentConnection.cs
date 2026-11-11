@@ -27,9 +27,9 @@ public sealed class AgentConnection : IAsyncDisposable
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-    public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null)
+    public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
-        dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage);
+        dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage, dataDirectory: dataDirectory);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
 
@@ -48,7 +48,11 @@ public sealed class AgentConnection : IAsyncDisposable
         lifetime.Dispose(); lifetime = null;
         SetStatus("disconnected", "未连接");
     }
-    public async ValueTask DisposeAsync() => await StopAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
+        await dispatcher.DisposeAsync();
+    }
     private void SetStatus(string state, string message, string? agentId = null)
     {
         status = new ConnectionState(state, message, agentId);
