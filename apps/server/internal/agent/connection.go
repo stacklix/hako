@@ -12,12 +12,16 @@ import (
 
 var ErrBusy = errors.New("agent_busy")
 
+const MaxConcurrentRequests = 16
+const MaxWorkshopRequests = 12
+
 type Connection struct {
 	newID           func() string
 	conn            *websocket.Conn
 	writeMu         sync.Mutex
 	mu              sync.Mutex
 	pending         map[string]chan Message
+	pendingWorkshop int
 	done            chan struct{}
 	once            sync.Once
 	capabilities    []Capability
@@ -127,14 +131,27 @@ func (c *Connection) Supports(method string, version int) bool {
 func (c *Connection) Request(ctx context.Context, request Request) (Message, error) {
 	id := c.newID()
 	ch := make(chan Message, 1)
+	workshop := strings.HasPrefix(request.Method, "action.codex.") ||
+		(strings.HasPrefix(request.Method, "query.codex.") && request.Method != "query.codex.usage")
 	c.mu.Lock()
-	if len(c.pending) >= 4 {
+	// Reserve four request slots for device monitoring.
+	if len(c.pending) >= MaxConcurrentRequests || (workshop && c.pendingWorkshop >= MaxWorkshopRequests) {
 		c.mu.Unlock()
 		return Message{}, ErrBusy
 	}
 	c.pending[id] = ch
+	if workshop {
+		c.pendingWorkshop++
+	}
 	c.mu.Unlock()
-	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pending, id)
+		if workshop {
+			c.pendingWorkshop--
+		}
+		c.mu.Unlock()
+	}()
 	if err := c.Send(Message{Type: "request", ID: id, Method: request.Method, Version: request.Version, Params: request.Params}); err != nil {
 		c.Close()
 		return Message{}, err

@@ -11,7 +11,7 @@ public static class CliHelp
         new("help", "查看全部命令或指定命令帮助；支持 --help、-h。", "Hako.exe help [命令]"),
         new("status", "查看进程、连接状态与公开配置信息，不启动后台实例。", "Hako.exe status [--json]"),
         new("config show", "查看 URL、账号、密钥指纹，不返回私钥。", "Hako.exe config show [--json]"),
-        new("config set", "更新配置并断开旧连接；可在尚未生成密钥时配置。", "Hako.exe config set [--url https://monitor.example.com] [--account owner] [--json]"),
+        new("config set", "更新配置；直连端口为 0 时关闭，无需服务器登录即可使用局域网代码工坊。", "Hako.exe config set [--url https://monitor.example.com] [--account owner] [--direct-port 8005] [--json]"),
         new("key generate", "生成并加密保存 RSA 3072 位密钥；替换现有密钥必须使用 --force。", "Hako.exe key generate [--force] [--json]"),
         new("key import", "从 PEM 文件导入私钥并加密保存；替换需要 --force。", "Hako.exe key import --input private.pem [--force] [--json]"),
         new("key export-public", "导出 SPKI PEM 公钥；省略 --output 则输出到终端；覆盖文件需要 --force。", "Hako.exe key export-public [--output desktop.public.pem] [--force] [--json]"),

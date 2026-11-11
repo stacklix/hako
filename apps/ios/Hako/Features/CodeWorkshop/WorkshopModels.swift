@@ -262,6 +262,43 @@ struct WorkshopPreferences: Codable {
     var choices: [String: WorkshopChoice]? = nil
 }
 
+// Keep a newly sent conversation visible until the live catalog acknowledges it.
+struct WorkshopLocalSessions {
+    private var receipts: [String: WorkshopReceipt] = [:]
+
+    mutating func record(_ receipt: WorkshopReceipt, isNew: Bool) {
+        guard receipt.originalThreadId == nil else { return }
+        if receipt.state == "rejected" { receipts[receipt.id] = nil }
+        else if isNew || receipts[receipt.id] != nil { receipts[receipt.id] = receipt }
+    }
+
+    mutating func confirm(_ sessions: [WorkshopSession], agentId: String) {
+        receipts = receipts.filter { _, receipt in
+            receipt.agentId != agentId || !sessions.contains { $0.id == receipt.threadId || $0.operationId == receipt.id }
+        }
+    }
+
+    mutating func remove(threadId: String, agentId: String) {
+        receipts = receipts.filter { $0.value.agentId != agentId || $0.value.threadId != threadId }
+    }
+
+    func merging(_ sessions: [WorkshopSession], agentId: String, applications: [WorkshopApplication], archived: Bool) -> [WorkshopSession] {
+        guard !archived else { return sessions }
+        let local = receipts.values.compactMap { receipt -> WorkshopSession? in
+            guard receipt.agentId == agentId,
+                  let application = applications.first(where: { $0.id == receipt.applicationId }),
+                  !sessions.contains(where: { $0.id == receipt.threadId || $0.operationId == receipt.id }) else { return nil }
+            return WorkshopSession(id: receipt.threadId ?? "pending-" + receipt.id, title: receipt.title,
+                applicationId: receipt.applicationId, cwd: application.path,
+                preview: receipt.threadId == nil ? "发送结果等待确认" : receipt.message,
+                updatedAt: Int64(receipt.createdAt.timeIntervalSince1970),
+                state: receipt.state == "pending" ? (receipt.threadId == nil ? "unknown" : "starting") : receipt.state,
+                operationId: receipt.id)
+        }
+        return WorkshopCatalog.ordered(sessions + local)
+    }
+}
+
 struct WorkshopModel: Decodable, Identifiable {
     let id: String
     let name: String

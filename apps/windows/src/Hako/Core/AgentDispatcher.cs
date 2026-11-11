@@ -178,6 +178,8 @@ public sealed class AgentDispatcher : IAsyncDisposable
             throw new AgentActionException("unsupported_method", "设备不支持此命令或版本。");
         if (action.Version != version)
             throw new AgentActionException("unsupported_method", "设备不支持此命令或版本。");
-        return await action.Invoke(parameters, token);
+        return method.StartsWith("query.", StringComparison.Ordinal)
+            ? await AgentRequestSlots.ReadAsync(budget => action.Invoke(parameters, budget), token)
+            : await action.Invoke(parameters, token);
     }
 }

@@ -60,6 +60,39 @@ import Foundation
             threadId: nil, title: "New", message: "Hello", createdAt: .now, state: "pending")
         var resolved = original
         resolved.threadId = UUID().uuidString
+        let application = WorkshopApplication(id: "app", name: "App", path: "project")
+        var local = WorkshopLocalSessions()
+        func listing(_ remote: [WorkshopSession] = [], agentId: String = "Agent", archived: Bool = false) -> [WorkshopSession] {
+            local.merging(remote, agentId: agentId, applications: [application], archived: archived)
+        }
+        local.record(original, isNew: true)
+        precondition(listing().first?.id == "pending-" + original.id,
+            "A new send must appear immediately before any catalog response")
+        precondition(listing(agentId: "other").isEmpty && listing(archived: true).isEmpty,
+            "New conversations must stay scoped to their computer and active list")
+        local.record(resolved, isNew: false)
+        precondition(listing().count == 1 && listing()[0].id == resolved.threadId && listing()[0].inProgress,
+            "Resolving the thread ID must replace the placeholder without waiting for the catalog")
+        local.confirm([], agentId: "Agent")
+        precondition(listing().first?.id == resolved.threadId,
+            "An older in-flight catalog response must not hide a newly created thread")
+        let remote = WorkshopSession(id: resolved.threadId!, title: "Remote title", applicationId: "app", cwd: "project",
+            preview: "Remote response", updatedAt: Int64(original.createdAt.timeIntervalSince1970), state: "running", operationId: original.id)
+        precondition(listing([remote]).count == 1 && listing([remote])[0].title == "Remote title",
+            "The catalog must replace local data without a duplicate row")
+        local.confirm([remote], agentId: "other")
+        precondition(listing().count == 1, "Another computer cannot acknowledge this conversation")
+        local.confirm([remote], agentId: "Agent")
+        local.record(resolved, isNew: false)
+        precondition(listing().isEmpty,
+            "Later operation events must not resurrect an acknowledged thread after external archival")
+        local.record(original, isNew: true)
+        var rejected = original; rejected.state = "rejected"
+        local.record(rejected, isNew: false)
+        precondition(listing().isEmpty, "A rejected send must not leave a phantom conversation")
+        local.record(resolved, isNew: true)
+        local.remove(threadId: resolved.threadId!, agentId: "Agent")
+        precondition(listing().isEmpty, "Archiving before catalog acknowledgement must remove the local row")
         let saved = try JSONDecoder().decode(WorkshopReceipt.self, from: JSONEncoder().encode(resolved))
         precondition(saved.threadId != nil)
         precondition(saved.parameters["threadId"] == nil, "A retry of a new thread must preserve the original request fingerprint")
@@ -96,6 +129,6 @@ import Foundation
         precondition(queuedRetry.parameters["requestId"] as? String == "stable-message")
         precondition(queuedRetry.parameters["operationId"] as? String == "original-operation")
         precondition(queuedRetry.entry.role == "user" && queuedRetry.entry.state == "pending")
-        print("PASS: chronological activity ordering, progressive catalog merging, twelve-hour unread expiry and stable request identity")
+        print("PASS: immediate new-session listing, catalog reconciliation, activity ordering, unread expiry and stable request identity")
     }
 }

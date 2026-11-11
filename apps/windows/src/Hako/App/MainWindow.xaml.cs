@@ -24,7 +24,8 @@ public partial class MainWindow : Window
         this.runtime = runtime;
         InitializeComponent();
         monitor = new MonitorView(runtime.Metrics);
-        settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync, AgentStartup.ForCurrentProcess(runtime.Store.DirectoryPath));
+        settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync, AgentStartup.ForCurrentProcess(runtime.Store.DirectoryPath),
+            port => runtime.UpdateConfigurationAsync(null, null, connect: false, directPort: port));
         runtime.StatusChanged += StatusChanged;
         runtime.MetricsReceived += MetricsReceived;
         runtime.SettingsChanged += SettingsChanged;
@@ -50,7 +51,7 @@ public partial class MainWindow : Window
         };
     }
 
-    private Task ApplyAsync(AgentSettings value) => runtime.UpdateConfigurationAsync(value.Url, value.Username, connect: true);
+    private Task ApplyAsync(AgentSettings value) => runtime.UpdateConfigurationAsync(value.Url, value.Username, connect: true, directPort: value.DirectPort);
     private async Task SaveKeyAsync(string privateKey)
     {
         await runtime.UpdatePrivateKeyAsync(privateKey, reloadForm: false);

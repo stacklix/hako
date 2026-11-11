@@ -397,6 +397,11 @@ import Combine
                 if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application) }
                 threadId = id
             }
+            var accepted = receipt
+            accepted.threadId = threadId
+            accepted.state = result.active ? "pending" : result.state
+            try store.saveReceipt(accepted)
+            self.receipt = accepted
             try await poll(result.id)
         } catch is CancellationError { }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_application_missing", "codex_workspace_invalid", "codex_busy", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {

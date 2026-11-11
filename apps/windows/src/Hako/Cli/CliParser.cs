@@ -12,7 +12,7 @@ public static class CliParser
 {
     private static readonly Dictionary<string, string[]> Allowed = new(StringComparer.Ordinal)
     {
-        ["status"] = [], ["config show"] = [], ["config set"] = ["url", "account"],
+        ["status"] = [], ["config show"] = [], ["config set"] = ["url", "account", "direct-port"],
         ["key generate"] = ["force"], ["key import"] = ["input", "force"],
         ["key export-public"] = ["output", "force"], ["connect"] = [], ["disconnect"] = [],
         ["metrics"] = [], ["exit"] = [], ["show"] = []
@@ -74,7 +74,9 @@ public static class CliParser
         if (request.Command == "help") { CliHelp.Get(request.Options.GetValueOrDefault("topic", "")); return; }
         if (!Allowed.TryGetValue(request.Command, out var allowed) || request.Options.Keys.Any(k => !allowed.Contains(k)))
             throw new CliUsageException("未知命令或选项，请运行 Hako.exe help。");
-        if (request.Command == "config set" && request.Options.Count == 0) throw new CliUsageException("config set 至少需要 --url 或 --account。");
+        if (request.Command == "config set" && request.Options.Count == 0) throw new CliUsageException("config set 至少需要 --url、--account 或 --direct-port。");
+        if (request.Options.TryGetValue("direct-port", out var port) && (!int.TryParse(port, out var number) || number < 0 || number > 65535))
+            throw new CliUsageException("--direct-port 必须为 0–65535 的整数，0 表示关闭。");
         if (request.Command == "key import" && !request.Options.ContainsKey("input")) throw new CliUsageException("key import 需要 --input 私钥文件。");
         if (request.Options.Any(p => string.IsNullOrWhiteSpace(p.Value))) throw new CliUsageException("选项值不能为空。");
         if (request.Options.TryGetValue("force", out var force) && force != "true") throw new CliUsageException("--force 不接受参数值。");

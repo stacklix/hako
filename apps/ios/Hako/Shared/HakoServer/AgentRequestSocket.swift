@@ -73,6 +73,8 @@ struct AgentSocketFrame: Decodable {
         }
     }
 
+    func close() { disconnect(CancellationError()); context = nil }
+
     func send(_ type: String, agentID: String? = nil, body: [String: Any]? = nil) async throws -> Data {
         let id = UUID().uuidString
         var frame: [String: Any] = ["id": id, "type": type]

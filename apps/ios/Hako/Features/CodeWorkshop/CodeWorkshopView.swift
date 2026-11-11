@@ -6,6 +6,7 @@ struct CodeWorkshopView: View {
     @State private var settingsPresented = false
     @State private var creating = false
     @State private var conversation: WorkshopConversation?
+    @State private var pendingArchive: WorkshopSession?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
@@ -32,7 +33,12 @@ struct CodeWorkshopView: View {
                                     sessionFilter
                                     Spacer()
                                     if !store.showingArchived {
-                                        Button { creating = true } label: { Label("新建会话", systemImage: "plus").font(.subheadline) }
+                                        Button { creating = true } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "plus")
+                                                Text("新建会话")
+                                            }.font(.subheadline)
+                                        }
                                             .frame(minHeight: 44).disabled(store.selectedApplication == nil || !agent.online)
                                     }
                                 }
@@ -98,12 +104,27 @@ struct CodeWorkshopView: View {
                 }
             }
         }
+        .alert("归档会话？", isPresented: Binding(get: { pendingArchive != nil }, set: { if !$0 { pendingArchive = nil } }),
+            presenting: pendingArchive) { session in
+            Button("取消", role: .cancel) { }
+            Button("确认归档") {
+                guard let agent = store.selectedAgent, !store.showingArchived,
+                      let current = store.visibleSessions.first(where: { $0.id == session.id }),
+                      !current.inProgress, current.state != "paused" else { return }
+                Task { await store.setArchived(session.id, archived: true, agent: agent) }
+            }
+        } message: { session in
+            Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
+        }
         .navigationDestination(isPresented: Binding(get: { conversation != nil }, set: { if !$0 { conversation = nil } })) {
             if let conversation { WorkshopConversationView(conversation: conversation) }
         }
         .onChange(of: store.scope) { _, _ in
-            conversation = nil; creating = false; settingsPresented = false
+            conversation = nil; creating = false; settingsPresented = false; pendingArchive = nil
         }
+        .onChange(of: store.selectedAgentID) { _, _ in pendingArchive = nil }
+        .onChange(of: store.selectedApplicationID) { _, _ in pendingArchive = nil }
+        .onChange(of: store.showingArchived) { _, _ in pendingArchive = nil }
         .onAppear { WorkshopRuntime.shared.enter(synchronizationOwner) }
         .onDisappear { WorkshopRuntime.shared.leave(synchronizationOwner) }
     }
@@ -119,7 +140,7 @@ struct CodeWorkshopView: View {
                         Text(store.selectedAgent?.name ?? "选择电脑").lineLimit(1)
                         Circle().fill(store.selectedAgent?.online == true ? Color.green : HakoStyle.muted).frame(width: 5, height: 5)
                     }
-                    Text(store.selectedAgent?.online == true ? "已连接" : "离线").foregroundStyle(HakoStyle.muted)
+                      Text(store.selectedAgent?.online == true ? store.transportLabel : "离线").foregroundStyle(HakoStyle.muted)
                 }
                 .font(.caption).frame(minHeight: 44)
             }
@@ -244,12 +265,15 @@ struct CodeWorkshopView: View {
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if agent.supportsArchiving, UUID(uuidString: session.id) != nil {
                             Button {
-                                let archived = !store.showingArchived
-                                Task { await store.setArchived(session.id, archived: archived, agent: agent) }
+                                if store.showingArchived {
+                                    Task { await store.setArchived(session.id, archived: false, agent: agent) }
+                                } else {
+                                    pendingArchive = session
+                                }
                             } label: {
-                                Label(store.showingArchived ? "取消归档" : "归档",
-                                    systemImage: store.showingArchived ? "tray.and.arrow.up" : "archivebox")
+                                Image(systemName: store.showingArchived ? "tray.and.arrow.up" : "archivebox")
                             }
+                            .accessibilityLabel(store.showingArchived ? "取消归档" : "归档")
                             .tint(.orange)
                             .disabled(!agent.online || store.loading || store.archivingSessionID != nil ||
                                 (!store.showingArchived && (session.inProgress || session.state == "paused")))

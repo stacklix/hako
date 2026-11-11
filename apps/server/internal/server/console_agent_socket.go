@@ -84,7 +84,7 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 
 	liveID := r.PathValue("id")
 	workshopID := r.PathValue("workshopAgentID")
-	commands := make(chan consoleAgentCommand, 4)
+	commands := make(chan consoleAgentCommand, agent.MaxConcurrentRequests)
 	ws.SetReadLimit(17 * 1024)
 	_ = ws.SetReadDeadline(time.Now().Add(45 * time.Second))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(45 * time.Second)) })
@@ -120,7 +120,7 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	replies := make(chan consoleAgentReply, 4)
+	replies := make(chan consoleAgentReply, agent.MaxConcurrentRequests)
 	inFlight := 0
 	for {
 		select {

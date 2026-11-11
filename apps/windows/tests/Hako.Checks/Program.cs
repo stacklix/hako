@@ -41,8 +41,10 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "agent-direct") { await AgentDirectChecks.RunAsync(); return 0; }
             if (args.Length == 2 && args[0] == "code-workshop-local")
             {
                 await using var workshop = new CodeWorkshop(args[1]);
@@ -145,6 +147,7 @@ internal static class Program
                 return 0;
             }
             CheckServerCompatibility();
+            await AgentRequestChecks.RunAsync();
             StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();

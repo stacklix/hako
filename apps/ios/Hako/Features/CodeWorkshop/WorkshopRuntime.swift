@@ -21,15 +21,25 @@ import UIKit
         store.authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.resetContext() }
         }.store(in: &subscriptions)
+        store.routeChanges.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.resetContext() }
+        }.store(in: &subscriptions)
+        LocalNetworkService.shared.changes.sink { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.store.prepareNetwork() }
+        }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification).sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.synchronization.setForeground(false) }
         }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).sink { [weak self] _ in
-            Task { @MainActor [weak self] in self?.synchronization.setForeground(true) }
+            Task { @MainActor [weak self] in
+                await self?.store.prepareNetwork()
+                self?.synchronization.setForeground(true)
+            }
         }.store(in: &subscriptions)
     }
 
     func enter(_ owner: UUID, conversation: WorkshopConversation? = nil) {
+        Task { await store.prepareNetwork() }
         resetContext()
         cleanup?.cancel(); cleanup = nil
         if let conversation {
@@ -104,6 +114,7 @@ import UIKit
     private func registerCatalog() {
         let store = store
         synchronization.register(catalogID, kind: .catalog) {
+            await store.prepareNetwork()
             if store.authenticated { await store.refresh() } else { await store.restore() }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }

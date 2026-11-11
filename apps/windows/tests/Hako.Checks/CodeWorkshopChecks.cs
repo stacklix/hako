@@ -46,6 +46,9 @@ internal static class CodeWorkshopChecks
         Check(CodeWorkshop.HistoryItem(userItem, "different-turn", userJobs, new HashSet<string>())!.Id == "canonical",
             "Messages from different turns must not be deduplicated");
         var directory = Path.Combine(Path.GetTempPath(), "hako-workshop-" + Guid.NewGuid().ToString("N"));
+        var launch = CodexAppServer.WithArguments(new ProcessStartInfo("codex.exe"));
+        Check(launch.ArgumentList.Contains("--enable") && launch.ArgumentList.Contains("default_mode_request_user_input"),
+            "Default-mode questions must be enabled for the phone's interactive answer UI");
         var code = Path.Combine(directory, "Code");
         var project = Path.Combine(code, "fixture");
         Directory.CreateDirectory(Path.Combine(project, ".git"));
@@ -267,6 +270,20 @@ internal static class CodeWorkshopChecks
                 var standardWaiting = await WaitAsync(service, standardId, "waiting");
                 await service.AnswerAsync(Json(new { operationId = standardId, approvalId = standardWaiting.GetProperty("approvals")[0].GetProperty("id").GetString(), decision = "accept" }), default);
                 await WaitAsync(service, standardId, "completed");
+                var questionId = Guid.NewGuid().ToString();
+                await service.StartAsync(Json(new { requestId = questionId, applicationId, threadId = FixtureThread, message = "Question fixture" }), default);
+                var questionWaiting = await WaitAsync(service, questionId, "waiting");
+                var question = questionWaiting.GetProperty("approvals")[0];
+                Check(CodexJson.Text(question, "kind") == "question" &&
+                    question.GetProperty("questions")[0].GetProperty("options").GetArrayLength() == 2,
+                    "Structured questions and selectable options did not reach the phone");
+                var questionApproval = question.GetProperty("id").GetString();
+                try { await service.AnswerAsync(Json(new { operationId = questionId, approvalId = questionApproval, answers = new { network = "" } }), default); throw new Exception("An unanswered question was accepted"); }
+                catch (AgentActionException e) when (e.Code == "invalid_params") { }
+                Check(Result(await service.OperationAsync(Json(new { operationId = questionId }), default)).GetProperty("approvals").GetArrayLength() == 1,
+                    "Validation consumed the question before explicit confirmation");
+                await service.AnswerAsync(Json(new { operationId = questionId, approvalId = questionApproval, answers = new { network = "服务器认证" } }), default);
+                await WaitAsync(service, questionId, "completed");
                 var failureId = Guid.NewGuid().ToString();
                 await service.StartAsync(Json(new { requestId = failureId, applicationId, threadId = FixtureThread, message = "Failure fixture" }), default);
                 var failureWaiting = await WaitAsync(service, failureId, "waiting");
@@ -334,6 +351,9 @@ internal static class CodeWorkshopChecks
             var method = CodexJson.Text(input, "method");
             if (method.Length == 0 && input.TryGetProperty("id", out var approval))
             {
+                if (approval.GetInt32() == 901)
+                    Check(CodexJson.Field(CodexJson.Field(CodexJson.Field(input, "result"), "answers"), "network")
+                        .GetProperty("answers")[0].GetString() == "服务器认证", "The user's confirmed selection was not returned to Codex");
                 if (CodexJson.Text(CodexJson.Field(input, "result"), "decision") == "decline")
                 {
                     Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "failed" } } });
@@ -345,6 +365,9 @@ internal static class CodeWorkshopChecks
                 continue;
             }
             if (!input.TryGetProperty("id", out var id)) continue;
+            if (method == "initialize")
+                Check(CodexJson.Field(CodexJson.Field(CodexJson.Field(input, "params"), "capabilities"), "experimentalApi").ValueKind == JsonValueKind.True,
+                    "The client did not opt into the structured input protocol");
             if (method == "thread/turns/list")
             {
                 var options = CodexJson.Field(input, "params");
@@ -404,7 +427,14 @@ internal static class CodeWorkshopChecks
             };
             Write(new { id, result });
             if (method == "turn/start")
-                Write(new { id = 900, method = "item/commandExecution/requestApproval", @params = new { command = "fixture test", threadId = FixtureThread, turnId, itemId = "command" } });
+            {
+                if (CodexJson.Items(CodexJson.Field(CodexJson.Field(input, "params"), "input")).Any(value => CodexJson.Text(value, "text") == "Question fixture"))
+                    Write(new { id = 901, method = "item/tool/requestUserInput", @params = new { threadId = FixtureThread, turnId, itemId = "question",
+                        questions = new[] { new { id = "network", header = "认证方式", question = "是否需要离线直连？", options = new[] {
+                            new { label = "离线直连", description = "配对后可离线使用" }, new { label = "服务器认证", description = "每次连接时认证" }
+                        } } } } });
+                else Write(new { id = 900, method = "item/commandExecution/requestApproval", @params = new { command = "fixture test", threadId = FixtureThread, turnId, itemId = "command" } });
+            }
             if (method == "turn/interrupt")
                 Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "interrupted" } } });
         }

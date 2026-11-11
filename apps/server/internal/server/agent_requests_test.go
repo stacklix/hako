@@ -255,8 +255,8 @@ func TestAgentRequestConcurrencyLimits(t *testing.T) {
 	ws := f.connectAgent(false)
 	f.s.config.RequestTimeout = 5 * time.Second
 	body := agent.Request{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)}
-	completed := make(chan int, 4)
-	requests := make([]agent.Message, 4)
+	completed := make(chan int, agent.MaxConcurrentRequests)
+	requests := make([]agent.Message, agent.MaxConcurrentRequests)
 	for i := range requests {
 		go func() {
 			status, _ := f.call("POST", "/api/v1/agents/PC/requests", body, f.tokens.AccessToken)

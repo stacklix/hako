@@ -36,6 +36,8 @@ public sealed class AgentRuntime : IAsyncDisposable
         try
         {
             var saved = Store.Load();
+            saved.ValidateDirectPort();
+            if (running) await Connection.ConfigureDirectAsync(saved.DirectPort);
             if (autoConnect && saved.Url.Length > 0) { saved.Validate(); await Connection.StartAsync(saved); }
         }
         catch (Exception) { configurationError = "配置读取失败或配置不完整，请检查服务器设置。"; StatusChanged?.Invoke(configurationError); }
@@ -45,26 +47,28 @@ public sealed class AgentRuntime : IAsyncDisposable
         var value = Store.Load();
         string? keyId = null;
         if (value.PrivateKey.Length > 0) { using var rsa = RSA.Create(); rsa.ImportFromPem(value.PrivateKey); keyId = AgentSettings.KeyId(rsa); }
-        return new { url = value.Url, account = value.Username, hasPrivateKey = value.PrivateKey.Length > 0, keyId };
+        return new { url = value.Url, account = value.Username, directPort = value.DirectPort, hasPrivateKey = value.PrivateKey.Length > 0, keyId };
     }
     public object Status()
     {
         var connection = Connection.Status;
         return new { running, processId = running ? Environment.ProcessId : (int?)null,
             connectionState = !running ? "stopped" : configurationError is not null ? "configuration_error" : connection.State,
-            message = configurationError ?? (!running ? "后台实例未运行。" : connection.Message), agentId = connection.AgentId, configuration = PublicSettings() };
+            message = configurationError ?? (!running ? "后台实例未运行。" : connection.Message), agentId = connection.AgentId, direct = Connection.DirectStatus, configuration = PublicSettings() };
     }
-    public async Task UpdateConfigurationAsync(string? url, string? account, bool connect, bool reloadForm = true, CancellationToken token = default)
+    public async Task UpdateConfigurationAsync(string? url, string? account, bool connect, bool reloadForm = true, CancellationToken token = default, int? directPort = null)
     {
         await operations.WaitAsync(token);
         try
         {
             var current = Store.Load();
-            var next = current with { Url = url is null ? current.Url : url.Trim().TrimEnd('/'), Username = account?.Trim() ?? current.Username };
-            next.ValidateConnectionSettings();
+            var next = current with { Url = url is null ? current.Url : url.Trim().TrimEnd('/'), Username = account?.Trim() ?? current.Username, DirectPort = directPort ?? current.DirectPort };
+            if (url != null || account != null || connect) next.ValidateConnectionSettings();
+            else next.ValidateDirectPort();
             if (connect) next.Validate();
-            await Connection.StopAsync();
+            if (url != null || account != null || connect) await Connection.StopAsync();
             token.ThrowIfCancellationRequested();
+            if (running) await Connection.ConfigureDirectAsync(next.DirectPort);
             Store.Save(next); configurationError = null;
             SettingsChanged?.Invoke(next, reloadForm);
             if (connect) await Connection.StartAsync(next);
@@ -92,7 +96,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         await operations.WaitAsync();
         try
         {
-            await Connection.StopAsync(); Store.Save(new()); configurationError = null;
+            await Connection.StopAsync(); await Connection.ConfigureDirectAsync(0); Store.Save(new()); configurationError = null;
             SettingsChanged?.Invoke(new(), true);
         }
         finally { operations.Release(); }
@@ -114,7 +118,8 @@ public sealed class AgentRuntime : IAsyncDisposable
             }
             if (request.Command == "config set")
             {
-                await UpdateConfigurationAsync(request.Options.GetValueOrDefault("url"), request.Options.GetValueOrDefault("account"), false, token: token);
+                int? directPort = request.Options.TryGetValue("direct-port", out var portText) ? int.Parse(portText) : null;
+                await UpdateConfigurationAsync(request.Options.GetValueOrDefault("url"), request.Options.GetValueOrDefault("account"), false, token: token, directPort: directPort);
                 return CommandReply.Success(PublicSettings(), "配置已加密保存。请使用 connect 连接服务器。");
             }
             await operations.WaitAsync(token);

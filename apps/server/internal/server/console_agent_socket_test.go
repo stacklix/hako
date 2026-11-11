@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +136,32 @@ func TestConsoleAgentSocketSharesAndStopsTelemetry(t *testing.T) {
 	stop := readAgentFrame[agent.Message](t, peer)
 	if stop.Type != "telemetry_stop" || stop.ID != start.ID {
 		t.Fatalf("telemetry stop: %+v", stop)
+	}
+}
+
+func TestConsoleAgentSocketAllowsSixteenRequests(t *testing.T) {
+	f := newFixture(t, true)
+	f.s.config.RequestTimeout = 5 * time.Second
+	peer := f.connectAgent(false)
+	console := openConsoleAgentSocket(t, f, "/ws/console/agents")
+	requests := make([]agent.Message, 16)
+	for i := range requests {
+		writeAgentFrame(t, console, consoleAgentCommand{Type: "request", ID: "request-" + strconv.Itoa(i), AgentID: "PC",
+			Body: json.RawMessage(`{"method":"query.all","version":1,"params":{}}`)})
+		requests[i] = readAgentFrame[agent.Message](t, peer)
+	}
+	writeAgentFrame(t, console, consoleAgentCommand{Type: "request", ID: "overflow", AgentID: "PC",
+		Body: json.RawMessage(`{"method":"query.all","version":1,"params":{}}`)})
+	if reply := readAgentFrame[consoleAgentReply](t, console); reply.ID != "overflow" || reply.Status != 429 {
+		t.Fatalf("missing bounded overflow: %+v", reply)
+	}
+	seen := make(map[string]bool)
+	for _, request := range requests {
+		writeAgentFrame(t, peer, agent.Message{Type: "response", ID: request.ID, Reply: agent.Reply{Result: json.RawMessage(`{"data":{}}`)}})
+		reply := readAgentFrame[consoleAgentReply](t, console)
+		if reply.Status != 200 || seen[reply.ID] {
+			t.Fatalf("request failed or duplicated: %+v", reply)
+		}
+		seen[reply.ID] = true
 	}
 }

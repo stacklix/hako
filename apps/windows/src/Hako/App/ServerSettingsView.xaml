@@ -6,6 +6,9 @@
    <TextBlock Text="服务器设置" FontSize="26" FontWeight="Bold" Margin="0,12,0,24"/>
    <TextBlock Text="服务器 URL"/><TextBox x:Name="ServerUrl" ToolTip="https://monitor.example.com"/>
    <TextBlock Text="账号"/><TextBox x:Name="Username"/>
+   <TextBlock Text="局域网直连端口"/><TextBox x:Name="DirectPort"/>
+   <TextBlock Text="0 表示关闭。局域网直连无需认证，可独立于服务器使用代码工坊。" TextWrapping="Wrap" Foreground="#526175" Margin="0,8"/>
+   <Button Content="保存局域网配置" Click="SaveDirectClick"/>
    <TextBlock Text="RSA 设备公私钥对" FontWeight="SemiBold"/>
    <TextBlock x:Name="KeyStatus" Text="尚未配置" TextWrapping="Wrap" Margin="0,8"/>
    <WrapPanel>

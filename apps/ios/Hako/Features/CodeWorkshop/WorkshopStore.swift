@@ -5,6 +5,10 @@ import CryptoKit
 @MainActor final class WorkshopStore: ObservableObject {
     let authentication: any AuthenticatedServerAccess
     private let socket: AgentRequestSocket
+    private var directSocket: AgentRequestSocket?
+    @Published private(set) var localEndpoint: LocalNetworkEndpoint?
+    let routeChanges = PassthroughSubject<Void, Never>()
+    private var networkCheck = UUID()
     private var subscription: AnyCancellable?
     private var context = ""
     private var preferences = WorkshopPreferences()
@@ -20,6 +24,7 @@ import CryptoKit
     @Published var selectedApplicationID = ""
     @Published private(set) var cachedAt: Date?
     @Published private var readState = WorkshopReadState()
+    @Published private var localSessions = WorkshopLocalSessions()
     private var cursor: String?
     private let transcriptDisk = WorkshopTranscriptDisk()
 
@@ -33,8 +38,36 @@ import CryptoKit
         prepareContext()
     }
 
-    var scope: String { authentication.requestContext }
-    var authenticated: Bool { authentication.authenticated && !authentication.logoutPending }
+    var scope: String { localEndpoint.map { "local:" + $0.address } ?? authentication.requestContext }
+    var authenticated: Bool { localEndpoint != nil || authentication.authenticated && !authentication.logoutPending }
+    var transportLabel: String { localEndpoint.map { "局域网直连 · " + $0.address } ?? "服务器转发" }
+
+    func prepareNetwork() async {
+        let check = UUID(); networkCheck = check
+        let endpoint = await LocalNetworkService.shared.endpoint(for: .codeWorkshop)
+        guard !Task.isCancelled, check == networkCheck, endpoint != localEndpoint else { return }
+        directSocket?.close(); directSocket = nil
+        localEndpoint = endpoint
+        if let endpoint {
+            directSocket = AgentRequestSocket(context: { "local:" + endpoint.address }, open: {
+                try await WorkshopLocalSocket.open(endpoint, path: "/agents")
+            })
+        }
+        prepareContext()
+        routeChanges.send()
+    }
+
+    private var requests: AgentRequestSocket { directSocket ?? socket }
+
+    private func verifyNetworkRoute() async throws {
+        let expected = localEndpoint
+        let current = await LocalNetworkService.shared.endpoint(for: .codeWorkshop)
+        try Task.checkCancellation()
+        guard current == expected else {
+            await prepareNetwork()
+            throw CancellationError()
+        }
+    }
     var selectedAgent: WorkshopAgent? { agents.first { $0.id == selectedAgentID } }
     var selectedApplication: WorkshopApplication? { applications.first { $0.id == selectedApplicationID } }
     var orderedApplications: [WorkshopApplication] {
@@ -42,7 +75,8 @@ import CryptoKit
             + applications.filter { !preferences.order.contains($0.id) }
     }
     var visibleSessions: [WorkshopSession] {
-        WorkshopCatalog.ordered(sessions.filter { $0.applicationId == selectedApplicationID })
+        localSessions.merging(sessions, agentId: selectedAgentID, applications: applications, archived: showingArchived)
+            .filter { $0.applicationId == selectedApplicationID }
     }
     var hasMore: Bool { cursor != nil }
 
@@ -109,6 +143,8 @@ import CryptoKit
         context = scope
         socket.resetIfContextChanged()
         preferences = (try? JSONDecoder().decode(WorkshopPreferences.self, from: Data(contentsOf: cacheFile))) ?? WorkshopPreferences()
+        localSessions = WorkshopLocalSessions()
+        for receipt in preferences.receipts where receipt.state == "pending" { localSessions.record(receipt, isNew: true) }
         readState = (try? JSONDecoder().decode(WorkshopReadState.self, from: Data(contentsOf: readStateFile))) ?? WorkshopReadState()
         selectedAgentID = preferences.agentId
         selectedApplicationID = preferences.applicationId
@@ -193,6 +229,7 @@ import CryptoKit
         do {
             let reply: WorkshopArchiveReply = try await call(agent, "action.codex.thread.archive", ["threadId": threadId, "archived": archived])
             guard ticket == scope, reply.threadId == threadId, reply.archived == archived else { return false }
+            localSessions.remove(threadId: threadId, agentId: agent.id)
             if selectedAgentID == agent.id {
                 sessions.removeAll { $0.id == threadId }
                 cachedCatalogs[catalogKey(agent.id, archived: archived)] = nil
@@ -223,12 +260,14 @@ import CryptoKit
     }
 
     func restore() async {
-        await authentication.restore()
+        await prepareNetwork()
+        if localEndpoint == nil { await authentication.restore() }
         prepareContext()
         await refresh()
     }
 
     func refresh(more: Bool = false) async {
+        await prepareNetwork()
         guard authenticated, !loading, archivingSessionID == nil else { return }
         let ticket = scope
         let archived = showingArchived
@@ -236,7 +275,7 @@ import CryptoKit
         defer { if scope == ticket { loading = false } }
         do {
             struct List: Decodable { let agents: [WorkshopAgent] }
-            let agentData = try await socket.send("list")
+            let agentData = try await requests.send("list")
             let values = try JSONDecoder().decode(List.self, from: agentData).agents
             guard ticket == scope else { return }
             let previousAgent = selectedAgentID
@@ -255,6 +294,7 @@ import CryptoKit
             applications = page.applications
             sessions = WorkshopCatalog.merge(page.sessions, existing: previousSessions, more: true)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
+            if !archived { localSessions.confirm(page.sessions, agentId: agent.id) }
             cachedAt = nil
             var freshSessions = page.sessions
             var nextCursor = page.nextCursor
@@ -275,6 +315,7 @@ import CryptoKit
             applications = page.applications
             sessions = WorkshopCatalog.merge(freshSessions, existing: previousSessions, more: more)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
+            if !archived { localSessions.confirm(freshSessions, agentId: agent.id) }
             cursor = nextCursor
             cachedAt = nil
             let newSessions = page.sessions.filter { !preferences.seenSessions.contains($0.id) }
@@ -283,13 +324,6 @@ import CryptoKit
             }
             preferences.seenSessions = Array(Set(preferences.seenSessions + page.sessions.map(\.id)))
             if !applications.contains(where: { $0.id == selectedApplicationID }) { selectedApplicationID = orderedApplications.first?.id ?? "" }
-            for receipt in preferences.receipts.filter({ !archived && $0.agentId == agent.id && $0.state == "pending" && $0.threadId == nil }) {
-                if !sessions.contains(where: { $0.operationId == receipt.id }) {
-                    sessions.insert(WorkshopSession(id: "pending-" + receipt.id, title: receipt.title, applicationId: receipt.applicationId,
-                        cwd: applications.first { $0.id == receipt.applicationId }?.path ?? "", preview: "发送结果等待确认",
-                        updatedAt: Int64(receipt.createdAt.timeIntervalSince1970), state: "unknown", operationId: receipt.id), at: 0)
-                }
-            }
             try persist()
             try saveLists()
         } catch is CancellationError { }
@@ -308,6 +342,7 @@ import CryptoKit
 
     func saveReceipt(_ receipt: WorkshopReceipt) throws {
         guard context == scope else { throw CancellationError() }
+        let isNew = !preferences.receipts.contains { $0.id == receipt.id }
         if let index = preferences.receipts.firstIndex(where: { $0.id == receipt.id }) { preferences.receipts[index] = receipt }
         else {
             preferences.receipts.append(receipt)
@@ -315,6 +350,7 @@ import CryptoKit
             if receipt.originalThreadId == nil { promote(receipt.applicationId) }
         }
         try persist()
+        localSessions.record(receipt, isNew: isNew)
     }
 
     private var queueFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("queue.json") }
@@ -444,11 +480,16 @@ import CryptoKit
     func watchOperation(_ agent: WorkshopAgent, id: String, cursor: Int64,
                         receive: (WorkshopOperationPage) async throws -> Bool) async throws {
         let ticket = scope
+        try await verifyNetworkRoute()
+        guard ticket == scope else { throw CancellationError() }
         guard authenticated, UUID(uuidString: id) != nil, cursor >= 0,
               let agentID = agent.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
         try await WorkshopEventStream.watch(open: {
             guard ticket == self.scope else { throw CancellationError() }
+            if let endpoint = self.localEndpoint {
+                return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/\(id)/\(cursor)")
+            }
             return try await self.authentication.openWebSocket(
                 "/ws/console/agents/workshop/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
         }, receive: { (page: WorkshopOperationPage) in
@@ -459,10 +500,12 @@ import CryptoKit
 
     func call<Result: Decodable>(_ agent: WorkshopAgent, _ method: String, _ params: [String: Any] = [:]) async throws -> Result {
         let ticket = scope
+        try await verifyNetworkRoute()
+        guard ticket == scope else { throw CancellationError() }
         guard authenticated else { throw HakoError(message: "请先在 Hako 设置中登录服务器。") }
         let body: [String: Any] = ["method": method, "version": 1, "params": params]
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw HakoError(message: "消息过长，请分段发送。") }
-        let data = try await socket.send("request", agentID: agent.id, body: body)
+        let data = try await requests.send("request", agentID: agent.id, body: body)
         guard ticket == scope else { throw CancellationError() }
         let reply = try JSONDecoder().decode(WorkshopReply<Result>.self, from: data)
         if let failure = reply.error { throw failure }

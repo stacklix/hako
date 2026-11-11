@@ -54,7 +54,8 @@ internal sealed class CodexAppServer : IAsyncDisposable
         {
             await server.RequestAsync("initialize", new
             {
-                clientInfo = new { name = "hako", title = "Hako", version = typeof(CodexAppServer).Assembly.GetName().Version?.ToString(3) ?? "1.0.0" }
+                clientInfo = new { name = "hako", title = "Hako", version = typeof(CodexAppServer).Assembly.GetName().Version?.ToString(3) ?? "1.0.0" },
+                capabilities = new { experimentalApi = true }
             }, token);
             await server.WriteAsync(new { method = "initialized" }, token);
             return server;
@@ -83,9 +84,12 @@ internal sealed class CodexAppServer : IAsyncDisposable
         throw new IOException("Codex CLI is not on PATH");
     }
 
-    private static ProcessStartInfo WithArguments(ProcessStartInfo start)
+    internal static ProcessStartInfo WithArguments(ProcessStartInfo start)
     {
         start.ArgumentList.Add("app-server");
+        // The phone can answer structured questions while Codex is in Default mode.
+        start.ArgumentList.Add("--enable");
+        start.ArgumentList.Add("default_mode_request_user_input");
         start.ArgumentList.Add("--listen");
         start.ArgumentList.Add("stdio://");
         return start;

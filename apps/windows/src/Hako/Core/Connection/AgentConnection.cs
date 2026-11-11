@@ -23,12 +23,20 @@ public sealed class AgentConnection : IAsyncDisposable
     public event Action<string>? VersionWarning;
     public event Action<Metrics>? MetricsReceived;
     private readonly AgentDispatcher dispatcher;
+    private readonly string directIdentityPath;
+    private readonly string dataDirectory;
+    private string? knownAgentId;
+    private AgentDirectServer? direct;
+    public object DirectStatus => new { listening = direct != null, port = direct?.Port ?? 0 };
     private readonly SemaphoreSlim writing = new(1, 1);
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
+        this.dataDirectory = dataDirectory ?? AgentSettingsStore.DefaultDirectory;
+        directIdentityPath = Path.Combine(this.dataDirectory, "direct-agent-id.txt");
+        if (File.Exists(directIdentityPath)) knownAgentId = File.ReadAllText(directIdentityPath).Trim();
         dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage, dataDirectory: dataDirectory);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
     }
@@ -51,7 +59,16 @@ public sealed class AgentConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopAsync();
+        if (direct != null) await direct.DisposeAsync();
         await dispatcher.DisposeAsync();
+    }
+
+    public async Task ConfigureDirectAsync(int port)
+    {
+        if (port is < 0 or > 65535) throw new ArgumentException("直连端口无效。");
+        if ((direct?.Port ?? 0) == port) return;
+        if (direct != null) { await direct.DisposeAsync(); direct = null; }
+        if (port != 0) direct = new AgentDirectServer(dispatcher, port, () => Status.AgentId ?? knownAgentId, dataDirectory);
     }
     private void SetStatus(string state, string message, string? agentId = null)
     {
@@ -99,10 +116,13 @@ public sealed class AgentConnection : IAsyncDisposable
                     using var ack = await ReceiveAsync(socket, authTimeout.Token);
                     if (ack.RootElement.GetProperty("type").GetString() != "authenticated") throw new AuthenticationException("认证失败。");
                     SetStatus("connected", "已连接 · 身份验证通过", ack.RootElement.GetProperty("agentId").GetString());
+                    knownAgentId = Status.AgentId;
+                    try { Directory.CreateDirectory(dataDirectory); File.WriteAllText(directIdentityPath, knownAgentId); } catch (IOException) { }
                 }
                 attempt = 0;
                 using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var workers = new List<Task>();
+                var requestSlots = new AgentRequestSlots();
                 var workshopStreams = new Dictionary<string, (CancellationTokenSource Lifetime, Task Worker)>();
                 CancellationTokenSource? telemetry = null;
                 Task? telemetryWorker = null;
@@ -134,10 +154,14 @@ public sealed class AgentConnection : IAsyncDisposable
                             case "request":
                                 workers.RemoveAll(task => task.IsCompleted);
                                 var request = root.Clone();
-                                if (workers.Count >= 4)
+                                var slot = requestSlots.TryAcquire(request.GetProperty("method").GetString()!);
+                                if (slot is null)
                                     await SendAsync(socket, new { type = "response", id = request.GetProperty("id").GetString(), error = new { code = "agent_busy", message = "设备繁忙，请稍后重试。" } }, connection.Token);
                                 else
-                                    workers.Add(Task.Run(() => ExecuteRequestAsync(socket, request, connection.Token), connection.Token));
+                                    workers.Add(Task.Run(async () =>
+                                    {
+                                        using (slot) await ExecuteRequestAsync(socket, request, connection.Token);
+                                    }));
                                 break;
                             case "telemetry_start":
                                 await StopTelemetryAsync();

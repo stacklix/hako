@@ -7,7 +7,7 @@ using Hako.Platform;
 
 namespace Hako.Core;
 
-public sealed record AgentSettings(string Url = "", string Username = "", string PrivateKey = "")
+public sealed record AgentSettings(string Url = "", string Username = "", string PrivateKey = "", int DirectPort = 0)
 {
     public static AgentSettings Load() => new AgentSettingsStore().Load();
     public void Save() => new AgentSettingsStore().Save(this);
@@ -32,9 +32,12 @@ public sealed record AgentSettings(string Url = "", string Username = "", string
 
     public void ValidateConnectionSettings()
     {
+        ValidateDirectPort();
         _ = Origin();
         if (!Regex.IsMatch(Username, @"\A[A-Za-z0-9_-]{1,80}\z")) throw new ArgumentException("账号应为 1–80 位英文字母、数字、下划线或连字符。");
     }
+
+    public void ValidateDirectPort() { if (DirectPort < 0 || DirectPort > 65535) throw new ArgumentException("直连端口必须为 0–65535；0 表示关闭。"); }
 
     public static string KeyId(RSA rsa) => Convert.ToBase64String(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo())).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

@@ -16,11 +16,12 @@ public partial class ServerSettingsView : UserControl
     private readonly Func<Task> clear;
     private readonly Func<string, Task> saveKey;
     private readonly AgentStartup startup;
+    private readonly Func<int, Task> saveDirect;
     private bool loadingStartup = true;
     private string privateKey = "";
-    public ServerSettingsView(Func<AgentSettings, Task> apply, Func<Task> clear, Func<string, Task> saveKey, AgentStartup startup)
+    public ServerSettingsView(Func<AgentSettings, Task> apply, Func<Task> clear, Func<string, Task> saveKey, AgentStartup startup, Func<int, Task> saveDirect)
     {
-        this.startup = startup;
+        this.startup = startup; this.saveDirect = saveDirect;
         InitializeComponent(); this.apply = apply; this.clear = clear; this.saveKey = saveKey;
         Loaded += (_, _) => RefreshStartup();
     }
@@ -46,7 +47,16 @@ public partial class ServerSettingsView : UserControl
             StartupMessage.Text = "自动启动设置失败：" + error.Message;
         }
     }
-    public void Load(AgentSettings settings) { ServerUrl.Text = settings.Url; Username.Text = settings.Username; privateKey = settings.PrivateKey; UpdateKey(); }
+    public void Load(AgentSettings settings) { ServerUrl.Text = settings.Url; Username.Text = settings.Username; DirectPort.Text = settings.DirectPort.ToString(); privateKey = settings.PrivateKey; UpdateKey(); }
+    private async void SaveDirectClick(object sender, RoutedEventArgs e)
+    {
+        IsEnabled = false;
+        try { await saveDirect(ParseDirectPort()); Message.Text = "局域网直连配置已保存。"; }
+        catch (Exception error) { Message.Text = error.Message; }
+        finally { IsEnabled = true; }
+    }
+    private int ParseDirectPort() => int.TryParse(DirectPort.Text, out var port) && port is >= 0 and <= 65535
+        ? port : throw new ArgumentException("直连端口必须为 0–65535 的整数。");
     private void UpdateKey()
     {
         ExportPublicKey.IsEnabled = privateKey.Length > 0;
@@ -100,7 +110,7 @@ public partial class ServerSettingsView : UserControl
     private async void SaveClick(object sender, RoutedEventArgs e)
     {
         IsEnabled = false;
-        try { await apply(new AgentSettings(ServerUrl.Text.Trim().TrimEnd('/'), Username.Text.Trim(), privateKey)); Message.Text = "已加密保存，正在连接。"; }
+        try { await apply(new AgentSettings(ServerUrl.Text.Trim().TrimEnd('/'), Username.Text.Trim(), privateKey, ParseDirectPort())); Message.Text = "已加密保存，正在连接。"; }
         catch (Exception error) { Message.Text = error.Message; }
         finally { IsEnabled = true; }
     }

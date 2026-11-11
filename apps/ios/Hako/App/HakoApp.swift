@@ -5,12 +5,15 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
 
+    init() { LocalNetworkService.shared = AppNetworkService.shared }
+
     var body: some Scene {
         WindowGroup {
             HomeView()
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .active {
+                        Task { await AppNetworkService.shared.refresh() }
                         Task { await BuildPushSubscription.shared.refresh() }
                     }
                 }
