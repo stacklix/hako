@@ -67,6 +67,7 @@ internal sealed partial class CodeWorkshop
                 .OrderByDescending(value => value.QueueOrder).FirstOrDefault() ?? root;
             var paused = !current.Active && current.State is not ("queued" or "completed");
             var job = new WorkshopJob { Id = id, RootId = root.Id, Fingerprint = fingerprint,
+                NotificationScope = notificationScope,
                 ApplicationId = root.ApplicationId, Cwd = root.Cwd, ThreadId = current.ThreadId ?? root.ThreadId,
                 InputMessage = message, ImageIds = images, Model = current.Model, Permission = current.Permission,
                 ServiceTier = current.ServiceTier, State = paused ? "paused" : "queued",

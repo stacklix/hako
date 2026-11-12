@@ -47,7 +47,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     {
         if (recovered) return;
         if (Directory.Exists(storage))
-            foreach (var file in Directory.EnumerateFiles(this.storage, "*.json").OrderByDescending(File.GetLastWriteTimeUtc).Take(100))
+            foreach (var file in Directory.EnumerateFiles(this.storage, "*.json").OrderByDescending(File.GetLastWriteTimeUtc))
             {
                 if (!Guid.TryParse(Path.GetFileNameWithoutExtension(file), out var id)) continue;
                 try { GetJob(id.ToString("D")); }

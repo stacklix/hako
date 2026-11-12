@@ -117,7 +117,7 @@ struct CodeWorkshopView: View {
             Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
         }
         .navigationDestination(isPresented: Binding(get: { conversation != nil }, set: { if !$0 { conversation = nil } })) {
-            if let conversation { WorkshopConversationView(conversation: conversation) }
+            if let conversation { WorkshopConversationView(conversation: conversation).id(conversation.id) }
         }
         .onChange(of: store.scope) { _, _ in
             conversation = nil; creating = false; settingsPresented = false; pendingArchive = nil
@@ -225,6 +225,7 @@ struct CodeWorkshopView: View {
         } else {
             Section {
                 ForEach(sessions) { session in
+                    let hasDraft = store.hasDraft(session)
                     Button {
                         guard let application = store.applications.first(where: { $0.id == session.applicationId }) else { return }
                         conversation = WorkshopRuntime.shared.open(session, agent: agent,
@@ -232,7 +233,7 @@ struct CodeWorkshopView: View {
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: "terminal").font(.subheadline).padding(.top, 3)
-                                .foregroundStyle(session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
+                                .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack(alignment: .top) {
                                     Text(session.title).font(.subheadline.weight(.medium))
@@ -249,7 +250,7 @@ struct CodeWorkshopView: View {
                         }
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                    .accessibilityValue(session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读")
+                    .accessibilityValue(hasDraft ? "有未发送的草稿" : session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读")
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(HakoStyle.card)
                     .listRowSeparatorTint(HakoStyle.line)
@@ -306,6 +307,7 @@ private struct WorkshopSettingsView: View {
                     Text("使用电脑上已登录的 Codex。默认自动审批，也可在会话中选择请求确认、完全访问或跟随电脑配置。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                WorkshopPushSettings(authentication: store.authentication)
                 Section {
                     Text("手机断线后，任务保留在电脑端。回到会话会继续读取进度。桌面版仍持有写锁时，需要先由桌面版释放会话。")
                         .font(.footnote).foregroundStyle(.secondary)

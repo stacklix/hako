@@ -65,7 +65,7 @@ export function Avatar({ name, small = false, square = false }: { name: string; 
   return <span className={`avatar avatar-${sum % 5} ${small ? 'avatar-small' : ''} ${square ? 'avatar-square' : ''}`}>{name.slice(0, 1).toUpperCase()}</span>;
 }
 const botLabels: Record<string, string> = { pending: '待登录', logging_in: '登录中', connecting: '连接中', online: '在线', reconnecting: '重连中', expired: '授权失效', stopped: '已停止' };
-const messageLabels: Record<string, string> = { queued: '排队中', sending: '发送中', provider_accepted: '已提交平台', failed: '发送失败', partial_failure: '部分失败', unknown: '结果待确认', received: '已接收', rejected: '请求被拒绝' };
+const messageLabels: Record<string, string> = { queued: '排队中', sending: '发送中', provider_accepted: '已提交平台', failed: '发送失败', partial_failure: '部分失败', unknown: '结果待确认', received: '已接收', rejected: '请求被拒绝', suppressed: '已跳过' };
 export function Status({ status, bot = false }: { status: string; bot?: boolean }) {
   return <span className={`status status-${status}`}><i />{(bot ? botLabels : messageLabels)[status] || status}</span>;
 }

@@ -62,6 +62,8 @@ type Connection struct {
 	streams map[string]*Subscription
 	done    chan struct{}
 	once    sync.Once
+	// Called only for unsolicited terminal receipts on an authenticated Agent socket.
+	Terminal func(Frame) bool
 }
 
 func New(ws *websocket.Conn, newID func() string) *Connection {
@@ -100,6 +102,12 @@ func (c *Connection) Run(seen func()) {
 		}
 		if frame.Kind == "alive" {
 			seen()
+			continue
+		}
+		if frame.Kind == "terminal" {
+			if c.Terminal == nil || !c.Terminal(frame) || c.Send(Frame{Kind: "terminal_ack", OperationID: frame.OperationID}) != nil {
+				return
+			}
 			continue
 		}
 		if frame.ID == "" || (frame.Kind != "result" && frame.Kind != "failure" && frame.Kind != "event") {

@@ -8,7 +8,7 @@ import Combine
     let application: WorkshopApplication
     let title: String
     let scope: String
-    @Published private(set) var threadId: String?
+    @Published private(set) var threadId: String? { didSet { persistDraft() } }
     @Published private(set) var isArchived: Bool
     @Published private(set) var entries: [WorkshopEntry] = []
     @Published private(set) var artifacts: [WorkshopArtifact] = []
@@ -18,24 +18,31 @@ import Combine
     @Published private(set) var busy = false
     @Published private(set) var loadingHistory = false
     @Published private(set) var uncertain = false
-    @Published var draft = ""
+    @Published var draft = "" { didSet { composerChanged() } }
     @Published var error: String?
     @Published private(set) var connectionIssue: String?
-    @Published private(set) var photos: [WorkshopPhoto] = []
+    @Published private(set) var photos: [WorkshopPhoto] = [] { didSet { composerChanged() } }
     @Published private(set) var uploadProgress: Double?
     @Published private(set) var models: [WorkshopModel] = []
     @Published private(set) var loadingModels = false
     @Published private(set) var modelError: String?
     @Published private(set) var choice = WorkshopChoice()
     @Published private(set) var followups: [WorkshopFollowupState] = []
-    @Published private(set) var editingMessageID: String?
+    @Published private(set) var editingMessageID: String? { didSet { persistDraft() } }
     @Published private(set) var appendedMessageID: String?
     @Published private(set) var cachedAt: Date?
     @Published private(set) var synchronizing = false
-    private var editingDraft: (text: String, photos: [WorkshopPhoto])?
+    private var editingDraft: (text: String, photos: [WorkshopPhoto])? { didSet { persistDraft() } }
+    private var draftReady = false
+    private var draftSessionID = "new"
+    private var savedDraft: WorkshopComposerDraft?
+    private var draftSendingID: String? { didSet { persistDraft() } }
     private var receipt: WorkshopReceipt?
     private var operationId: String? {
-        didSet { if oldValue != operationId { eventStream?.cancel() } }
+        didSet {
+            if oldValue != operationId { eventStream?.cancel() }
+            persistDraft()
+        }
     }
     private var eventStream: Task<Void, Error>?
     private var eventCursor: Int64 = 0
@@ -72,11 +79,64 @@ import Combine
         if let operationId {
             for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) { entries.append(pending.entry) }
         }
+        draftSessionID = composerSessionID
+        do {
+            var saved = try store.composerDraft(agent: agent, application: application, sessionId: draftSessionID)
+            // A new session can become visible in the catalog before this app
+            // receives its thread ID. Its input still belongs to the request.
+            if saved == nil, let operationId, draftSessionID != "pending-" + operationId,
+               let pending = try store.composerDraft(agent: agent, application: application, sessionId: "pending-" + operationId) {
+                saved = pending; draftSessionID = "pending-" + operationId
+            }
+            if let saved {
+                draft = saved.input.text
+                photos = try saved.input.imageIds.map { try store.savedPhoto($0) }
+                editingMessageID = saved.editingMessageID
+                if let original = saved.originalInput {
+                    editingDraft = (original.text, try original.imageIds.map { try store.savedPhoto($0) })
+                }
+                savedDraft = saved
+                draftSendingID = saved.sendingMessageID
+            }
+        } catch { self.error = "无法完整恢复输入草稿。\(error.localizedDescription)" }
+        draftReady = true
+        if savedDraft != nil { persistDraft() }
+    }
+
+    private var composerSessionID: String { threadId ?? operationId.map { "pending-" + $0 } ?? "new:" + title }
+
+    private var composerDraft: WorkshopComposerDraft {
+        WorkshopComposerDraft(input: WorkshopDraftInput(text: draft, imageIds: photos.map(\.id)),
+            editingMessageID: editingMessageID,
+            originalInput: editingDraft.map { WorkshopDraftInput(text: $0.text, imageIds: $0.photos.map(\.id)) },
+            sendingMessageID: draftSendingID)
+    }
+
+    private func persistDraft() {
+        guard draftReady, scope == store.scope else { return }
+        let snapshot = composerDraft
+        let sessionID = composerSessionID
+        guard snapshot != savedDraft || sessionID != draftSessionID else { return }
+        do {
+            try store.saveComposerDraft(snapshot, agent: agent, application: application, sessionId: sessionID,
+                previousSessionId: draftSessionID, scope: scope)
+            draftSessionID = sessionID; savedDraft = snapshot
+        } catch { self.error = "输入尚在本页，但草稿保存失败，请勿退出。\(error.localizedDescription)" }
+    }
+
+    private func composerChanged() {
+        if draftReady { draftSendingID = nil }
+        persistDraft()
+    }
+
+    private func clearSentDraft(_ message: String, imageIds: [String], id: String) {
+        guard composerDraft.matchesSentMessage(message, imageIds: imageIds, id: id) else { return }
+        draft = ""; photos = []
     }
 
     var canCompose: Bool { !isArchived && !busy && store.authenticated && scope == store.scope }
+    var canConfigure: Bool { !isArchived && store.authenticated && scope == store.scope }
     var canSubmitMessage: Bool { canCompose && !synchronizing && !uncertain }
-    var canSend: Bool { canSubmitMessage && operation?.active != true }
     var canEditMessages: Bool { canSubmitMessage && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
@@ -112,7 +172,7 @@ import Combine
     }
 
     func configure(_ next: WorkshopChoice) throws {
-        guard canSend else { throw HakoError(message: "本轮结束后可修改模型、速度和权限。") }
+        guard canConfigure else { throw HakoError(message: "当前会话不可修改设置，请确认登录状态且会话未归档。") }
         let selected = models.first { $0.id == next.model } ?? (next.model == nil ? models.first { $0.isDefault } : nil)
         if let tier = next.serviceTier, tier != "default", selected?.serviceTiers.contains(where: { $0.id == tier }) != true {
             throw HakoError(message: "所选模型暂不支持此速度，请刷新模型列表后重新选择。")
@@ -300,8 +360,10 @@ import Combine
         uncertain = false
         cachedAt = nil
         followups = result.followups
+        if let receipt, receipt.id == id { clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: id) }
         if result.cursor > eventCursor { for event in result.events { apply(event) } }
         for followup in followups {
+            if let queued = pendingSend(followup.id) { clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id) }
             try store.saveQueuedSend(nil, removing: followup.id)
             if followup.state == "cancelled" { entries.removeAll { $0.id == followup.id }; continue }
             if let index = entries.firstIndex(where: { $0.id == followup.id && $0.kind == "followup" }) {
@@ -347,6 +409,10 @@ import Combine
             await mutateMessage(id, action: "update", message: message)
             return
         }
+        if let id = draftSendingID, let queued = pendingSend(id) {
+            await submitQueued(queued)
+            return
+        }
         if !photos.isEmpty, let model = models.first(where: { $0.id == choice.model }), !model.supportsImages {
             error = "当前模型不支持图片，请在更多页面选择支持图片的模型。"; return
         }
@@ -356,7 +422,9 @@ import Combine
                 message: message, imageIds: photos.map(\.id))
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存排队消息，请重试。"; return }
-            entries.append(queued.entry); appendedMessageID = queued.id; draft = ""; photos = []; error = nil
+            store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
+            draftSendingID = queued.id
+            entries.append(queued.entry); appendedMessageID = queued.id; error = nil
             saveTranscript()
             await submitQueued(queued)
             if resume, followups.contains(where: { $0.id == queued.id && $0.editable }) {
@@ -370,8 +438,9 @@ import Combine
             serviceTier: choice.serviceTier ?? "default")
         do { try store.saveReceipt(next) }
         catch { self.error = "无法保存发送记录，请重试。"; return }
+        draftSendingID = next.id
         receipt = next; uncertain = true; operationId = next.id; eventCursor = 0; streamText = [:]; observedTerminal = nil
-        operation = nil; approvals = []; error = nil; draft = ""
+        operation = nil; approvals = []; error = nil
         saveTranscript()
         await submit(next)
     }
@@ -392,7 +461,8 @@ import Combine
             }
             let result: WorkshopOperation = try await store.call(agent, "turn.start", receipt.parameters)
             guard scope == store.scope, result.id == receipt.id else { throw CancellationError() }
-            operation = result; uncertain = false; photos = []; error = nil
+            operation = result; uncertain = false; error = nil
+            clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: receipt.id)
             if let id = result.threadId {
                 if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application) }
                 threadId = id
@@ -410,7 +480,8 @@ import Combine
             var rejected = receipt; rejected.state = "rejected"
             self.receipt = rejected
             try? store.saveReceipt(rejected)
-            draft = receipt.message
+            if draftSendingID == receipt.id { draftSendingID = nil }
+            if draft.isEmpty && photos.isEmpty { draft = receipt.message }
             error = failure.message
             saveTranscript()
         }
@@ -452,13 +523,22 @@ import Combine
             let result: WorkshopFollowupReply = try await store.call(agent, "message.queue", queued.parameters)
             guard scope == store.scope, operationId == queued.operationId, result.id == queued.id else { throw CancellationError() }
             acceptFollowup(result)
+            clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id)
             try store.saveQueuedSend(nil, removing: queued.id)
             observedTerminal = nil
             try await poll(queued.operationId)
         } catch is CancellationError { }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_queue_full", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {
             guard scope == store.scope else { return }
-            if draft.isEmpty && photos.isEmpty {
+            store.rejectQueuedActivity(queued, agent: agent, scope: scope)
+            if draftSendingID == queued.id {
+                do {
+                    try store.saveQueuedSend(nil, removing: queued.id)
+                    entries.removeAll { $0.id == queued.id }
+                    draftSendingID = nil
+                    saveTranscript()
+                } catch { self.error = "排队未成功，输入草稿已保留。\(error.localizedDescription)"; return }
+            } else if draft.isEmpty && photos.isEmpty {
                 do {
                     let restoredPhotos = try queued.imageIds.map { try store.savedPhoto($0) }
                     try store.saveQueuedSend(nil, removing: queued.id)

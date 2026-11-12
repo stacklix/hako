@@ -45,8 +45,9 @@ private struct WorkshopInlineProse: View {
 
     var body: some View {
         let rendered = render()
-        Text(rendered.text)
+        rendered.text
             .font(.subheadline).lineSpacing(5).textSelection(.enabled)
+            .textRenderer(WorkshopInlineCodeRenderer())
             .accessibilityHint(rendered.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
             .environment(\.openURL, OpenURLAction { url in
                 guard let code = rendered.copies[url] else { return .systemAction }
@@ -57,7 +58,7 @@ private struct WorkshopInlineProse: View {
             })
     }
 
-    private func render() -> (text: AttributedString, copies: [URL: String]) {
+    private func render() -> (text: Text, copies: [URL: String]) {
         var text = (try? AttributedString(markdown: source,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
         var copies: [URL: String] = [:]
@@ -69,10 +70,47 @@ private struct WorkshopInlineProse: View {
             copies[url] = span.value
             text[span.range].font = .system(.subheadline, design: .monospaced)
             text[span.range].foregroundColor = HakoStyle.text
-            text[span.range].backgroundColor = HakoStyle.line
             text[span.range].link = url
         }
-        return (text, copies)
+        let rendered = text.runs.reduce(Text("")) { result, run in
+            var fragment = Text(AttributedString(text[run.range]))
+            if let link = run.link, copies[link] != nil {
+                fragment = fragment.customAttribute(WorkshopInlineCodeAttribute(id: link))
+            }
+            return Text("\(result)\(fragment)")
+        }
+        return (rendered, copies)
+    }
+}
+
+private struct WorkshopInlineCodeAttribute: TextAttribute {
+    let id: URL
+}
+
+private struct WorkshopInlineCodeRenderer: TextRenderer {
+    var displayPadding: EdgeInsets { EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) }
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        // Merge fragments of the same code span on each line, including font
+        // fallback runs. Wrapped spans receive a separate rounded background.
+        for line in layout {
+            var backgrounds: [(id: URL, rect: CGRect)] = []
+            for run in line {
+                guard let code = run[WorkshopInlineCodeAttribute.self] else { continue }
+                let rect = run.typographicBounds.rect
+                if let last = backgrounds.indices.last, backgrounds[last].id == code.id {
+                    backgrounds[last].rect = backgrounds[last].rect.union(rect)
+                } else {
+                    backgrounds.append((code.id, rect))
+                }
+            }
+            for background in backgrounds {
+                let rect = background.rect.insetBy(dx: -3, dy: -1.5)
+                let path = RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: rect)
+                context.fill(path, with: .color(HakoStyle.line.opacity(0.55)))
+            }
+            context.draw(line)
+        }
     }
 }
 

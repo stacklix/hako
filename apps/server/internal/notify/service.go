@@ -238,27 +238,29 @@ func (v vault) open(text string) (string, error) {
 type Config struct {
 	DataDir, EncryptionKey string
 	TrustedConsoles        []string
+	WorkshopAllowed        func(console string, finishedAt int64) bool
 }
 
 type operation struct{ cancel context.CancelFunc }
 
 type Service struct {
-	db       *sql.DB
-	vault    vault
-	wechat   wechatClient
-	apns     *apnsClient
-	consoles []string
-	admin    *http.ServeMux
-	ctx      context.Context
-	cancel   context.CancelFunc
-	workers  sync.WaitGroup
-	mu       sync.Mutex
-	polls    map[string]*operation
-	logins   map[string]*loginSession
-	sending  map[string]*operation
-	busyAPNs int
-	eventMu  sync.Mutex
-	event    chan struct{}
+	db              *sql.DB
+	vault           vault
+	wechat          wechatClient
+	apns            *apnsClient
+	consoles        []string
+	admin           *http.ServeMux
+	ctx             context.Context
+	cancel          context.CancelFunc
+	workers         sync.WaitGroup
+	mu              sync.Mutex
+	polls           map[string]*operation
+	logins          map[string]*loginSession
+	sending         map[string]*operation
+	busyAPNs        int
+	workshopAllowed func(string, int64) bool
+	eventMu         sync.Mutex
+	event           chan struct{}
 }
 
 func New(config Config) (*Service, error) {
@@ -285,7 +287,8 @@ func New(config Config) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{db: db, vault: key, apns: apns, consoles: config.TrustedConsoles, ctx: ctx, cancel: cancel,
-		polls: make(map[string]*operation), logins: make(map[string]*loginSession), sending: make(map[string]*operation),
+		workshopAllowed: config.WorkshopAllowed,
+		polls:           make(map[string]*operation), logins: make(map[string]*loginSession), sending: make(map[string]*operation),
 		event: make(chan struct{}), admin: http.NewServeMux(), wechat: newWechatClient()}
 	if err := s.start(); err != nil {
 		cancel()

@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 enum HakoServerCompatibility {
-    private static let minimumServerVersion = "0.2.0"
+    private static let minimumServerVersion = "0.2.1"
     private static let invalidMetadata = "服务端返回的版本信息无效，请检查 Hako 服务端版本。"
 
     private struct Versions: Decodable {

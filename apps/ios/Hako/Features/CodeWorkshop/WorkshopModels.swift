@@ -261,40 +261,75 @@ struct WorkshopPreferences: Codable {
     var choices: [String: WorkshopChoice]? = nil
 }
 
-// Keep a newly sent conversation visible until the live catalog acknowledges it.
+// Reflect sends immediately, until the catalog acknowledges their operation
+// and activity time. An older catalog response must not undo the local state.
 struct WorkshopLocalSessions {
-    private var receipts: [String: WorkshopReceipt] = [:]
+    private struct Activity {
+        var receipt: WorkshopReceipt
+        let date: Date
+        let preview: String
+    }
+    private var receipts: [String: Activity] = [:]
 
     mutating func record(_ receipt: WorkshopReceipt, isNew: Bool) {
-        guard receipt.originalThreadId == nil else { return }
         if receipt.state == "rejected" { receipts[receipt.id] = nil }
-        else if isNew || receipts[receipt.id] != nil { receipts[receipt.id] = receipt }
+        else if isNew || receipts[receipt.id] != nil {
+            if isNew, let threadId = receipt.threadId {
+                receipts = receipts.filter { $0.key == receipt.id || $0.value.receipt.agentId != receipt.agentId || $0.value.receipt.threadId != threadId }
+            }
+            let previous = receipts[receipt.id]
+            let keepActivity = previous.map { $0.date > receipt.createdAt } == true
+            receipts[receipt.id] = Activity(receipt: receipt,
+                date: keepActivity ? previous!.date : receipt.createdAt,
+                preview: keepActivity ? previous!.preview : receipt.message)
+        }
     }
 
     mutating func confirm(_ sessions: [WorkshopSession], agentId: String) {
-        receipts = receipts.filter { _, receipt in
-            receipt.agentId != agentId || !sessions.contains { $0.id == receipt.threadId || $0.operationId == receipt.id }
+        receipts = receipts.filter { _, activity in
+            activity.receipt.agentId != agentId || !sessions.contains { acknowledges($0, activity: activity) }
         }
     }
 
     mutating func remove(threadId: String, agentId: String) {
-        receipts = receipts.filter { $0.value.agentId != agentId || $0.value.threadId != threadId }
+        receipts = receipts.filter { $0.value.receipt.agentId != agentId || $0.value.receipt.threadId != threadId }
+    }
+
+    private func acknowledges(_ session: WorkshopSession, activity: Activity) -> Bool {
+        session.operationId == activity.receipt.id && session.updatedAt >= Int64(activity.date.timeIntervalSince1970)
+            && (activity.receipt.state == "pending" || !session.inProgress)
+    }
+
+    mutating func reject(operationId: String, agentId: String) {
+        if receipts[operationId]?.receipt.agentId == agentId { receipts[operationId] = nil }
     }
 
     func merging(_ sessions: [WorkshopSession], agentId: String, applications: [WorkshopApplication], archived: Bool) -> [WorkshopSession] {
         guard !archived else { return sessions }
-        let local = receipts.values.compactMap { receipt -> WorkshopSession? in
+        var result = sessions
+        var localDates: [String: Date] = [:]
+        for activity in receipts.values {
+            let receipt = activity.receipt
             guard receipt.agentId == agentId,
-                  let application = applications.first(where: { $0.id == receipt.applicationId }),
-                  !sessions.contains(where: { $0.id == receipt.threadId || $0.operationId == receipt.id }) else { return nil }
-            return WorkshopSession(id: receipt.threadId ?? "pending-" + receipt.id, title: receipt.title,
+                  let application = applications.first(where: { $0.id == receipt.applicationId }) else { continue }
+            let index = result.firstIndex { $0.id == receipt.threadId || $0.operationId == receipt.id }
+            let remote = index.map { result[$0] }
+            if let remote, acknowledges(remote, activity: activity) { continue }
+            let local = WorkshopSession(id: receipt.threadId ?? remote?.id ?? "pending-" + receipt.id, title: remote?.title ?? receipt.title,
                 applicationId: receipt.applicationId, cwd: application.path,
-                preview: receipt.threadId == nil ? "发送结果等待确认" : receipt.message,
-                updatedAt: Int64(receipt.createdAt.timeIntervalSince1970),
+                preview: receipt.threadId == nil ? "发送结果等待确认" : activity.preview,
+                updatedAt: max(Int64(activity.date.timeIntervalSince1970), remote?.updatedAt ?? 0),
                 state: receipt.state == "pending" ? (receipt.threadId == nil ? "unknown" : "starting") : receipt.state,
                 operationId: receipt.id)
+            if let index { result[index] = local } else { result.append(local) }
+            localDates[local.id] = activity.date
         }
-        return WorkshopCatalog.ordered(sessions + local)
+        return result.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            let left = localDates[$0.id] ?? Date(timeIntervalSince1970: Double($0.updatedAt))
+            let right = localDates[$1.id] ?? Date(timeIntervalSince1970: Double($1.updatedAt))
+            return left != right ? left > right : $0.id < $1.id
+        }
     }
 }
 

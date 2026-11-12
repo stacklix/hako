@@ -12,19 +12,19 @@ internal static class Program
 {
     private static void CheckServerCompatibility()
     {
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
             throw new Exception("Agent rejected matching version floors");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
             throw new Exception("Agent did not compare compatible patch versions numerically");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a patch version below the required floor");
-        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.2.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about its own version floor");
         var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about the server version floor");
-        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
+        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.2.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
         if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer minor version than the server supports");
         var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.3.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
@@ -33,7 +33,7 @@ internal static class Program
         var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (both != outdatedAgent + "\n\n" + outdatedServer)
             throw new Exception("Agent did not report both incompatible versions together");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.0"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
             throw new Exception("Agent accepted incomplete version metadata");
     }
 
@@ -43,6 +43,7 @@ internal static class Program
         {
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-notifications") { await WorkshopNotificationChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "agent-direct") { await AgentDirectChecks.RunAsync(); return 0; }
@@ -150,6 +151,7 @@ internal static class Program
             CheckServerCompatibility();
             await AgentRequestChecks.RunAsync();
             await WorkshopCloudChecks.RunAsync();
+            await WorkshopNotificationChecks.RunAsync();
             StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();

@@ -25,6 +25,19 @@ func (s *Server) startNotifications() error {
 		DataDir:         s.config.NotificationDataDir,
 		EncryptionKey:   os.Getenv("HAKO_NOTIFICATION_ENCRYPTION_KEY"),
 		TrustedConsoles: trusted,
+		WorkshopAllowed: func(console string, finishedAt int64) bool {
+			allowed := false
+			s.store.inspect(func(st state) {
+				for _, entry := range s.registry.Load().Consoles {
+					if entry.thumb == console {
+						since := st.WorkshopPush[console]
+						allowed = since > 0 && finishedAt >= since
+						break
+					}
+				}
+			})
+			return allowed
+		},
 	})
 	if err == nil {
 		s.notifications = service
@@ -40,6 +53,8 @@ func (s *Server) notificationRoutes() {
 	s.mux.HandleFunc("POST /webhook/notifications/{token}", s.notificationWebhook)
 	s.mux.HandleFunc("GET /webhook/notifications/{token}/{notificationID}", s.notificationWebhook)
 	s.mux.HandleFunc("PUT /api/v1/notifications/device", s.registerNotificationDevice)
+	s.mux.HandleFunc("GET /api/v1/notifications/workshop", s.workshopPushSettings)
+	s.mux.HandleFunc("PUT /api/v1/notifications/workshop", s.workshopPushSettings)
 }
 
 func (s *Server) adminNotifications(w http.ResponseWriter, r *http.Request) {

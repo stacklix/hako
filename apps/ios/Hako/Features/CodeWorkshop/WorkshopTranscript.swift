@@ -88,6 +88,8 @@ struct WorkshopScrollFollowing {
     private var manualScroll = false
     private var nearBottom = true
 
+    var shouldFollowUpdates: Bool { followsBottom && !manualScroll }
+
     mutating func observe(nearBottom: Bool) {
         self.nearBottom = nearBottom
         // Content can grow before its scroll anchor is applied. Only a user's

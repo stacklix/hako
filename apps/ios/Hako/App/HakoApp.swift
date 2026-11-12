@@ -5,7 +5,10 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
 
-    init() { LocalNetworkService.shared = AppNetworkService.shared }
+    init() {
+        LocalNetworkService.shared = AppNetworkService.shared
+        RemoteNotificationRegistration.prepare = { try await BuildPushSubscription.shared.prepareHakoRegistration() }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -91,6 +94,12 @@ struct HomeView: View {
                 }
             }
         }.tint(.primary)
+            .task(id: scenePhase == .active && buildPush.workshopRequested) {
+                guard scenePhase == .active, buildPush.workshopRequested else { return }
+                loginLink = nil
+                path = [.application(.codeWorkshop)]
+                buildPush.workshopRequested = false
+            }
             .task(id: scenePhase == .active && buildPush.settingsRequested) {
                 guard !Task.isCancelled, scenePhase == .active, buildPush.settingsRequested else { return }
                 loginLink = nil

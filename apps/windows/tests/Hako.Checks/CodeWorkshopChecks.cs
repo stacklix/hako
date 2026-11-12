@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -72,6 +73,17 @@ internal static class CodeWorkshopChecks
             string requestId;
             await using (var service = new CodeWorkshop(storage, code, Path.Combine(directory, ".codex"), token => Start(token)))
             {
+                // The worker is shared by LAN and cloud; a configured cloud identity
+                // scopes notifications even when no phone/cloud request socket exists.
+                service.SetNotificationScope("fixture-cloud");
+                using var notificationLife = new CancellationTokenSource();
+                var notifications = new ConcurrentDictionary<string, WorkshopTerminal>();
+                var notificationWatch = service.WatchTerminalsAsync("fixture-cloud", terminal =>
+                {
+                    notifications[terminal.OperationId] = terminal;
+                    service.AcknowledgeTerminal("fixture-cloud", terminal.OperationId);
+                    return Task.CompletedTask;
+                }, notificationLife.Token);
                 var catalog = Result(await service.CatalogAsync(Json(new { }), default));
                 applicationId = catalog.GetProperty("applications")[0].GetProperty("id").GetString()!;
                 Check(catalog.GetProperty("sessions")[0].GetProperty("applicationId").GetString() == applicationId, "Session/application association failed");
@@ -133,11 +145,14 @@ internal static class CodeWorkshopChecks
                 var parameters = Json(new { requestId, applicationId, threadId = FixtureThread, name = "Fixture", message = "Run fixture" });
                 using var requestLife = new CancellationTokenSource();
                 var started = Result(await service.StartAsync(parameters, requestLife.Token));
+                Check(JsonDocument.Parse(File.ReadAllBytes(Path.Combine(storage, requestId + ".json"))).RootElement.GetProperty("notificationScope").GetString() == "fixture-cloud",
+                    "LAN/shared worker did not persist its configured cloud notification scope");
                 requestLife.Cancel();
                 Check(Result(await service.StartAsync(parameters, default)).GetProperty("id").GetString() == started.GetProperty("id").GetString(), "Request deduplication failed");
                 try { await service.StartAsync(Json(new { requestId, applicationId, threadId = FixtureThread, message = "different" }), default); throw new Exception("Request ID reused for different payload"); }
                 catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var waiting = await WaitAsync(service, requestId, "waiting");
+                Check(!notifications.ContainsKey(requestId), "Waiting for user input was reported as task completion");
                 Check(CodexJson.Text(Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0], "state") == "waiting",
                     "An executing job awaiting approval must take precedence over older completed history");
                 try { await service.ArchiveAsync(Json(new { threadId = FixtureThread, archived = true }), default); throw new Exception("Running turn was archived"); }
@@ -300,6 +315,16 @@ internal static class CodeWorkshopChecks
                     if (attempt == 99) throw new Exception("Failed turn automatically continued through a steered predecessor");
                     await Task.Delay(30);
                 }
+                var notificationDeadline = DateTime.UtcNow.AddSeconds(3);
+                while ((!notifications.ContainsKey(failureId) || !notifications.ContainsKey(automaticId) || !notifications.ContainsKey(stopId)) && DateTime.UtcNow < notificationDeadline)
+                    await Task.Delay(10);
+                Check(notifications[requestId].State == "completed" && notifications[automaticId].State == "completed" &&
+                    notifications[stopId].State == "interrupted" && notifications[failureId].State == "failed",
+                    "Actual worker outcomes did not reach the background notification outbox");
+                Check(!notifications.ContainsKey(cancelledId) && !notifications.ContainsKey(queuedId) && !notifications.ContainsKey(afterFailure),
+                    "Cancelled, steered or paused messages incorrectly generated terminal notifications");
+                notificationLife.Cancel();
+                try { await notificationWatch; } catch (OperationCanceledException) { }
             }
             await using (var recovered = new CodeWorkshop(storage, code, startServer: token => Start(token)))
             {

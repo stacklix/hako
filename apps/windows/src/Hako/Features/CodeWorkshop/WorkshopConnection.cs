@@ -23,6 +23,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
     {
         await StopAsync();
         settings.Validate();
+        dispatcher.SetNotificationScope(NotificationScope(settings));
         lifetime = new CancellationTokenSource();
         running = RunAsync(settings, lifetime.Token);
     }
@@ -35,6 +36,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
             lifetime.Dispose(); lifetime = null;
         }
         State = "disconnected";
+        dispatcher.SetNotificationScope(null);
     }
     public async ValueTask DisposeAsync() => await StopAsync();
 
@@ -71,7 +73,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
                     identified(ComputerId);
                 }
                 State = "connected";
-                await Serve(socket, token);
+                await Serve(socket, NotificationScope(settings), token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             catch (AuthenticationException) { State = "authentication_failed"; return; }
@@ -81,7 +83,13 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
         }
     }
 
-    private async Task Serve(ClientWebSocket socket, CancellationToken token)
+    internal static string NotificationScope(AgentSettings settings)
+    {
+        using var key = RSA.Create(); key.ImportFromPem(settings.PrivateKey);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + AgentSettings.KeyId(key))));
+    }
+
+    private async Task Serve(ClientWebSocket socket, string scope, CancellationToken token)
     {
         using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
         using var writing = new SemaphoreSlim(1, 1);
@@ -94,6 +102,12 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
             await writing.WaitAsync(deadline.Token);
             try { await Send(socket, value, deadline.Token); } finally { writing.Release(); }
         }
+        var notifications = Task.Run(async () =>
+        {
+            try { await dispatcher.WatchTerminalsAsync(scope, item => Publish(new { kind = "terminal", operationId = item.OperationId, result = item }), connection.Token); }
+            catch (OperationCanceledException) when (connection.IsCancellationRequested) { }
+            catch { connection.Cancel(); socket.Abort(); throw; }
+        });
         try
         {
             while (!connection.IsCancellationRequested)
@@ -104,6 +118,13 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
                 var frame = message.RootElement.Clone();
                 var kind = CodexJson.Text(frame, "kind");
                 if (kind == "keepalive") { await Publish(new { kind = "alive" }); continue; }
+                if (kind == "terminal_ack")
+                {
+                    var operationId = CodexJson.Text(frame, "operationId");
+                    if (!Guid.TryParse(operationId, out var acknowledged)) throw new InvalidDataException("Invalid terminal acknowledgement.");
+                    dispatcher.AcknowledgeTerminal(scope, acknowledged.ToString("D"));
+                    continue;
+                }
                 var id = frame.GetProperty("id").GetString()!;
                 if (kind == "unwatch") { if (streams.TryGetValue(id, out var old)) old.Lifetime.Cancel(); continue; }
                 if (kind == "watch")
@@ -141,6 +162,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
         finally
         {
             connection.Cancel(); socket.Abort();
+            try { await notifications; } catch { }
             try { await Task.WhenAll(requests); } catch { }
             foreach (var stream in streams.Values) { try { await stream.Worker; } catch { } finally { stream.Lifetime.Dispose(); } }
         }

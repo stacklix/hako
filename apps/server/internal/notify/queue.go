@@ -822,9 +822,9 @@ func (s *Service) drainAPNs() error {
 	if s.ctx.Err() != nil || s.busyAPNs >= 8 {
 		return nil
 	}
-	items, err := rows(s.db, `SELECT d.id,d.target_id,r.apns_payload,r.created_at,d.updated_at,0 direct
+	items, err := rows(s.db, `SELECT d.id,d.target_id,r.apns_payload,r.created_at,d.updated_at,0 direct,json_extract(r.apns_payload,'$.type') push_type
 		FROM notification_deliveries d JOIN webhook_requests r ON r.id=d.notification_id WHERE d.channel='apns' AND d.status='queued'
-		UNION ALL SELECT id,target_id,payload,created_at,updated_at,1 FROM direct_push WHERE status='queued'
+		UNION ALL SELECT id,target_id,payload,created_at,updated_at,1,json_extract(payload,'$.type') FROM direct_push WHERE status='queued'
 		ORDER BY updated_at,id LIMIT ?`, 8-s.busyAPNs)
 	if err != nil {
 		return err
@@ -833,6 +833,19 @@ func (s *Service) drainAPNs() error {
 		table := "notification_deliveries"
 		if enabled(job, "direct") {
 			table = "direct_push"
+		}
+		if str(job, "push_type") == "workshop_terminal" {
+			device, err := one(s.db, "SELECT console_id FROM push_devices WHERE id=?", str(job, "target_id"))
+			if err != nil {
+				return err
+			}
+			if s.workshopAllowed == nil || !s.workshopAllowed(str(device, "console_id"), integer(job, "created_at")) {
+				if err := exec(s.db, "UPDATE "+table+" SET status='suppressed',code='WORKSHOP_DISABLED',error='工坊通知订阅已关闭或更换',updated_at=? WHERE id=? AND status='queued'", nowMS(), str(job, "id")); err != nil {
+					return err
+				}
+				s.changed()
+				continue
+			}
 		}
 		res, err := s.db.Exec("UPDATE "+table+" SET status='sending',updated_at=? WHERE id=? AND status='queued'", nowMS(), str(job, "id"))
 		if err != nil {

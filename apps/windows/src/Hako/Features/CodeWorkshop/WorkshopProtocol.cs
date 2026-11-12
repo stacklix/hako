@@ -27,6 +27,9 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable
     private readonly CodeWorkshop workshop;
     internal WorkshopDispatcher(string dataDirectory) => workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory, "code-workshop"));
     public ValueTask DisposeAsync() => workshop.DisposeAsync();
+    internal void SetNotificationScope(string? scope) => workshop.SetNotificationScope(scope);
+    internal Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) => workshop.WatchTerminalsAsync(scope, publish, token);
+    internal void AcknowledgeTerminal(string scope, string id) => workshop.AcknowledgeTerminal(scope, id);
     internal Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
         workshop.WatchOperationAsync(parameters, publish, token);
 

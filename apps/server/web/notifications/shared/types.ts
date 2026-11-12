@@ -1,5 +1,5 @@
 export type BotStatus = 'pending' | 'logging_in' | 'connecting' | 'online' | 'reconnecting' | 'expired' | 'stopped';
-export type MessageStatus = 'received' | 'queued' | 'sending' | 'provider_accepted' | 'failed' | 'unknown';
+export type MessageStatus = 'received' | 'queued' | 'sending' | 'provider_accepted' | 'failed' | 'unknown' | 'suppressed';
 export const notificationChannels = ['wechat', 'apns'] as const;
 export type NotificationChannel = typeof notificationChannels[number];
 export const channelLabels: Record<NotificationChannel, string> = { wechat: '微信', apns: 'Apple Push' };

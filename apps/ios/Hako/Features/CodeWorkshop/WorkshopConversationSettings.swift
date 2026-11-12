@@ -26,7 +26,7 @@ struct WorkshopConversationSettings: View {
 
     var body: some View {
         SettingsSheet(title: "会话设置", hasChanges: selection != conversation.choice,
-            saveEnabled: conversation.canSend && selection != conversation.choice, onSave: save,
+            saveEnabled: conversation.canConfigure && selection != conversation.choice, onSave: save,
             saveAccessibilityLabel: "保存会话设置") {
             Form {
                 Section {
@@ -45,7 +45,7 @@ struct WorkshopConversationSettings: View {
                     .disabled(conversation.loadingModels || model == nil)
                 } header: { Text("生成设置") } footer: {
                     Text(speeds.first { $0.id == (selection.serviceTier ?? "default") }?.description ?? "此模型当前未提供所选速度。")
-                }.disabled(!conversation.canSend)
+                }.disabled(!conversation.canConfigure)
                 if conversation.loadingModels { ProgressView("正在读取模型…") }
                 if let message = conversation.modelError {
                     Section {
@@ -60,14 +60,14 @@ struct WorkshopConversationSettings: View {
                     .pickerStyle(.menu).workshopSettingsRow()
                 } header: { Text("执行权限") } footer: {
                     Text(selection.permission.detail).foregroundStyle(selection.permission == .full ? Color.orange : .secondary)
-                }.disabled(!conversation.canSend)
+                }.disabled(!conversation.canConfigure)
                 Section("会话信息") {
                     LabeledContent("应用", value: conversation.application.name)
                     LabeledContent("会话名称", value: conversation.title)
                     LabeledContent("执行电脑", value: conversation.agent.name)
                 }
                 Section("项目目录") { Text(conversation.application.path).font(.caption.monospaced()).textSelection(.enabled) }
-                Section { Text("设置在下一次发送时生效。").font(.footnote).foregroundStyle(.secondary) }
+                Section { Text("设置在下一轮任务开始时生效，当前正在执行的任务不受影响。").font(.footnote).foregroundStyle(.secondary) }
                 if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
             }
             .task { await conversation.loadModels() }

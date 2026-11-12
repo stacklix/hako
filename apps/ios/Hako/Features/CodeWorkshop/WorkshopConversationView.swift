@@ -15,9 +15,9 @@ struct WorkshopConversationView: View {
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
     @State private var scrollFollowing = WorkshopScrollFollowing()
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
 
-    private enum ScrollTarget: Hashable { case bottom }
     private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo }
 
     var body: some View {
@@ -25,7 +25,6 @@ struct WorkshopConversationView: View {
         let artifactsByEntry = WorkshopArtifactPlacement.group(conversation.artifacts, entries: transcript.history,
             projectPath: conversation.application.path)
         let groups = WorkshopEntryGroup.group(transcript.history, artifactsAfter: Set(artifactsByEntry.keys))
-        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if conversation.historyCursor != nil {
@@ -82,17 +81,17 @@ struct WorkshopConversationView: View {
                 ForEach(transcript.queued) { entry in
                     followupView(entry).id(entry.id)
                 }
-                Color.clear.frame(height: 1).id(ScrollTarget.bottom)
             }
             .padding(20)
         }
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(scrollFollowing.followsBottom ? .bottom : nil, for: .sizeChanges)
+        .scrollPosition($scrollPosition)
         .onAppear {
             WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation)
             scrollFollowing = WorkshopScrollFollowing()
             conversation.setReadingLatest(scenePhase == .active && transcriptVisible)
-            proxy.scrollTo(ScrollTarget.bottom, anchor: .bottom)
+            // Keep an edge target through the initial lazy layout and later
+            // streaming updates instead of resolving an unmeasured child ID.
+            scrollPosition = ScrollPosition(edge: .bottom)
         }
         .onScrollGeometryChange(for: Bool.self) { geometry in
             geometry.contentSize.height - geometry.visibleRect.maxY <= 80
@@ -115,12 +114,13 @@ struct WorkshopConversationView: View {
             else if phase == .idle { scrollFollowing.interacting(false) }
         }
         .onChange(of: conversation.entries) { _, _ in
-            if scrollFollowing.followsBottom { proxy.scrollTo(ScrollTarget.bottom, anchor: .bottom) }
+            if scrollFollowing.shouldFollowUpdates { scrollPosition.scrollTo(edge: .bottom) }
         }
         .onChange(of: conversation.appendedMessageID) { _, id in
-            if let id {
+            if id != nil {
                 scrollFollowing = WorkshopScrollFollowing()
-                withAnimation { proxy.scrollTo(id, anchor: .bottom) }
+                if reduceMotion { scrollPosition.scrollTo(edge: .bottom) }
+                else { withAnimation { scrollPosition.scrollTo(edge: .bottom) } }
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -161,7 +161,6 @@ struct WorkshopConversationView: View {
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
         .task(id: selectedPhoto) { await loadPhoto(selectedPhoto) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
-        }
     }
 
     @ViewBuilder private func entryView(_ entry: WorkshopEntry) -> some View {

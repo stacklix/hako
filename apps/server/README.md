@@ -113,6 +113,7 @@ docker compose up -d
 登录 Hako 管理后台，打开「通知网关」。工作台、通知渠道、消息中心和 Webhooks 使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `web/notifications/` 执行 `npm ci && npm run build`。从 `apps/server/` 启动时默认加载 `web/notifications/dist/web`，也可以用 `HAKO_NOTIFICATION_WEB_DIR` 指定产物路径。
 
 - 在「通知渠道」中扫码绑定微信账号，或查看 Apple Push 接收设备。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
+- 代码工坊后台任务通知复用此 APNs 设备、凭据和持久化队列，默认关闭；iOS 工坊设置主动开启后才通知任务完成、失败、中断或结果未知。`GET/PUT /api/v1/notifications/workshop` 使用现有 DPoP 登录，返回 `enabled`、`configured`、`registered`；PUT 只接受 `{"enabled":true/false}`。终态只接受已认证的 Windows 工坊连接，不提供公开完成 Webhook。局域网任务也可由配置了云端账号的 Windows 上报，离线不能即时推送。详细语义与限制见 [代码工坊](../../docs/code-workshop.md#后台任务通知)。投递结果在消息中心 Apple Push 历史中显示，来源为「代码工坊」。
 - 在「通知渠道 → Apple Push」配置 Apple Team ID、Key ID、Bundle ID（Hako 默认 `me.stackli.hako`）并上传 `.p8` 私钥。后台配置加密保存在通知网关数据库，保存后立即生效。未从后台保存配置时，继续读取 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID` 和 `APNS_KEY_FILE`。设备登记后可在渠道页发送测试通知，也可在「消息中心 → Apple Push」直接发送文本通知，查看直接发送与 Webhooks 的投递结果。
 - Go 通知网关使用 Hako 数据目录下的 `notification-gateway/`。首次启动后在后台配置通知渠道并创建 Webhook，调用方使用生成的 Webhook 地址。
 

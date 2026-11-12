@@ -35,6 +35,9 @@ internal sealed class WorkshopJob
     public string ServiceTier { get; set; } = "";
     public int Revision { get; set; }
     public long QueueOrder { get; set; }
+    public string? NotificationScope { get; set; }
+    public long FinishedAt { get; set; }
+    public bool NotificationAcknowledged { get; set; }
     public Dictionary<string, string> Commands { get; set; } = new();
     [JsonIgnore] public Task? Worker { get; set; }
     [JsonIgnore] public CodexAppServer? Server { get; set; }
@@ -80,6 +83,8 @@ internal sealed partial class CodeWorkshop
 
     private void Persist(WorkshopJob job)
     {
+        if (TerminalState(job.State) && job.FinishedAt == 0)
+            job.FinishedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         Directory.CreateDirectory(storage);
         var temporary = JobPath(job.Id) + ".tmp";
         File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(job, WorkshopProtocol.Json));
@@ -135,6 +140,7 @@ internal sealed partial class CodeWorkshop
             if (images.Any(image => !File.Exists(UploadPath(image))))
                 throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重新发送。");
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
+                NotificationScope = notificationScope,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
                 Model = model, Permission = permission, ServiceTier = serviceTier, QueueOrder = DateTime.UtcNow.Ticks };
             Persist(job);

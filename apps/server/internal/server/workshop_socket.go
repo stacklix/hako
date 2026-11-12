@@ -91,6 +91,21 @@ func (s *Server) workshopAgentSocket(w http.ResponseWriter, r *http.Request) {
 	if old != nil {
 		old.Close()
 	}
+	c.Terminal = func(frame workshop.Frame) bool {
+		// Identity comes from the RSA proof, never from the event body.
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		current, _ := s.workshopHub.Lookup(configured.ID)
+		if current != c {
+			return false
+		}
+		for _, entry := range s.registry.Load().Agents {
+			if entry.ID == configured.ID && entry.keyID == configured.keyID {
+				return s.receiveWorkshopTerminal(entry, frame)
+			}
+		}
+		return false
+	}
 	s.workshopHub.Run(configured.ID, c)
 }
 

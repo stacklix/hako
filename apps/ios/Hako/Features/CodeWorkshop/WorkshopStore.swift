@@ -25,6 +25,7 @@ import CryptoKit
     @Published private(set) var cachedAt: Date?
     @Published private var readState = WorkshopReadState()
     @Published private var localSessions = WorkshopLocalSessions()
+    @Published private var draftRevision = 0
     private var cursor: String?
     private let transcriptDisk = WorkshopTranscriptDisk()
 
@@ -136,6 +137,47 @@ import CryptoKit
     func saveTranscript(_ snapshot: WorkshopTranscript, scope ticket: String) {
         guard context == ticket, scope == ticket else { return }
         transcriptDisk.write(snapshot, to: transcriptFile(snapshot.key))
+    }
+
+    private func draftFile(agent: WorkshopAgent, application: WorkshopApplication, sessionId: String) -> URL {
+        let key = WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: sessionId)
+        return transcriptFile(key).deletingPathExtension().appendingPathExtension("draft.json")
+    }
+
+    func composerDraft(agent: WorkshopAgent, application: WorkshopApplication, sessionId: String) throws -> WorkshopComposerDraft? {
+        guard context == scope else { throw CancellationError() }
+        return try WorkshopDraftDisk.read(draftFile(agent: agent, application: application, sessionId: sessionId))
+    }
+
+    func hasDraft(_ session: WorkshopSession) -> Bool {
+        _ = draftRevision
+        guard context == scope, let agent = selectedAgent,
+              let application = applications.first(where: { $0.id == session.applicationId }) else { return false }
+        return (try? composerDraft(agent: agent, application: application, sessionId: session.id))?.hasUnsentInput == true
+    }
+
+    func saveComposerDraft(_ draft: WorkshopComposerDraft, agent: WorkshopAgent, application: WorkshopApplication,
+                           sessionId: String, previousSessionId: String, scope ticket: String) throws {
+        guard context == ticket, scope == ticket else { throw CancellationError() }
+        try WorkshopDraftDisk.write(draft, to: draftFile(agent: agent, application: application, sessionId: sessionId))
+        if previousSessionId != sessionId {
+            try WorkshopDraftDisk.write(WorkshopComposerDraft(input: WorkshopDraftInput(text: "", imageIds: [])),
+                to: draftFile(agent: agent, application: application, sessionId: previousSessionId))
+        }
+        draftRevision += 1
+    }
+
+    func recordQueuedActivity(_ queued: WorkshopQueuedSend, agent: WorkshopAgent, application: WorkshopApplication,
+                              threadId: String?, title: String, scope ticket: String) {
+        guard context == ticket, scope == ticket, let threadId else { return }
+        let receipt = WorkshopReceipt(id: queued.operationId, agentId: agent.id, applicationId: application.id,
+            originalThreadId: threadId, threadId: threadId, title: title, message: queued.message, createdAt: .now, state: "pending")
+        localSessions.record(receipt, isNew: true)
+    }
+
+    func rejectQueuedActivity(_ queued: WorkshopQueuedSend, agent: WorkshopAgent, scope ticket: String) {
+        guard context == ticket, scope == ticket else { return }
+        localSessions.reject(operationId: queued.operationId, agentId: agent.id)
     }
 
     private func prepareContext() {

@@ -36,6 +36,8 @@ internal static class WorkshopCloudChecks
         using var key=RSA.Create(2048);
         var probe=new TcpListener(IPAddress.Loopback,0);probe.Start();var port=((IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
         var origin=$"http://127.0.0.1:{port}";
+        var settings=new AgentSettings(origin,"owner",key.ExportPkcs8PrivateKeyPem());
+        File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob{Id=operation,State="completed",ApplicationId="fixture",Cwd=directory,NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},WorkshopProtocol.Json));
         using var listener=new HttpListener();listener.Prefixes.Add(origin+"/");listener.Start();
         using var lifetime=new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
@@ -43,7 +45,7 @@ internal static class WorkshopCloudChecks
             await using var dispatcher=new WorkshopDispatcher(directory);
             string? identity=null;
             await using var connection=new WorkshopConnection(dispatcher,id=>identity=id);
-            await connection.StartAsync(new AgentSettings(origin,"owner",key.ExportPkcs8PrivateKeyPem()));
+            await connection.StartAsync(settings);
             var context=await listener.GetContextAsync().WaitAsync(lifetime.Token);
             if (context.Request.Url?.AbsolutePath!="/ws/workshop/agent") throw new Exception("Workshop used the device endpoint");
             var accepted=await context.AcceptWebSocketAsync(null);using var socket=accepted.WebSocket;
@@ -54,12 +56,16 @@ internal static class WorkshopCloudChecks
             var proof=await Read(socket,lifetime.Token);
             if (CodexJson.Text(proof,"kind")!="proof" || !key.VerifyData(payload,Convert.FromBase64String(CodexJson.Text(proof,"signature")),HashAlgorithmName.SHA256,RSASignaturePadding.Pss)) throw new Exception("Workshop proof failed");
             await Send(socket,new{kind="welcome",protocol=WorkshopProtocol.Name,computerId="PC"},lifetime.Token);
+            var terminal=await Read(socket,lifetime.Token);
+            if(CodexJson.Text(terminal,"kind")!="terminal" || CodexJson.Text(terminal,"operationId")!=operation || CodexJson.Text(CodexJson.Field(terminal,"result"),"state")!="completed") throw new Exception("Durable terminal not reported without an iOS subscription");
+            await Send(socket,new{kind="terminal_ack",operationId=operation},lifetime.Token);
             await Send(socket,new{kind="keepalive"},lifetime.Token);
             if (CodexJson.Text(await Read(socket,lifetime.Token),"kind")!="alive") throw new Exception("Workshop heartbeat failed");
             await Send(socket,new{kind="call",id="fixture",method="operation.read",@params=new{operationId=operation,cursor=0}},lifetime.Token);
             var result=await Read(socket,lifetime.Token);
             if (CodexJson.Text(result,"kind")!="result" || CodexJson.Text(result,"id")!="fixture" || CodexJson.Text(CodexJson.Field(CodexJson.Field(result,"result"),"operation"),"id")!=operation) throw new Exception("Workshop request/result protocol failed");
             if (identity!="PC" || connection.State!="connected") throw new Exception("Independent Workshop identity not confirmed");
+            if (!JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory,"code-workshop",operation+".json"))).RootElement.GetProperty("notificationAcknowledged").GetBoolean()) throw new Exception("Server ACK was not persisted");
             await connection.StopAsync();
             if (connection.State!="disconnected") throw new Exception("Workshop did not stop independently");
         }

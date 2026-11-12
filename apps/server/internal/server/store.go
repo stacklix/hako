@@ -39,13 +39,14 @@ type loginChallenge struct {
 }
 
 type state struct {
-	OIDCKey     string                      `json:"oidcKey,omitempty"`
-	Subject     string                      `json:"subject,omitempty"`
-	AuthClients map[string]AuthClientConfig `json:"authClients"`
-	Registry    *Registry                   `json:"registry,omitempty"`
-	Sessions    map[string]*session         `json:"sessions"`
-	Challenges  map[string]loginChallenge   `json:"challenges"`
-	Proofs      map[string]int64            `json:"proofs"`
+	WorkshopPush map[string]int64            `json:"workshopPush,omitempty"`
+	OIDCKey      string                      `json:"oidcKey,omitempty"`
+	Subject      string                      `json:"subject,omitempty"`
+	AuthClients  map[string]AuthClientConfig `json:"authClients"`
+	Registry     *Registry                   `json:"registry,omitempty"`
+	Sessions     map[string]*session         `json:"sessions"`
+	Challenges   map[string]loginChallenge   `json:"challenges"`
+	Proofs       map[string]int64            `json:"proofs"`
 }
 
 func emptyState() state {

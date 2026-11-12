@@ -17,8 +17,31 @@ final class BuildPushSubscription: ObservableObject {
 
     @Published var settingsRequested = false
     @Published private(set) var settingsRequestID = 0
+    @Published var workshopRequested = false
 
     private init() { }
+
+    // Called only after the user explicitly enables a sub-app's notifications.
+    func prepareHakoRegistration() async throws {
+        let context = ConsoleClient.shared.requestContext
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        if settings.authorizationStatus == .notDetermined {
+            guard try await center.requestAuthorization(options: [.alert, .sound]) else { throw URLError(.userAuthenticationRequired) }
+        } else if settings.authorizationStatus != .authorized && settings.authorizationStatus != .provisional && settings.authorizationStatus != .ephemeral {
+            throw URLError(.userAuthenticationRequired)
+        }
+        UIApplication.shared.registerForRemoteNotifications()
+        let deadline = Date().addingTimeInterval(10)
+        while hakoToken == nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            guard ConsoleClient.shared.requestContext == context else { throw CancellationError() }
+        }
+        guard let token = hakoToken, ConsoleClient.shared.requestContext == context else { throw URLError(.timedOut) }
+        let hex = token.map { String(format: "%02x", $0) }.joined()
+        _ = try await ConsoleClient.shared.send("/api/v1/notifications/device", method: "PUT",
+            body: ["token": hex, "environment": "production"], logSource: .hako)
+    }
 
     func requestSettings() {
         settingsRequested = true
@@ -113,18 +136,20 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        if !RemoteNotificationPolicy.presentsInForeground(notification.request.content.userInfo) { return [] }
+        return [.banner, .list, .sound]
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
-        let opensSettings = response.actionIdentifier == UNNotificationDefaultActionIdentifier
-            && (response.notification.request.content.userInfo["type"] as? String) == "build_completed"
+        let destination = RemoteNotificationPolicy.destination(response.notification.request.content.userInfo,
+            defaultAction: response.actionIdentifier == UNNotificationDefaultActionIdentifier)
         DispatchQueue.main.async {
             // UIKit updates its scene snapshot when the response completes.
             defer { completionHandler() }
-            guard opensSettings else { return }
+            if destination == .codeWorkshop { BuildPushSubscription.shared.workshopRequested = true; return }
+            guard destination == .settings else { return }
             HakoLog.record(.hako, "收到构建通知点按")
             BuildPushSubscription.shared.requestSettings()
         }

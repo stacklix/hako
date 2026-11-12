@@ -101,6 +101,53 @@ import Foundation
         let continuing = WorkshopReceipt(id: UUID().uuidString, agentId: "Agent", applicationId: "app", originalThreadId: previous,
             threadId: previous, title: "Existing", message: "Continue", createdAt: .now, state: "pending")
         precondition(continuing.parameters["threadId"] as? String == previous)
+        var activeList = WorkshopLocalSessions()
+        let old = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "Old reply", updatedAt: 100, state: "completed", operationId: "older-request")
+        let recent = WorkshopSession(id: "other", title: "Other", applicationId: "app", cwd: "project",
+            preview: "Other reply", updatedAt: 200, state: "completed", operationId: "other-request")
+        func activeListing(_ remote: [WorkshopSession]) -> [WorkshopSession] {
+            activeList.merging(remote, agentId: "Agent", applications: [application], archived: false)
+        }
+        activeList.record(continuing, isNew: true)
+        let immediate = activeListing([recent, old])
+        precondition(immediate.count == 2 && immediate[0].id == previous && immediate[0].inProgress,
+            "Sending to an existing conversation must immediately move it to the top and mark it active")
+        precondition(immediate[0].preview == continuing.message)
+        activeList.confirm([old], agentId: "Agent")
+        precondition(activeListing([recent, old])[0].inProgress,
+            "An older catalog response for the same thread must not undo a new send")
+        let staleTime = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "Old reply", updatedAt: 100, state: "running", operationId: continuing.id)
+        activeList.confirm([staleTime], agentId: "Agent")
+        precondition(activeListing([recent, staleTime])[0].updatedAt == Int64(continuing.createdAt.timeIntervalSince1970),
+            "Acknowledging the operation before the catalog timestamp updates must preserve the new activity time")
+        var finished = continuing; finished.state = "completed"
+        activeList.record(finished, isNew: false)
+        precondition(!activeListing([staleTime])[0].inProgress, "A stale running catalog must not undo confirmed completion")
+        var denied = continuing; denied.state = "rejected"
+        activeList.record(denied, isNew: false)
+        precondition(activeListing([recent, old]) == [recent, old], "Rejecting a send must restore the catalog's state and order")
+        activeList.record(continuing, isNew: true)
+        let acceptedSession = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "Current", updatedAt: Int64(continuing.createdAt.timeIntervalSince1970), state: "running", operationId: continuing.id)
+        activeList.confirm([acceptedSession], agentId: "Agent")
+        activeList.record(continuing, isNew: false)
+        precondition(activeListing([]).isEmpty, "After catalog acknowledgement, polling must not resurrect an archived thread")
+        let queuedActivity = WorkshopReceipt(id: continuing.id, agentId: "Agent", applicationId: "app", originalThreadId: previous,
+            threadId: previous, title: "Existing", message: "Queued follow-up", createdAt: continuing.createdAt.addingTimeInterval(2), state: "pending")
+        activeList.record(queuedActivity, isNew: true)
+        activeList.record(continuing, isNew: false)
+        activeList.confirm([acceptedSession], agentId: "Agent")
+        let queuedListing = activeListing([acceptedSession, recent])
+        precondition(queuedListing[0].preview == queuedActivity.message && queuedListing[0].updatedAt == Int64(queuedActivity.createdAt.timeIntervalSince1970),
+            "Polling the parent operation must not replace a queued message's newer preview and activity time")
+        activeList.reject(operationId: continuing.id, agentId: "Agent")
+        precondition(activeListing([]).isEmpty, "Rejected queue activity must not leave a phantom running row")
+        let sameSecond = WorkshopReceipt(id: "same-second", agentId: "Agent", applicationId: "app", originalThreadId: "z",
+            threadId: "z", title: "Same second", message: "Latest", createdAt: Date(timeIntervalSince1970: 200.75), state: "pending")
+        activeList.record(sameSecond, isNew: true)
+        precondition(activeListing([recent])[0].id == "z", "Subsecond local sends must win timestamp ties without depending on the session ID")
         let operation = try JSONDecoder().decode(WorkshopOperation.self, from: Data("""
             {"id":"request","applicationId":"app","threadId":null,"turnId":null,"state":"finishing","message":null,"startedAt":1}
             """.utf8))
