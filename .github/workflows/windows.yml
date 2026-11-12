@@ -36,6 +36,8 @@ jobs:
       - run: ./scripts/publish.ps1
       - name: Verify published CLI and help
         run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe
+      - name: Verify startup under a restrictive Windows job
+        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe -RestrictBackgroundLaunch
       - uses: actions/upload-artifact@v7
         with:
           name: Hako-Windows

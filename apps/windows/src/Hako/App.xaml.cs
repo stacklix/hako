@@ -121,7 +121,12 @@ public partial class App : Application
                 {
                     invocation.Profile.Store.Load().Validate();
                     instance.ReleaseMutex(); ownsInstance = false;
-                    StartBackground(invocation.Profile);
+                    try { StartBackground(invocation.Profile); }
+                    catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 5)
+                    {
+                        return CommandReply.Failure(3, "background_launch_denied",
+                            "Windows 禁止当前命令独立启动后台 Agent（错误 5）。请从桌面或托盘启动 Hako，再使用 CLI 连接。");
+                    }
                     return await SendUntilReadyAsync(invocation.Profile, request, TimeSpan.FromSeconds(20))
                         ?? CommandReply.Failure(3, "instance_unavailable", "后台实例未能就绪，请检查配置或先退出旧版本。");
                 }

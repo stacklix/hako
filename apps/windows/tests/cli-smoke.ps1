@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$Executable)
+param([Parameter(Mandatory = $true)][string]$Executable, [switch]$RestrictBackgroundLaunch)
 
 $ErrorActionPreference = 'Stop'
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
@@ -7,6 +7,7 @@ $workRoot = Join-Path $appRoot ('build/cli-smoke-' + [Guid]::NewGuid().ToString(
 $profileDirectory = Join-Path $workRoot 'profile with spaces'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 $backgroundId = $null
+$controlledHost = $null
 
 if (-not ('HakoSmokeProcessJob' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -14,8 +15,21 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 public static class HakoSmokeProcessJob {
+    private static IntPtr restrictedJob;
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    public static void RestrictCurrentProcess() {
+        // Default job limits prohibit breakaway. Keep this handle alive for the
+        // test process; children remain supervised and are explicitly stopped.
+        restrictedJob = CreateJobObjectW(IntPtr.Zero, null);
+        using var process = Process.GetCurrentProcess();
+        if (restrictedJob == IntPtr.Zero || !AssignProcessToJobObject(restrictedJob, process.Handle))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
     public static bool Contains(int processId) {
         using var process = Process.GetProcessById(processId);
         if (!IsProcessInJob(process.Handle, IntPtr.Zero, out var result))
@@ -23,11 +37,14 @@ public static class HakoSmokeProcessJob {
         return result;
     }
 }
+
 '@
 }
 
+if ($RestrictBackgroundLaunch) { [HakoSmokeProcessJob]::RestrictCurrentProcess() }
+
 function Invoke-HakoCheck {
-    param([string[]]$Arguments, [int]$ExpectedExit = 0, [switch]$Text)
+    param([string[]]$Arguments, [int[]]$ExpectedExit = @(0), [switch]$Text)
     $start = [System.Diagnostics.ProcessStartInfo]::new($executablePath)
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -48,11 +65,11 @@ function Invoke-HakoCheck {
         if (-not $process.WaitForExit(45000)) { $process.Kill($true); throw 'CLI did not exit within 45 seconds.' }
         $output = $outputTask.WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult()
         $errorOutput = $errorTask.WaitAsync([TimeSpan]::FromSeconds(10)).GetAwaiter().GetResult()
-        if ($process.ExitCode -ne $ExpectedExit) { throw "Unexpected CLI exit $($process.ExitCode), expected $ExpectedExit. Output: $output $errorOutput" }
+        if ($process.ExitCode -notin $ExpectedExit) { throw "Unexpected CLI exit $($process.ExitCode), expected $ExpectedExit. Output: $output $errorOutput" }
         if ($output -match 'BEGIN (RSA )?PRIVATE KEY') { throw 'Private key leaked through CLI output.' }
         if ($Text) { return $output }
         $reply = $output | ConvertFrom-Json
-        if ($reply.exitCode -ne $ExpectedExit) { throw 'JSON exit code does not match process exit code.' }
+        if ($reply.exitCode -ne $process.ExitCode) { throw 'JSON exit code does not match process exit code.' }
         return $reply
     }
     finally { $process.Dispose() }
@@ -84,10 +101,31 @@ try {
     $null = Invoke-HakoCheck -Arguments @('config','set','--url','http://example.com') -ExpectedExit 1
     $metrics = Invoke-HakoCheck -Arguments @('metrics')
     if ($metrics.data.memoryTotalBytes -le 0 -or $metrics.data.cpuUsagePercent -lt 0 -or $metrics.data.cpuUsagePercent -gt 100) { throw 'Live metrics invalid.' }
-    $connected = Invoke-HakoCheck -Arguments @('connect')
+    $connected = Invoke-HakoCheck -Arguments @('connect') -ExpectedExit @(0, 3)
+    $independentLaunch = $connected.ok
+    if (-not $independentLaunch) {
+        if ($connected.error.code -ne 'background_launch_denied') { throw "Unexpected connect failure: $($connected.error.code)" }
+        if ((Invoke-HakoCheck -Arguments @('status')).data.running) { throw 'A denied independent launch left a background Agent running.' }
+        Write-Output 'PASS: restricted Windows job rejects independent startup with a structured error and no child Agent.'
+        # This supervised test host exercises IPC when the runner forbids
+        # persistent children. Production CLI never falls back to this path.
+        $hostStart = [Diagnostics.ProcessStartInfo]::new($executablePath)
+        $hostStart.UseShellExecute = $false; $hostStart.CreateNoWindow = $true
+        $hostStart.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        foreach ($argument in @('--background', '--data-dir', $profileDirectory)) { $hostStart.ArgumentList.Add($argument) }
+        $controlledHost = [Diagnostics.Process]::Start($hostStart)
+        $backgroundId = $controlledHost.Id
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 150
+            $hostStatus = Invoke-HakoCheck -Arguments @('status')
+        } until ($hostStatus.data.running -or [DateTime]::UtcNow -ge $deadline)
+        if (-not $hostStatus.data.running -or $hostStatus.data.processId -ne $backgroundId) { throw 'Supervised test Agent did not become ready.' }
+        $connected = Invoke-HakoCheck -Arguments @('connect')
+    } elseif ($RestrictBackgroundLaunch) { throw 'Restricted job unexpectedly permitted independent startup.' }
     if (-not $connected.data.running -or $connected.data.processId -le 0) { throw 'Connect did not start an independent background process.' }
     $backgroundId = $connected.data.processId
-    if ([HakoSmokeProcessJob]::Contains($backgroundId)) { throw 'Background Agent inherited a job and can be killed when its launching command exits.' }
+    if ($independentLaunch -and [HakoSmokeProcessJob]::Contains($backgroundId)) { throw 'Background Agent inherited a job and can be killed when its launching command exits.' }
     $status = Invoke-HakoCheck -Arguments @('status')
     if ($status.data.processId -ne $backgroundId) { throw 'Status did not reuse the running background process.' }
     $null = Invoke-HakoCheck -Arguments @('config','set','--account','updatedowner')
@@ -127,4 +165,5 @@ finally {
         $owned = Get-CimInstance Win32_Process -Filter "ProcessId=$backgroundId" -ErrorAction SilentlyContinue
         if ($null -ne $owned -and $owned.CommandLine -and $owned.CommandLine.Contains($profileDirectory)) { Stop-Process -Id $backgroundId -Force -ErrorAction SilentlyContinue }
     }
+    if ($null -ne $controlledHost) { $controlledHost.Dispose() }
 }
