@@ -25,10 +25,22 @@ internal static class WorkshopProtocol
 internal sealed class WorkshopDispatcher : IAsyncDisposable
 {
     private readonly CodeWorkshop workshop;
-    internal WorkshopDispatcher(string dataDirectory) => workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory, "code-workshop"));
-    public ValueTask DisposeAsync() => workshop.DisposeAsync();
+    private readonly string directory;
+    internal CommandTasks? Commands { get; }
+    internal WorkshopDispatcher(string dataDirectory, bool commandsOnly = false)
+    {
+        directory = dataDirectory;
+        workshop = new CodeWorkshop(System.IO.Path.Combine(dataDirectory, "code-workshop"));
+        if (commandsOnly) Commands = new CommandTasks(dataDirectory, workshop);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (Commands is not null) await Commands.DisposeAsync();
+        await workshop.DisposeAsync();
+    }
     internal void SetNotificationScope(string? scope) => workshop.SetNotificationScope(scope);
-    internal Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) => workshop.WatchTerminalsAsync(scope, publish, token);
+    internal Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) =>
+        Commands is null ? workshop.WatchTerminalsAsync(scope, publish, token) : Task.Delay(Timeout.Infinite, token);
     internal void AcknowledgeTerminal(string scope, string id) => workshop.AcknowledgeTerminal(scope, id);
     internal Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
         workshop.WatchOperationAsync(parameters, publish, token);
@@ -36,6 +48,14 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable
     internal async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
     {
         if (parameters.ValueKind != JsonValueKind.Object) throw CodexJson.Invalid();
+        if (Commands is not null) return await Commands.CallAsync(method, parameters, token);
+        if (method == "commands.open")
+        {
+            CodexJson.Keys(parameters);
+            try { return await CommandHost.OpenAsync(directory, token); }
+            catch (System.ComponentModel.Win32Exception error) { throw new WorkshopException("command_host_start_failed", $"独立执行器启动失败（Windows {error.NativeErrorCode}）。"); }
+            catch (System.IO.IOException error) { throw new WorkshopException("command_host_start_failed", error.Message); }
+        }
         Func<JsonElement, CancellationToken, Task<object?>> handler = method switch
         {
             "applications.list" => workshop.CatalogAsync, "models.list" => workshop.ModelsAsync,

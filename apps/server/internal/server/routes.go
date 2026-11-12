@@ -36,6 +36,7 @@ func (s *Server) agentRoutes() {
 
 func (s *Server) workshopRoutes() {
 	s.mux.HandleFunc("GET /ws/workshop/agent", s.workshopAgentSocket)
+	s.mux.HandleFunc("GET /ws/workshop/command-agent", s.commandAgentSocket)
 	s.mux.HandleFunc("GET /ws/workshop/client", s.workshopClientSocket)
 	s.mux.HandleFunc("GET /ws/workshop/events/{computerID}/{operationID}/{cursor}", s.workshopClientSocket)
 }

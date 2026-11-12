@@ -11,6 +11,9 @@ struct WorkshopConversationView: View {
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
     @State private var showingInfo = false
+    @State private var showingCommands = false
+    @State private var showingCommandTask = false
+    @StateObject private var commands: WorkshopCommands
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
@@ -18,7 +21,12 @@ struct WorkshopConversationView: View {
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo }
+    init(conversation: WorkshopConversation) {
+        self.conversation = conversation
+        _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
+    }
+
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo && !showingCommands && !showingCommandTask }
 
     var body: some View {
         let transcript = WorkshopTranscriptPresentation(entries: conversation.entries, followups: conversation.followups)
@@ -128,7 +136,21 @@ struct WorkshopConversationView: View {
         .background(WorkshopKeyboardDismissal())
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) { projectInfo }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                projectInfo
+                if commands.taskID != nil {
+                    Button { showingCommandTask = true } label: {
+                        HStack {
+                            Label(commands.task?.name ?? "快捷命令任务", systemImage: "terminal")
+                            Spacer()
+                            Text(commands.task?.status ?? "正在确认").foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        }.font(.caption).padding(.horizontal, 20).frame(minHeight: 44)
+                    }.buttonStyle(.plain).background(HakoStyle.card)
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if conversation.isArchived {
                 HStack {
@@ -141,7 +163,8 @@ struct WorkshopConversationView: View {
         }
         .refreshable { await conversation.synchronize() }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showingCommands = true } label: { Image(systemName: "terminal") }.accessibilityLabel("快捷命令")
                 Button { showingInfo = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("更多会话设置")
             }
         }
@@ -159,6 +182,9 @@ struct WorkshopConversationView: View {
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
         .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo) }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
+        .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands) }
+        .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
+        .task(id: commands.observationID) { await commands.observe() }
         .task(id: selectedPhoto) { await loadPhoto(selectedPhoto) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
     }

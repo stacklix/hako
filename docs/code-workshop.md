@@ -58,6 +58,26 @@ iOS 按登录上下文和执行电脑缓存应用、会话列表。进入页面�
 
 ## 请求与恢复
 
+### 快捷命令
+
+会话右上角「更多」左侧的终端按钮打开快捷命令。命令库初始为空，由用户在手机新增、编辑和删除；按服务器、电脑和项目保存在手机，不同步为电脑端预置脚本。执行时发送命令名称、完整 PowerShell 内容、项目、超时秒数及唯一请求 ID，工作目录为所选项目。它不修改会话草稿，也不向 Codex 发送消息。
+
+快捷命令需要服务端/iOS `0.2.3` 和 Windows `1.1.2`。主 Agent 的 `commands.open` 按需启动独立执行器。执行器从配置目录中的哈希副本运行，持有单独的 `/ws/workshop/command-agent` 云端连接和带随机凭据的局域网 WebSocket；手机仍通过认证工坊客户端连接调用云端。局域网凭据只在手机钥匙串保存，电脑副本用 DPAPI 保护。主 Agent 退出、程序替换和重连均不关闭命令连接。
+
+| 方法 | 参数与结果 |
+| --- | --- |
+| `commands.open` | 主 Agent 启动或复用执行器，返回局域网端口与凭据 |
+| `commands.start` | `requestId`、`applicationId`、`name`、`command`、`timeoutSeconds`；返回持久化任务 |
+| `commands.read` | `taskId` 和日志字节 `cursor`；返回任务、增量日志、新游标和 `hasMore` |
+| `commands.stop` | `taskId`；停止命令及其子进程 |
+| `commands.list` | `applicationId`；返回该项目最近 30 次执行 |
+
+同一电脑一次执行一条命令。命令最长 8,000 UTF-8 字节，超时范围 1–86,400 秒，使用 PowerShell 7 非交互模式。任务、命令快照、退出码和最多 20 MiB 日志保存在 Agent 配置目录；手机前台每秒读取增量，没有进行中任务时停止轮询。关闭页面或手机断网不停止命令；再次打开可查历史。相同请求 ID 和参数只执行一次，参数冲突明确拒绝；网络结果不确定时保留原请求，可显式重试核对。
+
+命令子进程进入独立 Windows Job，执行器保持在 Job 外。更新脚本进入替换阶段前，可在 `HAKO_COMMAND_TASK_DIRECTORY` 下持有独占 `phase.lock`，检查不存在 `cancelled` 后写入 `installing` 标记；该阶段禁止手动停止，超时最多额外等待三分钟。通过 `HAKO_COMMAND_EXECUTABLE --launch-agent --target <新程序> --data-dir <配置目录> --json` 启动新 Agent，使其脱离命令 Job，避免脚本结束时随子进程退出。这些环境变量由执行器传入，不要求手机预置任何命令。命令运行时不会自动提升 Windows 权限。
+
+执行器无任务且五分钟未收到请求后退出。执行器自身异常退出时，未完成记录会在下次启动时标为中断，不会自动重跑命令。它能承受主 Agent 替换，不能承受电脑关机或自身进程被终止。
+
 新增 Agent 能力均为 v1。
 
 | 方法 | 用途 |

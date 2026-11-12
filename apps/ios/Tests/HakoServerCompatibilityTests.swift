@@ -11,6 +11,8 @@ import Foundation
         precondition(warning(server: "0.2.6", minimumIOS: "0.2.0", installed: "0.2.0") == nil)
         precondition(warning(server: "0.1.9", minimumIOS: "0.2.0", installed: "0.2.13")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.2.10", minimumIOS: "0.2.9", installed: "0.2.10") == nil)
+        precondition(warning(server: "0.2.1", minimumIOS: "0.2.1", installed: "0.2.2")?.hasSuffix("请升级 服务端。") == true)
+        precondition(warning(server: "0.2.2", minimumIOS: "0.2.1", installed: "0.2.2") == nil)
         precondition(warning(server: "0.2.6", minimumIOS: "0.2.2", installed: "0.2.1")?.hasSuffix("请升级 Hako iOS。") == true)
         precondition(warning(server: "0.2.6", minimumIOS: "0.3.0", installed: "0.2.0")?.hasSuffix("请升级 Hako iOS。") == true)
         precondition(warning(server: "0.0.9", minimumIOS: "0.2.0", installed: "0.2.0")?.hasSuffix("请升级 服务端。") == true)

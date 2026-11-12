@@ -62,6 +62,7 @@ type Server struct {
 	mu                 sync.Mutex
 	agentHub           agent.Hub
 	workshopHub        workshop.Hub
+	commandHub         workshop.Hub
 	workshopRequests   chan struct{}
 	limits             map[string]bucket
 	requests           chan struct{}
@@ -214,6 +215,7 @@ func (s *Server) Close() error {
 	}
 	s.agentHub.Close()
 	s.workshopHub.Close()
+	s.commandHub.Close()
 	var investmentErr error
 	if s.investment != nil {
 		investmentErr = s.investment.Close()

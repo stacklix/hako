@@ -41,6 +41,8 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
+            if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-notifications") { await WorkshopNotificationChecks.RunAsync(); return 0; }

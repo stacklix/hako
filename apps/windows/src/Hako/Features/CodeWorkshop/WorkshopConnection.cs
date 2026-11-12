@@ -12,7 +12,7 @@ using Hako.Core;
 
 namespace Hako.Platform;
 
-internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<string> identified) : IAsyncDisposable
+internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<string> identified, bool commandHost = false) : IAsyncDisposable
 {
     private CancellationTokenSource? lifetime;
     private Task? running;
@@ -43,7 +43,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
     private async Task RunAsync(AgentSettings settings, CancellationToken token)
     {
         var origin = settings.Origin();
-        var uri = new UriBuilder(origin) { Scheme = origin.Scheme == "https" ? "wss" : "ws", Path = "/ws/workshop/agent" }.Uri;
+        var uri = new UriBuilder(origin) { Scheme = origin.Scheme == "https" ? "wss" : "ws", Path = commandHost ? "/ws/workshop/command-agent" : "/ws/workshop/agent" }.Uri;
         while (!token.IsCancellationRequested)
         {
             try

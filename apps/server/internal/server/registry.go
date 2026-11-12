@@ -150,6 +150,7 @@ func trustedConsoleState(st *state, thumb string) bool {
 }
 
 func (s *Server) saveRegistry(next *Registry) error {
+	previous := s.registry.Load()
 	err := s.store.update(func(st *state) error {
 		st.Registry = next
 		for id, ss := range st.Sessions {
@@ -166,6 +167,18 @@ func (s *Server) saveRegistry(next *Registry) error {
 	})
 	if err == nil {
 		s.registry.Store(next)
+		for _, old := range previous.Agents {
+			trusted := false
+			for _, current := range next.Agents {
+				if current.ID == old.ID && current.keyID == old.keyID {
+					trusted = true
+					break
+				}
+			}
+			if !trusted {
+				s.commandHub.Remove(old.ID)
+			}
+		}
 	}
 	return err
 }

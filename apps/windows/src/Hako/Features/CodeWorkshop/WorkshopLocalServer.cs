@@ -22,6 +22,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
     private readonly WorkshopDispatcher dispatcher;
     private readonly Func<string?> computerId;
     private readonly string localId;
+    private readonly string? accessToken;
     private readonly TcpListener listener;
     private readonly CancellationTokenSource stopping = new();
     private readonly HashSet<Task> clients = new();
@@ -30,9 +31,10 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
     private readonly Task accepting;
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity)
+    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity, string? accessToken = null)
     {
         this.dispatcher = dispatcher; this.computerId = computerId;
+        this.accessToken = accessToken;
         localId = "lan-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16].ToLowerInvariant();
         listener = new TcpListener(IPAddress.IPv6Any, port);
         listener.Server.DualMode = true;
@@ -104,7 +106,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 var stream = client.GetStream();
                 using var handshake = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 handshake.CancelAfter(TimeSpan.FromSeconds(5));
-                var path = await UpgradeAsync(stream, handshake.Token);
+                var path = await UpgradeAsync(stream, handshake.Token, accessToken);
                 using var socket = WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(15));
                 using var writing = new SemaphoreSlim(1, 1);
                 async Task Send(object frame)
@@ -206,7 +208,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
         }
     }
 
-    private static async Task<string> UpgradeAsync(NetworkStream stream, CancellationToken token)
+    private static async Task<string> UpgradeAsync(NetworkStream stream, CancellationToken token, string? accessToken)
     {
         var bytes = new List<byte>();
         var one = new byte[1];
@@ -233,6 +235,9 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
             !headers.TryGetValue("Sec-WebSocket-Key", out var key) || Convert.FromBase64String(key).Length != 16 ||
             (request[1] != "/workshop/v1" && !request[1].StartsWith("/workshop/v1/events/", StringComparison.Ordinal)))
             throw new InvalidDataException("Invalid WebSocket upgrade.");
+        if (accessToken is not null && (!headers.TryGetValue("X-Hako-Command", out var supplied)
+            || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(accessToken), Encoding.UTF8.GetBytes(supplied))))
+            throw new InvalidDataException("Command connection requires its task credential.");
         var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         var response = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
         await stream.WriteAsync(response, token);

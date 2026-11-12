@@ -19,9 +19,19 @@ import (
 )
 
 func connectWorkshop(t *testing.T, f *fixture) *websocket.Conn {
+	return connectWorkshopRole(t, f, false)
+}
+
+func connectWorkshopRole(t *testing.T, f *fixture, commands bool) *websocket.Conn {
 	t.Helper()
+	path := "/ws/workshop/agent"
+	hub := &f.s.workshopHub
+	if commands {
+		path = "/ws/workshop/command-agent"
+		hub = &f.s.commandHub
+	}
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
-	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/workshop/agent", nil)
+	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,13 +54,44 @@ func connectWorkshop(t *testing.T, f *fixture) *websocket.Conn {
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
-		if c, _ := f.s.workshopHub.Lookup("PC"); c != nil {
+		if c, _ := hub.Lookup("PC"); c != nil {
 			return ws
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("workshop never online")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestCommandWorkerSurvivesWorkshopAgentDisconnect(t *testing.T) {
+	f := newFixture(t, true)
+	primary := connectWorkshop(t, f)
+	commands := connectWorkshopRole(t, f, true)
+	client := openWorkshopClient(t, f, "/ws/workshop/client")
+	primary.Close()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if peer, _ := f.s.workshopHub.Lookup("PC"); peer == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("primary Agent did not disconnect")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "call", ID: "command-read", ComputerID: "PC", Method: "commands.read", Params: json.RawMessage(`{"taskId":"11111111-1111-4111-8111-111111111111","cursor":0}`)})
+	request := readAgentFrame[workshop.Frame](t, commands)
+	if request.Method != "commands.read" {
+		t.Fatal("command request reached the wrong worker", request)
+	}
+	writeAgentFrame(t, commands, workshop.Frame{Kind: "result", ID: request.ID, Result: json.RawMessage(`{"output":"still running","cursor":13}`)})
+	if reply := readAgentFrame[workshop.Frame](t, client); reply.ID != "command-read" || !strings.Contains(string(reply.Result), "still running") {
+		t.Fatal("Agent exit interrupted the command connection", reply)
+	}
+	connectWorkshop(t, f)
+	if peer, _ := f.s.commandHub.Lookup("PC"); peer == nil {
+		t.Fatal("new Agent replaced the independent command worker")
 	}
 }
 

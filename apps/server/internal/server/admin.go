@@ -232,5 +232,6 @@ func (s *Server) adminDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.agentHub.Remove(r.PathValue("id"))
 	s.workshopHub.Remove(r.PathValue("id"))
+	s.commandHub.Remove(r.PathValue("id"))
 	respond(w, 200, map[string]bool{"ok": true})
 }

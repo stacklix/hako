@@ -3,9 +3,11 @@ import Foundation
 @MainActor enum WorkshopLocalSocket {
     private static let session = HTTPTransport.makeSession(requestTimeout: 8)
 
-    static func open(_ endpoint: LocalNetworkEndpoint, path: String) async throws -> (any WorkshopSocketConnection, Data) {
+    static func open(_ endpoint: LocalNetworkEndpoint, path: String, commandToken: String? = nil) async throws -> (any WorkshopSocketConnection, Data) {
         guard endpoint.isValid, let url = endpoint.url(scheme: "ws", path: path) else { throw CocoaError(.coderReadCorrupt) }
-        let socket = session.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        if let commandToken { request.setValue(commandToken, forHTTPHeaderField: "X-Hako-Command") }
+        let socket = session.webSocketTask(with: request)
         socket.resume()
         var timedOut = false
         let deadline = Task {

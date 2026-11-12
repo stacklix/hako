@@ -21,6 +21,14 @@ import (
 var workshopOperationID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 func (s *Server) workshopAgentSocket(w http.ResponseWriter, r *http.Request) {
+	s.workshopWorkerSocket(w, r, &s.workshopHub, true)
+}
+
+func (s *Server) commandAgentSocket(w http.ResponseWriter, r *http.Request) {
+	s.workshopWorkerSocket(w, r, &s.commandHub, false)
+}
+
+func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hub *workshop.Hub, terminals bool) {
 	if !s.allow("workshop-auth", 30, time.Minute) {
 		reject(w, 429, "rate_limited")
 		return
@@ -86,16 +94,19 @@ func (s *Server) workshopAgentSocket(w http.ResponseWriter, r *http.Request) {
 		s.registryMu.Unlock()
 		return
 	}
-	old := s.workshopHub.Register(configured.ID, c)
+	old := hub.Register(configured.ID, c)
 	s.registryMu.Unlock()
 	if old != nil {
 		old.Close()
 	}
 	c.Terminal = func(frame workshop.Frame) bool {
+		if !terminals {
+			return false
+		}
 		// Identity comes from the RSA proof, never from the event body.
 		s.registryMu.Lock()
 		defer s.registryMu.Unlock()
-		current, _ := s.workshopHub.Lookup(configured.ID)
+		current, _ := hub.Lookup(configured.ID)
 		if current != c {
 			return false
 		}
@@ -106,7 +117,7 @@ func (s *Server) workshopAgentSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		return false
 	}
-	s.workshopHub.Run(configured.ID, c)
+	hub.Run(configured.ID, c)
 }
 
 func workshopFailure(id, code, message string) workshop.Frame {
@@ -145,7 +156,11 @@ func (s *Server) workshopCall(ctx context.Context, request workshop.Frame) works
 	if !identifier.MatchString(request.ComputerID) {
 		return workshopFailure(id, "invalid_request", "无效的执行电脑。")
 	}
-	c, _ := s.workshopHub.Lookup(request.ComputerID)
+	hub := &s.workshopHub
+	if strings.HasPrefix(request.Method, "commands.") && request.Method != "commands.open" {
+		hub = &s.commandHub
+	}
+	c, _ := hub.Lookup(request.ComputerID)
 	if c == nil {
 		return workshopFailure(id, "computer_offline", "执行电脑未连接代码工坊。")
 	}

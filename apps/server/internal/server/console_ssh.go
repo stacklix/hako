@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 )
 
 var errSSHHostKey = errors.New("SSH host key does not match")
+var errSSHHostKeyRequired = errors.New("SSH host key requires confirmation")
 
 type sshOutput func([]byte) error
 
@@ -52,7 +54,7 @@ func (l sshTerminalLogin) valid() bool {
 	decoded, err := base64.RawStdEncoding.Strict().DecodeString(hash)
 	return l.sshTerminalSize.valid() && len(l.Username) > 0 && len(l.Username) <= 256 &&
 		!strings.ContainsFunc(l.Username, unicode.IsControl) && len(l.Password) > 0 && len(l.Password) <= 4096 &&
-		ok && err == nil && len(decoded) == 32
+		(l.Fingerprint == "" || (ok && err == nil && len(decoded) == 32))
 }
 
 func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Conn, valid func() bool) {
@@ -144,6 +146,20 @@ func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Co
 		Auth:              []ssh.AuthMethod{ssh.Password(login.Password)},
 		HostKeyAlgorithms: []string{ssh.KeyAlgoED25519, ssh.KeyAlgoECDSA256, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSASHA512},
 		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			if login.Fingerprint == "" {
+				if !valid() {
+					return net.ErrClosed
+				}
+				data, _ := json.Marshal(map[string]string{
+					"type": "ssh_host_key", "fingerprint": ssh.FingerprintSHA256(key),
+				})
+				if err := write(websocket.TextMessage, data); err != nil {
+					return err
+				}
+				// Stop before password authentication. Confirmation opens a new
+				// connection pinned to this key, so no tunnel waits on the user.
+				return errSSHHostKeyRequired
+			}
 			if ssh.FingerprintSHA256(key) != login.Fingerprint {
 				return errSSHHostKey
 			}
@@ -152,6 +168,8 @@ func (s *Server) streamSSH(ctx context.Context, agentID string, ws *websocket.Co
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, errSSHHostKeyRequired):
+			return
 		case errors.Is(err, errSSHHostKey):
 			_ = control("ssh_host_key_mismatch")
 		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed):

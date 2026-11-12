@@ -1,25 +1,11 @@
 import Foundation
 import Combine
 
-struct DeviceSSHCredentials: Codable {
-    var username = ""
-    var password = ""
-    var fingerprint = ""
-
-    var isValid: Bool {
-        guard (1...256).contains(username.utf8.count),
-              !username.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              (1...4096).contains(password.utf8.count),
-              fingerprint.hasPrefix("SHA256:"),
-              let hash = Data(base64Encoded: String(fingerprint.dropFirst(7)) + "="), hash.count == 32 else { return false }
-        return fingerprint == "SHA256:" + hash.base64EncodedString().dropLast()
-    }
-}
-
 @MainActor final class DeviceSSHTerminal: HakoNativeTerminalData {
     @Published private(set) var connected = false
     @Published private(set) var connecting = false
     @Published private(set) var message: String?
+    @Published private(set) var pendingHostKey: String?
     @Published var control = false
     let display = HakoTerminalDisplay()
     private var socket: URLSessionWebSocketTask?
@@ -40,6 +26,7 @@ struct DeviceSSHCredentials: Codable {
         let context = authentication.requestContext
         display.beginSession()
         message = nil
+        pendingHostKey = nil
         connecting = true
         deadline = Task {
             do { try await Task.sleep(for: .seconds(25)) } catch { return }
@@ -63,7 +50,7 @@ struct DeviceSSHCredentials: Codable {
                     let event = try await socket.receive()
                     guard !Task.isCancelled, generation == ticket, authentication.requestContext == context else { return }
                     switch event {
-                    case .string("ssh_ready") where connecting:
+                    case .string("ssh_ready") where connecting && !credentials.fingerprint.isEmpty:
                         beginWriting(socket, ticket: ticket)
                         deadline?.cancel()
                         connecting = false
@@ -72,6 +59,12 @@ struct DeviceSSHCredentials: Codable {
                     case .data(let bytes) where connected && bytes.count <= 4096:
                         display.append(bytes)
                     case .string(let status):
+                        if connecting, credentials.fingerprint.isEmpty,
+                           let fingerprint = DeviceSSHCredentials.offeredFingerprint(status) {
+                            end(nil)
+                            pendingHostKey = fingerprint
+                            return
+                        }
                         end(Self.status(status)); return
                     default:
                         end("SSH 终端返回了无效消息。"); return
@@ -140,6 +133,7 @@ struct DeviceSSHCredentials: Codable {
         connecting = false
         connected = false
         self.message = message
+        pendingHostKey = nil
     }
 
     private static func json(_ value: [String: Any]) throws -> URLSessionWebSocketTask.Message {

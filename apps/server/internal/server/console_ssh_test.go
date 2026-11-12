@@ -20,11 +20,12 @@ import (
 )
 
 func TestConsoleSSHRelaysPowerShell(t *testing.T) {
-	t.Run("pinned host", func(t *testing.T) { testConsoleSSH(t, true) })
-	t.Run("wrong host key", func(t *testing.T) { testConsoleSSH(t, false) })
+	t.Run("pinned host", func(t *testing.T) { testConsoleSSH(t, "pinned") })
+	t.Run("wrong host key", func(t *testing.T) { testConsoleSSH(t, "mismatch") })
+	t.Run("first connection", func(t *testing.T) { testConsoleSSH(t, "discovery") })
 }
 
-func testConsoleSSH(t *testing.T, correctPin bool) {
+func testConsoleSSH(t *testing.T, mode string) {
 	f := newFixture(t, true)
 	const path = "/ws/console/agents/terminal/PC"
 	if ws, response, err := dialConsoleAgentSocket(f, path, false, ""); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
@@ -86,8 +87,10 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 	}
 	readConsole(websocket.TextMessage, "ssh_login")
 	fingerprint := ssh.FingerprintSHA256(signer.PublicKey())
-	if !correctPin {
+	if mode == "mismatch" {
 		fingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	} else if mode == "discovery" {
+		fingerprint = ""
 	}
 	writeAgentFrame(t, console, sshTerminalLogin{
 		sshTerminalSize: sshTerminalSize{Columns: 80, Rows: 24},
@@ -132,17 +135,28 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 			}
 		}
 	}()
-	if correctPin {
+	if mode == "pinned" {
 		readConsole(websocket.TextMessage, "ssh_ready")
 		readConsole(websocket.BinaryMessage, "PS> ")
 		if err := console.WriteMessage(websocket.BinaryMessage, []byte("pwd\r")); err != nil {
 			t.Fatal(err)
 		}
 		readConsole(websocket.BinaryMessage, "pwd\r")
-	} else {
+	} else if mode == "mismatch" {
 		readConsole(websocket.TextMessage, "ssh_host_key_mismatch")
-		if passwordReceived.Load() {
-			t.Fatal("SSH password sent to an unverified host")
+	} else {
+		var offer struct {
+			Type        string `json:"type"`
+			Fingerprint string `json:"fingerprint"`
+		}
+		if err := console.ReadJSON(&offer); err != nil {
+			t.Fatal(err)
+		}
+		if offer.Type != "ssh_host_key" || offer.Fingerprint != ssh.FingerprintSHA256(signer.PublicKey()) {
+			t.Fatalf("incorrect host key offer: %+v", offer)
+		}
+		if _, _, err := console.ReadMessage(); err == nil {
+			t.Fatal("discovery kept the terminal open before confirmation")
 		}
 	}
 	console.Close()
@@ -153,6 +167,49 @@ func testConsoleSSH(t *testing.T, correctPin bool) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("agent tunnel remained open after console disconnected")
+	}
+	if mode != "pinned" && passwordReceived.Load() {
+		t.Fatal("SSH password sent to an unverified host")
+	}
+	if mode == "discovery" {
+		// The user may spend any amount of time reviewing the fingerprint.
+		// Probe completion must release the device's single terminal slot.
+		next, _, err := dialConsoleAgentSocket(f, path, true, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer next.Close()
+		_ = next.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, _, err := next.ReadMessage(); err != nil {
+			t.Fatal(err)
+		}
+		writeAgentFrame(t, next, sshTerminalLogin{
+			sshTerminalSize: sshTerminalSize{Columns: 80, Rows: 24},
+			Username:        "windows-user", Password: "fixture-password", Fingerprint: ssh.FingerprintSHA256(signer.PublicKey()),
+		})
+		_ = peer.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if frame := readAgentFrame[agent.SSHFrame](t, peer); frame.Type != "ssh_open" || frame.ID == open.ID {
+			t.Fatalf("probe did not release terminal slot: %+v", frame)
+		}
+	}
+}
+
+func TestSSHLoginFingerprintValidation(t *testing.T) {
+	login := sshTerminalLogin{
+		sshTerminalSize: sshTerminalSize{Columns: 80, Rows: 24},
+		Username:        "windows-user", Password: "fixture-password",
+	}
+	for _, fingerprint := range []string{"", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
+		login.Fingerprint = fingerprint
+		if !login.valid() {
+			t.Fatalf("valid fingerprint rejected: %q", fingerprint)
+		}
+	}
+	for _, fingerprint := range []string{" ", "SHA256:bad", "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "MD5:abcd"} {
+		login.Fingerprint = fingerprint
+		if login.valid() {
+			t.Fatalf("malformed fingerprint accepted: %q", fingerprint)
+		}
 	}
 }
 

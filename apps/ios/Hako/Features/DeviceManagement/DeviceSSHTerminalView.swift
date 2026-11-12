@@ -75,12 +75,21 @@ struct DeviceSSHTerminalView: View {
         ScrollView {
             VStack(spacing: 16) {
                 Image(systemName: "terminal").font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
-                Text(terminal.connecting ? "正在连接 Windows SSH" : "Windows PowerShell")
+                Text(terminal.pendingHostKey != nil ? "确认 SSH 主机身份" : terminal.connecting ? "正在连接 Windows SSH" : "Windows PowerShell")
                     .font(.headline)
                 if let message = storageError ?? terminal.message {
                     Text(message).font(.footnote).foregroundStyle(.orange)
                 }
-                if terminal.connecting {
+                if let fingerprint = terminal.pendingHostKey {
+                    Text("首次连接设备 \(agentID)，请与电脑上的 SSH 主机指纹核对。确认后会保存指纹，后续连接自动校验。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Text(fingerprint).font(.footnote.monospaced())
+                        .textSelection(.enabled).accessibilityLabel("SSH 主机指纹：\(fingerprint)")
+                    Text("尚未向 Windows 进行密码认证。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("信任并连接") { trust(fingerprint) }.buttonStyle(HakoActionButtonStyle())
+                    Button("取消") { terminal.disconnect() }.buttonStyle(HakoActionButtonStyle(primary: false))
+                } else if terminal.connecting {
                     Button("取消连接") { terminal.disconnect() }.buttonStyle(.bordered)
                 } else if credentials?.isValid == true {
                     Button("连接 PowerShell", action: connect).buttonStyle(HakoActionButtonStyle())
@@ -102,7 +111,19 @@ struct DeviceSSHTerminalView: View {
 
     private func connect() {
         guard selected, scenePhase == .active, let credentials else { return }
+        storageError = nil
         terminal.connect(agentID: agentID, credentials: credentials, authentication: AuthenticatedServerService.shared)
+    }
+
+    private func trust(_ fingerprint: String) {
+        guard selected, scenePhase == .active, terminal.pendingHostKey == fingerprint,
+              var value = credentials else { return }
+        value.fingerprint = fingerprint
+        do {
+            try storage.save(JSONEncoder().encode(value), account: account, accessibility: .whenUnlocked)
+            credentials = value
+            connect()
+        } catch { storageError = "无法保存主机指纹，尚未继续连接。请解锁设备后重试。" }
     }
 }
 
@@ -111,6 +132,7 @@ private struct DeviceSSHSettingsView: View {
     private let original: DeviceSSHCredentials
     private let save: (DeviceSSHCredentials) throws -> Void
     @State private var error: String?
+    @State private var confirmingReset = false
 
     init(credentials: DeviceSSHCredentials, save: @escaping (DeviceSSHCredentials) throws -> Void) {
         _credentials = State(initialValue: credentials)
@@ -147,18 +169,24 @@ private struct DeviceSSHSettingsView: View {
                         SecureField("Windows 用户密码", text: $credentials.password)
                             .accessibilityLabel("SSH 密码")
                     }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("SSH 主机指纹").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("SHA256:…", text: $credentials.fingerprint)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .accessibilityLabel("SSH 主机指纹")
-                    }
                 } footer: {
-                    Text("使用 Windows OpenSSH 的 22 端口。请从可信来源核对并填入主机密钥的 SHA256 指纹。")
+                    Text("使用 Windows OpenSSH 的 22 端口。首次连接时会展示主机指纹，确认信任后再进行密码认证。")
+                }
+                if !credentials.fingerprint.isEmpty {
+                    Section("已信任主机") {
+                        Text(credentials.fingerprint).font(.footnote.monospaced()).textSelection(.enabled)
+                        Button("清除已信任指纹", role: .destructive) { confirmingReset = true }
+                    }
                 }
                 if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
             }
             .privacySensitive()
+        }
+        .alert("清除已信任指纹？", isPresented: $confirmingReset) {
+            Button("取消", role: .cancel) { }
+            Button("清除", role: .destructive) { credentials.fingerprint = "" }
+        } message: {
+            Text("仅在重装系统或重新生成 SSH 主机密钥后使用。保存后，下次连接需要重新核对并确认主机指纹。")
         }
     }
 

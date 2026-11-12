@@ -44,9 +44,11 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 ## Windows SSH 终端
 
-iOS 在「设备监控 → 设备详情 → 终端」中配置 Windows OpenSSH 账号、密码和主机密钥 SHA256 指纹。可在 Windows 上运行 `ssh-keygen -lf "$env:ProgramData\ssh\ssh_host_ed25519_key.pub"` 核对默认 Ed25519 主机密钥指纹。配置保存在 iPhone 的设备专属钥匙串条目中。连接时先核对指纹，再进行 SSH 密码认证。
+iOS 在「设备监控 → 设备详情 → 终端」中配置 Windows OpenSSH 账号和密码。首次连接自动读取主机密钥 SHA256 指纹并展示确认界面；可在 Windows 上运行 `ssh-keygen -lf "$env:ProgramData\ssh\ssh_host_ed25519_key.pub"` 核对默认 Ed25519 主机密钥指纹。点击「信任并连接」后，先将指纹保存到 iPhone 的设备专属钥匙串，再重新建立连接，严格校验指纹后进行 SSH 密码认证。取消确认不保存指纹、不登录 Windows；钥匙串保存失败也不会继续登录。后续连接自动校验，指纹变化时中止，不自动覆盖已信任指纹。重装系统或重建主机密钥后，可在 SSH 设置中明确清除已信任指纹，保存后重新核对。
 
-Console 通过 DPoP 认证访问 `GET /ws/console/agents/terminal/{id}`。服务端经已认证的 Windows Agent 连接目标设备的 `127.0.0.1:22`，申请交互式 PTY 并执行固定命令 `powershell.exe -NoLogo`。SSH 登录信息仅用于本次连接，服务端不持久化登录信息或终端内容。每台设备同时只支持一个终端，离开标签、客户端断线或 Agent 下线时关闭会话。
+Console 通过 DPoP 认证访问 `GET /ws/console/agents/terminal/{id}`。服务端经已认证的 Windows Agent 连接目标设备的 `127.0.0.1:22`，申请交互式 PTY 并执行固定命令 `powershell.exe -NoLogo`。SSH 登录信息仅用于本次连接，服务端不持久化登录信息或终端内容。每台设备同时只支持一个终端；详情内切换标签保留会话，离开设备详情、App 进入后台、客户端断线或 Agent 下线时关闭会话。
+
+收到 `ssh_login` 后，客户端发送 `{username,password,fingerprint,columns,rows}`。`fingerprint` 为空字符串时只探测主机身份：服务端返回文本 JSON `{"type":"ssh_host_key","fingerprint":"SHA256:…"}`，随即中止 SSH 握手并关闭隧道，Windows 不会收到密码认证，等待用户确认期间不占终端槽位。客户端确认并保存后使用非空指纹重新连接，校验失败仍返回 `ssh_host_key_mismatch`。发现指纹与实际登录属于两次连接，第二次连接始终校验保存的指纹，避免主机在探测后被替换。首次信任流程需服务端及 iOS 0.2.2；Windows Agent 的隧道协议不变，无需为本次改动升级。
 
 支持此功能的 Agent 在 v4 `hello` 中发送可选字段 `sshTunnel: true`。部署该功能需更新服务端、Windows Agent 和 iOS，并在 Windows 上启用允许该账号登录的 OpenSSH 服务。
 

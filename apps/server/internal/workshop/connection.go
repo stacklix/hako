@@ -16,7 +16,8 @@ const RequestLimit = 16
 func ValidMethod(method string) bool {
 	switch method {
 	case "applications.list", "models.list", "history.read", "operation.read", "artifact.read", "image.read",
-		"turn.start", "turn.stop", "thread.archive", "image.upload", "message.queue", "message.update", "message.cancel", "message.steer", "approval.reply":
+		"turn.start", "turn.stop", "thread.archive", "image.upload", "message.queue", "message.update", "message.cancel", "message.steer", "approval.reply",
+		"commands.open", "commands.start", "commands.read", "commands.stop", "commands.list":
 		return true
 	}
 	return false

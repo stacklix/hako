@@ -195,7 +195,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         return Application(application);
     }
 
-    private string ResolveApplication(string id) => DiscoverApplications().FirstOrDefault(value => value.Id == id)?.Path
+    internal string ResolveApplication(string id) => DiscoverApplications().FirstOrDefault(value => value.Id == id)?.Path
         ?? throw new WorkshopException("codex_application_missing", "项目目录已变化，请刷新应用列表。");
 
     private async Task<JsonElement> ThreadAsync(string id, bool history, CancellationToken token)
