@@ -3,9 +3,9 @@ package server
 import "net/http"
 
 const (
-	releaseVersion      = "0.3.0"
-	minimumIOSVersion   = "0.3.0"
-	minimumAgentVersion = "1.2.0"
+	releaseVersion      = "0.3.1"
+	minimumIOSVersion   = "0.3.1"
+	minimumAgentVersion = "1.2.1"
 )
 
 func serverVersion(w http.ResponseWriter, _ *http.Request) {

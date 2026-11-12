@@ -78,7 +78,7 @@ func (s *Server) receiveWorkshopTerminal(computer AgentConfig, frame workshop.Fr
 		return false
 	}
 	event.ComputerID, event.OperationID = computer.ID, frame.OperationID
-	if !event.Valid() {
+	if !event.Valid() || event.QuestionID != frame.QuestionID {
 		return false
 	}
 	s.workshopPushMu.Lock()

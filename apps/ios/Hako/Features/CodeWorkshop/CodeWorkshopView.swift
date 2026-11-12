@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CodeWorkshopView: View {
     @ObservedObject private var store = WorkshopRuntime.shared.store
+    @ObservedObject private var push = BuildPushSubscription.shared
     @State private var synchronizationOwner = UUID()
     @State private var settingsPresented = false
     @State private var creating = false
@@ -11,6 +12,10 @@ struct CodeWorkshopView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             page(at: timeline.date)
+        }
+        .task(id: push.workshopLink?.id) {
+            guard let link = push.workshopLink else { return }
+            await openNotification(link)
         }
         .sheet(item: $pendingArchive) { session in
             SettingsSheet(title: "归档会话", onSave: { archive(session) }, saveAccessibilityLabel: "确认归档") {
@@ -23,6 +28,32 @@ struct CodeWorkshopView: View {
                 }
             }
         }
+    }
+
+    private func openNotification(_ link: WorkshopPushNotice) async {
+        await store.restore()
+        guard push.workshopLink?.id == link.id else { return }
+        guard store.agents.contains(where: { $0.id == link.computerId }) else {
+            store.error = "通知对应的电脑当前不可用，请检查连接。"; return
+        }
+        await store.selectAgent(link.computerId)
+        guard let agent = store.selectedAgent, UUID(uuidString: link.threadId) != nil else { return }
+        do {
+            let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": link.threadId])
+            guard push.workshopLink?.id == link.id, agent.id == store.selectedAgentID else { return }
+            guard let application = store.applications.first(where: {
+                history.cwd.replacingOccurrences(of: "\\", with: "/").lowercased().hasPrefix($0.path.replacingOccurrences(of: "\\", with: "/").lowercased() + "/") ||
+                history.cwd.caseInsensitiveCompare($0.path) == .orderedSame
+            }) else { store.error = "通知对应的项目已不可用。"; return }
+            store.selectApplication(application.id)
+            let session = store.sessions.first(where: { $0.id == link.threadId }) ?? WorkshopSession(id: link.threadId,
+                title: link.subtitle.isEmpty ? "会话" : link.subtitle, applicationId: application.id, cwd: history.cwd,
+                preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970), state: "unknown",
+                operationId: history.operationId, completionId: history.completionId)
+            settingsPresented = false; creating = false; pendingArchive = nil
+            conversation = WorkshopRuntime.shared.open(session, agent: agent, application: application, archived: false)
+            push.workshopLink = nil
+        } catch { store.error = "无法打开通知对应的会话，请检查连接后重试。" }
     }
 
     private func page(at date: Date) -> some View {

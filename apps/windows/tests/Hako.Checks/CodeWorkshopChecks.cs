@@ -46,6 +46,16 @@ internal static class CodeWorkshopChecks
         Check(secondUser.Id == "request-two", "Identical messages in the same turn must remain distinct");
         Check(CodeWorkshop.HistoryItem(userItem, "different-turn", userJobs, new HashSet<string>())!.Id == "canonical",
             "Messages from different turns must not be deduplicated");
+        var asyncItem = Json(new { id = "async-question", type = "agentMessage", text = "选择升级方式", delivery = "async",
+            questions = new[] { new { title = "如何升级？", options = new[] { "同步升级", "保留兼容" } } } });
+        var parsedQuestion = CodeWorkshop.Item(asyncItem)!;
+        Check(parsedQuestion.Questions is { Length: 1 } && parsedQuestion.Questions[0].Options[1] == "保留兼容",
+            "Async question metadata was discarded while converting assistant messages");
+        Check(CodeWorkshop.Item(Json(new { id = "normal", type = "agentMessage", text = "Text without a question" }))!.Questions is null,
+            "Ordinary prose was incorrectly interpreted as an interactive question");
+        userJobs[0].QuestionId = "async-question";
+        Check(CodeWorkshop.HistoryItem(userItem, "turn-one", userJobs, new HashSet<string>())!.QuestionId == "async-question",
+            "Canonical history lost the durable answer association");
         var directory = Path.Combine(Path.GetTempPath(), "hako-workshop-" + Guid.NewGuid().ToString("N"));
         var launch = CodexAppServer.WithArguments(new ProcessStartInfo("codex.exe"));
         Check(launch.ArgumentList.Contains("--enable") && launch.ArgumentList.Contains("default_mode_request_user_input"),
@@ -78,10 +88,12 @@ internal static class CodeWorkshopChecks
                 service.SetNotificationScope("fixture-cloud");
                 using var notificationLife = new CancellationTokenSource();
                 var notifications = new ConcurrentDictionary<string, WorkshopTerminal>();
+                var asyncNotices = new ConcurrentQueue<WorkshopTerminal>();
                 var notificationWatch = service.WatchTerminalsAsync("fixture-cloud", terminal =>
                 {
+                    if (terminal.QuestionId.Length > 0) asyncNotices.Enqueue(terminal);
                     notifications[terminal.OperationId] = terminal;
-                    service.AcknowledgeTerminal("fixture-cloud", terminal.OperationId);
+                    service.AcknowledgeTerminal("fixture-cloud", terminal.OperationId, terminal.QuestionId);
                     return Task.CompletedTask;
                 }, notificationLife.Token);
                 var catalog = Result(await service.CatalogAsync(Json(new { }), default));
@@ -201,6 +213,12 @@ internal static class CodeWorkshopChecks
                 var steerRequest = Json(new { operationId = requestId, messageId = queuedId, requestId = steerId, revision = 1 });
                 Check(CodexJson.Text(Result(await service.SteerMessageAsync(steerRequest, default)), "state") == "steered", "Queued message was not steered");
                 await service.SteerMessageAsync(steerRequest, default);
+                var steeredHistory = Result(await service.HistoryAsync(Json(new { threadId = FixtureThread }), default)).GetProperty("entries");
+                Check(steeredHistory.EnumerateArray().Count(value => CodexJson.Text(value, "id") == queuedId &&
+                    CodexJson.Text(value, "text") == "Edited follow-up") == 1,
+                    "Accepted Steer history did not use the durable request ID; the phone will retain two bubbles");
+                Check(!steeredHistory.EnumerateArray().Any(value => CodexJson.Text(value, "id") == "canonical-" + queuedId),
+                    "History kept a second canonical identity for the steered request");
                 var cancelledId = Guid.NewGuid().ToString();
                 await service.QueueAsync(Json(new { operationId = requestId, requestId = cancelledId, message = "Cancelled follow-up" }), default);
                 await service.CancelMessageAsync(Json(new { operationId = requestId, messageId = cancelledId, requestId = Guid.NewGuid().ToString(), revision = 0 }), default);
@@ -299,6 +317,15 @@ internal static class CodeWorkshopChecks
                     "Validation consumed the question before explicit confirmation");
                 await service.AnswerAsync(Json(new { operationId = questionId, approvalId = questionApproval, answers = new { network = "服务器认证" } }), default);
                 await WaitAsync(service, questionId, "completed");
+                var asyncRequest = Guid.NewGuid().ToString();
+                await service.StartAsync(Json(new { requestId = asyncRequest, applicationId, threadId = FixtureThread, message = "Async question fixture" }), default);
+                var asyncPage = await WaitAsync(service, asyncRequest, "completed");
+                Check(asyncPage.GetProperty("events").EnumerateArray().Any(entry => CodexJson.Text(entry, "id") == "async-fixture" &&
+                    entry.GetProperty("questions")[0].GetProperty("options")[1].GetString() == "同步升级"), "Async options did not reach the operation stream");
+                var noticeDeadline = DateTime.UtcNow.AddSeconds(3);
+                while (asyncNotices.IsEmpty && DateTime.UtcNow < noticeDeadline) await Task.Delay(10);
+                Check(asyncNotices.TryPeek(out var asyncNotice) && asyncNotice.QuestionId == "async-fixture" &&
+                    asyncNotice.State == "input_required" && asyncNotice.ThreadId == FixtureThread, "Async question did not produce its own durable push receipt");
                 var failureId = Guid.NewGuid().ToString();
                 await service.StartAsync(Json(new { requestId = failureId, applicationId, threadId = FixtureThread, message = "Failure fixture" }), default);
                 var failureWaiting = await WaitAsync(service, failureId, "waiting");
@@ -437,15 +464,28 @@ internal static class CodeWorkshopChecks
                 Check(CodexJson.Text(parameters, "expectedTurnId") == turnId && CodexJson.Text(parameters, "threadId") == FixtureThread,
                     "Steer targeted the wrong turn");
                 Check(CodexJson.Items(CodexJson.Field(parameters, "input")).Any(value => CodexJson.Text(value, "text") == "Edited follow-up"), "Steer did not use edited text");
+                File.AppendAllText(Path.Combine(project, ".steered-inputs.jsonl"), JsonSerializer.Serialize(new {
+                    id = "canonical-" + CodexJson.Text(parameters, "clientUserMessageId"), type = "userMessage",
+                    clientUserMessageId = CodexJson.Text(parameters, "clientUserMessageId"), content = CodexJson.Field(parameters, "input")
+                }, WorkshopProtocol.Json) + "\n");
             }
             if (method == "thread/resume" && Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_OCCUPIED") == "1")
             { Write(new { id, error = new { code = -32600, message = "thread-store conflict: already has an active writer" } }); continue; }
+            var historyItems = new List<object>();
+            var steeredInputs = Path.Combine(project, ".steered-inputs.jsonl");
+            if (File.Exists(steeredInputs))
+                foreach (var historyLine in File.ReadAllLines(steeredInputs))
+                {
+                    using var stored = JsonDocument.Parse(historyLine);
+                    historyItems.Add(stored.RootElement.Clone());
+                }
+            historyItems.Add(new { id = "history", type = "agentMessage", text = "visualize" + JsonSerializer.Serialize(new { path = Path.Combine(project, "prototype.html") }) + "" });
             var thread = new
             {
                 id = FixtureThread, cwd = CodexJson.Text(CodexJson.Field(input, "params"), "threadId") == "22222222-2222-4222-8222-222222222222" ? Path.GetDirectoryName(project)! : project,
                 name = "Fixture", preview = "Fixture history", updatedAt = 1,
                 status = new { type = method == "thread/list" ? "active" : "idle", activeFlags = Array.Empty<string>() },
-                turns = new[] { new { id = turnId, status = "completed", items = new[] { new { id = "history", type = "agentMessage", text = "visualize" + JsonSerializer.Serialize(new { path = Path.Combine(project, "prototype.html") }) + "" } } } }
+                turns = new[] { new { id = turnId, status = "completed", items = historyItems.ToArray() } }
             };
             object result = method switch
             {
@@ -460,6 +500,14 @@ internal static class CodeWorkshopChecks
             Write(new { id, result });
             if (method == "turn/start")
             {
+                if (CodexJson.Items(CodexJson.Field(CodexJson.Field(input, "params"), "input")).Any(value => CodexJson.Text(value, "text") == "Async question fixture"))
+                {
+                    Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new {
+                        id = "async-fixture", type = "agentMessage", text = "需要你选择升级方式", delivery = "async",
+                        questions = new[] { new { title = "如何升级？", options = new[] { "保持现状", "同步升级" } } } } } });
+                    Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "completed" } } });
+                    continue;
+                }
                 if (CodexJson.Items(CodexJson.Field(CodexJson.Field(input, "params"), "input")).Any(value => CodexJson.Text(value, "text") == "Question fixture"))
                     Write(new { id = 901, method = "item/tool/requestUserInput", @params = new { threadId = FixtureThread, turnId, itemId = "question",
                         questions = new[] { new { id = "network", header = "认证方式", question = "是否需要离线直连？", options = new[] {

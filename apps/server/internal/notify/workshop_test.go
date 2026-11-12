@@ -43,7 +43,7 @@ func workshopGateway(t *testing.T) (*Service, *atomic.Int32) {
 			t.Error("notification did not use existing APNs alert transport")
 		}
 		data, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(data), "secret-prompt") || !strings.Contains(string(data), `"type":"workshop_terminal"`) {
+		if strings.Contains(string(data), "secret-prompt") || !(strings.Contains(string(data), `"type":"workshop_terminal"`) || strings.Contains(string(data), `"type":"workshop_question"`)) {
 			t.Error("invalid APNs payload")
 		}
 		return &http.Response{StatusCode: 200, ProtoMajor: 2, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
@@ -278,5 +278,62 @@ func TestWorkshopQueueRechecksPersistedSubscriptionBeforeSending(t *testing.T) {
 	count, _ := one(s.db, "SELECT COUNT(*) n FROM direct_push WHERE status='suppressed'")
 	if calls.Load() != 0 || integer(count, "n") != 1 {
 		t.Fatal("disabled subscription sent after restart", count, calls.Load())
+	}
+}
+func TestWorkshopQuestionsUseIndependentDurablePushes(t *testing.T) {
+	s, calls := workshopGateway(t)
+	event := terminalFor(0, "input_required")
+	event.ThreadID = fmtUUID(10)
+	event.QuestionID = "async-question-one"
+	event.Summary = "如何升级？"
+	since := nowMS() - 1000
+	for i := 0; i < 3; i++ {
+		if err := s.EnqueueWorkshop(event, "console", since); err != nil {
+			t.Fatal(err)
+		}
+	}
+	event.QuestionID = "async-question-two"
+	if err := s.EnqueueWorkshop(event, "console", since); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnqueueWorkshop(terminalFor(0, "completed"), "console", since); err != nil {
+		t.Fatal(err)
+	}
+	items, err := rows(s.db, "SELECT payload FROM direct_push")
+	if err != nil || len(items) != 3 {
+		t.Fatal("Questions and terminal outcomes must have independent identities", len(items), err)
+	}
+	questionCount := 0
+	for _, row := range items {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(str(row, "payload")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["type"] == "workshop_question" {
+			questionCount++
+			if payload["threadId"] != event.ThreadID || payload["operationId"] != event.OperationID || payload["questionId"] == "" {
+				t.Fatal(payload)
+			}
+		}
+	}
+	if questionCount != 2 {
+		t.Fatal("Question payloads were not routed separately", questionCount)
+	}
+	if err := s.drainAPNs(); err != nil {
+		t.Fatal(err)
+	}
+	s.workers.Wait()
+	if calls.Load() != 3 {
+		t.Fatal("Unexpected APNs request count", calls.Load())
+	}
+	for _, mutate := range []func(*WorkshopTerminal){
+		func(e *WorkshopTerminal) { e.QuestionID = "" },
+		func(e *WorkshopTerminal) { e.ThreadID = "invalid" },
+	} {
+		bad := event
+		mutate(&bad)
+		if s.EnqueueWorkshop(bad, "console", since) == nil {
+			t.Fatal("Invalid question routing accepted")
+		}
 	}
 }

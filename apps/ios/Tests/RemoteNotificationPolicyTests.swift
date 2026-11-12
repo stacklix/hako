@@ -9,6 +9,15 @@ import Foundation
         for state in ["failed", "interrupted", "unknown"] {
             precondition(!RemoteNotificationPolicy.presentsInForeground(["type": "workshop_terminal", "state": state]))
         }
+        let question: [AnyHashable: Any] = ["type": "workshop_question", "notificationId": "notice", "computerId": "PC",
+            "operationId": "11111111-1111-4111-8111-111111111111", "threadId": "22222222-2222-4222-8222-222222222222",
+            "aps": ["alert": ["title": "代码工坊 · hako", "subtitle": "迭代", "body": "需要你回答"]]]
+        precondition(!RemoteNotificationPolicy.presentsInForeground(question))
+        precondition(RemoteNotificationPolicy.isWorkshop(question))
+        precondition(RemoteNotificationPolicy.destination(question, defaultAction: true) == .codeWorkshop)
+        let notice = WorkshopPushNotice(question)!
+        precondition(notice.computerId == "PC" && notice.subtitle == "迭代" && notice.body == "需要你回答")
+        precondition(WorkshopPushNotice(["type": "workshop_question"]) == nil)
         let build: [AnyHashable: Any] = ["type": "build_completed"]
         precondition(RemoteNotificationPolicy.presentsInForeground(build))
         precondition(RemoteNotificationPolicy.destination(build, defaultAction: true) == .settings)

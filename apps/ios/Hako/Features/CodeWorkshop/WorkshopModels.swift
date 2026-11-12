@@ -72,6 +72,8 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     let state: String
     let truncated: Bool
     var replacesId: String? = nil
+    var questions: [WorkshopAsyncQuestion]? = nil
+    var questionId: String? = nil
 
     var recordTitle: String {
         switch kind {
@@ -99,6 +101,19 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
             return (executable.components(separatedBy: "/").last ?? executable) + first[first.index(after: end)...]
         }
         return first
+    }
+}
+
+struct WorkshopAsyncQuestion: Codable, Equatable, Sendable {
+    let title: String
+    let options: [String]
+
+    static func replyMessage(_ questions: [Self], answers: [Int: String]) -> String? {
+        guard !questions.isEmpty, questions.indices.allSatisfy({ !(answers[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return nil }
+        let message = "针对提问的回答：\n" + questions.enumerated().map { index, question in
+            question.title + "\n" + answers[index]!.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.joined(separator: "\n\n")
+        return message.utf16.count <= 4000 ? message : nil
     }
 }
 
@@ -181,6 +196,27 @@ struct WorkshopFollowupState: Codable, Identifiable, Equatable, Sendable {
     let revision: Int
     let imageIds: [String]
     var editable: Bool { state == "queued" || state == "paused" }
+
+    static func merging(_ updates: [Self], into current: [Self]) -> [Self] {
+        var result = current
+        for update in updates {
+            guard let index = result.firstIndex(where: { $0.id == update.id }) else {
+                result.append(update)
+                continue
+            }
+            let previous = result[index]
+            guard update.revision >= previous.revision else { continue }
+            if update.revision == previous.revision {
+                // Steer acknowledgement changes state within one revision.
+                // Older pages or RPC replies can arrive after that acknowledgement.
+                if previous.state == "steered", update.state != "steered" { continue }
+                if ["starting", "running", "waiting", "finishing", "sent", "completed"].contains(previous.state),
+                   ["pending", "queued", "paused", "steering"].contains(update.state) { continue }
+            }
+            result[index] = update
+        }
+        return result
+    }
 }
 
 struct WorkshopFollowupReply: Decodable {
@@ -190,9 +226,10 @@ struct WorkshopFollowupReply: Decodable {
     let state: String
     let revision: Int
     let detail: String?
+    var questionId: String? = nil
     var status: WorkshopFollowupState { WorkshopFollowupState(id: id, state: state, revision: revision, imageIds: imageIds) }
     var entry: WorkshopEntry { WorkshopEntry(kind: "followup", id: id,
-        text: message + (imageIds.isEmpty ? "" : "\n[图片 × \(imageIds.count)]"), role: "user", state: state, truncated: false) }
+        text: message + (imageIds.isEmpty ? "" : "\n[图片 × \(imageIds.count)]"), role: "user", state: state, truncated: false, questionId: questionId) }
 }
 
 struct WorkshopQueuedSend: Codable, Identifiable {
@@ -200,9 +237,14 @@ struct WorkshopQueuedSend: Codable, Identifiable {
     let operationId: String
     let message: String
     let imageIds: [String]
-    var parameters: [String: Any] { ["operationId": operationId, "requestId": id, "message": message, "imageIds": imageIds] }
+    var questionId: String? = nil
+    var parameters: [String: Any] {
+        var result: [String: Any] = ["operationId": operationId, "requestId": id, "message": message, "imageIds": imageIds]
+        result["questionId"] = questionId
+        return result
+    }
     var entry: WorkshopEntry { WorkshopEntry(kind: "followup", id: id,
-        text: message + (imageIds.isEmpty ? "" : "\n[图片 × \(imageIds.count)]"), role: "user", state: "pending", truncated: false) }
+        text: message + (imageIds.isEmpty ? "" : "\n[图片 × \(imageIds.count)]"), role: "user", state: "pending", truncated: false, questionId: questionId) }
 }
 
 struct WorkshopArtifactChunk: Decodable {
@@ -240,6 +282,7 @@ struct WorkshopReceipt: Codable, Identifiable {
     var permission: String? = nil
     var imageIds: [String]? = nil
     var serviceTier: String? = nil
+    var questionId: String? = nil
 
     var parameters: [String: Any] {
         var result: [String: Any] = ["requestId": id, "applicationId": applicationId, "name": title, "message": message]
@@ -248,6 +291,7 @@ struct WorkshopReceipt: Codable, Identifiable {
         result["permission"] = permission
         result["imageIds"] = imageIds
         result["serviceTier"] = serviceTier
+        result["questionId"] = questionId
         return result
     }
 }

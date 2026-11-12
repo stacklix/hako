@@ -104,7 +104,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
         }
         var notifications = Task.Run(async () =>
         {
-            try { await dispatcher.WatchTerminalsAsync(scope, item => Publish(new { kind = "terminal", operationId = item.OperationId, result = item }), connection.Token); }
+            try { await dispatcher.WatchTerminalsAsync(scope, item => Publish(new { kind = "terminal", operationId = item.OperationId, questionId = item.QuestionId, result = item }), connection.Token); }
             catch (OperationCanceledException) when (connection.IsCancellationRequested) { }
             catch { connection.Cancel(); socket.Abort(); throw; }
         });
@@ -122,7 +122,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
                 {
                     var operationId = CodexJson.Text(frame, "operationId");
                     if (!Guid.TryParse(operationId, out var acknowledged)) throw new InvalidDataException("Invalid terminal acknowledgement.");
-                    dispatcher.AcknowledgeTerminal(scope, acknowledged.ToString("D"));
+                    dispatcher.AcknowledgeTerminal(scope, acknowledged.ToString("D"), CodexJson.Text(frame, "questionId"));
                     continue;
                 }
                 var id = frame.GetProperty("id").GetString()!;

@@ -119,9 +119,16 @@ struct WorkshopTranscriptPresentation {
         var history: [WorkshopEntry] = []
         var queued: [WorkshopEntry] = []
         for entry in entries {
-            let state = followups.first { $0.id == entry.id }?.state ?? entry.state
-            if Self.isQueued(entry, state: state) { queued.append(entry) }
-            else { history.append(entry) }
+            let presented: WorkshopEntry
+            if entry.kind == "followup", let status = followups.first(where: { $0.id == entry.id }) {
+                // Give each row the same resolved state used to place it. A
+                // metadata-only acknowledgement must also change the row value.
+                presented = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
+                    state: status.state, truncated: entry.truncated, replacesId: entry.replacesId,
+                    questions: entry.questions, questionId: entry.questionId)
+            } else { presented = entry }
+            if Self.isQueued(presented) { queued.append(presented) }
+            else { history.append(presented) }
         }
         self.history = history
         self.queued = queued

@@ -64,6 +64,32 @@ internal static class WorkshopNotificationChecks
             }
         }
         finally { Directory.Delete(directory,true); }
+        var questionDirectory = Path.Combine(Path.GetTempPath(), "hako-question-outbox-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(questionDirectory);
+        var questionJob = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), State = "completed", NotificationScope = "cloud",
+            NotificationAcknowledged = true, ThreadId = Guid.NewGuid().ToString("D"), Cwd = "C:/Code/hako", SessionName = "Question session",
+            QuestionNotifications = new() { ["async-question"] = new() { CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Summary = "如何升级？" } } };
+        File.WriteAllBytes(Path.Combine(questionDirectory, questionJob.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(questionJob, WorkshopProtocol.Json));
+        try {
+            await using (var questions = new CodeWorkshop(questionDirectory)) {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                await questions.WatchTerminalsAsync("cloud", notice => {
+                    if (notice.State != "input_required" || notice.QuestionId != "async-question" || notice.ThreadId != questionJob.ThreadId)
+                        throw new Exception("Question notification lost routing or question identity");
+                    questions.AcknowledgeTerminal("wrong-scope", notice.OperationId, notice.QuestionId);
+                    var unchanged = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(questionDirectory, questionJob.Id + ".json")), WorkshopProtocol.Json)!;
+                    if (unchanged.QuestionNotifications[notice.QuestionId].Acknowledged) throw new Exception("Cross-scope question ACK accepted");
+                    questions.AcknowledgeTerminal("cloud", notice.OperationId, notice.QuestionId);
+                    timeout.Cancel(); return Task.CompletedTask;
+                }, timeout.Token).ContinueWith(task => { if (task.IsFaulted) throw task.Exception!; });
+            }
+            await using (var questions = new CodeWorkshop(questionDirectory)) {
+                using var timeout = new CancellationTokenSource(150);
+                var count = 0;
+                try { await questions.WatchTerminalsAsync("cloud", _ => { count++; return Task.CompletedTask; }, timeout.Token); } catch (OperationCanceledException) { }
+                if (count != 0) throw new Exception("Restart resent an acknowledged question");
+            }
+        } finally { Directory.Delete(questionDirectory, true); }
         Console.WriteLine("PASS: durable Workshop completion/failure/interruption outbox, restart unknown, scope isolation, LAN-only exclusion and persisted acknowledgements");
     }
 }

@@ -359,7 +359,7 @@ import Combine
         connectionIssue = nil
         uncertain = false
         cachedAt = nil
-        followups = result.followups
+        followups = WorkshopFollowupState.merging(result.followups, into: followups)
         if let receipt, receipt.id == id { clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: id) }
         if result.cursor > eventCursor { for event in result.events { apply(event) } }
         for followup in followups {
@@ -369,7 +369,7 @@ import Combine
             if let index = entries.firstIndex(where: { $0.id == followup.id && $0.kind == "followup" }) {
                 let entry = entries[index]
                 entries[index] = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
-                    state: followup.state, truncated: entry.truncated)
+                    state: followup.state, truncated: entry.truncated, questionId: entry.questionId)
             }
         }
         hasMoreEvents = result.hasMore && result.cursor > eventCursor
@@ -443,6 +443,41 @@ import Combine
         operation = nil; approvals = []; error = nil
         saveTranscript()
         await submit(next)
+    }
+
+    func hasAnswered(_ entry: WorkshopEntry) -> Bool {
+        entries.contains { $0.role == "user" && $0.questionId == entry.id && $0.state != "cancelled" }
+    }
+
+    func replyToQuestion(_ entry: WorkshopEntry, answers: [Int: String]) async {
+        guard canEditMessages, !hasAnswered(entry), let questions = entry.questions,
+              let message = WorkshopAsyncQuestion.replyMessage(questions, answers: answers) else { return }
+        let requestID = UUID().uuidString.lowercased()
+        if let operationId {
+            let queued = WorkshopQueuedSend(id: requestID, operationId: operationId, message: message,
+                imageIds: [], questionId: entry.id)
+            do { try store.saveQueuedSend(queued) }
+            catch { self.error = "无法保存回答，请重试。"; return }
+            entries.append(queued.entry); appendedMessageID = queued.id; saveTranscript()
+            store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
+            await submitQueued(queued)
+            if followups.contains(where: { $0.id == queued.id && $0.editable }) {
+                await mutateMessage(queued.id, action: "steer")
+            }
+        } else {
+            let next = WorkshopReceipt(id: requestID, agentId: agent.id, applicationId: application.id,
+                originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now,
+                state: "pending", model: choice.model, permission: choice.permission.rawValue,
+                serviceTier: choice.serviceTier ?? "default", questionId: entry.id)
+            do { try store.saveReceipt(next) }
+            catch { self.error = "无法保存回答，请重试。"; return }
+            receipt = next; uncertain = true; operationId = next.id; operation = nil
+            eventCursor = 0; streamText = [:]; observedTerminal = nil
+            entries.append(WorkshopEntry(kind: "item", id: next.id, text: message, role: "user",
+                state: "pending", truncated: false, questionId: entry.id))
+            saveTranscript()
+            await submit(next)
+        }
     }
 
     func retryOriginal() async {
@@ -553,7 +588,8 @@ import Combine
     }
 
     private func acceptFollowup(_ result: WorkshopFollowupReply) {
-        followups.removeAll { $0.id == result.id }; followups.append(result.status)
+        followups = WorkshopFollowupState.merging([result.status], into: followups)
+        guard followups.first(where: { $0.id == result.id }) == result.status else { return }
         apply(result.entry)
         saveTranscript()
     }

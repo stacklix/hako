@@ -94,6 +94,28 @@ struct HomeView: View {
                 }
             }
         }.tint(.primary)
+            .overlay(alignment: .top) {
+                if let notice = buildPush.workshopBanner {
+                    HStack(alignment: .top, spacing: 12) {
+                        Button { buildPush.openWorkshopNotice(notice) } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.title2)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(notice.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                    if !notice.subtitle.isEmpty { Text(notice.subtitle).font(.caption).lineLimit(1) }
+                                    Text(notice.body).font(.subheadline).lineLimit(3)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityLabel("打开会话：" + notice.subtitle + "，" + notice.body)
+                        Button { buildPush.dismissWorkshopNotice() } label: { Image(systemName: "xmark").frame(width: 36, height: 36) }
+                            .buttonStyle(.plain).accessibilityLabel("关闭消息提示")
+                    }.padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                        .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+                        .padding(.horizontal, 12).padding(.top, 6)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: buildPush.workshopBanner?.id)
             .task(id: scenePhase == .active && buildPush.workshopRequested) {
                 guard scenePhase == .active, buildPush.workshopRequested else { return }
                 loginLink = nil

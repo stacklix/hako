@@ -8,6 +8,24 @@ $profileDirectory = Join-Path $workRoot 'profile with spaces'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 $backgroundId = $null
 
+if (-not ('HakoSmokeProcessJob' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public static class HakoSmokeProcessJob {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    public static bool Contains(int processId) {
+        using var process = Process.GetProcessById(processId);
+        if (!IsProcessInJob(process.Handle, IntPtr.Zero, out var result))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return result;
+    }
+}
+'@
+}
+
 function Invoke-HakoCheck {
     param([string[]]$Arguments, [int]$ExpectedExit = 0, [switch]$Text)
     $start = [System.Diagnostics.ProcessStartInfo]::new($executablePath)
@@ -69,6 +87,7 @@ try {
     $connected = Invoke-HakoCheck -Arguments @('connect')
     if (-not $connected.data.running -or $connected.data.processId -le 0) { throw 'Connect did not start an independent background process.' }
     $backgroundId = $connected.data.processId
+    if ([HakoSmokeProcessJob]::Contains($backgroundId)) { throw 'Background Agent inherited a job and can be killed when its launching command exits.' }
     $status = Invoke-HakoCheck -Arguments @('status')
     if ($status.data.processId -ne $backgroundId) { throw 'Status did not reuse the running background process.' }
     $null = Invoke-HakoCheck -Arguments @('config','set','--account','updatedowner')

@@ -60,6 +60,14 @@ func TestWorkshopPushRequiresOptInAndAuthenticatedAgent(t *testing.T) {
 			t.Fatal("receipt not acknowledged", ack)
 		}
 	}
+	for range 2 {
+		questionPayload, _ := json.Marshal(map[string]any{"state": "input_required", "finishedAt": time.Now().UnixMilli(),
+			"projectName": "hako", "sessionName": "通知测试", "summary": "请选择升级方式", "threadId": operation, "questionId": "async-question"})
+		writeAgentFrame(t, worker, workshop.Frame{Kind: "terminal", OperationID: operation, QuestionID: "async-question", Result: questionPayload})
+		if ack := readAgentFrame[workshop.Frame](t, worker); ack.Kind != "terminal_ack" || ack.OperationID != operation || ack.QuestionID != "async-question" {
+			t.Fatal("Question acknowledgement lost its identity", ack)
+		}
+	}
 	// iOS cannot inject terminal frames through its authenticated client channel.
 	client := openWorkshopClient(t, f, "/ws/workshop/client")
 	writeAgentFrame(t, client, workshop.Frame{Kind: "terminal", ID: "inject", OperationID: operation, Result: json.RawMessage(`{"state":"completed"}`)})

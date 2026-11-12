@@ -18,6 +18,27 @@ final class BuildPushSubscription: ObservableObject {
     @Published var settingsRequested = false
     @Published private(set) var settingsRequestID = 0
     @Published var workshopRequested = false
+    @Published var workshopLink: WorkshopPushNotice?
+    @Published private(set) var workshopBanner: WorkshopPushNotice?
+    private var bannerDismissal: Task<Void, Never>?
+    private var displayedNotices: Set<String> = []
+
+    func presentWorkshopNotice(_ notice: WorkshopPushNotice) {
+        guard displayedNotices.insert(notice.id).inserted else { return }
+        if displayedNotices.count > 200 { displayedNotices = [notice.id] }
+        bannerDismissal?.cancel()
+        workshopBanner = notice
+        bannerDismissal = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            if self?.workshopBanner?.id == notice.id { self?.workshopBanner = nil }
+        }
+    }
+    func dismissWorkshopNotice() { bannerDismissal?.cancel(); workshopBanner = nil }
+    func openWorkshopNotice(_ notice: WorkshopPushNotice?) {
+        dismissWorkshopNotice()
+        workshopLink = notice
+        workshopRequested = true
+    }
 
     private init() { }
 
@@ -136,7 +157,11 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        if !RemoteNotificationPolicy.presentsInForeground(notification.request.content.userInfo) { return [] }
+        if !RemoteNotificationPolicy.presentsInForeground(notification.request.content.userInfo) {
+            let notice = WorkshopPushNotice(notification.request.content.userInfo)
+            await MainActor.run { if let notice { BuildPushSubscription.shared.presentWorkshopNotice(notice) } }
+            return []
+        }
         return [.banner, .list, .sound]
     }
 
@@ -148,7 +173,10 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         DispatchQueue.main.async {
             // UIKit updates its scene snapshot when the response completes.
             defer { completionHandler() }
-            if destination == .codeWorkshop { BuildPushSubscription.shared.workshopRequested = true; return }
+            if destination == .codeWorkshop {
+                BuildPushSubscription.shared.openWorkshopNotice(WorkshopPushNotice(response.notification.request.content.userInfo))
+                return
+            }
             guard destination == .settings else { return }
             HakoLog.record(.hako, "收到构建通知点按")
             BuildPushSubscription.shared.requestSettings()

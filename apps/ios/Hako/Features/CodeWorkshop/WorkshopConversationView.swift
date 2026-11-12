@@ -57,6 +57,9 @@ struct WorkshopConversationView: View {
                         ForEach(group.entries) { entry in
                             VStack(alignment: .leading, spacing: 12) {
                                 entryView(entry)
+                                if let questions = entry.questions, !questions.isEmpty {
+                                    WorkshopAsyncQuestionView(entry: entry, questions: questions, conversation: conversation)
+                                }
                                 ForEach(artifactsByEntry[entry.id] ?? []) { file in
                                     WorkshopArtifactButton(file: file) { artifact = file }
                                 }
@@ -229,7 +232,7 @@ struct WorkshopConversationView: View {
             Spacer(minLength: 30)
             VStack(alignment: .trailing, spacing: 4) {
                 HStack(spacing: 4) {
-                    Label(followupLabel(status?.state ?? entry.state), systemImage: "text.line.first.and.arrowtriangle.forward")
+                    Label(followupLabel(entry.state), systemImage: "text.line.first.and.arrowtriangle.forward")
                         .font(.caption).foregroundStyle(HakoStyle.muted)
                     if status?.editable == true || pending || status?.state == "unknown" {
                         Menu {
@@ -545,5 +548,39 @@ private struct WorkshopApprovalView: View {
             }
         }
         .padding(15).background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 14)).disabled(conversation.busy)
+    }
+}
+
+private struct WorkshopAsyncQuestionView: View {
+    let entry: WorkshopEntry
+    let questions: [WorkshopAsyncQuestion]
+    @ObservedObject var conversation: WorkshopConversation
+    @State private var answers: [Int: String] = [:]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(conversation.hasAnswered(entry) ? "回答已提交，可在消息中查看状态" : "需要你回答", systemImage: "bubble.left.and.text.bubble.right")
+                .font(.subheadline.weight(.medium))
+            if !conversation.hasAnswered(entry) {
+                ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(question.title).font(.subheadline).foregroundStyle(.secondary)
+                        ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                            Button { answers[index] = option } label: {
+                                HStack { Text(option); Spacer(); if answers[index] == option { Image(systemName: "checkmark") } }
+                                    .frame(maxWidth: .infinity, alignment: .leading).frame(minHeight: 44)
+                            }.buttonStyle(.plain)
+                        }
+                        Text("你的回答").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("选择选项或填写回答", text: Binding(get: { answers[index] ?? "" }, set: { answers[index] = $0 }), axis: .vertical)
+                            .accessibilityLabel(question.title).textFieldStyle(.roundedBorder)
+                    }
+                }
+                Button("提交回答") { Task { await conversation.replyToQuestion(entry, answers: answers) } }
+                    .buttonStyle(HakoActionButtonStyle())
+                    .disabled(!conversation.canEditMessages || WorkshopAsyncQuestion.replyMessage(questions, answers: answers) == nil)
+                Text("回答会发送到此会话，正在执行的任务会收到补充信息。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(15).background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 14))
     }
 }

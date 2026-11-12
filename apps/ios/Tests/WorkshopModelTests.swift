@@ -2,6 +2,16 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let question = WorkshopAsyncQuestion(title: "如何升级？", options: ["同步升级", "保留兼容"])
+        precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [:]) == nil)
+        precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: " \n "]) == nil)
+        precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: "同步升级"]) == "针对提问的回答：\n如何升级？\n同步升级")
+        precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: String(repeating: "a", count: 4000)]) == nil)
+        let answer = WorkshopQueuedSend(id: "reply", operationId: "op", message: "同步升级", imageIds: [], questionId: "async-question")
+        precondition(answer.parameters["questionId"] as? String == "async-question" && answer.entry.questionId == "async-question")
+        let restoredAnswer = try! JSONDecoder().decode(WorkshopQueuedSend.self, from: JSONEncoder().encode(answer))
+        precondition(restoredAnswer.questionId == "async-question")
+
         let now = Date(timeIntervalSince1970: 1000)
         var completion = WorkshopSession(id: "thread", title: "Task", applicationId: "app", cwd: "project", preview: "Latest response", updatedAt: 1,
             state: "completed", operationId: nil, completionId: "turn-one")
@@ -171,6 +181,24 @@ import Foundation
         precondition(followup.entry.id == followup.id && followup.entry.kind == "followup" && followup.entry.state == "queued")
         let steered = WorkshopFollowupState(id: followup.id, state: "steered", revision: 3, imageIds: [])
         precondition(!steered.editable, "Accepted steering must not offer edit or cancel")
+        var statuses = WorkshopFollowupState.merging([steered], into: [followup.status])
+        precondition(statuses == [steered])
+        statuses = WorkshopFollowupState.merging([followup.status], into: statuses)
+        precondition(statuses == [steered], "A late queued snapshot or queue RPC reply must not undo accepted steering")
+        for state in ["queued", "paused", "steering", "unknown"] {
+            let stale = WorkshopFollowupState(id: steered.id, state: state, revision: steered.revision, imageIds: ["stale-image"])
+            precondition(WorkshopFollowupState.merging([stale], into: statuses) == [steered],
+                "A same-revision pre-acknowledgement state cannot overwrite steered: " + state)
+        }
+        precondition(WorkshopFollowupState.merging([], into: statuses) == [steered],
+            "An older snapshot must not erase a request acknowledgement")
+        let paused = WorkshopFollowupState(id: steered.id, state: "paused", revision: 4, imageIds: [])
+        precondition(WorkshopFollowupState.merging([paused], into: statuses) == [paused], "Newer revisions remain authoritative")
+        let steering = WorkshopFollowupState(id: paused.id, state: "steering", revision: 4, imageIds: [])
+        precondition(WorkshopFollowupState.merging([paused], into: [steering]) == [paused],
+            "A rejected steer must still be allowed to return to paused within its revision")
+        let another = WorkshopFollowupState(id: "another-message", state: "queued", revision: 0, imageIds: [])
+        precondition(WorkshopFollowupState.merging([another, followup.status], into: statuses) == [steered, another])
         let queued = WorkshopQueuedSend(id: "stable-message", operationId: "original-operation", message: "Hello", imageIds: ["image"])
         let queuedRetry = try JSONDecoder().decode(WorkshopQueuedSend.self, from: JSONEncoder().encode(queued))
         precondition(queuedRetry.parameters["requestId"] as? String == "stable-message")

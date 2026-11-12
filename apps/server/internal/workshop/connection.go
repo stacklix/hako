@@ -39,6 +39,7 @@ type Frame struct {
 	Method      string          `json:"method,omitempty"`
 	Params      json.RawMessage `json:"params,omitempty"`
 	OperationID string          `json:"operationId,omitempty"`
+	QuestionID  string          `json:"questionId,omitempty"`
 	Cursor      int64           `json:"cursor,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
 	Error       *Error          `json:"error,omitempty"`
@@ -106,7 +107,7 @@ func (c *Connection) Run(seen func()) {
 			continue
 		}
 		if frame.Kind == "terminal" {
-			if c.Terminal == nil || !c.Terminal(frame) || c.Send(Frame{Kind: "terminal_ack", OperationID: frame.OperationID}) != nil {
+			if c.Terminal == nil || !c.Terminal(frame) || c.Send(Frame{Kind: "terminal_ack", OperationID: frame.OperationID, QuestionID: frame.QuestionID}) != nil {
 				return
 			}
 			continue

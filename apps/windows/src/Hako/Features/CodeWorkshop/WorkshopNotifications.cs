@@ -11,7 +11,13 @@ using System.Threading.Tasks;
 namespace Hako.Platform;
 
 internal sealed record WorkshopTerminal([property: JsonIgnore] string OperationId, string State, long FinishedAt,
-    string ProjectName, string SessionName, string Summary);
+    string ProjectName, string SessionName, string Summary, string QuestionId = "", string ThreadId = "");
+internal sealed class WorkshopQuestionNotice
+{
+    public long CreatedAt { get; set; }
+    public string Summary { get; set; } = "";
+    public bool Acknowledged { get; set; }
+}
 
 internal sealed partial class CodeWorkshop
 {
@@ -25,19 +31,28 @@ internal sealed partial class CodeWorkshop
         return string.Concat(runes.Take(runes.Length > limit ? limit - 1 : limit).Select(rune => rune.ToString())).Trim()
             + (runes.Length > limit ? "…" : "");
     }
-    private WorkshopTerminal Terminal(WorkshopJob job)
+    private WorkshopTerminal Terminal(WorkshopJob job, string questionId = "")
     {
         var project = NotificationText(ApplicationFor(job.Cwd)?.Name ?? Path.GetFileName(job.Cwd.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), 80);
         var session = NotificationText(job.SessionName, 120);
-        return new(job.Id, job.State, job.FinishedAt, project.Length > 0 ? project : "未命名项目",
-            session.Length > 0 ? session : "未命名会话", NotificationText(job.ReplySummary, 240));
+        var question = questionId.Length > 0 ? job.QuestionNotifications[questionId] : null;
+        return new(question is null ? job.Id : job.RootId ?? job.Id, question is null ? job.State : "input_required",
+            question?.CreatedAt ?? job.FinishedAt, project.Length > 0 ? project : "未命名项目",
+            session.Length > 0 ? session : "未命名会话", question?.Summary ?? NotificationText(job.ReplySummary, 240), questionId, job.ThreadId ?? "");
     }
     internal static bool TerminalState(string state) => state is "completed" or "failed" or "interrupted" or "unknown";
     internal void SetNotificationScope(string? scope) { lock (gate) notificationScope = scope; }
-    internal void AcknowledgeTerminal(string scope, string id)
+    internal void AcknowledgeTerminal(string scope, string id, string questionId = "")
     {
         lock (gate)
         {
+            if (questionId.Length > 0)
+            {
+                var owner = jobs.Values.FirstOrDefault(value => (value.RootId ?? value.Id) == id &&
+                    value.NotificationScope == scope && value.QuestionNotifications.ContainsKey(questionId));
+                if (owner is not null) { owner.QuestionNotifications[questionId].Acknowledged = true; Persist(owner); }
+                return;
+            }
             if (jobs.TryGetValue(id, out var job) && job.NotificationScope == scope && TerminalState(job.State) && !job.NotificationAcknowledged)
             { job.NotificationAcknowledged = true; Persist(job); }
         }
@@ -57,15 +72,19 @@ internal sealed partial class CodeWorkshop
                 RecoverJobs();
                 signal = changed.Task;
                 pending = jobs.Values.Where(job => job.NotificationScope == scope && TerminalState(job.State) && !job.NotificationAcknowledged && job.FinishedAt > 0)
-                    .OrderBy(job => job.FinishedAt).Select(Terminal).ToArray();
+                    .Select(job => Terminal(job)).Concat(jobs.Values.Where(job => job.NotificationScope == scope)
+                        .SelectMany(job => job.QuestionNotifications.Where(question => !question.Value.Acknowledged &&
+                            !jobs.Values.Any(answer => answer.ThreadId == job.ThreadId && answer.QuestionId == question.Key && answer.State != "cancelled"))
+                            .Select(question => Terminal(job, question.Key))))
+                    .OrderBy(item => item.FinishedAt).ToArray();
             }
-            foreach (var key in attempted.Keys.Except(pending.Select(value => value.OperationId)).ToArray()) attempted.Remove(key);
+            foreach (var key in attempted.Keys.Except(pending.Select(value => value.OperationId + ":" + value.QuestionId)).ToArray()) attempted.Remove(key);
             var now = DateTimeOffset.UtcNow;
             foreach (var item in pending)
             {
-                if (attempted.TryGetValue(item.OperationId, out var at) && now - at < TimeSpan.FromSeconds(10)) continue;
+                if (attempted.TryGetValue(item.OperationId + ":" + item.QuestionId, out var at) && now - at < TimeSpan.FromSeconds(10)) continue;
                 await publish(item);
-                attempted[item.OperationId] = DateTimeOffset.UtcNow;
+                attempted[item.OperationId + ":" + item.QuestionId] = DateTimeOffset.UtcNow;
             }
             if (pending.Length == 0) await signal.WaitAsync(token);
             else

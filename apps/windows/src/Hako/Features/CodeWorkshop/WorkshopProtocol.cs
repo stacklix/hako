@@ -41,7 +41,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable
     internal void SetNotificationScope(string? scope) => workshop.SetNotificationScope(scope);
     internal Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) =>
         Commands is null ? workshop.WatchTerminalsAsync(scope, publish, token) : Task.Delay(Timeout.Infinite, token);
-    internal void AcknowledgeTerminal(string scope, string id) => workshop.AcknowledgeTerminal(scope, id);
+    internal void AcknowledgeTerminal(string scope, string id, string questionId = "") => workshop.AcknowledgeTerminal(scope, id, questionId);
     internal Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
         workshop.WatchOperationAsync(parameters, publish, token);
 

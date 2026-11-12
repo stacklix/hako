@@ -156,7 +156,7 @@ const pushHistory = `
 	UNION ALL
 	SELECT id,'apns','out',NULL,target_name,
 		json_extract(payload,'$.aps.alert.title'),json_extract(payload,'$.aps.alert.body'),
-		CASE WHEN json_extract(payload,'$.type')='workshop_terminal' THEN '代码工坊' ELSE '后台直发' END,status,error,created_at FROM direct_push`
+		CASE WHEN json_extract(payload,'$.type') IN ('workshop_terminal','workshop_question') THEN '代码工坊' ELSE '后台直发' END,status,error,created_at FROM direct_push`
 
 func (s *Service) pushMessages(r *http.Request) (any, error) {
 	const limit = 30

@@ -17,6 +17,8 @@ type WorkshopTerminal struct {
 	ComputerID  string `json:"-"`
 	OperationID string `json:"-"`
 	State       string `json:"state"`
+	QuestionID  string `json:"questionId"`
+	ThreadID    string `json:"threadId"`
 	FinishedAt  int64  `json:"finishedAt"`
 	ProjectName string `json:"projectName"`
 	SessionName string `json:"sessionName"`
@@ -24,7 +26,8 @@ type WorkshopTerminal struct {
 }
 
 func (e WorkshopTerminal) Valid() bool {
-	return workshopUUID.MatchString(e.OperationID) && e.FinishedAt > 0 && e.FinishedAt <= nowMS()+300_000 && in(e.State, "completed", "failed", "interrupted", "unknown") &&
+	return workshopUUID.MatchString(e.OperationID) && e.FinishedAt > 0 && e.FinishedAt <= nowMS()+300_000 && in(e.State, "completed", "failed", "interrupted", "unknown", "input_required") &&
+		(e.State != "input_required" || (workshopTextValid(e.QuestionID, 200, true) && workshopUUID.MatchString(e.ThreadID))) &&
 		workshopTextValid(e.ProjectName, 80, true) && workshopTextValid(e.SessionName, 120, true) && workshopTextValid(e.Summary, 240, false)
 }
 
@@ -49,7 +52,7 @@ func (s *Service) SuppressWorkshop(console string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return exec(s.db, `UPDATE direct_push SET status='suppressed',code='WORKSHOP_DISABLED',error='工坊通知已关闭',updated_at=?
-        WHERE status='queued' AND json_extract(payload,'$.type')='workshop_terminal'
+        WHERE status='queued' AND json_extract(payload,'$.type') IN ('workshop_terminal','workshop_question')
         AND target_id IN (SELECT id FROM push_devices WHERE console_id=?)`, nowMS(), console)
 }
 
@@ -59,17 +62,23 @@ func (s *Service) EnqueueWorkshop(event WorkshopTerminal, console string, enable
 	if !event.Valid() || event.ComputerID == "" {
 		return invalid("无效的工坊任务终态")
 	}
-	hash := sha256.Sum256([]byte("hako-workshop-terminal/v1\n" + event.ComputerID + "\n" + strings.ToLower(event.OperationID)))
+	identity := "hako-workshop-terminal/v1\n" + event.ComputerID + "\n" + strings.ToLower(event.OperationID)
+	kind := "workshop_terminal"
+	if event.State == "input_required" {
+		identity += "\n" + event.QuestionID
+		kind = "workshop_question"
+	}
+	hash := sha256.Sum256([]byte(identity))
 	hash[6] = (hash[6] & 0x0f) | 0x50
 	hash[8] = (hash[8] & 0x3f) | 0x80
 	messageID := fmt.Sprintf("%x-%x-%x-%x-%x", hash[:4], hash[4:6], hash[6:8], hash[8:10], hash[10:16])
-	texts := map[string]string{"completed": "任务已完成。", "failed": "任务执行失败，请打开会话查看。", "interrupted": "任务已中断。", "unknown": "任务结果尚未确认，请打开会话核对。"}
+	texts := map[string]string{"input_required": "需要你回答，请打开会话。", "completed": "任务已完成。", "failed": "任务执行失败，请打开会话查看。", "interrupted": "任务已中断。", "unknown": "任务结果尚未确认，请打开会话核对。"}
 	body := texts[event.State]
 	if event.Summary != "" {
 		body += "\n" + event.Summary
 	}
 	payload, err := marshalPayload(object{"aps": object{"alert": object{"title": "代码工坊 · " + event.ProjectName, "subtitle": event.SessionName, "body": body}, "sound": "default"},
-		"type": "workshop_terminal", "notificationId": messageID, "computerId": event.ComputerID, "operationId": strings.ToLower(event.OperationID), "state": event.State})
+		"type": kind, "threadId": event.ThreadID, "questionId": event.QuestionID, "notificationId": messageID, "computerId": event.ComputerID, "operationId": strings.ToLower(event.OperationID), "state": event.State})
 	if err != nil {
 		return err
 	}

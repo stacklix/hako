@@ -32,6 +32,8 @@ internal sealed class WorkshopJob
     public string SessionName { get; set; } = "未命名会话";
     public string ReplySummary { get; set; } = "";
     public string[] ImageIds { get; set; } = [];
+    public string? QuestionId { get; set; }
+    public Dictionary<string, WorkshopQuestionNotice> QuestionNotifications { get; set; } = new();
     public string Model { get; set; } = "";
     public string Permission { get; set; } = "auto";
     public string ServiceTier { get; set; } = "";
@@ -104,11 +106,13 @@ internal sealed partial class CodeWorkshop
 
     public Task<object?> StartAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier");
+        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier", "questionId");
         var id = OperationId(parameters, "requestId");
         var applicationId = CodexJson.Required(parameters, "applicationId", 16);
         var cwd = ResolveApplication(applicationId);
         var images = ImageIds(parameters);
+        var questionId = CodexJson.Text(parameters, "questionId");
+        if (questionId.Length > 200) throw CodexJson.Invalid();
         var message = CodexJson.Text(parameters, "message");
         if (message.Length > 4000 || string.IsNullOrWhiteSpace(message) && images.Length == 0) throw CodexJson.Invalid();
         var model = CodexJson.Text(parameters, "model");
@@ -123,7 +127,7 @@ internal sealed partial class CodeWorkshop
         var name = CodexJson.Text(parameters, "name");
         if (name.Length > 120) throw CodexJson.Invalid();
         var identity = applicationId + "\n" + threadId + "\n" + name + "\n" + message;
-        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier" })
+        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier", "questionId" })
             if (parameters.TryGetProperty(key, out var option)) identity += "\n" + key + ":" + option.GetRawText();
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         token.ThrowIfCancellationRequested();
@@ -143,12 +147,13 @@ internal sealed partial class CodeWorkshop
                 throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重新发送。");
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
                 NotificationScope = notificationScope,
+                QuestionId = questionId.Length > 0 ? questionId : null,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
                 SessionName = name.Length > 0 ? NotificationText(name, 120) : "未命名会话",
                 Model = model, Permission = permission, ServiceTier = serviceTier, QueueOrder = DateTime.UtcNow.Ticks };
             Persist(job);
             jobs.Add(id, job);
-            try { Append(job, new("item", id, message + (images.Length > 0 ? $"\n[图片 × {images.Length}]" : ""), "user")); }
+            try { Append(job, new("item", id, message + (images.Length > 0 ? $"\n[图片 × {images.Length}]" : ""), "user", QuestionId: job.QuestionId)); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 job.State = "failed";
@@ -313,6 +318,11 @@ internal sealed partial class CodeWorkshop
                     {
                         if (method == "item/completed" && entry.Role == "assistant" && !string.IsNullOrWhiteSpace(entry.Text))
                             job.ReplySummary = NotificationText(entry.Text, 240);
+                        if (method == "item/completed" && entry.Questions is { Length: > 0 } &&
+                            job.QuestionNotifications.TryAdd(entry.Id, new WorkshopQuestionNotice {
+                                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                Summary = NotificationText(string.Join(" ", entry.Questions.Select(question => question.Title)), 240) }))
+                            Persist(job);
                         Append(job, entry);
                     }
                     break;

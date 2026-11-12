@@ -8,7 +8,8 @@ import Foundation
                 """.utf8), iosVersion: installed).warning
         }
 
-        precondition(warning(server: "0.3.0", minimumIOS: "0.3.0", installed: "0.3.0") == nil)
+        precondition(warning(server: "0.3.1", minimumIOS: "0.3.1", installed: "0.3.1") == nil)
+        precondition(warning(server: "0.3.0", minimumIOS: "0.3.1", installed: "0.3.1")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.2.4", minimumIOS: "0.3.0", installed: "0.3.13")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.3.10", minimumIOS: "0.3.9", installed: "0.3.10") == nil)
         precondition(warning(server: "0.2.99", minimumIOS: "0.3.0", installed: "0.3.0")?.hasSuffix("请升级 服务端。") == true)

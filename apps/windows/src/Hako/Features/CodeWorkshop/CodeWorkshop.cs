@@ -15,7 +15,8 @@ namespace Hako.Platform;
 internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
     string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null);
-internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null);
+internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null);
+internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
 
 internal sealed partial class CodeWorkshop : IAsyncDisposable
@@ -221,7 +222,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             .SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items"))).ToArray();
         foreach (var item in items) DiscoverItemArtifacts(id, cwd, item);
         WorkshopJob[] sent;
-        lock (gate) sent = jobs.Values.Where(job => job.ThreadId == id && job.Submitted).OrderBy(job => job.QueueOrder).ToArray();
+        // Steer submits input to the existing turn without starting a new one.
+        lock (gate) sent = jobs.Values.Where(job => job.ThreadId == id && (job.Submitted || job.State == "steered"))
+            .OrderBy(job => job.QueueOrder).ToArray();
         var used = new HashSet<string>();
         var events = turns.SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items"))
             .Select(item => HistoryItem(item, CodexJson.Text(turn, "id"), sent, used))).OfType<WorkshopEvent>().ToArray();
@@ -275,7 +278,12 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             case "plan": text = CodexJson.Text(item, "text"); break;
             default: return null;
         }
-        return new(type is "commandExecution" or "fileChange" or "plan" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000);
+        var questions = CodexJson.Text(item, "delivery") == "async" ? CodexJson.Items(CodexJson.Field(item, "questions"))
+            .Take(3).Select(question => new WorkshopAsyncQuestion(CodexJson.Clip(CodexJson.Text(question, "title"), 600),
+                CodexJson.Items(CodexJson.Field(question, "options")).Where(option => option.ValueKind == JsonValueKind.String)
+                    .Take(8).Select(option => CodexJson.Clip(option.GetString()!, 120)).ToArray()))
+            .Where(question => !string.IsNullOrWhiteSpace(question.Title)).ToArray() : [];
+        return new(type is "commandExecution" or "fileChange" or "plan" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000, Questions: questions.Length > 0 ? questions : null);
     }
 
     internal static WorkshopEvent? HistoryItem(JsonElement item, string turnId, WorkshopJob[] sent, HashSet<string> used)
@@ -289,7 +297,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
              entry.Text == job.InputMessage + (job.ImageIds.Length > 0 ? $"\n[图片 × {job.ImageIds.Length}]" : "")));
         if (job is null) return entry;
         used.Add(job.Id);
-        return entry with { Id = job.Id, ReplacesId = entry.Id == job.Id ? null : entry.Id };
+        return entry with { Id = job.Id, ReplacesId = entry.Id == job.Id ? null : entry.Id, QuestionId = job.QuestionId };
     }
 
     private void DiscoverArtifacts(string threadId, string cwd, IEnumerable<WorkshopEvent> entries)

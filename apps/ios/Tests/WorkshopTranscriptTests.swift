@@ -6,6 +6,19 @@ import Foundation
     }
 
     static func main() throws {
+        let questionEntry = WorkshopEntry(kind: "item", id: "async-card", text: "请选择升级方式", role: "assistant", state: "", truncated: false,
+            questions: [WorkshopAsyncQuestion(title: "如何升级？", options: ["同步升级"])])
+        var questionEntries: [WorkshopEntry] = []
+        var questionStream: [String: String] = [:]
+        WorkshopTranscriptMerge.apply(questionEntry, entries: &questionEntries, streamText: &questionStream)
+        precondition(questionEntries.first?.questions?.first?.options == ["同步升级"])
+        let answerEntry = WorkshopEntry(kind: "followup", id: "answer-request", text: "同步升级", role: "user", state: "queued", truncated: false, questionId: "async-card")
+        let answering = WorkshopTranscriptPresentation(entries: [questionEntry, answerEntry], followups: [WorkshopFollowupState(id: "answer-request", state: "steered", revision: 1, imageIds: [])])
+        precondition(answering.history.last?.questionId == "async-card" && answering.history.last?.state == "steered")
+        let questionCache = try! JSONEncoder().encode([questionEntry, answerEntry])
+        let restoredQuestions = try! JSONDecoder().decode([WorkshopEntry].self, from: questionCache)
+        precondition(restoredQuestions == [questionEntry, answerEntry])
+
         precondition(WorkshopWatchStep.next(operationId: "done", observedTerminal: "done", needsRecovery: true, busy: false) == .synchronize,
             "A connection failure after a completed turn must still reconnect")
         precondition(WorkshopWatchStep.next(operationId: "cached", observedTerminal: "cached", needsRecovery: true, busy: false) == .synchronize,
@@ -89,7 +102,9 @@ import Foundation
         for state in ["queued", "paused", "steering", "unknown"] {
             let presentation = WorkshopTranscriptPresentation(entries: mixed,
                 followups: [WorkshopFollowupState(id: queuedFirst.id, state: state, revision: 1, imageIds: [])])
-            precondition(presentation.queued == waiting.queued, "Unconsumed messages must stay at the bottom: " + state)
+            precondition(presentation.queued.map(\.id) == waiting.queued.map(\.id), "Unconsumed messages must stay at the bottom: " + state)
+            precondition(presentation.queued.first?.state == state && presentation.queued.last == queuedSecond,
+                "Pending rows must receive their current state without changing the next queued message")
         }
         for state in ["starting", "running", "waiting", "finishing", "sent", "completed", "steered"] {
             let presentation = WorkshopTranscriptPresentation(entries: mixed,
@@ -99,8 +114,29 @@ import Foundation
                 "Current operation state must release consumed messages from the queue even if cached entry state lags: " + state)
             precondition(presentation.history.count + presentation.queued.count == mixed.count,
                 "State transitions must render every message exactly once")
+            precondition(presentation.history.first(where: { $0.id == queuedFirst.id })?.state == state,
+                "A consumed message must display its acknowledged state: " + state)
         }
         let ordinaryUser = entry("ordinary-user", "Already sent", role: "user", state: "queued")
+        let steerAcknowledgement = WorkshopFollowupState(id: queuedFirst.id, state: "steered", revision: 1, imageIds: [])
+        let staleQueueSnapshot = WorkshopFollowupState(id: queuedFirst.id, state: "queued", revision: 0, imageIds: [])
+        let acknowledged = WorkshopFollowupState.merging([staleQueueSnapshot], into: [steerAcknowledgement])
+        let afterSteer = WorkshopTranscriptPresentation(entries: mixed, followups: acknowledged)
+        precondition(afterSteer.queued == [queuedSecond] && afterSteer.history.contains(where: { $0.id == queuedFirst.id }),
+            "Late queued metadata must not send an acknowledged Steer message back to the pending queue")
+        precondition(afterSteer.history.first(where: { $0.id == queuedFirst.id })?.state == "steered",
+            "A Steer acknowledgement must change the row's displayed value immediately, even when its cached event still says queued")
+        var linkedFollowup = queuedFirst
+        linkedFollowup.questionId = "question"
+        linkedFollowup.replacesId = "canonical-message"
+        linkedFollowup.questions = [WorkshopAsyncQuestion(title: "Question", options: ["Yes"])]
+        let resolved = WorkshopTranscriptPresentation(entries: [linkedFollowup], followups: [steerAcknowledgement]).history[0]
+        precondition(resolved.state == "steered" && resolved.id == linkedFollowup.id && resolved.text == linkedFollowup.text &&
+            resolved.questionId == linkedFollowup.questionId && resolved.replacesId == linkedFollowup.replacesId && resolved.questions == linkedFollowup.questions,
+            "Resolving the visible state must preserve the message identity, content and question metadata")
+        let cachedStatuses = try JSONDecoder().decode([WorkshopFollowupState].self, from: JSONEncoder().encode(acknowledged))
+        precondition(WorkshopFollowupState.merging([staleQueueSnapshot], into: cachedStatuses) == [steerAcknowledgement],
+            "Restoring a conversation must preserve acknowledgement against a stale snapshot")
         precondition(WorkshopTranscriptPresentation(entries: [ordinaryUser], followups: []).queued.isEmpty,
             "An ordinary historical user message must not be mistaken for a pending follow-up")
         let prototype = WorkshopArtifact(id: "prototype", name: "demo", path: #"C:\Code\hako\docs\demo.html"#, threadId: "thread")
@@ -137,6 +173,15 @@ import Foundation
         var aliasStream: [String: String] = [:]
         WorkshopTranscriptMerge.apply(canonical, entries: &liveAliases, streamText: &aliasStream)
         precondition(liveAliases.map(\.id) == ["request"])
+        let steeredReceipt = entry("request", "Same", kind: "followup", role: "user", state: "steered")
+        var duplicateSteer = WorkshopTranscriptMerge.history([steeredReceipt,
+            entry("codex-item", "Same", role: "user"), entry("second-request", "Same", role: "user")], page: [canonical])
+        precondition(duplicateSteer.map(\.id) == ["request", "second-request"] && duplicateSteer[0].kind == "item",
+            "A Steer receipt and its canonical bubble must merge while a genuinely repeated request remains distinct")
+        WorkshopTranscriptMerge.apply(entry("request", "Same", kind: "followup", role: "user", state: "queued"),
+            entries: &duplicateSteer, streamText: &aliasStream)
+        precondition(duplicateSteer.map(\.id) == ["request", "second-request"] && duplicateSteer[0].kind == "item",
+            "Replaying a queued receipt after canonical history must not recreate the duplicate card")
         let merged = WorkshopTranscriptMerge.history(original, page: [entry("b", "Updated"), entry("c", "Recent"), entry("d", "New")])
         precondition(merged.map(\.id) == ["a", "b", "c", "d"])
         precondition(merged[1].text == "Updated", "A refresh must update existing content without dropping older pages")

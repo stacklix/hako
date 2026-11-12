@@ -834,7 +834,7 @@ func (s *Service) drainAPNs() error {
 		if enabled(job, "direct") {
 			table = "direct_push"
 		}
-		if str(job, "push_type") == "workshop_terminal" {
+		if in(str(job, "push_type"), "workshop_terminal", "workshop_question") {
 			device, err := one(s.db, "SELECT console_id FROM push_devices WHERE id=?", str(job, "target_id"))
 			if err != nil {
 				return err

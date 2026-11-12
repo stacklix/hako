@@ -28,27 +28,29 @@ internal sealed partial class CodeWorkshop
             current.Message, root.StartedAt };
     }
     private object FollowupSummary(WorkshopJob job) => new { job.Id, message = job.InputMessage,
-        job.ImageIds, state = job.State == "completed" ? "sent" : job.State, job.Revision, job.QueueOrder, detail = job.Message };
+        job.ImageIds, state = job.State == "completed" ? "sent" : job.State, job.Revision, job.QueueOrder, detail = job.Message, job.QuestionId };
     private object[] FollowupSummaries(WorkshopJob root) => Group(root).Where(value => value.RootId is not null)
         .OrderBy(value => value.QueueOrder).Select(value => (object)new { value.Id, value.State, value.Revision, value.ImageIds }).ToArray();
     private void AppendFollowup(WorkshopJob job) => Append(job, new("followup", job.Id,
-        job.InputMessage + (job.ImageIds.Length > 0 ? $"\n[图片 × {job.ImageIds.Length}]" : ""), "user", job.State));
+        job.InputMessage + (job.ImageIds.Length > 0 ? $"\n[图片 × {job.ImageIds.Length}]" : ""), "user", job.State, QuestionId: job.QuestionId));
     private static string Digest(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
     public Task<object?> QueueAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "operationId", "requestId", "message", "imageIds");
+        CodexJson.Keys(parameters, "operationId", "requestId", "message", "imageIds", "questionId");
         var operationId = OperationId(parameters);
         var id = OperationId(parameters, "requestId");
         var message = CodexJson.Text(parameters, "message");
         var images = ImageIds(parameters);
+        var questionId = CodexJson.Text(parameters, "questionId");
+        if (questionId.Length > 200) throw CodexJson.Invalid();
         if (message.Length > 4000 || string.IsNullOrWhiteSpace(message) && images.Length == 0) throw CodexJson.Invalid();
         token.ThrowIfCancellationRequested();
         lock (gate)
         {
             RecoverJobs();
             var root = RootJob(GetJob(operationId));
-            var fingerprint = Digest(root.Id + "\n" + message + "\n" + string.Join(",", images));
+            var fingerprint = Digest(root.Id + "\n" + message + "\n" + string.Join(",", images) + (questionId.Length > 0 ? "\n" + questionId : ""));
             if (jobs.ContainsKey(id) || File.Exists(JobPath(id)))
             {
                 var existing = GetJob(id);
@@ -67,7 +69,7 @@ internal sealed partial class CodeWorkshop
                 .OrderByDescending(value => value.QueueOrder).FirstOrDefault() ?? root;
             var paused = !current.Active && current.State is not ("queued" or "completed");
             var job = new WorkshopJob { Id = id, RootId = root.Id, Fingerprint = fingerprint,
-                NotificationScope = notificationScope,
+                NotificationScope = notificationScope, QuestionId = questionId.Length > 0 ? questionId : null,
                 ApplicationId = root.ApplicationId, Cwd = root.Cwd, ThreadId = current.ThreadId ?? root.ThreadId,
                 SessionName = current.SessionName,
                 InputMessage = message, ImageIds = images, Model = current.Model, Permission = current.Permission,

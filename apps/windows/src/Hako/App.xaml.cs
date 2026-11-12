@@ -147,16 +147,13 @@ public partial class App : Application
     private static void StartBackground(AgentProfile profile)
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法找到 Hako 可执行文件。");
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        var arguments = new List<string>();
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Hako.dll"));
-        start.ArgumentList.Add("--background");
-        start.ArgumentList.Add("--data-dir"); start.ArgumentList.Add(profile.Store.DirectoryPath);
-        // A detached child must not retain the invoking script's stdout/stderr pipe handles.
-        using var standardHandles = CliConsole.PreventStandardHandleInheritance();
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("无法启动后台实例。");
-        process.StandardInput.Close();
+            arguments.Add(Path.Combine(AppContext.BaseDirectory, "Hako.dll"));
+        arguments.AddRange(["--background", "--data-dir", profile.Store.DirectoryPath]);
+        // A CLI launched by a task runner belongs to its temporary Windows job.
+        // The Agent must outlive that job as well as the CLI's standard handles.
+        using var process = DetachedAgentProcess.Start(executable, arguments.ToArray(), breakAway: true);
     }
     private void ShowMainWindow()
     {
