@@ -12,6 +12,17 @@ struct CodeWorkshopView: View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             page(at: timeline.date)
         }
+        .sheet(item: $pendingArchive) { session in
+            SettingsSheet(title: "归档会话", onSave: { archive(session) }, saveAccessibilityLabel: "确认归档") {
+                Form {
+                    Section {
+                        Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
+                        Button("确认归档") { archive(session) }
+                            .buttonStyle(HakoActionButtonStyle())
+                    }
+                }
+            }
+        }
     }
 
     private func page(at date: Date) -> some View {
@@ -104,18 +115,6 @@ struct CodeWorkshopView: View {
                 }
             }
         }
-        .alert("归档会话？", isPresented: Binding(get: { pendingArchive != nil }, set: { if !$0 { pendingArchive = nil } }),
-            presenting: pendingArchive) { session in
-            Button("取消", role: .cancel) { }
-            Button("确认归档") {
-                guard let agent = store.selectedAgent, !store.showingArchived,
-                      let current = store.visibleSessions.first(where: { $0.id == session.id }),
-                      !current.inProgress, current.state != "paused" else { return }
-                Task { await store.setArchived(session.id, archived: true, agent: agent) }
-            }
-        } message: { session in
-            Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
-        }
         .navigationDestination(isPresented: Binding(get: { conversation != nil }, set: { if !$0 { conversation = nil } })) {
             if let conversation { WorkshopConversationView(conversation: conversation).id(conversation.id) }
         }
@@ -127,6 +126,20 @@ struct CodeWorkshopView: View {
         .onChange(of: store.showingArchived) { _, _ in pendingArchive = nil }
         .onAppear { WorkshopRuntime.shared.enter(synchronizationOwner) }
         .onDisappear { WorkshopRuntime.shared.leave(synchronizationOwner) }
+    }
+
+    private func archive(_ session: WorkshopSession) {
+        pendingArchive = nil
+        guard let agent = store.selectedAgent, !store.showingArchived else { return }
+        guard let current = store.visibleSessions.first(where: { $0.id == session.id }) else {
+            store.error = "会话列表已更新，请刷新后核对归档状态。"
+            return
+        }
+        guard !current.inProgress, current.state != "paused" else {
+            store.error = "会话当前有任务正在处理或暂停，请结束任务后再归档。"
+            return
+        }
+        Task { await store.setArchived(session.id, archived: true, agent: agent) }
     }
 
     private var heading: some View {
@@ -269,7 +282,7 @@ struct CodeWorkshopView: View {
                             }
                             .accessibilityLabel(store.showingArchived ? "取消归档" : "归档")
                             .tint(.orange)
-                            .disabled(!agent.online || store.loading || store.archivingSessionID != nil ||
+                            .disabled(!agent.online || store.archivingSessionID != nil ||
                                 (!store.showingArchived && (session.inProgress || session.state == "paused")))
                         }
                     }

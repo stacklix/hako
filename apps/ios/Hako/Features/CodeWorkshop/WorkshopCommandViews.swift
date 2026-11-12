@@ -3,7 +3,6 @@ import SwiftUI
 struct WorkshopCommandLibraryView: View {
     @ObservedObject var client: WorkshopCommands
     @State private var editor: WorkshopSavedCommand?
-    @State private var showingEditor = false
 
     var body: some View {
         SettingsSheet(title: "快捷命令") {
@@ -68,14 +67,14 @@ struct WorkshopCommandLibraryView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { editor = WorkshopSavedCommand(); showingEditor = true } label: { Image(systemName: "plus") }
+                    Button { editor = WorkshopSavedCommand() } label: { Image(systemName: "plus") }
                         .accessibilityLabel("新增快捷命令").disabled(client.busy)
                 }
             }
             .refreshable { await client.prepare() }
         }
-        .sheet(isPresented: $showingEditor) {
-            if let editor { WorkshopCommandEditorView(client: client, initial: editor) }
+        .sheet(item: $editor) { editor in
+            WorkshopCommandEditorView(client: client, initial: editor)
         }
         .task { await client.prepare() }
     }

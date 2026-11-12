@@ -166,6 +166,8 @@ struct WorkshopUserMessage: View {
     @State private var selected: WorkshopPhoto?
     @State private var failure: String?
     @State private var loading = false
+    @State private var photoLoad = UUID()
+    @State private var photoRetry = 0
 
     var body: some View {
         let caption = WorkshopImageCaption(entry.text)
@@ -187,18 +189,22 @@ struct WorkshopUserMessage: View {
             if loading { ProgressView("正在加载图片…").font(.caption) }
             if let failure {
                 Text(failure).font(.caption).foregroundStyle(.secondary)
-                Button("重新加载图片") { Task { await loadPhotos() } }.font(.caption).disabled(loading)
+                Button("重新加载图片") { photoRetry += 1 }.font(.caption).disabled(loading)
             }
         }
-        .task(id: "\(threadId ?? ""):\(entry.id):\(caption.count)") { await loadPhotos() }
+        .task(id: "\(threadId ?? ""):\(entry.id):\(caption.count):\(photoRetry)") { await loadPhotos() }
         .sheet(item: $selected) { photo in WorkshopPhotoPreview(photo: photo) }
     }
 
     @MainActor private func loadPhotos() async {
         let count = WorkshopImageCaption(entry.text).count
-        guard count > 0, !loading else { return }
+        guard count > 0, !Task.isCancelled else { return }
+        // SwiftUI can start the replacement task before a cancelled image read
+        // unwinds. Let the new task take ownership instead of skipping it.
+        let load = UUID()
+        photoLoad = load
         loading = true; failure = nil
-        defer { loading = false }
+        defer { if photoLoad == load { loading = false } }
         if photos.isEmpty { photos = store.messagePhotos(entry.id) }
         do {
             guard photos.count < count else { return }
@@ -206,11 +212,14 @@ struct WorkshopUserMessage: View {
             for index in photos.count..<count {
                 let data = try await store.messageImage(threadId: threadId, messageId: entry.id, index: index, agent: agent)
                 try Task.checkCancellation()
+                guard photoLoad == load else { return }
                 guard UIImage(data: data) != nil else { throw HakoError(message: "图片格式无法显示。") }
                 photos.append(WorkshopPhoto(id: "\(entry.id)-\(index)", data: data))
             }
         } catch is CancellationError { }
-        catch { failure = "图片暂时无法加载：\(error.localizedDescription)" }
+        catch {
+            if photoLoad == load, !Task.isCancelled { failure = "图片暂时无法加载：\(error.localizedDescription)" }
+        }
     }
 }
 

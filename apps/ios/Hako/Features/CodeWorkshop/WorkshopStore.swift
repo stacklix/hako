@@ -27,6 +27,7 @@ import CryptoKit
     @Published private var localSessions = WorkshopLocalSessions()
     @Published private var draftRevision = 0
     private var cursor: String?
+    private var catalogRevision = UUID()
     private let transcriptDisk = WorkshopTranscriptDisk()
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
@@ -263,14 +264,23 @@ import CryptoKit
     }
 
     func setArchived(_ threadId: String, archived: Bool, agent: WorkshopAgent) async -> Bool {
-        guard authenticated, agent.online, agent.supportsArchiving, !loading, archivingSessionID == nil,
-              UUID(uuidString: threadId) != nil else { return false }
+        guard authenticated, agent.online, agent.supportsArchiving, archivingSessionID == nil,
+              UUID(uuidString: threadId) != nil else {
+            error = "当前无法修改归档状态，请确认电脑在线且没有其他归档操作正在进行。"
+            return false
+        }
         let ticket = scope
+        // A list read started before this mutation must not restore its stale rows.
+        catalogRevision = UUID()
         archivingSessionID = threadId; error = nil
         defer { if ticket == scope { archivingSessionID = nil } }
         do {
             let reply: WorkshopArchiveReply = try await call(agent, "thread.archive", ["threadId": threadId, "archived": archived])
-            guard ticket == scope, reply.threadId == threadId, reply.archived == archived else { return false }
+            guard ticket == scope else { return false }
+            guard reply.threadId == threadId, reply.archived == archived else {
+                error = "归档结果与请求不一致，请刷新列表核对。"
+                return false
+            }
             localSessions.remove(threadId: threadId, agentId: agent.id)
             if selectedAgentID == agent.id {
                 sessions.removeAll { $0.id == threadId }
@@ -312,6 +322,7 @@ import CryptoKit
         await prepareNetwork()
         guard authenticated, !loading, archivingSessionID == nil else { return }
         let ticket = scope
+        let revision = catalogRevision
         let archived = showingArchived
         loading = true; error = nil
         defer { if scope == ticket { loading = false } }
@@ -319,7 +330,7 @@ import CryptoKit
             struct List: Decodable { let computers: [WorkshopAgent] }
             let agentData = try await requests.send("computers.list")
             let values = try JSONDecoder().decode(List.self, from: agentData).computers
-            guard ticket == scope else { return }
+            guard ticket == scope, revision == catalogRevision else { return }
             let previousAgent = selectedAgentID
             agents = values
             if selectedAgent == nil {
@@ -331,7 +342,7 @@ import CryptoKit
             if archived { params["archived"] = true }
             let previousSessions = sessions
             let page: WorkshopCatalog = try await call(agent, "applications.list", params)
-            guard ticket == scope, selectedAgentID == agent.id, showingArchived == archived else { return }
+            guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             // Publish the newest page before slower reconciliation of older pages.
             applications = page.applications
             sessions = WorkshopCatalog.merge(page.sessions, existing: previousSessions, more: true)
@@ -348,12 +359,12 @@ import CryptoKit
                 var nextParams: [String: Any] = ["cursor": next]
                 if archived { nextParams["archived"] = true }
                 let older: WorkshopCatalog = try await call(agent, "applications.list", nextParams)
-                guard ticket == scope, selectedAgentID == agent.id, showingArchived == archived else { return }
+                guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
                 freshSessions += older.sessions
                 nextCursor = older.nextCursor; pages += 1
                 if nextCursor == next { break }
             }
-            guard ticket == scope, selectedAgentID == agent.id, showingArchived == archived else { return }
+            guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             applications = page.applications
             sessions = WorkshopCatalog.merge(freshSessions, existing: previousSessions, more: more)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
@@ -369,7 +380,7 @@ import CryptoKit
             try persist()
             try saveLists()
         } catch is CancellationError { }
-        catch { if ticket == scope { self.error = error.localizedDescription } }
+        catch { if ticket == scope, revision == catalogRevision { self.error = error.localizedDescription } }
     }
 
     private func promote(_ applicationID: String) {

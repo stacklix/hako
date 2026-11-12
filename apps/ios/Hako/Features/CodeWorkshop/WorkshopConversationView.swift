@@ -139,7 +139,7 @@ struct WorkshopConversationView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 projectInfo
-                if commands.taskID != nil {
+                if commands.task?.active == true || commands.pendingCommand != nil {
                     Button { showingCommandTask = true } label: {
                         HStack {
                             Label(commands.task?.name ?? "快捷命令任务", systemImage: "terminal")
