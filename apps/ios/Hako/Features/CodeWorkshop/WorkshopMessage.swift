@@ -3,6 +3,7 @@ import Foundation
 enum WorkshopMessagePart: Equatable {
     case text(String)
     case code(String, language: String?)
+    case image(String, URL)
 }
 
 enum WorkshopMessage {
@@ -62,6 +63,7 @@ enum WorkshopMessage {
     }
 
     private static func inlineParts(_ source: String) -> [WorkshopMessagePart] {
+        var result: [WorkshopMessagePart] = []
         var prose = ""
         var cursor = source.startIndex
         while cursor < source.endIndex {
@@ -77,6 +79,12 @@ enum WorkshopMessage {
                     continue
                 }
                 if marker.hasPrefix(remaining) { break }
+            }
+            if let picture = image(at: cursor, in: source) {
+                if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.text(prose)) }
+                result.append(.image(picture.alt, picture.url))
+                prose = ""; cursor = picture.end
+                continue
             }
             guard source[cursor] == "`", !escaped(cursor, in: source) else {
                 prose.append(source[cursor])
@@ -102,7 +110,30 @@ enum WorkshopMessage {
             prose += source[cursor..<closing.upperBound]
             cursor = closing.upperBound
         }
-        return prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.text(prose)]
+        if !prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.text(prose)) }
+        return result
+    }
+
+    private static func image(at start: String.Index, in source: String) -> (alt: String, url: URL, end: String.Index)? {
+        guard source[start...].hasPrefix("!["), !escaped(start, in: source) else { return nil }
+        let labelStart = source.index(start, offsetBy: 2)
+        guard let labelEnd = source[labelStart...].firstIndex(of: "]") else { return nil }
+        let opening = source.index(after: labelEnd)
+        guard opening < source.endIndex, source[opening] == "(" else { return nil }
+        var cursor = source.index(after: opening)
+        let urlStart = cursor
+        var depth = 1
+        while cursor < source.endIndex {
+            if source[cursor] == "(" { depth += 1 }
+            if source[cursor] == ")" { depth -= 1; if depth == 0 { break } }
+            cursor = source.index(after: cursor)
+        }
+        guard depth == 0 else { return nil }
+        let address = String(source[urlStart..<cursor])
+        guard !address.contains(where: \.isWhitespace), let url = URL(string: address),
+              ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false, url.user == nil, url.password == nil else { return nil }
+        return (String(source[labelStart..<labelEnd]), url, source.index(after: cursor))
     }
 
     private static func delimiterEnd(_ start: String.Index, in source: String) -> String.Index {

@@ -7,11 +7,15 @@ import FoundationNetworking
 struct InvestmentMarketDataTests {
     static func main() async throws {
         mapping()
+        try await credentialTestsUseAuthenticatedEndpoints()
+        try await credentialTestsRejectInvalidResponses()
         try await alternateAfterUnavailableQuote()
         try await watchRequiresRecentQuotes()
         try await usDailyBarWaitsForExchangeClose()
         try await stockConnectUsesHKDQuotes()
         try await instrumentSearchReturnsMatchingChoices()
+        try await mainlandStockSearchFindsChineseNames()
+        try await instrumentSearchReportsUnavailableSources()
         try await cryptocurrencyUsesUSDPair()
         try await binanceSpotCatalogFindsTRX()
         try await publicSpotPricesAreConvertedToDollars()
@@ -20,6 +24,60 @@ struct InvestmentMarketDataTests {
         try await domesticFundNAV()
         try await referenceRates()
         print("Investment market data checks passed")
+    }
+
+    static func credentialTestsUseAuthenticatedEndpoints() async throws {
+        var requests = 0
+        let provider = InvestmentQuoteProvider { request, secrets in
+            requests += 1
+            precondition(secrets == ["fixture"])
+            precondition(request.url?.query == nil)
+            if request.url?.host == "api.tushare.pro" {
+                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                precondition(request.httpMethod == "POST" && body["api_name"] as? String == "trade_cal")
+                precondition(body["token"] as? String == "fixture")
+                let params = body["params"] as! [String: String]
+                precondition(params["exchange"] == "SSE" && params["start_date"] == params["end_date"])
+                let date = params["start_date"]!
+                return response(request, "{\"code\":0,\"data\":{\"fields\":[\"cal_date\"],\"items\":[[\"" + date + "\"]]}}")
+            }
+            precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/api_usage")
+            precondition(request.value(forHTTPHeaderField: "Authorization") == "apikey fixture")
+            return response(request, #"{"timestamp":"2026-11-12 13:00:00","current_usage":0,"plan_limit":8,"plan_category":"Basic"}"#)
+        }
+        for source in InvestmentQuoteSource.allCases {
+            try await provider.testCredential(" \nfixture\n", for: source)
+        }
+        precondition(requests == 2)
+        for value in ["", " \n", "中文", "bad\nkey"] {
+            do {
+                try await provider.testCredential(value, for: .tushare)
+                preconditionFailure("Invalid credentials must be rejected before a request")
+            } catch InvestmentError.invalid {}
+        }
+        precondition(requests == 2)
+    }
+
+    static func credentialTestsRejectInvalidResponses() async throws {
+        let responses: [(InvestmentQuoteSource, String)] = [
+            (.tushare, #"{"code":2002,"data":null}"#),
+            (.tushare, #"{"code":0,"data":{"fields":["cal_date"],"items":[]}}"#),
+            (.twelveData, #"{"status":"error","code":401}"#),
+            (.twelveData, #"{"status":"error","code":429}"#),
+            (.twelveData, #"{"status":"ok"}"#)
+        ]
+        for (source, payload) in responses {
+            let provider = InvestmentQuoteProvider { request, _ in response(request, payload) }
+            do {
+                try await provider.testCredential("fixture", for: source)
+                preconditionFailure("A failed or incomplete response must not pass the connection test")
+            } catch InvestmentError.invalid {}
+        }
+        let offline = InvestmentQuoteProvider { _, _ in throw URLError(.notConnectedToInternet) }
+        do {
+            try await offline.testCredential("fixture", for: .twelveData)
+            preconditionFailure("Network failure must not pass the connection test")
+        } catch let error as URLError { precondition(error.code == .notConnectedToInternet) }
     }
 
     static func mapping() {
@@ -188,6 +246,59 @@ struct InvestmentMarketDataTests {
         let us = try await provider.searchInstruments(.init(query: "XY", kind: .stock, currency: .usd), keys: [.twelveData: "fixture"])
         precondition(us.map(\.name) == ["US Listing", "Another Listing", "Other Class"])
         precondition(us.map(\.market) == ["XNAS", "XNYS", "XNAS"])
+    }
+
+    static func mainlandStockSearchFindsChineseNames() async throws {
+        let provider = InvestmentQuoteProvider { request, secrets in
+            precondition(request.url?.host == "searchapi.eastmoney.com" && secrets.isEmpty)
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            precondition(query?.contains(.init(name: "type", value: "14")) == true)
+            precondition(query?.first(where: { $0.name == "input" })?.value?.isEmpty == false)
+            return response(request, #"""
+                {"QuotationCodeTable":{"Status":0,"Data":[
+                {"Code":"600036","Name":"招商银行","Classify":"AStock","MktNum":"1"},
+                {"Code":"600036","Name":"招商银行","Classify":"AStock","MktNum":"1"},
+                {"Code":"03968","Name":"招商银行","Classify":"HK","MktNum":"116"},
+                {"Code":"CIHKY","Name":"招商银行(ADR)","Classify":"OTCBB","MktNum":"153"},
+                {"Code":"600036","Name":"错误市场","Classify":"AStock","MktNum":"0"},
+                {"Code":"600000","Name":"浦发银行","Classify":"AStock","MktNum":"1"},
+                {"Code":"000001","Name":"平安银行","Classify":"AStock","MktNum":"0"},
+                {"Code":"920002","Name":"万达轴承","Classify":"AStock","MktNum":"0"},
+                {"Code":"510300","Name":"沪深300ETF","Classify":"Fund","MktNum":"1"}]}}
+                """#)
+        }
+        for text in ["招商银行", "600036", "600036.SH"] {
+            let rows = try await provider.searchInstruments(.init(query: text, kind: .stock, currency: .cny), keys: [:])
+            precondition(rows.map(\.code) == ["600036.SH"] && rows.map(\.name) == ["招商银行"])
+        }
+        let cases: [(String, Set<String>)] = [
+            ("银行", ["600036.SH", "600000.SH", "000001.SZ"]),
+            ("6000", ["600036.SH", "600000.SH"]),
+            ("平安", ["000001.SZ"]), ("000001.SZ", ["000001.SZ"]),
+            ("万达", ["920002.BJ"]), ("920002", ["920002.BJ"])
+        ]
+        for (text, expected) in cases {
+            let rows = try await provider.searchInstruments(.init(query: text, kind: .stock, currency: .cny), keys: [:])
+            precondition(Set(rows.map(\.code)) == expected)
+        }
+        let wrongVenue = try await provider.searchInstruments(.init(query: "600036.SZ", kind: .stock, currency: .cny), keys: [:])
+        precondition(wrongVenue.isEmpty)
+    }
+
+    static func instrumentSearchReportsUnavailableSources() async throws {
+        let unavailable = InvestmentQuoteProvider { _, _ in throw URLError(.timedOut) }
+        for search in [InvestmentInstrumentSearch(query: "招商银行", kind: .stock, currency: .cny),
+                       InvestmentInstrumentSearch(query: "AAPL", kind: .stock, currency: .usd)] {
+            do {
+                _ = try await unavailable.searchInstruments(search, keys: [.twelveData: "fixture"])
+                preconditionFailure("Unavailable search must not be reported as no matches")
+            } catch let error as URLError { precondition(error.code == .timedOut) }
+        }
+        let empty = InvestmentQuoteProvider { request, _ in
+            response(request, #"{"QuotationCodeTable":{"Status":0,"Data":null}}"#)
+        }
+        let rows = try await empty.searchInstruments(.init(query: "不存在的股票", kind: .stock, currency: .cny), keys: [:])
+        precondition(rows.isEmpty)
     }
 
     static func cryptocurrencyUsesUSDPair() async throws {

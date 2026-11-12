@@ -370,7 +370,14 @@ final class InvestmentStore: ObservableObject {
             guard search.currency == .usd else { return [] }
             return try await searchCrypto(search, local: local)
         }
-        let online = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys())
+        let online: [InvestmentAsset]
+        do {
+            online = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys())
+        } catch {
+            try Task.checkCancellation()
+            guard !local.isEmpty else { throw error }
+            online = []
+        }
         var results: [InvestmentAsset] = []
         for asset in local + online where !results.contains(where: { $0.matches(asset) && $0.name == asset.name }) {
             results.append(asset)

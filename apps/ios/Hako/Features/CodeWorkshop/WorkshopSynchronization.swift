@@ -61,6 +61,12 @@ import Foundation
 
     func setForeground(_ active: Bool) { foreground = active; reconcile() }
 
+    // Replace only read loops on a route change. Keep owners and conversation objects.
+    func restart() {
+        for value in running.values { value.task.cancel() }
+        reconcile()
+    }
+
     private func reconcile() {
         let leased = !owners.isEmpty || deadline.map { clock.now < $0 } == true
         let conversationVisible = owners.values.contains(true)

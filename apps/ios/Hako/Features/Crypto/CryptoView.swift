@@ -744,10 +744,9 @@ struct CryptoTrend: View {
     private var selectedRecord: CryptoRecord? { records.first { $0.day == selectedDay } }
     private var hasValues: Bool { records.contains { row in keys.contains { row.values[$0] != nil } } }
     private var tickDates: [Date] {
-        let step = max(1, Int(ceil(Double(records.count) / 4)))
-        return records.enumerated().compactMap { index, row in
-            index % step == 0 || index == records.count - 1 ? row.date : nil
-        }
+        guard let first = records.first, let last = records.last else { return [] }
+        let count = first.day.prefix(4) == last.day.prefix(4) ? 4 : 3
+        return CryptoDay.chartTicks(from: first.date, through: last.date, desiredCount: count)
     }
     private var dateDomain: ClosedRange<Date> {
         let first = records.first?.date ?? .now
@@ -862,13 +861,9 @@ struct CryptoTrend: View {
                     let first = date == dateDomain.lowerBound
                     let last = date == dateDomain.upperBound
                     let label = Text(dateLabel(date)).font(.system(size: 10)).foregroundStyle(HakoStyle.muted)
-                    if last && independentScales {
-                        AxisValueLabel { label }
-                    } else {
-                        AxisValueLabel(centered:false,anchor:first ? .topLeading : last ? .topTrailing : nil,
-                                       collisionResolution:first || last ? .disabled : .greedy) {
-                            label
-                        }
+                    AxisValueLabel(centered:false,anchor:first ? .topLeading : last ? .topTrailing : nil,
+                                   collisionResolution:.greedy) {
+                        label
                     }
                 }
             }

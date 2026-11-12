@@ -29,14 +29,15 @@ struct InvestmentAgentTests {
             .init(kind: .addAccount, values: ["name": "测试账户", "currency": "CNY", "account_type": "securities"])
         ])
         let messages: [InvestmentAgentConversation.Message] = [
-            .init(text: "成交截图", isUser: true, image: Data([1, 2, 3])),
+            .init(text: "成交截图", isUser: true, images: [Data([1, 2, 3]), Data([4, 5]), Data([6, 7, 8])]),
             .init(text: "", isUser: false, html: InvestmentAgentHTML("<p><strong>明细</strong></p>"))
         ]
         let history = Data("[[{\"role\":\"user\",\"content\":\"成交截图\"}]]".utf8)
         try file.save(.init(messages: messages, history: history, modelKey: "test", format: .openAI,
                             proposal: proposal, canExport: false, commitStarted: true))
         guard let saved = try file.load(), let draft = saved.proposal else { preconditionFailure("Missing saved conversation") }
-        precondition(saved.messages.map(\.id) == messages.map(\.id) && saved.messages[0].image == messages[0].image)
+        precondition(saved.messages.map(\.id) == messages.map(\.id) && saved.messages[0].images == messages[0].images)
+        precondition(saved.messages[1].images.isEmpty)
         precondition(saved.messages[1].html?.fragment == "<p><strong>明细</strong></p>")
         precondition(saved.history == history && saved.commitStarted)
         let newSession = UUID()
@@ -166,8 +167,8 @@ struct InvestmentAgentTests {
             let client = LanguageModelClient(configuration: .init(format: format, baseURL: "https://gateway.example/v1", model: "example", token: "test"))
             let tool = LanguageModelTool(name: "probe", description: "Probe",
                                          properties: ["value": ["type": "string"]], required: ["value"])
-            let image = Data([0xFF, 0xD8, 0xFF])
-            let request = try client.request(system: "system", messages: [client.userMessage("image", image: image)], tools: [tool])
+            let images = [Data([0xFF, 0xD8, 0xFF]), Data([1, 2, 3]), Data([4, 5, 6])]
+            let request = try client.request(system: "system", messages: [client.userMessage("images", images: images)], tools: [tool])
             guard let payload = request.httpBody,
                   let body = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
                   let messages = body["messages"] as? [[String: Any]],
@@ -175,18 +176,20 @@ struct InvestmentAgentTests {
                 preconditionFailure("Missing image in request")
             }
             precondition(body["tool_choice"] == nil, "Tool calling should use the provider's default selection mode")
+            precondition(parts.count == images.count + 1 && parts.first?["text"] as? String == "images")
             let response: [String: Any]
             switch format {
             case .openAI:
                 precondition(request.url?.path == "/v1/chat/completions" && request.value(forHTTPHeaderField: "Authorization") == "Bearer test")
-                let url = (parts.last?["image_url"] as? [String: String])?["url"]
-                precondition(url == "data:image/jpeg;base64," + image.base64EncodedString())
+                let urls = parts.dropFirst().compactMap { ($0["image_url"] as? [String: String])?["url"] }
+                precondition(urls == images.map { "data:image/jpeg;base64," + $0.base64EncodedString() })
                 response = ["choices": [["message": ["role": "assistant", "content": NSNull(), "annotations": [],
                     "tool_calls": [["id": "call", "type": "function", "function": ["name": "probe", "arguments": #"{"value":"ping"}"#]]]]]]]
             case .anthropic:
                 precondition(request.url?.path == "/v1/messages" && request.value(forHTTPHeaderField: "x-api-key") == "test")
-                let source = parts.last?["source"] as? [String: String]
-                precondition(source?["media_type"] == "image/jpeg" && source?["data"] == image.base64EncodedString())
+                let sources = parts.dropFirst().compactMap { $0["source"] as? [String: String] }
+                precondition(sources.allSatisfy { $0["media_type"] == "image/jpeg" })
+                precondition(sources.compactMap { $0["data"] } == images.map { $0.base64EncodedString() })
                 response = ["content": [["type": "tool_use", "name": "probe", "id": "call", "input": ["value": "ping"]]]]
             }
             let reply = try client.decode(JSONSerialization.data(withJSONObject: response))
@@ -195,6 +198,11 @@ struct InvestmentAgentTests {
             let result = client.toolMessages([(reply.calls[0], "ok")])
             if format == .openAI { precondition(result[0]["tool_call_id"] as? String == "call") }
             else { precondition((result[0]["content"] as? [[String: String]])?.first?["tool_use_id"] == "call") }
+            let imageOnly = client.userMessage("", images: images)["content"] as? [[String: Any]]
+            precondition(imageOnly?.count == images.count && imageOnly?.first?["type"] as? String != "text")
+            let textOnly = client.userMessage("文字记账")
+            if format == .openAI { precondition(textOnly["content"] as? String == "文字记账") }
+            else { precondition((textOnly["content"] as? [[String: String]])?.first?["text"] == "文字记账") }
         }
     }
 }

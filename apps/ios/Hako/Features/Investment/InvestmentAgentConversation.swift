@@ -1,11 +1,13 @@
 import Foundation
 
 struct InvestmentAgentConversation: Codable {
+    static let maximumImageCount = 9
+
     struct Message: Identifiable, Codable {
         var id = UUID()
         let text: String
         let isUser: Bool
-        var image: Data? = nil
+        var images: [Data] = []
         var html: InvestmentAgentHTML? = nil
     }
 

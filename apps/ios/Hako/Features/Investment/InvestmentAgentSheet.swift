@@ -6,11 +6,25 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct InvestmentAgentSheet: View {
+    private struct Attachment: Identifiable {
+        let id = UUID()
+        let item: PhotosPickerItem
+        let data: Data
+    }
+
+    private struct ImagePreview: Identifiable {
+        let id = UUID()
+        let images: [Data]
+        let index: Int
+    }
+
     @ObservedObject private var store: InvestmentStore
     @ObservedObject private var agent: InvestmentAgentSession
     @State private var message = ""
-    @State private var attachment: Data?
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var attachments: [Attachment] = []
+    @State private var selectedPhotos: [PhotosPickerItem] = []
+    @State private var photoSelectionLimit = InvestmentAgentConversation.maximumImageCount
+    @State private var imagePreview: ImagePreview?
     @State private var showsPhotos = false
     @State private var loadingPhoto = false
     @State private var showsModelSettings = false
@@ -31,7 +45,6 @@ struct InvestmentAgentSheet: View {
                       isBusy: agent.committing || exporting) {
             VStack(spacing: 0) {
                 thread
-                Divider()
                 composer
             }
             .background(HakoStyle.background)
@@ -55,8 +68,13 @@ struct InvestmentAgentSheet: View {
         } message: {
             Text("开始新会话会清空当前对话，并放弃未发送的消息和待确认的记账草稿。")
         }
-        .photosPicker(isPresented: $showsPhotos, selection: $selectedPhoto, matching: .images)
-        .task(id: selectedPhoto) { await loadPhoto(selectedPhoto) }
+        .photosPicker(isPresented: $showsPhotos, selection: $selectedPhotos,
+                      maxSelectionCount: photoSelectionLimit,
+                      selectionBehavior: .ordered, matching: .images)
+        .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
+        .sheet(item: $imagePreview) { preview in
+            InvestmentAgentPhotoPreview(images: preview.images, selection: preview.index)
+        }
         .sheet(isPresented: $showsModelSettings, onDismiss: agent.checkConfiguration) { LanguageModelSettingsSheet() }
         .sheet(item: $editing) { proposal in
             InvestmentAgentEditSheet(proposal: proposal, book: store.book) { actions in try await agent.revise(actions) }
@@ -102,7 +120,6 @@ struct InvestmentAgentSheet: View {
                             ProgressView()
                             Text("正在处理…").font(.footnote).foregroundStyle(.secondary)
                             Spacer()
-                            if agent.proposal == nil { Button("停止", action: agent.stop).font(.footnote) }
                         }
                     }
                     Color.clear.frame(height: 1).id("end")
@@ -139,7 +156,18 @@ struct InvestmentAgentSheet: View {
             HStack {
                 Spacer(minLength: 28)
                 VStack(alignment: .leading, spacing: 7) {
-                    if let image = item.image { photo(image, size: 72) }
+                    if !item.images.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 100))], alignment: .leading, spacing: 8) {
+                            ForEach(item.images.indices, id: \.self) { index in
+                                Button {
+                                    imagePreview = ImagePreview(images: item.images, index: index)
+                                } label: { photo(item.images[index], size: 76) }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("预览第 \(index + 1) 张图片，共 \(item.images.count) 张")
+                            }
+                        }
+                        .frame(maxWidth: CGFloat(min(item.images.count, 3) * 84 - 8), alignment: .leading)
+                    }
                     if !item.text.isEmpty { Text(verbatim: item.text).textSelection(.enabled) }
                 }
                 .padding(10)
@@ -158,69 +186,95 @@ struct InvestmentAgentSheet: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     shortcut("文字记账") { message = "帮我记一笔买入："; composing = true }
                     shortcut("成交截图") {
-                        if message.isEmpty { message = "帮我根据这张成交截图记账。" }
-                        showsPhotos = true
+                        openPhotos()
                     }
+                    .disabled(!canAddPhotos)
                     shortcut("查交易记录") { message = "查一下最近的交易记录。"; composing = true }
                 }
             }
             .scrollIndicators(.hidden)
-            if let attachment {
-                HStack(spacing: 8) {
-                    photo(attachment, size: 36)
-                    Text("待发送图片").font(.footnote).foregroundStyle(.secondary)
-                    Spacer()
-                    Button { self.attachment = nil; selectedPhoto = nil } label: {
-                        Image(systemName: "xmark").frame(width: 44, height: 44)
-                    }
-                    .accessibilityLabel("移除图片")
-                }
-            }
+            if !attachments.isEmpty { photoAttachments }
             if loadingPhoto { ProgressView("正在读取图片…").font(.footnote) }
             if agent.proposal != nil {
                 Text("请先确认或放弃上方草稿，再发送下一条。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            HStack(spacing: 6) {
-                Button { showsPhotos = true } label: {
-                    Image(systemName: "photo.badge.plus").frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("添加图片")
-                .disabled(loadingPhoto)
-                TextField("输入消息，或添加成交截图…", text: $message, axis: .vertical)
-                    .lineLimit(1...4)
-                    .padding(.horizontal, 9).padding(.vertical, 8)
-                    .frame(minHeight: 42)
-                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 10))
-                    .accessibilityLabel("聊天消息")
-                    .focused($composing)
-                Button(action: send) {
-                    Image(systemName: "arrow.up").font(.headline)
-                        .frame(width: 44, height: 44)
-                        .foregroundStyle(HakoStyle.background)
-                        .background(Color.primary, in: Circle())
+            HStack(alignment: .bottom, spacing: 2) {
+                Button(action: openPhotos) {
+                    Image(systemName: "plus").font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(HakoStyle.text).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(!canSend)
-                .opacity(canSend ? 1 : 0.38)
-                .accessibilityLabel("发送消息")
+                .accessibilityLabel("添加图片")
+                .accessibilityValue("已添加 \(attachments.count) 张，最多 \(InvestmentAgentConversation.maximumImageCount) 张")
+                .disabled(!canAddPhotos)
+                TextField("描述这笔交易…", text: $message, axis: .vertical)
+                    .font(.body).lineLimit(1...5)
+                    .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("聊天消息")
+                    .focused($composing)
+                if agent.working && agent.proposal == nil {
+                    Button(action: agent.stop) {
+                        Image(systemName: "square.fill").font(.system(size: 13, weight: .semibold))
+                    }
+                    .buttonStyle(InvestmentAgentSendButtonStyle())
+                    .accessibilityLabel("停止生成")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold))
+                    }
+                    .buttonStyle(InvestmentAgentSendButtonStyle())
+                    .disabled(!canSend)
+                    .accessibilityLabel("发送消息")
+                }
             }
+            .padding(4)
+            .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 27))
+            .overlay { RoundedRectangle(cornerRadius: 27).strokeBorder(HakoStyle.line, lineWidth: 1).allowsHitTesting(false) }
         }
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        .padding(.horizontal, 16).padding(.vertical, 8).background(HakoStyle.background)
         .disabled(agent.committing)
+    }
+
+    private var photoAttachments: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 12) {
+                ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
+                    Button {
+                        imagePreview = ImagePreview(images: attachments.map(\.data), index: index)
+                    } label: { photo(attachment.data, size: 76) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("预览第 \(index + 1) 张待发送图片")
+                    .overlay(alignment: .topTrailing) {
+                        Button { attachments.removeAll { $0.id == attachment.id } } label: {
+                            Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, .black.opacity(0.65)).frame(width: 32, height: 32)
+                        }
+                        .accessibilityLabel("移除第 \(index + 1) 张图片")
+                        .disabled(loadingPhoto)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var canAddPhotos: Bool {
+        !loadingPhoto && !agent.committing && attachments.count < InvestmentAgentConversation.maximumImageCount
     }
 
     private var canSend: Bool {
         !agent.working && agent.proposal == nil && !loadingPhoto &&
-            (!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachment != nil)
+            (!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
-    private var hasUnsentMessage: Bool { !message.isEmpty || attachment != nil || loadingPhoto }
+    private var hasUnsentMessage: Bool { !message.isEmpty || !attachments.isEmpty || loadingPhoto }
 
     private var canStartNewConversation: Bool {
         !agent.working && !agent.committing && !exporting &&
@@ -230,8 +284,8 @@ struct InvestmentAgentSheet: View {
     private func startNewConversation() {
         guard canStartNewConversation, agent.startNewConversation() else { return }
         message = ""
-        attachment = nil
-        selectedPhoto = nil
+        attachments = []
+        selectedPhotos = []
         composing = false
     }
 
@@ -249,36 +303,54 @@ struct InvestmentAgentSheet: View {
             if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
             else { Image(systemName: "photo") }
         }
-        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 7))
+        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 10))
         .accessibilityLabel("已附加的图片")
     }
 
     private func send() {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.count <= 12_000 else { agent.error = "消息太长，请分段发送。"; return }
-        if agent.send(text, image: attachment) {
+        if agent.send(text, images: attachments.map(\.data)) {
             message = ""
-            attachment = nil
-            selectedPhoto = nil
+            attachments = []
+            selectedPhotos = []
             composing = false
         }
     }
 
-    private func loadPhoto(_ item: PhotosPickerItem?) async {
-        guard let item else { loadingPhoto = false; return }
+    private func openPhotos() {
+        guard canAddPhotos else { return }
+        photoSelectionLimit = InvestmentAgentConversation.maximumImageCount - attachments.count
+        selectedPhotos = []
+        showsPhotos = true
+    }
+
+    private func loadPhotos(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { loadingPhoto = false; return }
         loadingPhoto = true
-        defer { if selectedPhoto == item { loadingPhoto = false } }
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else {
-                throw LanguageModelError.invalid("无法读取这张图片。")
+        defer { if selectedPhotos == items { loadingPhoto = false } }
+        var failures = 0
+        for item in items {
+            do {
+                try Task.checkCancellation()
+                guard selectedPhotos == items else { return }
+                guard attachments.count < InvestmentAgentConversation.maximumImageCount else { break }
+                if attachments.contains(where: { $0.item == item }) { continue }
+                guard let data = try await item.loadTransferable(type: Data.self) else {
+                    throw LanguageModelError.invalid("无法读取这张图片。")
+                }
+                let encoded = await Task.detached(priority: .userInitiated) { Self.modelImage(data) }.value
+                try Task.checkCancellation()
+                guard selectedPhotos == items else { return }
+                guard let encoded else { throw LanguageModelError.invalid("无法处理这张图片，请换一张。") }
+                attachments.append(Attachment(item: item, data: encoded))
+            } catch is CancellationError { return }
+            catch {
+                guard selectedPhotos == items, !Task.isCancelled else { return }
+                failures += 1
             }
-            let encoded = await Task.detached(priority: .userInitiated) { Self.modelImage(data) }.value
-            try Task.checkCancellation()
-            guard selectedPhoto == item else { return }
-            guard let encoded else { throw LanguageModelError.invalid("无法处理这张图片，请换一张。") }
-            attachment = encoded
-        } catch is CancellationError { return }
-        catch { if selectedPhoto == item { agent.error = error.localizedDescription } }
+        }
+        if failures > 0 { agent.error = "有 \(failures) 张图片未能读取，请重新选择。其余图片已保留。" }
     }
 
     nonisolated private static func modelImage(_ data: Data) -> Data? {
@@ -310,6 +382,95 @@ struct InvestmentAgentSheet: View {
             showsExporter = true
         } catch is CancellationError { return }
         catch { agent.error = error.localizedDescription }
+    }
+}
+
+private struct InvestmentAgentSendButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.frame(width: 36, height: 36)
+            .foregroundStyle(enabled ? HakoStyle.background : HakoStyle.muted)
+            .background(enabled ? HakoStyle.text : HakoStyle.line, in: Circle())
+            .padding(4).contentShape(Circle()).opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+private struct InvestmentAgentPhotoPreview: View {
+    let images: [Data]
+    @State private var selection: Int
+
+    init(images: [Data], selection: Int) {
+        self.images = images
+        _selection = State(initialValue: selection)
+    }
+
+    var body: some View {
+        SettingsSheet(title: "图片 \(selection + 1)/\(images.count)") {
+            TabView(selection: $selection) {
+                ForEach(images.indices, id: \.self) { index in
+                    Group {
+                        if let image = UIImage(data: images[index]) {
+                            InvestmentAgentImageZoom(image: image)
+                                .accessibilityLabel("第 \(index + 1) 张图片，可双指缩放")
+                        } else {
+                            ContentUnavailableView("无法预览图片", systemImage: "photo")
+                        }
+                    }
+                    .tag(index)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: images.count > 1 ? .automatic : .never))
+            .indexViewStyle(.page(backgroundDisplayMode: .always))
+            .background(HakoStyle.background)
+        }
+    }
+}
+
+private struct InvestmentAgentImageZoom: UIViewRepresentable {
+    let image: UIImage
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = InvestmentAgentZoomScrollView()
+        scroll.minimumZoomScale = 1
+        scroll.maximumZoomScale = 5
+        scroll.delegate = context.coordinator
+        let picture = context.coordinator.picture
+        scroll.picture = picture
+        picture.contentMode = .scaleAspectFit
+        picture.image = image
+        scroll.addSubview(picture)
+        return scroll
+    }
+
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.picture.image = image
+        scroll.setNeedsLayout()
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        let picture = UIImageView()
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            picture.center = CGPoint(x: max(scrollView.bounds.width, scrollView.contentSize.width) / 2,
+                                     y: max(scrollView.bounds.height, scrollView.contentSize.height) / 2)
+        }
+    }
+}
+
+private final class InvestmentAgentZoomScrollView: UIScrollView {
+    weak var picture: UIImageView?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if zoomScale == 1, picture?.frame != bounds {
+            picture?.frame = bounds
+            contentSize = bounds.size
+        }
     }
 }
 

@@ -30,6 +30,14 @@ struct WorkshopPushNotice: Equatable, Identifiable, Sendable {
     let subtitle: String
     let body: String
 
+    func belongsToConversation(computerId: String, threadId: String?, operationId: String?) -> Bool {
+        guard self.computerId == computerId else { return false }
+        if let threadId, !threadId.isEmpty, !self.threadId.isEmpty {
+            return self.threadId.caseInsensitiveCompare(threadId) == .orderedSame
+        }
+        return operationId?.caseInsensitiveCompare(self.operationId) == .orderedSame
+    }
+
     init?(_ info: [AnyHashable: Any]) {
         guard RemoteNotificationPolicy.isWorkshop(info), let id = info["notificationId"] as? String,
               let computer = info["computerId"] as? String, !computer.isEmpty,

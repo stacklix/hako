@@ -9,6 +9,7 @@ import CryptoKit
     @Published private(set) var localEndpoint: LocalNetworkEndpoint?
     let routeChanges = PassthroughSubject<Void, Never>()
     private var networkCheck = UUID()
+    private var transportRevision = UUID()
     private var subscription: AnyCancellable?
     private var context = ""
     private var preferences = WorkshopPreferences()
@@ -40,7 +41,8 @@ import CryptoKit
         prepareContext()
     }
 
-    var scope: String { localEndpoint.map { "local:" + $0.address } ?? authentication.requestContext }
+    // Authorization fences in-flight work; neither it nor the route identifies disk data.
+    var scope: String { authentication.requestContext }
     var authenticated: Bool { localEndpoint != nil || authentication.authenticated && !authentication.logoutPending }
     var transportLabel: String { localEndpoint.map { "局域网直连 · " + $0.address } ?? "服务器转发" }
 
@@ -48,7 +50,11 @@ import CryptoKit
         let check = UUID(); networkCheck = check
         let endpoint = await LocalNetworkService.shared.endpoint(for: .codeWorkshop)
         guard !Task.isCancelled, check == networkCheck, endpoint != localEndpoint else { return }
+        socket.close()
         directSocket?.close(); directSocket = nil
+        transportRevision = UUID()
+        catalogRevision = UUID()
+        loading = false
         localEndpoint = endpoint
         if let endpoint {
             directSocket = WorkshopRequestSocket(context: { "local:" + endpoint.address }, open: {
@@ -87,7 +93,8 @@ import CryptoKit
     }
 
     private var cacheFile: URL {
-        let digest = SHA256.hash(data: Data(context.utf8)).map { String(format: "%02x", $0) }.joined()
+        let account = WorkshopCacheIdentity.account(serverURL: authentication.serverURL, username: authentication.username)
+        let digest = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("CodeWorkshop", isDirectory: true).appendingPathComponent(digest + ".json")
     }
@@ -219,10 +226,8 @@ import CryptoKit
         let values = sessions.filter { UUID(uuidString: $0.id) != nil }.prefix(300)
         cachedCatalogs[catalogKey(selectedAgentID, archived: showingArchived)] = WorkshopCachedCatalog(catalog: WorkshopCatalog(
             applications: applications, sessions: Array(values), nextCursor: cursor), savedAt: .now)
-        let currentIDs = Set(agents.map(\.id))
-        cachedCatalogs = cachedCatalogs.filter { item in
-            currentIDs.contains(item.key) || currentIDs.contains { catalogKey($0, archived: true) == item.key }
-        }
+        // A direct connection exposes only its own computer. Its inventory is not
+        // evidence that cached catalogs for other computers should be deleted.
         let snapshot = WorkshopListSnapshot(agents: agents, catalogs: cachedCatalogs)
         let data = try JSONEncoder().encode(snapshot)
         var url = listCacheFile
@@ -324,8 +329,8 @@ import CryptoKit
         let ticket = scope
         let revision = catalogRevision
         let archived = showingArchived
-        loading = true; error = nil
-        defer { if scope == ticket { loading = false } }
+        loading = true
+        defer { if scope == ticket, revision == catalogRevision { loading = false } }
         do {
             struct List: Decodable { let computers: [WorkshopAgent] }
             let agentData = try await requests.send("computers.list")
@@ -379,6 +384,7 @@ import CryptoKit
             if !applications.contains(where: { $0.id == selectedApplicationID }) { selectedApplicationID = orderedApplications.first?.id ?? "" }
             try persist()
             try saveLists()
+            error = nil
         } catch is CancellationError { }
         catch { if ticket == scope, revision == catalogRevision { self.error = error.localizedDescription } }
     }
@@ -476,11 +482,12 @@ import CryptoKit
     }
 
     func messageImage(threadId: String, messageId: String, index: Int, agent: WorkshopAgent) async throws -> Data {
+        let ticket = scope
         let identity = "\(agent.id)\n\(threadId)\n\(messageId)\n\(index)"
         let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         var directory = cacheFile.deletingPathExtension().appendingPathExtension("images")
         let cached = directory.appendingPathComponent(key + ".image")
-        if let data = try? Data(contentsOf: cached), !data.isEmpty, data.count <= 2_000_000 { return data }
+        if let data = try? Data(contentsOf: cached), !data.isEmpty, data.count <= 8 * 1024 * 1024 { return data }
         var bytes = Data()
         var revision: String?
         var total: Int?
@@ -489,7 +496,7 @@ import CryptoKit
             var params: [String: Any] = ["threadId": threadId, "messageId": messageId, "index": index, "offset": bytes.count]
             params["revision"] = revision
             let chunk: WorkshopArtifactChunk = try await call(agent, "image.read", params)
-            guard chunk.id == messageId, chunk.offset == bytes.count, chunk.total > 0, chunk.total <= 2_000_000,
+            guard chunk.id == messageId, chunk.offset == bytes.count, chunk.total > 0, chunk.total <= 8 * 1024 * 1024,
                   total == nil || total == chunk.total, revision == nil || revision == chunk.revision,
                   let decoded = Data(base64Encoded: chunk.content), !decoded.isEmpty,
                   chunk.nextOffset == bytes.count + decoded.count, chunk.nextOffset <= chunk.total else { throw CocoaError(.coderReadCorrupt) }
@@ -497,6 +504,7 @@ import CryptoKit
         } while bytes.count < (total ?? 0)
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         guard hash == revision else { throw CocoaError(.coderReadCorrupt) }
+        guard ticket == scope else { throw CancellationError() }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         #if os(iOS)
         try bytes.write(to: cached, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -506,6 +514,33 @@ import CryptoKit
         var flags = URLResourceValues(); flags.isExcludedFromBackup = true
         try directory.setResourceValues(flags)
         return bytes
+    }
+
+    private func remoteImageFile(_ url: URL) -> URL {
+        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        return cacheFile.deletingPathExtension().appendingPathExtension("remote-images")
+            .appendingPathComponent(key + ".image")
+    }
+
+    func cachedRemoteImage(_ url: URL) -> Data? {
+        guard context == scope, let data = try? Data(contentsOf: remoteImageFile(url)),
+              !data.isEmpty, data.count <= 8 * 1024 * 1024 else { return nil }
+        return data
+    }
+
+    func cacheRemoteImage(_ data: Data, from url: URL) throws {
+        guard context == scope else { throw CancellationError() }
+        guard !data.isEmpty, data.count <= 8 * 1024 * 1024 else { throw HakoError(message: "图片为空或超过 8 MB，无法缓存。") }
+        let file = remoteImageFile(url)
+        var directory = file.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try data.write(to: file, options: .atomic)
+        #endif
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        try directory.setResourceValues(flags)
     }
 
     func uploadImages(_ ids: [String], agent: WorkshopAgent, progress: (Double) -> Void) async throws {
@@ -535,18 +570,19 @@ import CryptoKit
         let ticket = scope
         try await verifyNetworkRoute()
         guard ticket == scope else { throw CancellationError() }
+        let route = transportRevision
         guard authenticated, UUID(uuidString: id) != nil, cursor >= 0,
               let agentID = agent.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
         try await WorkshopEventStream.watch(open: {
-            guard ticket == self.scope else { throw CancellationError() }
+            guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
             if let endpoint = self.localEndpoint {
                 return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1/events/\(id)/\(cursor)")
             }
             return try await self.authentication.openWebSocket(
                 "/ws/workshop/events/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
         }, receive: { (page: WorkshopOperationPage) in
-            guard ticket == self.scope else { throw CancellationError() }
+            guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
             return try await receive(page)
         })
     }
@@ -555,11 +591,12 @@ import CryptoKit
         let ticket = scope
         try await verifyNetworkRoute()
         guard ticket == scope else { throw CancellationError() }
+        let route = transportRevision
         guard authenticated else { throw HakoError(message: "请先在 Hako 设置中登录服务器。") }
         let body: [String: Any] = ["method": method, "params": params]
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw HakoError(message: "消息过长，请分段发送。") }
         let data = try await requests.send(method, computerID: agent.id, params: params)
-        guard ticket == scope else { throw CancellationError() }
+        guard ticket == scope, route == transportRevision else { throw CancellationError() }
         return try JSONDecoder().decode(Result.self, from: data)
     }
 

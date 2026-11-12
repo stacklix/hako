@@ -779,7 +779,7 @@ private struct InvestmentAssetFields: View {
         let searchesCrypto = draft.kind == .crypto || draft.kind == .cryptoContract
         return Group {
             InvestmentField(draft.kind == .cryptoContract ? "搜索合约代码" : (searchesCrypto ? "搜索币种代码或名称" : "搜索代码或名称"),
-                            text: $query)
+                            text: $query, focusesOnRowTap: true)
                 .autocorrectionDisabled()
                 .task(id: request) { await search(request) }
             if !text.isEmpty {
@@ -821,7 +821,7 @@ private struct InvestmentAssetFields: View {
     }
 
     private func searchEmptyMessage(searchesCrypto: Bool) -> String {
-        if searchesCrypto || store.configured {
+        if searchesCrypto || (currency == .cny && draft.kind == .stock) || store.configured {
             return watchOnly ? "没有找到匹配标的，可以换个关键词。" : "没有找到匹配标的，可以换个关键词或手动录入。"
         }
         return watchOnly ? "请先在投资记账设置中配置行情接口。" : "配置行情源后可在线搜索，也可以手动录入。"

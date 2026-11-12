@@ -18,6 +18,14 @@ import Foundation
         let notice = WorkshopPushNotice(question)!
         precondition(notice.computerId == "PC" && notice.subtitle == "迭代" && notice.body == "需要你回答")
         precondition(WorkshopPushNotice(["type": "workshop_question"]) == nil)
+        precondition(notice.belongsToConversation(computerId: "PC", threadId: notice.threadId, operationId: nil))
+        precondition(notice.belongsToConversation(computerId: "PC", threadId: notice.threadId, operationId: "another-turn"),
+            "Another turn in the visible conversation must still suppress the banner")
+        precondition(!notice.belongsToConversation(computerId: "PC", threadId: "another-conversation", operationId: notice.operationId))
+        precondition(!notice.belongsToConversation(computerId: "another-PC", threadId: notice.threadId, operationId: notice.operationId))
+        precondition(notice.belongsToConversation(computerId: "PC", threadId: nil, operationId: notice.operationId),
+            "A newly created visible conversation can match by its stable request ID")
+        precondition(!notice.belongsToConversation(computerId: "PC", threadId: nil, operationId: nil))
         let build: [AnyHashable: Any] = ["type": "build_completed"]
         precondition(RemoteNotificationPolicy.presentsInForeground(build))
         precondition(RemoteNotificationPolicy.destination(build, defaultAction: true) == .settings)

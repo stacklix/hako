@@ -218,6 +218,11 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var thread = await ThreadAsync(id, true, token);
         var cwd = CodexJson.Text(thread, "cwd");
         var turns = CodexJson.Items(CodexJson.Field(thread, "turns")).ToArray();
+        lock (gate)
+        {
+            foreach (var job in jobs.Values.Where(job => job.ThreadId == id && job.State == "unknown"))
+                if (ReconcileTurn(job, turns)) { Persist(job); if (job.RootId is not null) AppendFollowup(job); }
+        }
         var items = turns
             .SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items"))).ToArray();
         foreach (var item in items) DiscoverItemArtifacts(id, cwd, item);
@@ -254,6 +259,19 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         return Page();
     }
 
+    internal static bool ReconcileTurn(WorkshopJob job, JsonElement[] turns)
+    {
+        if (job.State != "unknown" || string.IsNullOrEmpty(job.TurnId)) return false;
+        var turn = turns.FirstOrDefault(value => CodexJson.Text(value, "id") == job.TurnId);
+        var state = CodexJson.Text(turn, "status");
+        if (state is not ("completed" or "interrupted" or "failed")) return false;
+        job.State = state; job.Outcome = state;
+        job.Message = state == "failed" ? CodexJson.Clip(CodexJson.Text(CodexJson.Field(turn, "error"), "message"), 1000) : null;
+        var reply = CodexJson.Items(CodexJson.Field(turn, "items")).LastOrDefault(value => CodexJson.Text(value, "type") == "agentMessage");
+        job.ReplySummary = NotificationText(CodexJson.Text(reply, "text"), 240);
+        return true;
+    }
+
     internal static WorkshopEvent? Item(JsonElement item)
     {
         var type = CodexJson.Text(item, "type");
@@ -269,6 +287,12 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
                 var imageCount = CodexJson.Items(CodexJson.Field(item, "content")).Count(value => CodexJson.Text(value, "type") is "image" or "localImage");
                 if (imageCount > 0) text += $"\n[图片 × {imageCount}]";
                 break;
+            case "imageGeneration":
+                role = "assistant";
+                text = CodexJson.Text(item, "status") == "completed"
+                    ? CodexJson.Text(item, "savedPath").Length > 0 ? "[图片 × 1]" : "图片未保存到电脑，暂时无法读取。"
+                    : CodexJson.Text(item, "status") == "failed" ? "图片生成失败。" : "正在生成图片…";
+                break;
             case "agentMessage": role = "assistant"; text = CodexJson.Text(item, "text"); break;
             case "commandExecution": text = CodexJson.Text(item, "command") + "\n" + CodexJson.Text(item, "aggregatedOutput"); break;
             case "fileChange":
@@ -283,7 +307,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
                 CodexJson.Items(CodexJson.Field(question, "options")).Where(option => option.ValueKind == JsonValueKind.String)
                     .Take(8).Select(option => CodexJson.Clip(option.GetString()!, 120)).ToArray()))
             .Where(question => !string.IsNullOrWhiteSpace(question.Title)).ToArray() : [];
-        return new(type is "commandExecution" or "fileChange" or "plan" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000, Questions: questions.Length > 0 ? questions : null);
+        return new(type is "commandExecution" or "fileChange" or "plan" or "imageGeneration" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000, Questions: questions.Length > 0 ? questions : null);
     }
 
     internal static WorkshopEvent? HistoryItem(JsonElement item, string turnId, WorkshopJob[] sent, HashSet<string> used)

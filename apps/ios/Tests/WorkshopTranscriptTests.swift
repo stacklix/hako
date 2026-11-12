@@ -27,6 +27,23 @@ import Foundation
         precondition(WorkshopWatchStep.next(operationId: "live", observedTerminal: "previous", needsRecovery: false, busy: false) == .poll("live"))
         precondition(WorkshopWatchStep.next(operationId: "done", observedTerminal: "done", needsRecovery: false, busy: false) == .idle)
         precondition(WorkshopWatchStep.next(operationId: "live", observedTerminal: nil, needsRecovery: true, busy: true) == .idle)
+        precondition(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: true, failures: 0) == 30)
+        precondition(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: true, failures: 1) == 3000,
+            "Buffered pages must not trigger a 30ms reconnect loop while disconnected")
+        precondition(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: false, failures: 1) == 3000)
+        precondition(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: true, failures: 20) == 15000)
+        let staleNotice = WorkshopEntry(kind: "notice", id: "error-recovered", text: "Unknown old result", role: "", state: "", truncated: false)
+        let otherNotice = WorkshopEntry(kind: "notice", id: "error-other", text: "Still unknown", role: "", state: "", truncated: false)
+        for state in ["completed", "interrupted", "failed"] {
+            precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([staleNotice, otherNotice], operationId: "recovered", state: state, followups: []) == [otherNotice])
+        }
+        precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([staleNotice], operationId: "recovered", state: "unknown", followups: []) == [staleNotice],
+            "A history refresh alone cannot remove a genuinely unknown outcome")
+        let generatedPicture = WorkshopEntry(kind: "imageGeneration", id: "image-output", text: "[图片 × 1]", role: "assistant", state: "completed", truncated: false)
+        let imageHistory = WorkshopTranscriptMerge.history([], page: [generatedPicture])
+        precondition(imageHistory == [generatedPicture], "Generated picture items must remain in canonical history")
+        let restoredPicture = try! JSONDecoder().decode([WorkshopEntry].self, from: JSONEncoder().encode(imageHistory))
+        precondition(restoredPicture.first?.kind == "imageGeneration" && restoredPicture.first?.id == "image-output")
         let resumeNow = Date(timeIntervalSince1970: 1000)
         precondition(WorkshopWatchStep.onEntry(lastVerifiedAt: resumeNow.addingTimeInterval(-59), now: resumeNow,
             operationId: "live", observedTerminal: nil, needsRecovery: false, busy: false) == .poll("live"),

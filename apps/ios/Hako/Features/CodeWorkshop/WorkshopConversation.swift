@@ -134,6 +134,8 @@ import Combine
         draft = ""; photos = []
     }
 
+    var notificationOperationID: String? { operationId }
+
     var canCompose: Bool { !isArchived && !busy && store.authenticated && scope == store.scope }
     var canConfigure: Bool { !isArchived && store.authenticated && scope == store.scope }
     var canSubmitMessage: Bool { canCompose && !synchronizing && !uncertain }
@@ -245,8 +247,10 @@ import Combine
             }
             for artifact in newestArtifacts where !artifacts.contains(where: { $0.id == artifact.id }) { artifacts.append(artifact) }
             cachedAt = nil
-            connectionIssue = nil
-            error = nil
+            // A successful history read alone does not verify the operation
+            // connection. Keep the failure visible until both reads succeed.
+            if !synchronizing, operationId == nil { connectionIssue = nil; error = nil }
+            if !more, operation?.state == "unknown" { observedTerminal = nil }
             if !more { latestCompletionID = result.completionId; markLatestRead() }
             if !more, operationId == originalOperation, let newestOperation, newestOperation != operationId {
                 operationId = newestOperation; operation = nil; eventCursor = 0; streamText = [:]
@@ -282,7 +286,7 @@ import Combine
             case .synchronize:
                 idleChecks = 0
                 await synchronize()
-                failures = connectionIssue == nil ? 0 : failures + 1
+                failures = connectionIssue == nil && !uncertain ? 0 : failures + 1
             case .poll(let operationId):
                 idleChecks = 0
                 do {
@@ -311,7 +315,7 @@ import Combine
                     if idleChecks >= 10 { idleChecks = 0; await loadHistory() }
                 }
             }
-            do { try await Task.sleep(for: .milliseconds(hasMoreEvents ? 30 : min(15, 1 + failures * 2) * 1000)) }
+            do { try await Task.sleep(for: .milliseconds(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: hasMoreEvents, failures: failures))) }
             catch { return }
         }
     }
@@ -356,6 +360,7 @@ import Combine
     private func accept(_ result: WorkshopOperationPage, id: String) async throws {
         guard scope == store.scope, operationId == id, result.operation.id == id, result.cursor >= eventCursor else { throw CancellationError() }
         operation = result.operation
+        if result.operation.active { error = nil }
         connectionIssue = nil
         uncertain = false
         cachedAt = nil
@@ -391,7 +396,10 @@ import Combine
         if !result.operation.active && !result.hasMore {
             observedTerminal = id
             if result.operation.state == "completed" { latestCompletionID = result.operation.turnId; markLatestRead() }
-            if let message = result.operation.message, !message.isEmpty { error = message }
+            error = result.operation.message.flatMap { $0.isEmpty ? nil : $0 }
+            entries = WorkshopTranscriptMerge.withoutRecoveredNotices(entries, operationId: id,
+                state: result.operation.state, followups: followups)
+            saveTranscript()
             if result.operation.state == "completed" || result.operation.state == "interrupted" { await loadHistory() }
             await store.refresh()
         }
@@ -530,6 +538,7 @@ import Combine
     private func readFailed(_ failure: Error) {
         guard !Task.isCancelled, scope == store.scope else { return }
         lastVerifiedAt = nil
+        hasMoreEvents = false
         let underlying = failure as NSError
         if failure is CancellationError || underlying.domain == NSURLErrorDomain || underlying.domain == NSPOSIXErrorDomain {
             connectionIssue = "与服务器的连接已中断，正在重新连接。电脑上的任务会继续执行。"

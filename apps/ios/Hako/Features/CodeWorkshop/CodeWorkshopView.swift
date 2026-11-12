@@ -31,29 +31,58 @@ struct CodeWorkshopView: View {
     }
 
     private func openNotification(_ link: WorkshopPushNotice) async {
-        await store.restore()
-        guard push.workshopLink?.id == link.id else { return }
-        guard store.agents.contains(where: { $0.id == link.computerId }) else {
-            store.error = "通知对应的电脑当前不可用，请检查连接。"; return
+        let requestID = push.workshopNavigationID
+        func isCurrent() -> Bool {
+            !Task.isCancelled && push.workshopNavigationID == requestID && push.workshopLink?.id == link.id
         }
-        await store.selectAgent(link.computerId)
-        guard let agent = store.selectedAgent, UUID(uuidString: link.threadId) != nil else { return }
         do {
+            guard UUID(uuidString: link.threadId) != nil else {
+                store.error = "这条通知没有可打开的会话。"; return
+            }
+            await store.prepareNetwork()
+            guard isCurrent() else { return }
+            // Open known conversations immediately, including when the computer is offline.
+            if store.authenticated, let agent = store.selectedAgent, agent.id == link.computerId,
+               let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(link.threadId) == .orderedSame }),
+               let application = store.applications.first(where: { $0.id == session.applicationId }) {
+                showNotification(session, agent: agent, application: application)
+                return
+            }
+            await store.restore()
+            // The catalog synchronizer may already own the same refresh during cold launch.
+            while store.loading { try await Task.sleep(for: .milliseconds(100)) }
+            guard isCurrent() else { return }
+            guard store.agents.contains(where: { $0.id == link.computerId }) else {
+                store.error = "通知对应的电脑当前不可用，请检查连接。"; return
+            }
+            await store.selectAgent(link.computerId)
+            while store.loading { try await Task.sleep(for: .milliseconds(100)) }
+            guard isCurrent(), let agent = store.selectedAgent, agent.id == link.computerId else { return }
+            if let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(link.threadId) == .orderedSame }),
+               let application = store.applications.first(where: { $0.id == session.applicationId }) {
+                showNotification(session, agent: agent, application: application)
+                return
+            }
+            let scope = store.scope
             let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": link.threadId])
-            guard push.workshopLink?.id == link.id, agent.id == store.selectedAgentID else { return }
-            guard let application = store.applications.first(where: {
-                history.cwd.replacingOccurrences(of: "\\", with: "/").lowercased().hasPrefix($0.path.replacingOccurrences(of: "\\", with: "/").lowercased() + "/") ||
-                history.cwd.caseInsensitiveCompare($0.path) == .orderedSame
-            }) else { store.error = "通知对应的项目已不可用。"; return }
-            store.selectApplication(application.id)
-            let session = store.sessions.first(where: { $0.id == link.threadId }) ?? WorkshopSession(id: link.threadId,
+            guard isCurrent(), scope == store.scope, agent.id == store.selectedAgentID else { return }
+            guard let application = WorkshopApplication.containing(history.cwd, in: store.applications) else {
+                store.error = "通知对应的项目已不可用。"; return
+            }
+            let session = WorkshopSession(id: link.threadId,
                 title: link.subtitle.isEmpty ? "会话" : link.subtitle, applicationId: application.id, cwd: history.cwd,
                 preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970), state: "unknown",
                 operationId: history.operationId, completionId: history.completionId)
-            settingsPresented = false; creating = false; pendingArchive = nil
-            conversation = WorkshopRuntime.shared.open(session, agent: agent, application: application, archived: false)
-            push.workshopLink = nil
-        } catch { store.error = "无法打开通知对应的会话，请检查连接后重试。" }
+            showNotification(session, agent: agent, application: application)
+        } catch is CancellationError { }
+        catch { if isCurrent() { store.error = "无法打开通知对应的会话，请检查连接后重试。" } }
+    }
+
+    private func showNotification(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) {
+        store.selectApplication(application.id)
+        settingsPresented = false; creating = false; pendingArchive = nil
+        conversation = WorkshopRuntime.shared.open(session, agent: agent, application: application, archived: store.showingArchived)
+        push.workshopLink = nil
     }
 
     private func page(at date: Date) -> some View {
@@ -116,7 +145,7 @@ struct CodeWorkshopView: View {
                             Text(cachedAt, style: .relative)
                         }.font(.caption2).foregroundStyle(HakoStyle.muted)
                     }
-                    if store.loading { Text("正在读取会话…").font(.footnote).foregroundStyle(HakoStyle.muted) }
+                    if store.sessions.isEmpty { Text(store.loading ? "正在读取会话…" : "连接后显示会话").font(.footnote).foregroundStyle(HakoStyle.muted) }
                 }
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 0))

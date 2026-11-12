@@ -13,5 +13,7 @@
     <string>连接局域网中的 Chore 以查询构建和下载更新，并连接你配置的 Windows Agent、Arcane 等子应用服务。</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>读取当前 Wi-Fi 名称，判断是否使用应用更新与子应用配置的局域网地址。</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>将你选择保存的会话图片添加到本地相册。</string>
 </dict>
 </plist>

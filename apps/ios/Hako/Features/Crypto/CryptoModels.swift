@@ -265,6 +265,21 @@ enum CryptoDay {
     static func key(_ date: Date) -> String {
         let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.dateFormat = "yyyy-MM-dd"; return f.string(from: date)
     }
+
+    static func chartTicks(from start: Date, through end: Date, desiredCount: Int = 4) -> [Date] {
+        let calendar = calendar
+        let first = calendar.startOfDay(for: start)
+        let last = calendar.startOfDay(for: end)
+        guard desiredCount > 0, last >= first,
+              let span = calendar.dateComponents([.day], from: first, to: last).day else { return [] }
+        let count = min(desiredCount, span + 1)
+        guard count > 1 else { return [first] }
+        // Space ticks across time, including both ends, without appending a nearby final label.
+        return (0..<count).compactMap { index in
+            let offset = Int((Double(span) * Double(index) / Double(count - 1)).rounded())
+            return calendar.date(byAdding: .day, value: offset, to: first)
+        }
+    }
 }
 
 enum CryptoSyncPolicy {

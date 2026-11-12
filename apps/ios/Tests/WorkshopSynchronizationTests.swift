@@ -41,10 +41,16 @@ import Foundation
         sync.enter(detailOwner, conversation: true)
         try await until { catalog.active == 0 }
         precondition(conversation.starts == 1 && conversation.active == 1, "Entering a conversation must not restart its existing read loop")
+        let startsBeforeRouteChange = conversation.starts
+        sync.restart()
+        try await until { conversation.starts == startsBeforeRouteChange + 1 && conversation.active == 1 }
+        precondition(sync.hasVisibleOwners && catalog.active == 0,
+            "Route changes must preserve the detail visibility lease and registered conversations")
+        precondition(conversation.maxActive == 1, "A route change must finish the old event stream before opening the new one")
         sync.enter(listOwner, conversation: false)
         sync.leave(detailOwner)
         try await until { catalog.active == 1 }
-        precondition(conversation.starts == 1, "Returning to the list must keep the conversation continuously synchronized")
+        precondition(conversation.starts == startsBeforeRouteChange + 1, "Returning to the list must keep the conversation continuously synchronized")
 
         let ticksBeforeExit = conversation.ticks
         sync.leave(listOwner)
@@ -53,7 +59,7 @@ import Foundation
             "Both the catalog and conversation must keep syncing during the exit grace period")
         sync.enter(listOwner, conversation: false)
         try await Task.sleep(for: .milliseconds(220))
-        precondition(conversation.starts == 1 && conversation.active == 1, "Reentry must cancel the previous expiration without restarting synchronization")
+        precondition(conversation.starts == startsBeforeRouteChange + 1 && conversation.active == 1, "Reentry must cancel the previous expiration without restarting synchronization")
 
         sync.leave(listOwner)
         try await until { conversation.active == 0 && catalog.active == 0 }
@@ -69,6 +75,11 @@ import Foundation
         try await until { conversation.active == 1 && catalog.active == 1 }
         sync.setForeground(false)
         try await until { conversation.active == 0 && catalog.active == 0 }
+        let backgroundStarts = conversation.starts
+        sync.restart()
+        try await Task.sleep(for: .milliseconds(20))
+        precondition(conversation.starts == backgroundStarts && conversation.active == 0,
+            "A background route change must not start network traffic")
         sync.setForeground(true)
         try await until { conversation.active == 1 && catalog.active == 1 }
         precondition(conversation.maxActive == 1 && catalog.maxActive == 1, "Resuming must never overlap old and new pollers")

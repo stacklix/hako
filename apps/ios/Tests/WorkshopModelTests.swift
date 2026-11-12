@@ -2,6 +2,20 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let account = WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "alice")
+        precondition(account == WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "alice"))
+        precondition(account != WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "bob"))
+        precondition(account != WorkshopCacheIdentity.account(serverURL: "https://other.example", username: "alice"))
+        precondition(WorkshopCacheIdentity.account(serverURL: "a\nb", username: "c") !=
+            WorkshopCacheIdentity.account(serverURL: "a", username: "b\nc"), "Account cache keys must not collide across field boundaries")
+        let root = WorkshopApplication(id: "root", name: "Root", path: "C:\\Code\\")
+        let project = WorkshopApplication(id: "project", name: "Project", path: "C:\\Code\\Hako\\")
+        precondition(WorkshopApplication.containing("c:/code/hako", in: [root, project]) == project)
+        precondition(WorkshopApplication.containing("C:\\CODE\\HAKO\\apps", in: [root, project]) == project,
+            "Notification routing must choose the closest project, regardless of separator, case or trailing slash")
+        precondition(WorkshopApplication.containing("C:/Code/Hako-other", in: [project]) == nil,
+            "A project name prefix must not route a notification into a different project")
+        precondition(WorkshopApplication.containing("/repo/app", in: [.init(id: "unix", name: "Unix", path: "/repo/")])?.id == "unix")
         let question = WorkshopAsyncQuestion(title: "如何升级？", options: ["同步升级", "保留兼容"])
         precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [:]) == nil)
         precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: " \n "]) == nil)

@@ -602,6 +602,11 @@ private struct InvestmentQuoteCredentialEditor: View {
     @State private var key = ""
     @State private var savedKey: String?
     @State private var error: String?
+    @State private var testing = false
+    @State private var testMessage: String?
+    @State private var testSucceeded = false
+    @State private var showsKey = false
+    @FocusState private var keyFocused: Bool
 
     private var hasChanges: Bool { savedKey.map { key != $0 } ?? false }
 
@@ -610,21 +615,81 @@ private struct InvestmentQuoteCredentialEditor: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(source.credential).font(.subheadline).foregroundStyle(.secondary)
-                        SecureField("输入 " + source.credential, text: $key)
+                        HStack {
+                            Text(source.credential).font(.subheadline).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { showsKey.toggle() } label: {
+                                Image(systemName: showsKey ? "eye.slash" : "eye")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel((showsKey ? "隐藏" : "显示") + source.credential)
+                        }
+                        Group {
+                            if showsKey {
+                                TextEditor(text: $key)
+                            } else {
+                                SecureField("输入 " + source.credential, text: $key)
+                            }
+                        }
+                            .font(.body.monospaced())
+                            .frame(minHeight: 120, alignment: .topLeading)
+                            .scrollContentBackground(.hidden)
                             .accessibilityLabel(source.credential)
+                            .focused($keyFocused)
+                            .keyboardType(.asciiCapable)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
                     .investmentListRow()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { _ in keyFocused = true })
+                    .listRowInsets(EdgeInsets())
                     .disabled(savedKey == nil)
                 } footer: {
                     Text("清空后保存可移除此行情源的凭据。")
+                }
+                Section {
+                    Button { testing = true } label: {
+                        HStack(spacing: 8) {
+                            if testing { ProgressView() }
+                            Text(testing ? "正在测试…" : "测试连接")
+                        }
+                    }
+                    .buttonStyle(HakoActionButtonStyle(primary: false))
+                    .disabled(testing || savedKey == nil || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .listRowBackground(Color.clear)
+                    if let testMessage {
+                        Text(testMessage).font(.footnote)
+                            .foregroundStyle(testSucceeded ? Color.green : Color.red)
+                    }
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 if savedKey == nil { Button("重试读取", action: load) }
             }
         }
         .task { load() }
+        .task(id: testing) {
+            if testing { await testConnection() }
+        }
+        .onChange(of: key) { _, _ in testMessage = nil }
+        .onChange(of: showsKey) { _, _ in keyFocused = true }
+    }
+
+    private func testConnection() async {
+        let value = key
+        testMessage = nil
+        defer { testing = false }
+        do {
+            try await InvestmentQuoteProvider().testCredential(value, for: source)
+            guard !Task.isCancelled, key == value else { return }
+            testSucceeded = true
+            testMessage = "连接成功，凭据可用。"
+        } catch {
+            guard !Task.isCancelled, key == value else { return }
+            testSucceeded = false
+            testMessage = "测试失败：" + error.localizedDescription
+        }
     }
 
     private func load() {

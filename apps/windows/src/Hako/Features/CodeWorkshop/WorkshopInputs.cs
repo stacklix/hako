@@ -15,6 +15,7 @@ internal sealed record WorkshopModel(string Id, string Name, string Description,
 
 internal sealed partial class CodeWorkshop
 {
+    internal const int MaximumReadImageBytes = 8 * 1024 * 1024;
     private readonly Dictionary<string, string> messageImageSources = new();
     public async Task<object?> ImageAsync(JsonElement parameters, CancellationToken token)
     {
@@ -39,12 +40,21 @@ internal sealed partial class CodeWorkshop
             var thread = await ThreadAsync(threadId, true, token);
             var item = CodexJson.Items(CodexJson.Field(thread, "turns"))
                 .SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items")))
-                .FirstOrDefault(item => CodexJson.Text(item, "type") == "userMessage" && CodexJson.Text(item, "id") == messageId);
-            var images = CodexJson.Items(CodexJson.Field(item, "content"))
-                .Where(value => CodexJson.Text(value, "type") is "localImage" or "image").ToArray();
-            if (imageIndex >= images.Length) throw new WorkshopException("codex_image_missing", "找不到这条消息的图片。");
-            source = CodexJson.Text(images[imageIndex], "type") == "localImage"
-                ? CodexJson.Text(images[imageIndex], "path") : CodexJson.Text(images[imageIndex], "url");
+                .FirstOrDefault(item => CodexJson.Text(item, "type") is "userMessage" or "imageGeneration" && CodexJson.Text(item, "id") == messageId);
+            if (CodexJson.Text(item, "type") == "imageGeneration")
+            {
+                if (imageIndex != 0 || CodexJson.Text(item, "status") != "completed")
+                    throw new WorkshopException("codex_image_missing", "图片尚未生成完成。");
+                source = CodexJson.Text(item, "savedPath");
+            }
+            else
+            {
+                var images = CodexJson.Items(CodexJson.Field(item, "content"))
+                    .Where(value => CodexJson.Text(value, "type") is "localImage" or "image").ToArray();
+                if (imageIndex >= images.Length) throw new WorkshopException("codex_image_missing", "找不到这条消息的图片。");
+                source = CodexJson.Text(images[imageIndex], "type") == "localImage"
+                    ? CodexJson.Text(images[imageIndex], "path") : CodexJson.Text(images[imageIndex], "url");
+            }
         }
         lock (gate)
         {
@@ -55,7 +65,7 @@ internal sealed partial class CodeWorkshop
         if (source.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
         {
             var comma = source.IndexOf(',');
-            if (comma < 0 || !source[..comma].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || source.Length > 2_800_000)
+            if (comma < 0 || !source[..comma].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || source.Length > (MaximumReadImageBytes + 2) / 3 * 4 + 256)
                 throw CodexJson.Invalid();
             try { data = Convert.FromBase64String(source[(comma + 1)..]); }
             catch (FormatException) { throw CodexJson.Invalid(); }
@@ -63,11 +73,11 @@ internal sealed partial class CodeWorkshop
         else
         {
             // Only paths taken from the authorized thread or its saved upload are read.
-            if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || new FileInfo(source).Length > 2_000_000)
-                throw new WorkshopException("codex_image_missing", "图片不在电脑上，或超过 2 MB。");
+            if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || new FileInfo(source).Length > MaximumReadImageBytes)
+                throw new WorkshopException("codex_image_missing", "图片不在电脑上，或超过 8 MB。");
             data = await File.ReadAllBytesAsync(source, token);
         }
-        if (data.Length == 0 || data.Length > 2_000_000 || offset > data.Length) throw CodexJson.Invalid();
+        if (data.Length == 0 || data.Length > MaximumReadImageBytes || offset > data.Length) throw CodexJson.Invalid();
         var revision = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var expected = CodexJson.Text(parameters, "revision");
         if (expected.Length > 0 && expected != revision)

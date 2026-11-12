@@ -44,13 +44,16 @@ struct WorkshopConversationView: View {
                         Text(conversation.synchronizing ? "已显示缓存，正在更新 ·" : "显示缓存 ·")
                         Text(cachedAt, style: .relative)
                     }.font(.caption).foregroundStyle(HakoStyle.muted)
-                } else if conversation.loadingHistory {
-                    Text(conversation.entries.isEmpty ? "正在读取会话…" : "正在更新会话…")
-                        .font(.footnote).foregroundStyle(HakoStyle.muted)
                 }
-                if conversation.entries.isEmpty && !conversation.loadingHistory {
-                    Text("想在 \(conversation.application.name) 中完成什么？")
-                        .font(.subheadline).foregroundStyle(HakoStyle.muted).padding(.vertical, 40)
+                if conversation.entries.isEmpty {
+                    VStack(spacing: 10) {
+                        Text(conversation.threadId == nil ? "想在 \(conversation.application.name) 中完成什么？" : "暂未加载会话消息")
+                            .font(.subheadline).foregroundStyle(HakoStyle.muted)
+                        if conversation.threadId != nil {
+                            ProgressView().opacity(conversation.loadingHistory ? 1 : 0)
+                                .accessibilityHidden(!conversation.loadingHistory)
+                        }
+                    }.frame(maxWidth: .infinity).padding(.vertical, 40)
                 }
                 ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: 0) {
@@ -204,7 +207,9 @@ struct WorkshopConversationView: View {
         } else if entry.role == "assistant" {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Codex", systemImage: "terminal").font(.caption.weight(.medium))
-                WorkshopMessageView(text: entry.text)
+                if entry.kind == "imageGeneration" {
+                    WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
+                } else { WorkshopMessageView(text: entry.text, store: conversation.store) }
                 if entry.truncated {
                     Button("查看内容说明") { detail = entry }.font(.caption)
                 }

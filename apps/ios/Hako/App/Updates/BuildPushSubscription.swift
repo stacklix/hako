@@ -18,6 +18,7 @@ final class BuildPushSubscription: ObservableObject {
     @Published var settingsRequested = false
     @Published private(set) var settingsRequestID = 0
     @Published var workshopRequested = false
+    @Published private(set) var workshopNavigationID = UUID()
     @Published var workshopLink: WorkshopPushNotice?
     @Published private(set) var workshopBanner: WorkshopPushNotice?
     private var bannerDismissal: Task<Void, Never>?
@@ -26,6 +27,8 @@ final class BuildPushSubscription: ObservableObject {
     func presentWorkshopNotice(_ notice: WorkshopPushNotice) {
         guard displayedNotices.insert(notice.id).inserted else { return }
         if displayedNotices.count > 200 { displayedNotices = [notice.id] }
+        // Retained conversations do not count; only the foreground page suppresses its own banner.
+        guard !WorkshopRuntime.shared.isViewing(notice) else { return }
         bannerDismissal?.cancel()
         workshopBanner = notice
         bannerDismissal = Task { [weak self] in
@@ -37,6 +40,7 @@ final class BuildPushSubscription: ObservableObject {
     func openWorkshopNotice(_ notice: WorkshopPushNotice?) {
         dismissWorkshopNotice()
         workshopLink = notice
+        workshopNavigationID = UUID()
         workshopRequested = true
     }
 

@@ -22,7 +22,10 @@ import UIKit
             Task { @MainActor [weak self] in self?.resetContext() }
         }.store(in: &subscriptions)
         store.routeChanges.sink { [weak self] _ in
-            Task { @MainActor [weak self] in self?.resetContext() }
+            Task { @MainActor [weak self] in
+                self?.resetContext()
+                self?.synchronization.restart()
+            }
         }.store(in: &subscriptions)
         LocalNetworkService.shared.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in await self?.store.prepareNetwork() }
@@ -45,8 +48,20 @@ import UIKit
         if let conversation {
             visibleConversations.insert(conversation.id)
             retain(conversation)
+            if let notice = BuildPushSubscription.shared.workshopBanner, isViewing(notice) {
+                BuildPushSubscription.shared.dismissWorkshopNotice()
+            }
         }
         synchronization.enter(owner, conversation: conversation != nil)
+    }
+
+    func isViewing(_ notice: WorkshopPushNotice) -> Bool {
+        guard UIApplication.shared.applicationState == .active else { return false }
+        return visibleConversations.contains { id in
+            guard let conversation = conversations[id]?.conversation, conversation.scope == store.scope else { return false }
+            return notice.belongsToConversation(computerId: conversation.agent.id, threadId: conversation.threadId,
+                operationId: conversation.notificationOperationID)
+        }
     }
 
     func leave(_ owner: UUID, conversation: WorkshopConversation? = nil) {

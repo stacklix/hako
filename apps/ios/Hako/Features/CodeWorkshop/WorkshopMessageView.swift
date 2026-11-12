@@ -1,8 +1,10 @@
 import SwiftUI
 import UIKit
+import Photos
 
 struct WorkshopMessageView: View {
     let text: String
+    let store: WorkshopStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -12,6 +14,8 @@ struct WorkshopMessageView: View {
                     WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines))
                 case .code(let code, let language):
                     WorkshopCodeSnippet(code: code, language: language)
+                case .image(let alt, let url):
+                    WorkshopRemoteImage(alt: alt, url: url, store: store)
                 }
             }
         }
@@ -181,7 +185,7 @@ struct WorkshopUserMessage: View {
                 if let image = UIImage(data: photo.data) {
                     Button { selected = photo } label: {
                         Image(uiImage: image).resizable().scaledToFit()
-                            .frame(maxWidth: 220, maxHeight: 180)
+                            .frame(maxWidth: entry.role == "assistant" ? .infinity : 220, maxHeight: entry.role == "assistant" ? 440 : 180)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).accessibilityLabel("查看图片")
                 }
@@ -225,11 +229,68 @@ struct WorkshopUserMessage: View {
 
 struct WorkshopPhotoPreview: View {
     let photo: WorkshopPhoto
+    @Environment(\.openURL) private var openURL
+    @State private var saving = false
+    @State private var saved = false
+    @State private var showsSaveError = false
+    @State private var saveError = ""
+    @State private var canOpenSettings = false
+
     var body: some View {
-        SettingsSheet(title: "图片") {
+        SettingsSheet(title: "图片", isBusy: saving) {
             if let image = UIImage(data: photo.data) {
                 WorkshopImageZoom(image: image)
+                    .safeAreaInset(edge: .bottom) {
+                        Button {
+                            Task { await saveToPhotos() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if saving { ProgressView() }
+                                Label(saving ? "正在保存…" : saved ? "已保存到相册" : "保存到相册",
+                                      systemImage: saved ? "checkmark" : "square.and.arrow.down")
+                            }
+                        }
+                        .buttonStyle(HakoActionButtonStyle())
+                        .disabled(saving || saved)
+                        .padding()
+                        .background(.bar)
+                    }
             }
+        }
+        .alert("无法保存图片", isPresented: $showsSaveError) {
+            if canOpenSettings {
+                Button("打开设置") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                }
+            }
+            Button("好", role: .cancel) { }
+        } message: { Text(saveError) }
+    }
+
+    @MainActor private func saveToPhotos() async {
+        guard !saving, !saved else { return }
+        saving = true
+        canOpenSettings = false
+        defer { saving = false }
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized else {
+            canOpenSettings = status == .denied
+            saveError = canOpenSettings
+                ? "请在系统设置中允许 Hako 添加照片，然后重新保存。"
+                : "系统未允许添加照片，请检查设备的相册权限或访问限制。"
+            showsSaveError = true
+            return
+        }
+        do {
+            let data = photo.data
+            try await PHPhotoLibrary.shared().performChanges {
+                PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
+            }
+            saved = true
+            UIAccessibility.post(notification: .announcement, argument: "已保存到相册")
+        } catch {
+            saveError = "保存未完成：\(error.localizedDescription) 请先检查相册再重试。"
+            showsSaveError = true
         }
     }
 }
@@ -270,5 +331,61 @@ private final class WorkshopZoomScrollView: UIScrollView {
             picture?.frame = bounds
             contentSize = bounds.size
         }
+    }
+}
+
+private struct WorkshopRemoteImage: View {
+    let alt: String
+    let url: URL
+    let store: WorkshopStore
+    @State private var photo: WorkshopPhoto?
+    @State private var selected: WorkshopPhoto?
+    @State private var failure: String?
+    @State private var retry = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let photo, let image = UIImage(data: photo.data) {
+                Button { selected = photo } label: {
+                    Image(uiImage: image).resizable().scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 440)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).accessibilityLabel(alt.isEmpty ? "查看图片" : "查看图片：" + alt)
+            } else {
+                VStack(spacing: 12) {
+                    if let failure {
+                        Text(failure).font(.caption).foregroundStyle(.secondary)
+                        Button("重新加载图片") { retry += 1 }.buttonStyle(HakoActionButtonStyle(primary: false))
+                        Link("打开原图", destination: url).font(.caption)
+                    } else { ProgressView("正在加载图片…").font(.caption) }
+                }.padding(20).frame(maxWidth: .infinity, minHeight: 180)
+                    .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }.task(id: "\(url.absoluteString):\(retry)") { await load() }
+            .sheet(item: $selected) { photo in WorkshopPhotoPreview(photo: photo) }
+    }
+
+    @MainActor private func load() async {
+        guard photo == nil else { return }
+        failure = nil
+        if let data = store.cachedRemoteImage(url), UIImage(data: data) != nil {
+            photo = WorkshopPhoto(id: url.absoluteString, data: data)
+            return
+        }
+        let scope = store.scope
+        do {
+            let request = URLRequest(url: url, timeoutInterval: 30)
+            let (data, response) = try await HTTPTransport.data(for: request, source: .codeWorkshop, logBody: false)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+                  !data.isEmpty, data.count <= 8 * 1024 * 1024, UIImage(data: data) != nil else {
+                throw HakoError(message: "图片无法读取，或超过 8 MB。")
+            }
+            guard scope == store.scope else { throw CancellationError() }
+            // A full disk must not hide an image that was downloaded successfully.
+            try? store.cacheRemoteImage(data, from: url)
+            photo = WorkshopPhoto(id: url.absoluteString, data: data)
+        } catch is CancellationError { }
+        catch { if !Task.isCancelled { failure = "图片暂时无法加载，请重试或打开原图。" } }
     }
 }

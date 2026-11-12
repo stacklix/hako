@@ -64,7 +64,8 @@ struct HomeView: View {
             .navigationTitle("Hako")
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
-                case .application(let app): app.destination
+                case .application(let app):
+                    app.destination.id(app == .codeWorkshop ? buildPush.workshopNavigationID : nil)
                 case .notifications: NotificationsView(store: notifications)
                 case .settings: SettingsView()
                 }

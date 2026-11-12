@@ -108,6 +108,41 @@ struct InvestmentQuoteProvider {
         currency == .cny ? [.tushare, .twelveData] : [.twelveData, .tushare]
     }
 
+    private struct TwelveCredentialResponse: Decodable {
+        let code: Int?
+        let current_usage: Int?
+        let plan_limit: Int?
+    }
+
+    func testCredential(_ value: String, for source: InvestmentQuoteSource) async throws {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw InvestmentError.invalid("请先输入行情凭据。") }
+        guard key.utf8.allSatisfy({ (33...126).contains($0) }) else {
+            throw InvestmentError.invalid("行情凭据只能包含可见 ASCII 字符。")
+        }
+        try Task.checkCancellation()
+        switch source {
+        case .tushare:
+            let date = Self.dateFormat("yyyyMMdd").string(from: InvestmentBook.addDays(-1, to: InvestmentBook.day()))
+            let table = try await tushareTable(api: "trade_cal", params: ["exchange": "SSE", "start_date": date, "end_date": date],
+                                               fields: ["cal_date"], key: key)
+            guard let index = table.fields.firstIndex(of: "cal_date"),
+                  table.items.contains(where: { $0.count > index && $0[index]?.string == date }) else {
+                throw InvestmentError.invalid("行情接口未返回有效的交易日历。")
+            }
+        case .twelveData:
+            var request = URLRequest(url: URL(string: "https://api.twelvedata.com/api_usage")!, timeoutInterval: 15)
+            request.setValue("apikey " + key, forHTTPHeaderField: "Authorization")
+            let (data, response) = try await send(request, [key])
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let result = try? JSONDecoder().decode(TwelveCredentialResponse.self, from: data)
+            guard status == 200, result?.code == nil, result?.current_usage != nil, result?.plan_limit != nil else {
+                throw Self.failure(result?.code ?? status)
+            }
+        }
+        try Task.checkCancellation()
+    }
+
     private struct BinanceSpotSymbol: Decodable {
         struct Pair: Decodable {
             let baseAsset: String
@@ -193,6 +228,17 @@ struct InvestmentQuoteProvider {
         guard !search.query.isEmpty, !search.kind.isManual else { return [] }
         let asset = search.exactAsset
         let symbol = InvestmentQuoteSymbol(asset)
+        var lastError: Error?
+        if search.currency == .cny, search.kind == .stock, !search.stockConnect {
+            do {
+                let results = try await mainlandStocks(search, symbol: symbol)
+                try Task.checkCancellation()
+                if !results.isEmpty { return results }
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
+        }
         for source in Self.order(for: asset.currency) {
             try Task.checkCancellation()
             guard let key = keys[source] else { continue }
@@ -209,9 +255,49 @@ struct InvestmentQuoteProvider {
                 if !allowed.isEmpty { return allowed }
             } catch {
                 try Task.checkCancellation()
+                lastError = error
             }
         }
+        if let lastError { throw lastError }
         return []
+    }
+
+    private struct MainlandStockSearch: Decodable {
+        struct Table: Decodable {
+            struct Entry: Decodable {
+                let Code: String
+                let Name: String
+                let Classify: String
+                let MktNum: String
+            }
+            let Data: [Entry]?
+            let Status: Int
+        }
+        let QuotationCodeTable: Table
+    }
+
+    private func mainlandStocks(_ search: InvestmentInstrumentSearch, symbol: InvestmentQuoteSymbol) async throws -> [InvestmentAsset] {
+        var url = URLComponents(string: "https://searchapi.eastmoney.com/api/suggest/get")!
+        url.queryItems = [.init(name: "input", value: symbol.twelveSymbol ?? search.query),
+                          .init(name: "type", value: "14"), .init(name: "count", value: "100")]
+        guard let endpoint = url.url else { throw URLError(.badURL) }
+        let (data, response) = try await send(URLRequest(url: endpoint, timeoutInterval: 10), [])
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw Self.failure(status) }
+        let table = try JSONDecoder().decode(MainlandStockSearch.self, from: data).QuotationCodeTable
+        guard table.Status == 0 else { throw InvestmentError.invalid("A 股搜索暂不可用") }
+        var seen = Set<String>()
+        return (table.Data ?? []).compactMap { entry in
+            guard entry.Classify == "AStock", !entry.Name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let asset = InvestmentAsset(name: entry.Name, code: entry.Code, market: "", kind: .stock, currency: .cny)
+            guard let mainland = asset.mainlandSymbol,
+                  ["SH": "1", "SZ": "0", "BJ": "0"][mainland.venue] == entry.MktNum else { return nil }
+            let code = mainland.base + "." + mainland.venue
+            guard symbol.tushareSymbol == nil || symbol.tushareSymbol == code else { return nil }
+            let result = InvestmentAsset(name: entry.Name, code: code, market: "", kind: .stock, currency: .cny)
+            guard search.includes(result), seen.insert(code).inserted else { return nil }
+            return result
+        }
     }
 
     private struct TwelveInstrumentSearch: Decodable {

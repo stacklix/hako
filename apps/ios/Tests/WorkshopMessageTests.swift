@@ -2,6 +2,14 @@ import Foundation
 
 @main struct WorkshopMessageTests {
     static func main() {
+        let pictureURL = URL(string: "https://example.com/cat.png")!
+        precondition(WorkshopMessage.parts("![小猫](https://example.com/cat.png)") == [.image("小猫", pictureURL)])
+        precondition(WorkshopMessage.parts("看图\n![小猫](https://example.com/cat.png)\n结束") == [.text("看图\n"), .image("小猫", pictureURL), .text("\n结束")])
+        for text in ["`![小猫](https://example.com/cat.png)`", "```text\n![小猫](https://example.com/cat.png)\n```", "\\![小猫](https://example.com/cat.png)", "![未完成](https://example.com", "![文件](file:///private/cat.png)", "![凭据](https://user:pass@example.com/cat.png)"] {
+            precondition(!WorkshopMessage.parts(text).contains { if case .image = $0 { return true }; return false })
+        }
+        let nestedImage = "https://example.com/cat_(1).png"
+        precondition(WorkshopMessage.parts("![](\(nestedImage))") == [.image("", URL(string: nestedImage)!)])
         let command = "xkode tasks status 3cbd83c3c89b463098c2ef75065ada82 --details"
         let windows = #"Get-Item "C:\Users\xliqi\Code\hako""#
         let cases: [(String, [WorkshopMessagePart])] = [

@@ -231,7 +231,7 @@ private struct LanguageModelProfileEditor: View {
         } catch { checks.append(.init(id: "工具调用", failure: error.localizedDescription)) }
         if let image {
             do {
-                let message = client.userMessage("Name the color in the image. Answer with one English word.", image: image)
+                let message = client.userMessage("Name the color in the image. Answer with one English word.", images: [image])
                 let reply = try await client.complete(system: "You are performing a vision test.", messages: [message])
                 let word = reply.text.lowercased().split(whereSeparator: { !$0.isLetter })
                 checks.append(.init(id: "图片", failure: word.contains("red") ? nil : "未识别测试图颜色"))

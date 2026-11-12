@@ -47,9 +47,13 @@ final class InvestmentAgentSession: ObservableObject {
     }
 
     @discardableResult
-    func send(_ text: String, image: Data?) -> Bool {
+    func send(_ text: String, images: [Data]) -> Bool {
         restoreConversation()
-        guard !working, !committing, proposal == nil, !text.isEmpty || image != nil else { return false }
+        guard !working, !committing, proposal == nil, !text.isEmpty || !images.isEmpty else { return false }
+        guard images.count <= InvestmentAgentConversation.maximumImageCount else {
+            error = "每条消息最多添加 \(InvestmentAgentConversation.maximumImageCount) 张图片。"
+            return false
+        }
         guard session != nil || storageIssue == nil else { return false }
         do {
             guard let profile = try LanguageModelProfiles.load().active else {
@@ -59,7 +63,7 @@ final class InvestmentAgentSession: ObservableObject {
             _ = try profile.configuration.endpoint()
             error = nil
             working = true
-            turn = Task { await run(text, image: image, profile: profile) }
+            turn = Task { await run(text, images: images, profile: profile) }
             return true
         } catch {
             self.error = error.localizedDescription
@@ -82,7 +86,7 @@ final class InvestmentAgentSession: ObservableObject {
         }
     }
 
-    private func run(_ text: String, image: Data?, profile: LanguageModelProfile) async {
+    private func run(_ text: String, images: [Data], profile: LanguageModelProfile) async {
         defer { working = false; turn = nil }
         do {
             if !store.hasLoaded { await store.load() }
@@ -101,11 +105,11 @@ final class InvestmentAgentSession: ObservableObject {
             modelKey = key
             format = profile.configuration.format
             let client = LanguageModelClient(configuration: profile.configuration)
-            messages.append(.init(text: text, isUser: true, image: image))
+            messages.append(.init(text: text, isUser: true, images: images))
             if messages.count > 32 { messages.removeFirst(messages.count - 32) }
             persistConversation()
             let prior = history.suffix(4).flatMap { $0 }
-            var exchange = [client.userMessage(text, image: image)]
+            var exchange = [client.userMessage(text, images: images)]
             let today = InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())
             let prompt = """
                 你是 Hako 的投资记账助手，使用中文。北京时间今天是 \(today)。
@@ -271,7 +275,7 @@ final class InvestmentAgentSession: ObservableObject {
         let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                     appropriateFor: nil, create: true)
             .appendingPathComponent("InvestmentAgent", isDirectory: true)
-        let file = InvestmentAgentConversationFile(url: directory.appendingPathComponent(store.agentConversationKey + ".plist"))
+        let file = InvestmentAgentConversationFile(url: directory.appendingPathComponent(store.agentConversationKey + "-multiphoto.plist"))
         conversationFile = file
         let saved = try file.load()
         if let saved {

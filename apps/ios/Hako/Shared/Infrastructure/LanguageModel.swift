@@ -160,11 +160,11 @@ struct LanguageModelClient {
     private static let session = HTTPTransport.makeSession(requestTimeout: 90, resourceTimeout: 180)
     let configuration: LanguageModelConfiguration
 
-    func userMessage(_ text: String, image: Data? = nil) -> [String: Any] {
-        if configuration.format == .openAI, image == nil { return ["role": "user", "content": text] }
+    func userMessage(_ text: String, images: [Data] = []) -> [String: Any] {
+        if configuration.format == .openAI, images.isEmpty { return ["role": "user", "content": text] }
         var parts: [[String: Any]] = []
         if !text.isEmpty { parts.append(["type": "text", "text": text]) }
-        if let image {
+        for image in images {
             let data = image.base64EncodedString()
             switch configuration.format {
             case .openAI: parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + data]])

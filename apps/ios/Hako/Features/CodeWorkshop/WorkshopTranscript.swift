@@ -47,6 +47,12 @@ struct WorkshopTranscript: Codable, Equatable, Sendable {
 enum WorkshopWatchStep: Equatable {
     case synchronize, poll(String), idle
 
+    static func delayMilliseconds(hasMoreEvents: Bool, failures: Int) -> Int {
+        // Buffered event pages must never bypass backoff after a read failure.
+        if failures > 0 { return min(15, 1 + failures * 2) * 1000 }
+        return hasMoreEvents ? 30 : 1000
+    }
+
     static func catalogNeedsSynchronization(previous: WorkshopSession?, current: WorkshopSession,
                                              operationId: String?, operationActive: Bool, completionId: String?) -> Bool {
         guard previous != current else { return false }
@@ -165,6 +171,14 @@ enum WorkshopArtifactPlacement {
 }
 
 enum WorkshopTranscriptMerge {
+    static func withoutRecoveredNotices(_ entries: [WorkshopEntry], operationId: String,
+                                        state: String, followups: [WorkshopFollowupState]) -> [WorkshopEntry] {
+        let known: Set<String> = ["completed", "interrupted", "failed"]
+        let resolved = Set(followups.filter { known.contains($0.state) }.map { "error-" + $0.id })
+            .union(known.contains(state) ? ["error-" + operationId] : [])
+        return entries.filter { $0.kind != "notice" || !resolved.contains($0.id) }
+    }
+
     static func history(_ existing: [WorkshopEntry], page: [WorkshopEntry]) -> [WorkshopEntry] {
         let replaced = Set(page.compactMap(\.replacesId))
         var result = existing.filter { !replaced.contains($0.id) }

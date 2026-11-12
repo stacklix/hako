@@ -46,6 +46,26 @@ internal static class CodeWorkshopChecks
         Check(secondUser.Id == "request-two", "Identical messages in the same turn must remain distinct");
         Check(CodeWorkshop.HistoryItem(userItem, "different-turn", userJobs, new HashSet<string>())!.Id == "canonical",
             "Messages from different turns must not be deduplicated");
+        foreach (var state in new[] { "completed", "interrupted", "failed" })
+        {
+            var unknown = new WorkshopJob { State = "unknown", TurnId = "uncertain-turn", Message = "Old uncertainty" };
+            Check(CodeWorkshop.ReconcileTurn(unknown, [Json(new { id = "uncertain-turn", status = state, error = new { message = "Actual failure" }, items = Array.Empty<object>() })]) && unknown.State == state,
+                "Matching canonical terminal turn did not reconcile the unknown job");
+            Check(unknown.Message == (state == "failed" ? "Actual failure" : null), "Reconciliation retained a stale uncertainty message");
+        }
+        var unresolved = new WorkshopJob { State = "unknown", TurnId = "uncertain-turn" };
+        Check(!CodeWorkshop.ReconcileTurn(unresolved, [Json(new { id = "other-turn", status = "completed" })]) && unresolved.State == "unknown",
+            "Another turn incorrectly resolved this job");
+        Check(!CodeWorkshop.ReconcileTurn(unresolved, [Json(new { id = "uncertain-turn", status = "inProgress" })]),
+            "An unfinished turn must remain unconfirmed");
+        var activeJob = new WorkshopJob { State = "running", TurnId = "uncertain-turn" };
+        Check(!CodeWorkshop.ReconcileTurn(activeJob, [Json(new { id = "uncertain-turn", status = "completed" })]),
+            "History reconciliation must not overwrite an owned active worker");
+        var generatedItem = CodeWorkshop.Item(Json(new { id = "generated-output", type = "imageGeneration", status = "completed", savedPath = "C:/Code/fixture/cat.png" }))!;
+        Check(generatedItem.Kind == "imageGeneration" && generatedItem.Role == "assistant" && generatedItem.Text == "[图片 × 1]",
+            "Generated image items were omitted from the phone transcript");
+        var generatingItem = CodeWorkshop.Item(Json(new { id = "generating", type = "imageGeneration", status = "inProgress" }))!;
+        Check(generatingItem.Text == "正在生成图片…", "Pending generations should not request a nonexistent image");
         var asyncItem = Json(new { id = "async-question", type = "agentMessage", text = "选择升级方式", delivery = "async",
             questions = new[] { new { title = "如何升级？", options = new[] { "同步升级", "保留兼容" } } } });
         var parsedQuestion = CodeWorkshop.Item(asyncItem)!;
@@ -65,6 +85,9 @@ internal static class CodeWorkshopChecks
         Directory.CreateDirectory(Path.Combine(project, ".git"));
         var preview = Path.Combine(project, "prototype.html");
         File.WriteAllText(preview, "<div>interactive prototype</div>");
+        var generatedBytes = new byte[3_133_248];
+        new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }.CopyTo(generatedBytes, 0);
+        File.WriteAllBytes(Path.Combine(project, "generated-fixture.png"), generatedBytes);
         Task<CodexAppServer> Start(CancellationToken token, bool occupied = false)
         {
             var start = new ProcessStartInfo(Environment.ProcessPath!);
@@ -148,6 +171,25 @@ internal static class CodeWorkshopChecks
                     (string)CodeWorkshop.ThreadOptions("ask")["approvalsReviewer"] == "user" && CodeWorkshop.ThreadOptions("custom").Count == 0,
                     "Permission presets do not map to App Server policies");
                 var history = Result(await service.HistoryAsync(Json(new { threadId = FixtureThread }), default));
+                Check(history.GetProperty("entries").EnumerateArray().Any(entry => CodexJson.Text(entry, "kind") == "imageGeneration" && CodexJson.Text(entry, "id") == "generated-fixture"),
+                    "Completed image generation disappeared when reopening the thread history");
+                using (var imageData = new MemoryStream())
+                {
+                    string? imageRevision = null;
+                    do {
+                        var chunk = Result(await service.ImageAsync(Json(new { threadId = FixtureThread, messageId = "generated-fixture", index = 0, offset = (int)imageData.Length, revision = imageRevision }), default));
+                        imageRevision = CodexJson.Text(chunk, "revision");
+                        Check(chunk.GetProperty("total").GetInt32() == generatedBytes.Length, "Generated images larger than 2 MB were rejected or truncated");
+                        imageData.Write(Convert.FromBase64String(CodexJson.Text(chunk, "content")));
+                    } while (imageData.Length < generatedBytes.Length);
+                    Check(imageData.ToArray().SequenceEqual(generatedBytes), "Generated image bytes were not preserved across chunked reads");
+                }
+                try { await service.ImageAsync(Json(new { threadId = FixtureThread, messageId = "generated-fixture", index = 1, offset = 0 }), default); throw new Exception("Invalid generated image index accepted"); }
+                catch (WorkshopException error) when (error.Code == "codex_image_missing") { }
+                File.WriteAllBytes(Path.Combine(project, "generated-fixture.png"), new byte[CodeWorkshop.MaximumReadImageBytes + 1]);
+                try { await service.ImageAsync(Json(new { threadId = FixtureThread, messageId = "generated-fixture", index = 0, offset = 0 }), default); throw new Exception("Oversized generated image accepted"); }
+                catch (WorkshopException error) when (error.Code == "codex_image_missing") { }
+                File.WriteAllBytes(Path.Combine(project, "generated-fixture.png"), generatedBytes);
                 var artifactId = history.GetProperty("artifacts")[0].GetProperty("id").GetString();
                 var artifact = Result(await service.ArtifactAsync(Json(new { threadId = FixtureThread, artifactId, offset = 0 }), default));
                 Check(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(artifact.GetProperty("content").GetString()!)).Contains("interactive prototype"), "Artifact retrieval failed");
@@ -369,6 +411,21 @@ internal static class CodeWorkshopChecks
                 var failed = await WaitAsync(occupied, busyId, "failed");
                 Check(CodexJson.Text(failed.GetProperty("operation"), "message").Contains("桌面版仍占用"), "Writer conflict was not translated");
             }
+            var recoveryStorage = Path.Combine(directory, "recovery");
+            Directory.CreateDirectory(recoveryStorage);
+            var recoveredJob = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread,
+                TurnId = "fixture-turn", State = "unknown", Cwd = project, ApplicationId = applicationId,
+                Submitted = true, Message = "Old uncertainty" };
+            File.WriteAllBytes(Path.Combine(recoveryStorage, recoveredJob.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(recoveredJob, WorkshopProtocol.Json));
+            await using (var recovery = new CodeWorkshop(recoveryStorage, code, Path.Combine(directory, ".codex"), token => Start(token)))
+            {
+                await recovery.HistoryAsync(Json(new { threadId = FixtureThread }), default);
+                var reconciled = Result(await recovery.OperationAsync(Json(new { operationId = recoveredJob.Id }), default)).GetProperty("operation");
+                Check(CodexJson.Text(reconciled, "state") == "completed" && CodexJson.Text(reconciled, "message") == "",
+                    "History refresh did not persist a verified outcome for the operation API");
+                var saved = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(recoveryStorage, recoveredJob.Id + ".json")), WorkshopProtocol.Json)!;
+                Check(saved.State == "completed" && saved.Message is null, "Reconciled outcome did not survive a restart");
+            }
             Console.WriteLine("PASS: Codex stdio, durable queue/edit/cancel/Steer, stale revisions, automatic turn handoff, stop/resume, approval retries, images, models and artifacts");
         }
         finally
@@ -479,6 +536,7 @@ internal static class CodeWorkshopChecks
                     using var stored = JsonDocument.Parse(historyLine);
                     historyItems.Add(stored.RootElement.Clone());
                 }
+            historyItems.Add(new { id = "generated-fixture", type = "imageGeneration", status = "completed", savedPath = Path.Combine(project, "generated-fixture.png") });
             historyItems.Add(new { id = "history", type = "agentMessage", text = "visualize" + JsonSerializer.Serialize(new { path = Path.Combine(project, "prototype.html") }) + "" });
             var thread = new
             {

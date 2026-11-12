@@ -2,6 +2,7 @@ import Foundation
 
 @main struct CryptoModelsTests {
     static func main() throws {
+        chartDatesStaySeparated()
         func check(_ condition: Bool, _ message: String) { precondition(condition,message) }
         let dust=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0.000009,locked:0,frozen:0,withdrawing:0,unitPrice:100000)
         let boundary=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0,locked:0.00001,frozen:0,withdrawing:0,unitPrice:100000)
@@ -129,6 +130,29 @@ import Foundation
             _ = try group.replacing(in:[original],name:"wallet",address:evmAddress,networks:["TRON","Ethereum"])
             preconditionFailure("an EVM address cannot be saved for TRON")
         } catch {}
-        print("Crypto models: precision, dates, equity stability, strict CSV validation and sync policy passed")
+        print("Crypto models: precision, dates, chart ticks, equity stability, strict CSV validation and sync policy passed")
+    }
+
+    private static func chartDatesStaySeparated() {
+        let calendar = CryptoDay.calendar
+        let first = calendar.date(from: DateComponents(year: 2026, month: 10, day: 13))!
+        let last = calendar.date(from: DateComponents(year: 2026, month: 11, day: 11))!
+        let screenshotTicks = CryptoDay.chartTicks(from: first, through: last)
+        precondition(screenshotTicks.map(CryptoDay.key) == ["2026-10-13", "2026-10-23", "2026-11-01", "2026-11-11"],
+                     "The final date must be evenly spaced instead of crowding a previously chosen tick")
+        for span in [0, 1, 2, 3, 4, 7, 8, 29, 30, 179, 364, 365] {
+            let end = calendar.date(byAdding: .day, value: span, to: first)!
+            for count in [3, 4] {
+                let ticks = CryptoDay.chartTicks(from: first, through: end, desiredCount: count)
+                precondition(ticks.count == min(span + 1, count) && ticks.first == first && ticks.last == end)
+                let gaps = zip(ticks, ticks.dropFirst()).map { calendar.dateComponents([.day], from: $0, to: $1).day! }
+                precondition(gaps.allSatisfy { $0 > 0 }, "Tick dates must be distinct and ordered")
+                if let low = gaps.min(), let high = gaps.max() {
+                    precondition(high - low <= 1, "Sparse or uneven records must not create a crowded final interval")
+                }
+            }
+        }
+        precondition(CryptoDay.chartTicks(from: last, through: first).isEmpty)
+        precondition(CryptoDay.chartTicks(from: first, through: last, desiredCount: 0).isEmpty)
     }
 }

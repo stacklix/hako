@@ -1,5 +1,12 @@
 import Foundation
 
+enum WorkshopCacheIdentity {
+    // Stable across route changes, login restoration and token/session rotation.
+    static func account(serverURL: String, username: String) -> String {
+        String(data: try! JSONEncoder().encode([serverURL, username]), encoding: .utf8)!
+    }
+}
+
 struct WorkshopAgent: Codable, Identifiable {
     let id: String
     let name: String
@@ -14,6 +21,19 @@ struct WorkshopApplication: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let path: String
+
+    static func containing(_ cwd: String, in applications: [Self]) -> Self? {
+        func normalized(_ path: String) -> String {
+            var value = path.replacingOccurrences(of: "\\", with: "/").lowercased()
+            while value.count > 1 && value.hasSuffix("/") { value.removeLast() }
+            return value
+        }
+        let directory = normalized(cwd)
+        return applications.filter {
+            let root = normalized($0.path)
+            return !root.isEmpty && (directory == root || directory.hasPrefix(root == "/" ? root : root + "/"))
+        }.max { normalized($0.path).count < normalized($1.path).count }
+    }
 }
 
 struct WorkshopSession: Codable, Identifiable, Hashable {
