@@ -32,7 +32,7 @@ struct WorkshopCommandLibraryView: View {
                 } header: { Text("保存在这台手机") } footer: {
                     Text("命令直接发送到所选电脑执行，执行记录独立于 Codex 会话。")
                 }
-                if let id = client.taskID {
+                if let id = client.taskID, client.task?.active == true || client.pendingCommand != nil {
                     Section("当前任务") {
                         NavigationLink { WorkshopCommandTaskView(client: client) } label: {
                             LabeledContent(client.task?.name ?? "命令任务", value: client.task?.status ?? "正在确认")
@@ -97,6 +97,7 @@ private struct WorkshopCommandDetailView: View {
                     LabeledContent("执行电脑", value: client.agent.name)
                     LabeledContent("执行环境", value: "PowerShell 7")
                     LabeledContent("超时", value: "\(command.timeoutSeconds) 秒")
+                    LabeledContent("允许后台进程继续运行", value: command.allowBackgroundProcesses ? "开启" : "关闭")
                     ApplicationValue(label: "工作目录", value: client.application.path, monospaced: true)
                 }
                 Section {
@@ -156,6 +157,11 @@ private struct WorkshopCommandEditorView: View {
                             .keyboardType(.numberPad).accessibilityLabel("执行超时秒数")
                     }
                 }
+                Section {
+                    Toggle("允许后台进程继续运行", isOn: $draft.allowBackgroundProcesses)
+                } footer: {
+                    Text("开启后，命令退出、停止或超时只结束提交命令，已启动的后台进程继续运行。后台任务需通过其自身工具管理，例如用 xkode 取消构建。")
+                }
                 Section { Text("保存在当前手机，执行时发送完整命令。工作目录为 \(client.application.path)。").font(.footnote).foregroundStyle(.secondary) }
                 if existing {
                     Section { HakoDeleteButton(title: "删除快捷命令") { deleting = true }.listRowBackground(Color.clear) }
@@ -189,6 +195,7 @@ struct WorkshopCommandTaskView: View {
                 Section("提交时的命令") {
                     Text(task.command).font(.caption.monospaced()).textSelection(.enabled)
                     ApplicationValue(label: "工作目录", value: task.directory, monospaced: true)
+                    LabeledContent("允许后台进程继续运行", value: task.allowBackgroundProcesses ? "开启" : "关闭")
                 }
             }
             Section("执行日志") {
@@ -216,6 +223,10 @@ struct WorkshopCommandTaskView: View {
         .alert("停止当前命令？", isPresented: $confirmingStop) {
             Button("停止任务", role: .destructive) { Task { await client.stop() } }
             Button("取消", role: .cancel) { }
-        } message: { Text("正在执行的命令及其子进程会停止。") }
+        } message: {
+            Text(client.task?.allowBackgroundProcesses == true
+                 ? "当前命令会停止，已启动的后台进程继续运行，需要通过其自身工具停止。"
+                 : "正在执行的命令及其子进程会停止。")
+        }
     }
 }

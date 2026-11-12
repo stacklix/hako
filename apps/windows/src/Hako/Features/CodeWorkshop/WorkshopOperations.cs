@@ -29,6 +29,8 @@ internal sealed class WorkshopJob
     public bool Submitted { get; set; }
     public string? RootId { get; set; }
     public string InputMessage { get; set; } = "";
+    public string SessionName { get; set; } = "未命名会话";
+    public string ReplySummary { get; set; } = "";
     public string[] ImageIds { get; set; } = [];
     public string Model { get; set; } = "";
     public string Permission { get; set; } = "auto";
@@ -142,6 +144,7 @@ internal sealed partial class CodeWorkshop
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
                 NotificationScope = notificationScope,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
+                SessionName = name.Length > 0 ? NotificationText(name, 120) : "未命名会话",
                 Model = model, Permission = permission, ServiceTier = serviceTier, QueueOrder = DateTime.UtcNow.Ticks };
             Persist(job);
             jobs.Add(id, job);
@@ -189,6 +192,9 @@ internal sealed partial class CodeWorkshop
                     var cwd = CodexJson.Text(thread, "cwd");
                     if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new WorkshopException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
                     job.Cwd = cwd;
+                    var threadName = CodexJson.Text(thread, "name");
+                    var preview = CodexJson.Text(thread, "preview");
+                    job.SessionName = NotificationText(threadName.Length > 0 ? threadName : preview.Length > 0 ? preview : "未命名会话", 120);
                     options["threadId"] = job.ThreadId;
                     options["excludeTurns"] = true;
                     await server.RequestAsync("thread/resume", options, stopping.Token);
@@ -303,7 +309,12 @@ internal sealed partial class CodeWorkshop
                 case "item/started":
                 case "item/completed":
                     if (job.ThreadId is not null) DiscoverItemArtifacts(job.ThreadId, job.Cwd, CodexJson.Field(parameters, "item"));
-                    if (Item(CodexJson.Field(parameters, "item")) is { } entry && entry.Role != "user") Append(job, entry);
+                    if (Item(CodexJson.Field(parameters, "item")) is { } entry && entry.Role != "user")
+                    {
+                        if (method == "item/completed" && entry.Role == "assistant" && !string.IsNullOrWhiteSpace(entry.Text))
+                            job.ReplySummary = NotificationText(entry.Text, 240);
+                        Append(job, entry);
+                    }
                     break;
                 case "turn/completed":
                     var turn = CodexJson.Field(parameters, "turn");

@@ -30,7 +30,7 @@ struct WorkshopPushSettings: View {
                     .disabled(!authentication.authenticated || authentication.logoutPending)
             }
         } header: { Text("通知") } footer: {
-            Text("默认关闭。开启后通知完成、失败、中断或结果未知的任务；App 在前台时不弹横幅。局域网任务由电脑经 Hako 服务器上报，电脑需配置云端连接并联网；纯离线局域网无法推送。通知不包含提问或回复内容。")
+            Text("默认关闭。开启后通知完成、失败、中断或结果未知的任务，并显示项目名、会话名和本轮最后回复的简短摘要，锁屏上也可能显示这些内容；App 在前台时不弹横幅。局域网任务由电脑经 Hako 服务器上报，电脑需配置云端连接并联网；纯离线局域网无法推送。")
         }
         .task(id: authentication.requestContext) { await load() }
     }

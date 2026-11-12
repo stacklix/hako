@@ -74,10 +74,14 @@ internal sealed class CommandProcessJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     private IntPtr handle;
-    internal CommandProcessJob()
+    internal CommandProcessJob(bool allowBackgroundProcesses = false)
     {
         handle = CreateJobObjectW(IntPtr.Zero, null);
-        var limits = new Limits { Basic = new BasicLimits { Flags = 0x2000 | 0x0800 } };
+        const uint killOnClose = 0x2000, breakaway = 0x0800, silentBreakaway = 0x1000;
+        // Keep the submitting shell in the job, while opted-in descendants
+        // live independently after that shell exits or is stopped.
+        var limits = new Limits { Basic = new BasicLimits {
+            Flags = killOnClose | breakaway | (allowBackgroundProcesses ? silentBreakaway : 0) } };
         if (handle == IntPtr.Zero || !SetInformationJobObject(handle, 9, ref limits, Marshal.SizeOf<Limits>()))
         { var error = Marshal.GetLastWin32Error(); Dispose(); throw new Win32Exception(error); }
     }

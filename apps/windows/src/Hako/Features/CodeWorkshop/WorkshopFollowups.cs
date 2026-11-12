@@ -69,6 +69,7 @@ internal sealed partial class CodeWorkshop
             var job = new WorkshopJob { Id = id, RootId = root.Id, Fingerprint = fingerprint,
                 NotificationScope = notificationScope,
                 ApplicationId = root.ApplicationId, Cwd = root.Cwd, ThreadId = current.ThreadId ?? root.ThreadId,
+                SessionName = current.SessionName,
                 InputMessage = message, ImageIds = images, Model = current.Model, Permission = current.Permission,
                 ServiceTier = current.ServiceTier, State = paused ? "paused" : "queued",
                 QueueOrder = Math.Max(DateTime.UtcNow.Ticks, Group(root).Max(value => value.QueueOrder) + 1) };

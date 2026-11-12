@@ -37,7 +37,7 @@ internal static class WorkshopCloudChecks
         var probe=new TcpListener(IPAddress.Loopback,0);probe.Start();var port=((IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
         var origin=$"http://127.0.0.1:{port}";
         var settings=new AgentSettings(origin,"owner",key.ExportPkcs8PrivateKeyPem());
-        File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob{Id=operation,State="completed",ApplicationId="fixture",Cwd=directory,NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},WorkshopProtocol.Json));
+        File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob{Id=operation,State="completed",ApplicationId="fixture",Cwd=Path.Combine(directory,"fixture"),SessionName="Cloud session",ReplySummary="Last round reply",NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},WorkshopProtocol.Json));
         using var listener=new HttpListener();listener.Prefixes.Add(origin+"/");listener.Start();
         using var lifetime=new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
@@ -58,6 +58,9 @@ internal static class WorkshopCloudChecks
             await Send(socket,new{kind="welcome",protocol=WorkshopProtocol.Name,computerId="PC"},lifetime.Token);
             var terminal=await Read(socket,lifetime.Token);
             if(CodexJson.Text(terminal,"kind")!="terminal" || CodexJson.Text(terminal,"operationId")!=operation || CodexJson.Text(CodexJson.Field(terminal,"result"),"state")!="completed") throw new Exception("Durable terminal not reported without an iOS subscription");
+            var content = CodexJson.Field(terminal, "result");
+            if (CodexJson.Text(content, "projectName") != "fixture" || CodexJson.Text(content, "sessionName") != "Cloud session" || CodexJson.Text(content, "summary") != "Last round reply")
+                throw new Exception("Cloud terminal frame lost the notification content");
             await Send(socket,new{kind="terminal_ack",operationId=operation},lifetime.Token);
             await Send(socket,new{kind="keepalive"},lifetime.Token);
             if (CodexJson.Text(await Read(socket,lifetime.Token),"kind")!="alive") throw new Exception("Workshop heartbeat failed");

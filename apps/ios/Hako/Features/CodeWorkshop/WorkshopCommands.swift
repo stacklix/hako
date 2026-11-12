@@ -2,57 +2,6 @@ import Foundation
 import Combine
 import CryptoKit
 
-struct WorkshopSavedCommand: Codable, Identifiable, Equatable {
-    var id = UUID()
-    var name = ""
-    var command = ""
-    var note = ""
-    var timeoutSeconds = 3600
-
-    var valid: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= 120
-            && !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && command.utf8.count <= 8000
-            && (1...86400).contains(timeoutSeconds)
-    }
-}
-
-struct WorkshopCommandTask: Codable, Identifiable {
-    let id: String
-    let applicationId: String
-    let name: String
-    let command: String
-    let directory: String
-    let state: String
-    let startedAt: Int64
-    let finishedAt: Int64?
-    let exitCode: Int?
-    let error: String?
-    let canStop: Bool
-    var active: Bool { ["starting", "running", "stopping"].contains(state) }
-    var status: String { Self.status(state) }
-    static func status(_ state: String) -> String {
-        switch state {
-        case "starting": "正在启动"
-        case "running": "执行中"
-        case "stopping": "正在停止"
-        case "succeeded": "已完成"
-        case "cancelled": "已取消"
-        case "timed_out": "已超时"
-        case "interrupted": "已中断"
-        default: "失败"
-        }
-    }
-}
-
-struct WorkshopCommandSummary: Decodable, Identifiable {
-    let id: String
-    let applicationId: String
-    let name: String
-    let state: String
-    let startedAt: Int64
-    var status: String { WorkshopCommandTask.status(state) }
-}
-
 @MainActor final class WorkshopCommands: ObservableObject {
     private struct Endpoint: Codable { let port: Int; let token: String }
     private struct StoredEndpoint: Codable { let ip: String; let endpoint: Endpoint }
@@ -90,7 +39,10 @@ struct WorkshopCommandSummary: Decodable, Identifiable {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WorkshopCommands", isDirectory: true)
         file = directory.appendingPathComponent(key + ".json")
         do {
-            if FileManager.default.fileExists(atPath: file.path) { snapshot = try JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: file)) }
+            if FileManager.default.fileExists(atPath: file.path) {
+                let bytes = try Data(contentsOf: file)
+                snapshot = try JSONDecoder().decode(Snapshot.self, from: bytes)
+            }
             commands = snapshot.commands; taskID = snapshot.taskID ?? snapshot.pending?.requestId
         } catch { self.error = "手机保存的快捷命令暂时无法读取。" }
     }
@@ -180,7 +132,8 @@ struct WorkshopCommandSummary: Decodable, Identifiable {
             var saved = snapshot; saved.pending = pending; saved.taskID = pending.requestId; try save(saved)
             taskID = pending.requestId; observationID = UUID(); cursor = 0; output = ""; task = nil
             let result: WorkshopCommandTask = try await request("commands.start", ["requestId": pending.requestId, "applicationId": application.id,
-                "name": pending.command.name, "command": pending.command.command, "timeoutSeconds": pending.command.timeoutSeconds])
+                "name": pending.command.name, "command": pending.command.command, "timeoutSeconds": pending.command.timeoutSeconds,
+                "allowBackgroundProcesses": pending.command.allowBackgroundProcesses])
             task = result; saved = snapshot; saved.pending = nil; try save(saved); error = nil
         } catch is CancellationError { }
         catch let failure as WorkshopFailure where ["command_busy", "invalid_params", "invalid_request", "unsupported_method", "codex_application_missing", "command_shell_missing", "command_request_conflict", "command_context_changed", "command_result_large"].contains(failure.code) {

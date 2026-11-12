@@ -70,7 +70,7 @@ func (s *Server) workshopPushSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) receiveWorkshopTerminal(computer AgentConfig, frame workshop.Frame) bool {
-	if !workshopOperationID.MatchString(frame.OperationID) || len(frame.Result) > 1024 || !s.allow("workshop-terminal:"+computer.ID, 120, time.Minute) {
+	if !workshopOperationID.MatchString(frame.OperationID) || len(frame.Result) > 8192 || !s.allow("workshop-terminal:"+computer.ID, 120, time.Minute) {
 		return false
 	}
 	var event notify.WorkshopTerminal

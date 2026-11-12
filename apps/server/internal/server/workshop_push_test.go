@@ -54,7 +54,7 @@ func TestWorkshopPushRequiresOptInAndAuthenticatedAgent(t *testing.T) {
 	worker := connectWorkshop(t, f)
 	operation := "11111111-1111-4111-8111-111111111111"
 	for range 2 {
-		payload, _ := json.Marshal(map[string]any{"state": "completed", "finishedAt": time.Now().UnixMilli()})
+		payload, _ := json.Marshal(map[string]any{"state": "completed", "finishedAt": time.Now().UnixMilli(), "projectName": "hako", "sessionName": "通知测试", "summary": "本轮任务已完成"})
 		writeAgentFrame(t, worker, workshop.Frame{Kind: "terminal", OperationID: operation, Result: payload})
 		if ack := readAgentFrame[workshop.Frame](t, worker); ack.Kind != "terminal_ack" || ack.OperationID != operation {
 			t.Fatal("receipt not acknowledged", ack)
@@ -66,7 +66,7 @@ func TestWorkshopPushRequiresOptInAndAuthenticatedAgent(t *testing.T) {
 	if reply := readAgentFrame[workshop.Frame](t, client); reply.Kind != "failure" {
 		t.Fatal("client forged completion", reply)
 	}
-	// An Agent may not supply a device, another computer or arbitrary notification text.
+	// An Agent may not supply a device, another computer or arbitrary payload fields.
 	writeAgentFrame(t, worker, workshop.Frame{Kind: "terminal", OperationID: operation, Result: json.RawMessage(`{"state":"completed","finishedAt":1,"computerId":"other"}`)})
 	_ = worker.SetReadDeadline(time.Now().Add(time.Second))
 	if err := worker.ReadJSON(new(any)); err == nil {

@@ -321,6 +321,11 @@ internal static class CodeWorkshopChecks
                 Check(notifications[requestId].State == "completed" && notifications[automaticId].State == "completed" &&
                     notifications[stopId].State == "interrupted" && notifications[failureId].State == "failed",
                     "Actual worker outcomes did not reach the background notification outbox");
+                Check(notifications[requestId].ProjectName == "fixture" && notifications[requestId].SessionName == "Fixture" &&
+                    notifications[requestId].Summary == "Fixture completed" && notifications[automaticId].Summary == "Fixture completed",
+                    "Completed rounds lost the project, canonical session name or final assistant reply");
+                Check(notifications[failureId].Summary == "" && notifications[stopId].Summary == "",
+                    "A failed or interrupted round reused a reply from the previous round");
                 Check(!notifications.ContainsKey(cancelledId) && !notifications.ContainsKey(queuedId) && !notifications.ContainsKey(afterFailure),
                     "Cancelled, steered or paused messages incorrectly generated terminal notifications");
                 notificationLife.Cancel();
@@ -384,8 +389,10 @@ internal static class CodeWorkshopChecks
                     Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "failed" } } });
                     continue;
                 }
+                Write(new { method = "item/completed", @params = new { item = new { id = "commentary", type = "agentMessage", text = "Earlier progress update" } } });
                 Write(new { method = "item/agentMessage/delta", @params = new { threadId = FixtureThread, itemId = "answer", delta = "Fixture " } });
                 Write(new { method = "item/completed", @params = new { item = new { id = "answer", type = "agentMessage", text = "Fixture completed" } } });
+                Write(new { method = "item/completed", @params = new { item = new { id = "tool-log", type = "commandExecution", command = "fixture", aggregatedOutput = "Tool output must not replace the reply" } } });
                 Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "completed" } } });
                 continue;
             }

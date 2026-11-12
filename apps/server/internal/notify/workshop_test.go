@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -57,7 +58,62 @@ func workshopGateway(t *testing.T) (*Service, *atomic.Int32) {
 }
 
 func terminalFor(i int, state string) WorkshopTerminal {
-	return WorkshopTerminal{ComputerID: "PC", OperationID: fmtUUID(i), State: state, FinishedAt: nowMS()}
+	return WorkshopTerminal{ComputerID: "PC", OperationID: fmtUUID(i), State: state, FinishedAt: nowMS(), ProjectName: "hako", SessionName: "会话测试", Summary: "已完成本轮修复。"}
+}
+
+func TestWorkshopNotificationContentAndBounds(t *testing.T) {
+	s, _ := workshopGateway(t)
+	event := terminalFor(0, "completed")
+	event.Summary = strings.Repeat("🛠", 240)
+	if err := s.EnqueueWorkshop(event, "console", nowMS()-1000); err != nil {
+		t.Fatal(err)
+	}
+	row, _ := one(s.db, "SELECT payload FROM direct_push")
+	payload := str(row, "payload")
+	var decoded struct {
+		APS struct {
+			Alert struct{ Title, Subtitle, Body string }
+		}
+	}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	alert := decoded.APS.Alert
+	if alert.Title != "代码工坊 · hako" || alert.Subtitle != "会话测试" || alert.Body != "任务已完成。\n"+event.Summary || len(payload) > 4096 {
+		t.Fatal("notification lost its project, session, summary or payload bound")
+	}
+	// Maximum Unicode names and JSON-escaped characters must also fit APNs.
+	maximum := terminalFor(1, "failed")
+	maximum.ProjectName = strings.Repeat("🛠", 80)
+	maximum.SessionName = strings.Repeat("🛠", 120)
+	maximum.Summary = "x" + strings.Repeat("\u2028", 238) + "x"
+	if err := s.EnqueueWorkshop(maximum, "console", nowMS()-1000); err != nil {
+		t.Fatal(err)
+	}
+	row, _ = one(s.db, "SELECT MAX(length(CAST(payload AS BLOB))) n FROM direct_push")
+	if integer(row, "n") > 4096 {
+		t.Fatal("Unicode payload exceeded APNs limit")
+	}
+	for _, mutate := range []func(*WorkshopTerminal){
+		func(e *WorkshopTerminal) { e.ProjectName = "" },
+		func(e *WorkshopTerminal) { e.SessionName = "" },
+		func(e *WorkshopTerminal) { e.ProjectName = strings.Repeat("中", 81) },
+		func(e *WorkshopTerminal) { e.SessionName = strings.Repeat("中", 121) },
+		func(e *WorkshopTerminal) { e.Summary = strings.Repeat("🛠", 241) },
+		func(e *WorkshopTerminal) { e.Summary = "injected\ntext" },
+		func(e *WorkshopTerminal) { e.Summary = "\xff" },
+	} {
+		bad := terminalFor(2, "completed")
+		mutate(&bad)
+		if s.EnqueueWorkshop(bad, "console", nowMS()-1000) == nil {
+			t.Fatal("invalid notification text accepted")
+		}
+	}
+	noReply := terminalFor(3, "interrupted")
+	noReply.Summary = ""
+	if err := s.EnqueueWorkshop(noReply, "console", nowMS()-1000); err != nil {
+		t.Fatal(err)
+	}
 }
 func fmtUUID(i int) string {
 	return "11111111-1111-4111-8111-" + strings.Repeat("0", 11) + string("0123456789abcdef"[i])

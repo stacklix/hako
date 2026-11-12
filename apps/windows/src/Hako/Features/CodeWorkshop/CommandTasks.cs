@@ -10,9 +10,9 @@ using System.Threading.Tasks;
 
 namespace Hako.Platform;
 
-internal sealed record CommandTaskRequest(string Id, string ApplicationId, string Name, string Command, int TimeoutSeconds);
+internal sealed record CommandTaskRequest(string Id, string ApplicationId, string Name, string Command, int TimeoutSeconds, bool AllowBackgroundProcesses);
 internal sealed record CommandTaskState(string Id, string ApplicationId, string Name, string Command, string Directory,
-    string State, long StartedAt, long? FinishedAt = null, int? ExitCode = null, string? Error = null, bool CanStop = true)
+    string State, long StartedAt, bool AllowBackgroundProcesses, long? FinishedAt = null, int? ExitCode = null, string? Error = null, bool CanStop = true)
 {
     internal bool Active => State is "starting" or "running" or "stopping";
 }
@@ -86,7 +86,7 @@ internal sealed class CommandTasks : IAsyncDisposable
     }
     private object Start(JsonElement parameters)
     {
-        CodexJson.Keys(parameters, "requestId", "applicationId", "name", "command", "timeoutSeconds");
+        CodexJson.Keys(parameters, "requestId", "applicationId", "name", "command", "timeoutSeconds", "allowBackgroundProcesses");
         var id = CodexJson.Required(parameters, "requestId", 36).ToLowerInvariant();
         var directory = DirectoryFor(id);
         var application = CodexJson.Required(parameters, "applicationId", 16);
@@ -94,7 +94,10 @@ internal sealed class CommandTasks : IAsyncDisposable
         var command = CodexJson.Required(parameters, "command", 8000);
         if (!parameters.TryGetProperty("timeoutSeconds", out var timeoutValue) || !timeoutValue.TryGetInt32(out var timeout) || timeout is < 1 or > 86400
             || string.IsNullOrWhiteSpace(command) || name.Length == 0 || command.Contains('\0') || Encoding.UTF8.GetByteCount(command) > 8000) throw CodexJson.Invalid();
-        var request = new CommandTaskRequest(id, application, name, command, timeout);
+        var background = CodexJson.Field(parameters, "allowBackgroundProcesses");
+        if (background.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) throw CodexJson.Invalid();
+        var allowBackgroundProcesses = background.GetBoolean();
+        var request = new CommandTaskRequest(id, application, name, command, timeout, allowBackgroundProcesses);
         if (System.IO.Directory.Exists(directory))
         {
             var original = JsonSerializer.Deserialize<CommandTaskRequest>(File.ReadAllBytes(Path.Combine(directory, "request.json")), WorkshopProtocol.Json);
@@ -104,7 +107,7 @@ internal sealed class CommandTasks : IAsyncDisposable
         if (HasRunning) throw new WorkshopException("command_busy", "电脑已有命令任务正在执行，请先查看该任务。");
         var workingDirectory = projects.ResolveApplication(application);
         var shell = FindPowerShell();
-        var state = new CommandTaskState(id, application, name, command, workingDirectory, "starting", Now());
+        var state = new CommandTaskState(id, application, name, command, workingDirectory, "starting", Now(), allowBackgroundProcesses);
         if (JsonSerializer.SerializeToUtf8Bytes(state, WorkshopProtocol.Json).Length > 48 * 1024)
             throw new WorkshopException("command_result_large", "命令与目录的编码结果过长，请缩短后重试。");
         var staging = Path.Combine(root, ".starting-" + Guid.NewGuid().ToString("N"));
@@ -195,7 +198,7 @@ internal sealed class CommandTasks : IAsyncDisposable
         try
         {
             using var startGate = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\Hako.Command." + state.Id);
-            using var job = new CommandProcessJob();
+            using var job = new CommandProcessJob(state.AllowBackgroundProcesses);
             using var process = new Process();
             var commandFile = Path.Combine(directory, "command.ps1");
             File.WriteAllText(commandFile,
@@ -214,8 +217,9 @@ internal sealed class CommandTasks : IAsyncDisposable
             Write(directory, state with { State = "running" }); startGate.Set();
             using var output = new FileStream(Path.Combine(directory, "output.log"), FileMode.Append, FileAccess.Write, FileShare.Read);
             using var writing = new SemaphoreSlim(1, 1);
-            var stdout = CopyOutput(process.StandardOutput, output, writing);
-            var stderr = CopyOutput(process.StandardError, output, writing);
+            using var draining = new CancellationTokenSource();
+            var stdout = CopyOutput(process.StandardOutput, output, writing, draining.Token);
+            var stderr = CopyOutput(process.StandardError, output, writing, draining.Token);
             try { await process.WaitForExitAsync(lifetime.Token); }
             catch (OperationCanceledException)
             {
@@ -233,6 +237,11 @@ internal sealed class CommandTasks : IAsyncDisposable
                 }
                 await process.WaitForExitAsync();
             }
+            // Closing the job now cleans ordinary descendants before waiting
+            // for EOF. Opted-in descendants can retain inherited pipe handles,
+            // so their lifetime must not keep the submitting command active.
+            job.Dispose();
+            draining.CancelAfter(TimeSpan.FromSeconds(2));
             await Task.WhenAll(stdout, stderr);
             Write(directory, state with { State = cancellation.IsCancellationRequested ? "cancelled" : timeout.IsCancellationRequested ? "timed_out" : process.ExitCode == 0 ? "succeeded" : "failed",
                 ExitCode = process.ExitCode, FinishedAt = Now() });
@@ -242,28 +251,32 @@ internal sealed class CommandTasks : IAsyncDisposable
             Write(directory, state with { State = cancellation.IsCancellationRequested ? "cancelled" : timeout.IsCancellationRequested ? "timed_out" : "failed", FinishedAt = Now(), Error = error.Message[..Math.Min(1000, error.Message.Length)] });
         }
     }
-    private static async Task CopyOutput(StreamReader reader, Stream output, SemaphoreSlim writing)
+    private static async Task CopyOutput(StreamReader reader, Stream output, SemaphoreSlim writing, CancellationToken token)
     {
         var buffer = new char[2048];
         var encoder = Encoding.UTF8.GetEncoder();
         var encoded = new byte[Encoding.UTF8.GetMaxByteCount(buffer.Length)];
         int count;
-        while ((count = await reader.ReadAsync(buffer)) > 0)
+        try
         {
-            var byteCount = encoder.GetBytes(buffer, 0, count, encoded, 0, false);
-            await writing.WaitAsync();
-            try
+            while ((count = await reader.ReadAsync(buffer.AsMemory(), token)) > 0)
             {
-                const int limit = 20 * 1024 * 1024;
-                if (output.Length < limit)
+                var byteCount = encoder.GetBytes(buffer, 0, count, encoded, 0, false);
+                await writing.WaitAsync(token);
+                try
                 {
-                    await output.WriteAsync(encoded.AsMemory(0, byteCount));
-                    if (output.Length >= limit) await output.WriteAsync(Encoding.UTF8.GetBytes("\n[日志已达到 20 MB 上限，后续输出省略]\n"));
-                    await output.FlushAsync();
+                    const int limit = 20 * 1024 * 1024;
+                    if (output.Length < limit)
+                    {
+                        await output.WriteAsync(encoded.AsMemory(0, byteCount));
+                        if (output.Length >= limit) await output.WriteAsync(Encoding.UTF8.GetBytes("\n[日志已达到 20 MB 上限，后续输出省略]\n"));
+                        await output.FlushAsync();
+                    }
                 }
+                finally { writing.Release(); }
             }
-            finally { writing.Release(); }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
     public async ValueTask DisposeAsync()
     {

@@ -78,7 +78,7 @@ internal static class CommandHostChecks
             var id = Guid.NewGuid().ToString();
             string PS(string value) => "'" + value.Replace("'", "''") + "'";
             var command = "Write-Output 'before replacement'; $ready=Join-Path $env:HAKO_COMMAND_TASK_DIRECTORY 'replacement-ready'; while (!(Test-Path -LiteralPath $ready)) { Start-Sleep -Milliseconds 100 }; & $env:HAKO_COMMAND_EXECUTABLE --launch-agent --target " + PS(target) + " --data-dir " + PS(profile.Store.DirectoryPath) + " --json; Write-Output 'after replacement'";
-            await Call(socket, computer, "commands.start", new { requestId = id, applicationId = application, name = "isolated Agent replacement", command, timeoutSeconds = 30 });
+            await Call(socket, computer, "commands.start", new { requestId = id, applicationId = application, name = "isolated Agent replacement", command, timeoutSeconds = 30, allowBackgroundProcesses = false });
             await AgentPipeClient.TrySendAsync(profile, new AgentCommand("exit", new()));
             await main.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             main.Dispose();

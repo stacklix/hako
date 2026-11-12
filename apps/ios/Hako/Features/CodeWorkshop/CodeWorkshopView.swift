@@ -245,7 +245,9 @@ struct CodeWorkshopView: View {
                             application: application, archived: store.showingArchived)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "terminal").font(.subheadline).padding(.top, 3)
+                            Image(systemName: hasDraft || session.inProgress || store.isUnread(session, at: date) ? "terminal.fill" : "terminal")
+                                .symbolRenderingMode(.monochrome)
+                                .font(.subheadline).padding(.top, 3)
                                 .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
                                 HStack(alignment: .top) {

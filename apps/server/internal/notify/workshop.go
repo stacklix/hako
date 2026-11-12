@@ -6,20 +6,31 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var workshopUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// Only identifiers, outcome and time cross this boundary: never prompts, output or paths.
+// Only bounded display names and the last assistant reply excerpt accompany the outcome.
 type WorkshopTerminal struct {
 	ComputerID  string `json:"-"`
 	OperationID string `json:"-"`
 	State       string `json:"state"`
 	FinishedAt  int64  `json:"finishedAt"`
+	ProjectName string `json:"projectName"`
+	SessionName string `json:"sessionName"`
+	Summary     string `json:"summary"`
 }
 
 func (e WorkshopTerminal) Valid() bool {
-	return workshopUUID.MatchString(e.OperationID) && e.FinishedAt > 0 && e.FinishedAt <= nowMS()+300_000 && in(e.State, "completed", "failed", "interrupted", "unknown")
+	return workshopUUID.MatchString(e.OperationID) && e.FinishedAt > 0 && e.FinishedAt <= nowMS()+300_000 && in(e.State, "completed", "failed", "interrupted", "unknown") &&
+		workshopTextValid(e.ProjectName, 80, true) && workshopTextValid(e.SessionName, 120, true) && workshopTextValid(e.Summary, 240, false)
+}
+
+func workshopTextValid(text string, limit int, required bool) bool {
+	return (!required || text != "") && utf8.ValidString(text) && utf8.RuneCountInString(text) <= limit &&
+		strings.TrimSpace(text) == text && strings.IndexFunc(text, unicode.IsControl) < 0
 }
 
 func (s *Service) WorkshopReadiness(console string) (bool, bool) {
@@ -53,10 +64,17 @@ func (s *Service) EnqueueWorkshop(event WorkshopTerminal, console string, enable
 	hash[8] = (hash[8] & 0x3f) | 0x80
 	messageID := fmt.Sprintf("%x-%x-%x-%x-%x", hash[:4], hash[4:6], hash[6:8], hash[8:10], hash[10:16])
 	texts := map[string]string{"completed": "任务已完成。", "failed": "任务执行失败，请打开会话查看。", "interrupted": "任务已中断。", "unknown": "任务结果尚未确认，请打开会话核对。"}
-	payload, err := marshalPayload(object{"aps": object{"alert": object{"title": "代码工坊", "body": texts[event.State]}, "sound": "default"},
+	body := texts[event.State]
+	if event.Summary != "" {
+		body += "\n" + event.Summary
+	}
+	payload, err := marshalPayload(object{"aps": object{"alert": object{"title": "代码工坊 · " + event.ProjectName, "subtitle": event.SessionName, "body": body}, "sound": "default"},
 		"type": "workshop_terminal", "notificationId": messageID, "computerId": event.ComputerID, "operationId": strings.ToLower(event.OperationID), "state": event.State})
 	if err != nil {
 		return err
+	}
+	if len(payload) > 4096 {
+		return invalid("工坊通知超过 Apple Push 消息大小限制")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
