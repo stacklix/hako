@@ -40,12 +40,27 @@ private final class AgentPanelProtocol: URLProtocol, @unchecked Sendable {
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() {}
+
+    static func body(_ request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        // URLSession can deliver the request body as a stream to URLProtocol.
+        guard let stream = request.httpBodyStream else { throw CocoaError(.fileReadUnknown) }
+        stream.open(); defer { stream.close() }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { throw stream.streamError ?? CocoaError(.fileReadUnknown) }
+            if count == 0 { return data }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+    }
 }
 
 @main
 struct QinglongAgentTests {
     @MainActor
     static func main() async throws {
+        try readsStreamedRequestBodies()
         try rejectsUnsupportedAndIncompleteOperations()
         try metadataHidesSecrets()
         try conversationsAreIsolatedAndRetainCommitMarker()
@@ -67,7 +82,19 @@ struct QinglongAgentTests {
         try await editedDraftWritesOnlyAfterConfirmation()
         try assertAssistantFileRoundTrip(QinglongAgentConversationFile(url: URL(fileURLWithPath: "Tests/Fixtures/qinglong-assistant.plist")))
         toolFollowUpsRequireTheSameTarget()
-        print("Qinglong assistant tests passed (21 groups)")
+        print("Qinglong assistant tests passed (22 groups)")
+    }
+
+    static func readsStreamedRequestBodies() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["content": String(repeating: "任务正文", count: 2048)])
+        var request = URLRequest(url: URL(string: "https://panel.test/open/scripts")!)
+        request.httpBody = data
+        let direct = try AgentPanelProtocol.body(request)
+        precondition(direct == data)
+        request.httpBody = nil
+        request.httpBodyStream = InputStream(data: data)
+        let streamed = try AgentPanelProtocol.body(request)
+        precondition(streamed == data, "The mock must inspect the complete streamed body on macOS and Linux")
     }
 
     static func toolFollowUpsRequireTheSameTarget() {
@@ -221,7 +248,7 @@ struct QinglongAgentTests {
             if request.httpMethod == "GET" { return (200, "{\"code\":200,\"data\":[" + task + "]}") }
             writes.append(request.url!.path)
             if request.url!.path == "/open/crons" {
-                let body = try JSONDecoder().decode(QinglongJSON.self, from: request.httpBody!)
+                let body = try JSONDecoder().decode(QinglongJSON.self, from: AgentPanelProtocol.body(request))
                 precondition(body["schedule"].text == "0 4 * * *" && body["task_before"].text == "private hook")
                 precondition(body["enabled"] == .null)
                 return (200, "{\"code\":200,\"data\":" + task + "}")
@@ -355,7 +382,7 @@ struct QinglongAgentTests {
         let panel = try client { request in
             if request.httpMethod == "GET" { return (200, "{\"code\":200,\"data\":[" + task + "]}") }
             writes += 1
-            let body = try JSONDecoder().decode(QinglongJSON.self, from: request.httpBody!)
+            let body = try JSONDecoder().decode(QinglongJSON.self, from: AgentPanelProtocol.body(request))
             precondition(body["name"].text == "新名称" && body["task_before"].text == "private hook" && body["labels"].array?.count == 1)
             precondition(request.httpMethod == "PUT" && request.url!.path == "/open/crons")
             return (200, "{\"code\":200,\"data\":" + task + "}")
