@@ -3,6 +3,67 @@ import Foundation
 import FoundationNetworking
 #endif
 
+extension InvestmentAsset {
+    var catalogKey: String { [kind.rawValue, currency.rawValue, market, code, basis.rawValue].joined(separator: "|") }
+
+    func validateCatalogIdentity(_ listed: InvestmentAsset) throws {
+        guard kind == listed.kind, currency == listed.currency, code == listed.code, market == listed.market else {
+            throw InvestmentError.invalid("请从对应市场的目录中选择标的，不能手工填写代码或交易所。")
+        }
+        guard name == listed.name else {
+            throw InvestmentError.invalid("标的名称由目录提供（\(listed.name)），不能手工修改。请重新选择搜索结果。")
+        }
+    }
+}
+
+extension InvestmentBook {
+    func catalogAssetsRequiringValidation(comparedTo previous: InvestmentBook) -> [InvestmentAsset] {
+        var used = Set(watched).subtracting(previous.watched)
+        let oldEvents = Dictionary(previous.accounts.flatMap(\.events).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for event in accounts.flatMap(\.events) where oldEvents[event.id]?.assetID != event.assetID {
+            if let id = event.assetID { used.insert(id) }
+        }
+        for plan in plans where plan.enabled {
+            let old = previous.plans.first { $0.id == plan.id }
+            if let id = plan.assetID, old?.assetID != id || old?.enabled != true { used.insert(id) }
+        }
+        return assets.values.filter { asset in
+            guard asset.kind.requiresCatalog else { return false }
+            guard let original = previous.asset(asset.id) else { return true }
+            return used.contains(asset.id) || original.catalogKey != asset.catalogKey
+                || original.name != asset.name || original.multiplier != asset.multiplier
+        }.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+}
+
+struct InvestmentContractSearch {
+    let query: String
+    let exchange: InvestmentContractExchange?
+    let side: InvestmentContractSide?
+
+    init(_ input: String) throws {
+        let parts = input.uppercased().split(separator: "•", omittingEmptySubsequences: false)
+        guard parts.count <= 3, let first = parts.first, !first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw InvestmentError.invalid("请输入合约代码，例如 TRXUSD•S•HTX（空）或 TRXUSD•L•HTX（多）。")
+        }
+        query = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        if parts.count == 3 {
+            let marker = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let direction = InvestmentContractSide.allCases.first(where: { $0.shortCode == marker }) else {
+                throw InvestmentError.invalid("合约方向使用 S（空）或 L（多）。")
+            }
+            side = direction
+        } else { side = nil }
+        if parts.count > 1 {
+            let suffix = parts.last!.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let venue = InvestmentContractExchange.allCases.first(where: { $0.shortCode == suffix }) else {
+                throw InvestmentError.invalid("合约交易所仅支持 HTX 和 BIN（Binance）。")
+            }
+            exchange = venue
+        } else { exchange = nil }
+    }
+}
+
 enum InvestmentQuoteSource: String, CaseIterable, Identifiable {
     case tushare = "tushare-pro"
     case twelveData = "twelve-data"
@@ -174,7 +235,7 @@ struct InvestmentQuoteProvider {
         try Task.checkCancellation()
         let fiat = Set(Locale.Currency.isoCurrencies.map(\.identifier))
         return codes.subtracting(fiat).compactMap { code in
-            let asset = InvestmentAsset(name: names[code] ?? code, code: code, market: "", kind: .crypto, currency: .usd)
+            let asset = InvestmentAsset(name: names[code] ?? code, code: code, market: InvestmentContractExchange.binance.rawValue, kind: .crypto, currency: .usd)
             return (try? asset.validateMarket(settlingIn: .usd)) == nil ? nil : asset
         }
     }
@@ -357,7 +418,7 @@ struct InvestmentQuoteProvider {
                 code = normalized
                 market = InvestmentAsset.stockConnectMarket
             } else {
-                guard search.currency != .usd || entry.country?.lowercased() == "united states",
+                guard search.currency != .usd || (entry.country?.lowercased() == "united states" && !mic.isEmpty && mic != "US"),
                       search.currency != .cny || InvestmentAsset.mainlandMICs.values.contains(mic)
                         || (search.kind == .fund && mic.isEmpty && entry.country?.lowercased() == "china") else { return nil }
                 code = ticker
@@ -404,10 +465,14 @@ struct InvestmentQuoteProvider {
             params = ["name": search.query]
         }
         let currencyField = api == "hk_basic" ? ["curr_type"] : []
-        let table = try await tushareTable(api: api, params: params, fields: ["ts_code"] + nameFields + currencyField, key: key)
+        let exchangeFields = api == "us_basic" ? ["exchange", "list_status"] : api == "us_etf_basic" ? ["exchange"] : []
+        if api == "us_etf_basic" { params["list_status"] = "L" }
+        let table = try await tushareTable(api: api, params: params, fields: ["ts_code"] + nameFields + currencyField + exchangeFields, key: key)
         guard let codeIndex = table.fields.firstIndex(of: "ts_code") else { return [] }
         let nameIndices = nameFields.compactMap { table.fields.firstIndex(of: $0) }
         let currencyIndex = table.fields.firstIndex(of: "curr_type")
+        let exchangeIndex = table.fields.firstIndex(of: "exchange")
+        let statusIndex = table.fields.firstIndex(of: "list_status")
         return table.items.compactMap { row in
             guard row.count > codeIndex, let ticker = row[codeIndex]?.string?.uppercased(),
                   code == nil || ticker == code else { return nil }
@@ -421,7 +486,17 @@ struct InvestmentQuoteProvider {
                 return name
             }.first
             guard let name, code != nil || name.localizedCaseInsensitiveContains(search.query) else { return nil }
-            let asset = InvestmentAsset(name: name, code: ticker, market: search.stockConnect ? InvestmentAsset.stockConnectMarket : "",
+            var market = search.stockConnect ? InvestmentAsset.stockConnectMarket : ""
+            if !exchangeFields.isEmpty {
+                let venues = ["NASDAQ": "XNAS", "NYSE": "XNYS", "AMEX": "XASE", "NYSEARCA": "ARCX", "BZX": "BATS", "OTC": "XOTC"]
+                guard let exchangeIndex, row.count > exchangeIndex, let exchange = row[exchangeIndex]?.string?.uppercased(),
+                      let venue = venues[exchange] else { return nil }
+                if api == "us_basic" {
+                    guard let statusIndex, row.count > statusIndex, row[statusIndex]?.string == "L" else { return nil }
+                }
+                market = venue
+            }
+            let asset = InvestmentAsset(name: name, code: ticker, market: market,
                                         kind: search.kind, currency: search.currency)
             guard (try? asset.validateMarket(settlingIn: asset.settlementCurrency)) != nil else { return nil }
             return asset

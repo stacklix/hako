@@ -114,7 +114,7 @@ enum QinglongJSON: Codable, Equatable, Sendable {
     static func fields(_ fields: [String: String]) -> Self { .object(fields.mapValues(Self.string)) }
 }
 
-enum QinglongResource: String, CaseIterable, Identifiable, Sendable {
+enum QinglongResource: String, Codable, CaseIterable, Identifiable, Sendable {
     case tasks = "crons", scripts, subscriptions, envs, configs, dependencies, logs
     var id: String { rawValue }
     var title: String {
@@ -155,7 +155,7 @@ enum QinglongDependencyStatus: Int, Sendable {
     var failed: Bool { self == .installFailed || self == .removeFailed }
 }
 
-struct QinglongItem: Identifiable, Equatable, Sendable {
+struct QinglongItem: Codable, Identifiable, Equatable, Sendable {
     let resource: QinglongResource
     var raw: QinglongJSON
     var id: String { resource.rawValue + ":" + (raw["id"].text.isEmpty ? filePath : raw["id"].text) }

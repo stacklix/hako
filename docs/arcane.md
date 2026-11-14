@@ -148,9 +148,9 @@ swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Containers
 /tmp/hako-arcane-loading-tests
 swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneHostProtocol.swift Hako/Features/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
 /tmp/hako-arcane-workspace-tests
-swiftc Hako/Features/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
+swiftc Hako/Shared/UI/HakoCodeSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
 /tmp/hako-arcane-syntax-tests
-swiftc Hako/Features/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
+swiftc Hako/Shared/UI/HakoEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
 /tmp/hako-arcane-editor-lines-tests
 swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneHostProtocol.swift Hako/Features/Containers/ArcaneClient.swift Hako/Features/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
 /tmp/hako-arcane-host-tests

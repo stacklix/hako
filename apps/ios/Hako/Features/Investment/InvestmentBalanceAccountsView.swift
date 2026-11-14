@@ -222,7 +222,9 @@ struct InvestmentBalanceAccountDetail: View {
     }
 }
 
-private struct InvestmentBalanceAccountEditor: View {
+struct InvestmentBalanceAccountEditor: View {
+    var editorDraft: InvestmentEditorDraft? = nil
+    @State private var saving = false
     @ObservedObject var store: InvestmentStore
     @Environment(\.dismiss) private var dismiss
     let category: InvestmentBalanceCategory
@@ -237,29 +239,31 @@ private struct InvestmentBalanceAccountEditor: View {
     @State private var error: String?
 
     init(store: InvestmentStore, category: InvestmentBalanceCategory, account: InvestmentBalanceAccount?,
-         hidesAmounts: Bool, onSaved: @escaping (String) -> Void) {
+         hidesAmounts: Bool, editing: InvestmentEditorDraft? = nil, onSaved: @escaping (String) -> Void) {
         self.store = store
         self.category = category
         self.account = account
         self.hidesAmounts = hidesAmounts
         self.onSaved = onSaved
+        editorDraft = editing
         let previous = account?.records.last?.amount
         let initial = hidesAmounts ? "" : previous?.formatted(.number.grouping(.never)) ?? ""
         initialAmount = initial
-        _amount = State(initialValue: initial)
+        _amount = State(initialValue: editing?.action.text("amount") ?? initial)
+        _name = State(initialValue: editing?.value("name") ?? "")
         let day = InvestmentBook.day()
         initialDay = day
-        _recordDay = State(initialValue: day)
+        _recordDay = State(initialValue: editing?.date ?? day)
     }
 
     var body: some View {
         let editing = account != nil
         let title = editing ? "更新余额" : "添加账户"
         let hasName = !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasChanges = !name.isEmpty || amount != initialAmount || (!editing && recordDay != initialDay)
+        let hasChanges = !name.isEmpty || amount != initialAmount || recordDay != initialDay
         SettingsSheet(title: title, hasChanges: hasChanges,
-                      isBusy: store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
-                      detents: [.medium, .large], saveAccessibilityLabel: editing ? "保存余额" : "添加账户") {
+                      isBusy: saving || store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
+                      detents: [.medium, .large], saveAccessibilityLabel: editorDraft != nil ? "完成修改并更新预览" : editing ? "保存余额" : "添加账户") {
             Form {
                 Section {
                     if !editing {
@@ -269,10 +273,8 @@ private struct InvestmentBalanceAccountEditor: View {
                     InvestmentField(editing ? "更新后余额（元）" : "初始余额（元）", text: $amount,
                                     keyboard: .decimalPad, focusesOnRowTap: true)
                         .listRowBackground(HakoStyle.card)
-                    if !editing {
-                        InvestmentDatePicker("记账日期", selection: $recordDay, latest: InvestmentBook.day())
-                            .listRowBackground(HakoStyle.card)
-                    }
+                    InvestmentDatePicker("记账日期", selection: $recordDay, latest: InvestmentBook.day())
+                        .listRowBackground(HakoStyle.card)
                     if editing {
                         let previous = account?.records.last?.amount
                         let next = try? investmentDecimal(amount, "余额", allowZero: true)
@@ -306,14 +308,23 @@ private struct InvestmentBalanceAccountEditor: View {
     }
 
     private func save() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         do {
             let value = try investmentDecimal(amount, "余额", allowZero: true)
+            if let editorDraft {
+                try await editorDraft.submit(["name": name, "amount": InvestmentEditorDraft.text(value), "date": InvestmentEditorDraft.day.string(from: recordDay)])
+                dismiss()
+                return
+            }
             var message = "已添加账户"
             try await store.update { book in
                 var sheet = book.balanceSheet ?? InvestmentBalanceLedger()
                 if let account {
                     let previous = sheet.accounts.first { $0.id == account.id }?.records.last?.amount
-                    try sheet.update(account.id, amount: value)
+                    let day = InvestmentBook.day(recordDay)
+                    try sheet.update(account.id, amount: value, at: day == InvestmentBook.day() ? .now : day)
                     message = previous == value ? "余额无变化" : "已更新余额"
                 } else {
                     let now = Date.now
@@ -455,6 +466,7 @@ struct InvestmentBalanceHistory: View {
 }
 
 struct InvestmentBalanceRecordEditor: View {
+    var editorDraft: InvestmentEditorDraft? = nil
     @ObservedObject var store: InvestmentStore
     @Environment(\.dismiss) private var dismiss
     let change: InvestmentBalanceChange
@@ -466,14 +478,15 @@ struct InvestmentBalanceRecordEditor: View {
     @State private var confirmsDeletion = false
     @State private var error: String?
 
-    init(store: InvestmentStore, change: InvestmentBalanceChange, hidesAmounts: Bool) {
+    init(store: InvestmentStore, change: InvestmentBalanceChange, hidesAmounts: Bool, editing: InvestmentEditorDraft? = nil) {
         self.store = store
         self.change = change
         self.hidesAmounts = hidesAmounts
+        editorDraft = editing
         let initial = hidesAmounts ? "" : change.after.formatted(.number.grouping(.never))
         initialAmount = initial
-        _amount = State(initialValue: initial)
-        _date = State(initialValue: change.day)
+        _amount = State(initialValue: editing?.action.text("amount") ?? initial)
+        _date = State(initialValue: editing?.date ?? change.day)
     }
 
     var body: some View {
@@ -487,7 +500,7 @@ struct InvestmentBalanceRecordEditor: View {
                     try ledger.replaceRecord(original, accountID: accountID, amount: value, on: date)
                 }
             }
-        }, saveAccessibilityLabel: "保存余额记录") {
+        }, saveAccessibilityLabel: editorDraft == nil ? "保存余额记录" : "完成修改并更新预览") {
             Form {
                 Section(change.name + " · " + change.category.rawValue) {
                     InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
@@ -496,11 +509,11 @@ struct InvestmentBalanceRecordEditor: View {
                 if let error {
                     Section { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
-                Section {
+                if editorDraft == nil { Section {
                     HakoDeleteButton(title: "删除余额记录") { confirmsDeletion = true }
                         .investmentListRow()
                         .listRowBackground(Color.clear)
-                }
+                } }
             }
             .disabled(saving || store.saving)
             .hakoDeleteConfirmation(Text("删除这笔余额记录？"), isPresented: $confirmsDeletion,
@@ -522,6 +535,16 @@ struct InvestmentBalanceRecordEditor: View {
         error = nil
         defer { saving = false }
         do {
+            if let editorDraft {
+                guard var ledger = store.book.balanceSheet else { throw InvestmentError.invalid("找不到资产负债账本。") }
+                try operation(&ledger, accountID, record)
+                guard let edited = ledger.accounts.first(where: { $0.id == accountID })?.records.first(where: { $0.id == record.id }) else {
+                    throw InvestmentError.invalid("请通过删除预览确认删除记录。")
+                }
+                try await editorDraft.submit(["amount": InvestmentEditorDraft.text(edited.amount), "date": InvestmentEditorDraft.day.string(from: edited.recordedAt)])
+                dismiss()
+                return
+            }
             try await store.update { book in
                 guard var ledger = book.balanceSheet else { throw InvestmentError.invalid("找不到资产负债账本。") }
                 try operation(&ledger, accountID, record)

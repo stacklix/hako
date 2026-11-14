@@ -7,6 +7,9 @@ import FoundationNetworking
 struct InvestmentMarketDataTests {
     static func main() async throws {
         mapping()
+        try catalogIdentityCannotBeHandEdited()
+        try contractDisplayAndSearchPreserveVenueIdentity()
+        catalogValidationIncludesNewUsesOfExistingAssets()
         try await credentialTestsUseAuthenticatedEndpoints()
         try await credentialTestsRejectInvalidResponses()
         try await alternateAfterUnavailableQuote()
@@ -14,6 +17,7 @@ struct InvestmentMarketDataTests {
         try await usDailyBarWaitsForExchangeClose()
         try await stockConnectUsesHKDQuotes()
         try await instrumentSearchReturnsMatchingChoices()
+        try await tushareUSCatalogRequiresAnExchange()
         try await mainlandStockSearchFindsChineseNames()
         try await instrumentSearchReportsUnavailableSources()
         try await cryptocurrencyUsesUSDPair()
@@ -21,9 +25,113 @@ struct InvestmentMarketDataTests {
         try await publicSpotPricesAreConvertedToDollars()
         try await cryptoDailyClosesUseTheLedgerDay()
         try await exchangeContractsUseTheirOwnMultipliersAndMarkPrices()
+        try contractBindingRequiresMatchingExchangeSpecifications()
+        try await entryPricesUseDatedSettlementQuotes()
+        entryQuotesDoNotCrossInstrumentsOrDates()
         try await domesticFundNAV()
         try await referenceRates()
         print("Investment market data checks passed")
+    }
+
+    static func contractBindingRequiresMatchingExchangeSpecifications() throws {
+        let selected = InvestmentAsset(name: "TRX/USD 永续", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
+                                       currency: .usd, multiplier: 10, contractSide: .short, contractBasis: .coin)
+        let listing = InvestmentContractListing(asset: selected, settlementCode: "TRX")
+        try listing.validateSelection(selected, settlement: "TRX")
+        for mismatch in ["name", "code", "market", "basis", "multiplier", "settlement"] {
+            var wrong = selected
+            switch mismatch {
+            case "name": wrong.name = "手填合约名称"
+            case "code": wrong.code = "TRX-USD-SHORT"
+            case "market": wrong.market = "BINANCE"
+            case "basis": wrong.contractBasis = .stablecoin
+            case "multiplier": wrong.multiplier = 1
+            default: break
+            }
+            do {
+                try listing.validateSelection(wrong, settlement: mismatch == "settlement" ? "ETH" : "TRX")
+                preconditionFailure("Unverified contract binding was accepted: \(mismatch)")
+            } catch is InvestmentError { }
+        }
+    }
+
+    static func catalogIdentityCannotBeHandEdited() throws {
+        for kind in [InvestmentKind.stock, .fund, .etf, .crypto] {
+            let listed = InvestmentAsset(name: "目录名称", code: "ABC", market: "XNAS", kind: kind, currency: .usd)
+            try listed.validateCatalogIdentity(listed)
+            for field in ["name", "code", "market", "kind", "currency"] {
+                var changed = listed
+                switch field {
+                case "name": changed.name = "自定义名称"
+                case "code": changed.code = "OTHER"
+                case "market": changed.market = ""
+                case "kind": changed.kind = .wealth
+                default: changed.currency = .cny
+                }
+                do {
+                    try changed.validateCatalogIdentity(listed)
+                    preconditionFailure("Manual identity change passed: \(field)")
+                } catch is InvestmentError { }
+            }
+        }
+    }
+
+    static func contractDisplayAndSearchPreserveVenueIdentity() throws {
+        let htx = InvestmentAsset(name: "TRX/USD 永续", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
+                                  currency: .usd, contractBasis: .coin)
+        var binance = htx
+        binance.code = "TRXUSD_PERP"
+        binance.market = "BINANCE"
+        precondition(htx.displayCode == "TRXUSD•HTX" && binance.displayCode == "TRXUSD•BIN")
+        precondition(htx.displayName == htx.name, "A catalog entry must not invent a position direction")
+        precondition(htx.code == "TRX-USD" && binance.code == "TRXUSD_PERP" && !htx.matches(binance))
+        for listed in [htx, binance] {
+            var short = listed
+            short.contractSide = .short
+            var long = listed
+            long.contractSide = .long
+            let venue = listed.market == "HTX" ? "HTX" : "BIN"
+            precondition(short.displayCode == "TRXUSD•S•" + venue && long.displayCode == "TRXUSD•L•" + venue)
+            precondition(short.displayName == "TRX/USD 永续 · 空" && long.displayName == "TRX/USD 永续 · 多")
+            precondition(!short.matches(long) && short.code == listed.code && long.name == listed.name)
+            try short.validateCatalogIdentity(listed)
+            try long.validateCatalogIdentity(listed)
+            for position in [short, long] {
+                let search = try InvestmentContractSearch(position.displayCode.lowercased())
+                precondition(search.query == "TRXUSD" && search.side == position.contractSide)
+                precondition(search.exchange == InvestmentContractExchange(asset: position))
+            }
+        }
+        for (text, exchange) in [("trxusd•htx", InvestmentContractExchange.htx), ("TRXUSD•BIN", .binance)] {
+            let query = try InvestmentContractSearch(text)
+            precondition(query.query == "TRXUSD" && query.exchange == exchange && query.side == nil)
+        }
+        let plain = try InvestmentContractSearch("TRXUSD")
+        precondition(plain.exchange == nil && plain.query == "TRXUSD" && plain.side == nil)
+        for text in ["TRXUSD•OTHER", "TRXUSD•", "•HTX", "TRXUSD•HTX•BIN", "TRXUSD•X•HTX", "TRXUSD••HTX", "TRXUSD•S•OTHER", "TRXUSD•L•HTX•BIN"] {
+            do { _ = try InvestmentContractSearch(text); preconditionFailure("Unknown contract venue accepted") }
+            catch is InvestmentError { }
+        }
+    }
+
+    static func catalogValidationIncludesNewUsesOfExistingAssets() {
+        let listed = InvestmentAsset(name: "苹果", code: "AAPL", market: "XNAS", kind: .stock, currency: .usd)
+        let account = InvestmentAccount(name: "美股", currency: .usd, type: .securities)
+        let original = InvestmentBook(accounts: [account], assets: [listed.id: listed])
+        precondition(original.catalogAssetsRequiringValidation(comparedTo: original).isEmpty)
+        var edited = original
+        edited.assets[listed.id]!.name = "手填名称"
+        precondition(edited.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
+        var traded = original
+        traded.accounts[0].events.append(.init(day: day(1), kind: .buy, assetID: listed.id, quantity: 1, price: 1))
+        precondition(traded.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
+        precondition(original.catalogAssetsRequiringValidation(comparedTo: traded).isEmpty, "Deletion must not require a catalog request")
+        var watched = original
+        watched.watched = [listed.id]
+        precondition(watched.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
+        var planned = original
+        planned.plans = [.init(accountID: account.id, assetID: listed.id, amount: 10, monthDay: 1, nextDay: day(1))]
+        precondition(planned.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
     }
 
     static func credentialTestsUseAuthenticatedEndpoints() async throws {
@@ -235,17 +343,37 @@ struct InvestmentMarketDataTests {
                 {"symbol":"XYZ","instrument_name":"US Listing","instrument_type":"Common Stock","mic_code":"XNAS","country":"United States","currency":"USD"},
                 {"symbol":"XYZ","instrument_name":"Another Listing","instrument_type":"Common Stock","mic_code":"XNYS","country":"United States","currency":"USD"},
                 {"symbol":"XYZ.A","instrument_name":"Other Class","instrument_type":"Common Stock","mic_code":"XNAS","country":"United States","currency":"USD"},
+                {"symbol":"XYZ","instrument_name":"Unknown Exchange","instrument_type":"Common Stock","country":"United States","currency":"USD"},
                 {"symbol":"XYZ","instrument_name":"Foreign Listing","instrument_type":"Common Stock","mic_code":"XLON","country":"United Kingdom","currency":"USD"}]}
                 """#)
         }
         let funds = try await provider.searchInstruments(.init(query: "110022", kind: .fund, currency: .cny), keys: [.tushare: "fixture"])
         precondition(funds.map(\.name) == ["易方达消费行业"])
+        precondition(funds.map(\.code) == ["110022.OF"])
         let connect = try await provider.searchInstruments(.init(query: "700", kind: .stock, currency: .hkd, stockConnect: true),
                                                             keys: [.twelveData: "fixture"])
         precondition(connect.map(\.name) == ["Tencent"] && connect.first?.code == "00700.HK")
         let us = try await provider.searchInstruments(.init(query: "XY", kind: .stock, currency: .usd), keys: [.twelveData: "fixture"])
         precondition(us.map(\.name) == ["US Listing", "Another Listing", "Other Class"])
         precondition(us.map(\.market) == ["XNAS", "XNYS", "XNAS"])
+    }
+
+    static func tushareUSCatalogRequiresAnExchange() async throws {
+        let provider = InvestmentQuoteProvider { request, _ in
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let fields = (body["fields"] as! String).split(separator: ",")
+            precondition(fields.contains("exchange"))
+            if body["api_name"] as? String == "us_basic" {
+                precondition(fields.contains("list_status"))
+                return response(request, #"{"code":0,"data":{"fields":["ts_code","name","exchange","list_status"],"items":[["AAPL","苹果","NASDAQ","L"],["AAPL","已退市","NYSE","D"],["AAPL","没有交易所",null,"L"]]}}"#)
+            }
+            precondition(body["api_name"] as? String == "us_etf_basic")
+            return response(request, #"{"code":0,"data":{"fields":["ts_code","name","exchange"],"items":[["VOO","标普500ETF","NYSEARCA"]]}}"#)
+        }
+        let stock = try await provider.searchInstruments(.init(query: "AAPL", kind: .stock, currency: .usd), keys: [.tushare: "fixture"])
+        precondition(stock.map(\.name) == ["苹果"] && stock.map(\.market) == ["XNAS"])
+        let etf = try await provider.searchInstruments(.init(query: "VOO", kind: .etf, currency: .usd), keys: [.tushare: "fixture"])
+        precondition(etf.map(\.code) == ["VOO"] && etf.map(\.market) == ["ARCX"])
     }
 
     static func mainlandStockSearchFindsChineseNames() async throws {
@@ -342,6 +470,7 @@ struct InvestmentMarketDataTests {
         let query = InvestmentInstrumentSearch(query: "trx", kind: .crypto, currency: .usd, accountType: .crypto)
         precondition(Set(spot.map(\.code)) == ["TRX", "USDT"])
         precondition(spot.filter(query.includes).map(\.name) == ["TRON"])
+        precondition(spot.allSatisfy { $0.market == "BINANCE" })
         let byName = InvestmentInstrumentSearch(query: "tron", kind: .crypto, currency: .usd)
         precondition(spot.filter(byName.includes).map(\.code) == ["TRX"])
 
@@ -383,15 +512,16 @@ struct InvestmentMarketDataTests {
             precondition(secrets.isEmpty && request.value(forHTTPHeaderField: "Authorization") == nil)
             switch request.url?.path {
             case "/fapi/v1/exchangeInfo":
-                return response(request, #"{"symbols":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","status":"TRADING"}]}"#)
+                return response(request, #"{"symbols":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","contractType":"PERPETUAL","status":"TRADING"},{"symbol":"BTCUSDT_261225","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","contractType":"CURRENT_QUARTER","status":"TRADING"}]}"#)
             case "/linear-swap-api/v1/swap_contract_info":
-                return response(request, #"{"status":"ok","data":[{"symbol":"BTC","contract_code":"BTC-USDT","contract_size":0.001,"contract_status":1,"delivery_date":"","trade_partition":"USDT"}]}"#)
+                precondition(request.url?.query == "business_type=swap")
+                return response(request, #"{"status":"ok","data":[{"symbol":"BTC","contract_code":"BTC-USDT","contract_size":0.001,"contract_status":1,"delivery_date":"","trade_partition":"USDT"},{"symbol":"BTC","contract_code":"BTC-USDT-261225","contract_size":0.001,"contract_status":1,"delivery_date":"20261225","trade_partition":"USDT"}]}"#)
             case "/dapi/v1/exchangeInfo":
-                return response(request, #"{"symbols":[{"symbol":"BTCUSD_PERP","baseAsset":"BTC","quoteAsset":"USD","marginAsset":"BTC","contractType":"PERPETUAL","contractStatus":"TRADING","contractSize":100}]}"#)
+                return response(request, #"{"symbols":[{"symbol":"BTCUSD_PERP","baseAsset":"BTC","quoteAsset":"USD","marginAsset":"BTC","contractType":"PERPETUAL","contractStatus":"TRADING","contractSize":100},{"symbol":"BTCUSD_261225","baseAsset":"BTC","quoteAsset":"USD","marginAsset":"BTC","contractType":"CURRENT_QUARTER","contractStatus":"TRADING","contractSize":100}]}"#)
             case "/swap-api/v1/swap_contract_info":
                 return response(request, #"{"status":"ok","data":[{"symbol":"BTC","contract_code":"BTC-USD","contract_size":100,"contract_status":1}]}"#)
             case "/api/v1/contract_contract_info":
-                return response(request, #"{"status":"ok","data":[{"symbol":"BTC","contract_code":"BTC261113","contract_size":100,"contract_status":1,"delivery_date":"20261113"}]}"#)
+                preconditionFailure("Delivery catalog must not be requested")
             case "/fapi/v1/premiumIndex":
                 return response(request, #"{"symbol":"BTCUSDT","markPrice":"75814.3","indexPrice":"75848","time":1794113807000}"#)
             case "/dapi/v1/premiumIndex":
@@ -401,9 +531,6 @@ struct InvestmentMarketDataTests {
                 return response(request, #"{"status":"ok","ch":"market.BTC-USDT.mark_price.1min","data":[{"id":1794113760,"close":"75836.4"}]}"#)
             case "/index/market/history/swap_mark_price_kline":
                 return response(request, #"{"status":"ok","ch":"market.BTC-USD.mark_price.1min","data":[{"id":1794113760,"close":"75778"}]}"#)
-            case "/index/market/history/mark_price_kline":
-                precondition(request.url?.query?.contains("symbol=BTC261113") == true)
-                return response(request, #"{"status":"ok","ch":"market.BTC261113.mark_price.1min","data":[{"id":1794113760,"close":"75890"}]}"#)
             case "/v2/prices/USDT-USD/spot":
                 return response(request, #"{"data":{"amount":"0.998615","base":"USDT","currency":"USD"}}"#)
             default:
@@ -417,12 +544,13 @@ struct InvestmentMarketDataTests {
         precondition(binance.first?.asset.multiplier == 1 && binance.first?.settlementCode == "USDT")
         precondition(htx.first?.asset.multiplier == Decimal(string: "0.001") && htx.first?.settlementCode == "USDT")
         precondition(inverseBinance.first?.asset.multiplier == 100 && inverseBinance.first?.settlementCode == "BTC")
-        precondition(inverseHTX.map(\.asset.code) == ["BTC-USD", "BTC261113"] && inverseHTX.allSatisfy { $0.settlementCode == "BTC" })
+        precondition(inverseHTX.map(\.asset.code) == ["BTC-USD"] && inverseHTX.allSatisfy { $0.settlementCode == "BTC" })
 
         let now = Date(timeIntervalSince1970: 1794113807)
         let listings = binance + htx + inverseBinance + inverseHTX
-        let expected = ["75814.3", "75836.4", "75713.8", "75778", "75890"]
+        let expected = ["75814.3", "75836.4", "75713.8", "75778"]
         precondition(listings.count == expected.count)
+        precondition(listings.allSatisfy { $0.asset.name.hasSuffix("永续") })
         for (listing, value) in zip(listings, expected) {
             let mark = try await provider.contractMark(listing.asset, now: now)
             precondition(mark.price == Decimal(string: value) && mark.day == InvestmentBook.day(now))
@@ -431,6 +559,30 @@ struct InvestmentMarketDataTests {
         precondition(usd.price == Decimal(string: "0.998615"))
         let stale = try? await provider.contractMark(binance[0].asset, now: now.addingTimeInterval(301))
         precondition(stale == nil)
+    }
+
+    static func entryPricesUseDatedSettlementQuotes() async throws {
+        let now = Date(timeIntervalSince1970: 1794113807)
+        let historicalDay = InvestmentBook.day(now)
+        let provider = InvestmentQuoteProvider { request, secrets in
+            precondition(secrets.isEmpty && request.value(forHTTPHeaderField: "Authorization") == nil)
+            precondition(request.url?.path == "/v2/prices/TRX-USD/spot")
+            precondition(request.url?.query == "date=2026-11-08")
+            return response(request, #"{"data":{"amount":"0.32","base":"TRX","currency":"USD"}}"#)
+        }
+        let rate = try await InvestmentEntryQuoteRequest.settlement(code: "TRX", day: historicalDay).fetch(using: provider)
+        precondition(rate.day == historicalDay && rate.price == Decimal(string: "0.32") && rate.source?.contains("UTC") == true)
+    }
+
+    static func entryQuotesDoNotCrossInstrumentsOrDates() {
+        let first = day(1), second = day(2)
+        let request = InvestmentEntryQuoteRequest.settlement(code: "TRX", day: first)
+        var state = InvestmentEntryQuoteState(request: request, quote: .init(day: first, price: 1))
+        precondition(state.quote(for: request)?.price == 1)
+        precondition(state.quote(for: .settlement(code: "BTC", day: first)) == nil)
+        precondition(state.quote(for: .settlement(code: "TRX", day: second)) == nil)
+        state.loading = true
+        precondition(state.quote(for: request) == nil)
     }
 
     static func cryptoDailyClosesUseTheLedgerDay() async throws {

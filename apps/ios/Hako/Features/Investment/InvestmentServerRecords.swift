@@ -144,10 +144,12 @@ struct InvestmentServerRecords {
         }
         result["market_daily_prices"] = publicPrices.keys.sorted().compactMap { publicPrices[$0] }
         for (offset, account) in book.accounts.enumerated() {
-            result["investment_accounts", default: []].append([
+            var row = [
                 "id": account.id.uuidString, "name": account.name, "currency": account.currency.rawValue,
                 "account_type": Self.accountTypes[account.type]!, "sort_order": String(offset)
-            ])
+            ]
+            row["archived_at"] = account.archivedAt.map(timestamp.string(from:))
+            result["investment_accounts", default: []].append(row)
             for (index, event) in account.events.enumerated() {
                 let (row, details) = encode(event, accountID: account.id, offset: index, asset: book.asset(event.assetID))
                 result["investment_events", default: []].append(row)
@@ -258,7 +260,7 @@ struct InvestmentServerRecords {
             result["investment_daily_snapshots", default: []].append(row)
             date = InvestmentBook.addDays(1, to: date)
         }
-        for (id, history) in (snapshots.accountValues ?? [:]).sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+        for (id, history) in (snapshots.accountValues ?? [:]).sorted(by: { $0.key.uuidString < $1.key.uuidString }) where book.account(id) != nil {
             for (date, value) in history.sorted(by: { $0.key < $1.key }) {
                 var row = ["account_id": id.uuidString, "snapshot_date": day.string(from: date),
                            "cash_native": string(value.cash)!, "status": value.holdings == nil ? "partial" : "complete"]
@@ -311,8 +313,11 @@ struct InvestmentServerRecords {
             let id = try uuid(row, "id")
             let entries = try (events[id.uuidString] ?? []).sorted { ordering($0, "sequence") < ordering($1, "sequence") }
                 .map { try event($0, detail: details[$0["id"] ?? ""]?.first, book: book) }
+            let archivedAt = row["archived_at"].flatMap(timestamp.date(from:))
+            if row["archived_at"] != nil && archivedAt == nil { throw invalid("archived_at") }
             let account = try InvestmentAccount(id: id, name: required(row, "name"), currency: currency(row, "currency"),
-                                                events: entries, type: mapped(Self.accountTypes, row, "account_type"))
+                                                events: entries, type: mapped(Self.accountTypes, row, "account_type"),
+                                                archivedAt: archivedAt)
             book.accounts.append(account)
         }
         for row in records("investment_plans").sorted(by: { ordering($0) < ordering($1) }) {
@@ -364,6 +369,7 @@ struct InvestmentServerRecords {
         if !balanceAccounts.isEmpty || !months.isEmpty {
             book.balanceSheet = InvestmentBalanceLedger(accounts: balanceAccounts, investmentMonthEnds: months)
         }
+        if let dirty = state.dirtyFrom.flatMap(day.date(from:)) { book.invalidateDailySnapshots(from: dirty) }
         return book
     }
 

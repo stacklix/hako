@@ -140,8 +140,8 @@ private struct ConsoleApplicationDetailView: View {
         Form {
             if let application {
                 Section("应用信息") {
-                    ApplicationValue(label: "登记来源", value: application.origin)
-                    ApplicationValue(label: "Client ID", value: application.id, monospaced: true)
+                    HakoLabeledValue(label: "登记来源", value: application.origin)
+                    HakoLabeledValue(label: "Client ID", value: application.id, monospaced: true)
                     Toggle("启用应用", isOn: Binding(get: { application.enabled }, set: { value in
                         if value { Task { await setEnabled(application, true) } }
                         else { confirmation = .disable }
@@ -163,10 +163,10 @@ private struct ConsoleApplicationDetailView: View {
                 }
                 if let oidc = application.oidc, oidc.enabled {
                     Section("OIDC 接入信息") {
-                        ApplicationValue(label: "Issuer", value: client.serverURL, monospaced: true)
-                        ApplicationValue(label: "精确回调地址", value: oidc.redirectURIs.joined(separator: "\n"), monospaced: true)
-                        ApplicationValue(label: "允许的 scopes", value: oidc.scopes.joined(separator: " "), monospaced: true)
-                        ApplicationValue(label: "客户端认证方式", value: oidc.authMethod, monospaced: true)
+                        HakoLabeledValue(label: "Issuer", value: client.serverURL, monospaced: true)
+                        HakoLabeledValue(label: "精确回调地址", value: oidc.redirectURIs.joined(separator: "\n"), monospaced: true)
+                        HakoLabeledValue(label: "允许的 scopes", value: oidc.scopes.joined(separator: " "), monospaced: true)
+                        HakoLabeledValue(label: "客户端认证方式", value: oidc.authMethod, monospaced: true)
                         LabeledContent("PKCE S256", value: oidc.requirePKCE ? "要求使用" : "可选")
                     }
                 }
@@ -244,18 +244,5 @@ private struct ConsoleApplicationDetailView: View {
         do { try await client.setEnabled(application, enabled: enabled) }
         catch is CancellationError { }
         catch { errorMessage = error.localizedDescription }
-    }
-}
-
-struct ApplicationValue: View {
-    let label: String
-    let value: String
-    var monospaced = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.subheadline).foregroundStyle(.secondary)
-            Text(value).font(monospaced ? .footnote.monospaced() : .body).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
     }
 }

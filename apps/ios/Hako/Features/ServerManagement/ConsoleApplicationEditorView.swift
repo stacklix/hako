@@ -26,8 +26,8 @@ struct ConsoleApplicationEditorView: View {
                         field("应用名称", placeholder: "例如：Headplane", text: $draft.name)
                         field("登记来源", placeholder: "https://app.example.com", text: $draft.origin, url: true)
                     } else {
-                        ApplicationValue(label: "应用名称", value: draft.name)
-                        ApplicationValue(label: "登记来源", value: draft.origin)
+                        HakoLabeledValue(label: "应用名称", value: draft.name)
+                        HakoLabeledValue(label: "登记来源", value: draft.origin)
                     }
                 } header: { Text("应用信息") } footer: {
                     Text("手机确认授权时会展示应用名称与登记来源。来源为根地址，支持 HTTPS 或局域网 HTTP。")

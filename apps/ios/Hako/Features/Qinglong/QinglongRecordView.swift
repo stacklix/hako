@@ -156,16 +156,8 @@ struct QinglongRecordEditor: View {
     }
     private var recordForm: some View {
         QinglongSheet("\(item == nil ? "新建" : "编辑")\(resource == .envs ? "变量" : resource == .subscriptions ? "订阅" : "任务")", disabled: store.busy, saveDisabled: saveBlocked, save: { Task { await save() } }) {
-            Section {
-            field(resource == .envs ? "变量名" : "订阅名称", "name")
-            if resource == .envs { field("变量值", "value"); field("备注", "remarks") }
-            if resource == .subscriptions {
-                field("仓库地址", "url"); field("别名", "alias")
-                if item == nil || item?.raw["schedule_type"].text == "crontab" { field("Cron 表达式", "schedule") }
-                DisclosureGroup("更多选项") { field("分支", "branch"); field("包含关键词", "whitelist"); field("排除关键词", "blacklist") }
-            }
-            }
-            if resource == .envs { Section { Toggle("启用此变量", isOn: $enabled).font(.subheadline) } }
+            QinglongRecordFields(resource: resource, fields: $fields, enabled: $enabled,
+                                 showsSchedule: item == nil || item?.raw["schedule_type"].text == "crontab")
             if let error { QinglongNotice(text: error, error: true) }
             if let item = persistedItem {
                 if resource != .envs { Button(item.disabled ? "启用" : "禁用") { action = item.disabled ? "enable" : "disable" }.buttonStyle(QinglongSecondaryButtonStyle()).disabled(store.busy) }
@@ -178,9 +170,6 @@ struct QinglongRecordEditor: View {
         }) {
             if let item = persistedItem, let action { QinglongActionSheet(store: store, item: item, action: action, completed: { didDelete = action == "delete" }) }
         }
-    }
-    private func field(_ title: String, _ key: String, secure: Bool = false) -> some View {
-        QinglongTextField(title, text: Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 }), secure: secure)
     }
     private func save() async {
         guard revision == store.revision else { error = "连接已改变，请关闭后重新编辑。"; return }
@@ -240,28 +229,7 @@ private struct QinglongTaskEditor: View {
                       saveDisabled: !valid || saveBlocked || connectionChanged, usesForm: false,
                       close: requestClose, save: { Task { await save() } }) {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("任务信息")
-                    VStack(spacing: 0) {
-                        field("任务名称", key: "name")
-                        separator
-                        field("执行命令", key: "command", multiline: true)
-                    }.qinglongCard(padding: 0, cornerRadius: 16)
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionTitle("执行计划")
-                    VStack(spacing: 0) {
-                        field("Cron 表达式", key: "schedule")
-                        separator
-                        Toggle(isOn: $enabled) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("自动执行").font(.subheadline)
-                                Text("关闭后仍可手动运行").font(.caption).foregroundStyle(QinglongStyle.muted)
-                            }
-                        }.toggleStyle(.switch).tint(.green).padding(16)
-                    }.qinglongCard(padding: 0, cornerRadius: 16)
-                    Text("按青龙面板时区执行，修改在保存后生效。").font(.caption).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3)
-                }
+                QinglongTaskFields(fields: $fields, enabled: $enabled)
                 if connectionChanged { QinglongNotice(text: "连接已改变，请关闭后重新编辑。", error: true) }
                 else if let error { QinglongNotice(text: error, error: true) }
                 if persistedItem != nil {
@@ -281,22 +249,6 @@ private struct QinglongTaskEditor: View {
                 if await store.delete(saved) { dismiss() } else { error = store.message }
             }
         }
-    }
-    private var separator: some View { Rectangle().fill(QinglongStyle.line).frame(height: 1).padding(.horizontal, 16) }
-    private func sectionTitle(_ title: String) -> some View { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(QinglongStyle.muted).padding(.horizontal, 3) }
-    private func field(_ title: String, key: String, multiline: Bool = false) -> some View {
-        let binding = Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 })
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline).foregroundStyle(.secondary)
-            if multiline {
-                TextField("", text: binding, axis: .vertical).lineLimit(3...12)
-                    .font(.system(.footnote, design: .monospaced)).frame(minHeight: 72, alignment: .topLeading)
-                    .accessibilityLabel(title)
-            } else {
-                TextField("", text: binding).font(key == "schedule" ? .system(.body, design: .monospaced) : .body)
-                    .accessibilityLabel(title)
-            }
-        }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(16)
     }
     private func requestClose() { if changed { discarding = true } else { dismiss() } }
     private func save() async {

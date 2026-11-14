@@ -20,8 +20,8 @@ struct ConsoleApplicationSecretView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section(credential.application.name) {
-                        ApplicationValue(label: "Issuer", value: credential.issuer, monospaced: true)
-                        ApplicationValue(label: "Client ID", value: credential.application.id, monospaced: true)
+                        HakoLabeledValue(label: "Issuer", value: credential.issuer, monospaced: true)
+                        HakoLabeledValue(label: "Client ID", value: credential.application.id, monospaced: true)
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Client Secret").font(.subheadline).foregroundStyle(.secondary)
                             HStack(alignment: .top, spacing: 12) {

@@ -185,7 +185,7 @@ private struct ArcaneProjectFileDocument: View {
             if data.loading {
                 ProgressView("正在读取文件…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if data.viewable {
-                ArcaneCodeEditor(text: $data.draft, filename: file.relativePath, editable: data.editable, saving: data.saving)
+                HakoCodeEditor(text: $data.draft, filename: file.relativePath, editable: data.editable, saving: data.saving)
             } else {
                 ContentUnavailableView("无法预览内容", systemImage: "doc",
                     description: Text(data.readOnlyReason ?? data.error ?? "此文件不支持文本预览。"))

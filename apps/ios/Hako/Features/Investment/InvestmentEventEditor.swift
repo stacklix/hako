@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct InvestmentEventEditor: View {
+    var editorDraft: InvestmentEditorDraft? = nil
     private enum Field: Hashable { case amount, counterpart, quantity, price, fee, margin, settlement, rate }
 
     @ObservedObject var store: InvestmentStore
@@ -12,13 +13,16 @@ struct InvestmentEventEditor: View {
     @State private var decreases: Bool
     @State private var confirmsDeletion = false
     @State private var error: String?
+    @State private var saving = false
+    @State private var settlementQuote = InvestmentEntryQuoteState()
     private let counterpart: (InvestmentAccount, InvestmentEvent)?
     private let originalValues: [Field: String]
 
-    init(store: InvestmentStore, accountID: UUID, event: InvestmentEvent) {
+    init(store: InvestmentStore, accountID: UUID, event: InvestmentEvent, editing: InvestmentEditorDraft? = nil) {
         self.store = store
         self.accountID = accountID
         self.event = event
+        editorDraft = editing
         let counterpart = store.book.transferCounterpart(of: event, accountID: accountID)
         self.counterpart = counterpart
         func text(_ value: Decimal?) -> String {
@@ -30,9 +34,18 @@ struct InvestmentEventEditor: View {
             .margin: text(event.margin), .settlement: text(event.settledAmount), .rate: text(event.settlementRate)
         ]
         originalValues = inputs
-        _values = State(initialValue: inputs)
-        _date = State(initialValue: event.day)
-        _decreases = State(initialValue: event.amount < 0)
+        var populated = inputs
+        let keys: [Field: String] = [.amount: "amount", .counterpart: "counterpart_amount", .quantity: "quantity", .price: "price",
+                                    .fee: "fee", .margin: "margin", .settlement: "settled_amount", .rate: "settlement_rate"]
+        for (field, key) in keys {
+            if let value = editing?.action.values[key] { populated[field] = field == .amount || field == .quantity || field == .counterpart ? editing?.amount(key) : value }
+        }
+        if let editing, let proposed = editing.proposal.book.account(accountID)?.events.first(where: { $0.id == event.id }) {
+            populated[.quantity] = text(abs(proposed.quantity))
+        }
+        _values = State(initialValue: populated)
+        _date = State(initialValue: editing?.action.text("date").flatMap(InvestmentEditorDraft.day.date(from:)) ?? event.day)
+        _decreases = State(initialValue: editing?.action.text("direction").map { $0 == "decrease" } ?? (event.amount < 0))
     }
 
     private var account: InvestmentAccount? { store.book.account(accountID) }
@@ -40,12 +53,13 @@ struct InvestmentEventEditor: View {
     private var hasChanges: Bool { date != event.day || values != originalValues || decreases != (event.amount < 0) }
 
     var body: some View {
-        SettingsSheet(title: "编辑流水", hasChanges: hasChanges, isBusy: store.saving, saveEnabled: hasChanges,
-                      onSave: { Task { await save() } }, saveAccessibilityLabel: "保存流水") {
+        SettingsSheet(title: editorDraft?.action.kind == .addEvent ? "记录流水" : "编辑流水", hasChanges: hasChanges,
+                      isBusy: saving || store.saving, saveEnabled: hasChanges,
+                      onSave: { Task { await save() } }, saveAccessibilityLabel: editorDraft == nil ? "保存流水" : "完成修改并更新预览") {
             Form {
                 Section {
                     LabeledContent("流水类型", value: event.kind == .marginTransfer ? "保证金划转" : event.title(for: asset))
-                    if let asset { LabeledContent("标的", value: asset.name) }
+                    if let asset { LabeledContent("标的", value: asset.displayName) }
                     if let (other, _) = counterpart { LabeledContent("对方账户", value: other.name) }
                     InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
                     fields
@@ -55,11 +69,11 @@ struct InvestmentEventEditor: View {
                 if let error {
                     Section { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
-                Section {
+                if editorDraft == nil { Section {
                     HakoDeleteButton(title: "删除流水") { confirmsDeletion = true }
                         .disabled(store.saving).investmentListRow()
                         .listRowBackground(Color.clear)
-                }
+                } }
             }
             .hakoDeleteConfirmation(Text("删除这笔流水？"), isPresented: $confirmsDeletion,
                                     message: Text(counterpart == nil ? "删除后将重新计算受影响的日终快照。" :
@@ -91,7 +105,7 @@ struct InvestmentEventEditor: View {
                 if event.kind != .opening && asset.kind.supportsTradeFees && !asset.isStockConnect {
                     field("交易费用（\(settlement)，选填）", .fee)
                 }
-                if asset.collateralAssetID != nil { field("\(settlement) 兑美元单价", .rate) }
+                if asset.collateralAssetID != nil { settlementPriceField }
             }
         case .adjustment where asset?.kind.isTermDeposit == true:
             field("变动后余额（CNY）", .settlement)
@@ -109,7 +123,7 @@ struct InvestmentEventEditor: View {
             let unit = asset.map { store.book.settlementUnit(for: $0) } ?? currency
             field("变动金额（\(unit)）", .amount)
             if event.kind == .derivativeSettlement { field("结算价（\(currency)）", .price) }
-            if event.kind == .funding, asset?.collateralAssetID != nil { field("\(unit) 兑美元单价", .rate) }
+            if event.kind == .funding, asset?.collateralAssetID != nil { settlementPriceField }
         default:
             field("金额（\(currency)）", .amount)
             if let (other, entry) = counterpart, other.currency != account?.currency {
@@ -128,7 +142,32 @@ struct InvestmentEventEditor: View {
         try investmentDecimal(values[key, default: ""], label, allowZero: allowZero)
     }
 
+    private var settlementRequest: InvestmentEntryQuoteRequest? {
+        store.book.asset(asset?.collateralAssetID).map {
+            .settlement(code: $0.code, day: InvestmentBook.day(date))
+        }
+    }
+
+    private var settlementPriceField: some View {
+        let unit = asset.map { store.book.settlementUnit(for: $0) } ?? "结算币"
+        return InvestmentAutomaticPriceField(title: unit + " 兑美元单价", unit: "USD/" + unit,
+            request: settlementRequest,
+            help: "保留流水已记录的价格；清空手动价格后自动查询所选日期的美元报价。历史报价采用 UTC 日价。",
+            state: $settlementQuote,
+            manualPrice: Binding(get: { values[.rate, default: ""] }, set: { values[.rate] = $0 }))
+    }
+
+    private func settlementRate() throws -> Decimal? {
+        if values[.rate, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return settlementQuote.quote(for: settlementRequest)?.price
+        }
+        return try number(.rate, "结算币兑美元单价")
+    }
+
     private func save() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         do {
             var edited = event
             edited.day = InvestmentBook.day(date)
@@ -155,7 +194,7 @@ struct InvestmentEventEditor: View {
                     edited.fee = values[.fee, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
                         nil : try number(.fee, "交易费用", allowZero: true)
                 }
-                if asset.collateralAssetID != nil { edited.settlementRate = try number(.rate, "结算币兑美元单价") }
+                if asset.collateralAssetID != nil { edited.settlementRate = try settlementRate() }
             case .adjustment where asset?.kind.isTermDeposit == true:
                 edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
             case .income where asset?.kind.isTermDeposit == true:
@@ -167,13 +206,19 @@ struct InvestmentEventEditor: View {
                 edited.amount = try number(.amount, "金额", allowZero: event.kind == .derivativeSettlement) * (decreases ? -1 : 1)
                 if event.kind == .derivativeSettlement { edited.price = try number(.price, "结算价") }
                 if event.kind == .funding, asset?.collateralAssetID != nil {
-                    edited.settlementRate = try number(.rate, "结算币兑美元单价")
+                    edited.settlementRate = try settlementRate()
                 }
                 if let (other, entry) = counterpart, other.currency != account?.currency {
                     otherAmount = try number(.counterpart, "对方金额") * (entry.kind == .transferOut ? -1 : 1)
                 }
             }
-            try await store.update { try $0.replaceEvent(event, with: edited, accountID: accountID, counterpartAmount: otherAmount) }
+            if let editorDraft {
+                var inputs = InvestmentEditorDraft.eventValues(edited)
+                inputs["counterpart_amount"] = otherAmount.map { InvestmentEditorDraft.text(abs($0)) } ?? ""
+                try await editorDraft.submit(inputs)
+            } else {
+                try await store.update { try $0.replaceEvent(event, with: edited, accountID: accountID, counterpartAmount: otherAmount) }
+            }
             dismiss()
         } catch { self.error = error.localizedDescription }
     }

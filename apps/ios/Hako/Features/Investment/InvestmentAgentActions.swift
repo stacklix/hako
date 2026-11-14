@@ -3,6 +3,7 @@ import Foundation
 struct InvestmentAgentAction: Codable {
     enum Kind: String, CaseIterable, Codable {
         case addAccount = "add_account", editAccount = "edit_account", removeAccount = "remove_account"
+        case archiveAccount = "archive_account", restoreAccount = "restore_account", removePosition = "remove_position"
         case addAsset = "add_asset", editAsset = "edit_asset"
         case addEvent = "add_event", editEvent = "edit_event", deleteEvent = "delete_event"
         case transfer, distribution, cashBalance = "cash_balance", spotBalance = "spot_balance", fundingBalance = "funding_balance"
@@ -15,7 +16,10 @@ struct InvestmentAgentAction: Codable {
             switch self {
             case .addAccount: "新增账户"
             case .editAccount: "修改账户"
-            case .removeAccount: "移除空账户"
+            case .removeAccount: "删除账户"
+            case .archiveAccount: "归档账户"
+            case .restoreAccount: "撤销账户归档"
+            case .removePosition: "删除持仓"
             case .addAsset: "登记标的"
             case .editAsset: "修改标的资料"
             case .addEvent: "新增流水"
@@ -80,7 +84,7 @@ struct InvestmentAgentAction: Codable {
 
     static func fields(_ kind: Kind) -> [Field] {
         let account = Field(key: "account_id", label: "投资账户 ID", required: true)
-        let asset = Field(key: "asset_id", label: "标的 ID 或同一草稿中已登记的唯一代码", required: true)
+        let asset = Field(key: "asset_id", label: "标的 ID、唯一代码或唯一存款名称", required: true)
         let event = Field(key: "event_id", label: "流水 ID", required: true)
         let record = Field(key: "record_id", label: "余额记录 ID", required: true)
         let balanceAccount = Field(key: "balance_account_id", label: "资产负债账户 ID", required: true)
@@ -95,28 +99,34 @@ struct InvestmentAgentAction: Codable {
         let terms = [Field(key: "annual_rate", label: "年利率（百分数，例如 2.5 表示 2.5%）"),
                      Field(key: "maturity_date", label: "到期日（YYYY-MM-DD）")]
         let optional: (Field) -> Field = { var field = $0; field.required = false; return field }
-        let eventValues = [optional(amount), Field(key: "quantity", label: "数量（合约按张，现货减少填负数）"),
+        let eventValues = [optional(amount), Field(key: "quantity", label: "数量（正数；币本位按所选录入方式填写）"),
+                           Field(key: "quantity_mode", label: "币本位数量录入方式", choices: ["coins", "notional", "contracts"]),
+                           Field(key: "reference_price", label: "与仓位币量同一时刻、同一口径的折算用价格"),
+                           Field(key: "direction", label: "金额变动方向，变动金额填非负数", choices: ["increase", "decrease"]),
                            Field(key: "price", label: "单位价格"), Field(key: "fee", label: "手续费"),
                            Field(key: "margin", label: "保证金（期货每手，合约为整笔）"), settlement, rate, target,
                            Field(key: "unallocated", label: "账户资金费", choices: ["true", "false"])]
         switch kind {
         case .addAccount: return [name, currency, .init(key: "account_type", label: "账户类型", required: true, choices: accountTypes.keys.sorted())]
         case .editAccount: return [account, optional(name), .init(key: "position", label: "账户顺序（从 1 开始）")]
-        case .removeAccount: return [account]
+        case .removeAccount, .archiveAccount, .restoreAccount: return [account]
+        case .removePosition: return [account, asset]
         case .addAsset:
-            return [optional(account), name, .init(key: "symbol", label: "代码", required: true), currency,
+            return [optional(account), name, .init(key: "symbol", label: "代码（存款不填写）"), currency,
                     .init(key: "asset_type", label: "标的类型", required: true, choices: assetKinds.keys.sorted()),
                     .init(key: "market", label: "交易所代码，港股通填 HK_CONNECT"), .init(key: "multiplier", label: "合约乘数"),
                     .init(key: "side", label: "合约方向", choices: sides.keys.sorted()),
-                    .init(key: "basis", label: "合约本位", choices: bases.keys.sorted()),
+                    .init(key: "basis", label: "合约本位", choices: ["coin", "stablecoin"]),
                     .init(key: "collateral_id", label: "结算币标的 ID"),
                     .init(key: "stablecoin", label: "稳定币结算单位", choices: ["USDT", "USDC"])] + terms
-        case .editAsset: return [asset, optional(name)] + terms
+        case .editAsset: return [asset, optional(name),
+                                .init(key: "symbol", label: "关联的交易所真实合约代码，仅用于修正加密合约行情关联"),
+                                .init(key: "market", label: "报价交易所，仅用于修正加密合约行情关联", choices: ["BINANCE", "HTX"])] + terms
         case .addEvent:
-            return [account, day, .init(key: "event_type", label: "流水类型（现金转入和提取的金额填正数）", required: true,
+            return [account, day, .init(key: "event_type", label: "流水类型（合约开仓用 buy、平仓用 sell；opening 是期初资产首次录入。现金转入和提取填正数）", required: true,
                                        choices: eventKinds.keys.sorted()), optional(asset)] + eventValues +
                 [.init(key: "auto_fund", label: "允许自动补入现金，仅在用户要求时启用", choices: ["true", "false"])]
-        case .editEvent: return [account, event, optional(day)] + eventValues + [.init(key: "counterpart_amount", label: "跨币种对侧带符号金额")]
+        case .editEvent: return [account, event, optional(day)] + eventValues + [.init(key: "counterpart_amount", label: "跨币种对方金额（正数，沿用原流水方向）")]
         case .deleteEvent: return [account, event]
         case .transfer: return [account, .init(key: "target_id", label: "目标账户 ID", required: true), day, amount,
                                 .init(key: "received", label: "跨币种实际到账金额")]
@@ -125,7 +135,8 @@ struct InvestmentAgentAction: Codable {
         case .spotBalance: return [account, asset, day, amount]
         case .fundingBalance: return [account, asset, day, amount, target, rate,
                                       .init(key: "attribute_to_contract", label: "计入该合约的资金费", choices: ["true", "false"])]
-        case .plan: return [.init(key: "plan_id", label: "编辑现有定投时填写任务 ID"), account, optional(asset), amount,
+        case .plan: return [.init(key: "plan_id", label: "编辑现有定投时填写任务 ID"),
+                            .init(key: "plan_type", label: "任务类型", required: true, choices: ["deposit", "buy"]), account, optional(asset), amount,
                             .init(key: "month_day", label: "每月执行日（1 至 28）", required: true), enabled]
         case .removePlan: return [.init(key: "plan_id", label: "定投任务 ID", required: true)]
         case .watch: return [asset, enabled]
@@ -139,16 +150,23 @@ struct InvestmentAgentAction: Codable {
         }
     }
 
-    static let tool = LanguageModelTool(name: "propose_changes", description: "创建待确认的写入预览。所有动作按顺序试算。读取已有账户、标的和记录 ID。用户未提供必填资料时先询问。行情刷新和快照重算分别单独提案。",
-        properties: ["actions": ["type": "array", "minItems": 1, "maxItems": 20, "items": ["anyOf": Kind.allCases.map { kind -> [String: Any] in
+    static let tool = LanguageModelTool(name: "propose_changes", description: "按页面表单生成待确认草稿。先用 inspect_entry_form 检查整笔操作，合并询问仍缺少或有歧义的必要资料。明确后提交完整操作；纠正草稿时完整替换。维护操作单独确认。",
+        properties: schema(requireValues: true), required: ["actions"])
+
+    static let inspectTool = LanguageModelTool(name: "inspect_entry_form", description: "查看对应页面表单、已知值、真实候选和全部缺项，允许不完整输入。用于组织一轮完整追问和试算，不会保存或生成待确认草稿。",
+        properties: schema(requireValues: false), required: ["actions"])
+
+    private static func schema(requireValues: Bool) -> [String: [String: Any]] {
+        ["actions": ["type": "array", "minItems": 1, "maxItems": 20, "items": ["anyOf": Kind.allCases.map { kind -> [String: Any] in
             let fields = fields(kind)
             var properties = Dictionary(uniqueKeysWithValues: fields.map { ($0.key, $0.schema) })
             properties["action"] = ["type": "string", "enum": [kind.rawValue], "description": kind.title]
-            return ["type": "object", "properties": properties, "required": ["action"] + fields.filter(\.required).map(\.key),
+            return ["type": "object", "properties": properties, "required": ["action"] + (requireValues ? fields.filter(\.required).map(\.key) : []),
                     "additionalProperties": false]
-        }]]], required: ["actions"])
+        }]]]
+    }
 
-    static func parse(_ arguments: [String: Any]) throws -> [Self] {
+    static func parse(_ arguments: [String: Any], requireComplete: Bool = true) throws -> [Self] {
         guard arguments.count == 1, let rows = arguments["actions"] as? [[String: String]], (1...20).contains(rows.count) else {
             throw InvestmentError.invalid("请提供 1 至 20 项结构化操作，金额和日期用字符串填写。")
         }
@@ -158,7 +176,8 @@ struct InvestmentAgentAction: Codable {
                 throw InvestmentError.invalid("不支持该记账操作。")
             }
             let action = Self(kind: kind, values: values)
-            try action.validate()
+            if requireComplete { try action.validate() }
+            else if !Set(values.keys).isSubset(of: Set(action.fields.map(\.key))) { throw InvestmentError.invalid("操作包含未知字段。") }
             return action
         }
     }
@@ -166,20 +185,35 @@ struct InvestmentAgentAction: Codable {
     private func validate() throws {
         let fields = fields
         guard Set(values.keys).isSubset(of: Set(fields.map(\.key))) else { throw InvestmentError.invalid("操作包含未知字段。") }
+        var missing: [String] = []
         for field in fields {
             let value = text(field.key)
             guard let value else {
-                if field.required { throw InvestmentError.invalid("请填写\(field.label)。") }
+                if field.required && !(kind == .plan && text("plan_id") != nil) { missing.append(field.label) }
                 continue
             }
             guard value.count <= 180, field.choices.isEmpty || field.choices.contains(value) else {
                 throw InvestmentError.invalid("请检查\(field.label)。")
             }
         }
+        if kind == .addAsset, text("asset_type") == "crypto_contract" {
+            let required = ["market", "basis", "side", "multiplier"] +
+                (text("basis") == "coin" ? ["collateral_id"] : text("basis") == "stablecoin" ? ["stablecoin"] : [])
+            missing += required.filter { text($0) == nil }.compactMap { key in fields.first { $0.key == key }?.label }
+        }
+        if kind == .addAsset, let assetKind = text("asset_type").flatMap({ Self.assetKinds[$0] }), !assetKind.isTermDeposit, text("symbol") == nil {
+            missing.append("代码")
+        }
+        guard missing.isEmpty else { throw InvestmentError.invalid("资料不完整，请先向用户询问：" + missing.joined(separator: "、") + "。") }
     }
 
     func apply(to book: inout InvestmentBook, today: Date = InvestmentBook.day()) throws {
+        let resolved = resolvingPlan(in: book)
+        if resolved.values != values { try resolved.apply(to: &book, today: today); return }
         try validate()
+        try validateTransactionType(in: book)
+        let missingFields = form(in: book).missing
+        guard missingFields.isEmpty else { throw InvestmentError.invalid("资料不完整，请一次询问：" + missingFields.joined(separator: "、") + "。") }
         switch kind {
         case .addAccount:
             let name = try required("name")
@@ -193,11 +227,7 @@ struct InvestmentAgentAction: Codable {
             let id = try uuid("account_id")
             guard let index = book.accounts.firstIndex(where: { $0.id == id }) else { throw missing("投资账户") }
             if kind == .removeAccount {
-                guard book.accounts[index].events.isEmpty, !book.plans.contains(where: { $0.accountID == id }),
-                      !book.accounts.contains(where: { $0.events.contains { $0.transferAccountID == id } }) else {
-                    throw InvestmentError.invalid("仍有流水或定投的账户不能移除。")
-                }
-                book.accounts.remove(at: index)
+                try book.deleteInvestment(accountID: id, today: today)
             } else {
                 if let name = text("name") {
                     let current = book.accounts[index]
@@ -212,6 +242,10 @@ struct InvestmentAgentAction: Codable {
                     book.accounts.insert(account, at: position - 1)
                 }
             }
+        case .archiveAccount, .restoreAccount:
+            try book.setArchived(kind == .archiveAccount, accountID: uuid("account_id"))
+        case .removePosition:
+            try book.deleteInvestment(accountID: uuid("account_id"), assetID: asset(in: book).id, today: today)
         case .addAsset, .editAsset:
             try applyAsset(to: &book)
         case .addEvent, .editEvent, .deleteEvent:
@@ -232,8 +266,7 @@ struct InvestmentAgentAction: Codable {
             let balance = try decimal("amount", fallback: 0)
             guard balance >= 0 else { throw missing("现金余额") }
             let delta = try balance - book.ledger(account, through: day).cash
-            let kind: InvestmentEventKind = account.type == .crypto ? .adjustment : delta > 0 ? .deposit : .withdrawal
-            try book.post(.init(day: day, kind: kind, amount: delta), accountID: account.id, today: today)
+            try book.post(.init(day: day, kind: .adjustment, amount: delta), accountID: account.id, today: today)
         case .spotBalance:
             try book.adjustSpotBalance(assetID: asset(in: book).id, accountID: owner(in: book).id,
                                        balance: decimal("amount", fallback: 0), on: date("date", through: today))
@@ -265,16 +298,43 @@ struct InvestmentAgentAction: Codable {
         }
     }
 
+    func resolvingPlan(in book: InvestmentBook) -> Self {
+        guard kind == .plan, let plan = book.plans.first(where: { $0.id.uuidString == text("plan_id") }) else { return self }
+        var action = self
+        let existing = ["account_id": plan.accountID.uuidString, "asset_id": text("plan_type") == "deposit" ? nil : plan.assetID?.uuidString,
+                        "plan_type": plan.assetID == nil ? "deposit" : "buy",
+                        "amount": NSDecimalNumber(decimal: plan.amount).stringValue, "month_day": String(plan.monthDay),
+                        "enabled": plan.enabled ? "true" : "false"]
+        for (key, value) in existing where values[key] == nil { action.values[key] = value }
+        return action
+    }
+
     private func applyAsset(to book: inout InvestmentBook) throws {
         var item: InvestmentAsset
         if kind == .editAsset {
             item = try asset(in: book)
             if let name = text("name") { item.name = name }
+            if text("symbol") != nil || text("market") != nil {
+                guard item.kind.requiresCatalog, item.kind != .cryptoContract || item.basis != .usd else {
+                    throw InvestmentError.invalid("请从对应市场目录重新选择标的。")
+                }
+                let symbol = text("symbol")?.uppercased() ?? item.code
+                let market = text("market")?.uppercased() ?? item.market
+                if symbol != item.code || market != item.market {
+                    item.code = symbol
+                    item.market = market
+                    item.instrumentID = UUID()
+                    book.quotes.removeValue(forKey: item.id)
+                    if let first = book.accounts.flatMap(\.events).filter({ $0.assetID == item.id }).map(\.day).min() {
+                        book.invalidateDailySnapshots(from: first)
+                    }
+                }
+            }
         } else {
             guard let kind = Self.assetKinds[try required("asset_type")],
                   let currency = InvestmentCurrency(rawValue: try required("currency")) else { throw missing("标的类别或币种") }
             let market = text("market")?.uppercased() ?? ""
-            let symbol = try required("symbol").uppercased()
+            let symbol = kind.isTermDeposit ? UUID().uuidString : try required("symbol").uppercased()
             item = .init(name: try required("name"), code: market == InvestmentAsset.stockConnectMarket
                 ? InvestmentAsset.stockConnectCode(symbol) ?? symbol : symbol, market: market, kind: kind, currency: currency,
                 multiplier: try decimal("multiplier", fallback: 1))
@@ -323,13 +383,37 @@ struct InvestmentAgentAction: Codable {
         var event = original ?? .init(day: day, kind: type)
         event.day = day
         if text("asset_id") != nil { event.assetID = try asset(in: book).id }
-        if let amount = try number("amount") { event.amount = type == .withdrawal ? -abs(amount) : amount }
-        event.quantity = try decimal("quantity", fallback: event.quantity)
+        if let amount = try number("amount") {
+            if let direction = text("direction") {
+                guard amount >= 0 else { throw missing("非负的变动金额") }
+                event.amount = direction == "decrease" ? -amount : amount
+            } else { event.amount = type == .withdrawal || type == .transferOut ? -abs(amount) : amount }
+        } else if let direction = text("direction") { event.amount = abs(event.amount) * (direction == "decrease" ? -1 : 1) }
+        if let asset = book.asset(event.assetID), asset.basis == .coin, asset.kind == .cryptoContract,
+           type == .buy || type == .sell || type == .opening, text("quantity") != nil {
+            let quantity = try decimal("quantity", fallback: 0)
+            let input: InvestmentCoinContractQuantity
+            switch text("quantity_mode") {
+            case "coins": input = .coins(quantity, referencePrice: try decimal("reference_price", fallback: 0))
+            case "notional": input = .notionalUSD(quantity)
+            case "contracts": input = .contracts(quantity)
+            default: throw missing("数量录入方式")
+            }
+            event.quantity = try input.contractCount(faceValue: asset.multiplier)
+        } else {
+            event.quantity = try decimal("quantity", fallback: event.quantity)
+        }
+        if type == .spotAdjustment, let quantity = try number("quantity") {
+            guard quantity > 0 else { throw missing("减少数量（正数）") }
+            event.quantity = -quantity
+        }
+        if let asset = book.asset(event.assetID), asset.kind.isTermDeposit || asset.kind == .insurance,
+           [.buy, .sell, .opening].contains(type) { event.quantity = 1 }
         event.price = try decimal("price", fallback: event.price)
         event.margin = try decimal("margin", fallback: event.margin)
-        event.fee = try number("fee") ?? event.fee
+        if values["fee"] != nil { event.fee = try number("fee") }
         event.settledAmount = try number("settled_amount") ?? event.settledAmount
-        event.settlementRate = try number("settlement_rate") ?? event.settlementRate
+        if values["settlement_rate"] != nil { event.settlementRate = try number("settlement_rate") }
         event.fundingTarget = text("funding_target").flatMap { Self.fundingTargets[$0] } ?? event.fundingTarget
         if let flag = text("unallocated") { event.unallocatedFunding = flag == "true" }
         if let maturity = book.asset(event.assetID)?.depositTerms?.maturity, type == .opening || type == .buy, day > maturity {
@@ -337,7 +421,12 @@ struct InvestmentAgentAction: Codable {
         }
         if let original {
             guard event != original || text("counterpart_amount") != nil else { return }
-            try book.replaceEvent(original, with: event, accountID: account.id, counterpartAmount: number("counterpart_amount"), today: today)
+            var counterpartAmount = try number("counterpart_amount")
+            if let amount = counterpartAmount, let pair = book.transferCounterpart(of: original, accountID: account.id) {
+                guard amount > 0 else { throw missing("对方金额（正数）") }
+                counterpartAmount = pair.1.kind == .transferOut ? -amount : amount
+            }
+            try book.replaceEvent(original, with: event, accountID: account.id, counterpartAmount: counterpartAmount, today: today)
         } else {
             try book.post(event, accountID: account.id, today: today, autoFundCash: text("auto_fund") == "true")
         }
@@ -355,6 +444,10 @@ struct InvestmentAgentAction: Codable {
         }
         let account = try owner(in: book)
         let target = try text("asset_id").map { _ in try asset(in: book) }
+        if text("enabled") == "true" { try book.requireActive(accountID: account.id) }
+        guard (text("plan_type") == "buy") == (target != nil) else {
+            throw InvestmentError.invalid("定期买入需要选择标的，定期转入不指定买入标的。")
+        }
         if let target {
             guard target.supportsPlan else { throw missing("支持定投的标的") }
             try target.validateEntry(in: account)
@@ -397,15 +490,25 @@ struct InvestmentAgentAction: Codable {
         return account
     }
 
-    private func asset(in book: InvestmentBook, key: String = "asset_id") throws -> InvestmentAsset {
+    func validateTransactionType(in book: InvestmentBook) throws {
+        if kind == .addEvent, let event = text("event_type").flatMap({ Self.eventKinds[$0] }),
+           let asset = try? asset(in: book) {
+            try asset.validateTransactionType(event)
+        }
+    }
+
+    func asset(in book: InvestmentBook, key: String = "asset_id") throws -> InvestmentAsset {
         let value = try required(key)
         if let id = UUID(uuidString: value), let asset = book.asset(id) { return asset }
-        let matches = book.assets.values.filter { $0.code.caseInsensitiveCompare(value) == .orderedSame }
+        let matches = book.assets.values.filter {
+            $0.code.caseInsensitiveCompare(value) == .orderedSame || $0.displayCode.caseInsensitiveCompare(value) == .orderedSame
+                || ($0.kind.isTermDeposit && $0.name == value)
+        }
         guard matches.count == 1, let asset = matches.first else { throw missing("唯一标的，请使用标的 ID") }
         return asset
     }
 
-    private func text(_ key: String) -> String? {
+    func text(_ key: String) -> String? {
         guard let value = values[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
         return value
     }

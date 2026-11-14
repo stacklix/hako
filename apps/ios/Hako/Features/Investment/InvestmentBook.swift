@@ -32,6 +32,7 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
     var usesMargin: Bool { self == .future || self == .cryptoContract }
     var derivative: Bool { self == .option || usesMargin }
     var supportsPlan: Bool { self == .stock || self == .fund || self == .etf }
+    var requiresCatalog: Bool { [.stock, .fund, .etf, .crypto, .cryptoContract].contains(self) }
     var supportsCashDividends: Bool { self == .stock || self == .fund || self == .etf }
     var supportsTradeFees: Bool { self != .insurance && !isTermDeposit }
     var isTermDeposit: Bool { self == .deposit || self == .certificate }
@@ -50,6 +51,20 @@ enum InvestmentContractSide: String, Codable, CaseIterable, Identifiable {
     case long = "多仓", short = "空仓"
 
     var id: Self { self }
+    var shortCode: String { self == .short ? "S" : "L" }
+    var shortTitle: String { self == .short ? "空" : "多" }
+}
+
+enum InvestmentContractExchange: String, CaseIterable {
+    case binance = "BINANCE", htx = "HTX"
+
+    var shortCode: String { self == .binance ? "BIN" : "HTX" }
+    var title: String { self == .binance ? "BIN · Binance" : "HTX" }
+
+    init?(asset: InvestmentAsset) {
+        guard asset.kind == .cryptoContract, asset.basis != .usd else { return nil }
+        self.init(rawValue: asset.market)
+    }
 }
 
 enum InvestmentStablecoin: String, Codable, CaseIterable, Identifiable {
@@ -156,6 +171,18 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     var collateralAssetID: UUID?
     var settlementStablecoin: InvestmentStablecoin?
 
+    var displayName: String {
+        guard kind == .cryptoContract, let contractSide else { return name }
+        return name + " · " + contractSide.shortTitle
+    }
+
+    var displayCode: String {
+        guard let exchange = InvestmentContractExchange(asset: self) else { return code }
+        let symbol = code.hasSuffix("_PERP") ? String(code.dropLast(5)) : code
+        let pair = symbol.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "/", with: "")
+        return [pair, contractSide?.shortCode, exchange.shortCode].compactMap { $0 }.joined(separator: "•")
+    }
+
     func matches(_ other: Self) -> Bool {
         code == other.code && market == other.market && kind == other.kind && currency == other.currency
             && contractSide == other.contractSide && basis == other.basis && collateralAssetID == other.collateralAssetID
@@ -181,6 +208,12 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
 
     func contractProfit(entry: Decimal, exit: Decimal) -> Decimal {
         (basis == .coin ? entry - exit : exit - entry) * priceDirection
+    }
+
+    func validateTransactionType(_ event: InvestmentEventKind) throws {
+        if kind == .cryptoContract, basis != .usd, event == .opening {
+            throw InvestmentError.invalid("\(basis.rawValue)合约开仓请选择「\(transactionTitle(.buy))」，不能使用「首次录入」。")
+        }
     }
 
     func transactionTitle(_ event: InvestmentEventKind) -> String {
@@ -300,7 +333,7 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         let symbol = code.uppercased()
         let venue = market.uppercased()
         if kind == .crypto {
-            guard accountCurrency == .usd, venue.isEmpty,
+            guard accountCurrency == .usd, venue.isEmpty || venue == InvestmentContractExchange.binance.rawValue,
                   symbol.range(of: #"^[A-Z0-9]{1,20}$"#, options: .regularExpression) != nil else { throw mismatch }
             return
         }
@@ -407,9 +440,140 @@ struct InvestmentAccount: Codable, Identifiable {
     var currency: InvestmentCurrency
     var events: [InvestmentEvent] = []
     var type: InvestmentAccountType
+    var archivedAt: Date?
 
+    var isArchived: Bool { archivedAt != nil }
     var kinds: [InvestmentKind] { type.kinds(in: currency) }
     var allowsStockConnect: Bool { currency == .cny && type == .securities }
+}
+
+extension InvestmentBook {
+    func visibleAccounts(showArchived: Bool) -> [InvestmentAccount] {
+        accounts.filter { showArchived || !$0.isArchived }
+    }
+
+    func requireActive(accountID: UUID) throws {
+        guard let account = account(accountID) else { throw InvestmentError.invalid("找不到投资账户。") }
+        guard !account.isArchived else { throw InvestmentError.invalid("账户已归档，请先撤销归档再记账。") }
+    }
+
+    func positionIsEmpty(_ position: InvestmentPosition, assetID: UUID, reserved: Decimal = 0) -> Bool {
+        let balanceIsZero = asset(assetID)?.kind.isTermDeposit == true
+            ? position.depositBalance == 0 : position.quantity == 0
+        return balanceIsZero && position.margin == 0 && reserved == 0
+    }
+
+    func archiveBlocker(accountID: UUID) -> String? {
+        guard let account = account(accountID) else { return "找不到投资账户。" }
+        guard let ledger = try? ledger(account) else { return "无法核对余额，请先检查账户流水。" }
+        return ledger.cash == 0 && ledger.positions.allSatisfy({ positionIsEmpty($0.value, assetID: $0.key, reserved: ledger.reservedCollateral[$0.key, default: 0]) })
+            ? nil : "账户现金和全部持仓余额、占用保证金必须全部为 0 才能归档。"
+    }
+
+    mutating func setArchived(_ archived: Bool, accountID: UUID, at date: Date = .now) throws {
+        guard let index = accounts.firstIndex(where: { $0.id == accountID }) else {
+            throw InvestmentError.invalid("找不到投资账户。")
+        }
+        if archived, let reason = archiveBlocker(accountID: accountID) {
+            throw InvestmentError.invalid(reason)
+        }
+        accounts[index].archivedAt = archived ? date : nil
+        if archived {
+            for i in plans.indices where plans[i].accountID == accountID {
+                plans[i].enabled = false
+            }
+        }
+    }
+
+    func deletionMessage(accountID: UUID, assetID: UUID? = nil) -> String {
+        guard let account = account(accountID) else { return "此操作无法撤销。" }
+        let entries = account.events.filter { assetID == nil || $0.assetID == assetID }
+        let plans = plans.filter { $0.accountID == accountID && (assetID == nil || $0.assetID == assetID) }
+        let target = assetID.flatMap { asset($0)?.displayName }.map { "持仓「\($0)」" } ?? "账户「\(account.name)」"
+        let transfers = entries.filter { $0.transferID != nil }.count
+        var registrations = ""
+        var deleted = self
+        if (try? deleted.deleteInvestment(accountID: accountID, assetID: assetID)) != nil {
+            let involved = Set(entries.compactMap(\.assetID) + plans.compactMap(\.assetID) + [assetID].compactMap { $0 })
+            let removed = involved.filter { deleted.assets[$0] == nil }.compactMap { assets[$0]?.displayName }.sorted()
+            let kept = involved.filter { deleted.assets[$0] != nil }.compactMap { assets[$0]?.displayName }.sorted()
+            if !removed.isEmpty { registrations += "同时删除无其他引用的标的登记及报价：" + removed.joined(separator: "、") + "。" }
+            if !kept.isEmpty { registrations += "仍有其他流水、定投、关注或合约引用的登记继续保留：" + kept.joined(separator: "、") + "。" }
+        }
+        return "将永久删除\(target)及其 \(entries.count) 条交易记录"
+            + (transfers > 0 ? "，并删除其他账户中对应的 \(transfers) 条划转记录" : "")
+            + (plans.isEmpty ? "。" : "、\(plans.count) 项定投及执行记录。")
+            + registrations + "余额和历史统计会重新计算，此操作无法撤销。"
+    }
+
+    mutating func deleteInvestment(accountID: UUID, assetID: UUID? = nil, today: Date = Self.day()) throws {
+        guard let owner = account(accountID), assetID == nil || assets[assetID!] != nil else {
+            throw InvestmentError.invalid("找不到要删除的账户或持仓。")
+        }
+        if let assetID, try ledger(owner, through: today).positions[assetID] == nil {
+            throw InvestmentError.invalid("该账户没有这项持仓。")
+        }
+        let removed = owner.events.filter { assetID == nil || $0.assetID == assetID }
+        var affectedAssets = Set(removed.compactMap(\.assetID) + [assetID].compactMap { $0 })
+        var eventIDs = Set(removed.map(\.id))
+        let transfers = Set(removed.compactMap(\.transferID))
+        var draft = self
+        var firstRemovedDay: Date?
+        for i in draft.accounts.indices {
+            let entries = draft.accounts[i].events.filter {
+                eventIDs.contains($0.id) || $0.transferID.map { transfers.contains($0) } == true
+                    || (assetID == nil && $0.transferAccountID == accountID)
+            }
+            eventIDs.formUnion(entries.map(\.id))
+            draft.accounts[i].events.removeAll { eventIDs.contains($0.id) }
+            if let first = entries.map(\.day).min() { firstRemovedDay = min(first, firstRemovedDay ?? first) }
+        }
+        if let firstRemovedDay {
+            draft.invalidateDailySnapshots(from: firstRemovedDay)
+            draft.balanceSheet?.discardInvestmentSnapshots(from: firstRemovedDay)
+        }
+        if assetID == nil {
+            draft.accounts.removeAll { $0.id == accountID }
+            draft.dailySnapshots?.accountValues?.removeValue(forKey: accountID)
+        }
+        let planIDs = Set(draft.plans.filter {
+            $0.accountID == accountID && (assetID == nil || $0.assetID == assetID)
+        }.map(\.id))
+        affectedAssets.formUnion(draft.plans.filter { planIDs.contains($0.id) }.compactMap(\.assetID))
+        draft.plans.removeAll { planIDs.contains($0.id) }
+        draft.planRuns.removeAll { planIDs.contains($0.planID) || $0.eventID.map { eventIDs.contains($0) } == true }
+        // Only registrations involved in this deletion are candidates. Unrelated registrations
+        // and all references from surviving records, including contract collateral, stay intact.
+        var retained = Set(draft.assets.keys).subtracting(affectedAssets)
+        retained.formUnion(draft.accounts.flatMap(\.events).compactMap(\.assetID))
+        retained.formUnion(draft.plans.compactMap(\.assetID))
+        retained.formUnion(draft.watched)
+        var pending = Array(retained)
+        while let id = pending.popLast() {
+            if let collateral = draft.assets[id]?.collateralAssetID, retained.insert(collateral).inserted {
+                pending.append(collateral)
+            }
+        }
+        for id in affectedAssets.subtracting(retained) {
+            draft.assets.removeValue(forKey: id)
+            draft.quotes.removeValue(forKey: id)
+        }
+        for account in draft.accounts {
+            do {
+                let ledger = try draft.ledger(account, through: today)
+                if account.id == accountID, let assetID, ledger.positions[assetID] != nil {
+                    throw InvestmentError.invalid("该持仓仍由其他合约流水使用，请先处理相关合约。")
+                }
+            }
+            catch {
+                throw InvestmentError.invalid("删除后「\(account.name)」的其他流水无法成立：\(error.localizedDescription) 请先处理相关流水。")
+            }
+            if account.isArchived, let reason = draft.archiveBlocker(accountID: account.id) {
+                throw InvestmentError.invalid("请先撤销「\(account.name)」的归档再删除持仓或关联划转。\(reason)")
+            }
+        }
+        self = draft
+    }
 }
 
 struct InvestmentPlan: Codable, Identifiable {
@@ -555,13 +719,13 @@ struct InvestmentLedger {
     }
 
     private mutating func applyCollateralChange(_ change: Decimal, id: UUID, reserved: Decimal, rate: Decimal?) throws -> Decimal {
-        guard let rate, rate > 0 else {
-            throw InvestmentError.invalid("请填写结算币兑美元单价。")
+        guard change == 0 || (rate ?? 0) > 0 else {
+            throw InvestmentError.invalid("缺少结算币美元报价，请重新获取或手动指定价格。")
         }
         var token = positions[id] ?? InvestmentPosition()
         token.quantity += change
         guard token.quantity >= reserved else { throw InvestmentError.insufficientCollateral }
-        let usdChange = change * rate
+        let usdChange = change * (rate ?? 0)
         token.netCost += usdChange
         if token.quantity == 0 {
             token.realized -= token.netCost
@@ -632,6 +796,9 @@ struct InvestmentBook: Codable {
             guard known.multiplier == asset.multiplier else {
                 throw InvestmentError.invalid("该标的已经使用不同的合约乘数。")
             }
+            var linked = known
+            if asset.kind.requiresCatalog { linked.name = asset.name }
+            assets[known.id] = linked
             return known.id
         }
         assets[asset.id] = asset
@@ -739,10 +906,11 @@ struct InvestmentBook: Codable {
                     }
                     ledger.positions[id] = position
                 } else if asset.kind == .cryptoContract, asset.basis != .usd {
+                    try asset.validateTransactionType(event.kind)
                     let collateral = self.asset(asset.collateralAssetID)
                     let usesSharedCash = asset.basis == .stablecoin && asset.settlementStablecoin != nil && asset.collateralAssetID == nil
-                    guard event.kind != .opening, usesSharedCash || collateral.map(asset.basis.accepts) == true else {
-                        throw InvestmentError.invalid("请选择有效的结算币种。")
+                    guard usesSharedCash || collateral.map(asset.basis.accepts) == true else {
+                        throw InvestmentError.invalid("该合约未关联有效的结算币种，请核对标的登记中的结算币关联。")
                     }
                     let change = try ledger.settleContract(event, asset: asset, collateral: collateral)
                     if includeRows { ledger.collateralChanges[event.id] = change }
@@ -829,6 +997,7 @@ struct InvestmentBook: Codable {
         guard let index = accounts.firstIndex(where: { $0.id == accountID }), event.day <= today else {
             throw InvestmentError.invalid("请选择有效的账户和记账日期。")
         }
+        try requireActive(accountID: accountID)
         if let fee = event.fee, fee != 0 {
             guard fee > 0, event.kind == .buy || event.kind == .sell,
                   let asset = asset(event.assetID), asset.kind.supportsTradeFees, !asset.isStockConnect else {
@@ -982,6 +1151,7 @@ struct InvestmentBook: Codable {
     }
 
     mutating func deleteEvent(_ event: InvestmentEvent, accountID: UUID, today: Date = Self.day()) throws {
+        try requireActive(accountID: accountID)
         guard account(accountID)?.events.contains(where: { $0.id == event.id && $0.version == event.version }) == true else {
             throw InvestmentError.invalid("原流水已变更，请重新打开。")
         }
@@ -994,6 +1164,7 @@ struct InvestmentBook: Codable {
             removed.append((target.id, other))
         }
         for (id, entry) in removed {
+            try draft.requireActive(accountID: id)
             guard let index = draft.accounts.firstIndex(where: { $0.id == id }) else { continue }
             draft.accounts[index].events.removeAll { $0.id == entry.id }
             _ = try draft.ledger(draft.accounts[index], through: today)
@@ -1314,6 +1485,7 @@ struct InvestmentBook: Codable {
     }
 
     mutating func runPlans(through today: Date = Self.day()) {
+        for i in plans.indices where account(plans[i].accountID)?.isArchived == true { plans[i].enabled = false }
         var waiting = Set<UUID>()
         while let due = plans.filter({ $0.enabled && $0.nextDay <= today && !waiting.contains($0.id) })
             .map({ duePlan($0, through: today) })

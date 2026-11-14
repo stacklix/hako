@@ -18,10 +18,11 @@ enum InvestmentAgentTools {
                      "asset_type": ["type": "string", "enum": InvestmentAgentAction.assetKinds.keys.sorted()],
                      "currency": ["type": "string", "enum": ["CNY", "USD", "HKD"]],
                      "stock_connect": ["type": "boolean"],
+                     "market": ["type": "string", "enum": ["BINANCE", "HTX"]],
                      "basis": ["type": "string", "enum": ["coin", "stablecoin"]]], required: ["query", "asset_type", "currency"])
     static let export = LanguageModelTool(name: "offer_ledger_export", description: "在应用内显示导出账本按钮，用户点击后保存服务端 ZIP。ZIP 内容不会返回给模型。",
                                           properties: [:], required: [])
-    static let all = [read, searchTool, InvestmentAgentAction.tool, export]
+    static let all = [read, searchTool, InvestmentAgentAction.inspectTool, InvestmentAgentAction.tool, export]
 
     static func json(_ value: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])
@@ -115,6 +116,16 @@ enum InvestmentAgentTools {
                 return table.key(left.0) < table.key(right.0)
             }.map { $0.0 }
         }
+        if section == "investment_assets" {
+            values = values.map { value in
+                var row = value
+                if let asset = row["id"].flatMap(UUID.init(uuidString:)).flatMap(base.book.asset) {
+                    row["display_code"] = asset.displayCode
+                    row["display_name"] = asset.displayName
+                }
+                return row
+            }
+        }
         let offset = min(max(args["offset"] as? Int ?? 0, 0), values.count)
         let limit = min(max(args["limit"] as? Int ?? 20, 1), 40)
         let end = min(offset + limit, values.count)
@@ -131,8 +142,20 @@ enum InvestmentAgentTools {
             throw InvestmentError.invalid("请提供标的代码或名称、类型和币种。")
         }
         var values: [InvestmentServerRow]
-        if kind == .cryptoContract, let basis = (args["basis"] as? String).flatMap({ InvestmentAgentAction.bases[$0] }), basis != .usd {
-            values = try await store.searchContracts(query, basis: basis).prefix(20).map { listing in
+        if kind == .cryptoContract {
+            guard currency == .usd, let basis = (args["basis"] as? String).flatMap({ InvestmentAgentAction.bases[$0] }), basis != .usd else {
+                throw InvestmentError.invalid("搜索加密合约需先明确 U 本位或币本位，报价币种使用 USD。")
+            }
+            let request = try InvestmentContractSearch(query)
+            let explicit = (args["market"] as? String).flatMap(InvestmentContractExchange.init(rawValue:))
+            guard args["market"] == nil || explicit != nil else {
+                throw InvestmentError.invalid("合约交易所仅支持 HTX 和 BIN（Binance）。")
+            }
+            guard request.exchange == nil || explicit == nil || request.exchange == explicit else {
+                throw InvestmentError.invalid("合约代号中的交易所与所选交易所不一致，请先核对。")
+            }
+            let scoped = explicit.map { [request.query, request.side?.shortCode, $0.shortCode].compactMap { $0 }.joined(separator: "•") } ?? query
+            values = try await store.searchContracts(scoped, basis: basis).prefix(20).map { listing in
                 var row = assetRow(listing.asset)
                 row["settlement_unit"] = listing.settlementCode
                 row["basis"] = args["basis"] as? String
@@ -149,9 +172,12 @@ enum InvestmentAgentTools {
     }
 
     private static func assetRow(_ asset: InvestmentAsset) -> InvestmentServerRow {
-        ["id": asset.id.uuidString, "name": asset.name, "symbol": asset.code, "market": asset.market,
+        var row = ["id": asset.id.uuidString, "name": asset.name, "display_name": asset.displayName,
+         "symbol": asset.code, "display_code": asset.displayCode, "market": asset.market,
          "currency": asset.currency.rawValue, "asset_type": InvestmentAgentAction.assetKinds.first { $0.value == asset.kind }?.key ?? asset.kind.title,
          "multiplier": decimal(asset.multiplier) ?? "1"]
+        row["side"] = InvestmentAgentAction.sides.first { $0.value == asset.contractSide }?.key
+        return row
     }
 
     private static func decimal(_ value: Decimal?) -> String? { value.map { NSDecimalNumber(decimal: $0).stringValue } }

@@ -85,6 +85,10 @@
 
 `Sports/` 独立负责运动数据、校验、合并、统计、持久化与界面；`Usage/` 独立负责屏幕时间页面、数据模型、数据库、采集、同步回调、CSV 合并和 GitHub 业务适配。年度文件命名、模块目录和冲突策略均由子应用决定，主应用服务不识别运动或屏幕时间业务类型。使用时间的数据库在进入子应用或执行同步回调时按需初始化，损坏或打不开不会阻塞首页和其他子应用。模型类及默认数据库位置保持不变，以保留已有记录。两个子应用不互相引用业务代码。
 
+子应用间复用的界面组件统一放在 `Shared/UI/`：`AssistantHTML` 与 `AssistantReplyView` 负责助手回复解析和展示，`ConversationScrollFollowing` 负责对话滚动跟随，`HakoCodeEditor`、`HakoCodeSyntax` 与 `HakoEditorLines` 负责代码编辑、语法高亮和行号，`HakoLabeledValue` 负责标签值展示。子应用直接使用共享组件，不引用其他子应用的类型；`Tests/test_subapp_boundaries.py` 检查子应用间类型引用及共享 UI 对业务类型的依赖。`Features/ServerManagement` 与 `Features/Notifications` 为主应用的登录管理和通知界面。
+
+记账助手与青龙助手还共用 `Shared/Infrastructure/Assistant*` 的流式回复状态、输入草稿、会话文件保存和工具调用生命周期，以及 `Shared/UI/Assistant*` 的输入栏、消息图片、思考折叠、图片导入预览和调用详情。业务模块提供调用名称、参数摘要、结果解释与凭据隐藏规则，并保留各自的模型上下文、工具权限、表单和提交校验。提取共享代码不改变会话、草稿或调用记录的文件路径与保存字段；两套助手测试使用重构前生成的模拟文件检查读写格式。
+
 首页导航和快捷指令共用 `HakoApplications` 子应用清单。快捷指令首次运行时，清单调用子应用的注册入口，无需打开首页。使用时间和加密资产各自注册同步回调，主应用依次运行并汇总结果。某个回调失败后继续执行其余回调，最终以错误报告各项结果。
 
 主应用通过 `AuthenticatedServerAccess` 提供登录状态、会话上下文、变更通知及已认证请求，`ConsoleClient` 仅实现身份与会话管理。设备监控的 `DeviceMonitorClient`、ECS 访问统计的 `ECSAccessAPI` 均注入该接口，不引用或扩展主应用具体客户端。业务路径、参数、解析和错误翻译留在各自子应用。缓存按服务器、账号和会话隔离，切换身份后的旧请求结果被丢弃。日志来源由调用方传入，主应用不解析子应用 URL。

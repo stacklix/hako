@@ -98,7 +98,7 @@ private struct WorkshopCommandDetailView: View {
                     LabeledContent("执行环境", value: "PowerShell 7")
                     LabeledContent("超时", value: "\(command.timeoutSeconds) 秒")
                     LabeledContent("允许后台进程继续运行", value: command.allowBackgroundProcesses ? "开启" : "关闭")
-                    ApplicationValue(label: "工作目录", value: client.application.path, monospaced: true)
+                    HakoLabeledValue(label: "工作目录", value: client.application.path, monospaced: true)
                 }
                 Section {
                     Button {
@@ -188,13 +188,13 @@ struct WorkshopCommandTaskView: View {
                 LabeledContent("名称", value: client.task?.name ?? "正在确认任务")
                 LabeledContent("电脑", value: client.agent.name)
                 LabeledContent("状态", value: client.task?.status ?? "正在确认")
-                if let id = client.taskID { ApplicationValue(label: "任务 ID", value: id, monospaced: true) }
+                if let id = client.taskID { HakoLabeledValue(label: "任务 ID", value: id, monospaced: true) }
                 if let code = client.task?.exitCode { LabeledContent("退出码", value: String(code)) }
             }
             if let task = client.task {
                 Section("提交时的命令") {
                     Text(task.command).font(.caption.monospaced()).textSelection(.enabled)
-                    ApplicationValue(label: "工作目录", value: task.directory, monospaced: true)
+                    HakoLabeledValue(label: "工作目录", value: task.directory, monospaced: true)
                     LabeledContent("允许后台进程继续运行", value: task.allowBackgroundProcesses ? "开启" : "关闭")
                 }
             }

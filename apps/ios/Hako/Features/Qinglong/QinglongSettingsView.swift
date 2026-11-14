@@ -86,14 +86,15 @@ struct QinglongConnectionEditor: View {
             }
             if draft.address.lowercased().hasPrefix("http://") { Toggle("允许不加密的 HTTP 连接", isOn: $draft.allowHTTP).font(.subheadline) }
             }
-            if let testResult { QinglongNotice(text: testResult) }
-            if let error { QinglongNotice(text: error, error: true) }
             Section {
-                VStack(spacing: 12) {
+                HStack(spacing: 12) {
                     Button(testing ? "正在测试…" : "测试连接", action: test)
-                        .buttonStyle(HakoActionButtonStyle(primary: false))
+                        .buttonStyle(HakoActionButtonStyle())
                     if store.configuration.connections.contains(where: { $0.id == draft.id }) {
-                        HakoDeleteButton(title: "删除此连接") { deleting = true }
+                        Button(role: .destructive) { deleting = true } label: {
+                            Text("删除此连接").foregroundStyle(.white)
+                        }
+                        .buttonStyle(HakoActionButtonStyle(backgroundColor: .red))
                     }
                 }
                 .padding(.horizontal, 12)
@@ -101,6 +102,18 @@ struct QinglongConnectionEditor: View {
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+            }
+            if testResult != nil || error != nil {
+                Section {
+                    if let testResult {
+                        Text(testResult).font(.footnote).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let error {
+                        Text(error).font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
         }
         .disabled(testing || store.busy)
@@ -132,6 +145,8 @@ struct QinglongTextField: View {
     @Binding var text: String
     var secure = false
     var keyboard: UIKeyboardType = .default
+    @State private var showsSecret = false
+    @Environment(\.scenePhase) private var scenePhase
     init(_ title: String, text: Binding<String>, secure: Bool = false, keyboard: UIKeyboardType = .default) {
         self.title = title; _text = text; self.secure = secure; self.keyboard = keyboard
     }
@@ -139,11 +154,26 @@ struct QinglongTextField: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
             if secure {
-                SecureField("", text: $text).accessibilityLabel(title).textContentType(nil)
+                HStack(spacing: 8) {
+                    Group {
+                        if showsSecret { TextField("", text: $text) }
+                        else { SecureField("", text: $text) }
+                    }
+                    .accessibilityLabel(title).textContentType(nil)
+                    Button { showsSecret.toggle() } label: {
+                        Image(systemName: showsSecret ? "eye.slash" : "eye")
+                            .foregroundStyle(.secondary).frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel((showsSecret ? "隐藏" : "显示") + title)
+                }
             } else {
                 TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title)
             }
         }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(.vertical, 4)
+        .onChange(of: scenePhase) { _, phase in if phase != .active { showsSecret = false } }
+        .onDisappear { showsSecret = false }
     }
 }
 

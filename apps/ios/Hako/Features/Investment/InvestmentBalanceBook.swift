@@ -51,6 +51,12 @@ struct InvestmentBalanceLedger: Codable {
     var earliest: Date? { accounts.compactMap { $0.records.first?.recordedAt }.min().map(InvestmentBook.day) }
     var investmentSnapshots: [Date: Decimal] { investmentMonthEnds ?? [:] }
 
+    mutating func replaceInvestmentSnapshots(_ snapshots: [Date: Decimal]) { investmentMonthEnds = snapshots }
+
+    mutating func discardInvestmentSnapshots(from day: Date) {
+        investmentMonthEnds = investmentMonthEnds?.filter { $0.key < day }
+    }
+
     mutating func add(_ name: String, category: InvestmentBalanceCategory, amount: Decimal, at date: Date = .now) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 36 else {

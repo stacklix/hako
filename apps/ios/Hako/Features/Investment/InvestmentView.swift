@@ -48,7 +48,7 @@ struct InvestmentView: View {
             } else {
                 switch tab {
                 case .overview:
-                    InvestmentOverview(book: store.book, bookVersion: store.bookVersion) { id in
+                    InvestmentOverview(book: store.book, bookVersion: store.bookVersion, showsArchived: store.showsArchived) { id in
                         selectedAccount = id
                         tab = .accounts
                     }
@@ -79,7 +79,7 @@ struct InvestmentView: View {
         .sheet(isPresented: $showsAgent) {
             InvestmentAgentSheet(store: store, agent: .shared)
         }
-        .navigationDestination(isPresented: $showsSettings) {
+        .sheet(isPresented: $showsSettings) {
             InvestmentDestination(store: store, route: .settings)
         }
         .navigationDestination(isPresented: $showsBalanceAccounts) {
@@ -105,7 +105,7 @@ struct InvestmentView: View {
             guard scenePhase == .active, let assets, !assets.isEmpty else { return }
             Task { await store.refreshIfNeeded() }
         }
-        .onChange(of: store.book.accounts.map(\.id), initial: true) { _, ids in
+        .onChange(of: store.visibleAccounts.map(\.id), initial: true) { _, ids in
             if !ids.contains(where: { $0 == selectedAccount }) { selectedAccount = ids.first }
         }
     }
@@ -175,17 +175,17 @@ struct InvestmentView: View {
         } else {
             InvestmentScroll {
                 ContentUnavailableView("暂无投资账户", systemImage: "wallet.bifold",
-                                       description: Text("在投资记账设置中添加账户。"))
+                    description: Text(store.book.accounts.isEmpty ? "在投资记账设置中添加账户。" : "归档账户已隐藏，可在投资记账设置中打开显示。"))
             }
         }
     }
 
     private func accountTabs(_ selected: UUID) -> some View {
-        let accounts = store.book.accounts
+        let accounts = store.visibleAccounts
         let tabs = HakoUnderlineTabs(title: "资产账户", options: accounts.map(\.id),
                                     selection: Binding(get: { selected }, set: { selectedAccount = $0 })) { id in
             guard let item = store.book.account(id) else { return "" }
-            var name = item.name
+            var name = item.name + (item.isArchived ? " · 已归档" : "")
             if item.currency == .hkd {
                 name += " " + item.currency.rawValue
             } else if item.currency == .cny && accounts.contains(where: { $0.name == item.name && $0.currency == .usd }) {
@@ -236,7 +236,7 @@ struct InvestmentView: View {
         let latest = store.book.quote(asset.id)
         return InvestmentCard {
             HStack {
-                InvestmentTitle(asset.name, subtitle: asset.code + " · " + asset.kindLabel)
+                InvestmentTitle(asset.displayName, subtitle: asset.displayCode + " · " + asset.kindLabel)
                 Spacer()
                 if let latest {
                     VStack(alignment: .trailing) {
@@ -357,7 +357,7 @@ struct InvestmentAccountView: View {
                     Divider()
                     Button { sheet = .transfer } label: {
                         InvestmentPageRow(title: "划出资金", symbol: "arrow.left.arrow.right")
-                    }.buttonStyle(.plain).disabled(book.accounts.count < 2)
+                    }.buttonStyle(.plain).disabled(book.visibleAccounts(showArchived: false).count < 2 || account.isArchived)
                     Divider()
                     Button { sheet = .history } label: {
                         InvestmentPageRow(title: "现金流水", symbol: "list.bullet.rectangle")
@@ -389,10 +389,16 @@ struct InvestmentAccountView: View {
         Button { sheet = .cash(kind) } label: {
             Text(kind == .adjustment ? "调整余额" : kind.rawValue)
         }.buttonStyle(HakoActionButtonStyle(primary: primary))
+            .disabled(account.isArchived)
     }
 
     private func holdings(_ ledger: InvestmentLedger) -> some View {
-        let assets = ledger.positions.keys.compactMap { book.asset($0) }.sorted { $0.code < $1.code }
+        let assets = ledger.positions.keys.filter { id in
+            store.showsZeroPositions || ledger.positions[id].map {
+                !book.positionIsEmpty($0, assetID: id, reserved: ledger.reservedCollateral[id, default: 0])
+            } == true
+        }
+            .compactMap { book.asset($0) }.sorted { $0.code < $1.code }
         return InvestmentCard {
             HStack {
                 Text("持仓").font(Self.sectionTitleFont)
@@ -403,10 +409,12 @@ struct InvestmentAccountView: View {
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                 }
+                .disabled(account.isArchived)
             }
             Divider()
             if assets.isEmpty {
-                Text("这个账户目前只有现金。").font(.subheadline).foregroundStyle(.secondary)
+                Text(ledger.positions.isEmpty ? "这个账户目前只有现金。" : "零余额持仓已隐藏，可在设置中显示。")
+                    .font(.subheadline).foregroundStyle(.secondary)
             }
             ForEach(assets) { asset in
                 if let position = ledger.positions[asset.id] {
@@ -415,7 +423,7 @@ struct InvestmentAccountView: View {
                     InvestmentLink(route: .asset(account.id, asset.id)) {
                         HStack(alignment: .top, spacing: 8) {
                             let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                            InvestmentTitle(asset.name, subtitle: asset.kind.isTermDeposit ? asset.kindLabel : asset.code + " · " + details)
+                            InvestmentTitle(asset.displayName, subtitle: asset.kind.isTermDeposit ? asset.kindLabel : asset.displayCode + " · " + details)
                             Spacer(minLength: 0)
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))

@@ -10,6 +10,41 @@ FEATURES = APP / "Features"
 
 
 class SubappBoundariesTests(unittest.TestCase):
+    @staticmethod
+    def feature_types():
+        owners = {}
+        declarations = re.compile(
+            r"^(?:(?:@\w+(?:\([^\n]*?\))?|public|internal|private|fileprivate|final|indirect|nonisolated)\s+)*"
+            r"(?:class|struct|enum|protocol|typealias|actor)\s+(\w+)", re.M)
+        for path in FEATURES.rglob("*.swift"):
+            feature = path.relative_to(FEATURES).parts[0]
+            for name in declarations.findall(path.read_text(encoding="utf-8")):
+                owners.setdefault(name, set()).add(feature)
+        return owners
+
+    def test_subapps_do_not_reference_sibling_types(self):
+        # ServerManagement and Notifications provide host UI rather than child apps.
+        host_features = {"ServerManagement", "Notifications"}
+        owners = self.feature_types()
+        for path in FEATURES.rglob("*.swift"):
+            feature = path.relative_to(FEATURES).parts[0]
+            if feature in host_features:
+                continue
+            source = re.sub(r"//[^\n]*", "", path.read_text(encoding="utf-8"))
+            for name in set(re.findall(r"\b\w+\b", source)):
+                targets = owners.get(name, set())
+                if len(targets) == 1:
+                    self.assertFalse(targets - host_features - {feature},
+                                     f"{path.relative_to(APP)} references sibling type {name}")
+
+    def test_shared_ui_does_not_reference_feature_types(self):
+        owners = self.feature_types()
+        for path in (APP / "Shared/UI").glob("*.swift"):
+            source = re.sub(r"//[^\n]*", "", path.read_text(encoding="utf-8"))
+            for name in set(re.findall(r"\b\w+\b", source)):
+                self.assertNotIn(name, owners,
+                                 f"{path.relative_to(APP)} references feature type {name}")
+
     def test_investment_navigation_does_not_push_values_into_the_home_path(self):
         for path in (FEATURES / "Investment").glob("*.swift"):
             source = path.read_text(encoding="utf-8")

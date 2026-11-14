@@ -33,10 +33,18 @@ jobs:
           /tmp/hako-app-update-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Tests/HakoServerCompatibilityTests.swift -o /tmp/hako-server-compatibility-tests
           /tmp/hako-server-compatibility-tests
+      - name: Test shared assistant reply formatting
+        run: |
+          swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Tests/AssistantRenderingTests.swift -o /tmp/hako-assistant-rendering-tests
+          /tmp/hako-assistant-rendering-tests
       - name: Test investment assistant proposals and model protocols
         run: |
-          swiftc Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentAgentActions.swift Hako/Features/Investment/InvestmentAgentProposal.swift Hako/Features/Investment/InvestmentAgentHTML.swift Hako/Features/Investment/InvestmentAgentConversation.swift Tests/InvestmentAgentTests.swift -o /tmp/hako-investment-agent-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests
+          /tmp/hako-investment-book-tests
+          swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentAgentActions.swift Hako/Features/Investment/InvestmentAgentForm.swift Hako/Features/Investment/InvestmentEntryEditing.swift Hako/Features/Investment/InvestmentAgentProposal.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Features/Investment/InvestmentAgentToolCall.swift Hako/Features/Investment/InvestmentAgentConversation.swift Tests/AssistantFileAssertions.swift Tests/InvestmentAgentTests.swift -o /tmp/hako-investment-agent-tests
           /tmp/hako-investment-agent-tests
+          swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentMarketData.swift Hako/Features/Investment/InvestmentContractMarketData.swift Tests/InvestmentMarketDataTests.swift -o /tmp/hako-investment-market-tests
+          /tmp/hako-investment-market-tests
       - name: Test code workshop request identity and message rendering
         run: |
           swiftc Hako/Features/CodeWorkshop/WorkshopCommandModels.swift Tests/WorkshopCommandTests.swift -o /tmp/hako-workshop-command-tests
@@ -116,9 +124,9 @@ jobs:
           /tmp/hako-arcane-loading-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneHostProtocol.swift Hako/Features/Containers/ArcaneClient.swift Tests/ArcaneWorkspaceTests.swift -o /tmp/hako-arcane-workspace-tests
           /tmp/hako-arcane-workspace-tests
-          swiftc Hako/Features/Containers/ArcaneSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
+          swiftc Hako/Shared/UI/HakoCodeSyntax.swift Tests/ArcaneSyntaxTests.swift -o /tmp/hako-arcane-syntax-tests
           /tmp/hako-arcane-syntax-tests
-          swiftc Hako/Features/Containers/ArcaneEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
+          swiftc Hako/Shared/UI/HakoEditorLines.swift Tests/ArcaneEditorLinesTests.swift -o /tmp/hako-arcane-editor-lines-tests
           /tmp/hako-arcane-editor-lines-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-macos14.0 Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneHostProtocol.swift Hako/Features/Containers/ArcaneClient.swift Hako/Features/Containers/ArcaneHostData.swift Tests/ArcaneHostTests.swift -o /tmp/hako-arcane-host-tests
           /tmp/hako-arcane-host-tests
@@ -138,9 +146,11 @@ jobs:
           /tmp/hako-log-tests
       - name: Test Qinglong OpenAPI and connection policies
         run: |
+          swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongClient.swift Hako/Features/Qinglong/QinglongAgentTools.swift Hako/Features/Qinglong/QinglongAgentProposal.swift Hako/Features/Qinglong/QinglongAgentConversation.swift Hako/Features/Qinglong/QinglongAgentToolCall.swift Tests/AssistantFileAssertions.swift Tests/QinglongAgentTests.swift -o /tmp/hako-qinglong-agent-tests
+          /tmp/hako-qinglong-agent-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Tests/QinglongTests.swift -o /tmp/hako-qinglong-tests
           /tmp/hako-qinglong-tests
-          swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-macos14.0 -typecheck Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Hako/Features/Qinglong/QinglongStore.swift
+          swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Shared/UI/AssistantPhotoImporter.swift Hako/Features/Qinglong/QinglongAgentToolCall.swift -target arm64-apple-macos14.0 -typecheck Hako/Features/Qinglong/QinglongProtocol.swift Hako/Features/Qinglong/QinglongRefresh.swift Hako/Features/Qinglong/QinglongClient.swift Hako/Features/Qinglong/QinglongStore.swift Hako/Features/Qinglong/QinglongAgentTools.swift Hako/Features/Qinglong/QinglongAgentProposal.swift Hako/Features/Qinglong/QinglongAgentConversation.swift Hako/Features/Qinglong/QinglongAgentSession.swift
       - name: Test ECS API signing, snapshots and terminal protocol
         run: |
           swiftc Hako/Features/CloudServers/ECSModels.swift Hako/Features/CloudServers/ECSNetworkModels.swift Tests/ECSNetworkTests.swift -o /tmp/hako-ecs-network-tests

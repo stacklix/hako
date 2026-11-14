@@ -68,7 +68,8 @@ enum HTTPTransport {
                                    detail: detail, fullDetail: true)
     }
 
-    static func makeSession(requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 604800) -> URLSession {
+    static func makeSession(requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 604800,
+                            delegate: (any URLSessionDelegate)? = nil) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpShouldSetCookies = false
         config.httpCookieStorage = nil
@@ -77,7 +78,7 @@ enum HTTPTransport {
         config.urlCredentialStorage = nil
         config.timeoutIntervalForRequest = requestTimeout
         config.timeoutIntervalForResource = resourceTimeout
-        return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
+        return URLSession(configuration: config, delegate: delegate ?? NoRedirectDelegate(), delegateQueue: nil)
     }
 }
 

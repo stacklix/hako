@@ -137,7 +137,7 @@ struct QinglongFileEditor: View {
                 if loading {
                     ProgressView("正在读取文件…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if creating || baseline != nil {
-                    ArcaneCodeEditor(text: $text, filename: item.filePath,
+                    HakoCodeEditor(text: $text, filename: item.filePath,
                         editable: writable && openedRevision == store.revision, saving: store.busy)
                 } else {
                     ContentUnavailableView("无法读取文件", systemImage: "doc", description: Text(error ?? "请重新读取文件内容。"))

@@ -196,10 +196,15 @@ private struct QinglongNewScriptDirectory: View {
                         Text("创建位置").font(.subheadline).foregroundStyle(.secondary)
                         Text(directory.isEmpty ? "根目录" : directory).textSelection(.enabled)
                     }
-                }.disabled(working || store.busy || revision != store.revision)
+                }
+                .listRowBackground(QinglongStyle.surface)
+                .disabled(working || store.busy || revision != store.revision)
                 if revision != store.revision { QinglongNotice(text: "连接已改变，请关闭后重新创建文件夹。", error: true) }
                 else if let error { QinglongNotice(text: error, error: true) }
             }
+            .scrollContentBackground(.hidden)
+            .background(QinglongStyle.background)
+            .foregroundStyle(QinglongStyle.text)
             .navigationTitle("新建文件夹").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(working) }
@@ -207,7 +212,11 @@ private struct QinglongNewScriptDirectory: View {
                     Button(action: create) { if working { ProgressView() } else { Text("创建") } }.disabled(blocked)
                 }
             }
-        }.tint(QinglongStyle.text).presentationDetents([.medium, .large]).interactiveDismissDisabled(working)
+        }
+        .tint(QinglongStyle.text)
+        .presentationBackground(QinglongStyle.background)
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled(working)
     }
     private func create() {
         guard !blocked else { return }

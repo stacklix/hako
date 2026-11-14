@@ -1,7 +1,7 @@
 import Foundation
 
 // UIKit and TextKit use UTF-16 offsets, including for emoji and composed text.
-struct ArcaneEditorLines {
+struct HakoEditorLines {
     let starts: [Int]
 
     init(_ text: String) {

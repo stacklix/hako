@@ -12,6 +12,7 @@ struct InvestmentBookTests {
         try stablecoinContractsShareUSDCash()
         try coinContractInputConvertsToWholeContracts()
         try coinContractsUseInversePricing()
+        try coinContractsOnlyRequireConversionForCashChanges()
         try fundingBalanceAdjustmentsTrackSettlementAndAttribution()
         try cashMarginFundingIsRecognizedOnce()
         try stockDistributionsKeepPurchaseCost()
@@ -35,6 +36,11 @@ struct InvestmentBookTests {
         try changingTransfersIsAtomic()
         try dailyQuotesReuseCachedMarketCloses()
         try serverRoundTripPreservesShortFuturesAndSnapshots()
+        try archivesOnlyEmptyAccountsAndPreservesHistory()
+        try deletesOnlyTheSelectedHoldingAndItsRecords()
+        try deletesAccountsAndPairedTransfersAtomically()
+        try deletesUnreferencedRegistrationsAndTheirQuotes()
+        try deletionPreservesContractAndPlanReferences()
         print("Investment ledger checks passed")
     }
 
@@ -250,7 +256,8 @@ struct InvestmentBookTests {
     }
 
     static func coinContractInputConvertsToWholeContracts() throws {
-        let screenshot = InvestmentCoinContractQuantity.coins(35080, referencePrice: Decimal(string: "0.319840")!)
+        let screenshot = InvestmentCoinContractQuantity.coins(Decimal(string: "36087.2")!,
+                                                              referencePrice: Decimal(string: "0.310913")!)
         let estimated = try screenshot.contractCount(faceValue: 10)
         let nominal = try InvestmentCoinContractQuantity.notionalUSD(11220).contractCount(faceValue: 10)
         let direct = try InvestmentCoinContractQuantity.contracts(1122).contractCount(faceValue: 10)
@@ -264,6 +271,35 @@ struct InvestmentBookTests {
             _ = try InvestmentCoinContractQuantity.coins(35080, referencePrice: 0).contractCount(faceValue: 10)
             preconditionFailure("A coin quantity needs a positive reference price")
         } catch InvestmentError.invalid {}
+    }
+
+    static func coinContractsOnlyRequireConversionForCashChanges() throws {
+        let account = InvestmentAccount(name: "币本位", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let day = date(1)
+        let token = try book.register(.init(name: "TRX", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        let contract = try book.register(.init(name: "TRXUSD", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
+                                              currency: .usd, multiplier: 10, contractSide: .long,
+                                              contractBasis: .coin, collateralAssetID: token))
+        try book.post(.init(day: day, kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: day, kind: .buy, assetID: token, quantity: 100, price: 1), accountID: account.id)
+        try book.post(.init(day: day, kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 5), accountID: account.id)
+        let opened = try book.ledger(book.accounts[0], through: day)
+        precondition(opened.reservedCollateral[token] == 5 && opened.positions[token]?.quantity == 100)
+        precondition(opened.positions[contract]?.realized == 0)
+        for event in [
+            InvestmentEvent(day: day, kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 5, fee: 1),
+            InvestmentEvent(day: day, kind: .sell, assetID: contract, quantity: 1, price: 2)
+        ] {
+            do {
+                try book.post(event, accountID: account.id)
+                preconditionFailure("Nonzero coin cash flows still need a USD conversion price")
+            } catch InvestmentError.invalid {}
+        }
+        try book.post(.init(day: day, kind: .sell, assetID: contract, quantity: 1, price: 1), accountID: account.id)
+        let closed = try book.ledger(book.accounts[0], through: day)
+        precondition(closed.reservedCollateral[token] == 0 && closed.positions[token]?.quantity == 100)
+        precondition(closed.positions[contract]?.quantity == 0 && closed.positions[contract]?.realized == 0)
     }
 
     static func coinContractsUseInversePricing() throws {
@@ -1008,6 +1044,150 @@ struct InvestmentBookTests {
         precondition(restored.assets[shortID]?.contractSide == .short)
         precondition(restored.dailySnapshots?.values[date(3)]?.valueUSD == 230)
         precondition(restored.dailySnapshots?.accountValues?[account.id]?[date(3)]?.gain == 150)
+    }
+
+    static func archivesOnlyEmptyAccountsAndPreservesHistory() throws {
+        let account = InvestmentAccount(name: "可归档", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let asset = InvestmentAsset(name: "股票", code: "600000", market: "XSHG", kind: .stock, currency: .cny)
+        let id = try book.register(asset)
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 10, price: 10), accountID: account.id)
+        precondition(book.archiveBlocker(accountID: account.id) != nil, "Missing quotes do not make a held position empty")
+        do { try book.setArchived(true, accountID: account.id); preconditionFailure("Nonzero holdings must not archive") }
+        catch is InvestmentError { }
+        try book.post(.init(day: date(2), kind: .sell, assetID: id, quantity: 10, price: 10), accountID: account.id)
+        precondition(book.archiveBlocker(accountID: account.id) != nil, "Cash still prevents archiving")
+        try book.post(.init(day: date(2), kind: .withdrawal, amount: -100), accountID: account.id)
+        book.plans = [.init(accountID: account.id, amount: 100, monthDay: 1, nextDay: date(3))]
+        let events = try require(book.account(account.id)).events
+        let position = try require(book.ledger(book.accounts[0]).positions[id])
+        precondition(book.positionIsEmpty(position, assetID: id))
+        precondition(!book.positionIsEmpty(.init(quantity: 0, margin: 1), assetID: id))
+        precondition(!book.positionIsEmpty(.init(quantity: 0), assetID: id, reserved: 1))
+        try book.setArchived(true, accountID: account.id, at: date(3))
+        precondition(book.visibleAccounts(showArchived: false).isEmpty)
+        precondition(book.visibleAccounts(showArchived: true).count == 1)
+        precondition(book.accounts[0].events == events && !book.plans[0].enabled)
+        do { try book.post(.init(day: date(3), kind: .deposit, amount: 1), accountID: account.id); preconditionFailure("Archived accounts are read only") }
+        catch is InvestmentError { }
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        var restored = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        precondition(restored.accounts[0].archivedAt == date(3))
+        let roundTrip = try records.encode(restored, revision: 1)
+        precondition(roundTrip["investment_events"] == tables["investment_events"])
+        try restored.setArchived(false, accountID: account.id)
+        precondition(restored.visibleAccounts(showArchived: false).count == 1 && !restored.plans[0].enabled)
+        try restored.post(.init(day: date(3), kind: .deposit, amount: 1), accountID: account.id)
+    }
+
+    static func deletesOnlyTheSelectedHoldingAndItsRecords() throws {
+        let left = InvestmentAccount(name: "左", currency: .cny, type: .securities)
+        let right = InvestmentAccount(name: "右", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [left, right])
+        let id = try book.register(.init(name: "共享标的", code: "600000", market: "XSHG", kind: .stock, currency: .cny))
+        for account in [left, right] {
+            try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+            try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 10), accountID: account.id)
+            let event = try require(book.account(account.id)?.events.last)
+            let plan = InvestmentPlan(accountID: account.id, assetID: id, amount: 10, monthDay: 1, nextDay: date(3))
+            book.plans.append(plan)
+            book.planRuns.append(.init(planID: plan.id, day: date(1), status: "executed", eventID: event.id, executedAt: date(1), detail: nil))
+        }
+        book.watched = [id]
+        book.addQuotes([.init(day: date(2), price: 10)], assetID: id)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(2), rebuild: true)
+        book.balanceSheet = InvestmentBalanceLedger(investmentMonthEnds: [date(0): 100, date(31): 200])
+        let rightEvents = try require(book.account(right.id)).events
+        try book.deleteInvestment(accountID: left.id, assetID: id)
+        let ledger = try book.ledger(try require(book.account(left.id)))
+        precondition(ledger.positions[id] == nil && ledger.cash == 100)
+        precondition(book.account(right.id)?.events == rightEvents && book.asset(id) != nil && book.watched == [id])
+        precondition(book.plans.count == 1 && book.plans[0].accountID == right.id && book.planRuns.count == 1)
+        precondition(book.dailySnapshots?.through == date(0))
+        precondition(book.balanceSheet?.investmentSnapshots == [date(0): 100])
+        let records = InvestmentServerRecords()
+        let rows = try records.encode(book, revision: 2)
+        precondition(rows["investment_events"]?.filter { $0["account_id"] == left.id.uuidString }.count == 1)
+    }
+
+    static func deletesAccountsAndPairedTransfersAtomically() throws {
+        let source = InvestmentAccount(name: "来源", currency: .cny, type: .securities)
+        let target = InvestmentAccount(name: "目标", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [source, target])
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: source.id)
+        try book.transfer(from: source.id, to: target.id, amount: 50, remaining: 50, on: date(2))
+        try book.post(.init(day: date(3), kind: .withdrawal, amount: -40), accountID: target.id)
+        let before = book.accounts.map(\.events)
+        do { try book.deleteInvestment(accountID: source.id); preconditionFailure("Removing spent transfer proceeds must fail atomically") }
+        catch is InvestmentError { }
+        precondition(book.accounts.map(\.events) == before && book.accounts.count == 2)
+        try book.deleteEvent(try require(book.account(target.id)?.events.last), accountID: target.id)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(3), rebuild: true)
+        try book.deleteInvestment(accountID: source.id)
+        precondition(book.accounts.count == 1 && book.accounts[0].id == target.id && book.accounts[0].events.isEmpty)
+        precondition(book.dailySnapshots?.accountValues?[source.id] == nil)
+        let rows = try InvestmentServerRecords().encode(book, revision: 3)
+        precondition(rows["investment_account_daily_snapshots"]?.allSatisfy { $0["account_id"] != source.id.uuidString } == true)
+    }
+
+    static func deletesUnreferencedRegistrationsAndTheirQuotes() throws {
+        let account = InvestmentAccount(name: "证券", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let used = try book.register(.init(name: "持仓标的", code: "600000", market: "XSHG", kind: .stock, currency: .cny))
+        let planned = try book.register(.init(name: "定投标的", code: "600001", market: "XSHG", kind: .stock, currency: .cny))
+        let unrelated = try book.register(.init(name: "独立登记", code: "600002", market: "XSHG", kind: .stock, currency: .cny))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: used, quantity: 1, price: 10), accountID: account.id)
+        for id in [used, planned, unrelated] { book.addQuotes([.init(day: date(2), price: 10, source: "测试行情")], assetID: id) }
+        book.plans = [.init(accountID: account.id, assetID: planned, amount: 10, monthDay: 1, nextDay: date(3))]
+        precondition(book.deletionMessage(accountID: account.id, assetID: used).contains("同时删除无其他引用的标的登记及报价：持仓标的"))
+        try book.deleteInvestment(accountID: account.id, assetID: used)
+        precondition(book.asset(used) == nil && book.quotes[used] == nil)
+        precondition(book.asset(planned) != nil && book.asset(unrelated) != nil && book.quotes[unrelated]?.count == 1)
+        let ledger = try book.ledger(try require(book.account(account.id)))
+        precondition(ledger.cash == 100 && ledger.positions.isEmpty)
+        try book.deleteInvestment(accountID: account.id)
+        precondition(book.asset(planned) == nil && book.quotes[planned] == nil && book.plans.isEmpty)
+        precondition(book.assets.count == 1 && book.asset(unrelated) != nil)
+        let records = InvestmentServerRecords()
+        let rows = try records.encode(book, revision: 2)
+        precondition(rows["investment_assets"]?.count == 1 && rows["market_instruments"]?.count == 1 && rows["market_daily_prices"]?.count == 1)
+        let restored = try records.decode(.init(generation: 1, revision: 2, tables: rows))
+        precondition(restored.asset(unrelated) != nil && restored.accounts.isEmpty)
+    }
+
+    static func deletionPreservesContractAndPlanReferences() throws {
+        let account = InvestmentAccount(name: "加密", currency: .usd, type: .crypto)
+        let other = InvestmentAccount(name: "另一账户", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account, other])
+        let token = try book.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        let contract = try book.register(.init(name: "TRX/USD 永续", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
+            currency: .usd, multiplier: 10, contractSide: .short, contractBasis: .coin, collateralAssetID: token))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: token, quantity: 100, price: 1), accountID: account.id)
+        book.addQuotes([.init(day: date(2), price: 1)], assetID: token)
+        var withoutHolding = book
+        try withoutHolding.deleteInvestment(accountID: account.id, assetID: token)
+        precondition(withoutHolding.asset(token) != nil && withoutHolding.quotes[token] != nil)
+        precondition(withoutHolding.asset(contract)?.collateralAssetID == token)
+
+        try book.post(.init(day: date(2), kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 10), accountID: account.id)
+        let before = book.accounts.map(\.events)
+        do { try book.deleteInvestment(accountID: account.id, assetID: token); preconditionFailure("Collateral in use cannot be removed") }
+        catch is InvestmentError { }
+        precondition(book.accounts.map(\.events) == before && book.asset(token) != nil)
+        var watched = book
+        watched.watched = [contract]
+        try watched.deleteInvestment(accountID: account.id)
+        precondition(watched.asset(contract) != nil && watched.asset(token) != nil && watched.watched == [contract])
+        var planned = book
+        planned.plans = [.init(accountID: other.id, assetID: token, amount: 10, monthDay: 1, nextDay: date(3), enabled: false)]
+        try planned.deleteInvestment(accountID: account.id)
+        precondition(planned.asset(contract) == nil && planned.asset(token) != nil && planned.plans.count == 1)
+        try book.deleteInvestment(accountID: account.id)
+        precondition(book.assets.isEmpty && book.quotes.isEmpty)
     }
 
     static func date(_ day: Int) -> Date {

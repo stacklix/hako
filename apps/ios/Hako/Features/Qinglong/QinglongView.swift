@@ -36,6 +36,7 @@ struct QinglongView: View {
     @State private var destination: QinglongDestination?
     @State private var taskAction: QinglongTaskAction?
     @State private var page: QinglongMoreRoute?
+    @State private var showsAgent = false
     private var resource: QinglongResource? { tab.resource }
     private var lastUpdated: Date? { resource.flatMap { store.updated[$0] } ?? store.updated.values.max() }
 
@@ -45,11 +46,11 @@ struct QinglongView: View {
             if let resource {
                 if resource == .scripts {
                     QinglongScriptBrowser(store: store,
-                        active: scenePhase == .active && destination == nil && page == nil,
+                        active: scenePhase == .active && destination == nil && page == nil && !showsAgent,
                         configure: { destination = .connection })
                 } else {
                     QinglongResourceView(store: store, resource: resource,
-                        active: scenePhase == .active && destination == nil && taskAction == nil && page == nil,
+                        active: scenePhase == .active && destination == nil && taskAction == nil && page == nil && !showsAgent,
                         open: open, create: { create(resource) }, configure: { destination = .connection }, showsCreate: true)
                         .id(resource)
                 }
@@ -60,7 +61,9 @@ struct QinglongView: View {
         .overlay(alignment: .bottom) { failureToast.padding(.horizontal, 20).padding(.bottom, 72) }
         .navigationTitle("").navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showsAgent = true } label: { Image(systemName: "bubble.left") }
+                    .accessibilityLabel("青龙助手")
                 Button { page = .settings } label: { Image(systemName: "slider.horizontal.3") }
                     .accessibilityLabel("青龙面板设置").disabled(store.busy)
             }
@@ -80,6 +83,9 @@ struct QinglongView: View {
             }
         }
         .qinglongTaskAction(store: store, request: $taskAction)
+        .sheet(isPresented: $showsAgent) {
+            QinglongAgentSheet(store: store, agent: .shared)
+        }
         .sheet(item: $destination) { target in
             switch target {
             case .connection: QinglongConnectionEditor(store: store, initial: store.connection ?? QinglongConnection())

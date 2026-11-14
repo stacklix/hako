@@ -3,21 +3,47 @@ import Foundation
 import FoundationNetworking
 #endif
 
-enum InvestmentContractExchange: String, CaseIterable {
-    case binance = "BINANCE", htx = "HTX"
-
-    var title: String { self == .binance ? "Binance" : "HTX" }
-
-    init?(asset: InvestmentAsset) {
-        guard asset.kind == .cryptoContract, asset.basis != .usd else { return nil }
-        self.init(rawValue: asset.market)
-    }
-}
-
 struct InvestmentContractListing: Identifiable {
     let asset: InvestmentAsset
     let settlementCode: String
     var id: UUID { asset.id }
+
+    func validateSelection(_ selected: InvestmentAsset, settlement: String) throws {
+        try selected.validateCatalogIdentity(asset)
+        guard selected.kind == .cryptoContract, selected.code == asset.code, selected.market == asset.market,
+              selected.currency == asset.currency, selected.basis == asset.basis else {
+            throw InvestmentError.invalid("合约代码、交易所或本位与交易所目录不一致，请重新搜索并选择真实合约。")
+        }
+        guard selected.multiplier == asset.multiplier else {
+            throw InvestmentError.invalid("交易所合约乘数 / 面值为 \(NSDecimalNumber(decimal: asset.multiplier).stringValue)，与当前标的不一致。请先核对数量口径，不能仅修改行情关联。")
+        }
+        guard settlement == settlementCode else {
+            throw InvestmentError.invalid("该交易所合约使用 \(settlementCode) 结算，请核对结算币种。")
+        }
+    }
+}
+
+enum InvestmentEntryQuoteRequest: Equatable {
+    case settlement(code: String, day: Date)
+
+    func fetch(using provider: InvestmentQuoteProvider = .init()) async throws -> InvestmentQuote {
+        switch self {
+        case .settlement(let code, let day):
+            return try await provider.coinbaseSpotUSDQuote(code: code, on: day)
+        }
+    }
+}
+
+struct InvestmentEntryQuoteState {
+    var request: InvestmentEntryQuoteRequest?
+    var quote: InvestmentQuote?
+    var failure: String?
+    var loading = false
+
+    func quote(for request: InvestmentEntryQuoteRequest?) -> InvestmentQuote? {
+        guard let request, self.request == request, !loading else { return nil }
+        return quote
+    }
 }
 
 extension InvestmentQuoteProvider {
@@ -56,7 +82,7 @@ extension InvestmentQuoteProvider {
             let data = try await publicMarketData(host: host, path: path + "/exchangeInfo")
             let response = try JSONDecoder().decode(BinanceCatalog.self, from: data)
             return response.symbols.compactMap { row in
-                guard (row.contractStatus ?? row.status) == "TRADING", !row.contractType.isEmpty else { return nil }
+                guard (row.contractStatus ?? row.status) == "TRADING", row.contractType == "PERPETUAL" else { return nil }
                 let size: Decimal
                 if basis == .coin {
                     guard row.quoteAsset == "USD", row.baseAsset == row.marginAsset,
@@ -67,20 +93,14 @@ extension InvestmentQuoteProvider {
                     size = 1
                 }
                 return contractListing(code: row.symbol, pair: row.baseAsset + "/" + row.quoteAsset,
-                                       exchange: exchange, basis: basis, size: size, settlement: row.marginAsset,
-                                       delivery: row.contractType != "PERPETUAL")
+                                       exchange: exchange, basis: basis, size: size, settlement: row.marginAsset)
             }
         case .htx:
             if basis == .stablecoin {
                 return try await htxCatalog(path: "/linear-swap-api/v1/swap_contract_info",
-                                            query: [.init(name: "business_type", value: "all")], basis: basis)
+                                            query: [.init(name: "business_type", value: "swap")], basis: basis)
             }
-            async let perpetual = try? htxCatalog(path: "/swap-api/v1/swap_contract_info", basis: basis)
-            async let delivery = try? htxCatalog(path: "/api/v1/contract_contract_info", basis: basis)
-            let (swaps, futures) = await (perpetual, delivery)
-            try Task.checkCancellation()
-            guard swaps != nil || futures != nil else { throw InvestmentError.invalid("HTX 合约目录暂不可用") }
-            return (swaps ?? []) + (futures ?? [])
+            return try await htxCatalog(path: "/swap-api/v1/swap_contract_info", basis: basis)
         }
     }
 
@@ -89,7 +109,7 @@ extension InvestmentQuoteProvider {
         let response = try JSONDecoder().decode(HTXCatalog.self, from: data)
         guard response.status == "ok", let contracts = response.data else { throw InvestmentError.invalid("HTX 合约目录暂不可用") }
         return contracts.compactMap { row in
-            guard row.contract_status == 1, row.contract_size > 0 else { return nil }
+            guard row.contract_status == 1, row.contract_size > 0, (row.delivery_date ?? "").isEmpty else { return nil }
             let quote: String
             if basis == .coin {
                 quote = "USD"
@@ -98,14 +118,13 @@ extension InvestmentQuoteProvider {
                 quote = currency
             }
             return contractListing(code: row.contract_code, pair: row.symbol + "/" + quote, exchange: .htx, basis: basis,
-                                   size: row.contract_size, settlement: basis == .coin ? row.symbol : quote,
-                                   delivery: !(row.delivery_date ?? "").isEmpty)
+                                   size: row.contract_size, settlement: basis == .coin ? row.symbol : quote)
         }
     }
 
     private func contractListing(code: String, pair: String, exchange: InvestmentContractExchange, basis: InvestmentContractBasis,
-                                 size: Decimal, settlement: String, delivery: Bool) -> InvestmentContractListing {
-        let asset = InvestmentAsset(name: pair + (delivery ? " 交割" : " 永续"), code: code, market: exchange.rawValue,
+                                 size: Decimal, settlement: String) -> InvestmentContractListing {
+        let asset = InvestmentAsset(name: pair + " 永续", code: code, market: exchange.rawValue,
                                     kind: .cryptoContract, currency: .usd, multiplier: size, contractBasis: basis)
         return InvestmentContractListing(asset: asset, settlementCode: settlement)
     }
@@ -156,20 +175,9 @@ extension InvestmentQuoteProvider {
     }
 
     private func htxMarks(_ asset: InvestmentAsset, period: String, size: Int) async throws -> [HTXMark.Bar] {
-        let path: String
-        let codeParameter: String
-        if asset.basis == .stablecoin {
-            path = "linear_swap_mark_price_kline"
-            codeParameter = "contract_code"
-        } else if asset.code.hasSuffix("-USD") {
-            path = "swap_mark_price_kline"
-            codeParameter = "contract_code"
-        } else {
-            path = "mark_price_kline"
-            codeParameter = "symbol"
-        }
+        let path = asset.basis == .stablecoin ? "linear_swap_mark_price_kline" : "swap_mark_price_kline"
         let data = try await publicMarketData(host: "api.hbdm.com", path: "/index/market/history/" + path, query: [
-            .init(name: codeParameter, value: asset.code), .init(name: "period", value: period), .init(name: "size", value: String(size))
+            .init(name: "contract_code", value: asset.code), .init(name: "period", value: period), .init(name: "size", value: String(size))
         ])
         let mark = try JSONDecoder().decode(HTXMark.self, from: data)
         guard mark.status == "ok", mark.ch?.uppercased() == "MARKET." + asset.code + ".MARK_PRICE." + period.uppercased(),
@@ -300,14 +308,23 @@ extension InvestmentQuoteProvider {
         let data: Price
     }
 
-    func coinbaseSpotUSDQuote(code: String) async throws -> InvestmentQuote {
-        let data = try await publicMarketData(host: "api.coinbase.com", path: "/v2/prices/" + code + "-USD/spot")
+    func coinbaseSpotUSDQuote(code: String, on date: Date = InvestmentBook.day()) async throws -> InvestmentQuote {
+        let day = InvestmentBook.day(date)
+        guard day <= InvestmentBook.day() else { throw InvestmentError.invalid("不能查询未来的美元报价。") }
+        let historical = day < InvestmentBook.day()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = InvestmentBook.calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let query: [URLQueryItem] = historical
+            ? [.init(name: "date", value: formatter.string(from: day))] : []
+        let data = try await publicMarketData(host: "api.coinbase.com", path: "/v2/prices/" + code + "-USD/spot", query: query)
         let price = try JSONDecoder().decode(CoinbaseSpot.self, from: data).data
         guard price.base == code, price.currency == "USD",
               let amount = Decimal(string: price.amount, locale: Locale(identifier: "en_US_POSIX")), amount > 0 else {
             throw InvestmentError.invalid("没有有效的现货美元报价")
         }
-        return InvestmentQuote(day: InvestmentBook.day(), price: amount, source: "Coinbase 现货")
+        return InvestmentQuote(day: day, price: amount, source: historical ? "Coinbase 历史现货（UTC 日价）" : "Coinbase 现货")
     }
 
     private func binanceEndpoint(_ basis: InvestmentContractBasis) -> (String, String) {

@@ -1,4 +1,3 @@
-import ImageIO
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -6,27 +5,20 @@ import UniformTypeIdentifiers
 
 @MainActor
 struct InvestmentAgentSheet: View {
-    private struct Attachment: Identifiable {
-        let id = UUID()
-        let item: PhotosPickerItem
-        let data: Data
-    }
 
-    private struct ImagePreview: Identifiable {
-        let id = UUID()
-        let images: [Data]
-        let index: Int
-    }
+
+    private struct ToolSelection: Identifiable { let id: UUID }
 
     @ObservedObject private var store: InvestmentStore
     @ObservedObject private var agent: InvestmentAgentSession
-    @State private var message = ""
-    @State private var attachments: [Attachment] = []
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var scrollFollowing = ConversationScrollFollowing()
+    @State private var expandedThinking: Set<UUID> = []
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var photoSelectionLimit = InvestmentAgentConversation.maximumImageCount
-    @State private var imagePreview: ImagePreview?
+    @State private var imagePreview: AssistantImageSelection?
+    @State private var selectedTool: ToolSelection?
     @State private var showsPhotos = false
-    @State private var loadingPhoto = false
     @State private var showsModelSettings = false
     @State private var editing: InvestmentAgentProposal?
     @State private var exportDocument: InvestmentExportDocument?
@@ -41,7 +33,7 @@ struct InvestmentAgentSheet: View {
     }
 
     var body: some View {
-        SettingsSheet(title: "记账助手", hasChanges: hasUnsentMessage,
+        SettingsSheet(title: "记账助手",
                       isBusy: agent.committing || exporting) {
             VStack(spacing: 0) {
                 thread
@@ -59,6 +51,8 @@ struct InvestmentAgentSheet: View {
             }
         }
         .onAppear { agent.checkConfiguration() }
+        .onDisappear { agent.saveComposerDraft() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { agent.saveComposerDraft() } }
         .onChange(of: store.hasLoaded, initial: true) { _, loaded in
             if loaded { agent.restoreConversation() }
         }
@@ -71,13 +65,24 @@ struct InvestmentAgentSheet: View {
         .photosPicker(isPresented: $showsPhotos, selection: $selectedPhotos,
                       maxSelectionCount: photoSelectionLimit,
                       selectionBehavior: .ordered, matching: .images)
-        .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
+        .onChange(of: selectedPhotos) { _, items in agent.loadPhotos(items) }
         .sheet(item: $imagePreview) { preview in
-            InvestmentAgentPhotoPreview(images: preview.images, selection: preview.index)
+            AssistantPhotoPreview(images: preview.images, selection: preview.index)
+        }
+        .sheet(item: $selectedTool) { selection in
+            AssistantToolDetail(source: agent, id: selection.id)
         }
         .sheet(isPresented: $showsModelSettings, onDismiss: agent.checkConfiguration) { LanguageModelSettingsSheet() }
         .sheet(item: $editing) { proposal in
-            InvestmentAgentEditSheet(proposal: proposal, book: store.book) { actions in try await agent.revise(actions) }
+            InvestmentAgentEditSheet(proposal: proposal, store: store) { actions in
+                let live = try store.agentSnapshot()
+                guard agent.proposal?.id == proposal.id, live.session == proposal.session, live.generation == proposal.generation else {
+                    throw InvestmentAgentCommitError.stale
+                }
+                guard !agent.working, !agent.committing else { throw InvestmentError.invalid("助手正在处理，请稍后完成修改。") }
+                try await agent.revise(actions)
+                editing = nil
+            }
         }
         .fileExporter(isPresented: $showsExporter, document: exportDocument, contentType: .zip,
                       defaultFilename: "投资记账-" + InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())) { result in
@@ -114,11 +119,16 @@ struct InvestmentAgentSheet: View {
                             .disabled(exporting || agent.committing || agent.working)
                     }
                     if let error = agent.error { Text(error).font(.footnote).foregroundStyle(.red) }
+                    if agent.canRetry {
+                        Button("重试回复", action: agent.retryReply)
+                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                            .disabled(agent.working || agent.committing)
+                    }
                     if let issue = agent.storageIssue { Text(issue).font(.footnote).foregroundStyle(.red) }
                     if agent.working {
                         HStack(spacing: 8) {
                             ProgressView()
-                            Text("正在处理…").font(.footnote).foregroundStyle(.secondary)
+                            Text(agent.progress).font(.footnote).foregroundStyle(.secondary)
                             Spacer()
                         }
                     }
@@ -127,20 +137,42 @@ struct InvestmentAgentSheet: View {
                 .padding(15)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: agent.messages.last?.id, initial: true) { _, _ in
-                if let proposal = agent.proposal {
-                    scroll.scrollTo(proposal.id, anchor: .top)
-                } else if let reply = agent.messages.last, reply.html != nil {
-                    scroll.scrollTo(reply.id, anchor: .top)
-                } else if !agent.messages.isEmpty {
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY <= 80
+            } action: { _, nearBottom in scrollFollowing.observe(nearBottom: nearBottom) }
+            .onScrollPhaseChange { _, phase in
+                if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
+                else if phase == .idle { scrollFollowing.interacting(false) }
+            }
+            .onChange(of: agent.streamContent.text) { _, _ in
+                if agent.streamContent.hasContent, scrollFollowing.shouldFollowUpdates, selectedTool == nil {
                     scroll.scrollTo("end", anchor: .bottom)
                 }
             }
-            .onChange(of: agent.working) { _, working in
-                if working && agent.proposal == nil { scroll.scrollTo("end", anchor: .bottom) }
+            .onChange(of: agent.streamContent.thinking) { _, _ in
+                if expandedThinking.contains(agent.streamContent.id), scrollFollowing.shouldFollowUpdates, selectedTool == nil {
+                    scroll.scrollTo("end", anchor: .bottom)
+                }
             }
-            .onChange(of: agent.proposal?.id) { _, id in
-                if let id { scroll.scrollTo(id, anchor: .top) }
+            .onChange(of: agent.messages.last?.id, initial: true) { _, _ in
+                if let reply = agent.messages.last {
+                    if reply.isUser {
+                        scrollFollowing = ConversationScrollFollowing()
+                        scroll.scrollTo(reply.id, anchor: .bottom)
+                    } else if scrollFollowing.shouldFollowUpdates, selectedTool == nil, !expandedThinking.contains(reply.id) {
+                        if agent.toolCalls[reply.id] != nil { scroll.scrollTo("end", anchor: .bottom) }
+                        else { scroll.scrollTo(reply.id, anchor: .top) }
+                    }
+                }
+            }
+            .onChange(of: agent.toolCalls) { _, _ in
+                if scrollFollowing.shouldFollowUpdates, selectedTool == nil { scroll.scrollTo("end", anchor: .bottom) }
+            }
+            .onChange(of: agent.proposal?.id, initial: true) { _, id in
+                if let id, scrollFollowing.shouldFollowUpdates, selectedTool == nil,
+                   agent.messages.last.map({ expandedThinking.contains($0.id) }) != true {
+                    scroll.scrollTo(id, anchor: .top)
+                }
             }
         }
     }
@@ -150,34 +182,32 @@ struct InvestmentAgentSheet: View {
             .font(.caption.weight(.medium)).foregroundStyle(.secondary)
     }
 
+    private func thinkingView(_ text: String, id: UUID) -> some View {
+        AssistantThinkingView(text: text, expanded: Binding(get: { expandedThinking.contains(id) }, set: {
+            if $0 { expandedThinking.insert(id) } else { expandedThinking.remove(id) }
+        }))
+    }
+
     @ViewBuilder
     private func messageRow(_ item: InvestmentAgentSession.Message) -> some View {
         if item.isUser {
-            HStack {
-                Spacer(minLength: 28)
-                VStack(alignment: .leading, spacing: 7) {
-                    if !item.images.isEmpty {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 100))], alignment: .leading, spacing: 8) {
-                            ForEach(item.images.indices, id: \.self) { index in
-                                Button {
-                                    imagePreview = ImagePreview(images: item.images, index: index)
-                                } label: { photo(item.images[index], size: 76) }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("预览第 \(index + 1) 张图片，共 \(item.images.count) 张")
-                            }
-                        }
-                        .frame(maxWidth: CGFloat(min(item.images.count, 3) * 84 - 8), alignment: .leading)
-                    }
-                    if !item.text.isEmpty { Text(verbatim: item.text).textSelection(.enabled) }
-                }
-                .padding(10)
-                .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+            AssistantUserMessage(text: item.text, images: item.images) { images, index in
+                imagePreview = AssistantImageSelection(images: images, index: index)
             }
-        } else {
+        } else if let record = agent.toolCalls[item.id] {
+            AssistantToolRow(record: record, resolved: agent.toolFollowUps[record.id] != nil) { selectedTool = ToolSelection(id: record.id) }.equatable()
+        } else if !item.text.isEmpty || item.html != nil || agent.thinking[item.id]?.isEmpty == false {
             VStack(alignment: .leading, spacing: 7) {
                 assistantLabel
-                if let html = item.html {
-                    InvestmentAgentReplyView(html: html)
+                let streaming = agent.working && item.id == agent.streamContent.id
+                let thought = streaming ? agent.streamContent.thinking : agent.thinking[item.id] ?? ""
+                if !thought.isEmpty { thinkingView(thought, id: item.id) }
+                if streaming {
+                    if !agent.streamContent.text.isEmpty {
+                        Text(verbatim: agent.streamContent.displayText).textSelection(.enabled)
+                    }
+                } else if let html = item.html {
+                    AssistantReplyView(html: html)
                 } else {
                     Text(verbatim: item.text).textSelection(.enabled)
                 }
@@ -201,76 +231,40 @@ struct InvestmentAgentSheet: View {
             if !attachments.isEmpty { photoAttachments }
             if loadingPhoto { ProgressView("正在读取图片…").font(.footnote) }
             if agent.proposal != nil {
-                Text("请先确认或放弃上方草稿，再发送下一条。")
+                Text("有问题可以直接补充或提问，确认后才会写入。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            HStack(alignment: .bottom, spacing: 2) {
-                Button(action: openPhotos) {
-                    Image(systemName: "plus").font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(HakoStyle.text).frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("添加图片")
-                .accessibilityValue("已添加 \(attachments.count) 张，最多 \(InvestmentAgentConversation.maximumImageCount) 张")
-                .disabled(!canAddPhotos)
-                TextField("描述这笔交易…", text: $message, axis: .vertical)
-                    .font(.body).lineLimit(1...5)
-                    .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("聊天消息")
-                    .focused($composing)
-                if agent.working && agent.proposal == nil {
-                    Button(action: agent.stop) {
-                        Image(systemName: "square.fill").font(.system(size: 13, weight: .semibold))
-                    }
-                    .buttonStyle(InvestmentAgentSendButtonStyle())
-                    .accessibilityLabel("停止生成")
-                } else {
-                    Button(action: send) {
-                        Image(systemName: "arrow.up").font(.system(size: 18, weight: .semibold))
-                    }
-                    .buttonStyle(InvestmentAgentSendButtonStyle())
-                    .disabled(!canSend)
-                    .accessibilityLabel("发送消息")
-                }
-            }
-            .padding(4)
-            .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 27))
-            .overlay { RoundedRectangle(cornerRadius: 27).strokeBorder(HakoStyle.line, lineWidth: 1).allowsHitTesting(false) }
+            AssistantInputBar(text: $agent.composerDraft.text, prompt: agent.proposal == nil ? "描述这笔交易…" : "补充、更正或询问这笔交易…",
+                              imageCount: attachments.count, maximumImages: InvestmentAgentConversation.maximumImageCount,
+                              allowsPhotos: canAddPhotos, canSend: canSend, working: agent.working,
+                              focus: $composing, onPhotos: openPhotos, onSend: send, onStop: agent.stop)
         }
         .padding(.horizontal, 16).padding(.vertical, 8).background(HakoStyle.background)
         .disabled(agent.committing)
     }
 
     private var photoAttachments: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 12) {
-                ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
-                    Button {
-                        imagePreview = ImagePreview(images: attachments.map(\.data), index: index)
-                    } label: { photo(attachment.data, size: 76) }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("预览第 \(index + 1) 张待发送图片")
-                    .overlay(alignment: .topTrailing) {
-                        Button { attachments.removeAll { $0.id == attachment.id } } label: {
-                            Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
-                                .foregroundStyle(.white, .black.opacity(0.65)).frame(width: 32, height: 32)
-                        }
-                        .accessibilityLabel("移除第 \(index + 1) 张图片")
-                        .disabled(loadingPhoto)
-                    }
-                }
-            }
-            .padding(.vertical, 4)
+        AssistantAttachmentsView(attachments: $agent.composerDraft.attachments, loadingPhoto: loadingPhoto) { images, index in
+            imagePreview = AssistantImageSelection(images: images, index: index)
         }
-        .scrollIndicators(.hidden)
     }
+
+    private var message: String {
+        get { agent.composerDraft.text }
+        nonmutating set { agent.composerDraft.text = newValue }
+    }
+    private var attachments: [AssistantComposerDraft.Attachment] {
+        get { agent.composerDraft.attachments }
+        nonmutating set { agent.composerDraft.attachments = newValue }
+    }
+    private var loadingPhoto: Bool { agent.loadingPhoto }
 
     private var canAddPhotos: Bool {
         !loadingPhoto && !agent.committing && attachments.count < InvestmentAgentConversation.maximumImageCount
     }
 
     private var canSend: Bool {
-        !agent.working && agent.proposal == nil && !loadingPhoto &&
+        !agent.working && !agent.committing && !loadingPhoto &&
             (!message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
@@ -290,22 +284,9 @@ struct InvestmentAgentSheet: View {
     }
 
     private func shortcut(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.footnote)
-                .padding(.horizontal, 9).padding(.vertical, 6)
-                .background(HakoStyle.card, in: Capsule())
-        }
-        .buttonStyle(.plain)
+        AssistantShortcutButton(title: title, action: action)
     }
 
-    private func photo(_ data: Data, size: CGFloat) -> some View {
-        Group {
-            if let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
-            else { Image(systemName: "photo") }
-        }
-        .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 10))
-        .accessibilityLabel("已附加的图片")
-    }
 
     private func send() {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -315,6 +296,7 @@ struct InvestmentAgentSheet: View {
             attachments = []
             selectedPhotos = []
             composing = false
+            agent.saveComposerDraft()
         }
     }
 
@@ -323,48 +305,6 @@ struct InvestmentAgentSheet: View {
         photoSelectionLimit = InvestmentAgentConversation.maximumImageCount - attachments.count
         selectedPhotos = []
         showsPhotos = true
-    }
-
-    private func loadPhotos(_ items: [PhotosPickerItem]) async {
-        guard !items.isEmpty else { loadingPhoto = false; return }
-        loadingPhoto = true
-        defer { if selectedPhotos == items { loadingPhoto = false } }
-        var failures = 0
-        for item in items {
-            do {
-                try Task.checkCancellation()
-                guard selectedPhotos == items else { return }
-                guard attachments.count < InvestmentAgentConversation.maximumImageCount else { break }
-                if attachments.contains(where: { $0.item == item }) { continue }
-                guard let data = try await item.loadTransferable(type: Data.self) else {
-                    throw LanguageModelError.invalid("无法读取这张图片。")
-                }
-                let encoded = await Task.detached(priority: .userInitiated) { Self.modelImage(data) }.value
-                try Task.checkCancellation()
-                guard selectedPhotos == items else { return }
-                guard let encoded else { throw LanguageModelError.invalid("无法处理这张图片，请换一张。") }
-                attachments.append(Attachment(item: item, data: encoded))
-            } catch is CancellationError { return }
-            catch {
-                guard selectedPhotos == items, !Task.isCancelled else { return }
-                failures += 1
-            }
-        }
-        if failures > 0 { agent.error = "有 \(failures) 张图片未能读取，请重新选择。其余图片已保留。" }
-    }
-
-    nonisolated private static func modelImage(_ data: Data) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
-                       kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
-        for quality in [0.86, 0.68, 0.5] {
-            let encoded = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(encoded, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-            if CGImageDestinationFinalize(destination), encoded.length <= 2_000_000 { return encoded as Data }
-        }
-        return nil
     }
 
     private func regenerate(_ proposal: InvestmentAgentProposal) async {
@@ -385,95 +325,6 @@ struct InvestmentAgentSheet: View {
     }
 }
 
-private struct InvestmentAgentSendButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var enabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.frame(width: 36, height: 36)
-            .foregroundStyle(enabled ? HakoStyle.background : HakoStyle.muted)
-            .background(enabled ? HakoStyle.text : HakoStyle.line, in: Circle())
-            .padding(4).contentShape(Circle()).opacity(configuration.isPressed ? 0.6 : 1)
-    }
-}
-
-private struct InvestmentAgentPhotoPreview: View {
-    let images: [Data]
-    @State private var selection: Int
-
-    init(images: [Data], selection: Int) {
-        self.images = images
-        _selection = State(initialValue: selection)
-    }
-
-    var body: some View {
-        SettingsSheet(title: "图片 \(selection + 1)/\(images.count)") {
-            TabView(selection: $selection) {
-                ForEach(images.indices, id: \.self) { index in
-                    Group {
-                        if let image = UIImage(data: images[index]) {
-                            InvestmentAgentImageZoom(image: image)
-                                .accessibilityLabel("第 \(index + 1) 张图片，可双指缩放")
-                        } else {
-                            ContentUnavailableView("无法预览图片", systemImage: "photo")
-                        }
-                    }
-                    .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: images.count > 1 ? .automatic : .never))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
-            .background(HakoStyle.background)
-        }
-    }
-}
-
-private struct InvestmentAgentImageZoom: UIViewRepresentable {
-    let image: UIImage
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> UIScrollView {
-        let scroll = InvestmentAgentZoomScrollView()
-        scroll.minimumZoomScale = 1
-        scroll.maximumZoomScale = 5
-        scroll.delegate = context.coordinator
-        let picture = context.coordinator.picture
-        scroll.picture = picture
-        picture.contentMode = .scaleAspectFit
-        picture.image = image
-        scroll.addSubview(picture)
-        return scroll
-    }
-
-    func updateUIView(_ scroll: UIScrollView, context: Context) {
-        context.coordinator.picture.image = image
-        scroll.setNeedsLayout()
-    }
-
-    final class Coordinator: NSObject, UIScrollViewDelegate {
-        let picture = UIImageView()
-
-        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
-
-        func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            picture.center = CGPoint(x: max(scrollView.bounds.width, scrollView.contentSize.width) / 2,
-                                     y: max(scrollView.bounds.height, scrollView.contentSize.height) / 2)
-        }
-    }
-}
-
-private final class InvestmentAgentZoomScrollView: UIScrollView {
-    weak var picture: UIImageView?
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        if zoomScale == 1, picture?.frame != bounds {
-            picture?.frame = bounds
-            contentSize = bounds.size
-        }
-    }
-}
-
 private struct InvestmentAgentPreview: View {
     let proposal: InvestmentAgentProposal
     let committing: Bool
@@ -487,11 +338,12 @@ private struct InvestmentAgentPreview: View {
     private let pageSize = 8
 
     var body: some View {
+        let preview = proposal.preview
         VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("写入预览 · \(proposal.changes.count) 项变更").font(.caption).foregroundStyle(.secondary)
-                    Text(proposal.changes.first?.title ?? "账本变更").font(.headline)
+                    Text("记账预览").font(.caption).foregroundStyle(.secondary)
+                    Text(preview.summary).font(.headline)
                 }
                 Spacer()
                 Text(committing ? "正在写入" : stale ? "预览已过期" : "待确认")
@@ -500,35 +352,41 @@ private struct InvestmentAgentPreview: View {
                     .foregroundStyle(.primary)
                     .background(.orange.opacity(0.18), in: Capsule())
             }
-            ForEach(proposal.changes.dropFirst(page * pageSize).prefix(pageSize)) { change in
-                changeRow(change)
+            ForEach(preview.items.dropFirst(page * pageSize).prefix(pageSize)) { item in
+                formItem(item)
             }
-            if proposal.changes.count > pageSize {
+            if preview.items.count > pageSize {
                 HStack {
                     Button("上一页") { page -= 1 }.disabled(page == 0)
                     Spacer()
                     Text("第 \(page + 1) 页").font(.caption)
                     Spacer()
-                    Button("下一页") { page += 1 }.disabled((page + 1) * pageSize >= proposal.changes.count)
+                    Button("下一页") { page += 1 }.disabled((page + 1) * pageSize >= preview.items.count)
                 }
                 .font(.footnote)
             }
             if proposal.snapshotsOnly {
-                Text("使用已保存的行情和汇率重算，缺少输入的日期会标记为不完整。")
+                Text("先补查缺失行情和汇率，再重算快照；仍缺少输入的日期会标记为不完整。确认后一起保存。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Divider()
             if proposal.editable {
-                Button("修改", action: edit).font(.subheadline)
+                Button("修改", action: edit).font(.subheadline).disabled(stale)
+            }
+            if proposal.actions.contains(where: \.deletesData) {
+                Text("确认后删除所列数据，删除不可撤销。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
-                Button("放弃", action: discard)
+                Button("取消", action: discard)
                     .buttonStyle(HakoActionButtonStyle(primary: false))
                 if stale {
                     Button("重新预览", action: regenerate).buttonStyle(HakoActionButtonStyle())
+                } else if proposal.actions.contains(where: \.deletesData) {
+                    HakoDeleteButton(title: proposal.actions.allSatisfy(\.deletesData) ? "确认删除" : "确认执行", action: confirm)
                 } else {
-                    Button("确认写入", role: proposal.destructive ? .destructive : nil, action: confirm)
-                        .buttonStyle(HakoActionButtonStyle(destructive: proposal.destructive))
+                    Button("确认记账", action: confirm)
+                        .buttonStyle(HakoActionButtonStyle())
                 }
             }
         }
@@ -537,127 +395,33 @@ private struct InvestmentAgentPreview: View {
         .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 14))
     }
 
-    private func changeRow(_ change: InvestmentAgentProposal.Change) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("\(change.operation.rawValue) · \(change.title)").font(.subheadline.weight(.medium))
-            let columns = [GridItem(.adaptive(minimum: 125), alignment: .topLeading)]
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 7) {
-                ForEach(change.fields) { field in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(field.label).font(.caption).foregroundStyle(.secondary)
-                        if change.operation == .edit, field.before != field.after {
-                            Text(field.before ?? "—").font(.footnote).strikethrough().foregroundStyle(.secondary)
-                            Text(field.after ?? "—").font(.footnote).monospacedDigit()
-                        } else {
-                            Text(field.after ?? field.before ?? "—").font(.footnote).monospacedDigit()
+    private func formItem(_ item: InvestmentAgentProposal.Preview.Item) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(item.operation.rawValue) · \(item.title)").font(.headline)
+            ForEach(item.groups) { group in
+                VStack(alignment: .leading, spacing: 12) {
+                    if !group.title.isEmpty {
+                        Text(group.title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    ForEach(group.fields) { field in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(field.label).font(.subheadline).foregroundStyle(.secondary)
+                            if item.operation == .edit, let before = field.before, before != field.after {
+                                Text(before).strikethrough().foregroundStyle(.secondary)
+                                Text(field.after ?? "—").monospacedDigit()
+                            } else {
+                                Text(field.after ?? field.before ?? "—").monospacedDigit()
+                            }
                         }
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                     }
                 }
+                Divider()
             }
-            Divider()
         }
     }
 }
 
-private struct InvestmentAgentEditSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    let proposal: InvestmentAgentProposal
-    let book: InvestmentBook
-    let save: ([InvestmentAgentAction]) async throws -> Void
-    @State private var actions: [InvestmentAgentAction]
-    @State private var saving = false
-    @State private var error: String?
-
-    init(proposal: InvestmentAgentProposal, book: InvestmentBook, save: @escaping ([InvestmentAgentAction]) async throws -> Void) {
-        self.proposal = proposal
-        self.book = book
-        self.save = save
-        _actions = State(initialValue: proposal.actions)
-    }
-
-    var body: some View {
-        let changed = actions.map(\.values) != proposal.actions.map(\.values)
-        SettingsSheet(title: "修改草稿", hasChanges: changed, isBusy: saving, saveEnabled: changed,
-                      onSave: { Task { await updatePreview() } }, saveAccessibilityLabel: "更新预览") {
-            Form {
-                if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
-                ForEach(actions.indices, id: \.self) { index in
-                    let action = actions[index]
-                    Section(action.kind.title) {
-                        ForEach(action.fields, id: \.key) { field in
-                            let value = Binding(get: { actions[index].values[field.key] ?? "" }, set: { actions[index].values[field.key] = $0 })
-                            fieldEditor(field, value: value)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func fieldEditor(_ field: InvestmentAgentAction.Field, value: Binding<String>) -> some View {
-        let formatter = InvestmentBook.snapshotDateFormatter()
-        let options = choices(for: field)
-        if (field.key == "date" || field.key == "maturity_date"), formatter.date(from: value.wrappedValue) != nil {
-            let date = Binding(get: { formatter.date(from: value.wrappedValue) ?? InvestmentBook.day() },
-                               set: { value.wrappedValue = formatter.string(from: $0) })
-            DatePicker(field.key == "date" ? "记账日期" : "到期日", selection: date, displayedComponents: .date)
-                .environment(\.calendar, InvestmentBook.calendar)
-                .environment(\.timeZone, InvestmentBook.calendar.timeZone)
-        } else if !options.isEmpty {
-            Picker(field.label, selection: value) {
-                Text(field.required ? "请选择" : "未指定").tag("")
-                if !value.wrappedValue.isEmpty, !options.contains(where: { $0.id == value.wrappedValue }) {
-                    Text(value.wrappedValue).tag(value.wrappedValue)
-                }
-                ForEach(options) { Text($0.title).tag($0.id) }
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(field.label).font(.subheadline).foregroundStyle(.secondary)
-                TextField(field.required ? "必填" : "选填", text: value)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityLabel(Text(field.label))
-            }
-        }
-    }
-
-    private struct Choice: Identifiable {
-        let id: String
-        let title: String
-    }
-
-    private func choices(for field: InvestmentAgentAction.Field) -> [Choice] {
-        switch field.key {
-        case "account_id", "target_id":
-            return book.accounts.map { .init(id: $0.id.uuidString, title: "\($0.name) · \($0.currency.rawValue)") }
-        case "asset_id", "collateral_id":
-            return book.assets.values.sorted { $0.code < $1.code }.map { .init(id: $0.id.uuidString, title: "\($0.name) · \($0.code)") }
-        case "balance_account_id":
-            return (book.balanceSheet?.accounts ?? []).map { .init(id: $0.id.uuidString, title: $0.name) }
-        default:
-            return field.choices.map { value in
-                let title: String
-                switch field.key {
-                case "event_type": title = InvestmentAgentAction.eventKinds[value]?.rawValue ?? value
-                case "account_type": title = InvestmentAgentAction.accountTypes[value]?.rawValue ?? value
-                case "asset_type": title = InvestmentAgentAction.assetKinds[value]?.title ?? value
-                case "category": title = InvestmentAgentAction.balanceCategories[value]?.rawValue ?? value
-                case "basis": title = InvestmentAgentAction.bases[value]?.rawValue ?? value
-                case "side": title = InvestmentAgentAction.sides[value]?.rawValue ?? value
-                case "funding_target": title = InvestmentAgentAction.fundingTargets[value]?.rawValue ?? value
-                default: title = value == "true" ? "是" : value == "false" ? "否" : value
-                }
-                return Choice(id: value, title: title)
-            }
-        }
-    }
-
-    private func updatePreview() async {
-        guard !saving else { return }
-        saving = true
-        defer { saving = false }
-        do { try await save(actions); dismiss() }
-        catch { self.error = error.localizedDescription }
-    }
-}
+extension InvestmentAgentSession: AssistantToolSource {}

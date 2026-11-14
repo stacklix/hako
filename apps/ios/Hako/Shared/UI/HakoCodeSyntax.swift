@@ -1,7 +1,7 @@
 import Foundation
 
 // UTF-16 ranges match NSTextStorage, including emoji and non-ASCII paths/values.
-enum ArcaneSyntax {
+enum HakoCodeSyntax {
     enum Language: String, Sendable { case yaml = "YAML", env = "ENV", json = "JSON", toml = "TOML / INI", shell = "Shell", config = "配置", plain = "文本" }
     enum Kind: String, Sendable { case string, comment, key, literal, number, variable }
     struct Token: Sendable { let range: NSRange; let kind: Kind }

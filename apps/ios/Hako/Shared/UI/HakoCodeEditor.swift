@@ -1,35 +1,35 @@
 import SwiftUI
 import UIKit
 
-struct ArcaneCodeEditor: View {
+struct HakoCodeEditor: View {
     @Binding var text: String
     let filename: String
     let editable: Bool
     let saving: Bool
-    @StateObject private var keyboard = ArcaneEditorKeyboardState()
+    @StateObject private var keyboard = HakoEditorKeyboardState()
 
     var body: some View {
-        ArcaneCodeEditorTextView(text: $text, filename: filename, editable: editable, saving: saving, keyboard: keyboard)
+        HakoCodeEditorTextView(text: $text, filename: filename, editable: editable, saving: saving, keyboard: keyboard)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if keyboard.focused {
-                    ArcaneEditorKeyboardKeys(state: keyboard, editingEnabled: editable && !saving)
+                    HakoEditorKeyboardKeys(state: keyboard, editingEnabled: editable && !saving)
                 }
             }
     }
 }
 
-private struct ArcaneCodeEditorTextView: UIViewRepresentable {
+private struct HakoCodeEditorTextView: UIViewRepresentable {
     @Binding var text: String
     let filename: String
     let editable: Bool
     let saving: Bool
 
-    let keyboard: ArcaneEditorKeyboardState
+    let keyboard: HakoEditorKeyboardState
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> ArcaneCodeEditorView {
-        let editor = ArcaneCodeEditorView()
+    func makeUIView(context: Context) -> HakoCodeEditorView {
+        let editor = HakoCodeEditorView()
         let view = editor.textView
         context.coordinator.editor = editor
         view.delegate = context.coordinator
@@ -56,7 +56,7 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
         return editor
     }
 
-    func updateUIView(_ editor: ArcaneCodeEditorView, context: Context) {
+    func updateUIView(_ editor: HakoCodeEditorView, context: Context) {
         let view = editor.textView
         let coordinator = context.coordinator
         let changedLanguage = coordinator.parent.filename != filename
@@ -95,18 +95,18 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
         UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .monospacedSystemFont(ofSize: 12, weight: .regular))
     }
 
-    static func dismantleUIView(_ editor: ArcaneCodeEditorView, coordinator: Coordinator) {
+    static func dismantleUIView(_ editor: HakoCodeEditorView, coordinator: Coordinator) {
         coordinator.work?.cancel()
         editor.textView.delegate = nil
     }
 
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
-        var parent: ArcaneCodeEditorTextView
+        var parent: HakoCodeEditorTextView
         var work: Task<Void, Never>?
         var highlightedText: String?
         var applying = false
-        weak var editor: ArcaneCodeEditorView?
-        init(_ parent: ArcaneCodeEditorTextView) { self.parent = parent }
+        weak var editor: HakoCodeEditorView?
+        init(_ parent: HakoCodeEditorTextView) { self.parent = parent }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             // Only consume dismissal taps while editing; a tap with the keyboard hidden still focuses normally.
@@ -145,19 +145,19 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
             work?.cancel()
             guard view.markedTextRange == nil else { return }
             let text = view.text ?? ""
-            let language = ArcaneSyntax.language(filename: parent.filename)
+            let language = HakoCodeSyntax.language(filename: parent.filename)
             work = Task { @MainActor [weak self, weak view] in
                 if delayed {
                     do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
                 }
                 guard !Task.isCancelled else { return }
-                let tokens = await Task.detached(priority: .userInitiated) { ArcaneSyntax.tokens(text, language: language) }.value
+                let tokens = await Task.detached(priority: .userInitiated) { HakoCodeSyntax.tokens(text, language: language) }.value
                 guard !Task.isCancelled, let self, let view, view.text == text, view.markedTextRange == nil else { return }
                 self.apply(tokens, text: text, to: view)
             }
         }
 
-        private func apply(_ tokens: [ArcaneSyntax.Token], text: String, to view: UITextView) {
+        private func apply(_ tokens: [HakoCodeSyntax.Token], text: String, to view: UITextView) {
             applying = true
             defer { applying = false }
             highlightedText = text
@@ -167,18 +167,18 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
             let range = NSRange(location: 0, length: storage.length)
             // Attribute-only edits preserve the text, selection and UIKit undo history.
             storage.beginEditing()
-            storage.addAttributes([.font: ArcaneCodeEditorTextView.font, .foregroundColor: UIColor.label], range: range)
+            storage.addAttributes([.font: HakoCodeEditorTextView.font, .foregroundColor: UIColor.label], range: range)
             for token in tokens {
                 storage.addAttribute(.foregroundColor, value: color(token.kind), range: token.range)
             }
             storage.endEditing()
             view.selectedRange = selection
             view.setContentOffset(offset, animated: false)
-            view.typingAttributes = [.font: ArcaneCodeEditorTextView.font, .foregroundColor: UIColor.label]
+            view.typingAttributes = [.font: HakoCodeEditorTextView.font, .foregroundColor: UIColor.label]
             editor?.redrawLineNumbers()
         }
 
-        private func color(_ kind: ArcaneSyntax.Kind) -> UIColor {
+        private func color(_ kind: HakoCodeSyntax.Kind) -> UIColor {
             switch kind {
             case .comment: return .secondaryLabel
             case .key: return .systemBlue
@@ -191,7 +191,7 @@ private struct ArcaneCodeEditorTextView: UIViewRepresentable {
     }
 }
 
-private final class ArcaneEditorKeyboardState: ObservableObject {
+private final class HakoEditorKeyboardState: ObservableObject {
     weak var textView: UITextView?
     @Published var focused = false
 
@@ -223,8 +223,8 @@ private final class ArcaneEditorKeyboardState: ObservableObject {
     }
 }
 
-private struct ArcaneEditorKeyboardKeys: View {
-    @ObservedObject var state: ArcaneEditorKeyboardState
+private struct HakoEditorKeyboardKeys: View {
+    @ObservedObject var state: HakoEditorKeyboardState
     let editingEnabled: Bool
     private let keys = ["Tab", "撤销", "重做", "粘贴", "覆盖粘贴", "复制全部"]
     var body: some View {
@@ -239,10 +239,10 @@ private struct ArcaneEditorKeyboardKeys: View {
     }
 }
 
-final class ArcaneCodeEditorView: UIView {
+final class HakoCodeEditorView: UIView {
     // Explicitly use TextKit 1 so syntax highlighting and gutter share the same layout.
     let textView = UITextView(usingTextLayoutManager: false)
-    private let gutter = ArcaneLineNumberGutter()
+    private let gutter = HakoLineNumberGutter()
     private var gutterWidth: NSLayoutConstraint!
 
     init() {
@@ -277,12 +277,12 @@ final class ArcaneCodeEditorView: UIView {
     }
 
     func updateLineNumbers() {
-        gutter.lines = ArcaneEditorLines(textView.text ?? "")
+        gutter.lines = HakoEditorLines(textView.text ?? "")
         updateGutterFont()
     }
 
     func updateGutterFont() {
-        let font = ArcaneCodeEditorTextView.font
+        let font = HakoCodeEditorTextView.font
         gutter.font = font
         let digits = String(gutter.lines.starts.count).count
         let width = ceil((String(repeating: "8", count: digits) as NSString).size(withAttributes: [.font: font]).width) + 16
@@ -293,10 +293,10 @@ final class ArcaneCodeEditorView: UIView {
     func redrawLineNumbers() { gutter.setNeedsDisplay() }
 }
 
-private final class ArcaneLineNumberGutter: UIView {
+private final class HakoLineNumberGutter: UIView {
     weak var textView: UITextView?
-    var lines = ArcaneEditorLines("")
-    var font = ArcaneCodeEditorTextView.font
+    var lines = HakoEditorLines("")
+    var font = HakoCodeEditorTextView.font
 
     override func draw(_ rect: CGRect) {
         guard let textView else { return }

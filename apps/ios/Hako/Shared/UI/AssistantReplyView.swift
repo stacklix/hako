@@ -2,14 +2,14 @@ import SwiftUI
 import UIKit
 import WebKit
 
-struct InvestmentAgentReplyView: View {
-    let html: InvestmentAgentHTML
+struct AssistantReplyView: View {
+    let html: AssistantHTML
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: .body) private var fontSize = 17.0
+    @ScaledMetric(relativeTo: .body) private var fontSize = 14.0
 
     var body: some View {
         let page = document
-        InvestmentAgentHTMLLayout(document: page).id(page)
+        AssistantHTMLLayout(document: page).id(page)
     }
 
     private var document: String {
@@ -30,40 +30,47 @@ struct InvestmentAgentReplyView: View {
             color-scheme: \(dark ? "dark" : "light"); font-size: \(fontSize)px; -webkit-text-size-adjust: 100%;
             --ink: \(css(HakoStyle.text)); --muted: \(css(HakoStyle.muted));
             --card: \(css(HakoStyle.card)); --surface: \(css(HakoStyle.background)); --line: \(css(HakoStyle.line));
+            --code-background: \(css(HakoStyle.adaptive(0xf6f6f8, 0x2b2b2f)));
+            --title-size: calc(17rem / 14); --label-size: calc(12rem / 14);
+            --code-size: calc(13rem / 14); --title-code-size: calc(16rem / 14);
+            --item-gap: calc(16rem / 14); --title-gap: calc(8rem / 14); --field-gap: calc(4rem / 14);
         }
         * { box-sizing: border-box; }
-        body { margin: 0; color: var(--ink); background: transparent; font: 1rem/1.42 -apple-system, sans-serif; overflow-wrap: anywhere; }
+        body { margin: 0; color: var(--ink); background: transparent; font: 1rem/1.5 -apple-system, sans-serif; overflow-wrap: anywhere; }
         main { display: flow-root; }
         main > :first-child, section > :first-child { margin-top: 0; }
         main > :last-child, section > :last-child { margin-bottom: 0; }
-        p, ul, ol, dl, table, blockquote, pre, hr { margin: 0 0 .65rem; }
-        h2, h3, h4 { margin: .7rem 0 .3rem; font-size: 1rem; font-weight: 600; }
-        section { margin: 0 0 .6rem; padding: 14px; border-radius: 14px; background: var(--card); }
-        section > h2:first-child { font-size: .84rem; font-weight: 600; }
-        section > h2 + p { margin-bottom: .35rem; }
-        section > h2 + p > strong:only-child { font-size: 1.4rem; font-weight: 650; font-variant-numeric: tabular-nums; }
-        small, caption { color: var(--muted); font-size: .78rem; }
+        p, ul, ol, dl, table, blockquote, pre, hr { margin: 0 0 var(--title-gap); }
+        h2, h3, h4 { margin: var(--item-gap) 0 var(--title-gap); font-size: var(--title-size); line-height: 1.4; font-weight: 600; }
+        section { margin: 0 0 var(--item-gap); padding: calc(16rem / 14) 1rem; border-radius: calc(16rem / 14); background: var(--card); }
+        section > h2 + p > strong:only-child { font-size: calc(24rem / 14); font-weight: 650; font-variant-numeric: tabular-nums; }
+        small, caption { color: var(--muted); font-size: var(--label-size); }
         ul, ol { padding-inline-start: 1.3em; }
-        li + li { margin-top: .2rem; }
+        li + li { margin-top: var(--title-gap); }
+        li:has(> p, > h3) + li { margin-top: var(--item-gap); padding-top: var(--item-gap); border-top: 1px solid var(--line); }
+        li > p:first-child > strong:only-child { font-size: var(--title-size); line-height: 1.4; font-weight: 600; }
         li > ul, li > ol { margin: .25rem 0; }
-        dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: .4rem .6rem; font-size: .88rem; }
-        dt { color: var(--muted); }
+        dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--field-gap) var(--title-gap); font-size: 1rem; }
+        dt { color: var(--muted); font-size: var(--label-size); }
         dd { margin: 0; text-align: end; font-variant-numeric: tabular-nums; }
-        table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .84rem; font-variant-numeric: tabular-nums; }
+        table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 1rem; font-variant-numeric: tabular-nums; }
         caption { text-align: start; margin-bottom: .28rem; }
         th, td { padding: .38rem .28rem; text-align: start; border-bottom: 1px solid var(--line); vertical-align: top; }
         th { font-weight: 600; }
         hr { border: 0; border-top: 1px solid var(--line); }
         blockquote { padding-inline-start: .6rem; border-inline-start: 2px solid var(--line); color: var(--muted); }
-        code, pre { font-family: ui-monospace, monospace; font-size: .86rem; background: var(--surface); border-radius: 5px; }
-        code { padding: .1em .24em; }
-        pre { padding: .45rem; white-space: pre-wrap; }
+        code, pre { font-family: ui-monospace, monospace; background: var(--code-background); border-radius: calc(4rem / 14); }
+        code { font-size: var(--code-size); padding: calc(1rem / 14) calc(3rem / 14); }
+        :is(h2, h3, h4) code, li > p:first-child > strong:only-child code { font-size: var(--title-code-size); }
+        pre { padding: var(--title-gap); font-size: 1rem; white-space: pre-wrap; }
+        pre code { padding: 0; font-size: inherit; background: transparent; }
+        \(AssistantTableLayout.style)
         </style></head><body><main>\(html.fragment)</main></body></html>
         """
     }
 }
 
-private struct InvestmentAgentHTMLLayout: View {
+private struct AssistantHTMLLayout: View {
     let document: String
     @State private var width: CGFloat = 0
     @State private var height: CGFloat = 1
@@ -78,7 +85,7 @@ private struct InvestmentAgentHTMLLayout: View {
             ZStack(alignment: .topLeading) {
                 Color.clear
                 if layoutWidth > 0 {
-                    InvestmentAgentHTMLWebView(document: document, onHeight: { value in
+                    AssistantHTMLWebView(document: document, onHeight: { value in
                         if width == layoutWidth { height = value }
                     }, onFailure: {
                         if width == layoutWidth { failed = true }
@@ -97,7 +104,7 @@ private struct InvestmentAgentHTMLLayout: View {
     }
 }
 
-private struct InvestmentAgentHTMLWebView: UIViewRepresentable {
+private struct AssistantHTMLWebView: UIViewRepresentable {
     let document: String
     let onHeight: (CGFloat) -> Void
     let onFailure: () -> Void
@@ -135,6 +142,7 @@ private struct InvestmentAgentHTMLWebView: UIViewRepresentable {
         private let onFailure: () -> Void
         private var observation: NSKeyValueObservation?
         private var ready = false
+        private var active = true
 
         init(onHeight: @escaping (CGFloat) -> Void, onFailure: @escaping () -> Void) {
             self.onHeight = onHeight
@@ -150,6 +158,7 @@ private struct InvestmentAgentHTMLWebView: UIViewRepresentable {
         }
 
         func stop() {
+            active = false
             ready = false
             observation?.invalidate()
         }
@@ -168,8 +177,15 @@ private struct InvestmentAgentHTMLWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            ready = true
-            reportHeight(of: webView)
+            webView.evaluateJavaScript(AssistantTableLayout.script, in: nil, in: .defaultClient) { [weak self, weak webView] result in
+                guard let self, self.active, let webView else { return }
+                switch result {
+                case .success:
+                    self.ready = true
+                    self.reportHeight(of: webView)
+                case .failure: self.onFailure()
+                }
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { onFailure() }

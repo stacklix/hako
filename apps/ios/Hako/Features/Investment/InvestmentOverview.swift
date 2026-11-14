@@ -24,6 +24,7 @@ enum InvestmentRange: String, CaseIterable, Identifiable, Sendable {
 struct InvestmentOverview: View {
     let book: InvestmentBook
     let bookVersion: UUID
+    var showsArchived = false
     let openAccount: (UUID) -> Void
     @State private var month = InvestmentBook.day()
     @State private var selectedDay = InvestmentBook.day()
@@ -132,7 +133,7 @@ struct InvestmentOverview: View {
     private var accounts: some View {
         InvestmentCard {
             Text("账户盈亏").font(.headline)
-            ForEach(book.accounts) { account in
+            ForEach(book.visibleAccounts(showArchived: showsArchived)) { account in
                 let current = book.value(account)
                 let previous = book.value(account, on: InvestmentBook.addDays(-1, to: today), requiresDailyPrices: true)
                 let change = book.value(account, on: today, requiresDailyPrices: true).flatMap { now in
@@ -140,7 +141,7 @@ struct InvestmentOverview: View {
                 }
                 Button { openAccount(account.id) } label: {
                     HStack {
-                        InvestmentTitle(account.name, subtitle: "总资产 " + InvestmentText.money(current?.value, account.currency))
+                        InvestmentTitle(account.name + (account.isArchived ? " · 已归档" : ""), subtitle: "总资产 " + InvestmentText.money(current?.value, account.currency))
                         Spacer(minLength: 6)
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(InvestmentText.money(current?.gain, account.currency, signed: true))
@@ -151,9 +152,9 @@ struct InvestmentOverview: View {
                         InvestmentChevron()
                     }.frame(minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(.plain)
-                if account.id != book.accounts.last?.id { Divider() }
+                if account.id != book.visibleAccounts(showArchived: showsArchived).last?.id { Divider() }
             }
-            if book.accounts.isEmpty { Text("暂无账户").foregroundStyle(.secondary).font(.subheadline) }
+            if book.visibleAccounts(showArchived: showsArchived).isEmpty { Text("暂无账户").foregroundStyle(.secondary).font(.subheadline) }
         }
     }
 }

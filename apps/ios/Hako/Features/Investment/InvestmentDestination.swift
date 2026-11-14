@@ -62,7 +62,7 @@ struct InvestmentCashHistory: View {
                         HStack(alignment: .top) {
                             let asset = book.asset(row.event.assetID)
                             let otherAccount = row.event.transferAccountID.flatMap { book.account($0)?.name }
-                            let name = row.event.unallocatedFunding == true ? nil : otherAccount ?? asset?.name
+                            let name = row.event.unallocatedFunding == true ? nil : otherAccount ?? asset?.displayName
                             let title = row.event.title(for: asset) + (name.map { " · " + $0 } ?? "")
                             InvestmentTitle(title, subtitle: InvestmentText.date(row.event.day))
                             Spacer(minLength: 8)
@@ -83,7 +83,7 @@ struct InvestmentCashHistory: View {
                 Section("其他流水") {
                     ForEach(otherEvents.reversed()) { event in
                         let asset = book.asset(event.assetID)
-                        let name = event.unallocatedFunding == true ? "" : asset.map { " · " + $0.name } ?? ""
+                        let name = event.unallocatedFunding == true ? "" : asset.map { " · " + $0.displayName } ?? ""
                         Button { editing = event } label: {
                             HStack {
                                 InvestmentTitle(event.title(for: asset) + name, subtitle: InvestmentText.date(event.day))
@@ -189,6 +189,7 @@ struct InvestmentHoldingView: View {
     @State private var editing: InvestmentEvent?
     @State private var depositAction: DepositAction?
     @State private var showsDepositTerms = false
+    @Environment(\.dismiss) private var dismiss
 
     private var offersAdjustment: Bool { asset.kind.supportsCashDividends || [.crypto, .cryptoContract].contains(asset.kind) }
 
@@ -198,6 +199,11 @@ struct InvestmentHoldingView: View {
                let ledger = try? store.book.ledger(current, includeRows: true),
                let position = ledger.positions[asset.id] {
                 positionCard(position, reserved: ledger.reservedCollateral[asset.id, default: 0])
+                    .disabled(current.isArchived)
+                if current.isArchived {
+                    Text("账户已归档；如需修改交易，请先在账户管理中撤销归档。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 InvestmentCard {
                     Text(asset.kind.isManual || offersAdjustment ? "资产流水" : "买卖记录").font(.headline)
                     ForEach(store.book.orderedEvents(current, through: InvestmentBook.day()).filter {
@@ -253,13 +259,18 @@ struct InvestmentHoldingView: View {
                             }.monospacedDigit()
                             InvestmentChevron()
                         }.frame(maxWidth: .infinity).contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).disabled(current.isArchived)
                         Divider()
                     }
                 }
             }
         }
-        .navigationTitle(asset.name)
+        .navigationTitle(asset.displayName)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                InvestmentLifecycleActions(store: store, accountID: account.id, assetID: asset.id) { dismiss() }
+            }
+        }
         .sheet(item: $editing) { event in
             InvestmentEventEditor(store: store, accountID: account.id, event: event)
         }
@@ -303,7 +314,7 @@ struct InvestmentHoldingView: View {
         let sinceEntry = position.lastEntry.flatMap { entry in quote.map { ($0.price / entry - 1) * asset.priceDirection } }
         return InvestmentCard {
             let description = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-            InvestmentTitle("持仓概况", subtitle: termDeposit ? asset.kindLabel : asset.code + " · " + description)
+            InvestmentTitle("持仓概况", subtitle: termDeposit ? asset.kindLabel : asset.displayCode + " · " + description)
             InvestmentMetric(title: nativeContract || cashContract ? "未实现盈亏" : (termDeposit ? "存款余额" : (insurance ? "保单现金价值" : "持仓估值")),
                              value: InvestmentText.money(unrealized, account.currency), prominent: true)
             HStack(alignment: .top) {
@@ -423,9 +434,129 @@ struct InvestmentHoldingView: View {
     }
 }
 
+struct InvestmentAccountManagement: View {
+    @State private var editingAccount = false
+    @ObservedObject var store: InvestmentStore
+    let accountID: UUID
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        SettingsSheet(title: "管理账户") {
+            Form {
+                if let account = store.book.account(accountID) {
+                    Section {
+                        LabeledContent("账户名称", value: account.name)
+                        LabeledContent("账户类型", value: account.type.rawValue)
+                        LabeledContent("币种", value: account.currency.rawValue)
+                        LabeledContent("状态", value: account.isArchived ? "已归档" : "使用中")
+                    }
+                    Section {
+                        Button("编辑账户") { editingAccount = true }
+                            .investmentListRow()
+                        InvestmentLifecycleActions(store: store, accountID: accountID) { dismiss() }
+                            .listRowBackground(Color.clear)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $editingAccount) {
+            if let account = store.book.account(accountID) { InvestmentAccountEditor(store: store, account: account) }
+        }
+    }
+}
+
+private struct InvestmentLifecycleActions: View {
+    @State private var editingAsset = false
+    @ObservedObject var store: InvestmentStore
+    let accountID: UUID
+    var assetID: UUID?
+    let onDelete: () -> Void
+    @State private var confirmsDeletion = false
+    @State private var deletionVersion: UUID?
+    @State private var working = false
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if assetID != nil {
+                Menu {
+                    Button("修改标的资料") { editingAsset = true }
+                    Button(role: .destructive, action: requestDeletion) {
+                        Label("删除", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("更多持仓操作")
+                .disabled(working || store.saving)
+            } else {
+                accountActions
+            }
+        }
+        .hakoDeleteConfirmation(Text(assetID == nil ? "删除账户？" : "删除持仓？"), isPresented: $confirmsDeletion,
+                                message: Text(store.book.deletionMessage(accountID: accountID, assetID: assetID)), disabled: working || store.saving) {
+            Task {
+                await perform {
+                    try await store.update { book in
+                        guard deletionVersion == store.bookVersion else {
+                            throw InvestmentError.invalid("账本已更新，请重新核对删除范围。")
+                        }
+                        try book.deleteInvestment(accountID: accountID, assetID: assetID)
+                    }
+                    onDelete()
+                }
+            }
+        }
+        .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("好", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+        .sheet(isPresented: $editingAsset) {
+            if let assetID, let asset = store.book.asset(assetID) {
+                if asset.kind.isTermDeposit {
+                    InvestmentDepositTermsEditor(store: store, accountID: accountID, asset: asset)
+                } else {
+                    InvestmentAssetInfoEditor(store: store, asset: asset)
+                }
+            }
+        }
+    }
+
+    private var accountActions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let account = store.book.account(accountID) {
+                let blocker = store.book.archiveBlocker(accountID: accountID)
+                Button(account.isArchived ? "撤销归档" : "归档账户") {
+                    Task { await perform { try await store.update { try $0.setArchived(!account.isArchived, accountID: accountID) } } }
+                }
+                .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
+                .disabled(working || store.saving || (!account.isArchived && blocker != nil))
+                Text(account.isArchived ? "数据和历史流水均已保留。撤销归档后重新显示，定投需手动启用。"
+                     : blocker ?? "归档保留全部数据并暂停定投，默认隐藏；可在设置中显示归档账户，随时撤销归档。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            HakoDeleteButton(title: "删除账户", action: requestDeletion)
+                .disabled(working || store.saving)
+            Text("同时删除对应交易记录，无法撤销。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private func requestDeletion() {
+        deletionVersion = store.bookVersion
+        confirmsDeletion = true
+    }
+
+    private func perform(_ action: () async throws -> Void) async {
+        guard !working else { return }
+        working = true
+        defer { working = false }
+        do { try await action() } catch { self.error = error.localizedDescription }
+    }
+}
+
 private struct InvestmentSettings: View {
     private enum Sheet: Hashable, Identifiable {
-        case addAccount, credential(InvestmentQuoteSource)
+        case addAccount, account(UUID), credential(InvestmentQuoteSource)
         var id: Self { self }
     }
 
@@ -439,14 +570,38 @@ private struct InvestmentSettings: View {
     @State private var exportDocument: InvestmentExportDocument?
 
     var body: some View {
+        SettingsSheet(title: "投资记账设置") { settings }
+    }
+
+    private var settings: some View {
         Form {
+            Section("显示选项") {
+                Toggle("显示归档账户", isOn: $store.showsArchived)
+                Toggle("显示零余额持仓", isOn: $store.showsZeroPositions)
+                Text("隐藏只影响列表显示，历史流水和统计仍保留。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             Section("账户管理") {
-                ForEach(store.book.accounts) { account in
-                    let subtitle = account.currency.rawValue + " · " + account.type.rawValue
-                    InvestmentTitle(account.name, subtitle: subtitle).investmentListRow()
+                ForEach(store.visibleAccounts) { account in
+                    let subtitle = account.currency.rawValue + " · " + account.type.rawValue + (account.isArchived ? " · 已归档" : "")
+                    Button { sheet = .account(account.id) } label: {
+                        HStack {
+                            InvestmentTitle(account.name, subtitle: subtitle)
+                            Spacer()
+                            InvestmentChevron()
+                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
+                    }.buttonStyle(.plain).investmentListRow()
                 }
                 .onMove { offsets, destination in
-                    Task { await perform { try await store.update { $0.accounts.move(fromOffsets: offsets, toOffset: destination) } } }
+                    var reordered = store.visibleAccounts.map(\.id)
+                    reordered.move(fromOffsets: offsets, toOffset: destination)
+                    Task { await perform { try await store.update { book in
+                        let ids = Set(reordered)
+                        var ordered = reordered.compactMap { book.account($0) }.makeIterator()
+                        for i in book.accounts.indices where ids.contains(book.accounts[i].id) {
+                            if let account = ordered.next() { book.accounts[i] = account }
+                        }
+                    } } }
                 }
                 Button { sheet = .addAccount } label: {
                     Label("添加账户", systemImage: "plus")
@@ -497,6 +652,7 @@ private struct InvestmentSettings: View {
         .sheet(item: $sheet) { item in
             switch item {
             case .addAccount: InvestmentAccountEditor(store: store)
+            case .account(let id): InvestmentAccountManagement(store: store, accountID: id)
             case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
             }
         }
