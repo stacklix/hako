@@ -119,6 +119,10 @@ struct LanguageModelStreamAccumulator {
     private var inputs: [Int: String] = [:]
     private var openBlocks: Set<Int> = []
 
+    init(format: LanguageModelFormat) {
+        self.format = format
+    }
+
     mutating func append(_ event: String) throws {
         guard !finished else { return }
         if format == .openAI, event == "[DONE]" {
