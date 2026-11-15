@@ -13,13 +13,13 @@
 
 记账助手使用 `generic` 类型，以 `buy` / `sell` 记投入与取出（`price` 填金额，`quantity` 为 1）；`asset_balance` 记余额调整。首次投入可用 `settled_amount` 填实际余额。`crypto_contract` 和 `funding_balance` 已移除。
 
-## 0.4 后端一次性清理
+## 历史迁移与升级要求
 
-服务端与 iOS 升级到 0.4.0，Agent 升级到 1.2.4。后端首次启动时，将投资数据库的 schema 2 升级为 3；其他数据库仍为 schema 2。部署前保留数据库备份，先升级后端再使用新版客户端。
+当前投资数据库使用 schema 3，其他数据库仍为 schema 2。临时清理代码、启动调用和专用迁移测试已移除；新库直接创建 schema 3，已有 schema 3 账本正常打开，schema 2 会被拒绝且不清理其数据。
 
-临时实现位于 `apps/server/internal/server/investment_crypto_cleanup_040.go`，由 `openInvestmentDB` 调用。一个事务内完成数据清理、字段移除、快照失效和版本标记；失败全部回滚，重启可以重试。schema 已为 3 时不会重复执行。
+仍为 schema 2 的实例须先使用包含一次性迁移的提交 `7fd3ced`（服务端 0.4.0）成功启动一次，再升级到当前代码。部署前保留数据库备份。迁移在一个事务内完成数据清理、字段移除、快照失效和版本标记，失败全部回滚。
 
-清理范围仅限投资记账中的加密合约：
+历史迁移的清理范围仅限投资记账中的加密合约：
 
 - 删除 `crypto_contract` 标的及其交易、资金费、保证金等流水、行情、关注、定投及执行记录；同步删除没有标的关联的旧 `derivative_funding` 流水。
 - 删除 `investment_assets.collateral_asset_id`。
@@ -31,12 +31,4 @@
 
 该清理不会把旧合约转换为通用标的，也不会生成补偿性现金流水。需要继续记录的通用标的由用户按实际投入和余额重新登记。
 
-## 下一版删除临时迁移
-
-下一次发布（包括补丁版本）删除以下内容，保留当前 schema 3 的定义和新数据库建表逻辑：
-
-1. `investment_crypto_cleanup_040.go`。
-2. `investment_crypto_cleanup_040_test.go`。
-3. `openInvestmentDB` 中对 `migrateInvestmentCrypto040` 的启动调用及临时注释。
-
-从更早版本升级的现有数据库必须先运行一次 0.4.0 完成迁移，不能跳过这一版直接使用后续版本。清理后的 schema 3 不支持旧版服务端回退读取。
+清理后的 schema 3 不支持旧版服务端回退读取。客户端接口和通用标的的记账逻辑不受临时迁移代码移除的影响。

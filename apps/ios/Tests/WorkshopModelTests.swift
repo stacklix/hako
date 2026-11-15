@@ -307,6 +307,43 @@ import Foundation
             "Completion of the parent must not clear a newer queued follow-up sharing its operation ID")
         activeList.reject(operationId: continuing.id, agentId: "Agent")
         precondition(activeListing([]).isEmpty, "Rejected queue activity must not leave a phantom running row")
+        var verifiedActivity = WorkshopLocalSessions()
+        verifiedActivity.record(continuing, isNew: true)
+        let newerCatalog = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "Latest reply", updatedAt: 300, state: "completed", operationId: "newer-operation", completionId: "newer-turn")
+        precondition(verifiedActivity.merging([newerCatalog], agentId: "Agent", applications: [application], archived: false)[0].inProgress,
+            "An unrelated catalog completion alone cannot discard an unconfirmed send")
+        let verification = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]
+        let oldCompleted = WorkshopOperation(id: continuing.id, applicationId: "app", threadId: previous,
+            turnId: "older-turn", state: "completed", message: nil, startedAt: 1)
+        let stillRunning = WorkshopOperation(id: continuing.id, applicationId: "app", threadId: previous,
+            turnId: "older-turn", state: "running", message: nil, startedAt: 1)
+        precondition(!verifiedActivity.verify(verification, operation: stillRunning, followups: []))
+        let wrongThread = WorkshopOperation(id: continuing.id, applicationId: "app", threadId: "other-thread",
+            turnId: "older-turn", state: "completed", message: nil, startedAt: 1)
+        precondition(!verifiedActivity.verify(verification, operation: wrongThread, followups: []))
+        precondition(verifiedActivity.verify(verification, operation: oldCompleted, followups: []))
+        let verifiedListing = verifiedActivity.merging([newerCatalog], agentId: "Agent", applications: [application], archived: false)[0]
+        precondition(!verifiedListing.inProgress && verifiedListing.operationId == "newer-operation" &&
+            verifiedListing.completionId == "newer-turn" && verifiedListing.preview == "Latest reply",
+            "Verifying an old request must remove its stale overlay without replacing newer catalog activity")
+        verifiedActivity.record(continuing, isNew: true)
+        let beforeQueue = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]
+        verifiedActivity.record(queuedActivity, isNew: true, queued: true, queuedMessageId: "follow-up")
+        precondition(!verifiedActivity.verify(beforeQueue, operation: oldCompleted, followups: []),
+            "A delayed verification must not discard a newer queued message")
+        let queueCheck = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]
+        precondition(!verifiedActivity.verify(queueCheck, operation: oldCompleted, followups: []),
+            "A parent result cannot confirm a follow-up the computer has not accepted")
+        precondition(!verifiedActivity.verify(queueCheck, operation: oldCompleted,
+            followups: [WorkshopFollowupState(id: "follow-up", state: "queued", revision: 0, imageIds: [])]))
+        precondition(verifiedActivity.verify(queueCheck, operation: oldCompleted,
+            followups: [WorkshopFollowupState(id: "follow-up", state: "completed", revision: 0, imageIds: [])]),
+            "An identified completed follow-up must settle independently of phone/computer clock skew")
+        verifiedActivity.record(continuing, isNew: true)
+        let unconfirmed = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]
+        precondition(!verifiedActivity.verify(unconfirmed, operation: oldCompleted, followups: [], pendingMessages: ["unconfirmed-message"]),
+            "Persisted unconfirmed queued sends must survive a completed parent result")
         let sameSecond = WorkshopReceipt(id: "same-second", agentId: "Agent", applicationId: "app", originalThreadId: "z",
             threadId: "z", title: "Same second", message: "Latest", createdAt: Date(timeIntervalSince1970: 200.75), state: "pending")
         activeList.record(sameSecond, isNew: true)

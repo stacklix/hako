@@ -33,6 +33,7 @@ import CryptoKit
     private var cursor: String?
     private var catalogRevision = UUID()
     private var sessionUpdates = WorkshopSessionUpdates()
+    private var activityChecks: [String: ContinuousClock.Instant] = [:]
     private let transcriptDisk = WorkshopTranscriptDisk()
     private let stateDisk = WorkshopPersistence()
     private var queuedSends: [WorkshopQueuedSend] = []
@@ -265,7 +266,7 @@ import CryptoKit
         let receipt = WorkshopReceipt(id: queued.operationId, agentId: agent.id, applicationId: application.id,
             originalThreadId: threadId, threadId: threadId, title: title, message: queued.message, createdAt: .now, state: "pending")
         sessionUpdates.remove(threadId: threadId, agentId: agent.id)
-        localSessions.record(receipt, isNew: true, queued: true)
+        localSessions.record(receipt, isNew: true, queued: true, queuedMessageId: queued.id)
     }
 
     func rejectQueuedActivity(_ queued: WorkshopQueuedSend, agent: WorkshopAgent, scope ticket: String) {
@@ -277,6 +278,7 @@ import CryptoKit
         guard context != scope else { return }
         context = scope
         sessionUpdates = WorkshopSessionUpdates()
+        activityChecks.removeAll()
         connections.removeAll()
         socket.resetIfContextChanged()
         preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
@@ -480,8 +482,38 @@ import CryptoKit
             try persist()
             try saveLists()
             error = nil
+            if !archived { await verifyLocalActivity(agent: agent, ticket: ticket, revision: revision) }
         } catch is CancellationError { }
         catch { if ticket == scope, revision == catalogRevision { self.error = error.localizedDescription } }
+    }
+
+    private func verifyLocalActivity(agent: WorkshopAgent, ticket: String, revision: UUID) async {
+        struct Result: Decodable { let operation: WorkshopOperation; let followups: [WorkshopFollowupState] }
+        let now = ContinuousClock.now
+        let checks = localSessions.verifications(for: sessions, agentId: agent.id).filter {
+            activityChecks[$0.operationId + ":\($0.revision)"].map { $0.duration(to: now) >= .seconds(30) } ?? true
+        }.prefix(3)
+        for check in checks {
+            guard !Task.isCancelled, scope == ticket, catalogRevision == revision, selectedAgentID == agent.id else { return }
+            activityChecks[check.operationId + ":\(check.revision)"] = now
+            do {
+                let result: Result = try await call(agent, "operation.read", ["operationId": check.operationId, "cursor": 0])
+                guard !Task.isCancelled, scope == ticket, catalogRevision == revision, selectedAgentID == agent.id else { return }
+                guard localSessions.verify(check, operation: result.operation, followups: result.followups,
+                    pendingMessages: pendingQueue(operationId: check.operationId).map(\.id)) else { continue }
+                // Resolve the old receipt without replacing a newer catalog
+                // operation, its completion marker or its preview.
+                var changed = false
+                for index in preferences.receipts.indices where preferences.receipts[index].agentId == agent.id &&
+                    preferences.receipts[index].id == check.operationId {
+                    if preferences.receipts[index].state != result.operation.state {
+                        preferences.receipts[index].state = result.operation.state; changed = true
+                    }
+                }
+                if changed { try persist(background: true) }
+            } catch is CancellationError { return }
+            catch { /* Keep unconfirmed activity visible and retry later. */ }
+        }
     }
 
     private func confirmSessions(_ sessions: [WorkshopSession], agentId: String) {

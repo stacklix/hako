@@ -473,15 +473,23 @@ struct WorkshopPreferences: Codable, Sendable {
 // Reflect sends immediately, until the catalog acknowledges their operation
 // and activity time. An older catalog response must not undo the local state.
 struct WorkshopLocalSessions {
+    struct Verification: Equatable {
+        let operationId: String
+        let agentId: String
+        let revision: Int
+    }
     private struct Activity {
         var receipt: WorkshopReceipt
         let date: Date
         let preview: String
         let queued: Bool
+        let queuedMessageId: String?
+        let revision: Int
     }
     private var receipts: [String: Activity] = [:]
+    private var revision = 0
 
-    mutating func record(_ receipt: WorkshopReceipt, isNew: Bool, queued: Bool = false) {
+    mutating func record(_ receipt: WorkshopReceipt, isNew: Bool, queued: Bool = false, queuedMessageId: String? = nil) {
         if receipt.state == "rejected" { receipts[receipt.id] = nil }
         else if isNew || receipts[receipt.id] != nil {
             if isNew, let threadId = receipt.threadId {
@@ -489,11 +497,40 @@ struct WorkshopLocalSessions {
             }
             let previous = receipts[receipt.id]
             let keepActivity = previous.map { $0.date > receipt.createdAt } == true
+            revision += 1
             receipts[receipt.id] = Activity(receipt: receipt,
                 date: keepActivity ? previous!.date : receipt.createdAt,
                 preview: keepActivity ? previous!.preview : receipt.message,
-                queued: queued || (!isNew && previous?.queued == true))
+                queued: queued || (!isNew && previous?.queued == true),
+                queuedMessageId: queuedMessageId ?? (!isNew ? previous?.queuedMessageId : nil), revision: revision)
         }
+    }
+
+    func verifications(for sessions: [WorkshopSession], agentId: String) -> [Verification] {
+        receipts.values.filter { activity in
+            activity.receipt.agentId == agentId && sessions.contains { session in
+                !session.inProgress && (session.id == activity.receipt.threadId || session.operationId == activity.receipt.id)
+            }
+        }.sorted { $0.receipt.id < $1.receipt.id }.map {
+            Verification(operationId: $0.receipt.id, agentId: agentId, revision: $0.revision)
+        }
+    }
+
+    @discardableResult mutating func verify(_ ticket: Verification, operation: WorkshopOperation,
+        followups: [WorkshopFollowupState], pendingMessages: [String] = []) -> Bool {
+        guard let activity = receipts[ticket.operationId], activity.revision == ticket.revision,
+              activity.receipt.agentId == ticket.agentId, operation.id == ticket.operationId,
+              operation.applicationId == activity.receipt.applicationId,
+              activity.receipt.threadId == nil || operation.threadId == activity.receipt.threadId,
+              ["completed", "failed", "interrupted", "cancelled"].contains(operation.state) else { return false }
+        // A parent's completion cannot acknowledge a follow-up that the computer
+        // has not seen yet. Match each outstanding message by its own identity.
+        if activity.queued && activity.queuedMessageId == nil { return false }
+        let required = pendingMessages + [activity.queuedMessageId].compactMap { $0 }
+        guard required.allSatisfy({ id in followups.contains { $0.id == id &&
+            ["completed", "sent", "steered", "failed", "interrupted", "cancelled", "paused"].contains($0.state) } }) else { return false }
+        receipts[ticket.operationId] = nil
+        return true
     }
 
     mutating func confirm(_ sessions: [WorkshopSession], agentId: String) {

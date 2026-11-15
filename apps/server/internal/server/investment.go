@@ -114,10 +114,6 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err == nil {
-		// Release 0.4.0 only: remove this call and investment_crypto_cleanup_040.go in the next release.
-		err = migrateInvestmentCrypto040(db)
-	}
-	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
