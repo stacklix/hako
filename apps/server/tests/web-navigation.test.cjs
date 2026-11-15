@@ -43,11 +43,14 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
         return {ok: true, json: async () => investmentData};
       }
       const responses = {
-        '/admin/api/system/databases': {expectedVersion: 2, databases: [
-          {name: '服务端主库', file: 'hako.db', status: 'available', schema: {
+        '/admin/api/system/databases': {databases: [
+          {name: '服务端主库', file: 'hako.db', status: 'available', expectedVersion: 2, schema: {
             version: 2, tables: [{name: 'state', sql: 'CREATE TABLE state(id INTEGER PRIMARY KEY)'}]
           }},
-          {name: '访问日志', file: 'hako.db.access.db', status: 'not_created'}
+          {name: '访问日志', file: 'hako.db.access.db', status: 'not_created', expectedVersion: 2},
+          {name: '投资记账', file: 'investment.db', status: 'available', expectedVersion: 3, schema: {
+            version: 3, tables: [{name: 'investment_accounts', sql: 'CREATE TABLE investment_accounts(id TEXT PRIMARY KEY)'}]
+          }}
         ]},
         '/admin/api/session': {csrfToken: 'test', username: 'Admin'},
         '/admin/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
@@ -249,5 +252,6 @@ test('system configuration loads database versions and table definitions', async
   const text = node => [node.textContent || '', ...node.children.map(text)].join(' ');
   const content = text(document.getElementById('system-databases'));
   assert.match(content, /版本已就绪.*hako.db · 版本 2.*CREATE TABLE state/);
+  assert.match(content, /投资记账.*版本已就绪.*investment\.db · 版本 3.*CREATE TABLE investment_accounts/);
   assert.match(content, /尚未创建/);
 });
