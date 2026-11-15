@@ -24,7 +24,23 @@ private final class DraftWrites: @unchecked Sendable {
         precondition(actual == expected, message)
     }
 
-    static func main() async throws {
+    @MainActor static func main() async throws {
+        #if canImport(Combine)
+        let editor = WorkshopComposerInput()
+        let originalEditor = editor.editorID
+        editor.updateText("已发送的消息", editorID: originalEditor)
+        precondition(editor.editorID == originalEditor, "Typing must retain native editor identity and selection")
+        editor.clearAfterSending()
+        precondition(editor.text.isEmpty && editor.editorID != originalEditor,
+            "Acknowledged sends must replace the native editor as well as clearing persisted input")
+        editor.updateText("已发送的消息", editorID: originalEditor)
+        precondition(editor.text.isEmpty, "A delayed callback from the cleared editor must not restore sent text")
+        let clearedEditor = editor.editorID
+        editor.updateText("下一条未发送的输入", editorID: clearedEditor)
+        precondition(editor.editorID == clearedEditor, "New drafts must not repeatedly rebuild the native editor")
+        editor.updateText("", editorID: originalEditor)
+        precondition(editor.text == "下一条未发送的输入", "Stale editor callbacks must preserve a newer draft")
+        #endif
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hako-drafts-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = directory.appendingPathComponent("first.json")

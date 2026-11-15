@@ -344,6 +344,39 @@ import Foundation
         let unconfirmed = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]
         precondition(!verifiedActivity.verify(unconfirmed, operation: oldCompleted, followups: [], pendingMessages: ["unconfirmed-message"]),
             "Persisted unconfirmed queued sends must survive a completed parent result")
+        do {
+            // Reproduce a phone receipt whose request was never saved by the
+            // Agent, followed by a different, successfully completed request.
+            var missing = WorkshopLocalSessions()
+            missing.record(continuing, isNew: true)
+            let check = missing.verifications(for: [newerCatalog], agentId: "Agent")[0]
+            let later = WorkshopReceipt(id: "newer-operation", agentId: "Agent", applicationId: "app",
+                originalThreadId: previous, threadId: previous, title: "Existing", message: "Later send",
+                createdAt: continuing.createdAt.addingTimeInterval(-100), state: "completed")
+            let history = [continuing, later]
+            precondition(!missing.verifyMissing(check, sessions: [newerCatalog], history: [continuing]),
+                "Missing alone must not discard a new, unconfirmed send")
+            precondition(!missing.verifyMissing(check, sessions: [newerCatalog], history: [later, continuing]),
+                "An older completed request cannot confirm a newer missing send")
+            var pendingLater = later; pendingLater.state = "pending"
+            precondition(!missing.verifyMissing(check, sessions: [newerCatalog], history: [continuing, pendingLater]))
+            precondition(!missing.verifyMissing(check, sessions: [newerCatalog], history: history,
+                pendingMessages: ["unconfirmed-followup"]))
+            precondition(missing.verifyMissing(check, sessions: [newerCatalog], history: history),
+                "A verified later send must release a missing old request regardless of clock skew")
+            let row = missing.merging([newerCatalog], agentId: "Agent", applications: [application], archived: false)[0]
+            precondition(row == newerCatalog && !row.inProgress,
+                "The latest completed catalog row must survive retirement of a missing request")
+            precondition(history[0].message == continuing.message && history[0].state == "pending",
+                "Retiring list activity must not delete the original receipt or input")
+            missing.record(continuing, isNew: true)
+            let stale = missing.verifications(for: [newerCatalog], agentId: "Agent")[0]
+            missing.record(queuedActivity, isNew: true, queued: true, queuedMessageId: "followup")
+            precondition(!missing.verifyMissing(stale, sessions: [newerCatalog], history: history))
+            let queuedCheck = missing.verifications(for: [newerCatalog], agentId: "Agent")[0]
+            precondition(!missing.verifyMissing(queuedCheck, sessions: [newerCatalog], history: history),
+                "A missing parent must not discard a queued follow-up")
+        }
         let sameSecond = WorkshopReceipt(id: "same-second", agentId: "Agent", applicationId: "app", originalThreadId: "z",
             threadId: "z", title: "Same second", message: "Latest", createdAt: Date(timeIntervalSince1970: 200.75), state: "pending")
         activeList.record(sameSecond, isNew: true)

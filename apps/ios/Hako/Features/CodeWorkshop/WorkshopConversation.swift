@@ -1,11 +1,6 @@
 import Foundation
 import Combine
 
-@MainActor final class WorkshopComposerInput: ObservableObject {
-    @Published var text = "" { didSet { if text != oldValue { onChange?() } } }
-    var onChange: (() -> Void)?
-}
-
 @MainActor final class WorkshopConversation: ObservableObject, Identifiable {
     let id = UUID()
     let store: WorkshopStore
@@ -186,7 +181,7 @@ import Combine
 
     private func clearSentDraft(_ message: String, imageIds: [String], id: String) {
         guard composerDraft.matchesSentMessage(message, imageIds: imageIds, id: id) else { return }
-        draft = ""; photos = []
+        composerInput.clearAfterSending(); photos = []
     }
 
     var notificationOperationID: String? { operationId }

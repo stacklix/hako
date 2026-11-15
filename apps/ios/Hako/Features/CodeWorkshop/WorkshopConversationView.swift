@@ -439,6 +439,7 @@ private struct WorkshopComposerView: View {
     let loadingPhoto: Bool
 
     var body: some View {
+        let editorID = input.editorID
         VStack(alignment: .leading, spacing: 8) {
             if conversation.editingMessageID != nil {
                 HStack {
@@ -466,7 +467,9 @@ private struct WorkshopComposerView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("添加图片，最多还可选择 \(max(0, 3 - conversation.photos.count)) 张")
                 .disabled(!conversation.canCompose || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
-                TextField("描述你的想法…", text: $input.text, axis: .vertical)
+                TextField("描述你的想法…", text: Binding(get: { input.text },
+                    set: { input.updateText($0, editorID: editorID) }), axis: .vertical)
+                    .id(editorID)
                     .font(.body).lineLimit(1...5).accessibilityLabel("发给 Codex 的消息")
                     .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(!conversation.canCompose)

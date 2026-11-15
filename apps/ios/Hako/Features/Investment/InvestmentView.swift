@@ -405,8 +405,9 @@ struct InvestmentAccountView: View {
                 Spacer()
                 Button { sheet = .addAsset } label: {
                     Label("录入资产", systemImage: "plus")
+                        .labelStyle(.iconOnly)
                         .font(.footnote)
-                        .frame(minHeight: 44)
+                        .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(account.isArchived)

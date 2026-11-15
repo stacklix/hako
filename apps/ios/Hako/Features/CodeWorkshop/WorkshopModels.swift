@@ -533,6 +533,25 @@ struct WorkshopLocalSessions {
         return true
     }
 
+    // A missing task is not proof of completion. Only retire its activity when
+    // a later send in our own receipt order is confirmed by the current catalog.
+    @discardableResult mutating func verifyMissing(_ ticket: Verification, sessions: [WorkshopSession],
+        history: [WorkshopReceipt], pendingMessages: [String] = []) -> Bool {
+        guard let activity = receipts[ticket.operationId], activity.revision == ticket.revision,
+              activity.receipt.agentId == ticket.agentId, !activity.queued, pendingMessages.isEmpty,
+              let threadId = activity.receipt.threadId,
+              let index = history.firstIndex(where: { $0.id == ticket.operationId && $0.agentId == ticket.agentId }),
+              let current = sessions.first(where: { $0.id == threadId && $0.applicationId == activity.receipt.applicationId }),
+              ["completed", "failed", "interrupted", "cancelled"].contains(current.state),
+              let currentId = current.operationId, currentId != ticket.operationId,
+              history.dropFirst(index + 1).contains(where: {
+                  $0.id == currentId && $0.agentId == ticket.agentId && $0.threadId == threadId &&
+                  $0.applicationId == current.applicationId && $0.state == current.state
+              }) else { return false }
+        receipts[ticket.operationId] = nil
+        return true
+    }
+
     mutating func confirm(_ sessions: [WorkshopSession], agentId: String) {
         receipts = receipts.filter { _, activity in
             activity.receipt.agentId != agentId || !sessions.contains { acknowledges($0, activity: activity) }

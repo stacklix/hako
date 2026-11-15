@@ -512,6 +512,19 @@ import CryptoKit
                 }
                 if changed { try persist(background: true) }
             } catch is CancellationError { return }
+            catch let failure as WorkshopFailure where failure.code == "codex_operation_missing" {
+                guard !Task.isCancelled, scope == ticket, catalogRevision == revision, selectedAgentID == agent.id else { return }
+                guard localSessions.verifyMissing(check, sessions: sessions, history: preferences.receipts,
+                    pendingMessages: pendingQueue(operationId: check.operationId).map(\.id)) else { continue }
+                // Keep the original input and receipt. Its result is unknown;
+                // a later confirmed request owns the conversation's list state.
+                for index in preferences.receipts.indices where preferences.receipts[index].agentId == agent.id &&
+                    preferences.receipts[index].id == check.operationId {
+                    preferences.receipts[index].state = "unknown"
+                }
+                try? persist(background: true)
+                HakoLog.record(.codeWorkshop, "已解除旧请求的进行中状态", detail: "operationId=\(check.operationId); result=missing; newerRequest=verified")
+            }
             catch { /* Keep unconfirmed activity visible and retry later. */ }
         }
     }
