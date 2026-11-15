@@ -116,8 +116,9 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	seen := map[string]bool{}
 	for range 8 {
 		update := readAgentFrame[agent.TelemetryUpdate](t, live)
-		if update.Type != "update" || update.Error != nil {
-			t.Fatalf("real Windows telemetry: %+v", update)
+		if update.Type != "update" || update.Version != 1 || (update.Error != nil &&
+			(update.Method != "query.services.status" || update.Error.Code != "registry_missing")) {
+			t.Fatalf("real Windows telemetry: %+v, error=%+v", update, update.Error)
 		}
 		switch update.Method {
 		case "query.system.metrics":
@@ -255,6 +256,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 			Data map[string]struct {
 				Version int
 				Result  testMetrics
+				Error   *agent.Error
 			}
 		}
 		Capabilities []agent.Capability
@@ -265,6 +267,9 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		!slices.Contains(aggregate.Capabilities, agent.Capability{Name: "query.git.repositories", Version: 1}) {
 		t.Fatalf("real aggregate query failed: status=%d, result count=%d, capability count=%d",
 			status, len(aggregate.Result.Data), len(aggregate.Capabilities))
+	}
+	if serviceError := aggregate.Result.Data["query.services.status"].Error; serviceError != nil && serviceError.Code != "registry_missing" {
+		t.Fatalf("real aggregate service query failed: %+v", serviceError)
 	}
 	select {
 	case data := <-probeDone:
