@@ -81,9 +81,17 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
-	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"query.codex.usage","version":1},{"name":"query.network.listeners","version":1},{"name":"action.network.http.check","version":1},`)) ||
-		!bytes.Contains(data, []byte(`{"name":"query.git.repositories","version":1}`)) {
+	var agents struct {
+		Agents []struct{ Capabilities []agent.Capability }
+	}
+	if status != 200 || json.Unmarshal(data, &agents) != nil || len(agents.Agents) != 1 {
 		t.Fatal("Windows capabilities missing", status, string(data))
+	}
+	for _, name := range []string{"query.system.metrics", "query.codex.usage", "query.network.listeners",
+		"query.services.status", "action.services.start", "action.network.http.check", "query.git.repositories"} {
+		if !slices.Contains(agents.Agents[0].Capabilities, agent.Capability{Name: name, Version: 1}) {
+			t.Fatalf("Windows capability %q version 1 missing: %s", name, data)
+		}
 	}
 	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{
 		Method: "query.git.repository", Version: 1, Params: json.RawMessage(`{"repository":3}`),
@@ -122,16 +130,16 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 			} else if firstMetric != metrics.SampledAt {
 				seen[update.Method] = true
 			}
-		case "query.codex.usage", "query.network.listeners":
+		case "query.codex.usage", "query.network.listeners", "query.services.status":
 			seen[update.Method] = true
 		default:
 			t.Fatalf("unexpected telemetry method %q", update.Method)
 		}
-		if len(seen) == 3 {
+		if len(seen) == 4 {
 			break
 		}
 	}
-	if len(seen) != 3 {
+	if len(seen) != 4 {
 		t.Fatalf("missing Windows telemetry: %v", seen)
 	}
 	live.Close()
@@ -252,7 +260,8 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		Capabilities []agent.Capability
 	}
 	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() ||
-		len(aggregate.Result.Data) != 3 || aggregate.Result.Data["query.network.listeners"].Version != 1 ||
+		len(aggregate.Result.Data) != 4 || aggregate.Result.Data["query.network.listeners"].Version != 1 ||
+		aggregate.Result.Data["query.services.status"].Version != 1 ||
 		!slices.Contains(aggregate.Capabilities, agent.Capability{Name: "query.git.repositories", Version: 1}) {
 		t.Fatalf("real aggregate query failed: status=%d, result count=%d, capability count=%d",
 			status, len(aggregate.Result.Data), len(aggregate.Capabilities))
