@@ -224,6 +224,24 @@ import Combine
             }
         } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
     }
+    @discardableResult func refreshServices(_ agent: ConsoleAgent) async -> Bool {
+        let context = requestContext
+        do {
+            let result = try await invokeAgent(agent, method: DeviceServiceCommand.status, version: 1, as: ConsoleJSON.self)
+            guard context == requestContext, !Task.isCancelled else { return false }
+            deviceData[agent.id, default: ConsoleDeviceData()].entries[DeviceServiceCommand.status] =
+                ConsoleCapabilityData(version: 1, result: result)
+            deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] = UUID()
+            deviceData[agent.id]?.loaded = true
+            return true
+        } catch {
+            guard context == requestContext, !Task.isCancelled else { return false }
+            deviceData[agent.id, default: ConsoleDeviceData()].entries[DeviceServiceCommand.status] =
+                ConsoleCapabilityData(version: 1, error: ConsoleAgentError(code: "query_failed", message: error.localizedDescription))
+            deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] = UUID()
+            return false
+        }
+    }
     func checkHTTP(_ agent: ConsoleAgent, url: String) async {
         guard authenticated, !logoutPending, httpChecks[agent.id]?.loading != true else { return }
         let context = requestContext

@@ -92,7 +92,7 @@ private struct InvestmentAgentNativeEditor: View {
             if let account = account { InvestmentPlanEditor(store: store, editing: draft, account: account) }
             else { unavailable }
         case .quote:
-            if let asset = draft.asset { InvestmentQuoteEditor(store: store, editing: draft, asset: asset) }
+            if let asset = draft.asset, asset.kind.supportsManualQuote { InvestmentQuoteEditor(store: store, editing: draft, asset: asset) }
             else { unavailable }
         case .balanceAccount, .balanceRecord:
             if let account = balanceAccount {

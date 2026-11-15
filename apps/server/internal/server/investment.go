@@ -33,7 +33,7 @@ var investmentTables = []investmentTable{
 	{"investment_assets", "id", "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency", false},
 	{"investment_events", "id", "account_id asset_id event_type effective_date sequence amount quantity unit_price fee settled_amount transfer_id transfer_account_id version created_at updated_at deleted_at", false},
 	{"investment_derivative_event_details", "event_id", "trade_action position_side margin_delta", false},
-	{"investment_plans", "id", "account_id asset_id amount month_day next_date enabled last_result sort_order", false},
+	{"investment_plans", "id", "account_id asset_id amount frequency schedule_day next_date enabled last_result sort_order", false},
 	{"investment_plan_runs", "plan_id scheduled_date", "status event_id executed_at result_detail", false},
 	{"investment_watchlist", "asset_id", "instrument_id sort_order", false},
 	{"market_daily_prices", "instrument_id session_date price_type source", "closed_at_utc valuation_date price is_final revision", false},
@@ -54,7 +54,7 @@ var (
 	investmentNumberFields = " amount quantity unit_price fee settled_amount annual_rate margin_delta price rate value contract_multiplier total_cny total_usd cumulative_gain_cny daily_gain_cny cash_native holdings_native gain_native "
 )
 
-const investmentIntegerFields = " sequence sort_order enabled month_day is_final version revision computed_revision "
+const investmentIntegerFields = " sequence sort_order enabled schedule_day is_final version revision computed_revision "
 
 var investmentRequired = map[string]string{
 	"market_instruments":                 "asset_type symbol exchange name quote_currency price_type",
@@ -62,7 +62,7 @@ var investmentRequired = map[string]string{
 	"investment_accounts":                "name account_type currency sort_order",
 	"investment_assets":                  "name asset_type quote_currency settlement_unit",
 	"investment_events":                  "account_id effective_date sequence event_type",
-	"investment_plans":                   "account_id amount month_day next_date enabled",
+	"investment_plans":                   "account_id amount frequency schedule_day next_date enabled",
 	"investment_watchlist":               "sort_order",
 	"market_daily_prices":                "price",
 	"market_daily_fx":                    "rate",
@@ -114,6 +114,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err == nil {
+		err = upgradeEmptyInvestmentPlans(db)
+	}
+	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
@@ -417,6 +420,9 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 			"deposit", "withdrawal", "adjustment", "opening", "buy", "sell", "transfer_out", "transfer_in", "income",
 			"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade",
 		}, kind) {
+			return errInvestmentInvalid
+		}
+		if t.name == "investment_plans" && !validInvestmentPlan(row) {
 			return errInvestmentInvalid
 		}
 		if quoteVersions != nil {

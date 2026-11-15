@@ -167,11 +167,13 @@ struct InvestmentBalanceAccountTrend: View {
 
 struct InvestmentBalanceTrend: View {
     let book: InvestmentBook
+    let bookVersion: UUID
     let today: Date
     let hidesAmounts: Bool
     @State private var range = Range.all
     @State private var mode = Mode.balance
     @State private var selectedDate: Date?
+    @State private var loaded: LoadedHistory?
 
     private enum Range: String, CaseIterable, Identifiable {
         case all = "记账以来", year = "今年", rolling = "近一年"
@@ -192,19 +194,27 @@ struct InvestmentBalanceTrend: View {
         var id: Self { self }
     }
 
-    private struct Point: Identifiable {
-        let snapshot: InvestmentBalanceSnapshot
-        let segment: Int
-        var id: Date { snapshot.day }
+    private typealias Point = InvestmentBalanceTrendPoint
+
+    private struct Request: Equatable {
+        let bookVersion: UUID
+        let today: Date
+        let range: Range
+    }
+
+    private struct LoadedHistory {
+        let request: Request
+        let points: [Point]
     }
 
     var body: some View {
-        let points = history()
+        let request = Request(bookVersion: bookVersion, today: today, range: range)
+        let points = loaded?.request == request ? loaded?.points ?? [] : []
+        let valid = points.filter { $0.snapshot.net != nil }
         let selected = selectedDate.flatMap { day in
             points.min { abs($0.id.timeIntervalSince(day)) < abs($1.id.timeIntervalSince(day)) }
-        } ?? points.last
-        let valid = points.filter { $0.snapshot.net != nil }
-        InvestmentCard {
+        } ?? valid.last
+        return InvestmentCard {
             HStack {
                 Text("资产趋势").font(.headline)
                 Spacer()
@@ -225,6 +235,24 @@ struct InvestmentBalanceTrend: View {
                     .padding(.top, 7)
                 legend
                 selection(selected.snapshot)
+                if let snapshotDay = selected.investmentSnapshotDay, snapshotDay < selected.id {
+                    Text("投资估值沿用 \(InvestmentText.date(snapshotDay)) 的快照。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if valid.count == 1 {
+                    Text("目前只有一天完整估值，积累更多每日快照后显示面积趋势。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if Set(valid.map(\.segment)).count == valid.count {
+                    Text("完整估值日期不连续，暂时仅显示数据点。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if valid.count < points.count {
+                    Text("部分日期估值不完整，已保留断点。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if loaded?.request != request {
+                ProgressView("正在读取每日快照…")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, minHeight: 163)
             } else {
                 Text(points.isEmpty ? "暂无资产趋势记录。" : "暂缺报价或汇率，无法绘制资产趋势。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -232,6 +260,7 @@ struct InvestmentBalanceTrend: View {
         }
         .onChange(of: range) { selectedDate = nil }
         .onChange(of: mode) { selectedDate = nil }
+        .task(id: request) { await load(request) }
     }
 
     private var tabs: some View {
@@ -258,15 +287,23 @@ struct InvestmentBalanceTrend: View {
         }
     }
 
-    private func history() -> [Point] {
-        guard let earliest = book.balanceEarliest else { return [] }
-        let start = range.start(today: today, earliest: earliest)
-        var segment = 0
-        return book.balanceDates(from: start, through: today).map { date in
-            let snapshot = book.balanceSnapshot(on: date, today: today)
-            if snapshot.net == nil { segment += 1 }
-            return Point(snapshot: snapshot, segment: segment)
+    private func load(_ request: Request) async {
+        guard loaded?.request != request, !Task.isCancelled else { return }
+        let book = self.book
+        let worker = Task.detached(priority: .userInitiated) { Self.history(book: book, request: request) }
+        let points = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
         }
+        guard !Task.isCancelled else { return }
+        loaded = LoadedHistory(request: request, points: points)
+    }
+
+    nonisolated private static func history(book: InvestmentBook, request: Request) -> [Point] {
+        guard let earliest = book.balanceEarliest else { return [] }
+        let start = request.range.start(today: request.today, earliest: earliest)
+        return book.balanceTrend(from: start, through: request.today)
     }
 
     private func number(_ value: Decimal) -> Double { NSDecimalNumber(decimal: value).doubleValue }
@@ -278,13 +315,20 @@ struct InvestmentBalanceTrend: View {
             RuleMark(y: .value("零轴", 0.0)).foregroundStyle(.secondary.opacity(0.6))
             if mode == .net {
                 ForEach(points) { point in
+                    AreaMark(x: .value("日期", point.id), y: .value("净资产", number(point.snapshot.net ?? 0)),
+                             series: .value("连续区间", point.segment), stacking: .unstacked)
+                        .foregroundStyle(InvestmentBalanceStyle.equity.opacity(0.2))
+                }
+                ForEach(points) { point in
                     LineMark(x: .value("日期", point.id), y: .value("净资产", number(point.snapshot.net ?? 0)),
                              series: .value("连续区间", point.segment))
                         .foregroundStyle(InvestmentBalanceStyle.equity)
                 }
                 ForEach(singlePoints) { point in
-                    PointMark(x: .value("日期", point.id), y: .value("净资产", number(point.snapshot.net ?? 0)))
-                        .foregroundStyle(InvestmentBalanceStyle.equity)
+                    if point.id != selected.id {
+                        PointMark(x: .value("日期", point.id), y: .value("净资产", number(point.snapshot.net ?? 0)))
+                            .foregroundStyle(InvestmentBalanceStyle.equity)
+                    }
                 }
             } else {
                 ForEach(InvestmentBalanceCategory.assets) { category in
@@ -310,15 +354,17 @@ struct InvestmentBalanceTrend: View {
                         .foregroundStyle(InvestmentBalanceStyle.debt)
                 }
             }
-            RuleMark(x: .value("所选日期", selected.id))
-                .foregroundStyle(.secondary.opacity(0.7))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            if points.count > 1 || selectedDate != nil {
+                RuleMark(x: .value("所选日期", selected.id))
+                    .foregroundStyle(.secondary.opacity(0.7))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
             if mode == .net, let net = selected.snapshot.net {
                 PointMark(x: .value("日期", selected.id), y: .value("净资产", number(net)))
                     .foregroundStyle(InvestmentBalanceStyle.equity)
             }
         }
-        .chartXScale(domain: start...today)
+        .chartXScale(domain: start...today, range: .plotDimension(padding: 6))
         .chartYScale(domain: .automatic(includesZero: true))
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { axis in

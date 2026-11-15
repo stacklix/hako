@@ -9,7 +9,7 @@ struct InvestmentMarketDataTests {
         mapping()
         try catalogIdentityCannotBeHandEdited()
 
-        catalogValidationIncludesNewUsesOfExistingAssets()
+        try catalogValidationIncludesNewUsesOfExistingAssets()
         try await credentialTestsUseAuthenticatedEndpoints()
         try await credentialTestsRejectInvalidResponses()
         try await alternateAfterUnavailableQuote()
@@ -55,7 +55,7 @@ struct InvestmentMarketDataTests {
 
 
 
-    static func catalogValidationIncludesNewUsesOfExistingAssets() {
+    static func catalogValidationIncludesNewUsesOfExistingAssets() throws {
         let listed = InvestmentAsset(name: "苹果", code: "AAPL", market: "XNAS", kind: .stock, currency: .usd)
         let account = InvestmentAccount(name: "美股", currency: .usd, type: .securities)
         let original = InvestmentBook(accounts: [account], assets: [listed.id: listed])
@@ -71,7 +71,7 @@ struct InvestmentMarketDataTests {
         watched.watched = [listed.id]
         precondition(watched.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
         var planned = original
-        planned.plans = [.init(accountID: account.id, assetID: listed.id, amount: 10, monthDay: 1, nextDay: day(1))]
+        planned.plans = [.init(accountID: account.id, assetID: listed.id, amount: 10, schedule: try .init(frequency: .monthly, day: 1), nextDay: day(1))]
         precondition(planned.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
     }
 

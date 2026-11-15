@@ -145,6 +145,13 @@ struct InvestmentBalanceSnapshot {
     var debtRatio: Decimal? { assets.flatMap { $0 > 0 ? liabilities / $0 : nil } }
 }
 
+struct InvestmentBalanceTrendPoint: Identifiable {
+    let snapshot: InvestmentBalanceSnapshot
+    let segment: Int
+    let investmentSnapshotDay: Date?
+    var id: Date { snapshot.day }
+}
+
 enum InvestmentBalanceHistoryFilter: Hashable {
     case all, account(UUID), investment
 }
@@ -213,6 +220,43 @@ extension InvestmentBook {
     }
 
     func balanceSnapshot(on day: Date, today: Date = Self.day(), updatedAt: Date? = nil) -> InvestmentBalanceSnapshot {
+        let investment = day == today ? portfolio(on: day)?.value : historicalInvestment(on: day)
+        return makeBalanceSnapshot(on: day, investment: investment, updatedAt: updatedAt)
+    }
+
+    /// Daily trends use daily valuations; frozen month-end balances belong to monthly comparisons.
+    func balanceTrend(from start: Date, through today: Date) -> [InvestmentBalanceTrendPoint] {
+        let start = Self.day(start), today = Self.day(today)
+        let days = Self.calendar.dateComponents([.day], from: start, to: today).day ?? -1
+        guard days >= 0 else { return [] }
+        let dates = (0...days).map { Self.addDays($0, to: start) }
+        var investments = dailyPortfolio(on: dates.filter { $0 < today }).mapValues(\.value)
+        investments[today] = portfolio(on: today)?.value
+        let firstInvestment = [earliest, investmentSnapshots.keys.min(), dailySnapshots?.values.keys.min()]
+            .compactMap { $0 }.min()
+        let carryFrom = Self.calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        // Seed from outside the visible range, but never carry a snapshot from before November 1.
+        var previous = dailySnapshots?.values.filter { $0.key >= carryFrom && $0.key < start }
+            .max { $0.key < $1.key }.map { (day: $0.key, value: $0.value.value) }
+        var segment = 0
+        var points: [InvestmentBalanceTrendPoint] = []
+        points.reserveCapacity(dates.count)
+        for date in dates {
+            guard !Task.isCancelled else { return [] }
+            let hadInvestment = firstInvestment.map { $0 <= date } ?? false
+            let exact = investments[date].map { (day: date, value: $0) }
+            if date >= carryFrom, let exact { previous = exact }
+            let valuation = exact ?? (date >= carryFrom ? previous : nil)
+            let investment = hadInvestment ? valuation?.value : 0
+            let snapshot = makeBalanceSnapshot(on: date, investment: investment)
+            if snapshot.net == nil { segment += 1 }
+            points.append(InvestmentBalanceTrendPoint(snapshot: snapshot, segment: segment,
+                                                      investmentSnapshotDay: hadInvestment ? valuation?.day : nil))
+        }
+        return points
+    }
+
+    private func makeBalanceSnapshot(on day: Date, investment: Decimal?, updatedAt: Date? = nil) -> InvestmentBalanceSnapshot {
         var amounts: [InvestmentBalanceCategory: Decimal] = [:]
         var lastUpdate = updatedAt
         for account in balanceSheet?.accounts ?? [] {
@@ -220,7 +264,6 @@ extension InvestmentBook {
             amounts[account.category, default: 0] += record.amount
             lastUpdate = max(lastUpdate ?? record.recordedAt, record.recordedAt)
         }
-        let investment = day == today ? portfolio(on: day)?.value : historicalInvestment(on: day)
         return InvestmentBalanceSnapshot(day: day, manual: amounts, investment: investment, updatedAt: lastUpdate)
     }
 

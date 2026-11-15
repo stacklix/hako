@@ -316,7 +316,8 @@ struct WorkshopConversationView: View {
     }
 
     private func userMessage(_ entry: WorkshopEntry) -> some View {
-        WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
+        WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent,
+            replies: conversation.presentation.questionReplies[entry.id] ?? [])
     }
 
     private var projectInfo: some View {
@@ -439,7 +440,6 @@ private struct WorkshopComposerView: View {
     let loadingPhoto: Bool
 
     var body: some View {
-        let editorID = input.editorID
         VStack(alignment: .leading, spacing: 8) {
             if conversation.editingMessageID != nil {
                 HStack {
@@ -467,12 +467,14 @@ private struct WorkshopComposerView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("添加图片，最多还可选择 \(max(0, 3 - conversation.photos.count)) 张")
                 .disabled(!conversation.canCompose || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
-                TextField("描述你的想法…", text: Binding(get: { input.text },
-                    set: { input.updateText($0, editorID: editorID) }), axis: .vertical)
-                    .id(editorID)
-                    .font(.body).lineLimit(1...5).accessibilityLabel("发给 Codex 的消息")
-                    .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(!conversation.canCompose)
+                ZStack(alignment: .topLeading) {
+                    if input.text.isEmpty {
+                        Text("描述你的想法…").font(.body).foregroundStyle(Color(uiColor: .placeholderText))
+                            .padding(.vertical, 11).allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    WorkshopComposerTextEditor(input: input)
+                        .disabled(!conversation.canCompose)
+                }.frame(maxWidth: .infinity, alignment: .leading)
                 if conversation.restoringCache || conversation.synchronizing || conversation.uncertain {
                     Button {} label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
@@ -504,6 +506,75 @@ private struct WorkshopComposerView: View {
     }
 
 
+}
+
+// Keep one native editor and explicitly apply acknowledged resets to its buffer.
+// SwiftUI's multiline TextField can restore its old editing value when disabled
+// during submission, including after replacing the field's view identity.
+private struct WorkshopComposerTextEditor: UIViewRepresentable {
+    let input: WorkshopComposerInput
+    @Environment(\.isEnabled) private var enabled
+
+    func makeCoordinator() -> Coordinator { Coordinator(input) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.textColor = .label
+        view.adjustsFontForContentSizeCategory = true
+        view.font = .preferredFont(forTextStyle: .body)
+        view.textContainer.lineFragmentPadding = 0
+        view.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 0)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.accessibilityLabel = "发给 Codex 的消息"
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.applying = true
+        defer { coordinator.applying = false }
+        let reset = coordinator.editorID != input.editorID
+        coordinator.input = input
+        coordinator.editorID = input.editorID
+        if reset || view.text != input.text {
+            view.unmarkText()
+            view.text = input.text
+            if reset {
+                view.undoManager?.removeAllActions()
+                view.selectedRange = NSRange(location: 0, length: 0)
+                view.setContentOffset(.zero, animated: false)
+            }
+            view.invalidateIntrinsicContentSize()
+        }
+        view.isEditable = enabled
+        if !enabled, view.isFirstResponder { view.resignFirstResponder() }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0 else { return nil }
+        let line = uiView.font?.lineHeight ?? 22
+        let insets = uiView.textContainerInset.top + uiView.textContainerInset.bottom
+        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: min(max(ceil(size.height), line + insets), line * 5 + insets))
+    }
+
+    static func dismantleUIView(_ view: UITextView, coordinator: Coordinator) { view.delegate = nil }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var input: WorkshopComposerInput
+        var editorID: UUID
+        var applying = false
+
+        init(_ input: WorkshopComposerInput) { self.input = input; editorID = input.editorID }
+
+        func textViewDidChange(_ view: UITextView) {
+            guard !applying, view.isEditable, view.isFirstResponder else { return }
+            input.updateText(view.text ?? "", editorID: editorID)
+            view.invalidateIntrinsicContentSize()
+        }
+    }
 }
 
 private struct WorkshopComposerAttachments: View {

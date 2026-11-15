@@ -315,6 +315,7 @@ struct WorkshopUserMessage: View {
     let threadId: String?
     let store: WorkshopStore
     let agent: WorkshopAgent
+    var replies: [WorkshopQuestionReply] = []
     @State private var photos: [WorkshopPhoto] = []
     @State private var selected: WorkshopPhoto?
     @State private var failure: String?
@@ -326,7 +327,13 @@ struct WorkshopUserMessage: View {
         let caption = WorkshopImageCaption(entry.text)
         VStack(alignment: .leading, spacing: 10) {
             if !caption.text.isEmpty {
-                Text(caption.text).font(.subheadline).textSelection(.enabled)
+                Group {
+                    if replies.isEmpty {
+                        Text(caption.text).font(.subheadline).textSelection(.enabled)
+                    } else {
+                        WorkshopQuestionReplyView(replies: replies)
+                    }
+                }
                     .modifier(WorkshopMessageCopy(text: caption.text))
                     .accessibilityHint("双击复制整条消息，长按可选择文本")
             }
@@ -372,6 +379,34 @@ struct WorkshopUserMessage: View {
         } catch is CancellationError { }
         catch {
             if photoLoad == load, !Task.isCancelled { failure = "图片暂时无法加载：\(error.localizedDescription)" }
+        }
+    }
+}
+
+private struct WorkshopQuestionReplyView: View {
+    let replies: [WorkshopQuestionReply]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(Array(replies.enumerated()), id: \.offset) { index, reply in
+                if index > 0 { Divider() }
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(replies.count > 1 ? "问题 \(index + 1)" : "问题", systemImage: "questionmark.bubble")
+                            .font(.caption.weight(.medium))
+                        Text(reply.question).font(.subheadline).textSelection(.enabled)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(HakoStyle.background.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("你的回答", systemImage: "text.bubble")
+                            .font(.caption.weight(.semibold))
+                        Text(reply.answer).font(.subheadline).textSelection(.enabled)
+                    }.foregroundStyle(HakoStyle.text)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 }

@@ -156,7 +156,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         "effective_date": "记账日期", "exchange": "交易所", "transfer_id": "划转编号", "transfer_account_id": "对侧账户",
         "instrument_id": "行情标的", "position_side": "方向", "settlement_unit": "结算单位",
         "trade_action": "开平仓方向", "margin_delta": "保证金变动",
-        "annual_rate": "年利率", "maturity_date": "到期日", "sort_order": "顺序", "month_day": "每月执行日", "next_date": "下次执行",
+        "annual_rate": "年利率", "maturity_date": "到期日", "sort_order": "顺序", "frequency": "执行周期", "schedule_day": "执行日", "next_date": "下次执行",
         "enabled": "启用", "last_result": "最近结果", "plan_id": "定投编号", "scheduled_date": "计划日期", "executed_at": "执行时间",
         "result_detail": "执行结果", "recorded_at": "记录时间（北京时间）", "balance_account_id": "资产负债账户", "category": "分类",
         "price_type": "报价类型", "price": "价格", "value": "价格 / 估值", "session_date": "交易日", "valuation_date": "估值日",
@@ -225,6 +225,13 @@ struct InvestmentAgentProposal: Identifiable, Codable {
             if let value = row["account_type"] { row["account_type"] = InvestmentAgentAction.accountTypes[value]?.rawValue ?? value }
             if let value = row["asset_type"] { row["asset_type"] = InvestmentAgentAction.assetKinds[value]?.title ?? value }
             if let value = row["category"] { row["category"] = InvestmentAgentAction.balanceCategories[value]?.rawValue ?? value }
+            if let value = source["frequency"], let frequency = InvestmentPlanFrequency(rawValue: value) {
+                row["frequency"] = frequency.title
+                if frequency == .daily { row.removeValue(forKey: "schedule_day") }
+                else if let day = source["schedule_day"].flatMap(Int.init) {
+                    row["schedule_day"] = frequency == .monthly ? "\(day) 日" : InvestmentPlanSchedule.weekdays[day - 1]
+                }
+            }
             for key in ["enabled", "is_final"] { if let value = row[key] { row[key] = value == "1" ? "是" : "否" } }
             if let value = row["sort_order"], let offset = Int(value) { row["sort_order"] = String(offset + 1) }
             if let value = row["annual_rate"], let rate = Decimal(string: value) {
@@ -505,7 +512,7 @@ extension InvestmentAgentProposal {
             if let name = action.text("name"), fields.contains(where: { $0.id == "name" && ($0.after ?? $0.before) == name }) { return true }
             if action.kind == .plan, let plan = book.plans.first(where: { $0.id.uuidString == key }) {
                 return plan.accountID.uuidString == action.text("account_id") && plan.assetID == (try? action.asset(in: book))?.id &&
-                    plan.amount == action.text("amount").flatMap { Decimal(string: $0) } && plan.monthDay == action.text("month_day").flatMap(Int.init)
+                    plan.amount == action.text("amount").flatMap { Decimal(string: $0) } && plan.schedule == (try? action.planSchedule())
             }
             if action.kind == .balanceRecord, let account = book.balanceSheet?.accounts.first(where: { $0.id.uuidString == action.text("balance_account_id") }),
                let record = account.records.first(where: { $0.id.uuidString == key }) {

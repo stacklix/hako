@@ -88,13 +88,14 @@ struct InvestmentView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await store.load(force: true)
-            await store.settleDuePlans()
             await store.refreshIfNeeded()
+            await store.settleDuePlans()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(300)) }
                 catch { return }
                 await store.load(force: true)
                 await store.refreshIfNeeded()
+                await store.settleDuePlans()
             }
         }
         .onChange(of: store.refreshing ? nil : store.rateCurrencies) { _, currencies in
@@ -111,12 +112,15 @@ struct InvestmentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let hasPublicQuotes = !store.publicQuoteIDs.isEmpty
+        let quoteHint = store.configured ? "日线与基金净值 · 自动切换行情源"
+            : hasPublicQuotes ? "加密货币现货 · 自动获取行情" : "行情未配置 · 支持手动报价"
+        return VStack(alignment: .leading, spacing: 7) {
             Text("投资记账").font(.system(size: 28, weight: .bold)).tracking(-0.7)
                 .accessibilityAddTraits(.isHeader)
             HStack(alignment: .top, spacing: 6) {
-                Circle().fill(store.configured ? Color.teal : HakoStyle.muted).frame(width: 5, height: 5).padding(.top, 5)
-                Text(store.quoteStatus.isEmpty ? (store.configured ? "日线与基金净值 · 自动切换行情源" : "行情未配置 · 支持手动报价") : store.quoteStatus)
+                Circle().fill(store.configured || hasPublicQuotes ? Color.teal : HakoStyle.muted).frame(width: 5, height: 5).padding(.top, 5)
+                Text(store.quoteStatus.isEmpty ? quoteHint : store.quoteStatus)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
@@ -399,42 +403,44 @@ struct InvestmentAccountView: View {
             } == true
         }
             .compactMap { book.asset($0) }.sorted { $0.code < $1.code }
-        return InvestmentCard {
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("持仓").font(Self.sectionTitleFont)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button { sheet = .addAsset } label: {
                     Label("录入资产", systemImage: "plus")
                         .labelStyle(.iconOnly)
-                        .font(.footnote)
+                        .font(.body)
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .disabled(account.isArchived)
             }
-            Divider()
-            if assets.isEmpty {
-                Text(ledger.positions.isEmpty ? "这个账户目前只有现金。" : "零余额持仓已隐藏，可在设置中显示。")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            ForEach(assets) { asset in
-                if let position = ledger.positions[asset.id] {
-                    let value = book.positionValue(position, asset: asset)
-                    let gain = value.map { $0 - position.netCost + position.realized }
-                    InvestmentLink(route: .asset(account.id, asset.id)) {
-                        HStack(alignment: .top, spacing: 8) {
-                            let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                            InvestmentTitle(asset.displayName, subtitle: asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + details)
-                            Spacer(minLength: 0)
-                            VStack(alignment: .trailing, spacing: 4) {
-                                Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))
-                                Text(InvestmentText.money(gain, account.currency, signed: true))
-                                    .font(.caption).foregroundStyle(InvestmentText.tint(gain))
-                            }.monospacedDigit()
-                            InvestmentChevron()
-                        }.frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                    if asset.id != assets.last?.id { Divider() }
+            InvestmentCard {
+                if assets.isEmpty {
+                    Text(ledger.positions.isEmpty ? "这个账户目前只有现金。" : "零余额持仓已隐藏，可在设置中显示。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                ForEach(assets) { asset in
+                    if let position = ledger.positions[asset.id] {
+                        let value = book.positionValue(position, asset: asset)
+                        let gain = value.map { $0 - position.netCost + position.realized }
+                        InvestmentLink(route: .asset(account.id, asset.id)) {
+                            HStack(alignment: .top, spacing: 8) {
+                                let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
+                                InvestmentTitle(asset.displayName, subtitle: asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + details)
+                                Spacer(minLength: 0)
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))
+                                    Text(InvestmentText.money(gain, account.currency, signed: true))
+                                        .font(.caption).foregroundStyle(InvestmentText.tint(gain))
+                                }.monospacedDigit()
+                                InvestmentChevron()
+                            }.frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        if asset.id != assets.last?.id { Divider() }
+                    }
                 }
             }
         }

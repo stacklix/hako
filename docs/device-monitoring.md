@@ -98,6 +98,20 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 `query.system.metrics` v1 也可包含 `disk`。其中 `volumes` 列出已就绪的固定盘符卷及其已用、总容量，`readBytesPerSecond` 与 `writeBytesPerSecond` 是同一采样窗口内物理磁盘的合计速度。单项速度不可用时返回 null，空闲时返回 0。磁盘数据缺失时，已有的 CPU、内存和网卡指标照常显示。 [Windows 物理磁盘性能计数器](https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives)
 
+### 服务监控与手工启动
+
+设备详情的「服务」页签（标题「服务监控」）通过 `query.services.status` v1 读取 Agent 用户目录的 `.codex/server.json`。参数为 `{}`，参与 `query.all`；开启实时刷新后约每 10 秒更新。每次查询重新读取文件，登记增删即时生效。Windows 本机设备监控也提供「服务监控」页签。
+
+登记格式为 `{"version":1,"services":[{"name":"example","port":8000,"description":"示例服务","workingDirectory":"C:\\apps\\example","startCommand":"python server.py --port 8000"}]}`。每个服务必须登记唯一名称、端口和可重复使用的 PowerShell 启动命令 `startCommand`，需要相对路径时登记绝对 `workingDirectory`。启动命令应固定绑定已登记端口，不存密码、Token 等秘密。没有启动命令的条目仍可监控，不能通过页面启动。Agent 不根据脚本名猜测启动命令，也不在页面接收任意命令或可执行路径。
+
+查询返回 `collectedAt,services,warnings`。服务字段为 `name,port,description,status,processes,http,canStart,startup`；`processes` 复用监听端口的进程结构，按登记端口匹配当前 TCP 监听者，并不验证该进程一定由登记命令启动。`http` 包含 `url,statusCode,elapsedMs,failure`；地址取自操作系统实际监听 IP，通配地址转换为相同地址族的回环地址，支持仅绑定局域网地址的服务。使用 HTTP GET 根路径、只读取响应头、不跟随重定向、不使用代理、Cookie 或登录凭据；每项检查预算 3 秒，最多 8 个 HTTP 探测并发。
+
+`status` 为 `responding`（收到 100–499 响应）、`http_error`（5xx）、`unreachable`（仍有监听，但 HTTP 失败或超时）、`stopped`（未监听）或 `unknown`（无法确认）。401、403、404 仍表示 HTTP 服务有响应；HTTPS-only 或非 HTTP 端口可能显示探测失败，不等同于进程停止。端口和根路径响应不代替业务健康检查。部分 TCP 表读取失败时，未发现的服务标记未知，避免误判停机；登记文件缺失、损坏或不可读返回明确错误，不当作空列表。最多 128 项、登记文件最多 256 KiB、结果最多 48 KiB，超限显式报错。
+
+`action.services.start` v1 参数为 `{"name":"example","requestId":"UUID"}`，仅在用户点击「启动服务」时调用，不参与聚合查询或实时采集。Agent 在登记表同目录持有 `server.json.lock` 独占文件句柄，重新核对登记命令、工作目录和 TCP 端口；已有监听或状态不明时不启动。命令使用隐藏的独立 PowerShell 进程执行。启动意图、幂等回执、退出码和日志保存于本机 Agent 数据区域的 `service-starts`，不放入公开目录；命令及日志不通过监控接口上传。同一 requestId 在 Agent 重启后仍不会重复执行；同一服务有未确认的启动时拒绝创建第二个进程。
+
+启动响应的 `starting` 只表示命令已提交。iOS 随后查询实际端口与 HTTP 状态；命令失败、命令已结束但未监听、结果不确定分别提示。断线不终止已提交的服务，也不自动重试启动动作。通过刷新查询结果确认，不将“已提交”显示为“服务已正常运行”。服务端复用通用能力转发，无新增路由。
+
 ### 监听端口
 
 `query.network.listeners` v1 参数为 `{}`，支持单独调用及 `query.all`，由 Windows Agent 按需读取 TCP LISTEN 和 UDP 绑定端口（IPv4 / IPv6），不统计已连接或出站 TCP 连接。服务端沿用通用转发，不存历史，不需要新增路由。

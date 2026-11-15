@@ -42,7 +42,7 @@ func TestInvestmentAccountDeletionWithSnapshotPruning(t *testing.T) {
 			{"id": "in", "account_id": "right", "event_type": "transfer_in", "effective_date": day, "sequence": "1", "amount": "50", "transfer_id": "transfer", "transfer_account_id": "left"},
 			remaining,
 		},
-		"investment_plans":     {{"id": "plan", "account_id": "left", "amount": "100", "month_day": "10", "next_date": "2026-12-10", "enabled": "1", "sort_order": "0"}},
+		"investment_plans":     {{"id": "plan", "account_id": "left", "amount": "100", "frequency": "monthly", "schedule_day": "10", "next_date": "2026-12-10", "enabled": "1", "sort_order": "0"}},
 		"investment_plan_runs": {{"plan_id": "plan", "scheduled_date": day, "status": "executed", "event_id": "deposit"}},
 	}}, 200)
 	snapshot := investmentRow{"snapshot_date": day, "computed_revision": "1", "status": "complete", "total_cny": "110"}

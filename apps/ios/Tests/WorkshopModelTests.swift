@@ -102,6 +102,22 @@ import Foundation
         precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: " \n "]) == nil)
         precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: "同步升级"]) == "针对提问的回答：\n如何升级？\n同步升级")
         precondition(WorkshopAsyncQuestion.replyMessage([question], answers: [0: String(repeating: "a", count: 4000)]) == nil)
+        let secondQuestion = WorkshopAsyncQuestion(title: "需要保留哪些数据？\n请说明范围。", options: [])
+        let questions = [question, secondQuestion]
+        let multiline = "第一行\n\n保留这段 `code` 和换行。"
+        let replyMessage = WorkshopAsyncQuestion.replyMessage(questions, answers: [0: "同步升级", 1: multiline])!
+        precondition(WorkshopAsyncQuestion.replySections(in: replyMessage, questions: questions) == [
+            WorkshopQuestionReply(question: question.title, answer: "同步升级"),
+            WorkshopQuestionReply(question: secondQuestion.title, answer: multiline)
+        ], "Each original question must be paired with its complete multiline answer")
+        precondition(WorkshopAsyncQuestion.replySections(in: "普通消息", questions: questions) == nil)
+        precondition(WorkshopAsyncQuestion.replySections(in: replyMessage, questions: []) == nil)
+        precondition(WorkshopAsyncQuestion.replySections(in: replyMessage, questions: [secondQuestion]) == nil)
+        precondition(WorkshopAsyncQuestion.replySections(in: "针对提问的回答：\n如何升级？\n", questions: [question]) == nil)
+        let ambiguousReply = WorkshopAsyncQuestion.replyMessage(questions,
+            answers: [0: "引用：\n\n" + secondQuestion.title + "\n不要把引用当成下一题", 1: "完整保留"])!
+        precondition(WorkshopAsyncQuestion.replySections(in: ambiguousReply, questions: questions) == nil,
+            "Ambiguous boundaries must preserve the original message instead of showing incorrect question/answer pairs")
         let answer = WorkshopQueuedSend(id: "reply", operationId: "op", message: "同步升级", imageIds: [], questionId: "async-question")
         precondition(answer.parameters["questionId"] as? String == "async-question" && answer.entry.questionId == "async-question")
         let restoredAnswer = try! JSONDecoder().decode(WorkshopQueuedSend.self, from: JSONEncoder().encode(answer))
@@ -109,7 +125,7 @@ import Foundation
 
         let now = Date(timeIntervalSince1970: 1000)
         var completion = WorkshopSession(id: "thread", title: "Task", applicationId: "app", cwd: "project", preview: "Latest response", updatedAt: 1,
-            state: "completed", operationId: nil, completionId: "turn-one")
+            state: "completed", operationId: nil, completionId: "turn-one", lastSentAt: 1)
         var reads = WorkshopReadState()
         precondition(reads.isUnread(completion, agentId: "computer-one", now: now))
         precondition(reads.markRead(threadId: completion.id, completionId: "turn-one", agentId: "computer-one"))
@@ -120,10 +136,10 @@ import Foundation
         completion.completionId = "turn-two"
         precondition(restoredReads.isUnread(completion, agentId: "computer-one", now: now), "A new completion with identical reply text must become unread")
         let renamed = WorkshopSession(id: "thread", title: "Renamed", applicationId: "app", cwd: "project", preview: "Latest response", updatedAt: 999,
-            state: "completed", operationId: nil, completionId: "turn-one")
+            state: "completed", operationId: nil, completionId: "turn-one", lastSentAt: 999)
         precondition(!restoredReads.isUnread(renamed, agentId: "computer-one", now: now), "Renaming must not turn an already-read completion unread")
         let running = WorkshopSession(id: "thread", title: "Task", applicationId: "app", cwd: "project", preview: "New request", updatedAt: 999,
-            state: "running", operationId: nil)
+            state: "running", operationId: nil, lastSentAt: 999)
         precondition(running.inProgress && !restoredReads.isUnread(running, agentId: "computer-one", now: now))
         let deadline = Date(timeIntervalSince1970: Double(completion.updatedAt) + 12 * 60 * 60)
         precondition(restoredReads.isUnread(completion, agentId: "computer-one", now: deadline), "Exactly twelve hours remains unread")
@@ -132,28 +148,28 @@ import Foundation
         precondition(restoredReads.receipts["computer-one:thread"]?.completionId == "turn-one",
             "Expiring a badge must preserve the saved read receipt")
         let recentUnread = WorkshopSession(id: "recent", title: "Unread", applicationId: "app", cwd: "project", preview: "", updatedAt: 990,
-            state: "completed", operationId: nil, completionId: "recent-turn")
+            state: "completed", operationId: nil, completionId: "recent-turn", lastSentAt: 990)
         let ordinary = WorkshopSession(id: "ordinary", title: "Earlier read", applicationId: "app", cwd: "project", preview: "", updatedAt: 999,
-            state: "idle", operationId: nil)
+            state: "idle", operationId: nil, lastSentAt: 999)
         let activityOrder = WorkshopCatalog.ordered([ordinary, completion, recentUnread])
         precondition(activityOrder.map(\.id) == [ordinary.id, recentUnread.id, completion.id],
             "Activity ordering must follow update times without granting unread conversations a separate priority")
         let equalTimeA = WorkshopSession(id: "a", title: "A", applicationId: "app", cwd: "project", preview: "", updatedAt: 999,
-            state: "idle", operationId: nil)
+            state: "idle", operationId: nil, lastSentAt: 999)
         let equalTimeB = WorkshopSession(id: "b", title: "B", applicationId: "app", cwd: "project", preview: "", updatedAt: 999,
-            state: "idle", operationId: nil)
+            state: "idle", operationId: nil, lastSentAt: 999)
         precondition(WorkshopCatalog.ordered([equalTimeB, equalTimeA]).map(\.id) == ["a", "b"],
             "Equal activity timestamps must have a stable order across refreshes")
-        let older = WorkshopSession(id: "archived-elsewhere", title: "Earlier", applicationId: "app", cwd: "project", preview: "", updatedAt: 1, state: "idle", operationId: nil)
-        let live = WorkshopSession(id: "live", title: "Live", applicationId: "app", cwd: "project", preview: "", updatedAt: 2, state: "idle", operationId: nil)
-        let latest = WorkshopSession(id: "live", title: "Updated", applicationId: "app", cwd: "project", preview: "", updatedAt: 3, state: "idle", operationId: nil)
+        let older = WorkshopSession(id: "archived-elsewhere", title: "Earlier", applicationId: "app", cwd: "project", preview: "", updatedAt: 1, state: "idle", operationId: nil, lastSentAt: 1)
+        let live = WorkshopSession(id: "live", title: "Live", applicationId: "app", cwd: "project", preview: "", updatedAt: 2, state: "idle", operationId: nil, lastSentAt: 2)
+        let latest = WorkshopSession(id: "live", title: "Updated", applicationId: "app", cwd: "project", preview: "", updatedAt: 3, state: "idle", operationId: nil, lastSentAt: 3)
         precondition(WorkshopCatalog.merge([latest], existing: [older, live], more: false).map(\.id) == ["live"],
             "Refreshing must remove threads that were archived outside the phone")
         let more = WorkshopCatalog.merge([latest], existing: [older, live], more: true)
         precondition(more.map(\.id) == ["live", "archived-elsewhere"] && more[0].title == "Updated",
             "Pagination must retain earlier pages and reconcile duplicate thread IDs")
         let activated = WorkshopSession(id: older.id, title: older.title, applicationId: older.applicationId, cwd: older.cwd,
-            preview: "New activity", updatedAt: 4, state: "running", operationId: "new-operation")
+            preview: "New activity", updatedAt: 4, state: "running", operationId: "new-operation", lastSentAt: 4)
         let firstPage = WorkshopCatalog.merge([activated], existing: [latest, older], more: true)
         precondition(firstPage.map(\.id) == [older.id, latest.id] && firstPage[0].preview == "New activity",
             "Publishing the newest page must immediately move updated conversations forward while retaining older loaded pages")
@@ -182,7 +198,7 @@ import Foundation
         precondition(listing().first?.id == resolved.threadId,
             "An older in-flight catalog response must not hide a newly created thread")
         let remote = WorkshopSession(id: resolved.threadId!, title: "Remote title", applicationId: "app", cwd: "project",
-            preview: "Remote response", updatedAt: Int64(original.createdAt.timeIntervalSince1970), state: "running", operationId: original.id)
+            preview: "Remote response", updatedAt: Int64(original.createdAt.timeIntervalSince1970), state: "running", operationId: original.id, lastSentAt: Int64(original.createdAt.timeIntervalSince1970))
         precondition(listing([remote]).count == 1 && listing([remote])[0].title == "Remote title",
             "The catalog must replace local data without a duplicate row")
         local.confirm([remote], agentId: "other")
@@ -208,9 +224,16 @@ import Foundation
         precondition(continuing.parameters["threadId"] as? String == previous)
         var activeList = WorkshopLocalSessions()
         let old = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "Old reply", updatedAt: 100, state: "completed", operationId: "older-request")
+            preview: "Old reply", updatedAt: 100, state: "completed", operationId: "older-request", lastSentAt: 100)
         let recent = WorkshopSession(id: "other", title: "Other", applicationId: "app", cwd: "project",
-            preview: "Other reply", updatedAt: 200, state: "completed", operationId: "other-request")
+            preview: "Other reply", updatedAt: 200, state: "completed", operationId: "other-request", lastSentAt: 200)
+        let executing = WorkshopSession(id: "executing", title: "Executing", applicationId: "app", cwd: "project",
+            preview: "Recent tool output", updatedAt: 999999, state: "running", operationId: "active", lastSentAt: 50)
+        precondition(WorkshopCatalog.ordered([executing, recent, old]).map(\.id) == [recent.id, old.id, executing.id],
+            "Opening, tool output or assistant activity must not outrank a later user send")
+        let decodedOrder = try JSONDecoder().decode(WorkshopSession.self, from: JSONEncoder().encode(executing))
+        precondition(decodedOrder.lastSentAt == 50 && decodedOrder.updatedAt == 999999,
+            "List snapshots must preserve the send timestamp separately from execution freshness")
         func activeListing(_ remote: [WorkshopSession]) -> [WorkshopSession] {
             activeList.merging(remote, agentId: "Agent", applications: [application], archived: false)
         }
@@ -223,7 +246,7 @@ import Foundation
         precondition(activeListing([recent, old])[0].inProgress,
             "An older catalog response for the same thread must not undo a new send")
         let staleTime = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "Old reply", updatedAt: 100, state: "running", operationId: continuing.id)
+            preview: "Old reply", updatedAt: 100, state: "running", operationId: continuing.id, lastSentAt: 100)
         activeList.confirm([staleTime], agentId: "Agent")
         precondition(activeListing([recent, staleTime])[0].updatedAt == Int64(continuing.createdAt.timeIntervalSince1970),
             "Acknowledging the operation before the catalog timestamp updates must preserve the new activity time")
@@ -235,14 +258,14 @@ import Foundation
         precondition(activeListing([recent, old]) == [recent, old], "Rejecting a send must restore the catalog's state and order")
         activeList.record(continuing, isNew: true)
         let acceptedSession = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "Current", updatedAt: Int64(continuing.createdAt.timeIntervalSince1970), state: "running", operationId: continuing.id)
+            preview: "Current", updatedAt: Int64(continuing.createdAt.timeIntervalSince1970), state: "running", operationId: continuing.id, lastSentAt: Int64(continuing.createdAt.timeIntervalSince1970))
         activeList.confirm([acceptedSession], agentId: "Agent")
         activeList.record(continuing, isNew: false)
         precondition(activeListing([]).isEmpty, "After catalog acknowledgement, polling must not resurrect an archived thread")
         var updates = WorkshopSessionUpdates()
         let inFlight = updates.revision
         let verifiedDone = WorkshopSession(id: acceptedSession.id, title: acceptedSession.title, applicationId: "app", cwd: "project",
-            preview: "Final reply", updatedAt: acceptedSession.updatedAt, state: "completed", operationId: continuing.id, completionId: "verified-turn")
+            preview: "Final reply", updatedAt: acceptedSession.updatedAt, state: "completed", operationId: continuing.id, completionId: "verified-turn", lastSentAt: acceptedSession.updatedAt)
         updates.record(verifiedDone, agentId: "Agent")
         let reconciled = updates.merging([acceptedSession], agentId: "Agent", since: inFlight)[0]
         precondition(!reconciled.inProgress && reconciled.completionId == "verified-turn",
@@ -256,21 +279,21 @@ import Foundation
                 "Returning to the list and polling again must not undo verified completion without new activity")
         }
         let newTurn = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "New task", updatedAt: verifiedDone.updatedAt + 1, state: "running", operationId: continuing.id)
+            preview: "New task", updatedAt: verifiedDone.updatedAt + 1, state: "running", operationId: continuing.id, lastSentAt: verifiedDone.updatedAt + 1)
         precondition(updates.merging([newTurn], agentId: "Agent", since: inFlight)[0].inProgress,
             "New activity in the same queue group must not be hidden by a previous completion")
         let newOperation = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "New task", updatedAt: verifiedDone.updatedAt, state: "running", operationId: "different-operation")
+            preview: "New task", updatedAt: verifiedDone.updatedAt, state: "running", operationId: "different-operation", lastSentAt: verifiedDone.updatedAt)
         precondition(updates.merging([newOperation], agentId: "Agent", since: inFlight)[0].inProgress)
         let newCompletion = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
             preview: "Another completed turn", updatedAt: verifiedDone.updatedAt, state: "completed",
-            operationId: continuing.id, completionId: "new-completion")
+            operationId: continuing.id, completionId: "new-completion", lastSentAt: verifiedDone.updatedAt)
         precondition(updates.merging([newCompletion], agentId: "Agent", since: inFlight)[0].completionId == "new-completion",
             "A newly completed turn in the same timestamp bucket must retain its unread identity")
         for state in ["failed", "interrupted", "cancelled", "unknown", "paused"] {
             var terminalUpdates = WorkshopSessionUpdates()
             terminalUpdates.record(WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-                preview: "Terminal", updatedAt: acceptedSession.updatedAt, state: state, operationId: continuing.id), agentId: "Agent")
+                preview: "Terminal", updatedAt: acceptedSession.updatedAt, state: state, operationId: continuing.id, lastSentAt: acceptedSession.updatedAt), agentId: "Agent")
             let result = terminalUpdates.merging([acceptedSession], agentId: "Agent", since: terminalUpdates.revision)[0]
             precondition(result.inProgress == ["unknown", "paused"].contains(state),
                 "Verified terminal states must survive stale polls, while uncertain or paused operations can recover")
@@ -282,7 +305,7 @@ import Foundation
             "An explicit new send must allow resumed activity even in the same timestamp bucket")
         var settledActivity = WorkshopLocalSessions()
         let skewedDone = WorkshopSession(id: verifiedDone.id, title: verifiedDone.title, applicationId: "app", cwd: "project",
-            preview: verifiedDone.preview, updatedAt: 100, state: "completed", operationId: continuing.id, completionId: "verified-turn")
+            preview: verifiedDone.preview, updatedAt: 100, state: "completed", operationId: continuing.id, completionId: "verified-turn", lastSentAt: 100)
         settledActivity.record(continuing, isNew: true)
         settledActivity.settle(threadId: previous, operationId: "unrelated", agentId: "Agent")
         precondition(!settledActivity.merging([skewedDone], agentId: "Agent", applications: [application], archived: false)[0].inProgress,
@@ -310,7 +333,7 @@ import Foundation
         var verifiedActivity = WorkshopLocalSessions()
         verifiedActivity.record(continuing, isNew: true)
         let newerCatalog = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
-            preview: "Latest reply", updatedAt: 300, state: "completed", operationId: "newer-operation", completionId: "newer-turn")
+            preview: "Latest reply", updatedAt: 300, state: "completed", operationId: "newer-operation", completionId: "newer-turn", lastSentAt: 300)
         precondition(verifiedActivity.merging([newerCatalog], agentId: "Agent", applications: [application], archived: false)[0].inProgress,
             "An unrelated catalog completion alone cannot discard an unconfirmed send")
         let verification = verifiedActivity.verifications(for: [newerCatalog], agentId: "Agent")[0]

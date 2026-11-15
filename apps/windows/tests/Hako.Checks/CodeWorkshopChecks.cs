@@ -21,6 +21,7 @@ internal static class CodeWorkshopChecks
 
     public static async Task RunAsync()
     {
+        WorkshopCatalogChecks.Run();
         var summarized = CodeWorkshop.SummarizeTurn(Json(new { id = "latest-turn", status = "completed", items = new object[] {
             new { id = "first", type = "userMessage", content = new[] { new { type = "text", text = "First prompt" } } },
             new { id = "last", type = "agentMessage", text = "Latest\n  response" },
@@ -121,6 +122,38 @@ internal static class CodeWorkshopChecks
         var storage = Path.Combine(directory, "state");
         try
         {
+            var catalogStorage = Path.Combine(directory, "catalog-state");
+            Directory.CreateDirectory(catalogStorage);
+            var accepted = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread, TurnId = "fixture-turn",
+                State = "completed", Cwd = project, ApplicationId = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(project.ToUpperInvariant())))[..16].ToLowerInvariant(),
+                QueueOrder = DateTime.UnixEpoch.AddSeconds(2000).Ticks };
+            File.WriteAllBytes(Path.Combine(catalogStorage, accepted.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(accepted, WorkshopProtocol.Json));
+            var catalogPages = Path.Combine(project, ".catalog-pages");
+            File.WriteAllText(catalogPages, "enabled");
+            try
+            {
+                await using var listing = new CodeWorkshop(catalogStorage, code, Path.Combine(directory, ".codex"), token => Start(token));
+                var firstPage = Result(await listing.CatalogAsync(Json(new { }), default));
+                Check(CodexJson.Text(firstPage.GetProperty("sessions")[0], "id") == FixtureThread &&
+                    firstPage.GetProperty("sessions")[0].GetProperty("lastSentAt").GetInt64() == 2000,
+                    "An accepted send from the fourth upstream page did not reach the first client page");
+                var all = new List<string>();
+                var currentPage = firstPage;
+                do
+                {
+                    all.AddRange(currentPage.GetProperty("sessions").EnumerateArray().Select(row => CodexJson.Text(row, "id")));
+                    var cursor = CodexJson.Text(currentPage, "nextCursor");
+                    if (cursor.Length == 0) break;
+                    currentPage = Result(await listing.CatalogAsync(Json(new { cursor }), default));
+                } while (true);
+                Check(all.Count == 65 && all.Distinct().Count() == 65, "Global send-order pagination lost or duplicated a thread");
+                await listing.HistoryAsync(Json(new { threadId = FixtureThread }), default);
+                var afterOpen = Result(await listing.CatalogAsync(Json(new { }), default));
+                Check(firstPage.GetProperty("sessions").EnumerateArray().Select(row => CodexJson.Text(row, "id"))
+                    .SequenceEqual(afterOpen.GetProperty("sessions").EnumerateArray().Select(row => CodexJson.Text(row, "id"))),
+                    "Reading a running/completed thread changed the send-order page");
+            }
+            finally { File.Delete(catalogPages); }
             string applicationId;
             string requestId;
             long completedStart;
@@ -143,6 +176,9 @@ internal static class CodeWorkshopChecks
                 var catalog = Result(await service.CatalogAsync(Json(new { }), default));
                 applicationId = catalog.GetProperty("applications")[0].GetProperty("id").GetString()!;
                 Check(catalog.GetProperty("sessions")[0].GetProperty("applicationId").GetString() == applicationId, "Session/application association failed");
+                Check(catalog.GetProperty("sessions")[0].GetProperty("lastSentAt").GetInt64() == 1 &&
+                    catalog.GetProperty("sessions")[0].GetProperty("updatedAt").GetInt64() == 1000,
+                    "Send order and execution freshness must remain separate in the client response");
                 Check(CodexJson.Text(catalog.GetProperty("sessions")[0], "state") == "completed",
                     "An active thread flag must not override its completed latest turn");
                 Check(CodexJson.Text(catalog.GetProperty("sessions")[0], "preview") == "Latest fixture reply" &&
@@ -594,8 +630,21 @@ internal static class CodeWorkshopChecks
                     CodexJson.Field(options, "limit").GetInt32() == 1, "Catalog hydrated the full transcript instead of one latest-turn summary");
             }
             if (method == "thread/list")
-                Check(CodexJson.Field(CodexJson.Field(input, "params"), "useStateDbOnly").ValueKind == JsonValueKind.True,
-                    "Interactive catalog queries must use the state database instead of rescanning every rollout");
+                Check(CodexJson.Field(CodexJson.Field(input, "params"), "useStateDbOnly").ValueKind == JsonValueKind.True &&
+                    CodexJson.Text(CodexJson.Field(input, "params"), "sortKey") == "recency_at" &&
+                    CodexJson.Text(CodexJson.Field(input, "params"), "sortDirection") == "desc",
+                    "Catalog must read lightweight metadata in user-send order, independently of execution updates");
+            if (method == "thread/list" && File.Exists(Path.Combine(project, ".catalog-pages")))
+            {
+                var cursor = CodexJson.Text(CodexJson.Field(input, "params"), "cursor");
+                var offset = cursor.Length == 0 ? 0 : int.Parse(cursor.Replace("native-", ""));
+                var data = Enumerable.Range(offset, Math.Min(20, 65 - offset)).Select(index => new {
+                    id = index == 64 ? FixtureThread : new Guid(index + 1, 0, 0, new byte[8]).ToString("D"),
+                    cwd = project, name = "Catalog fixture", preview = "Preview", updatedAt = 999999 - index, recencyAt = 1000 - index
+                }).ToArray();
+                Write(new { id, result = new { data, nextCursor = offset + 20 < 65 ? "native-" + (offset + 20) : null } });
+                continue;
+            }
             if (method == "thread/archive")
             {
                 File.WriteAllText(Path.Combine(project, ".archive-entered"), "entered");
@@ -662,7 +711,7 @@ internal static class CodeWorkshopChecks
             var thread = new
             {
                 id = FixtureThread, cwd = CodexJson.Text(CodexJson.Field(input, "params"), "threadId") == "22222222-2222-4222-8222-222222222222" ? Path.GetDirectoryName(project)! : project,
-                name = "Fixture", preview = "Fixture history", updatedAt = 1,
+                name = "Fixture", preview = "Fixture history", updatedAt = 1000, recencyAt = 1,
                 status = new { type = method == "thread/list" ? "active" : "idle", activeFlags = Array.Empty<string>() },
                 turns = new[] { new { id = turnId, status = "completed", items = historyItems.ToArray() } }
             };

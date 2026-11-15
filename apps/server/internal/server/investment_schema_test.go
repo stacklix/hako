@@ -30,7 +30,7 @@ func TestInvestmentDatabaseRejectsOldSchemaWithoutChangingRecords(t *testing.T) 
 		opened.Close()
 		t.Fatal("old schema was opened")
 	}
-	if err == nil || !strings.Contains(err.Error(), "unsupported database schema version 2 (expected 3)") {
+	if err == nil || !strings.Contains(err.Error(), "unsupported database schema version 2 (expected 4)") {
 		t.Fatalf("old schema error = %v", err)
 	}
 	var version int

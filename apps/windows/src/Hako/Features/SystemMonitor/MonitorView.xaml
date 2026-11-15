@@ -8,6 +8,8 @@
    </Expander>
   </DataTemplate>
  </UserControl.Resources>
+ <TabControl>
+ <TabItem Header="系统监控">
  <ScrollViewer VerticalScrollBarVisibility="Auto">
  <StackPanel>
   <TextBlock Text="设备监控" FontSize="26" FontWeight="Bold" Margin="0,12,0,12"/>
@@ -38,4 +40,29 @@
   </TabControl>
  </StackPanel>
  </ScrollViewer>
+ </TabItem>
+ <TabItem Header="服务监控">
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+   <StackPanel Margin="12" Loaded="ServicesLoaded">
+    <TextBlock Text="服务监控" FontSize="26" FontWeight="Bold" Margin="0,12,0,12"/>
+    <TextBlock Text="读取本机 ~/.codex/server.json，按登记端口检查 TCP 监听与 HTTP 根路径响应。" TextWrapping="Wrap" Foreground="#526175" Margin="0,0,0,16"/>
+    <Button x:Name="RefreshServices" Content="刷新服务状态" Click="RefreshServicesClick" HorizontalAlignment="Left"/>
+    <TextBlock x:Name="ServiceStatus" Text="等待检查服务状态" TextWrapping="Wrap" Foreground="#526175" Margin="0,16"/>
+    <ItemsControl x:Name="Services">
+     <ItemsControl.ItemTemplate>
+      <DataTemplate>
+       <Expander Header="{Binding Title}" HorizontalContentAlignment="Stretch" Margin="0,0,0,12">
+        <StackPanel Margin="16,8,0,8">
+         <TextBlock Text="{Binding Detail}" TextWrapping="Wrap"/>
+         <Button Content="启动服务" Tag="{Binding Name}" IsEnabled="{Binding CanStart}" Click="StartServiceClick" HorizontalAlignment="Left" Margin="0,12,0,0"/>
+        </StackPanel>
+       </Expander>
+      </DataTemplate>
+     </ItemsControl.ItemTemplate>
+    </ItemsControl>
+    <TextBlock Text="HTTP 4xx 仍表示服务已响应，5xx 标记为服务异常；端口进程按端口匹配，HTTP 响应不代表业务健康检查通过。" TextWrapping="Wrap" Foreground="#526175" Margin="0,8"/>
+   </StackPanel>
+  </ScrollViewer>
+ </TabItem>
+ </TabControl>
 </UserControl>

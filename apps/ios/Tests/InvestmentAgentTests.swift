@@ -19,7 +19,9 @@ struct InvestmentAgentTests {
         try cashBalanceUsesAdjustment()
         try editingEntriesKeepsPageSignAndClearingRules()
         try termDepositsAndPlansFollowPageForms()
+        try planActionsSupportEveryPeriod()
         try snapshotPreviewIncludesFetchedInputs()
+        try cryptoSpotQuotesRequireMarketData()
 
         try lifecycleActionsUseOneBusinessPreview()
         try await nativeEditorOnlyRevisesThePendingDraft()
@@ -437,13 +439,46 @@ struct InvestmentAgentTests {
         precondition(after == 120 && book.accounts[0].events.count == 1)
     }
 
+    private static func planActionsSupportEveryPeriod() throws {
+        let account = InvestmentAccount(name: "定投周期", currency: .cny, type: .securities)
+        let first = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        for frequency in InvestmentPlanFrequency.allCases {
+            var book = InvestmentBook(accounts: [account])
+            var values = ["account_id": account.id.uuidString, "plan_type": "deposit", "amount": "100",
+                          "frequency": frequency.rawValue, "enabled": "true"]
+            if frequency != .daily { values["schedule_day"] = frequency == .monthly ? "31" : "1" }
+            let action = InvestmentAgentAction(kind: .plan, values: values)
+            precondition(action.form(in: book).missing.isEmpty)
+            try action.apply(to: &book, today: first)
+            let plan = book.plans[0]
+            precondition(plan.schedule.frequency == frequency && plan.nextDay > first)
+            let update = InvestmentAgentAction(kind: .plan, values: ["plan_id": plan.id.uuidString, "amount": "200"])
+            try update.apply(to: &book, today: first)
+            precondition(book.plans[0].schedule == plan.schedule && book.plans[0].nextDay == plan.nextDay)
+            precondition(book.plans[0].amount == 200 && book.plans.count == 1)
+        }
+        var book = InvestmentBook(accounts: [account])
+        try InvestmentAgentAction(kind: .plan, values: ["account_id": account.id.uuidString, "plan_type": "deposit", "amount": "100",
+            "frequency": "monthly", "schedule_day": "8", "enabled": "true"]).apply(to: &book, today: first)
+        let changed = InvestmentAgentAction(kind: .plan, values: ["plan_id": book.plans[0].id.uuidString, "frequency": "biweekly"])
+        precondition(changed.form(in: book).missing == ["执行日"])
+        do { try changed.apply(to: &book, today: first); preconditionFailure("missing weekday") }
+        catch is InvestmentError { }
+        for day in ["1", "invalid"] {
+            let invalid = InvestmentAgentAction(kind: .plan, values: ["account_id": account.id.uuidString, "plan_type": "deposit", "amount": "100",
+                "frequency": "daily", "schedule_day": day, "enabled": "true"])
+            do { try invalid.apply(to: &book, today: first); preconditionFailure("invalid daily schedule") }
+            catch is InvestmentError { }
+        }
+    }
+
     private static func nativeEditorPreservesPlanIdentityAndCanClearItsAsset() throws {
         let account = InvestmentAccount(name: "定投测试", currency: .usd, type: .securities)
         var book = InvestmentBook(accounts: [account])
         let asset = InvestmentAsset(name: "Example", code: "TEST", market: "US", kind: .stock, currency: .usd)
         _ = try book.register(asset)
         let plan = InvestmentAgentAction(kind: .plan, values: ["account_id": account.id.uuidString,
-            "asset_id": asset.id.uuidString, "plan_type": "buy", "amount": "10", "month_day": "8", "enabled": "true"])
+            "asset_id": asset.id.uuidString, "plan_type": "buy", "amount": "10", "frequency": "monthly", "schedule_day": "8", "enabled": "true"])
         try plan.apply(to: &book)
         let id = book.plans[0].id
         let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [.init(kind: .plan, values: ["plan_id": id.uuidString, "amount": "20"])])
@@ -452,7 +487,7 @@ struct InvestmentAgentTests {
         let revised = try InvestmentAgentProposal(base: snapshot(book), actions: actions)
         precondition(revised.book.plans.count == 1 && revised.book.plans[0].id == id)
         precondition(revised.book.plans[0].assetID == nil && revised.book.plans[0].amount == 30)
-        precondition(revised.book.plans[0].monthDay == 8 && book.plans[0].amount == 10)
+        precondition(revised.book.plans[0].schedule.day == 8 && book.plans[0].amount == 10)
     }
 
     private static func deletionPreviewsHaveNoEntryEditor() throws {
@@ -682,9 +717,9 @@ struct InvestmentAgentTests {
         precondition(!proposal.preview.items.flatMap(\.groups).flatMap(\.fields).contains { ($0.after ?? "").contains(stored.code) })
         let context = InvestmentAgentAction.inspect([setup, entry], in: book)
         precondition(context.allSatisfy { ($0["missing"] as? [String])?.isEmpty == true && $0["validation_error"] == nil })
-        let unclear = InvestmentAgentAction(kind: .plan, values: ["account_id": account.id.uuidString, "amount": "100", "month_day": "5", "enabled": "true"])
+        let unclear = InvestmentAgentAction(kind: .plan, values: ["account_id": account.id.uuidString, "amount": "100", "frequency": "monthly", "schedule_day": "5", "enabled": "true"])
         precondition(unclear.form(in: book).missing == ["任务类型"])
-        let plan = InvestmentAgentAction(kind: .plan, values: ["plan_type": "deposit", "account_id": account.id.uuidString, "amount": "100", "month_day": "5", "enabled": "true"])
+        let plan = InvestmentAgentAction(kind: .plan, values: ["plan_type": "deposit", "account_id": account.id.uuidString, "amount": "100", "frequency": "monthly", "schedule_day": "5", "enabled": "true"])
         try plan.apply(to: &book)
         let paused = InvestmentAgentAction(kind: .plan, values: ["plan_id": book.plans[0].id.uuidString, "enabled": "false"])
         precondition(paused.form(in: book).missing.isEmpty)
@@ -724,6 +759,30 @@ struct InvestmentAgentTests {
         try reduce.apply(to: &book)
         precondition(book.accounts[0].events.last?.quantity == -1)
         precondition(reduce.form(in: book).fields.contains { $0.key == "quantity" && $0.label == "减少数量" && $0.value == "1" })
+    }
+
+    private static func cryptoSpotQuotesRequireMarketData() throws {
+        var book = InvestmentBook()
+        let day = InvestmentBook.day()
+        let date = InvestmentEditorDraft.day.string(from: day)
+        let spot = try book.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        let stock = try book.register(.init(name: "Example", code: "TEST", market: "US", kind: .stock, currency: .usd))
+        book.addQuotes([.init(day: day, price: 1, source: "Binance 现货")], assetID: spot)
+        let manual = InvestmentAgentAction(kind: .quote, values: ["asset_id": spot.uuidString, "date": date, "price": "99"])
+        do {
+            try manual.apply(to: &book)
+            preconditionFailure("Crypto spot prices must not be overwritten by manual quotes")
+        } catch let error as InvestmentError {
+            precondition(error.localizedDescription.contains("不支持手动报价"))
+        }
+        precondition(book.quote(spot)?.price == 1 && book.quote(spot)?.source == "Binance 现货")
+        let inspection = InvestmentAgentAction.inspect([manual], in: book)
+        precondition((inspection[0]["validation_error"] as? String)?.contains("不支持手动报价") == true)
+
+        book.addQuotes([.init(day: day, price: 2, source: "Binance 现货")], assetID: spot)
+        precondition(book.quote(spot)?.price == 2, "Market refresh must still update crypto spot quotes")
+        try InvestmentAgentAction(kind: .quote, values: ["asset_id": stock.uuidString, "date": date, "price": "20"]).apply(to: &book)
+        precondition(book.quote(stock)?.price == 20 && book.quote(stock)?.source == "手动录入")
     }
 
     private static func snapshotPreviewIncludesFetchedInputs() throws {

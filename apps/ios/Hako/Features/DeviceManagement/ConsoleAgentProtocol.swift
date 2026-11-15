@@ -250,6 +250,9 @@ struct ConsoleCapabilityData: Decodable {
     let version: Int
     let result: ConsoleJSON?
     let error: ConsoleAgentError?
+    init(version: Int, result: ConsoleJSON? = nil, error: ConsoleAgentError? = nil) {
+        self.version = version; self.result = result; self.error = error
+    }
     private enum CodingKeys: String, CodingKey { case version, result, error }
     init(from decoder: Decoder) throws {
         let parsed: (Int, ConsoleJSON?, ConsoleAgentError?)

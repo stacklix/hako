@@ -71,6 +71,12 @@ struct InvestmentServerRecords {
     }
     private func ordering(_ row: InvestmentServerRow, _ key: String = "sort_order") -> Int { Int(row[key] ?? "") ?? 0 }
 
+    private func planSchedule(_ row: InvestmentServerRow) throws -> InvestmentPlanSchedule {
+        guard let frequency = InvestmentPlanFrequency(rawValue: try required(row, "frequency")),
+              let day = Int(try required(row, "schedule_day")) else { throw invalid("schedule") }
+        return try InvestmentPlanSchedule(frequency: frequency, day: day)
+    }
+
     private struct InstrumentKey: Hashable {
         let kind: InvestmentKind
         let currency: InvestmentCurrency
@@ -153,7 +159,8 @@ struct InvestmentServerRecords {
         }
         for (offset, plan) in book.plans.enumerated() {
             var row = ["id": plan.id.uuidString, "account_id": plan.accountID.uuidString,
-                       "amount": string(plan.amount)!, "month_day": String(plan.monthDay),
+                       "amount": string(plan.amount)!, "frequency": plan.schedule.frequency.rawValue,
+                       "schedule_day": String(plan.schedule.day),
                        "next_date": day.string(from: plan.nextDay), "enabled": plan.enabled ? "1" : "0", "sort_order": String(offset)]
             row["asset_id"] = plan.assetID?.uuidString
             row["last_result"] = plan.lastResult
@@ -309,7 +316,7 @@ struct InvestmentServerRecords {
         for row in records("investment_plans").sorted(by: { ordering($0) < ordering($1) }) {
             book.plans.append(try InvestmentPlan(id: uuid(row, "id"), accountID: uuid(row, "account_id"),
                 assetID: row["asset_id"].flatMap(UUID.init(uuidString:)), amount: decimal(row["amount"]) ?? 0,
-                monthDay: ordering(row, "month_day"), nextDay: date(row, "next_date"),
+                schedule: planSchedule(row), nextDay: date(row, "next_date"),
                 enabled: row["enabled"] == "1", lastResult: row["last_result"]))
         }
         book.planRuns = try records("investment_plan_runs").map { row in

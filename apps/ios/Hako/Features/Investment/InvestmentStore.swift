@@ -241,7 +241,7 @@ final class InvestmentStore: ObservableObject {
         while refreshing { try await Task.sleep(for: .milliseconds(150)) }
         try Task.checkCancellation()
         var prepared: InvestmentBook?
-        await refreshQuotes(preview: { prepared = $0 })
+        try await refreshQuotes(preview: { prepared = $0 })
         try Task.checkCancellation()
         let current = try agentSnapshot()
         guard current.session == base.session, current.generation == base.generation else { throw InvestmentAgentCommitError.stale }
@@ -287,7 +287,7 @@ final class InvestmentStore: ObservableObject {
         var source = base.book
         // The page fills missing historical inputs before recalculating. Keep both steps
         // in memory here so the confirmation commits the inputs and snapshots together.
-        await refreshQuotes(fullSnapshotHistory: true, preview: { source = $0 })
+        try await refreshQuotes(fullSnapshotHistory: true, preview: { source = $0 })
         try Task.checkCancellation()
         let refreshed = try agentSnapshot()
         guard refreshed.session == base.session, refreshed.generation == base.generation else { throw InvestmentAgentCommitError.stale }
@@ -526,9 +526,25 @@ final class InvestmentStore: ObservableObject {
     }
 
     func settleDuePlans() async {
-        guard book.plans.contains(where: { $0.enabled && $0.nextDay <= InvestmentBook.day() }) else { return }
-        do { try await update { $0.runPlans() } }
+        do { try await processDuePlans() }
+        catch is CancellationError { return }
         catch { quoteStatus = error.localizedDescription }
+    }
+
+    private func processDuePlans() async throws {
+        while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
+        try Task.checkCancellation()
+        guard book.plans.contains(where: { $0.enabled && $0.nextDay <= InvestmentBook.day() }) else { return }
+        var preview = book
+        guard preview.runPlans() else { return }
+        try await update { $0.runPlans() }
+    }
+
+    func refreshAndSettlePlans() async throws {
+        while refreshing { try await Task.sleep(for: .milliseconds(150)) }
+        try Task.checkCancellation()
+        try await refreshQuotes()
+        try await processDuePlans()
     }
 
     func refreshIfNeeded() async {
@@ -559,18 +575,22 @@ final class InvestmentStore: ObservableObject {
         }
         try Task.checkCancellation()
         guard ledgerRevision == revision else { throw CancellationError() }
-        await refreshQuotes(fullSnapshotHistory: fullHistory)
+        try await refreshQuotes(fullSnapshotHistory: fullHistory)
         try Task.checkCancellation()
         guard ledgerRevision == revision else { throw CancellationError() }
     }
 
     func refresh(publicQuotesOnly: Bool = false) async {
         await load(force: true)
-        await refreshQuotes(publicQuotesOnly: publicQuotesOnly)
+        do {
+            try await refreshQuotes(publicQuotesOnly: publicQuotesOnly)
+            try await processDuePlans()
+        } catch is CancellationError { return }
+        catch { quoteStatus = error.localizedDescription }
     }
 
     private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil,
-                               preview: ((InvestmentBook) -> Void)? = nil) async {
+                               preview: ((InvestmentBook) -> Void)? = nil) async throws {
         guard loaded, !refreshing else { return }
         let revision = ledgerRevision
         func checkRefresh() throws {
@@ -696,7 +716,7 @@ final class InvestmentStore: ObservableObject {
             let apply: (inout InvestmentBook) -> Void = { draft in
                 for (id, values) in prices { draft.addQuotes(values, assetID: id) }
                 for (currency, values) in rates { draft.addExchangeRates(values, for: currency) }
-                draft.runPlans(through: today)
+                if !snapshotRefresh { draft.runPlans(through: today) }
             }
             if let preview {
                 var draft = book
@@ -718,9 +738,10 @@ final class InvestmentStore: ObservableObject {
                 quoteStatus = "部分行情不可用 · " + Set(failures).sorted().joined(separator: "、")
             }
         } catch is CancellationError {
-            return
+            throw CancellationError()
         } catch {
             quoteStatus = error.localizedDescription
+            throw error
         }
     }
 

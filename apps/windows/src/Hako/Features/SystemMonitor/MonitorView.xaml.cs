@@ -1,6 +1,8 @@
 using System;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Hako.Platform;
@@ -10,6 +12,7 @@ namespace Hako.Features.SystemMonitor;
 public partial class MonitorView : UserControl, IDisposable
 {
     private readonly SystemMetrics metrics;
+    private readonly RegisteredServices registeredServices = new();
     private readonly CancellationTokenSource lifetime = new();
     public MonitorView(SystemMetrics metrics) { InitializeComponent(); this.metrics = metrics; }
     public void Display(Metrics value)
@@ -68,5 +71,55 @@ public partial class MonitorView : UserControl, IDisposable
         var time = TimeSpan.FromSeconds(seconds);
         return $"{time.Days} 天 {time.Hours} 小时 {time.Minutes} 分 {time.Seconds} 秒";
     }
-    public void Dispose() { lifetime.Cancel(); lifetime.Dispose(); }
+    private async void ServicesLoaded(object sender, RoutedEventArgs e) => await ReadServicesAsync();
+    private async void RefreshServicesClick(object sender, RoutedEventArgs e) => await ReadServicesAsync();
+    private async Task ReadServicesAsync()
+    {
+        if (!RefreshServices.IsEnabled) return;
+        RefreshServices.IsEnabled = false;
+        ServiceStatus.Text = "正在检查登记服务…";
+        try
+        {
+            var snapshot = await registeredServices.ReadAsync(lifetime.Token);
+            Services.ItemsSource = snapshot.Services.Select(service => new
+            {
+                service.Name, service.CanStart,
+                Title = $"{service.Name} · {service.Port} · {ServiceState(service.Status)}" +
+                    (service.Http?.StatusCode is int code ? $" · HTTP {code} · {service.Http.ElapsedMs} ms" : ""),
+                Detail = (service.Description is { Length: > 0 } description ? description + "\n" : "") +
+                    (service.Startup is { } startup && service.Status == "stopped" ? startup.Message + "\n" : "") +
+                    (!service.CanStart && service.Status == "stopped" && service.Startup is null ? "尚未登记 startCommand 启动命令。\n" : "") +
+                    (service.Http is { } http ? $"探测地址：{http.Url}\n" + (http.Failure is { } failure ? failure + "\n" : "") : "") +
+                    string.Join("\n", service.Processes.Select(process =>
+                        $"监听进程：{process.DisplayName} · PID {process.ProcessId}\n" +
+                        $"运行时长：{(process.UptimeSeconds is { } seconds ? FormatUptime(seconds) : "暂不可用")}\n" +
+                        "监听 IP：" + string.Join("、", process.Addresses)))
+            }).ToArray();
+            ServiceStatus.Text = snapshot.Services.Length == 0 ? "尚未登记服务。" :
+                $"{snapshot.Services.Length} 个登记服务 · {snapshot.Services.Count(service => service.Status == "responding")} 个已响应 · {DateTimeOffset.Parse(snapshot.CollectedAt).ToLocalTime():HH:mm:ss} 检查";
+            if (snapshot.Warnings.Length > 0) ServiceStatus.Text += "\n" + string.Join("\n", snapshot.Warnings);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { Services.ItemsSource = null; ServiceStatus.Text = "检查失败：" + error.Message; }
+        finally { RefreshServices.IsEnabled = true; }
+    }
+    private async void StartServiceClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string name } button) return;
+        button.IsEnabled = false;
+        try
+        {
+            var reply = await registeredServices.StartAsync(JsonSerializer.SerializeToElement(new { name, requestId = Guid.NewGuid().ToString("D") }), lifetime.Token);
+            await ReadServicesAsync();
+            ServiceStatus.Text += "\n" + reply.Message;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { ServiceStatus.Text = "启动请求失败：" + error.Message + " 请先刷新确认状态。"; }
+    }
+    private static string ServiceState(string status) => status switch
+    {
+        "responding" => "已响应", "http_error" => "服务异常", "stopped" => "未监听",
+        "unreachable" => "HTTP 探测失败", _ => "状态未知"
+    };
+    public void Dispose() { lifetime.Cancel(); registeredServices.Dispose(); lifetime.Dispose(); }
 }

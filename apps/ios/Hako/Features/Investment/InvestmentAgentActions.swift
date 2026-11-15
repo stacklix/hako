@@ -126,7 +126,8 @@ struct InvestmentAgentAction: Codable {
         case .assetBalance: return [account, asset, day, amount]
         case .plan: return [.init(key: "plan_id", label: "编辑现有定投时填写任务 ID"),
                             .init(key: "plan_type", label: "任务类型", required: true, choices: ["deposit", "buy"]), account, optional(asset), amount,
-                            .init(key: "month_day", label: "每月执行日（1 至 28）", required: true), enabled]
+                            .init(key: "frequency", label: "执行周期", required: true, choices: InvestmentPlanFrequency.allCases.map(\.rawValue)),
+                            .init(key: "schedule_day", label: "执行日：每周或每两周为周一 1 至周日 7，每月为 1 至 31，每日为 0"), enabled]
         case .removePlan: return [.init(key: "plan_id", label: "定投任务 ID", required: true)]
         case .watch: return [asset, enabled]
         case .quote: return [asset, day, .init(key: "price", label: "手工报价或估值", required: true)]
@@ -269,8 +270,11 @@ struct InvestmentAgentAction: Codable {
             } else { book.watched.removeAll { $0 == item.id } }
         case .quote:
             let item = try asset(in: book)
+            guard item.kind.supportsManualQuote else {
+                throw InvestmentError.invalid(item.kind == .crypto ? "加密货币现货使用自动行情，不支持手动报价。" : "该标的类型不支持手动报价。")
+            }
             let price = try decimal("price", fallback: 0)
-            guard !item.kind.usesBalance, price > 0 || (item.kind == .insurance && price == 0) else { throw missing("有效报价") }
+            guard price > 0 || (item.kind == .insurance && price == 0) else { throw missing("有效报价") }
             book.addQuotes([.init(day: try date("date", through: today), price: price, source: "手动录入")], assetID: item.id)
             book.runPlans(through: today)
         case .balanceAccount, .balanceRecord, .editBalanceRecord, .deleteBalanceRecord:
@@ -285,10 +289,23 @@ struct InvestmentAgentAction: Codable {
         var action = self
         let existing = ["account_id": plan.accountID.uuidString, "asset_id": text("plan_type") == "deposit" ? nil : plan.assetID?.uuidString,
                         "plan_type": plan.assetID == nil ? "deposit" : "buy",
-                        "amount": NSDecimalNumber(decimal: plan.amount).stringValue, "month_day": String(plan.monthDay),
+                        "amount": NSDecimalNumber(decimal: plan.amount).stringValue, "frequency": plan.schedule.frequency.rawValue,
                         "enabled": plan.enabled ? "true" : "false"]
         for (key, value) in existing where values[key] == nil { action.values[key] = value }
+        if action.text("schedule_day") == nil {
+            if action.text("frequency") == "daily" { action.values["schedule_day"] = "0" }
+            else if action.text("frequency") == plan.schedule.frequency.rawValue {
+                action.values["schedule_day"] = String(plan.schedule.day)
+            }
+        }
         return action
+    }
+
+    func planSchedule() throws -> InvestmentPlanSchedule {
+        guard let frequency = InvestmentPlanFrequency(rawValue: try required("frequency")) else { throw missing("执行周期") }
+        let day = frequency == .daily && text("schedule_day") == nil ? 0 : Int(try required("schedule_day"))
+        guard let day else { throw missing("执行日") }
+        return try InvestmentPlanSchedule(frequency: frequency, day: day)
     }
 
     private func applyAsset(to book: inout InvestmentBook) throws {
@@ -413,11 +430,12 @@ struct InvestmentAgentAction: Codable {
             try target.validateEntry(in: account)
         }
         let amount = try decimal("amount", fallback: 0)
-        guard amount > 0, let day = Int(try required("month_day")), (1...28).contains(day) else { throw missing("定投金额或执行日") }
+        guard amount > 0 else { throw missing("定投金额") }
+        let schedule = try planSchedule()
         let current = index.map { book.plans[$0] }
-        let unchanged = current.map { $0.enabled && $0.monthDay == day && $0.accountID == account.id && $0.assetID == target?.id } ?? false
-        let next = (unchanged ? current?.nextDay : nil) ?? InvestmentBook.nextRun(day, after: today)
-        let plan = InvestmentPlan(id: id ?? UUID(), accountID: account.id, assetID: target?.id, amount: amount, monthDay: day,
+        let unchanged = current.map { $0.enabled && $0.schedule == schedule && $0.accountID == account.id && $0.assetID == target?.id } ?? false
+        let next = (unchanged ? current?.nextDay : nil) ?? schedule.first(after: today)
+        let plan = InvestmentPlan(id: id ?? UUID(), accountID: account.id, assetID: target?.id, amount: amount, schedule: schedule,
                                   nextDay: next, enabled: text("enabled") == "true", lastResult: current?.lastResult)
         if let index { book.plans[index] = plan } else { book.plans.append(plan) }
     }

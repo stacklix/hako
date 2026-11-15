@@ -14,7 +14,7 @@ namespace Hako.Platform;
 
 internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
-    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null);
+    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0);
 internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null);
 internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
@@ -73,50 +73,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         finally { metadataGate.Release(); }
     }
 
-    public async Task<object?> CatalogAsync(JsonElement parameters, CancellationToken token)
-    {
-        CodexJson.Keys(parameters, "cursor", "archived");
-        var archiveFilter = CodexJson.Field(parameters, "archived");
-        if (archiveFilter.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.True or JsonValueKind.False)) throw CodexJson.Invalid();
-        lock (gate) RecoverJobs();
-        var response = await ReadAsync("thread/list", new
-        {
-            limit = 30, cursor = CodexJson.Text(parameters, "cursor") is { Length: > 0 } cursor ? cursor : null,
-            sortKey = "updated_at", archived = archiveFilter.ValueKind == JsonValueKind.True,
-            // Interactive refresh must not rescan JSONL rollouts to repair metadata.
-            useStateDbOnly = true,
-            modelProviders = Array.Empty<string>(), sourceKinds = new[] { "cli", "vscode", "appServer", "exec" }
-        }, token);
-        var applications = DiscoverApplications();
-        var sessions = new List<WorkshopSession>();
-        foreach (var thread in CodexJson.Items(CodexJson.Field(response, "data")))
-        {
-            var cwd = CodexJson.Text(thread, "cwd");
-            var application = ApplicationFor(cwd);
-            if (application is null) continue;
-            if (applications.All(value => value.Id != application.Id)) applications.Add(application);
-            var id = CodexJson.Text(thread, "id");
-            var name = CodexJson.Text(thread, "name");
-            var preview = CodexJson.Clip(CodexJson.Text(thread, "preview"), 240);
-            var summary = await LatestSummaryAsync(id, token);
-            var updated = CodexJson.Field(thread, "updatedAt");
-            WorkshopJob? operation;
-            lock (gate)
-            {
-                operation = jobs.Values.Where(job => job.ThreadId == id).OrderByDescending(job => job.StartedAt).ThenByDescending(job => job.QueueOrder).FirstOrDefault();
-                var current = operation is null ? null : CurrentJob(RootJob(operation));
-                summary = ReconcileSummary(summary, current);
-            }
-            // A thread-level active flag can outlive its turn. Keep the latest
-            // turn's terminal state unless an actual local job is still active.
-            sessions.Add(new(id, CodexJson.Clip(name.Length > 0 ? name : preview.Length > 0 ? preview : "未命名会话", 120),
-                application.Id, cwd, summary.Preview, updated.TryGetInt64(out var time) ? time : 0,
-                summary.State, operation?.RootId ?? operation?.Id, summary.CompletionId));
-        }
-        return new { applications, sessions, nextCursor = CodexJson.Text(response, "nextCursor") is { Length: > 0 } next ? next : null };
-    }
-
-    internal sealed record ThreadSummary(string Preview, string State, string? CompletionId, string TurnId);
+    internal sealed record ThreadSummary(string Preview, string State, string? CompletionId, string TurnId, JsonElement UserInput = default);
 
     internal static ThreadSummary ReconcileSummary(ThreadSummary summary, WorkshopJob? current)
     {
@@ -140,7 +97,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var status = CodexJson.Text(turn, "status");
         var state = status == "inProgress" ? "running" : status.Length == 0 ? "idle" : status;
         var turnId = CodexJson.Text(turn, "id");
-        return new(preview, state, status == "completed" && turnId.Length > 0 ? turnId : null, turnId);
+        var user = CodexJson.Items(CodexJson.Field(turn, "items")).LastOrDefault(item => CodexJson.Text(item, "type") == "userMessage");
+        return new(preview, state, status == "completed" && turnId.Length > 0 ? turnId : null, turnId, user);
     }
 
     private async Task<ThreadSummary> LatestSummaryAsync(string threadId, CancellationToken token)

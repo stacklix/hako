@@ -27,6 +27,7 @@ struct WorkshopTranscriptLayout: Sendable {
     var queued: [WorkshopEntry] = []
     var artifactsByEntry: [String: [WorkshopArtifact]] = [:]
     var messageParts: [String: [WorkshopMessagePart]] = [:]
+    var questionReplies: [String: [WorkshopQuestionReply]] = [:]
     var isEmpty: Bool { groups.isEmpty && queued.isEmpty }
 }
 
@@ -49,6 +50,16 @@ actor WorkshopTranscriptRenderer {
     func render(entries: [WorkshopEntry], followups: [WorkshopFollowupState], artifacts: [WorkshopArtifact],
                 projectPath: String, revision: Int) -> WorkshopTranscriptLayout {
         let presentation = WorkshopTranscriptPresentation(entries: entries, followups: followups)
+        let questions = Dictionary(entries.compactMap { entry in
+            entry.questions.map { (entry.id, $0) }
+        }, uniquingKeysWith: { _, latest in latest })
+        var questionReplies: [String: [WorkshopQuestionReply]] = [:]
+        for entry in presentation.history + presentation.queued where entry.role == "user" {
+            if let questionId = entry.questionId, let source = questions[questionId],
+               let replies = WorkshopAsyncQuestion.replySections(in: entry.text, questions: source) {
+                questionReplies[entry.id] = replies
+            }
+        }
         let paths = Dictionary(artifacts.map { ($0.id, $0.path) }, uniquingKeysWith: { _, last in last })
         if project != projectPath || paths != artifactPaths {
             project = projectPath; artifactPaths = paths; matched.removeAll()
@@ -98,7 +109,7 @@ actor WorkshopTranscriptRenderer {
         }
         return WorkshopTranscriptLayout(revision: revision,
             groups: WorkshopEntryGroup.group(presentation.history, artifactsAfter: Set(placement.keys)),
-            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts)
+            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts, questionReplies: questionReplies)
     }
 
     private static func normalize(_ text: String) -> String {

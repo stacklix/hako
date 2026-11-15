@@ -72,7 +72,7 @@ struct InvestmentBalanceView: View {
             summary(snapshot)
             comparisonPanel(snapshot, comparison: previousMonth(book, today: today))
             structure(snapshot, debts: debts)
-            InvestmentBalanceTrend(book: book, today: today, hidesAmounts: hidesAmounts)
+            InvestmentBalanceTrend(book: book, bookVersion: store.bookVersion, today: today, hidesAmounts: hidesAmounts)
             history(changes)
         }
         .navigationDestination(isPresented: $showsCalendar) {

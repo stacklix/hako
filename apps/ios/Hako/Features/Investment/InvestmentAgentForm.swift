@@ -127,7 +127,13 @@ extension InvestmentAgentAction {
                 }
             case "plan_id":
                 return book.plans.map { .init(id: $0.id.uuidString, title:
-                    [book.account($0.accountID)?.name, book.asset($0.assetID)?.name ?? "定期转入", "每月 \($0.monthDay) 日"].compactMap { $0 }.joined(separator: " · ")) }
+                    [book.account($0.accountID)?.name, book.asset($0.assetID)?.name ?? "定期转入", $0.schedule.summary].compactMap { $0 }.joined(separator: " · ")) }
+            case "frequency": return InvestmentPlanFrequency.allCases.map { .init(id: $0.rawValue, title: $0.title) }
+            case "schedule_day":
+                if ["weekly", "biweekly"].contains(text("frequency") ?? "") {
+                    return (1...7).map { .init(id: String($0), title: InvestmentPlanSchedule.weekdays[$0 - 1]) }
+                }
+                return (1...31).map { .init(id: String($0), title: "\($0) 日") }
             case "balance_account_id": return (book.balanceSheet?.accounts ?? []).map { .init(id: $0.id.uuidString, title: $0.name + " · " + $0.category.rawValue) }
             case "record_id": return (balance?.records ?? []).map { .init(id: $0.id.uuidString, title: day.string(from: $0.recordedAt) + " · " + (decimal($0.amount) ?? "") + " 元") }
             default:
@@ -295,7 +301,9 @@ extension InvestmentAgentAction {
             inputs += [field("plan_type", "任务类型", required: true), owner]
             if text("plan_type") == "buy" { inputs.append(field("asset_id", "买入标的", required: true)) }
             inputs += [field("amount", "每次金额（\(currency)）", required: true),
-                       field("month_day", "每月执行日", required: true), field("enabled", "启用任务", required: true)]
+                       field("frequency", "执行周期", required: true)]
+            if text("frequency") != "daily" { inputs.append(field("schedule_day", "执行日", required: true)) }
+            inputs.append(field("enabled", "启用任务", required: true))
         case .removePlan: inputs = [field("plan_id", "定投任务", required: true)]
         case .watch:
             title = text("enabled") == "false" ? "移出关注" : "添加关注"

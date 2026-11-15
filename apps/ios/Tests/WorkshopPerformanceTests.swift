@@ -13,6 +13,25 @@ private final class Counter: @unchecked Sendable {
     }
 
     static func main() async throws {
+        let question = WorkshopAsyncQuestion(title: "如何更新？", options: ["立即更新"])
+        let questionEntry = WorkshopEntry(kind: "item", id: "question", text: "请选择", role: "assistant", state: "",
+            truncated: false, questions: [question])
+        let answerText = WorkshopAsyncQuestion.replyMessage([question], answers: [0: "立即更新\n保留我的设置"])!
+        let answerEntry = WorkshopEntry(kind: "followup", id: "answer", text: answerText, role: "user", state: "queued",
+            truncated: false, questionId: questionEntry.id)
+        let questionRenderer = WorkshopTranscriptRenderer()
+        let queuedReply = await questionRenderer.render(entries: [questionEntry, answerEntry], followups: [],
+            artifacts: [], projectPath: "/project", revision: 1)
+        let expectedReply = [WorkshopQuestionReply(question: question.title, answer: "立即更新\n保留我的设置")]
+        precondition(queuedReply.questionReplies[answerEntry.id] == expectedReply && queuedReply.queued.count == 1)
+        let acceptedReply = await questionRenderer.render(entries: [questionEntry, answerEntry],
+            followups: [WorkshopFollowupState(id: answerEntry.id, state: "steered", revision: 1, imageIds: [])],
+            artifacts: [], projectPath: "/project", revision: 2)
+        precondition(acceptedReply.questionReplies[answerEntry.id] == expectedReply && acceptedReply.queued.isEmpty,
+            "Question/answer sections must survive the queued-to-accepted transition")
+        let unlinked = await questionRenderer.render(entries: [entry("ordinary", answerText, role: "user")],
+            followups: [], artifacts: [], projectPath: "/project", revision: 3)
+        precondition(unlinked.questionReplies.isEmpty, "Ordinary user text must not be reclassified as a linked answer")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hako-workshop-performance-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }

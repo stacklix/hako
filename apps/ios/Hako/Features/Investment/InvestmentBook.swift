@@ -38,6 +38,7 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
     var isTermDeposit: Bool { self == .deposit || self == .certificate }
     var usesBalance: Bool { isTermDeposit || self == .generic }
     var isManual: Bool { self == .insurance || self == .wealth || usesBalance }
+    var supportsManualQuote: Bool { self != .crypto && !usesBalance }
 
     static func watchKinds(in currency: InvestmentCurrency) -> [Self] {
         switch currency {
@@ -468,24 +469,111 @@ extension InvestmentBook {
     }
 }
 
-struct InvestmentPlan: Codable, Identifiable {
+enum InvestmentPlanFrequency: String, Codable, CaseIterable, Identifiable {
+    case daily, weekly, biweekly, monthly
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .daily: "每日"
+        case .weekly: "每周"
+        case .biweekly: "每两周"
+        case .monthly: "每月"
+        }
+    }
+}
+
+struct InvestmentPlanSchedule: Codable, Equatable {
+    let frequency: InvestmentPlanFrequency
+    /// Zero for daily schedules, Monday = 1 for weekly schedules, or the calendar day of the month.
+    let day: Int
+    init(frequency: InvestmentPlanFrequency, day: Int) throws {
+        let validDay = switch frequency {
+        case .daily: day == 0
+        case .weekly, .biweekly: (1...7).contains(day)
+        case .monthly: (1...31).contains(day)
+        }
+        guard validDay else {
+            throw InvestmentError.invalid("请选择有效的定投周期和执行日。")
+        }
+        self.frequency = frequency
+        self.day = day
+    }
+
+    private enum CodingKeys: String, CodingKey { case frequency, day }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(frequency: values.decode(InvestmentPlanFrequency.self, forKey: .frequency),
+                      day: values.decode(Int.self, forKey: .day))
+    }
+
+    static let weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+    var summary: String {
+        switch frequency {
+        case .daily: "每日"
+        case .weekly: "每" + Self.weekdays[day - 1]
+        case .biweekly: "每两周 · " + Self.weekdays[day - 1]
+        case .monthly: "每月 \(day) 日"
+        }
+    }
+
+    func first(after date: Date) -> Date {
+        let calendar = InvestmentBook.calendar
+        let today = InvestmentBook.day(date)
+        switch frequency {
+        case .daily:
+            return InvestmentBook.addDays(1, to: today)
+        case .weekly, .biweekly:
+            let weekday = (calendar.component(.weekday, from: today) + 5) % 7 + 1
+            let offset = (day - weekday + 7) % 7
+            return InvestmentBook.addDays(offset == 0 ? 7 : offset, to: today)
+        case .monthly:
+            let month = calendar.dateInterval(of: .month, for: today)!
+            func scheduled(in start: Date) -> Date {
+                let last = calendar.range(of: .day, in: .month, for: start)!.count
+                return InvestmentBook.addDays(min(day, last) - 1, to: start)
+            }
+            let candidate = scheduled(in: month.start)
+            return candidate > today ? candidate : scheduled(in: month.end)
+        }
+    }
+
+    func next(after scheduledDay: Date) -> Date {
+        frequency == .biweekly ? InvestmentBook.addDays(14, to: scheduledDay) : first(after: scheduledDay)
+    }
+}
+
+struct InvestmentPlan: Codable, Equatable, Identifiable {
     var id = UUID()
     var accountID: UUID
     var assetID: UUID?
     var amount: Decimal
-    var monthDay: Int
+    var schedule: InvestmentPlanSchedule
     var nextDay: Date
     var enabled: Bool = true
     var lastResult: String?
 }
 
-struct InvestmentPlanRun: Codable {
+struct InvestmentPlanRun: Codable, Hashable {
     let planID: UUID
     let day: Date
     let status: String
     let eventID: UUID?
     let executedAt: Date?
     let detail: String?
+}
+
+struct InvestmentPlanReport {
+    let executed: Int
+    let skipped: Int
+    let waiting: Int
+
+    var hasResults: Bool { executed + skipped + waiting > 0 }
+    var message: String {
+        hasResults ? "定投：已记账 \(executed) 期，已跳过 \(skipped) 期，等待报价 \(waiting) 期。" : "定投：暂无到期任务。"
+    }
 }
 
 struct InvestmentPosition {
@@ -1232,11 +1320,9 @@ struct InvestmentBook: Codable {
         return quote.price
     }
 
-    static func nextRun(_ monthDay: Int, after date: Date) -> Date {
-        calendar.nextDate(after: date, matching: DateComponents(day: monthDay, hour: 0), matchingPolicy: .strict) ?? date
-    }
-
-    mutating func runPlans(through today: Date = Self.day()) {
+    @discardableResult
+    mutating func runPlans(through today: Date = Self.day()) -> Bool {
+        let originalPlans = plans, originalRuns = planRuns
         for i in plans.indices where account(plans[i].accountID)?.isArchived == true { plans[i].enabled = false }
         var waiting = Set<UUID>()
         while let due = plans.filter({ $0.enabled && $0.nextDay <= today && !waiting.contains($0.id) })
@@ -1248,6 +1334,10 @@ struct InvestmentBook: Codable {
             guard due.next > due.plan.nextDay else {
                 plans[index].enabled = false
                 plans[index].lastResult = "执行日期无效，任务已暂停。"
+                continue
+            }
+            if planRuns.contains(where: { $0.planID == due.plan.id && $0.day == due.plan.nextDay && $0.status != "waiting" }) {
+                plans[index].nextDay = due.next
                 continue
             }
             var status = due.waiting ? "waiting" : "skipped"
@@ -1271,6 +1361,17 @@ struct InvestmentBook: Codable {
             if due.waiting { waiting.insert(due.plan.id) }
             else { plans[index].nextDay = due.next }
         }
+        return plans != originalPlans || planRuns != originalRuns
+    }
+
+    func planReport(since previous: [InvestmentPlanRun]) -> InvestmentPlanReport {
+        let previous = Set(previous)
+        let changed = planRuns.filter { !previous.contains($0) }
+        let waiting = planRuns.filter { run in
+            run.status == "waiting" && plans.contains { $0.id == run.planID && $0.enabled && $0.nextDay == run.day }
+        }.count
+        return InvestmentPlanReport(executed: changed.filter { $0.status == "executed" }.count,
+                                    skipped: changed.filter { $0.status == "skipped" }.count, waiting: waiting)
     }
 
     private struct DuePlan {
@@ -1283,7 +1384,7 @@ struct InvestmentBook: Codable {
     }
 
     private func duePlan(_ plan: InvestmentPlan, through today: Date) -> DuePlan {
-        let next = Self.nextRun(plan.monthDay, after: plan.nextDay)
+        let next = plan.schedule.next(after: plan.nextDay)
         var due = DuePlan(plan: plan, next: next)
         guard let id = plan.assetID else {
             due.event = InvestmentEvent(day: plan.nextDay, kind: .deposit, amount: plan.amount)

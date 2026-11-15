@@ -161,7 +161,7 @@ import CryptoKit
               previous.operationId == operationId || previous.operationId == nil else { return }
         let updated = WorkshopSession(id: previous.id, title: previous.title, applicationId: previous.applicationId,
             cwd: previous.cwd, preview: previous.preview, updatedAt: previous.updatedAt, state: state,
-            operationId: operationId, completionId: state == "completed" ? completionId : nil)
+            operationId: operationId, completionId: state == "completed" ? completionId : nil, lastSentAt: previous.lastSentAt)
         let terminal = ["completed", "failed", "interrupted", "cancelled", "unknown", "paused"].contains(state)
         if terminal {
             // Also settle the durable receipt, so reopening the app cannot
@@ -475,7 +475,7 @@ import CryptoKit
             cachedAt = nil
             let newSessions = page.sessions.filter { !preferences.seenSessions.contains($0.id) }
             if !more && !archived {
-                for session in newSessions.sorted(by: { $0.updatedAt < $1.updatedAt }) { promote(session.applicationId) }
+                for session in newSessions.sorted(by: { $0.lastSentAt < $1.lastSentAt }) { promote(session.applicationId) }
             }
             preferences.seenSessions = Array(Set(preferences.seenSessions + page.sessions.map(\.id)))
             if !applications.contains(where: { $0.id == selectedApplicationID }) { selectedApplicationID = orderedApplications.first?.id ?? "" }

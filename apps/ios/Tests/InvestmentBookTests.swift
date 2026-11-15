@@ -15,6 +15,8 @@ struct InvestmentBookTests {
         try genericBalancesValidateAndReplayHistory()
         try spotBalanceAdjustmentsUseTokenQuantity()
         try plansUseCashInExecutionOrder()
+        try planSchedulesRespectCalendarDays()
+        try planPeriodsCatchUpOnceAndRoundTrip()
         try currencyConversionRequiresQuote()
         try accountCurrencyRestrictsEntries()
         try stockConnectSettlesInRenminbi()
@@ -25,6 +27,10 @@ struct InvestmentBookTests {
         try balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation()
         try balanceHistoryFiltersAndReplaysEditedRecords()
         try investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth()
+        try balanceTrendUsesEveryDailySnapshotBeforeFirstMonthClose()
+        try balanceTrendKeepsMissingDaysAndManualBalances()
+        try balanceTrendCarriesSnapshotsFromNovemberFirst()
+        try balanceTrendStopsCarryAtNovemberFirst()
         try dailyGainsRequireCompleteMarketPrices()
         try portfolioHistoryMatchesIndividualValuations()
         try dailySnapshotsUseBeijingCloseAndDatedRates()
@@ -236,11 +242,12 @@ struct InvestmentBookTests {
         let asset = try book.register(InvestmentAsset(name: "测试ETF", code: "510300", market: "XSHG", kind: .etf, currency: .cny))
         let first = date(1), second = date(2), third = date(3)
         book.plans = [
-            InvestmentPlan(accountID: account.id, assetID: asset, amount: 100, monthDay: 1, nextDay: first),
-            InvestmentPlan(accountID: account.id, amount: 105, monthDay: 2, nextDay: second)
+            InvestmentPlan(accountID: account.id, assetID: asset, amount: 100, schedule: try .init(frequency: .monthly, day: 1), nextDay: first),
+            InvestmentPlan(accountID: account.id, amount: 105, schedule: try .init(frequency: .monthly, day: 2), nextDay: second)
         ]
         book.runPlans(through: first)
         precondition(book.plans[0].nextDay == first && book.accounts[0].events.isEmpty)
+        let priorRuns = book.planRuns
         book.addQuotes([.init(day: third, price: 6)], assetID: asset)
         book.runPlans(through: third)
         book.runPlans(through: third)
@@ -248,6 +255,87 @@ struct InvestmentBookTests {
         precondition(ledger.cash == 9 && ledger.positions[asset]?.quantity == 16)
         precondition(book.accounts[0].events.map(\.kind) == [.deposit, .buy])
         precondition(book.plans.allSatisfy { $0.nextDay > third })
+        let report = book.planReport(since: priorRuns)
+        precondition(report.executed == 2 && report.skipped == 0 && report.waiting == 0)
+    }
+
+    static func planSchedulesRespectCalendarDays() throws {
+        func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+            InvestmentBook.calendar.date(from: DateComponents(year: year, month: month, day: day))!
+        }
+        let daily = try InvestmentPlanSchedule(frequency: .daily, day: 0)
+        precondition(daily.first(after: date(2026, 11, 1)) == date(2026, 11, 2))
+        precondition(daily.next(after: date(2026, 12, 31)) == date(2027, 1, 1))
+        let weekly = try InvestmentPlanSchedule(frequency: .weekly, day: 1)
+        precondition(weekly.first(after: date(2026, 11, 1)) == date(2026, 11, 2))
+        precondition(weekly.next(after: date(2026, 11, 2)) == date(2026, 11, 9))
+        precondition(weekly.summary == "每周一")
+        let biweekly = try InvestmentPlanSchedule(frequency: .biweekly, day: 1)
+        precondition(biweekly.first(after: date(2026, 11, 1)) == date(2026, 11, 2))
+        precondition(biweekly.next(after: date(2026, 11, 2)) == date(2026, 11, 16))
+        precondition(biweekly.next(after: date(2026, 11, 16)) == date(2026, 11, 30))
+        let monthly = try InvestmentPlanSchedule(frequency: .monthly, day: 31)
+        precondition(monthly.next(after: date(2026, 1, 31)) == date(2026, 2, 28))
+        precondition(monthly.next(after: date(2026, 2, 28)) == date(2026, 3, 31))
+        precondition(monthly.first(after: date(2028, 2, 1)) == date(2028, 2, 29))
+        let restored = try JSONDecoder().decode(InvestmentPlanSchedule.self, from: JSONEncoder().encode(monthly))
+        precondition(restored == monthly)
+        let invalidSchedules: [(InvestmentPlanFrequency, Int)] = [
+            (.daily, 1), (.weekly, 0), (.weekly, 8), (.biweekly, 0), (.biweekly, 8), (.monthly, 0), (.monthly, 32)
+        ]
+        for (frequency, day) in invalidSchedules {
+            do { _ = try InvestmentPlanSchedule(frequency: frequency, day: day); preconditionFailure("invalid plan schedule") }
+            catch is InvestmentError { }
+        }
+    }
+
+    static func planPeriodsCatchUpOnceAndRoundTrip() throws {
+        let monday = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 2))!
+        let account = InvestmentAccount(name: "周期测试", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let daily = InvestmentPlan(accountID: account.id, amount: 10, schedule: try .init(frequency: .daily, day: 0), nextDay: monday)
+        let weekly = InvestmentPlan(accountID: account.id, amount: 100, schedule: try .init(frequency: .weekly, day: 1), nextDay: monday)
+        let biweekly = InvestmentPlan(accountID: account.id, amount: 1000, schedule: try .init(frequency: .biweekly, day: 1), nextDay: monday)
+        let monthly = InvestmentPlan(accountID: account.id, amount: 10000, schedule: try .init(frequency: .monthly, day: 2), nextDay: monday)
+        book.plans = [daily, weekly, biweekly, monthly]
+        precondition(!book.runPlans(through: InvestmentBook.addDays(-1, to: monday)))
+        let through = InvestmentBook.addDays(21, to: monday)
+        precondition(book.runPlans(through: through))
+        precondition(book.planRuns.filter { $0.planID == daily.id }.count == 22)
+        precondition(book.planRuns.filter { $0.planID == weekly.id }.map(\.day) == [0, 7, 14, 21].map { InvestmentBook.addDays($0, to: monday) })
+        precondition(book.planRuns.filter { $0.planID == biweekly.id }.map(\.day) == [0, 14].map { InvestmentBook.addDays($0, to: monday) })
+        let ledger = try book.ledger(book.accounts[0], through: through)
+        precondition(ledger.cash == 12620)
+        let report = book.planReport(since: [])
+        precondition(report.executed == 29 && report.skipped == 0 && report.waiting == 0)
+        let previousRuns = book.planRuns
+        precondition(!book.runPlans(through: through))
+        book.plans[0].nextDay = monday
+        precondition(book.runPlans(through: through))
+        precondition(book.accounts[0].events.count == 29 && book.planRuns.count == 29)
+        precondition(!book.planReport(since: previousRuns).hasResults)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let restored = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        precondition(restored.plans == book.plans && restored.planRuns.count == book.planRuns.count)
+        precondition(tables["investment_plans"]?.allSatisfy { $0["month_day"] == nil && $0["frequency"] != nil } == true)
+
+        var waiting = InvestmentBook(accounts: [account])
+        let asset = try waiting.register(.init(name: "报价等待", code: "510300", market: "XSHG", kind: .etf, currency: .cny))
+        waiting.plans = [.init(accountID: account.id, assetID: asset, amount: 100,
+                              schedule: try .init(frequency: .daily, day: 0), nextDay: monday)]
+        precondition(waiting.runPlans(through: monday))
+        precondition(!waiting.runPlans(through: monday))
+        precondition(waiting.planRuns.first?.status == "waiting")
+        let firstRuns = waiting.planRuns
+        let waitingReport = waiting.planReport(since: firstRuns)
+        precondition(waitingReport.executed == 0 && waitingReport.skipped == 0 && waitingReport.waiting == 1)
+        precondition(waiting.runPlans(through: InvestmentBook.addDays(1, to: monday)))
+        precondition(waiting.planRuns.map(\.status) == ["skipped", "waiting"] && waiting.accounts[0].events.isEmpty)
+        let skippedReport = waiting.planReport(since: firstRuns)
+        precondition(skippedReport.executed == 0 && skippedReport.skipped == 1 && skippedReport.waiting == 1)
+        waiting.plans[0].enabled = false
+        precondition(!waiting.planReport(since: waiting.planRuns).hasResults)
     }
 
     static func balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation() throws {
@@ -362,6 +450,119 @@ struct InvestmentBookTests {
         precondition(snapshots.map(\.after) == [1260, 1140] && snapshots.first?.before == 1140)
         precondition(snapshots.allSatisfy { $0.name == "投资理财" && $0.category == .investments })
         precondition(book.balanceDates(from: first, through: decemberStart) == [first, octoberEnd, novemberEnd, decemberStart])
+    }
+
+    static func balanceTrendUsesEveryDailySnapshotBeforeFirstMonthClose() throws {
+        let account = InvestmentAccount(name: "趋势测试", currency: .cny, type: .securities)
+        let first = date(10), second = date(11), today = date(12)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: first, kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: today, kind: .deposit, amount: 100), accountID: account.id)
+        var manual = InvestmentBalanceLedger()
+        try manual.add("流动资金", category: .cash, amount: 300, at: first)
+        try manual.add("负债", category: .liabilities, amount: 200, at: first)
+        book.balanceSheet = manual
+        book.dailySnapshots = InvestmentDailySnapshots(through: second, values: [
+            first: .init(value: 100, gain: 0), second: .init(value: 120, gain: 20)
+        ])
+        book.usesServerSnapshots = true
+
+        precondition(book.balanceSheet?.investmentSnapshots.isEmpty == true)
+        precondition(book.balanceSnapshot(on: first, today: today).net == nil)
+        let points = book.balanceTrend(from: first, through: today)
+        precondition(points.map(\.id) == [first, second, today])
+        precondition(points.map { $0.snapshot.investment } == [100, 120, 200])
+        precondition(points.map { $0.snapshot.net } == [200, 220, 300])
+        precondition(Set(points.map(\.segment)).count == 1)
+        precondition(book.balanceTrend(from: second, through: today).map(\.id) == [second, today])
+        precondition(book.balanceTrend(from: today, through: today).count == 1)
+        precondition(book.balanceTrend(from: today, through: first).isEmpty)
+    }
+
+    static func balanceTrendKeepsMissingDaysAndManualBalances() throws {
+        let first = date(10), second = date(11), third = date(12), fourth = date(13), today = date(14)
+        let account = InvestmentAccount(name: "趋势缺口测试", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: first, kind: .deposit, amount: 150), accountID: account.id)
+        var manual = InvestmentBalanceLedger()
+        try manual.add("流动资金", category: .cash, amount: 50, at: date(9))
+        try manual.add("负债", category: .liabilities, amount: 200, at: date(9))
+        book.balanceSheet = manual
+        book.dailySnapshots = InvestmentDailySnapshots(through: fourth, values: [
+            first: .init(value: 100, gain: 0), third: .init(value: 140, gain: 40)
+        ])
+        book.usesServerSnapshots = true
+        let points = book.balanceTrend(from: date(9), through: today)
+        precondition(points.map(\.id) == [date(9), first, second, third, fourth, today])
+        precondition(points.map { $0.snapshot.net } == [-150, -50, nil, -10, nil, 0])
+        precondition(points[1].segment != points[3].segment && points[3].segment != points[5].segment)
+        precondition(points[2].snapshot.liabilities == 200 && points[4].snapshot.assets == nil)
+
+        var manualOnly = InvestmentBook()
+        manualOnly.usesServerSnapshots = true
+        manualOnly.balanceSheet = manual
+        let balances = manualOnly.balanceTrend(from: first, through: today)
+        precondition(balances.count == 5 && balances.allSatisfy { $0.snapshot.net == -150 })
+    }
+
+    static func balanceTrendCarriesSnapshotsFromNovemberFirst() throws {
+        let first = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        let before = InvestmentBook.addDays(-1, to: first), second = InvestmentBook.addDays(1, to: first)
+        let third = InvestmentBook.addDays(2, to: first), fourth = InvestmentBook.addDays(3, to: first)
+        let fifth = InvestmentBook.addDays(4, to: first), today = InvestmentBook.addDays(5, to: first)
+        let account = InvestmentAccount(name: "快照沿用", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: before, kind: .deposit, amount: 500), accountID: account.id)
+        var manual = InvestmentBalanceLedger()
+        try manual.add("流动资金", category: .cash, amount: 50, at: first)
+        try manual.update(manual.accounts[0].id, amount: 80, at: third)
+        try manual.add("负债", category: .liabilities, amount: 40, at: first)
+        book.balanceSheet = manual
+        book.dailySnapshots = InvestmentDailySnapshots(through: fifth, values: [
+            before: .init(value: 90, gain: 0), first: .init(value: 100, gain: 0), fourth: .init(value: 140, gain: 0)
+        ])
+        book.usesServerSnapshots = true
+
+        let points = book.balanceTrend(from: first, through: today)
+        precondition(points.map { $0.snapshot.investment } == [100, 100, 100, 140, 140, 500])
+        precondition(points.map { $0.snapshot.net } == [110, 110, 140, 180, 180, 540])
+        precondition(points.map(\.investmentSnapshotDay) == [first, first, first, fourth, fourth, today])
+        precondition(Set(points.map(\.segment)).count == 1)
+        let trimmed = book.balanceTrend(from: third, through: today)
+        precondition(trimmed.first?.snapshot.investment == 100 && trimmed.first?.investmentSnapshotDay == first)
+        precondition(book.dailyPortfolio(on: [second, third, fifth]).isEmpty)
+        precondition(book.dailySnapshots?.values.count == 3 && book.dailySnapshots?.values[second] == nil)
+
+        let foreign = InvestmentAccount(name: "今日估值缺失", currency: .usd, type: .securities)
+        var missingToday = InvestmentBook(accounts: [foreign])
+        try missingToday.post(.init(day: first, kind: .deposit, amount: 100), accountID: foreign.id)
+        missingToday.dailySnapshots = InvestmentDailySnapshots(through: fifth, values: [first: .init(value: 700, gain: 0)])
+        missingToday.usesServerSnapshots = true
+        precondition(missingToday.portfolio(on: today) == nil)
+        let carriedToday = missingToday.balanceTrend(from: today, through: today).first
+        precondition(carriedToday?.snapshot.investment == 700 && carriedToday?.investmentSnapshotDay == first)
+    }
+
+    static func balanceTrendStopsCarryAtNovemberFirst() throws {
+        let first = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        let before = InvestmentBook.addDays(-1, to: first), third = InvestmentBook.addDays(2, to: first)
+        let fifth = InvestmentBook.addDays(4, to: first), sixth = InvestmentBook.addDays(5, to: first)
+        let today = InvestmentBook.addDays(6, to: first)
+        let account = InvestmentAccount(name: "快照回溯边界", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: before, kind: .deposit, amount: 500), accountID: account.id)
+        book.dailySnapshots = InvestmentDailySnapshots(through: sixth, values: [
+            before: .init(value: 90, gain: 0), third: .init(value: 0, gain: 0), fifth: .init(value: -20, gain: 0)
+        ])
+        book.usesServerSnapshots = true
+        let points = book.balanceTrend(from: before, through: today)
+        precondition(points.map { $0.snapshot.investment } == [90, nil, nil, 0, 0, -20, -20, 500])
+        precondition(points[1].investmentSnapshotDay == nil && points[2].investmentSnapshotDay == nil)
+        precondition(points[0].segment != points[3].segment)
+        precondition(points[3].segment == points[6].segment)
+        precondition(points[4].investmentSnapshotDay == third && points[6].investmentSnapshotDay == fifth)
+        precondition(points[6].snapshot.assets == 0 && points[6].snapshot.liabilities == 20 && points[6].snapshot.net == -20)
+        precondition(book.balanceTrend(from: first, through: today).first?.snapshot.investment == nil)
     }
 
     static func currencyConversionRequiresQuote() throws {
@@ -824,7 +1025,7 @@ struct InvestmentBookTests {
         try book.post(.init(day: date(2), kind: .sell, assetID: id, quantity: 10, price: 10), accountID: account.id)
         precondition(book.archiveBlocker(accountID: account.id) != nil, "Cash still prevents archiving")
         try book.post(.init(day: date(2), kind: .withdrawal, amount: -100), accountID: account.id)
-        book.plans = [.init(accountID: account.id, amount: 100, monthDay: 1, nextDay: date(3))]
+        book.plans = [.init(accountID: account.id, amount: 100, schedule: try .init(frequency: .monthly, day: 1), nextDay: date(3))]
         let events = try require(book.account(account.id)).events
         let position = try require(book.ledger(book.accounts[0]).positions[id])
         precondition(book.positionIsEmpty(position, assetID: id))
@@ -855,7 +1056,7 @@ struct InvestmentBookTests {
             try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
             try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 10), accountID: account.id)
             let event = try require(book.account(account.id)?.events.last)
-            let plan = InvestmentPlan(accountID: account.id, assetID: id, amount: 10, monthDay: 1, nextDay: date(3))
+            let plan = InvestmentPlan(accountID: account.id, assetID: id, amount: 10, schedule: try .init(frequency: .monthly, day: 1), nextDay: date(3))
             book.plans.append(plan)
             book.planRuns.append(.init(planID: plan.id, day: date(1), status: "executed", eventID: event.id, executedAt: date(1), detail: nil))
         }
@@ -905,7 +1106,7 @@ struct InvestmentBookTests {
         try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
         try book.post(.init(day: date(1), kind: .buy, assetID: used, quantity: 1, price: 10), accountID: account.id)
         for id in [used, planned, unrelated] { book.addQuotes([.init(day: date(2), price: 10, source: "测试行情")], assetID: id) }
-        book.plans = [.init(accountID: account.id, assetID: planned, amount: 10, monthDay: 1, nextDay: date(3))]
+        book.plans = [.init(accountID: account.id, assetID: planned, amount: 10, schedule: try .init(frequency: .monthly, day: 1), nextDay: date(3))]
         precondition(book.deletionMessage(accountID: account.id, assetID: used).contains("同时删除无其他引用的标的登记及报价：持仓标的"))
         try book.deleteInvestment(accountID: account.id, assetID: used)
         precondition(book.asset(used) == nil && book.quotes[used] == nil)
@@ -928,7 +1129,7 @@ struct InvestmentBookTests {
         var book = InvestmentBook(accounts: [owner, other])
         let id = try book.register(.init(name: "测试", code: "600000", market: "SH", kind: .stock, currency: .cny))
         try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 10, price: 1), accountID: owner.id, autoFundCash: true)
-        book.plans = [.init(accountID: other.id, assetID: id, amount: 10, monthDay: 1, nextDay: date(3), enabled: false)]
+        book.plans = [.init(accountID: other.id, assetID: id, amount: 10, schedule: try .init(frequency: .monthly, day: 1), nextDay: date(3), enabled: false)]
         try book.deleteInvestment(accountID: owner.id)
         precondition(book.asset(id) != nil && book.plans.count == 1)
     }

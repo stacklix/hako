@@ -108,6 +108,7 @@ struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     let state: String
     let operationId: String?
     var completionId: String? = nil
+    var lastSentAt: Int64 = 0
 
     var inProgress: Bool { ["starting", "running", "waiting", "stopping", "finishing", "queued", "steering"].contains(state) }
 }
@@ -125,7 +126,7 @@ struct WorkshopCatalog: Codable, Sendable {
 
     static func ordered(_ sessions: [WorkshopSession]) -> [WorkshopSession] {
         sessions.sorted {
-            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            if $0.lastSentAt != $1.lastSentAt { return $0.lastSentAt > $1.lastSentAt }
             return $0.id < $1.id
         }
     }
@@ -158,7 +159,7 @@ struct WorkshopSessionUpdates {
             guard update.revision > checkpoint || staleRunning else { return session }
             return WorkshopSession(id: session.id, title: session.title, applicationId: session.applicationId,
                 cwd: session.cwd, preview: session.preview, updatedAt: session.updatedAt,
-                state: known.state, operationId: known.operationId, completionId: known.completionId)
+                state: known.state, operationId: known.operationId, completionId: known.completionId, lastSentAt: session.lastSentAt)
         }
     }
 }
@@ -218,16 +219,44 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct WorkshopQuestionReply: Equatable, Sendable {
+    let question: String
+    let answer: String
+}
+
 struct WorkshopAsyncQuestion: Codable, Equatable, Sendable {
     let title: String
     let options: [String]
+    private static let replyPrefix = "针对提问的回答：\n"
 
     static func replyMessage(_ questions: [Self], answers: [Int: String]) -> String? {
         guard !questions.isEmpty, questions.indices.allSatisfy({ !(answers[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return nil }
-        let message = "针对提问的回答：\n" + questions.enumerated().map { index, question in
+        let message = replyPrefix + questions.enumerated().map { index, question in
             question.title + "\n" + answers[index]!.trimmingCharacters(in: .whitespacesAndNewlines)
         }.joined(separator: "\n\n")
         return message.utf16.count <= 4000 ? message : nil
+    }
+
+    static func replySections(in message: String, questions: [Self]) -> [WorkshopQuestionReply]? {
+        guard !questions.isEmpty, message.hasPrefix(replyPrefix) else { return nil }
+        var remaining = String(message.dropFirst(replyPrefix.count))
+        var result: [WorkshopQuestionReply] = []
+        for (index, question) in questions.enumerated() {
+            let heading = question.title + "\n"
+            guard !question.title.isEmpty, remaining.hasPrefix(heading) else { return nil }
+            remaining.removeFirst(heading.count)
+            let answer: String
+            if index + 1 < questions.count {
+                let separator = "\n\n" + questions[index + 1].title + "\n"
+                guard let boundary = remaining.range(of: separator),
+                      remaining.range(of: separator, range: boundary.upperBound..<remaining.endIndex) == nil else { return nil }
+                answer = String(remaining[..<boundary.lowerBound])
+                remaining = String(remaining[boundary.lowerBound...].dropFirst(2))
+            } else { answer = remaining }
+            guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            result.append(WorkshopQuestionReply(question: question.title, answer: answer))
+        }
+        return result
     }
 }
 
@@ -598,14 +627,14 @@ struct WorkshopLocalSessions {
                 preview: receipt.threadId == nil ? "发送结果等待确认" : activity.preview,
                 updatedAt: max(Int64(activity.date.timeIntervalSince1970), remote?.updatedAt ?? 0),
                 state: receipt.state == "pending" ? (receipt.threadId == nil ? "unknown" : "starting") : receipt.state,
-                operationId: receipt.id)
+                operationId: receipt.id, lastSentAt: max(Int64(activity.date.timeIntervalSince1970), remote?.lastSentAt ?? 0))
             if let index { result[index] = local } else { result.append(local) }
             localDates[local.id] = activity.date
         }
         return result.sorted {
-            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
-            let left = localDates[$0.id] ?? Date(timeIntervalSince1970: Double($0.updatedAt))
-            let right = localDates[$1.id] ?? Date(timeIntervalSince1970: Double($1.updatedAt))
+            if $0.lastSentAt != $1.lastSentAt { return $0.lastSentAt > $1.lastSentAt }
+            let left = localDates[$0.id] ?? Date(timeIntervalSince1970: Double($0.lastSentAt))
+            let right = localDates[$1.id] ?? Date(timeIntervalSince1970: Double($1.lastSentAt))
             return left != right ? left > right : $0.id < $1.id
         }
     }

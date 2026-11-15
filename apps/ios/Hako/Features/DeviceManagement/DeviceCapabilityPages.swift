@@ -266,6 +266,7 @@ private extension ConsoleAgentCapability {
         case ("query.system.metrics", 1): "系统指标"
         case ("query.codex.usage", 1): "Codex 活动"
         case ("query.network.listeners", 1): "监听端口"
+        case (DeviceServiceCommand.status, 1): "服务监控"
         case ("action.network.http.check", 1): "URL 连通性检测"
         case (DeviceGitCommand.list, 1): "Git 仓库"
         default: name + " · v\(version)"

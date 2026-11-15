@@ -1245,55 +1245,68 @@ struct InvestmentQuoteEditor: View {
     @State private var price = ""
 
     var body: some View {
-        let insurance = asset.kind == .insurance
-        let hasPublicQuote = asset.kind == .crypto
-        let unit = store.book.quoteUnit(for: asset)
-        return InvestmentEditor(title: insurance ? "保单现金价值" : "行情与手动报价", hasChanges: !price.isEmpty) {
-            Section(asset.displayName + " · " + asset.displayCode) {
-                if let quote = store.book.quote(asset.id) {
-                    LabeledContent(insurance ? "当前现金价值" : (asset.kind == .wealth ? "最新单位净值" : "最新报价"),
-                                   value: InvestmentText.number(quote.price) + " " + unit)
-                    LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
-                }
-
-                if editorDraft == nil && (hasPublicQuote || (store.configured && !asset.kind.isManual)) {
-                    Button(store.refreshing ? "正在刷新…" : "刷新行情") {
-                        Task { await store.refresh(publicQuotesOnly: hasPublicQuote) }
+        Group {
+            if asset.kind.supportsManualQuote {
+                InvestmentEditor(title: asset.kind == .insurance ? "保单现金价值" : "行情与手动报价", hasChanges: !price.isEmpty) {
+                    quoteContent
+                } save: {
+                    let price = try investmentDecimal(price, asset.kind == .insurance ? "现金价值" : "报价", allowZero: asset.kind == .insurance)
+                    if let editorDraft {
+                        try await editorDraft.submit(["date": InvestmentEditorDraft.day.string(from: date), "price": InvestmentEditorDraft.text(price)])
+                        return
                     }
-                        .disabled(store.refreshing)
-                }
-                if !asset.kind.isManual, !store.quoteStatus.isEmpty {
-                    Text(store.quoteStatus).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Section(insurance ? "更新现金价值" : "手动报价") {
-                InvestmentDatePicker(insurance ? "估值日期" : "报价日期", selection: $date, latest: InvestmentBook.day())
-                let label = insurance ? "现金价值（HKD）" : (asset.kind == .wealth ? "单位净值（CNY）" : "价格（" + unit + "）")
-                InvestmentField(label, text: $price, keyboard: .decimalPad)
-            }
-            if editorDraft == nil && store.book.watched.contains(asset.id) {
-                Section {
-                    HakoDeleteButton(title: "移出关注") {
-                        Task { await removeWatch() }
+                    try await store.update { book in
+                        book.addQuotes([InvestmentQuote(day: InvestmentBook.day(date), price: price, source: "手动录入")], assetID: asset.id)
+                        book.runPlans()
                     }
-                    .disabled(store.saving).investmentListRow()
-                    .listRowBackground(Color.clear)
                 }
-            }
-        } save: {
-            let price = try investmentDecimal(price, insurance ? "现金价值" : "报价", allowZero: insurance)
-            if let editorDraft {
-                try await editorDraft.submit(["date": InvestmentEditorDraft.day.string(from: date), "price": InvestmentEditorDraft.text(price)])
-                return
-            }
-            try await store.update { book in
-                book.addQuotes([InvestmentQuote(day: InvestmentBook.day(date), price: price, source: "手动录入")], assetID: asset.id)
-                book.runPlans()
+            } else {
+                Form { quoteContent }
+                    .navigationTitle("行情")
             }
         }
         .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
+    }
+
+    @ViewBuilder private var quoteContent: some View {
+        let insurance = asset.kind == .insurance
+        let hasPublicQuote = asset.kind == .crypto
+        let unit = store.book.quoteUnit(for: asset)
+        Section(asset.displayName + " · " + asset.displayCode) {
+            if let quote = store.book.quote(asset.id) {
+                LabeledContent(insurance ? "当前现金价值" : (asset.kind == .wealth ? "最新单位净值" : "最新报价"),
+                               value: InvestmentText.number(quote.price) + " " + unit)
+                LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
+            }
+
+            if editorDraft == nil && (hasPublicQuote || (store.configured && !asset.kind.isManual)) {
+                Button(store.refreshing ? "正在刷新…" : "刷新行情") {
+                    Task { await store.refresh(publicQuotesOnly: hasPublicQuote) }
+                }
+                .disabled(store.refreshing)
+            }
+            if !asset.kind.isManual, !store.quoteStatus.isEmpty {
+                Text(store.quoteStatus).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        if asset.kind.supportsManualQuote {
+            Section(insurance ? "更新现金价值" : "手动报价") {
+                InvestmentDatePicker(insurance ? "估值日期" : "报价日期", selection: $date, latest: InvestmentBook.day())
+                let label = insurance ? "现金价值（HKD）" : (asset.kind == .wealth ? "单位净值（CNY）" : "价格（" + unit + "）")
+                InvestmentField(label, text: $price, keyboard: .decimalPad)
+            }
+        }
+        if editorDraft == nil && store.book.watched.contains(asset.id) {
+            Section {
+                HakoDeleteButton(title: "移出关注") {
+                    Task { await removeWatch() }
+                }
+                .disabled(store.saving).investmentListRow()
+                .listRowBackground(Color.clear)
+            }
+        }
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -1316,6 +1329,8 @@ struct InvestmentPlanEditor: View {
     @State private var buy: Bool
     @State private var assetID: UUID?
     @State private var amount: String
+    @State private var frequency: InvestmentPlanFrequency
+    @State private var weekday: Int
     @State private var day: Int
     @State private var enabled: Bool
     @State private var draft = InvestmentAssetDraft()
@@ -1330,7 +1345,9 @@ struct InvestmentPlanEditor: View {
         _buy = State(initialValue: plan?.assetID != nil)
         _assetID = State(initialValue: plan?.assetID)
         _amount = State(initialValue: plan.map { $0.amount.formatted(.number.grouping(.never)) } ?? "")
-        _day = State(initialValue: plan?.monthDay ?? 8)
+        _frequency = State(initialValue: plan?.schedule.frequency ?? .monthly)
+        _weekday = State(initialValue: [.weekly, .biweekly].contains(plan?.schedule.frequency) ? plan!.schedule.day : 1)
+        _day = State(initialValue: plan?.schedule.frequency == .monthly ? plan!.schedule.day : 8)
         _enabled = State(initialValue: plan?.enabled ?? true)
     }
 
@@ -1338,7 +1355,16 @@ struct InvestmentPlanEditor: View {
         accountID != initialAccountID || buy != (plan?.assetID != nil)
             || (buy && (assetID != plan?.assetID || draft.selected || !draft.name.isEmpty || !draft.code.isEmpty))
             || amount != (plan.map { $0.amount.formatted(.number.grouping(.never)) } ?? "")
-            || day != (plan?.monthDay ?? 8) || enabled != (plan?.enabled ?? true)
+            || frequency != (plan?.schedule.frequency ?? .monthly)
+            || scheduleDay != (plan?.schedule.day ?? 8) || enabled != (plan?.enabled ?? true)
+    }
+
+    private var scheduleDay: Int {
+        switch frequency {
+        case .daily: 0
+        case .weekly, .biweekly: weekday
+        case .monthly: day
+        }
     }
 
     var body: some View {
@@ -1374,11 +1400,27 @@ struct InvestmentPlanEditor: View {
                     }
                 }
                 InvestmentField("每次金额（" + currency.rawValue + "）", text: $amount, keyboard: .decimalPad)
-                Picker("每月执行日", selection: $day) {
-                    ForEach(1...28, id: \.self) { Text("\($0) 日").tag($0) }
+                Picker("执行周期", selection: $frequency) {
+                    ForEach(InvestmentPlanFrequency.allCases) { Text($0.title).tag($0) }
+                }
+                if frequency == .weekly || frequency == .biweekly {
+                    Picker("执行日", selection: $weekday) {
+                        ForEach(1...7, id: \.self) { Text(InvestmentPlanSchedule.weekdays[$0 - 1]).tag($0) }
+                    }
+                } else if frequency == .monthly {
+                    Picker("每月执行日", selection: $day) {
+                        ForEach(1...31, id: \.self) { Text("\($0) 日").tag($0) }
+                    }
+                }
+                if let schedule = try? InvestmentPlanSchedule(frequency: frequency, day: scheduleDay) {
+                    let unchanged = plan.map { $0.enabled && $0.schedule == schedule } ?? false
+                    LabeledContent(plan == nil ? "首次执行日" : "下次执行日",
+                                   value: InvestmentText.date(unchanged ? plan!.nextDay : schedule.first(after: InvestmentBook.day())))
                 }
                 Toggle("启用任务", isOn: $enabled)
             } footer: {
+                if frequency == .biweekly { Text("从首次计划日起，每隔 14 天执行一次。") }
+                if frequency == .monthly && day > 28 { Text("当月没有该日期时，按月末执行。") }
                 if buy { Text("定期买入从该账户的现金余额扣款，按可用报价补记。港股通按交割单手动记账。") }
             }
             if plan != nil && editorDraft == nil {
@@ -1390,10 +1432,12 @@ struct InvestmentPlanEditor: View {
             }
         } save: {
             let amount = try investmentDecimal(amount, "金额")
+            let schedule = try InvestmentPlanSchedule(frequency: frequency, day: scheduleDay)
             if let editorDraft {
                 let selected: InvestmentAsset? = buy ? try assetID.flatMap(store.book.asset) ?? draft.asset(currency: currency, reusing: existing) : nil
                 try await editorDraft.submit(["account_id": accountID.uuidString, "plan_type": buy ? "buy" : "deposit",
-                    "asset_id": "", "amount": InvestmentEditorDraft.text(amount), "month_day": String(day), "enabled": enabled ? "true" : "false"], asset: selected)
+                    "asset_id": "", "amount": InvestmentEditorDraft.text(amount), "frequency": frequency.rawValue,
+                    "schedule_day": String(scheduleDay), "enabled": enabled ? "true" : "false"], asset: selected)
                 return
             }
             try await store.update { book in
@@ -1408,9 +1452,9 @@ struct InvestmentPlanEditor: View {
                     }
                     try asset.validateEntry(in: account)
                 }
-                let unchanged = plan.map { $0.enabled && $0.monthDay == day && $0.accountID == accountID && $0.assetID == target } ?? false
+                let unchanged = plan.map { $0.enabled && $0.schedule == schedule && $0.accountID == accountID && $0.assetID == target } ?? false
                 let item = InvestmentPlan(id: plan?.id ?? UUID(), accountID: accountID, assetID: target, amount: amount,
-                    monthDay: day, nextDay: unchanged ? (plan?.nextDay ?? .now) : InvestmentBook.nextRun(day, after: InvestmentBook.day()),
+                    schedule: schedule, nextDay: unchanged ? plan!.nextDay : schedule.first(after: InvestmentBook.day()),
                     enabled: enabled, lastResult: plan?.lastResult)
                 if enabled { try book.requireActive(accountID: accountID) }
                 if let index = book.plans.firstIndex(where: { $0.id == item.id }) { book.plans[index] = item }
@@ -1617,6 +1661,10 @@ extension InvestmentPlanEditor {
         _assetID = State(initialValue: editing.asset.flatMap { store.book.asset($0.id)?.id })
         if let asset = editing.asset, store.book.asset(asset.id) == nil { _draft = State(initialValue: InvestmentAssetDraft(asset, book: editing.proposal.book)) }
         _amount = State(initialValue: editing.value("amount"))
-        _day = State(initialValue: Int(editing.value("month_day")) ?? 8); _enabled = State(initialValue: editing.value("enabled") == "true")
+        let frequency = InvestmentPlanFrequency(rawValue: editing.value("frequency")) ?? .monthly
+        _frequency = State(initialValue: frequency)
+        _day = State(initialValue: frequency == .monthly ? Int(editing.value("schedule_day")) ?? 8 : 8)
+        _weekday = State(initialValue: [.weekly, .biweekly].contains(frequency) ? Int(editing.value("schedule_day")) ?? 1 : 1)
+        _enabled = State(initialValue: editing.value("enabled") == "true")
     }
 }

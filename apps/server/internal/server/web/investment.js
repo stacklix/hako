@@ -17,6 +17,12 @@ const investmentEventTypes = {
 const investmentCategories = {cash: '流动资金', investments: '投资理财', fixed: '固定资产', receivables: '应收款', liabilities: '负债'};
 const investmentPeriods = [['近1周', 0, 7], ['近1月', 1], ['近3月', 3], ['近半年', 6], ['近1年', 12]];
 const investmentSnapshotStatus = {complete: '已保存', partial: '部分数据缺失', missing: '缺少估值数据'};
+function investmentPlanPeriod(plan) {
+  if (plan.frequency === 'daily') return '每日';
+  if (plan.frequency === 'monthly') return `每月 ${plan.schedule_day} 日`;
+  const weekday = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][Number(plan.schedule_day) - 1];
+  return plan.frequency === 'biweekly' ? `每两周 · ${weekday}` : `每${weekday}`;
+}
 const investmentNumber = new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 8});
 const investmentPercent = new Intl.NumberFormat('zh-CN', {style: 'percent', maximumFractionDigits: 2, signDisplay: 'exceptZero'});
 const investmentRatio = new Intl.NumberFormat('zh-CN', {style: 'percent', maximumFractionDigits: 2});
@@ -280,7 +286,7 @@ function investmentAccounts(tables) {
         balanceAsset ? investmentMoney(event.settled_amount, currency) : '—'];
     });
     const plans = investmentByOrder(tables.investment_plans).filter(plan => plan.account_id === id).map(plan =>
-      [assets.get(plan.asset_id)?.name ?? '定期转入', investmentMoney(plan.amount, currency), plan.next_date,
+      [assets.get(plan.asset_id)?.name ?? '定期转入', investmentPlanPeriod(plan), investmentMoney(plan.amount, currency), plan.next_date,
         plan.enabled === '1' ? '启用' : '停用', plan.last_result]);
     content.replaceChildren(
       investmentCard(account.name, node('p', `${investmentAccountTypes[account.account_type] ?? account.account_type} · ${currency} · ` +
@@ -289,7 +295,7 @@ function investmentAccounts(tables) {
         ['持仓估值', investmentMoney(snapshot?.holdings_native, currency)], ['累计盈亏', investmentMoney(snapshot?.gain_native, currency)]])),
       investmentCard('账本标的', investmentTable(['名称', '代码', '类型', '报价币种'], tracked, '暂无资产标的。')),
       investmentCard('账户流水', investmentTable(['日期', '类型', '标的', '数量', '成交价', '金额', '记录余额'], rows)),
-      investmentCard('定投任务', investmentTable(['任务', '金额', '下次执行', '状态', '上次结果'], plans, '暂无定投任务。'))
+      investmentCard('定投任务', investmentTable(['任务', '周期', '金额', '下次执行', '状态', '上次结果'], plans, '暂无定投任务。'))
     );
   }
   select.addEventListener('change', draw);

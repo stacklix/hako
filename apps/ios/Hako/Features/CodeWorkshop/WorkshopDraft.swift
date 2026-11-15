@@ -1,23 +1,44 @@
 import Foundation
+
+struct WorkshopComposerText: Equatable {
+    private(set) var text = ""
+    private(set) var editorID = UUID()
+
+    mutating func update(_ text: String, editorID: UUID) {
+        guard self.editorID == editorID else { return }
+        self.text = text
+    }
+
+    mutating func clearAfterSending() { self = WorkshopComposerText() }
+}
+
 #if canImport(Combine)
 import Combine
 
 @MainActor final class WorkshopComposerInput: ObservableObject {
-    @Published var text = "" { didSet { if text != oldValue { onChange?() } } }
-    @Published private(set) var editorID = UUID()
+    @Published private var value = WorkshopComposerText()
+    var text: String {
+        get { value.text }
+        set { updateText(newValue, editorID: editorID) }
+    }
+    var editorID: UUID { value.editorID }
     var onChange: (() -> Void)?
 
     func updateText(_ value: String, editorID: UUID) {
-        guard self.editorID == editorID else { return }
-        text = value
+        var next = self.value
+        next.update(value, editorID: editorID)
+        guard next != self.value else { return }
+        self.value = next
+        onChange?()
     }
 
     func clearAfterSending() {
-        text = ""
-        // Disabling the focused multiline TextField during submission can
-        // retain its native editing buffer after the model has been cleared.
-        // Replace only that editor, and only after this input is acknowledged.
-        editorID = UUID()
+        // Publish the empty value and its new identity together. An old editor
+        // cannot observe a new identity paired with the previously sent text.
+        var next = value
+        next.clearAfterSending()
+        value = next
+        onChange?()
     }
 }
 #endif

@@ -275,6 +275,9 @@ struct DeviceMetricsView: View {
                 DeviceGitRepositoriesView(agent: currentAgent,
                     cacheFile: DeviceGitInventory.cacheFile(server: client.serverURL, account: client.username, agent: currentAgent.id))
                     .id(client.requestContext)
+            } else if capability.name == DeviceServiceCommand.status, capability.version == 1 {
+                DeviceServicesView(agent: currentAgent, entry: state.entries[capability.name], loaded: state.loaded)
+                    .id(client.requestContext)
             } else {
                 VStack(alignment: .leading, spacing: 14) { capabilityContent(capability) }
                     .devicePagePanel()
@@ -408,6 +411,7 @@ struct DeviceMetricsView: View {
         case ("query.system.metrics", 1): return "系统"
         case ("query.codex.usage", 1): return "Codex"
         case ("query.network.listeners", 1): return "端口"
+        case (DeviceServiceCommand.status, 1): return "服务"
         case ("action.network.http.check", 1): return "检测"
         case (DeviceGitCommand.list, 1): return "Git"
         default: return capability.name.split(separator: ".").last.map(String.init) ?? capability.name
@@ -749,6 +753,7 @@ private extension ConsoleAgent {
     var monitorPages: [ConsoleAgentCapability] {
         (capabilities ?? []).filter {
             $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
+                && $0.name != DeviceServiceCommand.start
         }
     }
 }

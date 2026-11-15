@@ -64,7 +64,7 @@ import Foundation
             "Reentry must not start overlapping reads while a send or synchronization is already running")
         func session(_ time: Int64, state: String = "running", operation: String = "live", completion: String? = nil) -> WorkshopSession {
             WorkshopSession(id: "thread", title: "Session", applicationId: "app", cwd: "project", preview: "Reply",
-                updatedAt: time, state: state, operationId: operation, completionId: completion)
+                updatedAt: time, state: state, operationId: operation, completionId: completion, lastSentAt: time)
         }
         let catalogBefore = session(1)
         precondition(!WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogBefore, current: session(2),

@@ -45,9 +45,9 @@ public sealed class NetworkListeners
     private static extern uint GetExtendedUdpTable(IntPtr table, ref int size, [MarshalAs(UnmanagedType.Bool)] bool order,
         uint family, int tableClass, uint reserved);
 
-    public Task<ListenerSnapshot> ReadAsync(CancellationToken token) => Task.Run(() => Capture(token), token);
+    public Task<ListenerSnapshot> ReadAsync(CancellationToken token, IReadOnlySet<int>? ports = null) => Task.Run(() => Capture(token, ports), token);
 
-    private static ListenerSnapshot Capture(CancellationToken token)
+    private static ListenerSnapshot Capture(CancellationToken token, IReadOnlySet<int>? ports)
     {
         var endpoints = new List<Endpoint>();
         var warnings = new List<string>();
@@ -61,6 +61,7 @@ public sealed class NetworkListeners
             { warnings.Add($"{protocol} IPv{(family == 2 ? 4 : 6)} 端口读取失败，结果可能不完整。"); }
         }
         if (succeeded == 0) throw new AgentActionException("sample_failed", "无法读取本机监听端口。");
+        if (ports is not null) endpoints.RemoveAll(endpoint => endpoint.Protocol != "TCP" || !ports.Contains(endpoint.Port));
         var processSnapshot = ProcessSnapshot.Capture(token);
         var snapshot = Merge(endpoints, pid =>
         {

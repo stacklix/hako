@@ -25,6 +25,20 @@ private final class DraftWrites: @unchecked Sendable {
     }
 
     @MainActor static func main() async throws {
+        var textState = WorkshopComposerText()
+        let composingID = textState.editorID
+        textState.update("持仓标题行单独出来，不要放在 section 内部，画原型", editorID: composingID)
+        precondition(textState.editorID == composingID)
+        textState.clearAfterSending()
+        precondition(textState.text.isEmpty && textState.editorID != composingID,
+            "Acknowledgement must atomically publish empty text with a new editing identity")
+        textState.update("持仓标题行单独出来，不要放在 section 内部，画原型", editorID: composingID)
+        precondition(textState.text.isEmpty, "A delayed pre-send edit must not restore sent text as a new draft")
+        let nextID = textState.editorID
+        textState.update("新的草稿 👋\n还有图片", editorID: nextID)
+        textState.update("", editorID: composingID)
+        precondition(textState.text == "新的草稿 👋\n还有图片" && textState.editorID == nextID,
+            "A stale acknowledgement/editor callback must preserve new typing and its identity")
         #if canImport(Combine)
         let editor = WorkshopComposerInput()
         let originalEditor = editor.editorID
@@ -32,7 +46,7 @@ private final class DraftWrites: @unchecked Sendable {
         precondition(editor.editorID == originalEditor, "Typing must retain native editor identity and selection")
         editor.clearAfterSending()
         precondition(editor.text.isEmpty && editor.editorID != originalEditor,
-            "Acknowledged sends must replace the native editor as well as clearing persisted input")
+            "Acknowledged sends must invalidate old edits as well as clearing persisted input")
         editor.updateText("已发送的消息", editorID: originalEditor)
         precondition(editor.text.isEmpty, "A delayed callback from the cleared editor must not restore sent text")
         let clearedEditor = editor.editorID

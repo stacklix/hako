@@ -12,34 +12,34 @@ internal static class Program
 {
     private static void CheckServerCompatibility()
     {
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0") is not null)
             throw new Exception("Agent rejected the current compatibility line");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.4","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0")?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired server compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.2.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.2.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired Agent compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
             throw new Exception("Agent rejected matching version floors");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
             throw new Exception("Agent did not compare compatible patch versions numerically");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a patch version below the required floor");
-        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about its own version floor");
         var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about the server version floor");
-        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
+        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
         if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer minor version than the server supports");
-        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
+        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.6.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (newerServer?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer server minor version");
         var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (both != outdatedAgent + "\n\n" + outdatedServer)
             throw new Exception("Agent did not report both incompatible versions together");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
             throw new Exception("Agent accepted incomplete version metadata");
     }
 
@@ -81,6 +81,13 @@ internal static class Program
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "registered-services")
+            {
+                using var services = new RegisteredServices();
+                Console.WriteLine(JsonSerializer.Serialize(await services.ReadAsync(default), AgentConnection.Json));
+                return 0;
+            }
             if (args.Length == 1 && args[0] == "workshop-notifications") { await WorkshopNotificationChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
@@ -195,6 +202,7 @@ internal static class Program
             StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();
+            await ServiceMonitorChecks.RunAsync();
             await PythonProcessLaunchChecks.RunAsync();
             byte[] secret = RandomNumberGenerator.GetBytes(64);
             var encrypted = DataProtection.Protect(secret);
@@ -225,7 +233,8 @@ internal static class Program
             var dispatcher = new AgentDispatcher(new SystemMetrics());
             if (!dispatcher.Capabilities.SequenceEqual(new[] {
                 new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
-                new AgentCapability("query.network.listeners", 1), new AgentCapability("action.network.http.check", 1),
+                new AgentCapability(RegisteredServices.Command, 1), new AgentCapability("query.network.listeners", 1),
+                new AgentCapability(RegisteredServices.StartCommand, 1), new AgentCapability("action.network.http.check", 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),

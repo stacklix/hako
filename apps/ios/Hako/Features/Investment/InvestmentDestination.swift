@@ -158,7 +158,7 @@ struct InvestmentPlansView: View {
         let label = store.book.asset(plan.assetID).map { "定期买入 · " + $0.name } ?? "定期转入"
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
-                InvestmentTitle(label, subtitle: "每月 \(plan.monthDay) 日")
+                InvestmentTitle(label, subtitle: plan.schedule.summary)
                 Spacer(minLength: 6)
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(InvestmentText.money(plan.amount, account.currency)).monospacedDigit()
@@ -387,7 +387,7 @@ struct InvestmentHoldingView: View {
                     InvestmentPageRow(title: "调整余额", symbol: "slider.horizontal.3")
                 }.buttonStyle(.plain)
             } else if asset.kind != .generic {
-                InvestmentPageLink(title: insurance ? "更新现金价值" : (asset.kind == .wealth ? "更新单位净值" : "行情与手动报价"),
+                InvestmentPageLink(title: insurance ? "更新现金价值" : (asset.kind == .wealth ? "更新单位净值" : asset.kind == .crypto ? "行情" : "行情与手动报价"),
                                    symbol: "chart.xyaxis.line", route: .quote(asset.id))
             }
         }
@@ -733,7 +733,6 @@ private struct InvestmentQuoteCredentialEditor: View {
     @State private var testMessage: String?
     @State private var testSucceeded = false
     @State private var showsKey = false
-    @FocusState private var keyFocused: Bool
 
     private var hasChanges: Bool { savedKey.map { key != $0 } ?? false }
 
@@ -746,50 +745,49 @@ private struct InvestmentQuoteCredentialEditor: View {
                             Text(source.credential).font(.subheadline).foregroundStyle(.secondary)
                             Spacer()
                             Button { showsKey.toggle() } label: {
-                                Image(systemName: showsKey ? "eye.slash" : "eye")
+                                Image(systemName: showsKey ? "eye" : "eye.slash")
                             }
                             .buttonStyle(.borderless)
                             .accessibilityLabel((showsKey ? "隐藏" : "显示") + source.credential)
+                            .accessibilityValue(showsKey ? "已显示" : "已隐藏")
                         }
-                        Group {
-                            if showsKey {
-                                TextEditor(text: $key)
-                            } else {
-                                SecureField("输入 " + source.credential, text: $key)
+                        HakoSecureTextEditor(text: $key, isSecure: !showsKey, label: source.credential)
+                            .frame(minHeight: 88, alignment: .topLeading)
+                            .overlay(alignment: .topLeading) {
+                                if key.isEmpty {
+                                    Text("输入 " + source.credential)
+                                        .font(.body.monospaced())
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.top, 8)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
                             }
-                        }
-                            .font(.body.monospaced())
-                            .frame(minHeight: 120, alignment: .topLeading)
-                            .scrollContentBackground(.hidden)
-                            .accessibilityLabel(source.credential)
-                            .focused($keyFocused)
-                            .keyboardType(.asciiCapable)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
                     .investmentListRow()
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture().onEnded { _ in keyFocused = true })
                     .listRowInsets(EdgeInsets())
                     .disabled(savedKey == nil)
                 } footer: {
                     Text("清空后保存可移除此行情源的凭据。")
                 }
                 Section {
-                    Button { testing = true } label: {
-                        HStack(spacing: 8) {
-                            if testing { ProgressView() }
-                            Text(testing ? "正在测试…" : "测试连接")
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button { testing = true } label: {
+                            HStack(spacing: 8) {
+                                if testing { ProgressView() }
+                                Text(testing ? "正在测试…" : "测试连接")
+                            }
                         }
+                        .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
+                        .disabled(testing || savedKey == nil || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if let testMessage { connectionResult(testMessage) }
                     }
-                    .buttonStyle(HakoActionButtonStyle(primary: false))
-                    .disabled(testing || savedKey == nil || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .listRowBackground(Color.clear)
-                    if let testMessage {
-                        Text(testMessage).font(.footnote)
-                            .foregroundStyle(testSucceeded ? Color.green : Color.red)
-                    }
+                    .listRowSeparator(.hidden)
+                    // Keep both outlines inside the grouped Form's rounded clipping boundary.
+                    .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 if savedKey == nil { Button("重试读取", action: load) }
@@ -800,7 +798,35 @@ private struct InvestmentQuoteCredentialEditor: View {
             if testing { await testConnection() }
         }
         .onChange(of: key) { _, _ in testMessage = nil }
-        .onChange(of: showsKey) { _, _ in keyFocused = true }
+    }
+
+    private func connectionResult(_ message: String) -> some View {
+        let tint = testSucceeded ? Color.green : Color.red
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: testSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .font(.body)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(testSucceeded ? "连接成功" : "连接失败")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(tint.opacity(0.18), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func testConnection() async {
@@ -811,11 +837,11 @@ private struct InvestmentQuoteCredentialEditor: View {
             try await InvestmentQuoteProvider().testCredential(value, for: source)
             guard !Task.isCancelled, key == value else { return }
             testSucceeded = true
-            testMessage = "连接成功，凭据可用。"
+            testMessage = "凭据可用，行情接口响应正常。"
         } catch {
             guard !Task.isCancelled, key == value else { return }
             testSucceeded = false
-            testMessage = "测试失败：" + error.localizedDescription
+            testMessage = error.localizedDescription
         }
     }
 
