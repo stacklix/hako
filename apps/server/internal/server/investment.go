@@ -28,11 +28,11 @@ type investmentTable struct {
 
 var investmentTables = []investmentTable{
 	{"market_instruments", "id", "asset_type symbol exchange name quote_currency price_type", false},
-	{"market_derivative_specs", "instrument_id", "pricing_model contract_multiplier settlement_basis settlement_unit expiry_date", false},
+	{"market_derivative_specs", "instrument_id", "contract_multiplier expiry_date", false},
 	{"investment_accounts", "id", "name account_type currency sort_order archived_at", false},
-	{"investment_assets", "id", "instrument_id name asset_type settlement_unit annual_rate maturity_date collateral_asset_id position_side symbol quote_currency", false},
+	{"investment_assets", "id", "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency", false},
 	{"investment_events", "id", "account_id asset_id event_type effective_date sequence amount quantity unit_price fee settled_amount transfer_id transfer_account_id version created_at updated_at deleted_at", false},
-	{"investment_derivative_event_details", "event_id", "trade_action position_side margin_delta funding_target settlement_to_account_rate", false},
+	{"investment_derivative_event_details", "event_id", "trade_action position_side margin_delta", false},
 	{"investment_plans", "id", "account_id asset_id amount month_day next_date enabled last_result sort_order", false},
 	{"investment_plan_runs", "plan_id scheduled_date", "status event_id executed_at result_detail", false},
 	{"investment_watchlist", "asset_id", "instrument_id sort_order", false},
@@ -51,14 +51,14 @@ var (
 	errInvestmentInvalid   = errors.New("invalid_investment_data")
 	investmentDay          = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	investmentDecimal      = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
-	investmentNumberFields = " amount quantity unit_price fee settled_amount annual_rate margin_delta settlement_to_account_rate price rate value contract_multiplier total_cny total_usd cumulative_gain_cny daily_gain_cny cash_native holdings_native gain_native "
+	investmentNumberFields = " amount quantity unit_price fee settled_amount annual_rate margin_delta price rate value contract_multiplier total_cny total_usd cumulative_gain_cny daily_gain_cny cash_native holdings_native gain_native "
 )
 
 const investmentIntegerFields = " sequence sort_order enabled month_day is_final version revision computed_revision "
 
 var investmentRequired = map[string]string{
 	"market_instruments":                 "asset_type symbol exchange name quote_currency price_type",
-	"market_derivative_specs":            "pricing_model contract_multiplier settlement_basis settlement_unit",
+	"market_derivative_specs":            "contract_multiplier",
 	"investment_accounts":                "name account_type currency sort_order",
 	"investment_assets":                  "name asset_type quote_currency settlement_unit",
 	"investment_events":                  "account_id effective_date sequence event_type",
@@ -114,7 +114,11 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err == nil {
-		err = dbschema.Initialize(db, func(tx *sql.Tx) error {
+		// Release 0.4.0 only: remove this call and investment_crypto_cleanup_040.go in the next release.
+		err = migrateInvestmentCrypto040(db)
+	}
+	if err == nil {
+		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
 				timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai', generation INTEGER NOT NULL DEFAULT 0,
@@ -408,7 +412,15 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 				return errInvestmentInvalid
 			}
 		}
-		if row["asset_type"] == "option" {
+		if kind, exists := row["asset_type"]; exists && !slices.Contains([]string{
+			"stock", "etf", "fund", "future", "crypto", "generic", "insurance", "wealth", "deposit", "certificate",
+		}, kind) {
+			return errInvestmentInvalid
+		}
+		if kind, exists := row["event_type"]; exists && !slices.Contains([]string{
+			"deposit", "withdrawal", "adjustment", "opening", "buy", "sell", "transfer_out", "transfer_in", "income",
+			"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade",
+		}, kind) {
 			return errInvestmentInvalid
 		}
 		if quoteVersions != nil {
@@ -465,7 +477,6 @@ func validateInvestmentLinks(ctx context.Context, tx *sql.Tx, owner string) erro
 		{"investment_events", "transfer_account_id", "investment_accounts", "id"},
 		{"investment_derivative_event_details", "event_id", "investment_events", "id"},
 		{"investment_assets", "instrument_id", "market_instruments", "id"},
-		{"investment_assets", "collateral_asset_id", "investment_assets", "id"},
 		{"market_derivative_specs", "instrument_id", "market_instruments", "id"},
 		{"market_daily_prices", "instrument_id", "market_instruments", "id"},
 		{"investment_manual_prices", "asset_id", "investment_assets", "id"},

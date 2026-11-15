@@ -97,6 +97,8 @@ try {
     if ($export.data.publicKeyPem -notmatch 'BEGIN PUBLIC KEY') { throw 'Public PEM missing from JSON.' }
     $null = Invoke-HakoCheck -Arguments @('config','set','--url','http://127.0.0.1:1','--account','owner')
     $configuration = Invoke-HakoCheck -Arguments @('config','show')
+    $serverCheck = Invoke-HakoCheck -Arguments @('--check-server-version') -ExpectedExit 4
+    if ($serverCheck.error.code -ne 'server_version_unavailable') { throw 'An unreachable server did not block candidate installation preflight.' }
     if ($configuration.data.keyId -ne $key.data.keyId -or $configuration.data.account -ne 'owner') { throw 'Shared configuration was not persisted.' }
     $null = Invoke-HakoCheck -Arguments @('config','set','--url','http://example.com') -ExpectedExit 1
     $metrics = Invoke-HakoCheck -Arguments @('metrics')
@@ -157,6 +159,39 @@ try {
     $null = Invoke-HakoCheck -Arguments @('exit')
     if (-not $guiProcess.WaitForExit(10000)) { throw 'GUI runtime did not exit through CLI.' }
     $guiProcess.Dispose(); $backgroundId = $null
+    $lifecyclePath = Join-Path $profileDirectory 'logs/agent-lifecycle.jsonl'
+    $lifecycle = @(Get-Content -LiteralPath $lifecyclePath | ForEach-Object { $_ | ConvertFrom-Json })
+    $starts = @($lifecycle | Where-Object event -eq 'started')
+    $stops = @($lifecycle | Where-Object event -eq 'exited')
+    if ($starts.Count -ne 2 -or $stops.Count -ne 2 -or
+        @($stops | Where-Object { !$_.details.clean -or $_.details.reason -ne 'cli_exit' }).Count) {
+        throw 'GUI/CLI Agent lifecycle did not record clean exits or CLI status created extra sessions.'
+    }
+    $guiStart.ArgumentList.Add('--background')
+    for ($iteration = 0; $iteration -lt 2; $iteration++) {
+        $fixture = [Diagnostics.Process]::Start($guiStart)
+        $backgroundId = $fixture.Id
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 150
+            $fixtureStatus = Invoke-HakoCheck -Arguments @('status')
+        } until ($fixtureStatus.data.running -or [DateTime]::UtcNow -ge $deadline)
+        if (!$fixtureStatus.data.running -or $fixtureStatus.data.processId -ne $backgroundId) { throw 'Lifecycle fixture did not start its own isolated Agent.' }
+        if ($iteration -eq 0) {
+            $owned = Get-CimInstance Win32_Process -Filter "ProcessId=$backgroundId"
+            if (!$owned -or !$owned.CommandLine.Contains($profileDirectory)) { throw 'Forced-exit fixture does not own the isolated test profile.' }
+            $forcedId = $backgroundId
+            $fixture.Kill()
+            if (!$fixture.WaitForExit(10000)) { throw 'Forced-exit fixture did not stop.' }
+            $backgroundId = $null
+        }
+        $fixture.Dispose()
+    }
+    $lifecycle = @(Get-Content -LiteralPath $lifecyclePath | ForEach-Object { $_ | ConvertFrom-Json })
+    $unclean = @($lifecycle | Where-Object { $_.event -eq 'previous_unclean_exit' -and $_.details.previous.processId -eq $forcedId })
+    if ($unclean.Count -ne 1) { throw 'Restart did not record the forcibly terminated Agent session.' }
+    $null = Invoke-HakoCheck -Arguments @('exit')
+    Write-Output 'PASS: lifecycle logs cover GUI/CLI exits and recovery after a forcibly terminated Agent.'
     Write-Output 'PASS: EXE help/aliases/JSON, exit codes, encrypted keys, safe export, metrics, background control and shared GUI/CLI runtime.'
 }
 finally {

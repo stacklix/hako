@@ -2,10 +2,67 @@ package server
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestInvestmentGenericBalancesRoundTripAndRemovedContractsAreRejected(t *testing.T) {
+	f := newFixture(t, true)
+	const path = "/api/v1/investment/book"
+	day := "2026-11-15"
+	asset := investmentRow{"id": "generic", "name": "策略账户", "asset_type": "generic", "quote_currency": "USD", "settlement_unit": "USD"}
+	adjustment := investmentRow{"id": "adjustment", "account_id": "account", "asset_id": "generic", "event_type": "adjustment", "effective_date": day, "sequence": "2", "settled_amount": "10800.123456789012345678"}
+	initial := investmentWrite{DirtyFrom: &day, Tables: investmentRows{
+		"investment_accounts": {{"id": "account", "name": "Binance", "account_type": "crypto", "currency": "USD", "sort_order": "0"}},
+		"investment_assets":   {asset},
+		"investment_events": {
+			{"id": "deposit", "account_id": "account", "event_type": "deposit", "effective_date": day, "sequence": "0", "amount": "10000"},
+			{"id": "buy", "account_id": "account", "asset_id": "generic", "event_type": "buy", "effective_date": day, "sequence": "1", "quantity": "1", "unit_price": "10000", "settled_amount": "10000"},
+			adjustment,
+		},
+	}}
+	if status, body := f.call(http.MethodPut, path, initial, f.tokens.AccessToken); status != http.StatusOK {
+		t.Fatalf("generic write = %d %s", status, body)
+	}
+	for _, test := range []struct {
+		table, column, value string
+		row                  investmentRow
+	}{
+		{"investment_assets", "asset_type", "crypto_contract", asset},
+		{"market_instruments", "asset_type", "crypto_contract", investmentRow{"id": "contract", "symbol": "BTCUSDT", "exchange": "BINANCE", "name": "Contract", "quote_currency": "USD", "price_type": "mark"}},
+		{"investment_events", "event_type", "derivative_funding", adjustment},
+		{"investment_assets", "collateral_asset_id", "generic", asset},
+		{"market_derivative_specs", "pricing_model", "inverse", investmentRow{"instrument_id": "future", "contract_multiplier": "1"}},
+		{"market_derivative_specs", "settlement_basis", "coin", investmentRow{"instrument_id": "future", "contract_multiplier": "1"}},
+		{"market_derivative_specs", "settlement_unit", "BTC", investmentRow{"instrument_id": "future", "contract_multiplier": "1"}},
+		{"investment_derivative_event_details", "funding_target", "account_available", investmentRow{"event_id": "adjustment"}},
+		{"investment_derivative_event_details", "settlement_to_account_rate", "1", investmentRow{"event_id": "adjustment"}},
+	} {
+		t.Run(test.table+"/"+test.column, func(t *testing.T) {
+			row := maps.Clone(test.row)
+			row[test.column] = test.value
+			write := investmentWrite{Generation: 1, DirtyFrom: &day, Tables: investmentRows{test.table: {row}}}
+			if status, body := f.call(http.MethodPut, path, write, f.tokens.AccessToken); status != http.StatusBadRequest {
+				t.Fatalf("removed contract data accepted: %d %s", status, body)
+			}
+		})
+	}
+	status, body := f.call(http.MethodGet, path, nil, f.tokens.AccessToken)
+	var saved investmentState
+	if err := json.Unmarshal(body, &saved); err != nil || status != http.StatusOK {
+		t.Fatalf("read = %d %s (%v)", status, body, err)
+	}
+	if saved.Generation != 1 || len(saved.Tables["investment_events"]) != 3 || !maps.Equal(saved.Tables["investment_assets"][0], asset) {
+		t.Fatalf("rejected writes changed the saved book: %+v", saved)
+	}
+	for _, event := range saved.Tables["investment_events"] {
+		if event["id"] == "adjustment" && event["settled_amount"] != adjustment["settled_amount"] {
+			t.Fatalf("balance precision changed: %+v", event)
+		}
+	}
+}
 
 func TestInvestmentBookRequiresAuthAndCommitsAtomically(t *testing.T) {
 	f := newFixture(t, true)

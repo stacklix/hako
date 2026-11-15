@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 extension InvestmentAsset {
-    var catalogKey: String { [kind.rawValue, currency.rawValue, market, code, basis.rawValue].joined(separator: "|") }
+    var catalogKey: String { [kind.rawValue, currency.rawValue, market, code].joined(separator: "|") }
 
     func validateCatalogIdentity(_ listed: InvestmentAsset) throws {
         guard kind == listed.kind, currency == listed.currency, code == listed.code, market == listed.market else {
@@ -33,34 +33,6 @@ extension InvestmentBook {
             return used.contains(asset.id) || original.catalogKey != asset.catalogKey
                 || original.name != asset.name || original.multiplier != asset.multiplier
         }.sorted { $0.id.uuidString < $1.id.uuidString }
-    }
-}
-
-struct InvestmentContractSearch {
-    let query: String
-    let exchange: InvestmentContractExchange?
-    let side: InvestmentContractSide?
-
-    init(_ input: String) throws {
-        let parts = input.uppercased().split(separator: "•", omittingEmptySubsequences: false)
-        guard parts.count <= 3, let first = parts.first, !first.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw InvestmentError.invalid("请输入合约代码，例如 TRXUSD•S•HTX（空）或 TRXUSD•L•HTX（多）。")
-        }
-        query = first.trimmingCharacters(in: .whitespacesAndNewlines)
-        if parts.count == 3 {
-            let marker = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let direction = InvestmentContractSide.allCases.first(where: { $0.shortCode == marker }) else {
-                throw InvestmentError.invalid("合约方向使用 S（空）或 L（多）。")
-            }
-            side = direction
-        } else { side = nil }
-        if parts.count > 1 {
-            let suffix = parts.last!.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let venue = InvestmentContractExchange.allCases.first(where: { $0.shortCode == suffix }) else {
-                throw InvestmentError.invalid("合约交易所仅支持 HTX 和 BIN（Binance）。")
-            }
-            exchange = venue
-        } else { exchange = nil }
     }
 }
 
@@ -235,7 +207,7 @@ struct InvestmentQuoteProvider {
         try Task.checkCancellation()
         let fiat = Set(Locale.Currency.isoCurrencies.map(\.identifier))
         return codes.subtracting(fiat).compactMap { code in
-            let asset = InvestmentAsset(name: names[code] ?? code, code: code, market: InvestmentContractExchange.binance.rawValue, kind: .crypto, currency: .usd)
+            let asset = InvestmentAsset(name: names[code] ?? code, code: code, market: "BINANCE", kind: .crypto, currency: .usd)
             return (try? asset.validateMarket(settlingIn: .usd)) == nil ? nil : asset
         }
     }
@@ -383,7 +355,7 @@ struct InvestmentQuoteProvider {
         case .etf: acceptedTypes = ["etf"]
         case .fund: acceptedTypes = ["mutual fund"]
         case .crypto: acceptedTypes = ["digital currency", "cryptocurrency"]
-        case .future, .option, .insurance, .wealth, .deposit, .certificate, .cryptoContract: return []
+        case .future, .option, .insurance, .wealth, .deposit, .certificate, .generic: return []
         }
         var url = URLComponents()
         url.scheme = "https"

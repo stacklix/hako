@@ -45,6 +45,30 @@ class SubappBoundariesTests(unittest.TestCase):
                 self.assertNotIn(name, owners,
                                  f"{path.relative_to(APP)} references feature type {name}")
 
+    def test_host_references_children_only_in_the_application_catalog(self):
+        owners = self.feature_types()
+        host_features = {"ServerManagement", "Notifications"}
+        for folder in (APP / "App", APP / "Shared"):
+            for path in folder.rglob("*.swift"):
+                if path == APP / "App/HakoApplications.swift":
+                    continue
+                source = re.sub(r"//[^\n]*", "", path.read_text(encoding="utf-8"))
+                for name in set(re.findall(r"\b\w+\b", source)):
+                    targets = owners.get(name, set())
+                    self.assertFalse(targets - host_features,
+                                     f"{path.relative_to(APP)} references child implementation {name}")
+
+    def test_notification_callbacks_are_registered_by_the_child(self):
+        catalog = (APP / "App/HakoApplications.swift").read_text(encoding="utf-8")
+        contributor = (FEATURES / "CodeWorkshop/WorkshopNotificationContributor.swift").read_text(encoding="utf-8")
+        self.assertIn("application.registerNotifications(in: registry)", catalog)
+        self.assertIn("WorkshopNotificationContributor.registerNotifications(in: registry)", catalog)
+        self.assertNotIn("WorkshopRuntime", catalog)
+        self.assertNotIn("WorkshopNotificationPreview", catalog)
+        self.assertIn("registry.register(for: .codeWorkshop", contributor)
+        self.assertIn("isViewing: { WorkshopRuntime.shared.isViewing($0) }", contributor)
+        self.assertIn("WorkshopNotificationPreview(notice: notice, onSwitch: onOpen)", contributor)
+
     def test_investment_navigation_does_not_push_values_into_the_home_path(self):
         for path in (FEATURES / "Investment").glob("*.swift"):
             source = path.read_text(encoding="utf-8")

@@ -22,6 +22,23 @@ func connectWorkshop(t *testing.T, f *fixture) *websocket.Conn {
 	return connectWorkshopRole(t, f, false)
 }
 
+func TestWorkshopPassesInitialSystemPromptUnchanged(t *testing.T) {
+	f := newFixture(t, true)
+	worker := connectWorkshop(t, f)
+	client := openWorkshopClient(t, f, "/ws/workshop/client")
+	params := json.RawMessage(`{"requestId":"11111111-1111-4111-8111-111111111111","applicationId":"fixture","message":"Start","reasoningEffort":"high","systemPrompt":"每次原型修改都发送新卡片"}`)
+	writeAgentFrame(t, client, workshop.Frame{Kind: "call", ID: "initial-prompt", ComputerID: "PC", Method: "turn.start", Params: params})
+	request := readAgentFrame[workshop.Frame](t, worker)
+	var forwarded map[string]any
+	if request.Method != "turn.start" || json.Unmarshal(request.Params, &forwarded) != nil || forwarded["systemPrompt"] != "每次原型修改都发送新卡片" || forwarded["message"] != "Start" || forwarded["reasoningEffort"] != "high" {
+		t.Fatal("initial prompt was not forwarded separately from the user message")
+	}
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "result", ID: request.ID, Result: json.RawMessage(`{"state":"starting"}`)})
+	if reply := readAgentFrame[workshop.Frame](t, client); reply.ID != "initial-prompt" || reply.Kind != "result" {
+		t.Fatal("initial prompt response was not routed to the client", reply)
+	}
+}
+
 func connectWorkshopRole(t *testing.T, f *fixture, commands bool) *websocket.Conn {
 	t.Helper()
 	path := "/ws/workshop/agent"

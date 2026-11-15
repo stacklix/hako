@@ -158,10 +158,10 @@ extension InvestmentBook {
     func missingDailyMarketData(in window: ClosedRange<Date>) -> InvestmentSnapshotQuoteRequests {
         var requests = InvestmentSnapshotQuoteRequests()
         func includeAsset(_ id: UUID, on day: Date) {
-            guard let asset = assets[id], !asset.kind.isManual || asset.kind == .cryptoContract,
+            guard let asset = assets[id], !asset.kind.isManual,
                   positionQuote(for: asset, on: day, requiresDailyPrices: true) == nil else { return }
             // The session closing on this Beijing day may be Friday in New York.
-            let continuous = asset.kind == .crypto || asset.kind == .cryptoContract
+            let continuous = asset.kind == .crypto
             let marketDay = asset.usesUSEquityClose ? Self.addDays(-1, to: day) : day
             let first = continuous ? marketDay : Self.weekdayMarketDate(on: marketDay)
             let last = asset.usesUSEquityClose ? first : marketDay
@@ -180,7 +180,6 @@ extension InvestmentBook {
                     currencies.insert(.usd)
                     if asset.isStockConnect { currencies.insert(.hkd) }
                     if position.settledDay != day { includeAsset(id, on: day) }
-                    if let collateral = asset.collateralAssetID { includeAsset(collateral, on: day) }
                 }
             }
             for currency in currencies where rateToCNY(currency, on: day, requiresDailyPrice: true) == nil {

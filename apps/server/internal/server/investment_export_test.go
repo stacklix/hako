@@ -89,7 +89,7 @@ func TestInvestmentExportIncludesCSVAndExecutableSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema, err := dbschema.Inspect(context.Background(), db)
-	if err != nil || schema.Version != dbschema.CurrentVersion || len(schema.Tables) != len(investmentTables)+1 {
+	if err != nil || schema.Version != investmentSchemaVersion || len(schema.Tables) != len(investmentTables)+1 {
 		t.Fatalf("recreated schema: %+v, %v", schema, err)
 	}
 	for _, table := range schema.Tables {

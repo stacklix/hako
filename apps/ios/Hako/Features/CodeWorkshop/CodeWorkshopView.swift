@@ -1,8 +1,60 @@
 import SwiftUI
 
+struct WorkshopNotificationPreview: View {
+    let notice: WorkshopPushNotice
+    let onSwitch: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var conversation: WorkshopConversation?
+    @State private var failure: String?
+    @State private var attempt = 0
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let conversation {
+                    WorkshopConversationView(conversation: conversation, onSwitch: onSwitch)
+                } else {
+                    VStack(spacing: 16) {
+                        if let failure {
+                            Text(failure).font(.subheadline).foregroundStyle(HakoStyle.muted)
+                            Button("重试") { attempt += 1 }.buttonStyle(HakoActionButtonStyle())
+                        } else { ProgressView("正在打开会话…") }
+                    }
+                    .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(HakoStyle.background)
+                    .navigationTitle(notice.subtitle.isEmpty ? "会话预览" : notice.subtitle)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("切换", systemImage: "arrow.up.right", action: onSwitch).disabled(true)
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭会话预览")
+                        }
+                    }
+                }
+            }
+        }
+        .tint(.primary)
+        .presentationDetents([.large]).presentationDragIndicator(.visible)
+        .task(id: attempt) {
+            failure = nil
+            do {
+                let target = try await WorkshopRuntime.shared.notificationConversation(notice)
+                try Task.checkCancellation()
+                conversation = target
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { failure = error.localizedDescription } }
+        }
+    }
+}
+
 struct CodeWorkshopView: View {
     @ObservedObject private var store = WorkshopRuntime.shared.store
     @ObservedObject private var push = BuildPushSubscription.shared
+    // State belongs to this particular stack instance. Reconstructing a View
+    // value must not let the old list claim the replacement stack's request.
+    @State private var navigationOwner = BuildPushSubscription.shared.workshopNavigationID
     @State private var synchronizationOwner = UUID()
     @State private var settingsPresented = false
     @State private var creating = false
@@ -13,8 +65,9 @@ struct CodeWorkshopView: View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             page(at: timeline.date)
         }
-        .task(id: push.workshopLink?.id) {
-            guard let link = push.workshopLink else { return }
+        .task(id: push.workshopNavigation) {
+            guard let link = push.workshopLink,
+                  push.workshopNavigation.accepts(ownerID: navigationOwner, noticeID: link.id) else { return }
             await openNotification(link)
         }
         .sheet(item: $pendingArchive) { session in
@@ -31,58 +84,19 @@ struct CodeWorkshopView: View {
     }
 
     private func openNotification(_ link: WorkshopPushNotice) async {
-        let requestID = push.workshopNavigationID
         func isCurrent() -> Bool {
-            !Task.isCancelled && push.workshopNavigationID == requestID && push.workshopLink?.id == link.id
+            !Task.isCancelled && push.workshopNavigation.accepts(ownerID: navigationOwner, noticeID: link.id)
         }
         do {
-            guard UUID(uuidString: link.threadId) != nil else {
-                store.error = "这条通知没有可打开的会话。"; return
-            }
-            await store.prepareNetwork()
+            let target = try await WorkshopRuntime.shared.notificationConversation(link)
             guard isCurrent() else { return }
-            // Open known conversations immediately, including when the computer is offline.
-            if store.authenticated, let agent = store.selectedAgent, agent.id == link.computerId,
-               let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(link.threadId) == .orderedSame }),
-               let application = store.applications.first(where: { $0.id == session.applicationId }) {
-                showNotification(session, agent: agent, application: application)
-                return
-            }
-            await store.restore()
-            // The catalog synchronizer may already own the same refresh during cold launch.
-            while store.loading { try await Task.sleep(for: .milliseconds(100)) }
-            guard isCurrent() else { return }
-            guard store.agents.contains(where: { $0.id == link.computerId }) else {
-                store.error = "通知对应的电脑当前不可用，请检查连接。"; return
-            }
-            await store.selectAgent(link.computerId)
-            while store.loading { try await Task.sleep(for: .milliseconds(100)) }
-            guard isCurrent(), let agent = store.selectedAgent, agent.id == link.computerId else { return }
-            if let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(link.threadId) == .orderedSame }),
-               let application = store.applications.first(where: { $0.id == session.applicationId }) {
-                showNotification(session, agent: agent, application: application)
-                return
-            }
-            let scope = store.scope
-            let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": link.threadId])
-            guard isCurrent(), scope == store.scope, agent.id == store.selectedAgentID else { return }
-            guard let application = WorkshopApplication.containing(history.cwd, in: store.applications) else {
-                store.error = "通知对应的项目已不可用。"; return
-            }
-            let session = WorkshopSession(id: link.threadId,
-                title: link.subtitle.isEmpty ? "会话" : link.subtitle, applicationId: application.id, cwd: history.cwd,
-                preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970), state: "unknown",
-                operationId: history.operationId, completionId: history.completionId)
-            showNotification(session, agent: agent, application: application)
+            await store.selectAgent(target.agent.id)
+            guard isCurrent(), target.scope == store.scope else { return }
+            store.selectApplication(target.application.id)
+            settingsPresented = false; creating = false; pendingArchive = nil
+            conversation = target
         } catch is CancellationError { }
-        catch { if isCurrent() { store.error = "无法打开通知对应的会话，请检查连接后重试。" } }
-    }
-
-    private func showNotification(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) {
-        store.selectApplication(application.id)
-        settingsPresented = false; creating = false; pendingArchive = nil
-        conversation = WorkshopRuntime.shared.open(session, agent: agent, application: application, archived: store.showingArchived)
-        push.workshopLink = nil
+        catch { if isCurrent() { store.error = error.localizedDescription } }
     }
 
     private func page(at date: Date) -> some View {
@@ -133,7 +147,9 @@ struct CodeWorkshopView: View {
                     if store.authenticated, let agent = store.selectedAgent {
                         if store.hasMore && agent.supported {
                             Button("加载更早的会话") { Task { await store.refresh(more: true) } }
-                                .font(.subheadline).disabled(store.loading)
+                                .font(.subheadline)
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .contentShape(Rectangle()).disabled(store.loading)
                         }
                         if !agent.online { Text("电脑当前离线，联网后下拉刷新。已发送的任务由电脑端继续执行。")
                             .font(.footnote).foregroundStyle(HakoStyle.muted) }
@@ -147,8 +163,9 @@ struct CodeWorkshopView: View {
                     }
                     if store.sessions.isEmpty { Text(store.loading ? "正在读取会话…" : "连接后显示会话").font(.footnote).foregroundStyle(HakoStyle.muted) }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 0))
+                .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 16, trailing: 12))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             }
@@ -176,7 +193,13 @@ struct CodeWorkshopView: View {
             }
         }
         .navigationDestination(isPresented: Binding(get: { conversation != nil }, set: { if !$0 { conversation = nil } })) {
-            if let conversation { WorkshopConversationView(conversation: conversation).id(conversation.id) }
+            if let conversation {
+                WorkshopConversationView(conversation: conversation).id(conversation.id)
+                    .onAppear {
+                        push.workshopDestinationDisplayed(ownerID: navigationOwner, computerID: conversation.agent.id,
+                            threadID: conversation.threadId, operationID: conversation.notificationOperationID)
+                    }
+            }
         }
         .onChange(of: store.scope) { _, _ in
             conversation = nil; creating = false; settingsPresented = false; pendingArchive = nil
@@ -310,12 +333,8 @@ struct CodeWorkshopView: View {
                                 .font(.subheadline).padding(.top, 3)
                                 .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
-                                HStack(alignment: .top) {
-                                    Text(session.title).font(.subheadline.weight(.medium))
-                                    Spacer(minLength: 5)
-                                    Text(Date(timeIntervalSince1970: Double(session.updatedAt)), style: .relative)
-                                        .font(.caption2).foregroundStyle(HakoStyle.muted)
-                                }
+                                Text(session.title).font(.subheadline.weight(.medium))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -356,6 +375,7 @@ struct CodeWorkshopView: View {
 
 private struct WorkshopSettingsView: View {
     @ObservedObject var store: WorkshopStore
+    @State private var editingSystemPrompt = false
     var body: some View {
         SettingsSheet(title: "代码工坊设置") {
             Form {
@@ -378,6 +398,17 @@ private struct WorkshopSettingsView: View {
                     if store.agents.isEmpty { Text("请先在设备监控中登记 Windows Agent。").foregroundStyle(.secondary) }
                 }
                 Section("Codex") {
+                    Button { editingSystemPrompt = true } label: {
+                        HStack {
+                            Text("系统提示词").foregroundStyle(.primary)
+                            Spacer()
+                            Text("编辑").foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                    }
                     LabeledContent("模型与权限", value: "在会话的更多页面设置")
                     Text("使用电脑上已登录的 Codex。默认自动审批，也可在会话中选择请求确认、完全访问或跟随电脑配置。")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -388,6 +419,7 @@ private struct WorkshopSettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
+            .sheet(isPresented: $editingSystemPrompt) { WorkshopSystemPromptSheet(store: store) }
         }
     }
 }

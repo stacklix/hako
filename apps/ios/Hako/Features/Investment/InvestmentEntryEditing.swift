@@ -22,7 +22,7 @@ extension InvestmentAgentProposal {
         let setup = actions.indices.first { candidate in
             guard candidate < index, actions[candidate].kind == .addAsset else { return false }
             let setup = actions[candidate]
-            return asset.kind.isTermDeposit ? setup.text("name") == asset.name :
+            return asset.kind.usesBalance ? setup.text("name") == asset.name :
                 setup.text("symbol")?.uppercased() == asset.code && (setup.text("market")?.uppercased() ?? "") == asset.market
                     && (!asset.kind.usesMargin || asset.contractSide == setup.text("side").flatMap { InvestmentAgentAction.sides[$0] })
         }
@@ -65,7 +65,7 @@ struct InvestmentEditorDraft {
     var asset: InvestmentAsset? {
         if action.kind != .addAsset { return try? action.asset(in: proposal.book) }
         return proposal.book.assets.values.first {
-            $0.name == action.text("name") && ($0.kind.isTermDeposit ||
+            $0.name == action.text("name") && ($0.kind.usesBalance ||
                 ($0.code == action.text("symbol")?.uppercased() && $0.market == (action.text("market")?.uppercased() ?? "")))
         }
     }
@@ -85,9 +85,9 @@ struct InvestmentEditorDraft {
         var identifiers: [UUID: UUID] = [:]
         for asset in book.assets.values where base.asset(asset.id) == nil {
             let matches = proposal.book.assets.values.filter {
-                ($0.kind.isTermDeposit ? $0.name == asset.name : $0.code == asset.code) && $0.market == asset.market && $0.kind == asset.kind && $0.currency == asset.currency
-                    && $0.basis == asset.basis && $0.contractSide == asset.contractSide
-                    && ($0.kind.isTermDeposit ? $0.name == asset.name : true)
+                ($0.kind.usesBalance ? $0.name == asset.name : $0.code == asset.code) && $0.market == asset.market && $0.kind == asset.kind && $0.currency == asset.currency
+                    && $0.contractSide == asset.contractSide
+                    && ($0.kind.usesBalance ? $0.name == asset.name : true)
             }
             if matches.count == 1, let match = matches.first { identifiers[asset.id] = match.id }
         }
@@ -98,9 +98,6 @@ struct InvestmentEditorDraft {
             asset?.id = new
             book.assets[new] = asset
             if let quotes = book.quotes.removeValue(forKey: old) { book.quotes[new] = quotes }
-        }
-        for id in book.assets.keys {
-            if let collateral = book.assets[id]?.collateralAssetID, let new = identifiers[collateral] { book.assets[id]?.collateralAssetID = new }
         }
         for owner in book.accounts.indices {
             for event in book.accounts[owner].events.indices {
@@ -115,7 +112,7 @@ struct InvestmentEditorDraft {
     }
 
     func reference(_ asset: InvestmentAsset) -> String {
-        base.asset(asset.id) != nil ? asset.id.uuidString : asset.kind.isTermDeposit ? asset.name : asset.displayCode
+        base.asset(asset.id) != nil ? asset.id.uuidString : asset.kind.usesBalance ? asset.name : asset.displayCode
     }
 
     func formEvent(in book: InvestmentBook) throws -> InvestmentEvent? {
@@ -136,9 +133,6 @@ struct InvestmentEditorDraft {
                       "asset_type": InvestmentAgentAction.assetKinds.first { $0.value == asset.kind }!.key,
                       "multiplier": text(asset.multiplier)]
         if let side = asset.contractSide { values["side"] = InvestmentAgentAction.sides.first { $0.value == side }?.key }
-        if asset.kind == .cryptoContract { values["basis"] = InvestmentAgentAction.bases.first { $0.value == asset.basis }?.key }
-        if let id = asset.collateralAssetID, let token = book.asset(id) { values["collateral_id"] = token.id.uuidString }
-        if let token = asset.settlementStablecoin { values["stablecoin"] = token.rawValue }
         if let terms = asset.depositTerms {
             values["annual_rate"] = text(terms.annualRate * 100)
             values["maturity_date"] = day.string(from: terms.maturity)
@@ -147,12 +141,10 @@ struct InvestmentEditorDraft {
     }
 
     static func eventValues(_ event: InvestmentEvent) -> [String: String] {
-        var values = ["date": day.string(from: event.day), "amount": text(abs(event.amount)),
+        let values = ["date": day.string(from: event.day), "amount": text(abs(event.amount)),
                       "direction": event.amount < 0 ? "decrease" : "increase", "quantity": text(abs(event.quantity)),
-                      "quantity_mode": "contracts", "price": text(event.price), "margin": text(event.margin),
-                      "fee": text(event.fee), "settled_amount": text(event.settledAmount), "settlement_rate": text(event.settlementRate)]
-        if let target = event.fundingTarget { values["funding_target"] = InvestmentAgentAction.fundingTargets.first { $0.value == target }?.key }
-        if let flag = event.unallocatedFunding { values["unallocated"] = flag ? "true" : "false" }
+                      "price": text(event.price), "margin": text(event.margin),
+                      "fee": text(event.fee), "settled_amount": text(event.settledAmount)]
         return values
     }
 
@@ -166,16 +158,15 @@ struct InvestmentEditorDraft {
         let clearsPlanAsset = action.kind == .plan && updated.text("asset_id") == nil
         let keepsSetup: Bool
         if let original = asset,
-           clearsPlanAsset || selectedAsset.map({ !original.matches($0) || (original.kind.isTermDeposit && original.name != $0.name) }) == true {
+           clearsPlanAsset || selectedAsset.map({ !original.matches($0) || (original.kind.usesBalance && original.name != $0.name) }) == true {
             keepsSetup = proposal.actions.indices.contains { position in
-                position != index && position != setupIndex && position != quoteIndex && ["asset_id", "collateral_id"].contains { key in
+                position != index && position != setupIndex && position != quoteIndex && ["asset_id"].contains { key in
                     (try? proposal.actions[position].asset(in: proposal.book, key: key).id) == original.id
                 }
             }
         } else { keepsSetup = false }
         if let selectedAsset {
-            var identity = Self.assetValues(selectedAsset, in: proposal.book)
-            if let id = selectedAsset.collateralAssetID, let token = proposal.book.asset(id) { identity["collateral_id"] = reference(token) }
+            let identity = Self.assetValues(selectedAsset, in: proposal.book)
             if action.kind == .addAsset {
                 updated.values = identity
             } else if action.kind == .editAsset {
@@ -184,7 +175,7 @@ struct InvestmentEditorDraft {
                     updated.values["symbol"] = selectedAsset.code
                     updated.values["market"] = selectedAsset.market
                 }
-                if selectedAsset.kind.isTermDeposit {
+                if selectedAsset.kind.usesBalance {
                     updated.values["annual_rate"] = identity["annual_rate"]
                     updated.values["maturity_date"] = identity["maturity_date"]
                 }

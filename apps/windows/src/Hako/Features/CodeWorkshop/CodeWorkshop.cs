@@ -83,6 +83,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         {
             limit = 30, cursor = CodexJson.Text(parameters, "cursor") is { Length: > 0 } cursor ? cursor : null,
             sortKey = "updated_at", archived = archiveFilter.ValueKind == JsonValueKind.True,
+            // Interactive refresh must not rescan JSONL rollouts to repair metadata.
+            useStateDbOnly = true,
             modelProviders = Array.Empty<string>(), sourceKinds = new[] { "cli", "vscode", "appServer", "exec" }
         }, token);
         var applications = DiscoverApplications();
@@ -99,24 +101,36 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             var summary = await LatestSummaryAsync(id, token);
             var updated = CodexJson.Field(thread, "updatedAt");
             WorkshopJob? operation;
-            string operationState;
             lock (gate)
             {
                 operation = jobs.Values.Where(job => job.ThreadId == id).OrderByDescending(job => job.StartedAt).ThenByDescending(job => job.QueueOrder).FirstOrDefault();
                 var current = operation is null ? null : CurrentJob(RootJob(operation));
-                operationState = current is not null && (current.Active || current.State is "queued" or "paused")
-                    ? current.State : summary.State;
+                summary = ReconcileSummary(summary, current);
             }
             // A thread-level active flag can outlive its turn. Keep the latest
             // turn's terminal state unless an actual local job is still active.
             sessions.Add(new(id, CodexJson.Clip(name.Length > 0 ? name : preview.Length > 0 ? preview : "未命名会话", 120),
                 application.Id, cwd, summary.Preview, updated.TryGetInt64(out var time) ? time : 0,
-                operationState, operation?.RootId ?? operation?.Id, operationState == "completed" ? summary.CompletionId : null));
+                summary.State, operation?.RootId ?? operation?.Id, summary.CompletionId));
         }
         return new { applications, sessions, nextCursor = CodexJson.Text(response, "nextCursor") is { Length: > 0 } next ? next : null };
     }
 
-    internal sealed record ThreadSummary(string Preview, string State, string? CompletionId);
+    internal sealed record ThreadSummary(string Preview, string State, string? CompletionId, string TurnId);
+
+    internal static ThreadSummary ReconcileSummary(ThreadSummary summary, WorkshopJob? current)
+    {
+        if (current is null) return summary;
+        if (current.Active || current.State is "queued" or "paused")
+            return summary with { State = current.State, CompletionId = null };
+        // The metadata connection can retain an in-progress snapshot after the
+        // worker has exited. Its matching terminal job is authoritative, while
+        // a different turn may have been started outside this Agent.
+        if (!string.IsNullOrEmpty(current.TurnId) && current.TurnId == summary.TurnId &&
+            current.State is "completed" or "failed" or "interrupted")
+            return summary with { State = current.State, CompletionId = current.State == "completed" ? current.TurnId : null };
+        return summary;
+    }
 
     internal static ThreadSummary SummarizeTurn(JsonElement turn)
     {
@@ -126,7 +140,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var status = CodexJson.Text(turn, "status");
         var state = status == "inProgress" ? "running" : status.Length == 0 ? "idle" : status;
         var turnId = CodexJson.Text(turn, "id");
-        return new(preview, state, status == "completed" && turnId.Length > 0 ? turnId : null);
+        return new(preview, state, status == "completed" && turnId.Length > 0 ? turnId : null, turnId);
     }
 
     private async Task<ThreadSummary> LatestSummaryAsync(string threadId, CancellationToken token)

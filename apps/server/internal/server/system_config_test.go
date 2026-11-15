@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"hako/server/internal/dbschema"
 )
 
 func TestAdminDatabaseSchemas(t *testing.T) {
@@ -37,18 +39,21 @@ func TestAdminDatabaseSchemas(t *testing.T) {
 		t.Fatal("schema response included application row data")
 	}
 	var result struct {
-		ExpectedVersion int
-		Databases       []databaseInfo
+		Databases []databaseInfo
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.ExpectedVersion != 2 || len(result.Databases) != 4 {
+	if len(result.Databases) != 4 {
 		t.Fatalf("unexpected schema inventory: %s", body)
 	}
 	for i, want := range []string{"state", "notification_deliveries", "access_counts", "investment_daily_snapshots"} {
 		db := result.Databases[i]
-		if db.Schema == nil || db.Schema.Version != 2 || db.Status != "available" {
+		expected := dbschema.CurrentVersion
+		if want == "investment_daily_snapshots" {
+			expected = investmentSchemaVersion
+		}
+		if db.Schema == nil || db.Schema.Version != expected || db.ExpectedVersion != expected || db.Status != "available" {
 			t.Fatalf("%s schema is unavailable: %+v", db.Name, db)
 		}
 		found := false

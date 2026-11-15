@@ -11,7 +11,9 @@ using Hako.Core;
 namespace Hako.Platform;
 
 internal sealed record WorkshopSpeed(string Id, string Name, string Description);
-internal sealed record WorkshopModel(string Id, string Name, string Description, bool IsDefault, bool SupportsImages, WorkshopSpeed[] ServiceTiers);
+internal sealed record WorkshopReasoningEffort(string Id, string Description);
+internal sealed record WorkshopModel(string Id, string Name, string Description, bool IsDefault, bool SupportsImages,
+    WorkshopSpeed[] ServiceTiers, WorkshopReasoningEffort[] ReasoningEfforts, string DefaultReasoningEffort);
 
 internal sealed partial class CodeWorkshop
 {
@@ -103,7 +105,10 @@ internal sealed partial class CodeWorkshop
                     CodexJson.Field(model, "isDefault").ValueKind == JsonValueKind.True,
                     modalities.ValueKind == JsonValueKind.Array && modalities.EnumerateArray().Any(value => value.GetString() == "image"),
                     CodexJson.Items(CodexJson.Field(model, "serviceTiers")).Select(tier => new WorkshopSpeed(
-                        CodexJson.Text(tier, "id"), CodexJson.Text(tier, "name"), CodexJson.Clip(CodexJson.Text(tier, "description"), 400))).ToArray()));
+                        CodexJson.Text(tier, "id"), CodexJson.Text(tier, "name"), CodexJson.Clip(CodexJson.Text(tier, "description"), 400))).ToArray(),
+                    CodexJson.Items(CodexJson.Field(model, "supportedReasoningEfforts")).Select(effort => new WorkshopReasoningEffort(
+                        CodexJson.Text(effort, "reasoningEffort"), CodexJson.Clip(CodexJson.Text(effort, "description"), 400))).ToArray(),
+                    CodexJson.Text(model, "defaultReasoningEffort")));
             }
             cursor = CodexJson.Text(result, "nextCursor");
         } while (!string.IsNullOrEmpty(cursor) && models.Count < 100);
@@ -111,6 +116,16 @@ internal sealed partial class CodeWorkshop
     }
 
     private string UploadPath(string id) => Path.Combine(storage, "images", id + ".jpg");
+
+    private static string ReasoningEffort(JsonElement parameters)
+    {
+        var value = CodexJson.Field(parameters, "reasoningEffort");
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return "";
+        if (value.ValueKind != JsonValueKind.String) throw CodexJson.Invalid();
+        var effort = value.GetString()!;
+        if (effort.Length is 0 or > 100 || string.IsNullOrWhiteSpace(effort) || effort.Any(char.IsControl)) throw CodexJson.Invalid();
+        return effort;
+    }
 
     public Task<object?> UploadImageAsync(JsonElement parameters, CancellationToken token)
     {

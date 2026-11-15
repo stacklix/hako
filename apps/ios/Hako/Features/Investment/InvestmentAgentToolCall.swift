@@ -143,7 +143,6 @@ extension AssistantToolCall where Presentation == InvestmentAgentToolPresentatio
         if let id = args["id"] as? String { append("查询记录", (args["section"] as? String == "investment_assets" ? asset(id) : id)) }
         append("交易所", args["market"] as? String)
         if let kind = args["asset_type"] as? String { append("标的类型", InvestmentAgentAction.assetKinds[kind]?.title ?? kind) }
-        if let basis = args["basis"] as? String { append("合约本位", InvestmentAgentAction.bases[basis]?.rawValue ?? basis) }
         append("币种", args["currency"] as? String)
         if let stockConnect = args["stock_connect"] as? Bool { append("沪深港通", stockConnect ? "是" : "否") }
         append("起始日期", args["from"] as? String)

@@ -95,6 +95,11 @@ internal sealed class CodexAppServer : IAsyncDisposable
         return start;
     }
 
+    // Startup can load a long conversation and initialize tools. It runs in the
+    // durable worker, so it must not share the short interactive-read deadline.
+    internal static TimeSpan RequestTimeout(string method) => TimeSpan.FromSeconds(
+        method is "initialize" or "thread/start" or "thread/resume" ? 60 : 8);
+
     public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken token)
     {
         var id = Interlocked.Increment(ref sequence);
@@ -104,7 +109,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
         try
         {
             await WriteAsync(new { id, method, @params = parameters }, token);
-            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(8), token);
+            return await completion.Task.WaitAsync(RequestTimeout(method), token);
         }
         finally { pending.TryRemove(key, out _); }
     }

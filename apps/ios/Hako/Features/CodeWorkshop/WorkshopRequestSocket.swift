@@ -76,6 +76,7 @@ enum WorkshopJSON: Codable {
 
 @MainActor final class WorkshopRequestSocket {
     static let path = "/ws/workshop/client"
+    var onDisconnect: (() -> Void)?
 
     private let requestContext: () -> String
     private let openSocket: () async throws -> (any WorkshopSocketConnection, Data)
@@ -219,5 +220,8 @@ enum WorkshopJSON: Codable {
         let cancelled = pending
         pending.removeAll()
         for continuation in cancelled.values { continuation.resume(throwing: error) }
+        // Explicit close, route changes and idle retirement do not mean a
+        // previously verified computer went offline.
+        if !(error is CancellationError) { onDisconnect?() }
     }
 }

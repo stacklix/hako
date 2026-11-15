@@ -395,7 +395,7 @@ struct InvestmentAccountView: View {
     private func holdings(_ ledger: InvestmentLedger) -> some View {
         let assets = ledger.positions.keys.filter { id in
             store.showsZeroPositions || ledger.positions[id].map {
-                !book.positionIsEmpty($0, assetID: id, reserved: ledger.reservedCollateral[id, default: 0])
+                !book.positionIsEmpty($0, assetID: id)
             } == true
         }
             .compactMap { book.asset($0) }.sorted { $0.code < $1.code }
@@ -423,7 +423,7 @@ struct InvestmentAccountView: View {
                     InvestmentLink(route: .asset(account.id, asset.id)) {
                         HStack(alignment: .top, spacing: 8) {
                             let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                            InvestmentTitle(asset.displayName, subtitle: asset.kind.isTermDeposit ? asset.kindLabel : asset.displayCode + " · " + details)
+                            InvestmentTitle(asset.displayName, subtitle: asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + details)
                             Spacer(minLength: 0)
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))

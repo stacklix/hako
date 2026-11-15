@@ -15,7 +15,7 @@ enum InvestmentCurrency: String, Codable, CaseIterable, Identifiable {
 
 enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
     case stock = "股票", fund = "基金", etf = "ETF", option = "期权", future = "期货", insurance = "保险"
-    case wealth = "理财产品", deposit = "定期存款", certificate = "大额存单", crypto = "加密货币", cryptoContract = "合约"
+    case wealth = "理财产品", deposit = "定期存款", certificate = "大额存单", crypto = "加密货币", generic = "通用"
 
     var id: Self { self }
     var title: String { self == .crypto ? "现货" : rawValue }
@@ -25,18 +25,19 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
         case .fund, .etf, .insurance, .wealth: "份"
         case .option: "张"
         case .future: "手"
-        case .deposit, .certificate: "笔"
-        case .crypto, .cryptoContract: "单位"
+        case .deposit, .certificate, .generic: "笔"
+        case .crypto: "单位"
         }
     }
-    var usesMargin: Bool { self == .future || self == .cryptoContract }
+    var usesMargin: Bool { self == .future }
     var derivative: Bool { self == .option || usesMargin }
     var supportsPlan: Bool { self == .stock || self == .fund || self == .etf }
-    var requiresCatalog: Bool { [.stock, .fund, .etf, .crypto, .cryptoContract].contains(self) }
+    var requiresCatalog: Bool { [.stock, .fund, .etf, .crypto].contains(self) }
     var supportsCashDividends: Bool { self == .stock || self == .fund || self == .etf }
-    var supportsTradeFees: Bool { self != .insurance && !isTermDeposit }
+    var supportsTradeFees: Bool { self != .insurance && !usesBalance }
     var isTermDeposit: Bool { self == .deposit || self == .certificate }
-    var isManual: Bool { self == .insurance || self == .wealth || self == .cryptoContract || isTermDeposit }
+    var usesBalance: Bool { isTermDeposit || self == .generic }
+    var isManual: Bool { self == .insurance || self == .wealth || usesBalance }
 
     static func watchKinds(in currency: InvestmentCurrency) -> [Self] {
         switch currency {
@@ -55,18 +56,6 @@ enum InvestmentContractSide: String, Codable, CaseIterable, Identifiable {
     var shortTitle: String { self == .short ? "空" : "多" }
 }
 
-enum InvestmentContractExchange: String, CaseIterable {
-    case binance = "BINANCE", htx = "HTX"
-
-    var shortCode: String { self == .binance ? "BIN" : "HTX" }
-    var title: String { self == .binance ? "BIN · Binance" : "HTX" }
-
-    init?(asset: InvestmentAsset) {
-        guard asset.kind == .cryptoContract, asset.basis != .usd else { return nil }
-        self.init(rawValue: asset.market)
-    }
-}
-
 enum InvestmentStablecoin: String, Codable, CaseIterable, Identifiable {
     case usdt = "USDT", usdc = "USDC"
 
@@ -75,51 +64,6 @@ enum InvestmentStablecoin: String, Codable, CaseIterable, Identifiable {
     static func isCashCode(_ code: String) -> Bool {
         let symbol = code.uppercased()
         return symbol == InvestmentCurrency.usd.rawValue || Self(rawValue: symbol) != nil
-    }
-}
-
-enum InvestmentContractBasis: String, Codable, CaseIterable, Identifiable {
-    case usd = "美元线性", stablecoin = "U 本位", coin = "币本位"
-
-    var id: Self { self }
-
-    func accepts(_ collateral: InvestmentAsset) -> Bool {
-        guard collateral.kind == .crypto, collateral.currency == .usd else { return false }
-        switch self {
-        case .usd: return false
-        case .stablecoin: return InvestmentStablecoin(rawValue: collateral.code) != nil
-        case .coin: return !InvestmentStablecoin.isCashCode(collateral.code)
-        }
-    }
-}
-
-enum InvestmentCoinContractQuantity {
-    case coins(Decimal, referencePrice: Decimal)
-    case notionalUSD(Decimal)
-    case contracts(Decimal)
-
-    func contractCount(faceValue: Decimal) throws -> Decimal {
-        guard faceValue > 0 else { throw InvestmentError.invalid("请填写有效的每张合约面值。") }
-        var count: Decimal
-        let permitsRounding: Bool
-        switch self {
-        case .coins(let amount, let referencePrice):
-            guard amount > 0, referencePrice > 0 else { throw InvestmentError.invalid("请填写有效的币量和折算用价格。") }
-            count = amount * referencePrice / faceValue
-            permitsRounding = true
-        case .notionalUSD(let amount):
-            count = amount / faceValue
-            permitsRounding = false
-        case .contracts(let amount):
-            count = amount
-            permitsRounding = false
-        }
-        var whole = Decimal()
-        NSDecimalRound(&whole, &count, 0, .plain)
-        guard whole > 0, permitsRounding || count == whole else {
-            throw InvestmentError.invalid("数量必须对应正整数张合约，请检查输入和每张面值。")
-        }
-        return whole
     }
 }
 
@@ -145,7 +89,7 @@ enum InvestmentAccountType: String, Codable, CaseIterable, Identifiable {
         case .futures: [.future]
         case .wealth: [.wealth]
         case .deposits: [.deposit, .certificate]
-        case .crypto: [.crypto, .cryptoContract]
+        case .crypto: [.crypto, .generic]
         case .insurance: [.insurance]
         }
     }
@@ -167,26 +111,12 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     var multiplier: Decimal = 1
     var depositTerms: InvestmentDepositTerms?
     var contractSide: InvestmentContractSide?
-    var contractBasis: InvestmentContractBasis?
-    var collateralAssetID: UUID?
-    var settlementStablecoin: InvestmentStablecoin?
-
-    var displayName: String {
-        guard kind == .cryptoContract, let contractSide else { return name }
-        return name + " · " + contractSide.shortTitle
-    }
-
-    var displayCode: String {
-        guard let exchange = InvestmentContractExchange(asset: self) else { return code }
-        let symbol = code.hasSuffix("_PERP") ? String(code.dropLast(5)) : code
-        let pair = symbol.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: "/", with: "")
-        return [pair, contractSide?.shortCode, exchange.shortCode].compactMap { $0 }.joined(separator: "•")
-    }
+    var displayName: String { name }
+    var displayCode: String { code }
 
     func matches(_ other: Self) -> Bool {
-        code == other.code && market == other.market && kind == other.kind && currency == other.currency
-            && contractSide == other.contractSide && basis == other.basis && collateralAssetID == other.collateralAssetID
-            && settlementStablecoin == other.settlementStablecoin
+        (kind == .generic ? name == other.name : code == other.code) && market == other.market && kind == other.kind && currency == other.currency
+            && contractSide == other.contractSide
     }
 
     static let stockConnectMarket = "HK_CONNECT"
@@ -195,25 +125,12 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     var supportsPlan: Bool { kind.supportsPlan && !isStockConnect }
     var kindLabel: String {
         if isStockConnect { return "港股通 · " + kind.title }
-        if let contractSide { return kind.title + " · " + basis.rawValue + " · " + contractSide.rawValue }
+        if let contractSide { return kind.title + " · " + contractSide.rawValue }
         return kind.title
     }
     var priceDirection: Decimal { kind.usesMargin && contractSide == .short ? -1 : 1 }
-    var basis: InvestmentContractBasis { contractBasis ?? .usd }
-
     func contractExposure(quantity: Decimal, price: Decimal) -> Decimal {
-        let units = quantity * multiplier
-        return basis == .coin ? units / price : units * price
-    }
-
-    func contractProfit(entry: Decimal, exit: Decimal) -> Decimal {
-        (basis == .coin ? entry - exit : exit - entry) * priceDirection
-    }
-
-    func validateTransactionType(_ event: InvestmentEventKind) throws {
-        if kind == .cryptoContract, basis != .usd, event == .opening {
-            throw InvestmentError.invalid("\(basis.rawValue)合约开仓请选择「\(transactionTitle(.buy))」，不能使用「首次录入」。")
-        }
+        quantity * multiplier * price
     }
 
     func transactionTitle(_ event: InvestmentEventKind) -> String {
@@ -224,6 +141,11 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         if kind == .wealth {
             if event == .buy { return "申购" }
             if event == .sell { return "赎回" }
+        }
+        if kind == .generic {
+            if event == .buy { return "投入" }
+            if event == .sell { return "取出" }
+            if event == .adjustment { return "调整余额" }
         }
         if kind.isTermDeposit {
             if event == .buy { return "存入" }
@@ -333,23 +255,12 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         let symbol = code.uppercased()
         let venue = market.uppercased()
         if kind == .crypto {
-            guard accountCurrency == .usd, venue.isEmpty || venue == InvestmentContractExchange.binance.rawValue,
+            guard accountCurrency == .usd, venue.isEmpty || venue == "BINANCE",
                   symbol.range(of: #"^[A-Z0-9]{1,20}$"#, options: .regularExpression) != nil else { throw mismatch }
             return
         }
-        if kind == .cryptoContract {
-            guard accountCurrency == .usd, contractSide != nil,
-                  symbol.range(of: #"^[A-Z0-9]+(?:[./:_-][A-Z0-9]+)*$"#, options: .regularExpression) != nil else {
-                throw InvestmentError.invalid("请填写合约代码和开仓方向。")
-            }
-            let hasSettlement = switch basis {
-            case .usd: collateralAssetID == nil && settlementStablecoin == nil
-            case .coin: collateralAssetID != nil && settlementStablecoin == nil
-            case .stablecoin: settlementStablecoin != nil ? collateralAssetID == nil : collateralAssetID != nil
-            }
-            guard hasSettlement else {
-                throw InvestmentError.invalid("请选择合约的实际结算币种。")
-            }
+        if kind == .generic {
+            guard accountCurrency == .usd, venue.isEmpty, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw mismatch }
             return
         }
         if kind == .wealth || kind.isTermDeposit {
@@ -396,14 +307,8 @@ enum InvestmentEventKind: String, Codable {
     case transferOut = "划出", transferIn = "划入", income = "收益"
     case dividend = "现金分红", bonusShares = "送股"
     case stakingReward = "质押奖励", spotAdjustment = "现货余额调整"
-    case funding = "资金费", marginTransfer = "保证金划转"
+    case marginTransfer = "保证金划转"
     case derivativeSettlement = "实际结算"
-}
-
-enum InvestmentFundingTarget: String, Codable, CaseIterable, Identifiable {
-    case available = "可用余额", margin = "该仓保证金"
-
-    var id: Self { self }
 }
 
 struct InvestmentEvent: Codable, Equatable, Identifiable {
@@ -418,9 +323,6 @@ struct InvestmentEvent: Codable, Equatable, Identifiable {
     // For deposits, the reported product balance after a cash movement or valuation update.
     var settledAmount: Decimal?
     var fee: Decimal?
-    var settlementRate: Decimal?
-    var fundingTarget: InvestmentFundingTarget?
-    var unallocatedFunding: Bool?
     var transferAccountID: UUID?
     var transferID: UUID?
     var version: Int?
@@ -429,7 +331,6 @@ struct InvestmentEvent: Codable, Equatable, Identifiable {
 
     func title(for asset: InvestmentAsset?) -> String {
         if kind == .marginTransfer { return amount > 0 ? "增加保证金" : "减少保证金" }
-        if unallocatedFunding == true { return "账户资金费" }
         return asset?.transactionTitle(kind) ?? kind.rawValue
     }
 }
@@ -457,16 +358,16 @@ extension InvestmentBook {
         guard !account.isArchived else { throw InvestmentError.invalid("账户已归档，请先撤销归档再记账。") }
     }
 
-    func positionIsEmpty(_ position: InvestmentPosition, assetID: UUID, reserved: Decimal = 0) -> Bool {
-        let balanceIsZero = asset(assetID)?.kind.isTermDeposit == true
+    func positionIsEmpty(_ position: InvestmentPosition, assetID: UUID) -> Bool {
+        let balanceIsZero = asset(assetID)?.kind.usesBalance == true
             ? position.depositBalance == 0 : position.quantity == 0
-        return balanceIsZero && position.margin == 0 && reserved == 0
+        return balanceIsZero && position.margin == 0
     }
 
     func archiveBlocker(accountID: UUID) -> String? {
         guard let account = account(accountID) else { return "找不到投资账户。" }
         guard let ledger = try? ledger(account) else { return "无法核对余额，请先检查账户流水。" }
-        return ledger.cash == 0 && ledger.positions.allSatisfy({ positionIsEmpty($0.value, assetID: $0.key, reserved: ledger.reservedCollateral[$0.key, default: 0]) })
+        return ledger.cash == 0 && ledger.positions.allSatisfy({ positionIsEmpty($0.value, assetID: $0.key) })
             ? nil : "账户现金和全部持仓余额、占用保证金必须全部为 0 才能归档。"
     }
 
@@ -498,7 +399,7 @@ extension InvestmentBook {
             let removed = involved.filter { deleted.assets[$0] == nil }.compactMap { assets[$0]?.displayName }.sorted()
             let kept = involved.filter { deleted.assets[$0] != nil }.compactMap { assets[$0]?.displayName }.sorted()
             if !removed.isEmpty { registrations += "同时删除无其他引用的标的登记及报价：" + removed.joined(separator: "、") + "。" }
-            if !kept.isEmpty { registrations += "仍有其他流水、定投、关注或合约引用的登记继续保留：" + kept.joined(separator: "、") + "。" }
+            if !kept.isEmpty { registrations += "仍有其他流水、定投或关注引用的登记继续保留：" + kept.joined(separator: "、") + "。" }
         }
         return "将永久删除\(target)及其 \(entries.count) 条交易记录"
             + (transfers > 0 ? "，并删除其他账户中对应的 \(transfers) 条划转记录" : "")
@@ -543,27 +444,18 @@ extension InvestmentBook {
         draft.plans.removeAll { planIDs.contains($0.id) }
         draft.planRuns.removeAll { planIDs.contains($0.planID) || $0.eventID.map { eventIDs.contains($0) } == true }
         // Only registrations involved in this deletion are candidates. Unrelated registrations
-        // and all references from surviving records, including contract collateral, stay intact.
+        // and all references from surviving records stay intact.
         var retained = Set(draft.assets.keys).subtracting(affectedAssets)
         retained.formUnion(draft.accounts.flatMap(\.events).compactMap(\.assetID))
         retained.formUnion(draft.plans.compactMap(\.assetID))
         retained.formUnion(draft.watched)
-        var pending = Array(retained)
-        while let id = pending.popLast() {
-            if let collateral = draft.assets[id]?.collateralAssetID, retained.insert(collateral).inserted {
-                pending.append(collateral)
-            }
-        }
         for id in affectedAssets.subtracting(retained) {
             draft.assets.removeValue(forKey: id)
             draft.quotes.removeValue(forKey: id)
         }
         for account in draft.accounts {
             do {
-                let ledger = try draft.ledger(account, through: today)
-                if account.id == accountID, let assetID, ledger.positions[assetID] != nil {
-                    throw InvestmentError.invalid("该持仓仍由其他合约流水使用，请先处理相关合约。")
-                }
+                _ = try draft.ledger(account, through: today)
             }
             catch {
                 throw InvestmentError.invalid("删除后「\(account.name)」的其他流水无法成立：\(error.localizedDescription) 请先处理相关流水。")
@@ -625,18 +517,7 @@ struct InvestmentLedger {
     var flows: Decimal = 0
     var cashIncome: Decimal = 0
     var positions: [UUID: InvestmentPosition] = [:]
-    var reservedCollateral: [UUID: Decimal] = [:]
-    var collateralChanges: [UUID: Decimal] = [:]
     var cashRows: [InvestmentCashRow] = []
-
-    func fundingBalance(for asset: InvestmentAsset, target: InvestmentFundingTarget) -> Decimal? {
-        guard let position = positions[asset.id] else { return nil }
-        if target == .margin { return position.quantity > 0 ? position.margin : nil }
-        if let id = asset.collateralAssetID {
-            return (positions[id]?.quantity ?? 0) - reservedCollateral[id, default: 0]
-        }
-        return cash
-    }
 
     mutating func transferMargin(_ amount: Decimal, for asset: InvestmentAsset) throws {
         guard var position = positions[asset.id], position.quantity > 0 else {
@@ -645,96 +526,13 @@ struct InvestmentLedger {
         let margin = position.margin + amount
         guard margin >= 0 else { throw InvestmentError.invalid("减少金额不能超过该仓已占用保证金。") }
 
-        if let id = asset.collateralAssetID {
-            let reserved = reservedCollateral[id, default: 0] + amount
-            guard reserved <= (positions[id]?.quantity ?? 0) else { throw InvestmentError.insufficientCollateral }
-            reservedCollateral[id] = reserved
-        } else {
-            guard cash >= amount else { throw InvestmentError.insufficientCash }
-            cash -= amount
-            position.netCost += amount
-        }
+        guard cash >= amount else { throw InvestmentError.insufficientCash }
+        cash -= amount
+        position.netCost += amount
         position.margin = margin
         positions[asset.id] = position
     }
 
-    mutating func settleContract(_ event: InvestmentEvent, asset: InvestmentAsset, collateral: InvestmentAsset?) throws -> Decimal {
-        var position = positions[asset.id] ?? InvestmentPosition()
-        let exposure = asset.contractExposure(quantity: event.quantity, price: event.price)
-        var settlementChange = -(event.fee ?? 0)
-        let marginChange: Decimal
-        if event.kind == .sell {
-            guard position.quantity >= event.quantity else { throw InvestmentError.insufficientPosition }
-            let fraction = event.quantity / position.quantity
-            let releasedMargin = position.margin * fraction
-            let entry = position.contractEntry * fraction
-            settlementChange += asset.contractProfit(entry: entry, exit: exposure)
-            marginChange = -releasedMargin
-            position.contractEntry -= entry
-            position.quantity -= event.quantity
-        } else {
-            marginChange = event.margin
-            position.contractEntry += exposure
-            position.quantity += event.quantity
-            position.lastEntry = event.price
-        }
-        position.margin += marginChange
-        let usdChange: Decimal
-        if let collateral {
-            let reserved = reservedCollateral[collateral.id, default: 0] + marginChange
-            usdChange = try applyCollateralChange(settlementChange, id: collateral.id, reserved: reserved, rate: event.settlementRate)
-        } else {
-            // U-margined contracts use the USD cash balance at 1:1.
-            usdChange = settlementChange
-            cash += usdChange - marginChange
-            position.netCost = position.margin
-        }
-        position.realized += usdChange
-        positions[asset.id] = position
-        return settlementChange
-    }
-
-    mutating func applyFunding(_ event: InvestmentEvent, asset: InvestmentAsset) throws {
-        guard let target = event.fundingTarget, let balance = fundingBalance(for: asset, target: target),
-              var position = positions[asset.id] else {
-            throw InvestmentError.invalid("该日期没有可调整的合约余额。")
-        }
-        guard balance + event.amount >= 0 else {
-            if asset.collateralAssetID != nil { throw InvestmentError.insufficientCollateral }
-            throw InvestmentError.insufficientCash
-        }
-        let marginChange = target == .margin ? event.amount : 0
-        let usdChange: Decimal
-        if let id = asset.collateralAssetID {
-            let reserved = reservedCollateral[id, default: 0] + marginChange
-            usdChange = try applyCollateralChange(event.amount, id: id, reserved: reserved, rate: event.settlementRate)
-        } else {
-            usdChange = event.amount
-            if target == .available { cash += event.amount }
-            position.netCost += marginChange
-        }
-        position.margin += marginChange
-        if event.unallocatedFunding != true { position.realized += usdChange }
-        positions[asset.id] = position
-    }
-
-    private mutating func applyCollateralChange(_ change: Decimal, id: UUID, reserved: Decimal, rate: Decimal?) throws -> Decimal {
-        guard change == 0 || (rate ?? 0) > 0 else {
-            throw InvestmentError.invalid("缺少结算币美元报价，请重新获取或手动指定价格。")
-        }
-        var token = positions[id] ?? InvestmentPosition()
-        token.quantity += change
-        guard token.quantity >= reserved else { throw InvestmentError.insufficientCollateral }
-        let usdChange = change * (rate ?? 0)
-        token.netCost += usdChange
-        if token.quantity == 0 {
-            token.realized -= token.netCost
-            token.netCost = 0
-        }
-        reservedCollateral[id] = reserved
-        positions[id] = token
-        return usdChange
-    }
 }
 
 struct InvestmentValuation: Codable {
@@ -747,14 +545,12 @@ enum InvestmentError: LocalizedError {
     case invalid(String)
     case insufficientCash
     case insufficientPosition
-    case insufficientCollateral
 
     var errorDescription: String? {
         switch self {
         case .invalid(let message): message
         case .insufficientCash: "该笔记录会使账户现金余额为负。"
         case .insufficientPosition: "卖出数量超过成交日可用持仓。"
-        case .insufficientCollateral: "可用结算币余额不足，请检查持仓及已占用保证金。"
         }
     }
 }
@@ -827,9 +623,9 @@ struct InvestmentBook: Codable {
                 ledger.cash += event.amount
                 ledger.flows += event.amount
             case .adjustment:
-                if let id = event.assetID, assets[id]?.kind.isTermDeposit == true {
+                if let id = event.assetID, assets[id]?.kind.usesBalance == true {
                     guard var position = ledger.positions[id], let balance = event.settledAmount, balance >= 0 else {
-                        throw InvestmentError.invalid("找不到存款记录，或调整后余额无效。")
+                        throw InvestmentError.invalid("找不到标的记录，或调整后余额无效。")
                     }
                     position.depositBalance = balance
                     position.quantity = balance > 0 ? 1 : 0
@@ -838,18 +634,11 @@ struct InvestmentBook: Codable {
                 }
                 ledger.cash += event.amount
                 ledger.cashIncome += event.amount
-            case .funding:
-                guard let asset = asset(event.assetID), asset.kind == .cryptoContract else {
-                    throw InvestmentError.invalid("找不到资金费对应的合约。")
-                }
-                try ledger.applyFunding(event, asset: asset)
-                if asset.collateralAssetID != nil || event.fundingTarget == .margin { continue }
             case .marginTransfer:
                 guard let asset = asset(event.assetID), asset.kind.usesMargin else {
                     throw InvestmentError.invalid("找不到保证金划转对应的合约。")
                 }
                 try ledger.transferMargin(event.amount, for: asset)
-                if asset.collateralAssetID != nil { continue }
             case .derivativeSettlement:
                 guard let asset = asset(event.assetID), asset.kind == .future,
                       var position = ledger.positions[asset.id], position.quantity > 0 else {
@@ -867,7 +656,7 @@ struct InvestmentBook: Codable {
                 }
                 ledger.cash += event.amount
                 position.realized += event.amount
-                if event.kind == .income, assets[id]?.kind.isTermDeposit == true, let balance = event.settledAmount {
+                if event.kind == .income, assets[id]?.kind.usesBalance == true, let balance = event.settledAmount {
                     position.depositBalance = balance
                     position.quantity = balance > 0 ? 1 : 0
                 }
@@ -878,9 +667,6 @@ struct InvestmentBook: Codable {
                 }
                 position.quantity += event.quantity
                 guard position.quantity >= 0 else { throw InvestmentError.insufficientPosition }
-                guard position.quantity >= ledger.reservedCollateral[id, default: 0] else {
-                    throw InvestmentError.insufficientCollateral
-                }
                 if position.quantity == 0 {
                     position.realized -= position.netCost
                     position.netCost = 0
@@ -891,11 +677,17 @@ struct InvestmentBook: Codable {
                 guard let id = event.assetID, let asset = assets[id], asset.settlementCurrency == currency else {
                     throw InvestmentError.invalid("标的与账户币种不一致。")
                 }
-                if asset.kind.isTermDeposit {
+                if asset.kind.usesBalance {
                     var position = ledger.positions[id] ?? InvestmentPosition()
                     if event.kind == .sell && position.quantity == 0 { throw InvestmentError.insufficientPosition }
                     let change = event.kind == .sell ? -event.price : event.price
-                    let balance = event.settledAmount ?? (event.kind == .sell ? 0 : (position.depositBalance ?? 0) + change)
+                    let current = position.depositBalance ?? 0
+                    if asset.kind == .generic, event.kind == .sell, event.price > current { throw InvestmentError.insufficientPosition }
+                    let expected = current + change
+                    let balance = event.settledAmount ?? (asset.kind == .generic ? expected : (event.kind == .sell ? 0 : expected))
+                    guard balance >= 0, asset.kind != .generic || ledger.positions[id] == nil || balance == expected else {
+                        throw InvestmentError.invalid("投入和取出后余额须与资金变动一致，请通过调整余额记录盈亏。")
+                    }
                     if event.kind == .opening { ledger.flows += change } else { ledger.cash -= change }
                     position.netCost += change
                     position.depositBalance = balance
@@ -905,24 +697,11 @@ struct InvestmentBook: Codable {
                         position.netCost = 0
                     }
                     ledger.positions[id] = position
-                } else if asset.kind == .cryptoContract, asset.basis != .usd {
-                    try asset.validateTransactionType(event.kind)
-                    let collateral = self.asset(asset.collateralAssetID)
-                    let usesSharedCash = asset.basis == .stablecoin && asset.settlementStablecoin != nil && asset.collateralAssetID == nil
-                    guard usesSharedCash || collateral.map(asset.basis.accepts) == true else {
-                        throw InvestmentError.invalid("该合约未关联有效的结算币种，请核对标的登记中的结算币关联。")
-                    }
-                    let change = try ledger.settleContract(event, asset: asset, collateral: collateral)
-                    if includeRows { ledger.collateralChanges[event.id] = change }
-                    if collateral != nil { continue }
                 } else {
                     var position = ledger.positions[id] ?? InvestmentPosition()
                     if event.kind == .sell {
                         let cashValue = try cashTradeValue(event, asset: asset)
                         guard position.quantity >= event.quantity else { throw InvestmentError.insufficientPosition }
-                        guard position.quantity - ledger.reservedCollateral[id, default: 0] >= event.quantity else {
-                            throw InvestmentError.insufficientCollateral
-                        }
                         var proceeds = cashValue
                         if asset.kind.usesMargin {
                             let releasedMargin = position.margin * event.quantity / position.quantity
@@ -981,7 +760,7 @@ struct InvestmentBook: Codable {
 
     private func cashPurchase(_ event: InvestmentEvent, asset: InvestmentAsset) throws -> (value: Decimal, margin: Decimal, debit: Decimal) {
         let value = try cashTradeValue(event, asset: asset)
-        let margin = asset.kind == .cryptoContract ? event.margin : event.margin * event.quantity
+        let margin = event.margin * event.quantity
         let debit = (asset.kind.usesMargin ? margin : value) + (event.fee ?? 0)
         return (value, margin, debit)
     }
@@ -1021,12 +800,6 @@ struct InvestmentBook: Codable {
                 }
             }
             try asset.validateEntry(in: accounts[index])
-        case .funding:
-            guard let asset = asset(event.assetID), asset.kind == .cryptoContract, let target = event.fundingTarget,
-                  event.amount != 0, target != .margin || event.unallocatedFunding != true else {
-                throw InvestmentError.invalid("请选择合约余额并填写有效的资金费调整。")
-            }
-            try asset.validateEntry(in: accounts[index])
         case .marginTransfer:
             guard let asset = asset(event.assetID), asset.kind.usesMargin, event.amount != 0 else {
                 throw InvestmentError.invalid("请选择合约并填写有效的保证金划转金额。")
@@ -1057,9 +830,9 @@ struct InvestmentBook: Codable {
             }
             try asset.validateEntry(in: accounts[index])
         case .adjustment where event.assetID != nil:
-            guard let asset = asset(event.assetID), asset.kind.isTermDeposit, event.amount == 0,
+            guard let asset = asset(event.assetID), asset.kind.usesBalance, event.amount == 0,
                   let balance = event.settledAmount, balance >= 0 else {
-                throw InvestmentError.invalid("请输入有效的存款余额。")
+                throw InvestmentError.invalid("请输入有效的标的余额。")
             }
             try asset.validateEntry(in: accounts[index])
         case .deposit, .withdrawal, .adjustment:
@@ -1071,7 +844,7 @@ struct InvestmentBook: Codable {
         case .opening, .buy, .sell:
             guard let asset = asset(event.assetID), event.quantity > 0,
                   event.price > 0 || (asset.kind == .insurance && event.kind == .sell && event.price == 0),
-                  (asset.kind != .insurance && !asset.kind.isTermDeposit) || event.quantity == 1,
+                  (asset.kind != .insurance && !asset.kind.usesBalance) || event.quantity == 1,
                   !asset.kind.usesMargin || event.kind == .sell || event.margin > 0 else {
                 throw InvestmentError.invalid("请输入有效的数量、价格和保证金。")
             }
@@ -1081,10 +854,10 @@ struct InvestmentBook: Codable {
             }
             if asset.kind.isTermDeposit {
                 guard let balance = event.settledAmount, balance >= 0 else {
-                    throw InvestmentError.invalid("请输入操作后的存款余额。")
+                    throw InvestmentError.invalid("请输入操作后的标的余额。")
                 }
             }
-            if autoFundCash, event.kind == .buy, asset.kind != .cryptoContract || asset.basis == .usd {
+            if autoFundCash, event.kind == .buy {
                 let purchase = try cashPurchase(event, asset: asset)
                 let cash = try ledger(draft, through: event.day).cash
                 if purchase.debit > cash {
@@ -1200,22 +973,14 @@ struct InvestmentBook: Codable {
         try post(.init(day: day, kind: kind, assetID: assetID, quantity: change), accountID: accountID)
     }
 
-    mutating func adjustFundingBalance(assetID: UUID, accountID: UUID, target: InvestmentFundingTarget,
-                                       balance: Decimal, rate: Decimal?, attributeToContract: Bool, on date: Date) throws {
+    mutating func adjustAssetBalance(assetID: UUID, accountID: UUID, balance: Decimal, on date: Date) throws {
         let day = Self.day(date)
-        guard balance >= 0, let account = account(accountID), let asset = asset(assetID), asset.kind == .cryptoContract,
-              let current = try ledger(account, through: day).fundingBalance(for: asset, target: target) else {
-            throw InvestmentError.invalid("请选择有效的合约和调整后余额。")
+        guard balance >= 0, let asset = asset(assetID), asset.kind.usesBalance,
+              let account = account(accountID), let position = try ledger(account, through: day).positions[assetID] else {
+            throw InvestmentError.invalid("请选择已有标的并填写调整后余额。")
         }
-        let change = balance - current
-        guard change != 0 else { throw InvestmentError.invalid("调整后余额与账面余额相同。") }
-        let settledRate = asset.collateralAssetID.flatMap { rate ?? quote($0, on: day)?.price }
-        try post(.init(day: day, kind: .funding, assetID: assetID, amount: change, settlementRate: settledRate,
-                       fundingTarget: target, unallocatedFunding: target == .available && !attributeToContract),
-                 accountID: accountID)
-        if let id = asset.collateralAssetID, let rate = settledRate, quote(id, on: day) == nil {
-            addQuotes([.init(day: day, price: rate, source: "结算币录入")], assetID: id)
-        }
+        guard balance != position.depositBalance else { throw InvestmentError.invalid("调整后余额与账面余额相同。") }
+        try post(.init(day: day, kind: .adjustment, assetID: assetID, settledAmount: balance), accountID: accountID)
     }
 
     mutating func transfer(from sourceID: UUID, to targetID: UUID, amount: Decimal, remaining: Decimal,
@@ -1250,17 +1015,10 @@ struct InvestmentBook: Codable {
     }
 
     func settlementUnit(for asset: InvestmentAsset) -> String {
-        asset.settlementStablecoin?.rawValue ?? self.asset(asset.collateralAssetID)?.code ?? asset.settlementCurrency.rawValue
+        asset.settlementCurrency.rawValue
     }
 
-    func fundingUnit(for asset: InvestmentAsset, target: InvestmentFundingTarget) -> String {
-        if target == .available && asset.collateralAssetID == nil { return asset.settlementCurrency.rawValue }
-        return settlementUnit(for: asset)
-    }
-
-    func quoteUnit(for asset: InvestmentAsset) -> String {
-        asset.basis == .stablecoin ? settlementUnit(for: asset) : asset.currency.rawValue
-    }
+    func quoteUnit(for asset: InvestmentAsset) -> String { asset.currency.rawValue }
 
     mutating func addQuotes(_ values: [InvestmentQuote], assetID: UUID) {
         let previous = quotes[assetID] ?? []
@@ -1314,24 +1072,18 @@ struct InvestmentBook: Codable {
     func positionValue(_ position: InvestmentPosition, asset: InvestmentAsset, on day: Date = Self.day(),
                        requiresDailyPrices: Bool = false) -> Decimal? {
         if position.quantity == 0 { return 0 }
-        if asset.kind.isTermDeposit { return position.depositBalance }
+        if asset.kind.usesBalance { return position.depositBalance }
         if asset.kind == .future, requiresDailyPrices, position.settledDay == day, let price = position.settledPrice {
             return position.value(at: price, asset: asset)
         }
         guard let quote = positionQuote(for: asset, on: day, requiresDailyPrices: requiresDailyPrices) else { return nil }
-        if asset.kind == .cryptoContract, let collateral = asset.collateralAssetID {
-            guard let rate = valuationQuote(quotes[collateral], on: day, requiresDailyPrice: requiresDailyPrices,
-                                            continuous: true)?.price else { return nil }
-            let exposure = asset.contractExposure(quantity: position.quantity, price: quote.price)
-            return asset.contractProfit(entry: position.contractEntry, exit: exposure) * rate
-        }
         let value = position.value(at: quote.price, asset: asset)
         if !asset.isStockConnect { return value }
         return rateToCNY(.hkd, on: day, requiresDailyPrice: requiresDailyPrices).map { value * $0 }
     }
 
     func positionQuote(for asset: InvestmentAsset, on day: Date, requiresDailyPrices: Bool) -> InvestmentQuote? {
-        let continuous = asset.kind == .crypto || asset.kind == .cryptoContract
+        let continuous = asset.kind == .crypto
         let isMarketAsset = continuous || !asset.kind.isManual
         if requiresDailyPrices, asset.usesUSEquityClose {
             return usEquityQuote(quotes[asset.id], on: day)

@@ -19,9 +19,56 @@ public partial class App : Application
     private AgentPipeServer? pipe;
     private MainWindow? window;
     private bool exiting;
+    private AgentLifecycleLog? lifecycle;
+    private System.Windows.Threading.DispatcherTimer? heartbeat;
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Length == 3 && e.Args[1] == "--config" && e.Args[0] is "--guardian" or "--start-guardian" or "--stop-guardian")
+        {
+            try
+            {
+                var configuration = Path.GetFullPath(e.Args[2]);
+                var options = AgentGuardianControl.Read<AgentGuardianOptions>(configuration) ?? throw new IOException("守护配置不存在。");
+                options.Validate();
+                var stop = AgentGuardianControl.FileFor(options.ProfileDirectory, "stop");
+                if (e.Args[0] == "--guardian") await AgentGuardian.RunAsync(configuration);
+                else if (e.Args[0] == "--stop-guardian") File.WriteAllText(stop, "stop");
+                else
+                {
+                    File.Delete(stop);
+                    using var guardian = DetachedAgentProcess.Start(Environment.ProcessPath!, ["--guardian", "--config", configuration], breakAway: true);
+                    CliConsole.Initialize(); CliConsole.Write(CommandReply.Success(new { processId = guardian.Id }), true);
+                }
+                Shutdown();
+            }
+            catch (Exception error)
+            {
+                CliConsole.Initialize(); CliConsole.Write(CommandReply.Failure(1, "guardian_failed", error.GetType().Name), true); Shutdown(1);
+            }
+            return;
+        }
+        // Installation preflight runs in the candidate binary, never forwards
+        // to the installed Agent, and does not acquire its instance mutex.
+        if (e.Args.Length == 4 && e.Args[0] == "--check-server-version" && e.Args[1] == "--data-dir" && e.Args[3] == "--json")
+        {
+            CliConsole.Initialize();
+            CommandReply reply;
+            try
+            {
+                var settings = new AgentSettingsStore(Path.GetFullPath(e.Args[2])).Load();
+                settings.ValidateConnectionSettings();
+                var warning = await ServerCompatibility.CheckAsync(settings.Origin(), CancellationToken.None);
+                reply = warning is null ? CommandReply.Success(new { compatible = true }, "服务端版本兼容，可以更新 Agent。")
+                    : CommandReply.Failure(3, "server_incompatible", warning + " Agent 未更新，请先更新服务端。");
+            }
+            catch (Exception error) when (error is System.Net.Http.HttpRequestException or OperationCanceledException)
+            { reply = CommandReply.Failure(4, "server_version_unavailable", "无法确认服务端版本，Agent 未更新。请恢复服务器连接后重试。"); }
+            catch (Exception)
+            { reply = CommandReply.Failure(3, "server_version_check_failed", "无法完成服务端版本检查，Agent 未更新。请检查当前服务器配置。"); }
+            FinishCommand(reply, true);
+            return;
+        }
         if (e.Args.Length > 0 && e.Args[0] is "--command-host" or "--launch-agent")
         {
             try
@@ -78,18 +125,28 @@ public partial class App : Application
                 }
                 await Task.Delay(100);
             }
+            AgentGuardianControl.Resume(invocation.Profile.Store.DirectoryPath);
+            lifecycle = new AgentLifecycleLog(invocation.Profile.Store.DirectoryPath, invocation.Background);
+            DispatcherUnhandledException += OnDispatcherUnhandledException;
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+            AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+            TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
+            heartbeat = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            heartbeat.Tick += (_, _) => lifecycle.Heartbeat();
+            heartbeat.Start();
             runtime = new AgentRuntime(invocation.Profile.Store, true);
             runtime.ShowRequested += () => Dispatcher.InvokeAsync(ShowMainWindow);
-            runtime.Connection.VersionWarning += ShowVersionWarning;
             await runtime.InitializeAsync(autoConnect: true);
-            pipe = new AgentPipeServer(invocation.Profile, runtime, () => Dispatcher.InvokeAsync(async () => await ExitHostedAsync()));
-            window = new MainWindow(runtime, () => ExitHostedAsync());
+            pipe = new AgentPipeServer(invocation.Profile, runtime, () => Dispatcher.InvokeAsync(async () => await ExitHostedAsync(reason: "cli_exit")));
+            window = new MainWindow(runtime, () => ExitHostedAsync(reason: "tray_exit"));
             if (!invocation.Background) ShowMainWindow();
+            lifecycle.Ready();
         }
         catch (Exception error)
         {
+            lifecycle?.Exception("startup", error, terminating: true);
             if (!invocation.Background) MessageBox.Show("Hako 启动失败：" + error.Message, "Hako");
-            await ExitHostedAsync(1);
+            await ExitHostedAsync(1, "startup_failed");
         }
     }
     private void FinishCommand(CommandReply reply, bool json)
@@ -163,25 +220,16 @@ public partial class App : Application
     private void ShowMainWindow()
     {
         if (runtime is null || exiting) return;
-        if (window is null) window = new MainWindow(runtime, () => ExitHostedAsync());
+        if (window is null) window = new MainWindow(runtime, () => ExitHostedAsync(reason: "tray_exit"));
         window.ShowWindow();
     }
-    private void ShowVersionWarning(string message)
-    {
-        _ = Dispatcher.InvokeAsync(() =>
-        {
-            if (exiting) return;
-            const string title = "Hako 版本兼容性";
-            if (window is { IsVisible: true })
-                MessageBox.Show(window, message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
-            else
-                MessageBox.Show(message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
-        });
-    }
-    private async Task ExitHostedAsync(int exitCode = 0)
+    private async Task ExitHostedAsync(int exitCode = 0, string reason = "application_shutdown")
     {
         if (exiting) return;
         exiting = true;
+        if (runtime is not null && reason is "cli_exit" or "tray_exit")
+            AgentGuardianControl.ManualExit(runtime.Store.DirectoryPath, Environment.ProcessId);
+        lifecycle?.ExitRequested(reason);
         window?.DisposeForExit();
         if (pipe is not null) await pipe.DisposeAsync();
         if (runtime is not null) await runtime.DisposeAsync();
@@ -189,8 +237,23 @@ public partial class App : Application
     }
     protected override void OnExit(ExitEventArgs e)
     {
+        heartbeat?.Stop();
+        lifecycle?.Complete(e.ApplicationExitCode);
         if (ownsInstance) instance?.ReleaseMutex();
         instance?.Dispose();
         base.OnExit(e);
     }
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        base.OnSessionEnding(e);
+        if (!e.Cancel) lifecycle?.ExitRequested(e.ReasonSessionEnding == ReasonSessionEnding.Logoff ? "windows_logoff" : "windows_shutdown");
+    }
+    private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        => lifecycle?.Exception("dispatcher", e.Exception, terminating: true);
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        => lifecycle?.Exception("app_domain", e.ExceptionObject as Exception, e.IsTerminating);
+    private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+        => lifecycle?.Exception("unobserved_task", e.Exception, terminating: false);
+    private void OnProcessExit(object? sender, EventArgs e)
+        => lifecycle?.ProcessExited(Environment.ExitCode);
 }

@@ -9,6 +9,11 @@ const CurrentVersion = 2
 
 // Initialize creates the current schema only in an empty database.
 func Initialize(db *sql.DB, create func(*sql.Tx) error) error {
+	return InitializeVersion(db, CurrentVersion, create)
+}
+
+// InitializeVersion allows independent databases to evolve without changing unrelated schemas.
+func InitializeVersion(db *sql.DB, currentVersion int, create func(*sql.Tx) error) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -20,7 +25,7 @@ func Initialize(db *sql.DB, create func(*sql.Tx) error) error {
 		return err
 	}
 	switch version {
-	case CurrentVersion:
+	case currentVersion:
 		return nil
 	case 0:
 		var populated bool
@@ -33,11 +38,11 @@ func Initialize(db *sql.DB, create func(*sql.Tx) error) error {
 		if err := create(tx); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", CurrentVersion)); err != nil {
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentVersion)); err != nil {
 			return err
 		}
 		return tx.Commit()
 	default:
-		return fmt.Errorf("unsupported database schema version %d (expected %d)", version, CurrentVersion)
+		return fmt.Errorf("unsupported database schema version %d (expected %d)", version, currentVersion)
 	}
 }

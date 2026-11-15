@@ -1,5 +1,67 @@
 import Foundation
 
+struct WorkshopConversationVisibility {
+    private var owners: [UUID: UUID] = [:]
+    private var previews: Set<UUID> = []
+    var foreground: Set<UUID> {
+        previews.isEmpty ? Set(owners.values) : Set(previews.compactMap { owners[$0] })
+    }
+    func contains(_ conversation: UUID) -> Bool { owners.values.contains(conversation) }
+    mutating func enter(_ owner: UUID, conversation: UUID, preview: Bool) {
+        owners[owner] = conversation
+        if preview { previews.insert(owner) } else { previews.remove(owner) }
+    }
+    mutating func leave(_ owner: UUID) { owners[owner] = nil; previews.remove(owner) }
+}
+
+enum WorkshopConnectionState: Equatable {
+    case disconnected, connecting, connected
+
+    var beginningRequest: Self { self == .connected ? .connected : .connecting }
+    var accessibilityDescription: String {
+        switch self {
+        case .disconnected: "电脑未连接"
+        case .connecting: "正在连接电脑"
+        case .connected: "电脑已连接"
+        }
+    }
+
+    func afterFailure(_ error: Error) -> Self {
+        if error is CancellationError || (error as NSError).code == NSURLErrorCancelled {
+            return self == .connected ? .connected : .disconnected
+        }
+        if let failure = error as? WorkshopFailure {
+            switch failure.code {
+            case "computer_offline", "workshop_disconnected", "workshop_timeout", "stream_overflow":
+                return .disconnected
+            case "workshop_busy", "invalid_request", "unsupported_method":
+                return self == .connected ? .connected : .disconnected
+            default:
+                // An Agent error still proves that the computer replied.
+                return .connected
+            }
+        }
+        return .disconnected
+    }
+}
+
+enum WorkshopSystemPrompt {
+    static let maximumLength = 4000
+    static let defaultText = """
+    你通过 Hako 代码工坊与用户协作，遵循用户指示和当前仓库规范。
+
+    原型交付规则：
+    每次新建或修改原型，都必须在本次最终回复中发送一张新的原型卡片。
+    每次交付都使用全新、唯一的 HTML 文件名和绝对路径；修改已有原型时也要另存为新文件，不得覆盖或复用此前已交付的原型路径。
+    最终回复必须包含本次新文件的原型卡片引用：visualize{"path":"本次新文件的绝对路径","title":"原型标题"}。
+    卡片须展示本次修改后的完整原型，不能只说明“已修改”，也不能让用户返回旧卡片查看。
+    """
+
+    static func valid(_ text: String) -> Bool {
+        text.utf16.count <= maximumLength && !text.contains("\0")
+    }
+}
+
 enum WorkshopCacheIdentity {
     // Stable across route changes, login restoration and token/session rotation.
     static func account(serverURL: String, username: String) -> String {
@@ -7,7 +69,7 @@ enum WorkshopCacheIdentity {
     }
 }
 
-struct WorkshopAgent: Codable, Identifiable {
+struct WorkshopAgent: Codable, Identifiable, Sendable {
     let id: String
     let name: String
     let online: Bool
@@ -17,7 +79,7 @@ struct WorkshopAgent: Codable, Identifiable {
 
 }
 
-struct WorkshopApplication: Codable, Identifiable, Equatable {
+struct WorkshopApplication: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let path: String
@@ -36,7 +98,7 @@ struct WorkshopApplication: Codable, Identifiable, Equatable {
     }
 }
 
-struct WorkshopSession: Codable, Identifiable, Hashable {
+struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let applicationId: String
@@ -50,7 +112,7 @@ struct WorkshopSession: Codable, Identifiable, Hashable {
     var inProgress: Bool { ["starting", "running", "waiting", "stopping", "finishing", "queued", "steering"].contains(state) }
 }
 
-struct WorkshopCatalog: Codable {
+struct WorkshopCatalog: Codable, Sendable {
     let applications: [WorkshopApplication]
     let sessions: [WorkshopSession]
     let nextCursor: String?
@@ -69,17 +131,49 @@ struct WorkshopCatalog: Codable {
     }
 }
 
+// Detail reads fence older catalog responses. A verified terminal state also
+// survives later stale polls until the catalog proves a newer operation/activity.
+struct WorkshopSessionUpdates {
+    private struct Update { let revision: Int; let session: WorkshopSession }
+    private var updates: [String: Update] = [:]
+    private(set) var revision = 0
+
+    mutating func record(_ session: WorkshopSession, agentId: String) {
+        revision += 1
+        updates[agentId + ":" + session.id] = Update(revision: revision, session: session)
+    }
+
+    mutating func remove(threadId: String, agentId: String) {
+        updates[agentId + ":" + threadId] = nil
+    }
+
+    func merging(_ sessions: [WorkshopSession], agentId: String, since checkpoint: Int) -> [WorkshopSession] {
+        sessions.map { session in
+            guard let update = updates[agentId + ":" + session.id],
+                  update.session.operationId == session.operationId,
+                  session.updatedAt <= update.session.updatedAt,
+                  session.completionId == nil || session.completionId == update.session.completionId else { return session }
+            let known = update.session
+            let staleRunning = session.inProgress && ["completed", "failed", "interrupted", "cancelled"].contains(known.state)
+            guard update.revision > checkpoint || staleRunning else { return session }
+            return WorkshopSession(id: session.id, title: session.title, applicationId: session.applicationId,
+                cwd: session.cwd, preview: session.preview, updatedAt: session.updatedAt,
+                state: known.state, operationId: known.operationId, completionId: known.completionId)
+        }
+    }
+}
+
 struct WorkshopArchiveReply: Decodable {
     let threadId: String
     let archived: Bool
 }
 
-struct WorkshopCachedCatalog: Codable {
+struct WorkshopCachedCatalog: Codable, Sendable {
     let catalog: WorkshopCatalog
     let savedAt: Date
 }
 
-struct WorkshopListSnapshot: Codable {
+struct WorkshopListSnapshot: Codable, Sendable {
     let agents: [WorkshopAgent]
     let catalogs: [String: WorkshopCachedCatalog]
 }
@@ -154,8 +248,8 @@ struct WorkshopHistory: Decodable {
     let completionId: String?
 }
 
-struct WorkshopReadState: Codable {
-    struct Receipt: Codable { let completionId: String; let readAt: Date }
+struct WorkshopReadState: Codable, Sendable {
+    struct Receipt: Codable, Sendable { let completionId: String; let readAt: Date }
     private(set) var receipts: [String: Receipt] = [:]
     static let unreadLifetime: TimeInterval = 12 * 60 * 60
 
@@ -176,7 +270,7 @@ struct WorkshopReadState: Codable {
     }
 }
 
-struct WorkshopOperation: Codable {
+struct WorkshopOperation: Codable, Equatable {
     let id: String
     let applicationId: String
     let threadId: String?
@@ -184,16 +278,56 @@ struct WorkshopOperation: Codable {
     let state: String
     let message: String?
     let startedAt: Int64
+    var finishedAt: Int64? = nil
     var active: Bool { ["starting", "running", "waiting", "stopping", "finishing"].contains(state) }
+
+    func elapsedText(at now: Date) -> String? {
+        guard startedAt > 0 else { return nil }
+        let end: TimeInterval
+        if active { end = now.timeIntervalSince1970 }
+        else if ["completed", "failed", "interrupted", "cancelled"].contains(state), let finishedAt, finishedAt > 0 {
+            // Operation starts use Unix seconds; durable terminal records use milliseconds.
+            end = Double(finishedAt) / 1000
+        } else { return nil }
+        let elapsed = max(0, end - Double(startedAt))
+        guard elapsed.isFinite, elapsed < Double(Int.max) else { return nil }
+        let seconds = Int(elapsed)
+        if seconds >= 3600 { return "\(seconds / 3600) 小时 \(seconds / 60 % 60) 分 \(seconds % 60) 秒" }
+        if seconds >= 60 { return "\(seconds / 60) 分 \(seconds % 60) 秒" }
+        return "\(seconds) 秒"
+    }
+
+    var statusLabel: String {
+        switch state {
+        case "starting": "正在连接 Codex…"
+        case "running": "任务在电脑上执行中"
+        case "waiting": "等待你确认"
+        case "stopping": "正在停止任务"
+        case "finishing": "正在保存结果并释放会话"
+        case "completed": "本轮已完成"
+        case "interrupted", "cancelled": "任务已停止"
+        case "failed": "本轮未完成"
+        default: "请核对本轮执行结果"
+        }
+    }
+
+    var statusIcon: String {
+        switch state {
+        case "completed": "checkmark.circle"
+        case "failed": "exclamationmark.circle"
+        case "interrupted", "cancelled": "stop.circle"
+        default: active ? "circle.dotted" : "questionmark.circle"
+        }
+    }
 }
 
-struct WorkshopQuestion: Decodable, Identifiable {
+struct WorkshopQuestion: Decodable, Identifiable, Equatable {
     let id: String
     let question: String
     let options: [String]
 }
 
-struct WorkshopApproval: Decodable, Identifiable {
+struct WorkshopApproval: Decodable, Identifiable, Equatable {
     let id: String
     let kind: String
     let detail: String
@@ -252,15 +386,17 @@ struct WorkshopFollowupReply: Decodable {
         text: message + (imageIds.isEmpty ? "" : "\n[图片 × \(imageIds.count)]"), role: "user", state: state, truncated: false, questionId: questionId) }
 }
 
-struct WorkshopQueuedSend: Codable, Identifiable {
+struct WorkshopQueuedSend: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let operationId: String
     let message: String
     let imageIds: [String]
     var questionId: String? = nil
+    var reasoningEffort: String? = nil
     var parameters: [String: Any] {
         var result: [String: Any] = ["operationId": operationId, "requestId": id, "message": message, "imageIds": imageIds]
         result["questionId"] = questionId
+        result["reasoningEffort"] = reasoningEffort
         return result
     }
     var entry: WorkshopEntry { WorkshopEntry(kind: "followup", id: id,
@@ -288,7 +424,7 @@ struct WorkshopReply<Value: Decodable>: Decodable {
     let error: WorkshopFailure?
 }
 
-struct WorkshopReceipt: Codable, Identifiable {
+struct WorkshopReceipt: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let agentId: String
     let applicationId: String
@@ -303,6 +439,8 @@ struct WorkshopReceipt: Codable, Identifiable {
     var imageIds: [String]? = nil
     var serviceTier: String? = nil
     var questionId: String? = nil
+    var systemPrompt: String? = nil
+    var reasoningEffort: String? = nil
 
     var parameters: [String: Any] {
         var result: [String: Any] = ["requestId": id, "applicationId": applicationId, "name": title, "message": message]
@@ -311,12 +449,19 @@ struct WorkshopReceipt: Codable, Identifiable {
         result["permission"] = permission
         result["imageIds"] = imageIds
         result["serviceTier"] = serviceTier
+        result["reasoningEffort"] = reasoningEffort
         result["questionId"] = questionId
+        if originalThreadId == nil { result["systemPrompt"] = systemPrompt }
         return result
+    }
+
+    var fitsRequestBudget: Bool {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["method": "turn.start", "params": parameters]) else { return false }
+        return data.count <= 16 * 1024
     }
 }
 
-struct WorkshopPreferences: Codable {
+struct WorkshopPreferences: Codable, Sendable {
     var agentId = ""
     var applicationId = ""
     var order: [String] = []
@@ -332,10 +477,11 @@ struct WorkshopLocalSessions {
         var receipt: WorkshopReceipt
         let date: Date
         let preview: String
+        let queued: Bool
     }
     private var receipts: [String: Activity] = [:]
 
-    mutating func record(_ receipt: WorkshopReceipt, isNew: Bool) {
+    mutating func record(_ receipt: WorkshopReceipt, isNew: Bool, queued: Bool = false) {
         if receipt.state == "rejected" { receipts[receipt.id] = nil }
         else if isNew || receipts[receipt.id] != nil {
             if isNew, let threadId = receipt.threadId {
@@ -345,7 +491,8 @@ struct WorkshopLocalSessions {
             let keepActivity = previous.map { $0.date > receipt.createdAt } == true
             receipts[receipt.id] = Activity(receipt: receipt,
                 date: keepActivity ? previous!.date : receipt.createdAt,
-                preview: keepActivity ? previous!.preview : receipt.message)
+                preview: keepActivity ? previous!.preview : receipt.message,
+                queued: queued || (!isNew && previous?.queued == true))
         }
     }
 
@@ -359,8 +506,19 @@ struct WorkshopLocalSessions {
         receipts = receipts.filter { $0.value.receipt.agentId != agentId || $0.value.receipt.threadId != threadId }
     }
 
+    mutating func settle(threadId: String, operationId: String?, agentId: String) {
+        receipts = receipts.filter { _, value in
+            value.receipt.agentId != agentId || value.receipt.threadId != threadId || value.receipt.id != operationId
+        }
+    }
+
     private func acknowledges(_ session: WorkshopSession, activity: Activity) -> Bool {
-        session.operationId == activity.receipt.id && session.updatedAt >= Int64(activity.date.timeIntervalSince1970)
+        guard session.operationId == activity.receipt.id else { return false }
+        // An operation ID identifies the original send across both clocks.
+        // A queued follow-up shares its parent's ID, so it still needs evidence
+        // of newer activity before that parent's completion can acknowledge it.
+        if !activity.queued && ["completed", "failed", "interrupted", "cancelled"].contains(session.state) { return true }
+        return session.updatedAt >= Int64(activity.date.timeIntervalSince1970)
             && (activity.receipt.state == "pending" || !session.inProgress)
     }
 
@@ -404,6 +562,40 @@ struct WorkshopModel: Decodable, Identifiable {
     let isDefault: Bool
     let supportsImages: Bool
     let serviceTiers: [WorkshopSpeed]
+    let reasoningEfforts: [WorkshopReasoningEffort]
+    let defaultReasoningEffort: String
+}
+
+struct WorkshopReasoningEffort: Decodable, Identifiable {
+    let id: String
+    let description: String
+    var title: String {
+        switch id {
+        case "none": "无"
+        case "minimal": "最低"
+        case "low": "低"
+        case "medium": "中"
+        case "high": "高"
+        case "xhigh": "超高"
+        case "max": "最高"
+        case "ultra": "极高"
+        default: id
+        }
+    }
+
+    var detail: String {
+        switch id {
+        case "none": "不使用额外推理。"
+        case "minimal": "使用最低推理强度，优先快速响应。"
+        case "low": "使用较低推理强度，适合简单任务。"
+        case "medium": "兼顾推理深度与响应速度。"
+        case "high": "投入更多推理，适合复杂任务。"
+        case "xhigh": "使用超高推理强度，可能需要更长时间。"
+        case "max": "使用最高推理强度，可能需要更长时间。"
+        case "ultra": "使用极高推理强度，可能需要更长时间。"
+        default: description
+        }
+    }
 }
 
 struct WorkshopSpeed: Decodable, Identifiable {
@@ -429,7 +621,7 @@ struct WorkshopImageCaption {
     }
 }
 
-enum WorkshopPermission: String, Codable, CaseIterable, Identifiable {
+enum WorkshopPermission: String, Codable, CaseIterable, Identifiable, Sendable {
     case ask, auto, full, custom
     var id: String { rawValue }
     var title: String {
@@ -450,8 +642,9 @@ enum WorkshopPermission: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct WorkshopChoice: Codable, Equatable {
+struct WorkshopChoice: Codable, Equatable, Sendable {
     var model: String? = nil
     var permission: WorkshopPermission = .auto
     var serviceTier: String? = nil
+    var reasoningEffort: String? = nil
 }

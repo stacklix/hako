@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     {
         this.runtime = runtime;
         InitializeComponent();
+        UpdateVersionNotice();
         monitor = new MonitorView(runtime.Metrics);
         settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync, AgentStartup.ForCurrentProcess(runtime.Store.DirectoryPath),
             port => runtime.UpdateConfigurationAsync(null, null, connect: false, directPort: port));
@@ -46,6 +47,7 @@ public partial class MainWindow : Window
                 var saved = runtime.Store.Load();
                 settings.Load(saved);
                 ConnectionStatus.Text = runtime.Connection.Status.Message;
+                UpdateVersionNotice();
             }
             catch (Exception e) { ConnectionStatus.Text = "配置读取失败：" + e.Message; Page.Content = settings; }
         };
@@ -58,7 +60,17 @@ public partial class MainWindow : Window
         ConnectionStatus.Text = "设备密钥已保存，请登记服务端公钥后重新连接。";
     }
     private Task ClearAsync() => runtime.ClearAsync();
-    private void StatusChanged(string text) => Dispatcher.InvokeAsync(() => ConnectionStatus.Text = text);
+    private void StatusChanged(string text) => Dispatcher.InvokeAsync(() =>
+    {
+        ConnectionStatus.Text = text;
+        UpdateVersionNotice();
+    });
+    private void UpdateVersionNotice()
+    {
+        var warning = runtime.Connection.CompatibilityWarning;
+        VersionNotice.Visibility = warning is null ? Visibility.Collapsed : Visibility.Visible;
+        VersionNoticeText.Text = warning is null ? "" : warning + "\n\n每 30 秒检查一次，版本兼容后自动连接。";
+    }
     private void MetricsReceived(Metrics result) => Dispatcher.InvokeAsync(() => monitor.Display(result));
     private void SettingsChanged(AgentSettings value, bool reloadForm) { if (reloadForm) Dispatcher.InvokeAsync(() => settings.Load(value)); }
     public void ShowWindow() { Show(); WindowState = WindowState.Normal; Activate(); }

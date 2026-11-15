@@ -42,6 +42,8 @@ enum HakoLogSource { case codeWorkshop }
         let transport = WorkshopTestSocket()
         var opens = 0
         let client = WorkshopRequestSocket(context: { "workshop-account" }, open: { opens += 1; return (transport, welcome) })
+        var disconnects = 0
+        client.onDisconnect = { disconnects += 1 }
         let first = Task { try await client.send("history.read", computerID: "PC", params: ["threadId": "thread"]) }
         while transport.sent.count < 1 { await Task.yield() }
         let second = Task { try await client.send("models.list", computerID: "PC") }
@@ -60,6 +62,18 @@ enum HakoLogSource { case codeWorkshop }
         precondition(firstReply == ["answer": 1] && secondReply == ["answer": 2])
         client.close()
         precondition(!transport.workshopUsable)
+        precondition(disconnects == 0, "Leaving or retiring an idle socket must not claim the computer is offline")
+        let broken = WorkshopTestSocket()
+        let brokenClient = WorkshopRequestSocket(context: { "workshop-account" }, open: { (broken, welcome) })
+        brokenClient.onDisconnect = { disconnects += 1 }
+        let request = Task { try await brokenClient.send("history.read", computerID: "PC") }
+        while broken.sent.isEmpty { await Task.yield() }
+        while broken.receiver == nil { await Task.yield() }
+        let receiver = broken.receiver; broken.receiver = nil
+        receiver?.resume(throwing: URLError(.networkConnectionLost))
+        do { _ = try await request.value; preconditionFailure("Broken transport unexpectedly replied") }
+        catch { }
+        precondition(disconnects == 1, "A reader failure must immediately update connection presentation")
         print("PASS: Workshop-only handshake, independent call schema, multiplexing and out-of-order reply identity")
     }
 }

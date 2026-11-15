@@ -2,13 +2,71 @@ import SwiftUI
 import UIKit
 import Photos
 
-struct WorkshopMessageView: View {
+struct WorkshopDiffView: View {
     let text: String
+
+    var body: some View {
+        highlighted.font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            .textRenderer(WorkshopDiffRenderer())
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var highlighted: Text {
+        WorkshopDiff.lines(text).reduce(Text("")) { result, line in
+            let fragment = Text(verbatim: line.text)
+                .foregroundColor(line.kind == .metadata ? HakoStyle.muted : HakoStyle.text)
+                .customAttribute(WorkshopDiffAttribute(kind: line.kind))
+            return Text("\(result)\(fragment)")
+        }
+    }
+}
+
+private struct WorkshopDiffAttribute: TextAttribute {
+    let kind: WorkshopDiff.Kind
+}
+
+private struct WorkshopDiffRenderer: TextRenderer {
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            var backgrounds: [(kind: WorkshopDiff.Kind, rect: CGRect)] = []
+            for run in line {
+                guard let diff = run[WorkshopDiffAttribute.self], fill(for: diff.kind) != nil else { continue }
+                let rect = run.typographicBounds.rect
+                if let last = backgrounds.indices.last, backgrounds[last].kind == diff.kind {
+                    backgrounds[last].rect = backgrounds[last].rect.union(rect)
+                } else {
+                    backgrounds.append((diff.kind, rect))
+                }
+            }
+            for background in backgrounds {
+                if let color = fill(for: background.kind) {
+                    context.fill(Path(background.rect), with: .color(color))
+                }
+            }
+            context.draw(line)
+        }
+    }
+
+    private func fill(for kind: WorkshopDiff.Kind) -> Color? {
+        switch kind {
+        case .addition: HakoStyle.adaptive(0xe3f4e8, 0x193b28)
+        case .removal: HakoStyle.adaptive(0xfbe5e7, 0x48272b)
+        case .hunk: HakoStyle.adaptive(0xebf2ff, 0x20344f)
+        case .metadata, .context: nil
+        }
+    }
+}
+
+struct WorkshopMessageView: View, Equatable {
+    let text: String
+    let parts: [WorkshopMessagePart]
     let store: WorkshopStore
+
+    static func == (left: Self, right: Self) -> Bool { left.text == right.text && left.parts == right.parts && left.store === right.store }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(WorkshopMessage.parts(text).enumerated()), id: \.offset) { _, part in
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 switch part {
                 case .text(let prose):
                     WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines))
@@ -16,11 +74,93 @@ struct WorkshopMessageView: View {
                     WorkshopCodeSnippet(code: code, language: language)
                 case .image(let alt, let url):
                     WorkshopRemoteImage(alt: alt, url: url, store: store)
+                case .table(let table):
+                    WorkshopTableView(table: table)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(WorkshopMessageCopy(text: text))
+    }
+}
+
+private struct WorkshopTableView: View {
+    let table: WorkshopMarkdownTable
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            compactTable.fixedSize(horizontal: true, vertical: true)
+            records
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var compactTable: some View {
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            compactRow(table.headers, header: true)
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, cells in
+                compactRow(cells, header: false)
+            }
+        }
+    }
+
+    private func compactRow(_ cells: [String], header: Bool) -> some View {
+        GridRow(alignment: .top) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
+                WorkshopInlineProse(source: cell.isEmpty ? "—" : cell)
+                    .fontWeight(header ? .medium : .regular)
+                    .foregroundStyle(header ? HakoStyle.muted : HakoStyle.text)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(.horizontal, 10).padding(.vertical, header ? 6 : 8)
+                    .frame(minWidth: 64, alignment: alignment(table.alignments[index]))
+                    .gridColumnAlignment(horizontalAlignment(table.alignments[index]))
+                    .overlay(alignment: .bottom) { Rectangle().fill(HakoStyle.line).frame(height: 0.5) }
+            }
+        }
+    }
+
+    private var records: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if table.rows.isEmpty {
+                ForEach(Array(table.headers.enumerated()), id: \.offset) { _, header in
+                    WorkshopInlineProse(source: header).fontWeight(.medium)
+                }
+            }
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { rowIndex, cells in
+                if rowIndex > 0 { Divider().padding(.vertical, 12) }
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(table.headers.enumerated()), id: \.offset) { column, header in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(header).font(.caption).foregroundStyle(HakoStyle.muted)
+                            WorkshopInlineProse(source: cells[column].isEmpty ? "—" : cells[column])
+                                .fontWeight(column == 0 ? .medium : .regular)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func alignment(_ value: WorkshopMarkdownTable.Alignment) -> Alignment {
+        switch value {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private func horizontalAlignment(_ value: WorkshopMarkdownTable.Alignment) -> HorizontalAlignment {
+        switch value {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
     }
 }
 
@@ -46,25 +186,34 @@ private struct WorkshopMessageCopy: ViewModifier {
 
 private struct WorkshopInlineProse: View {
     let source: String
+    @State private var rendered: (text: Text, copies: [URL: String])?
 
     var body: some View {
-        let rendered = render()
-        rendered.text
+        let current = rendered ?? (text: Text(verbatim: source), copies: [:])
+        current.text
             .font(.subheadline).lineSpacing(5).textSelection(.enabled)
             .textRenderer(WorkshopInlineCodeRenderer())
-            .accessibilityHint(rendered.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
+            .accessibilityHint(current.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
             .environment(\.openURL, OpenURLAction { url in
-                guard let code = rendered.copies[url] else { return .systemAction }
+                guard let code = current.copies[url] else { return .systemAction }
                 UIPasteboard.general.string = code
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 UIAccessibility.post(notification: .announcement, argument: "已复制")
                 return .handled
             })
+            .task(id: source) {
+                let source = source
+                let parsed = await Task.detached(priority: .userInitiated) {
+                    (try? AttributedString(markdown: source,
+                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+                }.value
+                guard !Task.isCancelled else { return }
+                rendered = render(parsed)
+            }
     }
 
-    private func render() -> (text: Text, copies: [URL: String]) {
-        var text = (try? AttributedString(markdown: source,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+    private func render(_ parsed: AttributedString) -> (text: Text, copies: [URL: String]) {
+        var text = parsed
         var copies: [URL: String] = [:]
         // Keep one Text layout so code wraps naturally with the surrounding prose.
         let spans = text.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }

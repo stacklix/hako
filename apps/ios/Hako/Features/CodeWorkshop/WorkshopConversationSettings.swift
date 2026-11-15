@@ -2,12 +2,14 @@ import SwiftUI
 
 struct WorkshopConversationSettings: View {
     @ObservedObject var conversation: WorkshopConversation
+    @ObservedObject private var store: WorkshopStore
     @Environment(\.dismiss) private var dismiss
     @State private var selection: WorkshopChoice
     @State private var error: String?
 
     init(conversation: WorkshopConversation) {
         self.conversation = conversation
+        self.store = conversation.store
         _selection = State(initialValue: conversation.choice)
     }
 
@@ -42,15 +44,43 @@ struct WorkshopConversationSettings: View {
                         ForEach(speeds) { speed in Text(speed.name).tag(speed.id) }
                     }
                     .pickerStyle(.menu).workshopSettingsRow()
-                    .disabled(conversation.loadingModels || model == nil)
+                    .disabled(model == nil && selection.serviceTier == nil)
+                    Picker("推理强度", selection: $selection.reasoningEffort) {
+                        Text("跟随会话设置").tag(Optional<String>.none)
+                        ForEach(model?.reasoningEfforts ?? []) { effort in
+                            Text(effort.title).tag(Optional(effort.id))
+                        }
+                        if let effort = selection.reasoningEffort, model?.reasoningEfforts.contains(where: { $0.id == effort }) != true {
+                            Text(effort).tag(Optional(effort))
+                        }
+                    }
+                    .pickerStyle(.menu).workshopSettingsRow()
+                    .disabled(model?.reasoningEfforts.isEmpty != false && selection.reasoningEffort == nil)
                 } header: { Text("生成设置") } footer: {
-                    Text(speeds.first { $0.id == (selection.serviceTier ?? "default") }?.description ?? "此模型当前未提供所选速度。")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(speeds.first { $0.id == (selection.serviceTier ?? "default") }?.description ?? "此模型当前未提供所选速度。")
+                        Text(model?.reasoningEfforts.first { $0.id == selection.reasoningEffort }?.detail
+                            ?? "跟随会话已有设置，新会话使用执行电脑的默认设置。")
+                    }
                 }.disabled(!conversation.canConfigure)
-                if conversation.loadingModels { ProgressView("正在读取模型…") }
-                if let message = conversation.modelError {
-                    Section {
+                Section {
+                    if conversation.loadingModels { ProgressView("正在读取模型…") }
+                    if let message = conversation.modelError {
                         Text(message).font(.footnote).foregroundStyle(.red)
-                        Button("重新读取模型") { Task { await conversation.loadModels() } }
+                    } else if conversation.models.isEmpty && !conversation.loadingModels {
+                        Text("尚未读取到可用模型，请确认执行电脑已连接后重试。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Button(conversation.modelError == nil ? "刷新模型列表" : "重新读取模型") {
+                        Task { await conversation.loadModels() }
+                    }.disabled(conversation.loadingModels || !conversation.canConfigure)
+                } footer: {
+                    if let reason = conversation.configurationUnavailableReason {
+                        Text(reason)
+                    } else if model == nil {
+                        Text("读取到所选模型后可选择速度和推理强度。")
+                    } else if model?.reasoningEfforts.isEmpty == true {
+                        Text("当前模型未提供推理强度选项。")
                     }
                 }
                 Section {
@@ -70,9 +100,12 @@ struct WorkshopConversationSettings: View {
                 Section { Text("设置在下一轮任务开始时生效，当前正在执行的任务不受影响。").font(.footnote).foregroundStyle(.secondary) }
                 if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
             }
-            .task { await conversation.loadModels() }
+            .task(id: store.scope) {
+                if conversation.models.isEmpty && conversation.canConfigure { await conversation.loadModels() }
+            }
             .onChange(of: selection.model) { _, _ in
                 if let tier = selection.serviceTier, !speeds.contains(where: { $0.id == tier }) { selection.serviceTier = nil }
+                if let effort = selection.reasoningEffort, model?.reasoningEfforts.contains(where: { $0.id == effort }) != true { selection.reasoningEffort = nil }
             }
         }
     }

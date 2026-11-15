@@ -18,8 +18,8 @@ struct WorkshopTranscript: Codable, Equatable, Sendable {
     var savedAt: Date
 
     func hasSameContent(as other: Self) -> Bool {
-        key == other.key && entries == other.entries && artifacts == other.artifacts && followups == other.followups &&
-            historyCursor == other.historyCursor && operationId == other.operationId && eventCursor == other.eventCursor && streamText == other.streamText
+        eventCursor == other.eventCursor && operationId == other.operationId && historyCursor == other.historyCursor &&
+            key == other.key && entries == other.entries && artifacts == other.artifacts && followups == other.followups && streamText == other.streamText
     }
 
     func encodedForCache(maxEntries: Int = 300, maxBytes: Int = 2 * 1024 * 1024) throws -> Data? {
@@ -89,29 +89,6 @@ struct WorkshopConversationReuseKey: Hashable {
     let archived: Bool
 }
 
-struct WorkshopScrollFollowing {
-    private(set) var followsBottom = true
-    private var manualScroll = false
-    private var nearBottom = true
-
-    var shouldFollowUpdates: Bool { followsBottom && !manualScroll }
-
-    mutating func observe(nearBottom: Bool) {
-        self.nearBottom = nearBottom
-        // Content can grow before its scroll anchor is applied. Only a user's
-        // scroll away from the bottom should turn off response following.
-        if manualScroll || nearBottom { followsBottom = nearBottom }
-    }
-
-    mutating func interacting(_ active: Bool) {
-        if active { manualScroll = true }
-        else if manualScroll {
-            followsBottom = nearBottom
-            manualScroll = false
-        }
-    }
-}
-
 struct WorkshopTranscriptPresentation {
     let history: [WorkshopEntry]
     let queued: [WorkshopEntry]
@@ -143,6 +120,7 @@ struct WorkshopTranscriptPresentation {
 
 enum WorkshopArtifactPlacement {
     static func group(_ artifacts: [WorkshopArtifact], entries: [WorkshopEntry], projectPath: String) -> [String: [WorkshopArtifact]] {
+        guard !artifacts.isEmpty else { return [:] }
         let project = normalize(projectPath).trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/"
         let candidates = entries.filter { $0.role == "assistant" || $0.kind == "fileChange" }
             .map { (entry: $0, text: normalize($0.text)) }
@@ -171,6 +149,24 @@ enum WorkshopArtifactPlacement {
 }
 
 enum WorkshopTranscriptMerge {
+    // Preserve item/status boundaries, but concatenate adjacent fragments before
+    // searching and replacing the corresponding transcript row.
+    static func apply(_ events: [WorkshopEntry], entries: inout [WorkshopEntry], streamText: inout [String: String]) {
+        var pending: WorkshopEntry?
+        for event in events {
+            if var delta = pending, delta.kind == "delta", event.kind == "delta", delta.id == event.id,
+               delta.role == event.role, delta.state == event.state, delta.truncated == event.truncated,
+               event.replacesId == nil {
+                delta.text += event.text
+                pending = delta
+            } else {
+                if let pending { apply(pending, entries: &entries, streamText: &streamText) }
+                pending = event
+            }
+        }
+        if let pending { apply(pending, entries: &entries, streamText: &streamText) }
+    }
+
     static func withoutRecoveredNotices(_ entries: [WorkshopEntry], operationId: String,
                                         state: String, followups: [WorkshopFollowupState]) -> [WorkshopEntry] {
         let known: Set<String> = ["completed", "interrupted", "failed"]
@@ -225,28 +221,32 @@ enum WorkshopTranscriptMerge {
             entries.removeAll { $0.id == event.id }; streamText[event.id] = nil; return
         }
         var entry = event
+        let index = entries.last?.id == event.id ? entries.indices.last : entries.firstIndex { $0.id == event.id }
         if event.kind == "delta" {
             let text = (streamText[event.id] ?? "") + event.text
             streamText[event.id] = text
-            if let old = entries.first(where: { $0.id == event.id }), old.text.count > text.count && old.text.hasPrefix(text) {
+            if let index, entries[index].text.utf8.count > text.utf8.count && entries[index].text.hasPrefix(text) {
                 return // A fresh operation replay is catching up with canonical/cached history.
             }
             entry = WorkshopEntry(kind: "item", id: event.id, text: text, role: event.role, state: event.state, truncated: event.truncated)
         } else if event.role == "assistant" {
             streamText[event.id] = event.text
-            if event.text.isEmpty, entries.contains(where: { $0.id == event.id && !$0.text.isEmpty }) { return }
+            if event.text.isEmpty, let index, !entries[index].text.isEmpty { return }
         }
-        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+        if let index {
             if WorkshopTranscriptPresentation.isQueued(entries[index]), !WorkshopTranscriptPresentation.isQueued(entry) {
                 entries.remove(at: index)
                 entries = queueAtEnd(entries)
                 let tail = entries.firstIndex(where: { WorkshopTranscriptPresentation.isQueued($0) }) ?? entries.endIndex
                 entries.insert(entry, at: tail)
             } else { entries[index] = entry }
+        } else if !WorkshopTranscriptPresentation.isQueued(entry),
+                  let tail = entries.firstIndex(where: { WorkshopTranscriptPresentation.isQueued($0) }) {
+            entries.insert(entry, at: tail)
         } else {
             entries.append(entry)
         }
-        if entry.kind == "followup" || entries.last?.id == entry.id { entries = queueAtEnd(entries) }
+        if entry.kind == "followup" { entries = queueAtEnd(entries) }
     }
 
     private static func queueAtEnd(_ entries: [WorkshopEntry]) -> [WorkshopEntry] {
@@ -255,40 +255,96 @@ enum WorkshopTranscriptMerge {
     }
 }
 
-// Cache I/O is serialized off the UI thread. Reads wait for earlier writes to finish.
+// Only the newest waiting snapshot for each file is retained. Reading never
+// blocks the caller; pending snapshots also provide read-your-writes semantics.
 final class WorkshopTranscriptDisk: @unchecked Sendable {
+    private struct Pending { let url: URL; let snapshot: WorkshopTranscript; let order: Int }
     private let queue = DispatchQueue(label: "me.stackli.hako.workshop.transcripts", qos: .utility)
+    private let lock = NSLock()
+    private var pending: [URL: Pending] = [:]
+    private var writing: [URL: WorkshopTranscript] = [:]
+    private var scheduled = false
+    private var generation = 0
+    private var order = 0
+    private let delay: TimeInterval
+    private let writeFile: @Sendable (WorkshopTranscript, URL) throws -> Void
     private let maxFiles = 50
     private let maxBytes = 64 * 1024 * 1024
 
-    func read(_ url: URL, key: WorkshopTranscriptKey) -> WorkshopTranscript? {
-        queue.sync {
-            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 2 * 1024 * 1024,
-                  let data = try? Data(contentsOf: url), let snapshot = try? JSONDecoder().decode(WorkshopTranscript.self, from: data),
-                  snapshot.key == key, snapshot.eventCursor >= 0 else { return nil }
-            return snapshot
+    init(delay: TimeInterval = 0.25,
+         writeFile: @escaping @Sendable (WorkshopTranscript, URL) throws -> Void = { try WorkshopTranscriptDisk.save($0, to: $1) }) {
+        self.delay = delay
+        self.writeFile = writeFile
+    }
+
+    private func latest(_ url: URL) -> WorkshopTranscript? {
+        lock.lock(); defer { lock.unlock() }
+        return pending[url]?.snapshot ?? writing[url]
+    }
+
+    func read(_ url: URL, key: WorkshopTranscriptKey) async -> WorkshopTranscript? {
+        if let snapshot = latest(url) { return snapshot.key == key && snapshot.eventCursor >= 0 ? snapshot : nil }
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                let snapshot = self.latest(url) ?? Self.load(url)
+                continuation.resume(returning: snapshot.flatMap { $0.key == key && $0.eventCursor >= 0 ? $0 : nil })
+            }
         }
     }
 
     func write(_ snapshot: WorkshopTranscript, to url: URL) {
-        queue.async { [self] in
-            guard let bytes = try? snapshot.encodedForCache() else { return }
-            do {
-                let directory = url.deletingLastPathComponent()
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                #if os(iOS)
-                try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-                #else
-                try bytes.write(to: url, options: .atomic)
-                #endif
-                #if os(iOS) || os(macOS)
-                var directoryURL = directory
-                var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-                try directoryURL.setResourceValues(flags)
-                #endif
-                prune(directory, keeping: url)
-            } catch { /* An optional cache must not interrupt message delivery. */ }
+        lock.lock()
+        order += 1
+        pending[url] = Pending(url: url, snapshot: snapshot, order: order)
+        guard !scheduled else { lock.unlock(); return }
+        scheduled = true
+        let expected = generation
+        lock.unlock()
+        queue.asyncAfter(deadline: .now() + delay) { self.drain(expected: expected) }
+    }
+
+    func flush() async {
+        await withCheckedContinuation { continuation in
+            queue.async { self.drain(); continuation.resume() }
         }
+    }
+
+    private func drain(expected: Int? = nil) {
+        lock.lock()
+        guard expected == nil || expected == generation else { lock.unlock(); return }
+        generation += 1
+        let batch = pending.values.sorted { $0.order < $1.order }
+        pending.removeAll(); writing = Dictionary(uniqueKeysWithValues: batch.map { ($0.url, $0.snapshot) }); scheduled = false
+        lock.unlock()
+        var directories: [URL: URL] = [:]
+        for value in batch {
+            do { try writeFile(value.snapshot, value.url); directories[value.url.deletingLastPathComponent()] = value.url }
+            catch { /* This optional cache must not interrupt message delivery. */ }
+        }
+        for (directory, current) in directories { prune(directory, keeping: current) }
+        lock.lock(); writing.removeAll(); lock.unlock()
+    }
+
+    private static func load(_ url: URL) -> WorkshopTranscript? {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 2 * 1024 * 1024,
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(WorkshopTranscript.self, from: data)
+    }
+
+    private static func save(_ snapshot: WorkshopTranscript, to url: URL) throws {
+        guard let bytes = try snapshot.encodedForCache() else { return }
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        try bytes.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try bytes.write(to: url, options: .atomic)
+        #endif
+        #if os(iOS) || os(macOS)
+        var directoryURL = directory
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        try directoryURL.setResourceValues(flags)
+        #endif
     }
 
     private func prune(_ directory: URL, keeping current: URL) {

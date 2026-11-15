@@ -39,13 +39,32 @@ internal static class WorkshopCloudChecks
         var settings=new AgentSettings(origin,"owner",key.ExportPkcs8PrivateKeyPem());
         File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob{Id=operation,State="completed",ApplicationId="fixture",Cwd=Path.Combine(directory,"fixture"),SessionName="Cloud session",ReplySummary="Last round reply",NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},WorkshopProtocol.Json));
         using var listener=new HttpListener();listener.Prefixes.Add(origin+"/");listener.Start();
-        using var lifetime=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var lifetime=new CancellationTokenSource(TimeSpan.FromSeconds(50));
         try
         {
             await using var dispatcher=new WorkshopDispatcher(directory);
             string? identity=null;
             await using var connection=new WorkshopConnection(dispatcher,id=>identity=id);
             await connection.StartAsync(settings);
+            var version=await listener.GetContextAsync().WaitAsync(lifetime.Token);
+            if (version.Request.Url?.AbsolutePath!="/api/v1/version") throw new Exception("Workshop skipped the server compatibility check");
+            var agentVersion=typeof(AgentConnection).Assembly.GetName().Version!.ToString(3);
+            var versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.3.1",minimumAgentVersion=agentVersion});
+            version.Response.ContentType="application/json";
+            version.Response.ContentLength64=versionBody.Length;
+            await version.Response.OutputStream.WriteAsync(versionBody,lifetime.Token);
+            version.Response.Close();
+            while (connection.State!="version_mismatch") await Task.Delay(10,lifetime.Token);
+            var pendingVersion=listener.GetContextAsync();
+            await Task.Delay(100,lifetime.Token);
+            if (pendingVersion.IsCompleted || identity is not null) throw new Exception("Workshop connected before the server was upgraded");
+            version=await pendingVersion.WaitAsync(lifetime.Token);
+            if (version.Request.Url?.AbsolutePath!="/api/v1/version") throw new Exception("Workshop did not poll the version endpoint while waiting");
+            versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.4.0",minimumAgentVersion=agentVersion});
+            version.Response.ContentType="application/json";
+            version.Response.ContentLength64=versionBody.Length;
+            await version.Response.OutputStream.WriteAsync(versionBody,lifetime.Token);
+            version.Response.Close();
             var context=await listener.GetContextAsync().WaitAsync(lifetime.Token);
             if (context.Request.Url?.AbsolutePath!="/ws/workshop/agent") throw new Exception("Workshop used the device endpoint");
             var accepted=await context.AcceptWebSocketAsync(null);using var socket=accepted.WebSocket;

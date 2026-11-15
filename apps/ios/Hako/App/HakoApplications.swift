@@ -71,7 +71,22 @@ enum HakoApplications {
             default: break
             }
         }
+
+        @MainActor fileprivate func registerNotifications(in registry: ApplicationNotificationRegistry<WorkshopPushNotice, AnyView>) {
+            switch self {
+            case .codeWorkshop: WorkshopNotificationContributor.registerNotifications(in: registry)
+            default: break
+            }
+        }
     }
+
+    @MainActor static let notifications: ApplicationNotificationRegistry<WorkshopPushNotice, AnyView> = {
+        let registry = ApplicationNotificationRegistry<WorkshopPushNotice, AnyView>()
+        for application in Category.allCases.flatMap(\.applications) {
+            application.registerNotifications(in: registry)
+        }
+        return registry
+    }()
 
     @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
         for application in Category.allCases.flatMap(\.applications) {

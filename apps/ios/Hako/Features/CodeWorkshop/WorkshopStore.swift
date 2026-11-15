@@ -27,14 +27,23 @@ import CryptoKit
     @Published private var readState = WorkshopReadState()
     @Published private var localSessions = WorkshopLocalSessions()
     @Published private var draftRevision = 0
+    @Published private(set) var systemPrompt = WorkshopSystemPrompt.defaultText
+    @Published private(set) var systemPromptLoadError: String?
+    @Published private(set) var connections: [String: WorkshopConnectionState] = [:]
     private var cursor: String?
     private var catalogRevision = UUID()
+    private var sessionUpdates = WorkshopSessionUpdates()
     private let transcriptDisk = WorkshopTranscriptDisk()
+    private let stateDisk = WorkshopPersistence()
+    private var queuedSends: [WorkshopQueuedSend] = []
+    private let draftWriter = WorkshopDraftWriter()
+    private var draftCache: [URL: WorkshopComposerDraft] = [:]
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
         socket = WorkshopRequestSocket(authentication: authentication, logSource: .codeWorkshop)
+        socket.onDisconnect = { [weak self] in self?.connections.removeAll() }
         subscription = authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.prepareContext() }
         }
@@ -53,6 +62,7 @@ import CryptoKit
         socket.close()
         directSocket?.close(); directSocket = nil
         transportRevision = UUID()
+        connections.removeAll()
         catalogRevision = UUID()
         loading = false
         localEndpoint = endpoint
@@ -60,6 +70,7 @@ import CryptoKit
             directSocket = WorkshopRequestSocket(context: { "local:" + endpoint.address }, open: {
                 try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1")
             })
+            directSocket?.onDisconnect = { [weak self] in self?.connections.removeAll() }
         }
         prepareContext()
         routeChanges.send()
@@ -105,6 +116,27 @@ import CryptoKit
 
     private var readStateFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("read.json") }
 
+    var settingsAccount: String {
+        WorkshopCacheIdentity.account(serverURL: authentication.serverURL, username: authentication.username)
+    }
+    private var systemPromptFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("instructions.txt") }
+
+    func saveSystemPrompt(_ text: String) throws {
+        guard context == scope else { throw CancellationError() }
+        guard WorkshopSystemPrompt.valid(text) else { throw HakoError(message: "系统提示词最多 4,000 个字符，且不能包含空字符。") }
+        var file = systemPromptFile
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if os(iOS)
+        try Data(text.utf8).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
+        try Data(text.utf8).write(to: file, options: .atomic)
+        #endif
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        try file.setResourceValues(flags)
+        systemPrompt = text
+        systemPromptLoadError = nil
+    }
+
     func isUnread(_ session: WorkshopSession, at date: Date) -> Bool {
         readState.isUnread(session, agentId: selectedAgentID, now: date)
     }
@@ -113,19 +145,49 @@ import CryptoKit
         guard context == scope else { return }
         var updated = readState
         guard updated.markRead(threadId: threadId, completionId: completionId, agentId: agentId) else { return }
-        do {
-            try FileManager.default.createDirectory(at: readStateFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(updated)
-            #if os(iOS)
-            try data.write(to: readStateFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            #else
-            try data.write(to: readStateFile, options: .atomic)
-            #endif
-            var file = readStateFile
-            var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-            try file.setResourceValues(flags)
-            readState = updated
-        } catch { self.error = "无法保存会话已读状态。" }
+        readState = updated
+        scheduleState(updated, to: readStateFile)
+    }
+
+    func observeSession(threadId: String, operationId: String?, state: String, completionId: String?,
+                        agent: WorkshopAgent, scope ticket: String) {
+        guard context == ticket, scope == ticket else { return }
+        let selected = selectedAgentID == agent.id
+        let catalogs = cachedCatalogs.filter { $0.key == agent.id || $0.key == agent.id + ":archived" }
+        let candidates = selected ? localSessions.merging(sessions, agentId: agent.id, applications: applications, archived: showingArchived) : []
+        guard let previous = candidates.first(where: { $0.id == threadId }) ?? catalogs.values
+            .flatMap({ $0.catalog.sessions }).first(where: { $0.id == threadId }),
+              previous.operationId == operationId || previous.operationId == nil else { return }
+        let updated = WorkshopSession(id: previous.id, title: previous.title, applicationId: previous.applicationId,
+            cwd: previous.cwd, preview: previous.preview, updatedAt: previous.updatedAt, state: state,
+            operationId: operationId, completionId: state == "completed" ? completionId : nil)
+        let terminal = ["completed", "failed", "interrupted", "cancelled", "unknown", "paused"].contains(state)
+        if terminal {
+            // Also settle the durable receipt, so reopening the app cannot
+            // restore a pending overlay for an operation already verified done.
+            var changed = false
+            for index in preferences.receipts.indices where preferences.receipts[index].agentId == agent.id && preferences.receipts[index].id == operationId {
+                if preferences.receipts[index].state != state {
+                    preferences.receipts[index].state = state; changed = true
+                }
+            }
+            if changed { try? persist(background: true) }
+            localSessions.settle(threadId: threadId, operationId: operationId, agentId: agent.id)
+        }
+        let previousRaw = selected ? sessions.first(where: { $0.id == threadId }) : catalogs.values
+            .flatMap({ $0.catalog.sessions }).first(where: { $0.id == threadId })
+        guard previousRaw != updated else { return }
+        sessionUpdates.record(updated, agentId: agent.id)
+        if selected {
+            if let index = sessions.firstIndex(where: { $0.id == threadId }) { sessions[index] = updated }
+            else { sessions.append(updated); sessions = WorkshopCatalog.ordered(sessions) }
+        }
+        for (key, cached) in catalogs {
+            let values = cached.catalog.sessions.map { $0.id == threadId ? updated : $0 }
+            cachedCatalogs[key] = WorkshopCachedCatalog(catalog: WorkshopCatalog(applications: cached.catalog.applications,
+                sessions: values, nextCursor: cached.catalog.nextCursor), savedAt: cached.savedAt)
+        }
+        try? saveLists(background: true)
     }
 
     private func transcriptFile(_ key: WorkshopTranscriptKey) -> URL {
@@ -137,9 +199,11 @@ import CryptoKit
             .appendingPathComponent(hash + ".json")
     }
 
-    func cachedTranscript(_ key: WorkshopTranscriptKey) -> WorkshopTranscript? {
+    func cachedTranscript(_ key: WorkshopTranscriptKey) async -> WorkshopTranscript? {
         guard context == scope else { return nil }
-        return transcriptDisk.read(transcriptFile(key), key: key)
+        let ticket = scope
+        let snapshot = await transcriptDisk.read(transcriptFile(key), key: key)
+        return ticket == scope ? snapshot : nil
     }
 
     func saveTranscript(_ snapshot: WorkshopTranscript, scope ticket: String) {
@@ -154,7 +218,11 @@ import CryptoKit
 
     func composerDraft(agent: WorkshopAgent, application: WorkshopApplication, sessionId: String) throws -> WorkshopComposerDraft? {
         guard context == scope else { throw CancellationError() }
-        return try WorkshopDraftDisk.read(draftFile(agent: agent, application: application, sessionId: sessionId))
+        let file = draftFile(agent: agent, application: application, sessionId: sessionId)
+        if let cached = draftCache[file] { return cached.isEmpty ? nil : cached }
+        let saved = try WorkshopDraftDisk.read(file)
+        draftCache[file] = saved ?? WorkshopComposerDraft(input: WorkshopDraftInput(text: "", imageIds: []))
+        return saved
     }
 
     func hasDraft(_ session: WorkshopSession) -> Bool {
@@ -165,14 +233,30 @@ import CryptoKit
     }
 
     func saveComposerDraft(_ draft: WorkshopComposerDraft, agent: WorkshopAgent, application: WorkshopApplication,
-                           sessionId: String, previousSessionId: String, scope ticket: String) throws {
+                           sessionId: String, previousSessionId: String, scope ticket: String,
+                           onFailure: @escaping @MainActor (Error) -> Void) throws {
         guard context == ticket, scope == ticket else { throw CancellationError() }
-        try WorkshopDraftDisk.write(draft, to: draftFile(agent: agent, application: application, sessionId: sessionId))
-        if previousSessionId != sessionId {
-            try WorkshopDraftDisk.write(WorkshopComposerDraft(input: WorkshopDraftInput(text: "", imageIds: [])),
-                to: draftFile(agent: agent, application: application, sessionId: previousSessionId))
+        let file = draftFile(agent: agent, application: application, sessionId: sessionId)
+        let previous = previousSessionId == sessionId ? nil : draftFile(agent: agent, application: application, sessionId: previousSessionId)
+        let markerChanged = (draftCache[file]?.hasUnsentInput ?? false) != draft.hasUnsentInput
+            || previous.map { draftCache[$0]?.hasUnsentInput == true } == true
+        draftCache[file] = draft
+        if let previous { draftCache[previous] = WorkshopComposerDraft(input: WorkshopDraftInput(text: "", imageIds: [])) }
+        draftWriter.write(draft, to: file, removing: previous) { [weak self] result in
+            if case .failure(let error) = result {
+                Task { @MainActor [weak self] in
+                    guard let self, self.scope == ticket else { return }
+                    onFailure(error)
+                }
+            }
         }
-        draftRevision += 1
+        if markerChanged { draftRevision += 1 }
+    }
+
+    func flushComposerDrafts() async {
+        await draftWriter.flush()
+        await stateDisk.flush()
+        await transcriptDisk.flush()
     }
 
     func recordQueuedActivity(_ queued: WorkshopQueuedSend, agent: WorkshopAgent, application: WorkshopApplication,
@@ -180,7 +264,8 @@ import CryptoKit
         guard context == ticket, scope == ticket, let threadId else { return }
         let receipt = WorkshopReceipt(id: queued.operationId, agentId: agent.id, applicationId: application.id,
             originalThreadId: threadId, threadId: threadId, title: title, message: queued.message, createdAt: .now, state: "pending")
-        localSessions.record(receipt, isNew: true)
+        sessionUpdates.remove(threadId: threadId, agentId: agent.id)
+        localSessions.record(receipt, isNew: true, queued: true)
     }
 
     func rejectQueuedActivity(_ queued: WorkshopQueuedSend, agent: WorkshopAgent, scope ticket: String) {
@@ -191,18 +276,29 @@ import CryptoKit
     private func prepareContext() {
         guard context != scope else { return }
         context = scope
+        sessionUpdates = WorkshopSessionUpdates()
+        connections.removeAll()
         socket.resetIfContextChanged()
-        preferences = (try? JSONDecoder().decode(WorkshopPreferences.self, from: Data(contentsOf: cacheFile))) ?? WorkshopPreferences()
+        preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
+        queuedSends = (try? stateDisk.read([WorkshopQueuedSend].self, from: queueFile)) ?? []
         localSessions = WorkshopLocalSessions()
         for receipt in preferences.receipts where receipt.state == "pending" { localSessions.record(receipt, isNew: true) }
-        readState = (try? JSONDecoder().decode(WorkshopReadState.self, from: Data(contentsOf: readStateFile))) ?? WorkshopReadState()
+        readState = (try? stateDisk.read(WorkshopReadState.self, from: readStateFile)) ?? WorkshopReadState()
         selectedAgentID = preferences.agentId
         selectedApplicationID = preferences.applicationId
         agents = []; applications = []; sessions = []; cursor = nil; error = nil; loading = false
         showingArchived = false; archivingSessionID = nil
         cachedCatalogs = [:]; cachedAt = nil
-        if let data = try? Data(contentsOf: listCacheFile),
-           let snapshot = try? JSONDecoder().decode(WorkshopListSnapshot.self, from: data) {
+        systemPrompt = WorkshopSystemPrompt.defaultText
+        systemPromptLoadError = nil
+        if FileManager.default.fileExists(atPath: systemPromptFile.path) {
+            do {
+                let text = try String(contentsOf: systemPromptFile, encoding: .utf8)
+                guard WorkshopSystemPrompt.valid(text) else { throw CocoaError(.coderReadCorrupt) }
+                systemPrompt = text
+            } catch { systemPromptLoadError = "无法读取已保存的系统提示词，请在代码工坊设置中检查后重新保存。" }
+        }
+        if let snapshot = try? stateDisk.read(WorkshopListSnapshot.self, from: listCacheFile) {
             cachedCatalogs = snapshot.catalogs
             // A saved list is available immediately, but cannot establish live connectivity.
             agents = snapshot.agents.map { WorkshopAgent(id: $0.id, name: $0.name, online: false, protocolVersion: $0.protocolVersion) }
@@ -222,37 +318,34 @@ import CryptoKit
         }
     }
 
-    private func saveLists() throws {
+    private func saveLists(background: Bool = false) throws {
         let values = sessions.filter { UUID(uuidString: $0.id) != nil }.prefix(300)
         cachedCatalogs[catalogKey(selectedAgentID, archived: showingArchived)] = WorkshopCachedCatalog(catalog: WorkshopCatalog(
             applications: applications, sessions: Array(values), nextCursor: cursor), savedAt: .now)
         // A direct connection exposes only its own computer. Its inventory is not
         // evidence that cached catalogs for other computers should be deleted.
         let snapshot = WorkshopListSnapshot(agents: agents, catalogs: cachedCatalogs)
-        let data = try JSONEncoder().encode(snapshot)
-        var url = listCacheFile
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        #if os(iOS)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try data.write(to: url, options: .atomic)
-        #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-        try url.setResourceValues(flags)
+        if background { scheduleState(snapshot, to: listCacheFile) }
+        else { try stateDisk.write(snapshot, to: listCacheFile) }
     }
 
-    private func persist() throws {
+    private func persist(background: Bool = false) throws {
         preferences.agentId = selectedAgentID
         preferences.applicationId = selectedApplicationID
-        var url = cacheFile
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        #if os(iOS)
-        try JSONEncoder().encode(preferences).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try JSONEncoder().encode(preferences).write(to: url, options: .atomic)
-        #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-        try url.setResourceValues(flags)
+        if background { scheduleState(preferences, to: cacheFile) }
+        else { try stateDisk.write(preferences, to: cacheFile) }
+    }
+
+    private func scheduleState<Value: Encodable & Sendable>(_ value: Value, to file: URL) {
+        let ticket = scope
+        stateDisk.schedule(value, to: file) { [weak self] result in
+            if case .failure = result {
+                Task { @MainActor [weak self] in
+                    guard let self, self.scope == ticket else { return }
+                    self.error = "无法保存代码工坊状态，请检查设备存储空间。"
+                }
+            }
+        }
     }
 
     func selectApplication(_ id: String) {
@@ -328,6 +421,7 @@ import CryptoKit
         guard authenticated, !loading, archivingSessionID == nil else { return }
         let ticket = scope
         let revision = catalogRevision
+        let sessionCheckpoint = sessionUpdates.revision
         let archived = showingArchived
         loading = true
         defer { if scope == ticket, revision == catalogRevision { loading = false } }
@@ -338,6 +432,7 @@ import CryptoKit
             guard ticket == scope, revision == catalogRevision else { return }
             let previousAgent = selectedAgentID
             agents = values
+            for agent in values where !agent.online { connections[agent.id] = .disconnected }
             if selectedAgent == nil {
                 selectedAgentID = values.first(where: { $0.online && $0.supported })?.id ?? values.first?.id ?? ""
             }
@@ -350,9 +445,9 @@ import CryptoKit
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             // Publish the newest page before slower reconciliation of older pages.
             applications = page.applications
-            sessions = WorkshopCatalog.merge(page.sessions, existing: previousSessions, more: true)
+            sessions = WorkshopCatalog.merge(sessionUpdates.merging(page.sessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: true)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
-            if !archived { localSessions.confirm(page.sessions, agentId: agent.id) }
+            if !archived { confirmSessions(page.sessions, agentId: agent.id) }
             cachedAt = nil
             var freshSessions = page.sessions
             var nextCursor = page.nextCursor
@@ -371,9 +466,9 @@ import CryptoKit
             }
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             applications = page.applications
-            sessions = WorkshopCatalog.merge(freshSessions, existing: previousSessions, more: more)
+            sessions = WorkshopCatalog.merge(sessionUpdates.merging(freshSessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: more)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
-            if !archived { localSessions.confirm(freshSessions, agentId: agent.id) }
+            if !archived { confirmSessions(freshSessions, agentId: agent.id) }
             cursor = nextCursor
             cachedAt = nil
             let newSessions = page.sessions.filter { !preferences.seenSessions.contains($0.id) }
@@ -389,6 +484,18 @@ import CryptoKit
         catch { if ticket == scope, revision == catalogRevision { self.error = error.localizedDescription } }
     }
 
+    private func confirmSessions(_ sessions: [WorkshopSession], agentId: String) {
+        localSessions.confirm(sessions, agentId: agentId)
+        var changed = false
+        for index in preferences.receipts.indices where preferences.receipts[index].agentId == agentId && preferences.receipts[index].state == "pending" {
+            guard let session = sessions.first(where: { $0.operationId == preferences.receipts[index].id }),
+                  ["completed", "failed", "interrupted", "cancelled"].contains(session.state) else { continue }
+            preferences.receipts[index].state = session.state
+            changed = true
+        }
+        if changed { try? persist(background: true) }
+    }
+
     private func promote(_ applicationID: String) {
         preferences.order.removeAll { $0 == applicationID }
         preferences.order.insert(applicationID, at: 0)
@@ -399,8 +506,10 @@ import CryptoKit
         return preferences.receipts.last { $0.agentId == agent.id && ($0.id == session.operationId || $0.threadId == session.id) }
     }
 
-    func saveReceipt(_ receipt: WorkshopReceipt) throws {
+    func saveReceipt(_ receipt: WorkshopReceipt, background: Bool = false) throws {
         guard context == scope else { throw CancellationError() }
+        guard preferences.receipts.first(where: { $0.id == receipt.id }) != receipt else { return }
+        let previous = preferences
         let isNew = !preferences.receipts.contains { $0.id == receipt.id }
         if let index = preferences.receipts.firstIndex(where: { $0.id == receipt.id }) { preferences.receipts[index] = receipt }
         else {
@@ -408,42 +517,41 @@ import CryptoKit
             if preferences.receipts.count > 100 { preferences.receipts.removeFirst() }
             if receipt.originalThreadId == nil { promote(receipt.applicationId) }
         }
-        try persist()
+        do { try persist(background: background) }
+        catch { preferences = previous; throw error }
+        if isNew, let threadId = receipt.threadId {
+            sessionUpdates.remove(threadId: threadId, agentId: receipt.agentId)
+        }
         localSessions.record(receipt, isNew: isNew)
     }
 
     private var queueFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("queue.json") }
 
     func pendingQueue(operationId: String) -> [WorkshopQueuedSend] {
-        (try? JSONDecoder().decode([WorkshopQueuedSend].self, from: Data(contentsOf: queueFile)))?.filter { $0.operationId == operationId } ?? []
+        queuedSends.filter { $0.operationId == operationId }
     }
 
-    func saveQueuedSend(_ send: WorkshopQueuedSend?, removing id: String? = nil) throws {
+    func saveQueuedSend(_ send: WorkshopQueuedSend?, removing id: String? = nil, background: Bool = false) throws {
         guard context == scope else { throw CancellationError() }
-        var values = (try? JSONDecoder().decode([WorkshopQueuedSend].self, from: Data(contentsOf: queueFile))) ?? []
+        var values = queuedSends
         if send == nil, let id, !values.contains(where: { $0.id == id }) { return }
         if let id { values.removeAll { $0.id == id } }
         if let send { values.removeAll { $0.id == send.id }; values.append(send) }
-        var url = queueFile
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        #if os(iOS)
-        try JSONEncoder().encode(values).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try JSONEncoder().encode(values).write(to: url, options: .atomic)
-        #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
-        try url.setResourceValues(flags)
+        guard values != queuedSends else { return }
+        if background { scheduleState(values, to: queueFile) }
+        else { try stateDisk.write(values, to: queueFile) }
+        queuedSends = values
     }
 
     func choice(agent: WorkshopAgent, thread: String?, application: WorkshopApplication) -> WorkshopChoice {
         preferences.choices?[agent.id + ":" + (thread ?? "new-" + application.id)] ?? WorkshopChoice()
     }
 
-    func saveChoice(_ choice: WorkshopChoice, agent: WorkshopAgent, thread: String?, application: WorkshopApplication) throws {
+    func saveChoice(_ choice: WorkshopChoice, agent: WorkshopAgent, thread: String?, application: WorkshopApplication, background: Bool = false) throws {
         guard context == scope else { throw CancellationError() }
         if preferences.choices == nil { preferences.choices = [:] }
         preferences.choices?[agent.id + ":" + (thread ?? "new-" + application.id)] = choice
-        try persist()
+        try persist(background: background)
     }
 
     private func imageFile(_ id: String) throws -> URL {
@@ -471,8 +579,7 @@ import CryptoKit
 
     func messagePhotos(_ messageID: String) -> [WorkshopPhoto] {
         let ids = preferences.receipts.first(where: { $0.id == messageID })?.imageIds ??
-            ((try? JSONDecoder().decode([WorkshopQueuedSend].self, from: Data(contentsOf: queueFile)))?
-                .first(where: { $0.id == messageID })?.imageIds ?? [])
+            (queuedSends.first(where: { $0.id == messageID })?.imageIds ?? [])
         var photos: [WorkshopPhoto] = []
         for id in ids {
             guard let photo = try? savedPhoto(id) else { break }
@@ -574,17 +681,26 @@ import CryptoKit
         guard authenticated, UUID(uuidString: id) != nil, cursor >= 0,
               let agentID = agent.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
-        try await WorkshopEventStream.watch(open: {
-            guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
-            if let endpoint = self.localEndpoint {
-                return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1/events/\(id)/\(cursor)")
+        connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest
+        do {
+            try await WorkshopEventStream.watch(open: {
+                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                if let endpoint = self.localEndpoint {
+                    return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1/events/\(id)/\(cursor)")
+                }
+                return try await self.authentication.openWebSocket(
+                    "/ws/workshop/events/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
+            }, receive: { (page: WorkshopOperationPage) in
+                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                if self.connections[agent.id] != .connected { self.connections[agent.id] = .connected }
+                return try await receive(page)
+            })
+        } catch {
+            if ticket == scope, route == transportRevision {
+                connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)
             }
-            return try await self.authentication.openWebSocket(
-                "/ws/workshop/events/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
-        }, receive: { (page: WorkshopOperationPage) in
-            guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
-            return try await receive(page)
-        })
+            throw error
+        }
     }
 
     func call<Result: Decodable>(_ agent: WorkshopAgent, _ method: String, _ params: [String: Any] = [:]) async throws -> Result {
@@ -595,9 +711,22 @@ import CryptoKit
         guard authenticated else { throw HakoError(message: "请先在 Hako 设置中登录服务器。") }
         let body: [String: Any] = ["method": method, "params": params]
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw HakoError(message: "消息过长，请分段发送。") }
-        let data = try await requests.send(method, computerID: agent.id, params: params)
-        guard ticket == scope, route == transportRevision else { throw CancellationError() }
-        return try JSONDecoder().decode(Result.self, from: data)
+        // Shortcut commands use a separate Agent channel, so they cannot verify
+        // the conversation's connection.
+        let tracksConversation = !method.hasPrefix("commands.")
+        if tracksConversation { connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest }
+        do {
+            let data = try await requests.send(method, computerID: agent.id, params: params)
+            guard ticket == scope, route == transportRevision else { throw CancellationError() }
+            let result = try JSONDecoder().decode(Result.self, from: data)
+            if tracksConversation { connections[agent.id] = .connected }
+            return result
+        } catch {
+            if tracksConversation, ticket == scope, route == transportRevision {
+                connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)
+            }
+            throw error
+        }
     }
 
     func artifact(_ artifact: WorkshopArtifact, agent: WorkshopAgent) async throws -> String {

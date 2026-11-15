@@ -7,22 +7,20 @@ import FoundationNetworking
 struct InvestmentAgentTests {
     @MainActor
     static func main() async throws {
+        try genericDraftsUseBalanceFormsAndRejectContracts()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()
-        try contractPreviewUsesOneEntryForm()
-        try existingContractRegistrationAcceptsNewTrades()
-        try contractDetailEditsAndDeletesKeepTheirTransaction()
+
         try followUpReplacesUncommittedDraft()
-        try incompleteContractRequiresClarification()
+
         try formInspectionCollectsMissingFieldsWithoutWriting()
-        try coinEntryUsesPageQuantityConversions()
+
         try businessActionsGroupLinkedRecords()
         try cashBalanceUsesAdjustment()
         try editingEntriesKeepsPageSignAndClearingRules()
         try termDepositsAndPlansFollowPageForms()
         try snapshotPreviewIncludesFetchedInputs()
-        try relinkingContractPreservesTheTrade()
-        try catalogIdentityIsReadOnlyAndContractAliasesResolve()
+
         try lifecycleActionsUseOneBusinessPreview()
         try await nativeEditorOnlyRevisesThePendingDraft()
         try nativeEditorKeepsSharedRegistrationsAndOtherEntries()
@@ -56,7 +54,7 @@ struct InvestmentAgentTests {
 
     @MainActor
     private static func recordsEveryToolAttemptAndItsOutcome() async throws {
-        let (base, _) = try contractDraft()
+        let (base, _) = try stockDraft()
         let call = LanguageModelCall(id: "same-provider-id", name: "inspect_entry_form", arguments: ["actions": []])
         var updates: [InvestmentAgentToolCall] = []
         let ok = "{\"forms\":[{\"operation\":\"开空\",\"missing\":[]}]}"
@@ -122,7 +120,7 @@ struct InvestmentAgentTests {
 
     @MainActor
     private static func toolCancellationAndMalformedArgumentsRemainVisible() async throws {
-        let (base, _) = try contractDraft()
+        let (base, _) = try stockDraft()
         let client = LanguageModelClient(configuration: .init(model: "fixture", token: "fixture"))
         let malformed = "{\"section\":"
         let response = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["role": "assistant", "content": "", "tool_calls": [
@@ -155,7 +153,7 @@ struct InvestmentAgentTests {
     }
 
     private static func savesToolRecordsWithoutChangingConversationFormat() throws {
-        let (base, _) = try contractDraft()
+        let (base, _) = try stockDraft()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = InvestmentAgentConversationFile(url: directory.appendingPathComponent("ledger.plist"))
@@ -176,7 +174,7 @@ struct InvestmentAgentTests {
         let loaded = try file.loadToolCalls()
         let isolated = try other.loadToolCalls()
         precondition(loaded == [first, second] && isolated.isEmpty)
-        precondition(loaded[0].inputs.contains { $0.label == "账户" && $0.value == "加密套利" })
+        precondition(loaded[0].inputs.contains { $0.label == "账户" && $0.value == "证券账户" })
         precondition(loaded[0].outputs.first?.value == "0 条记录")
         precondition(loaded[0].restored().state == .succeeded)
         precondition(loaded[1].restored().state == .interrupted && loaded[1].restored().elapsed == nil)
@@ -245,11 +243,11 @@ struct InvestmentAgentTests {
     }
 
     private static func savesConfirmedPreviewWithoutAnActiveDraft() throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let proposal = try InvestmentAgentProposal(base: base, actions: actions)
         let receipt = InvestmentAgentConversation.Message.recorded(proposal, at: InvestmentBook.day())
         precondition(receipt.html != nil && receipt.text.contains("已记账：1 笔交易"))
-        for value in ["1153", "0.319505", "7217.4", "TRXUSD•S•HTX", "确认时间"] {
+        for value in ["1153", "0.319505", "HKO", "确认时间"] {
             precondition(receipt.text.contains(value) && receipt.html!.fragment.contains(value))
         }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -275,7 +273,7 @@ struct InvestmentAgentTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = InvestmentAgentConversationFile(url: directory.appendingPathComponent("ledger-a.plist"))
         let other = InvestmentAgentConversationFile(url: directory.appendingPathComponent("ledger-b.plist"))
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let proposal = try InvestmentAgentProposal(base: base, actions: actions)
         try file.save(.init(messages: [.init(text: "仍在核对的交易", isUser: true)], history: Data("[]".utf8),
             modelKey: nil, format: .openAI, proposal: proposal, canExport: false, commitStarted: false))
@@ -368,7 +366,7 @@ struct InvestmentAgentTests {
 
     @MainActor
     private static func nativeEditorOnlyRevisesThePendingDraft() async throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let proposal = try InvestmentAgentProposal(base: base, actions: actions)
         let originalAsset = try actions[1].asset(in: proposal.book)
         var submitted: [InvestmentAgentAction]?
@@ -376,20 +374,19 @@ struct InvestmentAgentTests {
         precondition(proposal.entryEditorIndices == [1])
         let initial = try editor.editingBook()
         precondition(initial.asset(originalAsset.id) == nil && submitted == nil)
-        try await editor.submit(["quantity": "10", "margin": "12", "fee": "", "account_id": base.book.accounts[0].id.uuidString], asset: originalAsset)
+        try await editor.submit(["quantity": "10", "price": "12", "fee": "", "account_id": base.book.accounts[0].id.uuidString], asset: originalAsset)
         let revised = try InvestmentAgentProposal(base: base, actions: submitted!)
         let event = revised.book.accounts[0].events.last!
-        precondition(event.quantity == 10 && event.margin == 12 && event.fee == nil)
+        precondition(event.quantity == 10 && event.price == 12 && event.fee == nil)
         precondition(revised.preview.summary == "1 笔交易" && revised.entryEditorIndices == [1])
         precondition(proposal.book.accounts[0].events.last?.quantity == 1153)
         precondition(base.book.accounts[0].events.count == 2 && base.book.asset(originalAsset.id) == nil)
     }
 
     private static func nativeEditorKeepsSharedRegistrationsAndOtherEntries() throws {
-        let (base, initial) = try contractDraft()
+        let (base, initial) = try stockDraft()
         var second = initial[1]
         second.values["quantity"] = "2"
-        second.values["margin"] = "1"
         let proposal = try InvestmentAgentProposal(base: base, actions: initial + [second])
         let shared = try second.asset(in: proposal.book)
         precondition(proposal.entryEditorIndices == [1, 2])
@@ -405,16 +402,16 @@ struct InvestmentAgentTests {
 
         var another = shared
         another.id = UUID()
-        another.code = "TRXUSD_PERP"
-        another.market = "BINANCE"
+        another.code = "ALT"
+        another.market = "XNAS"
         let first = InvestmentEditorDraft(proposal: proposal, index: 1, base: base.book) { _ in }
-        let split = try first.replacing(values: ["quantity": "1", "margin": "1"], selectedAsset: another)
+        let split = try first.replacing(values: ["quantity": "1"], selectedAsset: another)
         precondition(split.filter { $0.kind == .addAsset }.count == 2)
         let splitPreview = try InvestmentAgentProposal(base: base, actions: split)
         let events = Array(splitPreview.book.accounts[0].events.suffix(2))
         precondition(events.map(\.quantity) == [1, 2])
-        precondition(splitPreview.book.asset(events[0].assetID)?.market == "BINANCE")
-        precondition(splitPreview.book.asset(events[1].assetID)?.market == "HTX")
+        precondition(splitPreview.book.asset(events[0].assetID)?.code == "ALT")
+        precondition(splitPreview.book.asset(events[1].assetID)?.code == "HKO")
     }
 
     private static func nativeEditorUsesTheBalanceBeforeItsEntry() throws {
@@ -459,7 +456,7 @@ struct InvestmentAgentTests {
     }
 
     private static func deletionPreviewsHaveNoEntryEditor() throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let committed = try InvestmentAgentProposal(base: base, actions: actions).book
         let entry = committed.accounts[0].events.last!
         let removal = InvestmentAgentAction(kind: .deleteEvent, values: ["account_id": committed.accounts[0].id.uuidString, "event_id": entry.id.uuidString])
@@ -530,119 +527,61 @@ struct InvestmentAgentTests {
         }
     }
 
-    private static func contractDraft() throws -> (InvestmentAgentSnapshot, [InvestmentAgentAction]) {
-        let account = InvestmentAccount(name: "加密套利", currency: .usd, type: .crypto)
+    private static func genericDraftsUseBalanceFormsAndRejectContracts() throws {
+        let account = InvestmentAccount(name: "Binance", currency: .usd, type: .crypto)
+        let base = snapshot(.init(accounts: [account]))
+        let date = InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())
+        let actions: [InvestmentAgentAction] = [
+            .init(kind: .addAsset, values: ["name": "策略账户", "currency": "USD", "asset_type": "generic"]),
+            .init(kind: .addEvent, values: ["account_id": account.id.uuidString, "asset_id": "策略账户", "event_type": "buy",
+                "date": date, "price": "10000", "settled_amount": "10400", "auto_fund": "true"])
+        ]
+        let proposal = try InvestmentAgentProposal(base: base, actions: actions)
+        precondition(proposal.book.value(proposal.book.accounts[0])?.gain == 400)
+        precondition(proposal.entryEditorIndices == [1])
+        precondition(proposal.preview.items.contains { $0.groups.flatMap(\.fields).contains { $0.label == "投入金额（USD）" } })
+        let edit = InvestmentEditorDraft(proposal: proposal, index: 1, base: base.book) { _ in }
+        let revised = try edit.replacing(values: ["settled_amount": "10800"])
+        let replacement = try InvestmentAgentProposal(base: base, actions: revised)
+        precondition(replacement.book.value(replacement.book.accounts[0])?.gain == 800)
+        var book = replacement.book
+        let adjustment = InvestmentAgentAction(kind: .assetBalance, values: ["account_id": account.id.uuidString, "asset_id": "策略账户", "date": date, "amount": "11200"])
+        precondition(adjustment.form(in: book).missing.isEmpty)
+        try adjustment.apply(to: &book)
+        precondition(book.value(book.accounts[0])?.gain == 1200)
+        let adjustPreview = try InvestmentAgentProposal(base: snapshot(replacement.book), actions: [adjustment])
+        precondition(adjustPreview.preview.summary == "1 笔交易")
+        for args: [String: String] in [
+            ["action": "add_asset", "name": "已移除", "symbol": "BTCUSDT", "currency": "USD", "asset_type": "crypto_contract"],
+            ["action": "funding_balance", "amount": "1"]
+        ] {
+            do { _ = try InvestmentAgentAction.parse(["actions": [args]]); preconditionFailure("removed crypto contract accepted") }
+            catch is InvestmentError { }
+        }
+    }
+
+    private static func stockDraft() throws -> (InvestmentAgentSnapshot, [InvestmentAgentAction]) {
+        let account = InvestmentAccount(name: "证券账户", currency: .usd, type: .securities)
         var book = InvestmentBook(accounts: [account])
-        let token = try book.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        let token = try book.register(.init(name: "已有持仓", code: "TRX", market: "XNAS", kind: .stock, currency: .usd))
         let day = InvestmentBook.day()
         try book.post(.init(day: day, kind: .deposit, amount: 10000), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: token, quantity: 10000, price: 1), accountID: account.id)
+        try book.post(.init(day: day, kind: .buy, assetID: token, quantity: 1000, price: 1), accountID: account.id)
         return (snapshot(book), [
-            .init(kind: .addAsset, values: ["name": "TRX/USD 永续", "symbol": "TRX-USD", "currency": "USD",
-                "asset_type": "crypto_contract", "market": "HTX", "basis": "coin", "side": "short",
-                "multiplier": "10", "collateral_id": token.uuidString]),
-            .init(kind: .addEvent, values: ["account_id": account.id.uuidString, "asset_id": "TRX-USD",
-                "date": InvestmentBook.snapshotDateFormatter().string(from: day), "event_type": "buy",
-                "quantity_mode": "contracts", "quantity": "1153", "price": "0.319505", "margin": "7217.4", "fee": "0"])
+            .init(kind: .addAsset, values: ["name": "示例股票", "symbol": "HKO", "currency": "USD", "asset_type": "stock", "market": "XNAS"]),
+            .init(kind: .addEvent, values: ["account_id": account.id.uuidString, "asset_id": "HKO",
+                "date": InvestmentBook.snapshotDateFormatter().string(from: day), "event_type": "buy", "quantity": "1153", "price": "0.319505", "fee": "0"])
         ])
     }
 
-    private static func contractPreviewUsesOneEntryForm() throws {
-        let (base, actions) = try contractDraft()
-        let proposal = try InvestmentAgentProposal(base: base, actions: actions)
-        precondition(proposal.changes.count == 5)
-        let preview = proposal.preview
-        precondition(preview.summary == "1 笔交易" && preview.items.count == 1)
-        let item = preview.items[0]
-        precondition(item.sourceIDs == Set(proposal.changes.map(\.id)))
-        precondition(item.groups.map(\.title) == ["加密套利", "使用结算币余额"])
-        let fields = item.groups.flatMap(\.fields)
-        precondition(fields.first { $0.label == "资产类型" }?.after == "币本位合约")
-        precondition(fields.first { $0.label == "报价交易所" }?.after == "HTX")
-        precondition(fields.first { $0.label == "结算币种" }?.after == "TRX")
-        precondition(fields.first { $0.label == "每张合约面值（USD）" }?.after == "10")
-        precondition(fields.first { $0.label == "数量（张）" }?.after == "1153")
-        precondition(fields.first { $0.label == "成交价（USD/TRX）" }?.after == "0.319505")
-        precondition(fields.first { $0.label == "本次开仓保证金总额（TRX）" }?.after == "7217.4")
-        precondition(!fields.contains { $0.id == "event_id" || $0.id == "instrument_id" || $0.id == "trade_action" })
-        precondition(base.book.accounts[0].events.count == 2, "Preview must not write to the real ledger")
-        var extra = actions
-        extra.append(.init(kind: .addEvent, values: ["account_id": base.book.accounts[0].id.uuidString,
-            "event_type": "deposit", "date": actions[1].values["date"]!, "amount": "25"]))
-        let withDeposit = try InvestmentAgentProposal(base: base, actions: extra)
-        precondition(withDeposit.preview.summary == "2 笔交易", "A real cash deposit must not be hidden as supporting data")
-    }
 
-    private static func existingContractRegistrationAcceptsNewTrades() throws {
-        let (base, actions) = try contractDraft()
-        var registered = base.book
-        try actions[0].apply(to: &registered)
-        let contract = registered.assets.values.first { $0.kind == .cryptoContract }!
-        let records = InvestmentServerRecords()
-        registered = try records.decode(.init(generation: 1, revision: 1, tables: records.encode(registered, revision: 1)))
-        precondition(registered.asset(contract.id)?.collateralAssetID == contract.collateralAssetID)
-        var trade = actions[1]
-        trade.values["asset_id"] = contract.id.uuidString
-        let choices = trade.form(in: registered).fields.first { $0.key == "event_type" }!.choices
-        precondition(!choices.contains { $0.id == "opening" })
-        precondition(choices.contains { $0.id == "buy" && $0.title == "开空" })
-        let inspection = InvestmentAgentAction.inspect([trade], in: registered)[0]
-        precondition((inspection["missing"] as? [String]) == [] && inspection["validation_error"] == nil)
-        let proposal = try InvestmentAgentProposal(base: snapshot(registered), actions: [trade])
-        precondition(proposal.preview.items.count == 1 && proposal.preview.summary == "1 笔交易")
-        precondition(proposal.book.assets.count == registered.assets.count)
-        precondition(proposal.book.accounts[0].events.last?.assetID == contract.id)
 
-        // A registration retained by a watchlist can be reused after deleting the holding.
-        var deleted = proposal.book
-        deleted.watched = [contract.id]
-        try deleted.deleteInvestment(accountID: base.book.accounts[0].id, assetID: contract.id)
-        precondition(deleted.asset(contract.id) != nil)
-        let reopened = try InvestmentAgentProposal(base: snapshot(deleted), actions: [trade])
-        precondition(reopened.book.assets.count == registered.assets.count)
-        precondition(reopened.book.accounts[0].events.last?.assetID == contract.id)
-        var additional = trade
-        additional.values["quantity"] = "1"
-        additional.values["margin"] = "100"
-        let increased = try InvestmentAgentProposal(base: snapshot(reopened.book), actions: [additional])
-        precondition(increased.book.accounts[0].events.count == reopened.book.accounts[0].events.count + 1)
 
-        var opening = trade
-        opening.values["event_type"] = "opening"
-        precondition(opening.form(in: registered).missing.contains("流水类型"))
-        precondition((InvestmentAgentAction.inspect([opening], in: registered)[0]["validation_error"] as? String)?.contains("开空") == true)
-        do { try opening.apply(to: &registered); preconditionFailure("Opening balances are not contract trades") }
-        catch let error as InvestmentError {
-            precondition(error.localizedDescription.contains("开空") && error.localizedDescription.contains("首次录入"))
-            precondition(!error.localizedDescription.contains("结算币"))
-        }
-        registered.assets[contract.id]?.collateralAssetID = UUID()
-        do { try trade.apply(to: &registered); preconditionFailure("A missing collateral reference must still be rejected") }
-        catch let error as InvestmentError { precondition(error.localizedDescription.contains("结算币关联")) }
-    }
 
-    private static func contractDetailEditsAndDeletesKeepTheirTransaction() throws {
-        let (base, actions) = try contractDraft()
-        let committed = try InvestmentAgentProposal(base: base, actions: actions).book
-        let event = committed.accounts[0].events.last!
-        let edited = try InvestmentAgentProposal(base: snapshot(committed), actions: [
-            .init(kind: .editEvent, values: ["account_id": committed.accounts[0].id.uuidString,
-                "event_id": event.id.uuidString, "margin": "7000"])
-        ])
-        precondition(edited.changes.count == 1 && edited.changes[0].id.hasPrefix("investment_derivative_event_details:"))
-        precondition(edited.preview.summary == "1 笔交易")
-        let margin = edited.preview.items[0].groups.flatMap(\.fields).first { $0.id == "margin" }
-        precondition(margin?.before == "7217.4" && margin?.after == "7000")
-        precondition(edited.preview.items[0].groups.flatMap(\.fields).contains { $0.label == "数量（张）" && $0.after == "1153" })
-        let deleted = try InvestmentAgentProposal(base: snapshot(committed), actions: [
-            .init(kind: .deleteEvent, values: ["account_id": committed.accounts[0].id.uuidString, "event_id": event.id.uuidString])
-        ])
-        precondition(deleted.destructive && deleted.preview.summary == "1 笔交易")
-        precondition(deleted.preview.items[0].groups.flatMap(\.fields).contains { $0.id == "margin_delta" && $0.before == "7217.4" && $0.after == nil })
-    }
+
 
     private static func followUpReplacesUncommittedDraft() throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let original = try InvestmentAgentProposal(base: base, actions: actions)
         var corrected = original.actions
         corrected[1].values["quantity"] = "1100"
@@ -662,30 +601,17 @@ struct InvestmentAgentTests {
         precondition(emptyContext.contains("当前没有待确认草稿"))
     }
 
-    private static func incompleteContractRequiresClarification() throws {
-        let (_, actions) = try contractDraft()
-        for key in ["market", "basis", "side", "multiplier", "collateral_id"] {
-            var fields = actions[0].values
-            fields.removeValue(forKey: key)
-            fields["action"] = "add_asset"
-            do {
-                _ = try InvestmentAgentAction.parse(["actions": [fields]])
-                preconditionFailure("Missing contract information must be clarified: \(key)")
-            } catch let error as InvestmentError {
-                precondition(error.localizedDescription.contains("先向用户询问"))
-            }
-        }
-    }
+
 
     private static func formInspectionCollectsMissingFieldsWithoutWriting() throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         let partial = try InvestmentAgentAction.parse(["actions": [
-            ["action": "add_asset", "asset_type": "crypto_contract", "basis": "coin", "name": "TRX/USD 永续"],
+            ["action": "add_asset", "asset_type": "stock", "name": "示例股票"],
             ["action": "add_event", "event_type": "buy"]
         ]], requireComplete: false)
         let inspection = InvestmentAgentAction.inspect(partial, in: base.book)
         let instrumentMissing = inspection[0]["missing"] as! [String]
-        precondition(Set(["报价币种", "代码", "报价交易所", "结算币种", "开仓方向", "每张合约面值（USD）"]).isSubset(of: Set(instrumentMissing)))
+        precondition(Set(["报价币种", "代码"]).isSubset(of: Set(instrumentMissing)))
         let tradeMissing = inspection[1]["missing"] as! [String]
         precondition(Set(["所属账户", "已选标的", "成交日期"]).isSubset(of: Set(tradeMissing)))
         precondition(base.book.assets.count == 1 && base.book.accounts[0].events.count == 2)
@@ -693,35 +619,10 @@ struct InvestmentAgentTests {
         precondition(ready.allSatisfy { ($0["missing"] as? [String])?.isEmpty == true && $0["validation_error"] == nil })
         let form = InvestmentAgentAction(kind: .cashBalance, values: [:]).form(in: base.book)
         precondition(form.fields.first { $0.key == "account_id" }?.value == nil, "Even one account is not evidence of the user's intended account")
-        precondition(form.fields.first { $0.key == "account_id" }?.choices.first?.title == "加密套利 · USD")
+        precondition(form.fields.first { $0.key == "account_id" }?.choices.first?.title == "证券账户 · USD")
     }
 
-    private static func coinEntryUsesPageQuantityConversions() throws {
-        let (base, actions) = try contractDraft()
-        for (mode, amount, expected) in [("coins", "35080", Decimal(1123)), ("notional", "11530", Decimal(1153)), ("contracts", "1153", Decimal(1153))] {
-            var converted = actions
-            converted[1].values["quantity_mode"] = mode
-            converted[1].values["quantity"] = amount
-            if mode == "coins" { converted[1].values["reference_price"] = "0.32" }
-            let proposal = try InvestmentAgentProposal(base: base, actions: converted)
-            precondition(proposal.book.accounts[0].events.last?.quantity == expected)
-            let fields = proposal.preview.items[0].groups.flatMap(\.fields)
-            precondition(fields.first { $0.id == "quantity" }?.after == amount)
-            if mode != "contracts" { precondition(fields.first { $0.id == "contract_count" }?.after == NSDecimalNumber(decimal: expected).stringValue) }
-        }
-        let book = try InvestmentAgentProposal(base: base, actions: actions).book
-        let event = book.accounts[0].events.last!
-        let changedMode = InvestmentAgentAction(kind: .editEvent, values: ["account_id": book.accounts[0].id.uuidString,
-            "event_id": event.id.uuidString, "quantity_mode": "coins", "reference_price": "0.32"])
-        precondition(changedMode.form(in: book).missing.contains("仓位折算量（TRX）"))
-        var copy = book
-        do { try changedMode.apply(to: &copy); preconditionFailure("Changing units must not reinterpret stored contracts as coins") }
-        catch is InvestmentError { }
-        var cleared = changedMode
-        cleared.values["quantity_mode"] = "contracts"
-        cleared.values["quantity"] = ""
-        precondition(cleared.form(in: book).missing.contains("数量（张）"))
-    }
+
 
     private static func businessActionsGroupLinkedRecords() throws {
         let day = InvestmentBook.day()
@@ -843,100 +744,17 @@ struct InvestmentAgentTests {
         precondition(book.dailySnapshots == nil && book.quotes[asset]?.isEmpty != false)
     }
 
-    private static func relinkingContractPreservesTheTrade() throws {
-        let (base, actions) = try contractDraft()
-        var book = try InvestmentAgentProposal(base: base, actions: actions).book
-        let event = book.accounts[0].events.last!
-        let id = event.assetID!
-        book.assets[id]!.code = "TRX-USD-SHORT"
-        book.assets[id]!.instrumentID = UUID()
-        let original = book.assets[id]!
-        book.addQuotes([.init(day: event.day, price: 1, source: "旧行情")], assetID: id)
-        let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [
-            .init(kind: .editAsset, values: ["asset_id": id.uuidString, "symbol": "TRX-USD", "market": "HTX"])])
-        let linked = proposal.book.asset(id)!
-        precondition(linked.code == "TRX-USD" && linked.market == "HTX" && linked.instrumentID != original.instrumentID)
-        precondition(linked.multiplier == original.multiplier && linked.basis == original.basis && linked.contractSide == original.contractSide)
-        precondition(linked.collateralAssetID == original.collateralAssetID && proposal.book.accounts[0].events.last == event)
-        precondition(proposal.book.quotes[id] == nil && book.quotes[id]?.count == 1)
-        precondition(proposal.changes.contains { $0.operation == .remove })
-        precondition(!proposal.destructive, "Replacing old quote data is not a user-requested deletion")
-        precondition(proposal.preview.summary == "1 项操作")
-        let receipt = InvestmentAgentConversation.Message.recorded(proposal)
-        precondition(receipt.text.contains("原值：TRX-USD-SHORT") && receipt.text.contains("改为：TRX-USD"))
-        precondition(proposal.preview.items[0].groups.flatMap(\.fields).contains { $0.id == "symbol" && $0.before == "TRX-USD-SHORT" && $0.after == "TRX-USD" })
-    }
 
-    private static func catalogIdentityIsReadOnlyAndContractAliasesResolve() throws {
-        let (base, actions) = try contractDraft()
-        let form = actions[0].form(in: base.book)
-        for key in ["name", "symbol", "market", "multiplier"] {
-            precondition(form.fields.first { $0.key == key }?.editable == false)
-        }
-        precondition(form.fields.first { $0.key == "name" }?.value == "TRX/USD 永续")
-        precondition(form.fields.first { $0.key == "name" }?.displayValue == "TRX/USD 永续 · 空")
-        precondition(form.fields.first { $0.key == "display_code" }?.displayValue == "TRXUSD•S•HTX")
-        let proposal = try InvestmentAgentProposal(base: base, actions: actions)
-        precondition(proposal.preview.items[0].groups.flatMap(\.fields).contains { $0.after?.contains("TRXUSD•S•HTX") == true })
-        var book = proposal.book
-        let htx = book.assets.values.first { $0.kind == .cryptoContract }!
-        var binance = htx
-        binance.id = UUID()
-        binance.market = "BINANCE"
-        binance.code = "TRXUSD_PERP"
-        let binanceID = try book.register(binance)
-        let date = InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())
-        let quote = InvestmentAgentAction(kind: .quote, values: ["asset_id": "TRXUSD•S•BIN", "date": date, "price": "0.32"])
-        try quote.apply(to: &book)
-        precondition(book.quote(binanceID)?.price == Decimal(string: "0.32") && book.quote(htx.id) == nil)
-        let rows = try InvestmentServerRecords().encode(book, revision: 1)
-        precondition(rows["market_instruments"]?.contains { $0["symbol"] == "TRXUSD_PERP" && $0["exchange"] == "BINANCE" } == true)
-        precondition(!rows.values.flatMap { $0 }.contains { $0["symbol"]?.contains("•") == true })
-        let edit = InvestmentAgentAction(kind: .editAsset, values: ["asset_id": htx.id.uuidString]).form(in: book)
-        precondition(edit.fields.first { $0.key == "name" }?.editable == false)
-        precondition(edit.fields.first { $0.key == "name" }?.displayValue == "TRX/USD 永续 · 空")
-        var aliasActions = actions
-        aliasActions[1].values["asset_id"] = "TRXUSD•S•HTX"
-        let aliasPreview = try InvestmentAgentProposal(base: base, actions: aliasActions)
-        precondition(aliasPreview.preview.summary == "1 笔交易" && aliasPreview.preview.items.count == 1)
-        precondition(aliasPreview.preview.items[0].sourceIDs == Set(aliasPreview.changes.map(\.id)))
-        var another = binance
-        another.id = UUID()
-        another.contractSide = .long
-        let longID = try book.register(another)
-        let selectedShort = try quote.asset(in: book)
-        precondition(selectedShort.id == binanceID)
-        let longReference = InvestmentAgentAction(kind: .quote, values: ["asset_id": "TRXUSD•L•BIN"])
-        let selectedLong = try longReference.asset(in: book)
-        precondition(selectedLong.id == longID)
-        var ambiguous = quote
-        ambiguous.values["asset_id"] = "TRXUSD_PERP"
-        do {
-            try ambiguous.apply(to: &book)
-            preconditionFailure("Ambiguous direction must require clarification")
-        } catch is InvestmentError { }
 
-        var longSetup = actions[0]
-        longSetup.values["side"] = "long"
-        var longEntry = aliasActions[1]
-        longEntry.values["asset_id"] = "TRXUSD•L•HTX"
-        longEntry.values["margin"] = "1000"
-        let both = try InvestmentAgentProposal(base: base, actions: aliasActions + [longSetup, longEntry])
-        precondition(both.preview.summary == "2 笔交易" && both.preview.items.count == 2)
-        precondition(both.entryEditorIndices == [1, 3])
-        precondition(both.assetSetupIndex(for: 1) == 0 && both.assetSetupIndex(for: 3) == 2)
-        for (index, suffix) in [(0, "空"), (1, "多")] {
-            precondition(both.preview.items[index].groups.flatMap(\.fields).contains { $0.after?.contains("TRX/USD 永续 · " + suffix) == true })
-        }
-    }
+
 
     private static func lifecycleActionsUseOneBusinessPreview() throws {
-        let (base, actions) = try contractDraft()
+        let (base, actions) = try stockDraft()
         var committed = try InvestmentAgentProposal(base: base, actions: actions).book
         let owner = committed.accounts[0]
-        let contract = committed.assets.values.first { $0.kind == .cryptoContract }!
+        let contract = committed.assets.values.first { $0.code == "HKO" }!
         committed.addQuotes([.init(day: InvestmentBook.day(), price: 1, source: "测试行情")], assetID: contract.id)
-        precondition(committed.deletionMessage(accountID: owner.id, assetID: contract.id).contains("TRX/USD 永续 · 空"))
+        precondition(committed.deletionMessage(accountID: owner.id, assetID: contract.id).contains("示例股票"))
         let deletion = try InvestmentAgentProposal(base: snapshot(committed), actions: [
             .init(kind: .removePosition, values: ["account_id": owner.id.uuidString, "asset_id": contract.id.uuidString])
         ])

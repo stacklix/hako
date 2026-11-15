@@ -1,6 +1,11 @@
 import Foundation
 import Combine
 
+@MainActor final class WorkshopComposerInput: ObservableObject {
+    @Published var text = "" { didSet { if text != oldValue { onChange?() } } }
+    var onChange: (() -> Void)?
+}
+
 @MainActor final class WorkshopConversation: ObservableObject, Identifiable {
     let id = UUID()
     let store: WorkshopStore
@@ -10,15 +15,21 @@ import Combine
     let scope: String
     @Published private(set) var threadId: String? { didSet { persistDraft() } }
     @Published private(set) var isArchived: Bool
-    @Published private(set) var entries: [WorkshopEntry] = []
-    @Published private(set) var artifacts: [WorkshopArtifact] = []
+    private(set) var entries: [WorkshopEntry] = [] { didSet { schedulePresentation() } }
+    @Published private(set) var presentation = WorkshopTranscriptLayout()
+    @Published private(set) var restoringCache = false
+    @Published private(set) var artifacts: [WorkshopArtifact] = [] { didSet { schedulePresentation() } }
     @Published private(set) var operation: WorkshopOperation?
     @Published private(set) var approvals: [WorkshopApproval] = []
     @Published private(set) var historyCursor: String?
     @Published private(set) var busy = false
     @Published private(set) var loadingHistory = false
     @Published private(set) var uncertain = false
-    @Published var draft = "" { didSet { composerChanged() } }
+    let composerInput = WorkshopComposerInput()
+    var draft: String {
+        get { composerInput.text }
+        set { composerInput.text = newValue }
+    }
     @Published var error: String?
     @Published private(set) var connectionIssue: String?
     @Published private(set) var photos: [WorkshopPhoto] = [] { didSet { composerChanged() } }
@@ -27,7 +38,7 @@ import Combine
     @Published private(set) var loadingModels = false
     @Published private(set) var modelError: String?
     @Published private(set) var choice = WorkshopChoice()
-    @Published private(set) var followups: [WorkshopFollowupState] = []
+    @Published private(set) var followups: [WorkshopFollowupState] = [] { didSet { schedulePresentation() } }
     @Published private(set) var editingMessageID: String? { didSet { persistDraft() } }
     @Published private(set) var appendedMessageID: String?
     @Published private(set) var cachedAt: Date?
@@ -56,6 +67,10 @@ import Combine
     private var lastVerifiedAt: Date?
     private var catalogHint: WorkshopSession?
     private var needsHistoryRefresh = false
+    private var cacheLoad: Task<WorkshopTranscript?, Never>?
+    private let renderer = WorkshopTranscriptRenderer()
+    private var presentationTask: Task<Void, Never>?
+    private var presentationRevision = 0
 
     init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, session: WorkshopSession? = nil, title: String? = nil, archived: Bool = false) {
         self.store = store; self.agent = agent; self.application = application
@@ -68,14 +83,6 @@ import Combine
         operationId = session?.operationId ?? receipt?.id
         if let receipt, receipt.id == operationId, receipt.state == "pending" { uncertain = true }
         choice = store.choice(agent: agent, thread: threadId, application: application)
-        if let threadId, let snapshot = store.cachedTranscript(WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId)) {
-            entries = snapshot.entries; artifacts = snapshot.artifacts; followups = snapshot.followups
-            historyCursor = snapshot.historyCursor; cachedAt = snapshot.savedAt
-            if operationId == nil { operationId = snapshot.operationId }
-            if operationId == snapshot.operationId { eventCursor = snapshot.eventCursor; streamText = snapshot.streamText }
-            savedTranscript = snapshot
-            uncertain = operationId != nil
-        }
         if let operationId {
             for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) { entries.append(pending.entry) }
         }
@@ -100,7 +107,51 @@ import Combine
             }
         } catch { self.error = "无法完整恢复输入草稿。\(error.localizedDescription)" }
         draftReady = true
+        composerInput.onChange = { [weak self] in self?.composerChanged() }
         if savedDraft != nil { persistDraft() }
+        if let threadId {
+            restoringCache = true
+            let key = WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId)
+            cacheLoad = Task { await store.cachedTranscript(key) }
+        }
+        schedulePresentation()
+    }
+
+    private func restoreTranscript() async {
+        guard let load = cacheLoad else { return }
+        let snapshot = await load.value
+        guard !Task.isCancelled, scope == store.scope, cacheLoad != nil else { return }
+        cacheLoad = nil
+        if let snapshot {
+            let pending = entries
+            entries = snapshot.entries
+            for entry in pending where !entries.contains(where: { $0.id == entry.id }) { entries.append(entry) }
+            artifacts = snapshot.artifacts; followups = snapshot.followups
+            historyCursor = snapshot.historyCursor; cachedAt = snapshot.savedAt
+            if operationId == nil { operationId = snapshot.operationId }
+            if operationId == snapshot.operationId { eventCursor = snapshot.eventCursor; streamText = snapshot.streamText }
+            savedTranscript = snapshot
+            uncertain = operationId != nil
+        }
+        restoringCache = false
+    }
+
+    private func schedulePresentation() {
+        presentationRevision += 1
+        guard presentationTask == nil else { return }
+        presentationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
+                guard let self, self.scope == self.store.scope else { break }
+                let revision = self.presentationRevision
+                let layout = await self.renderer.render(entries: self.entries, followups: self.followups,
+                    artifacts: self.artifacts, projectPath: self.application.path, revision: revision)
+                guard !Task.isCancelled, self.scope == self.store.scope else { break }
+                self.presentation = layout
+                if revision == self.presentationRevision { break }
+            }
+            self?.presentationTask = nil
+        }
     }
 
     private var composerSessionID: String { threadId ?? operationId.map { "pending-" + $0 } ?? "new:" + title }
@@ -119,7 +170,11 @@ import Combine
         guard snapshot != savedDraft || sessionID != draftSessionID else { return }
         do {
             try store.saveComposerDraft(snapshot, agent: agent, application: application, sessionId: sessionID,
-                previousSessionId: draftSessionID, scope: scope)
+                previousSessionId: draftSessionID, scope: scope) { [weak self] error in
+                    guard let self, self.savedDraft == snapshot, self.draftSessionID == sessionID else { return }
+                    self.savedDraft = nil
+                    self.error = "输入尚在本页，但草稿保存失败，请勿退出。\(error.localizedDescription)"
+                }
             draftSessionID = sessionID; savedDraft = snapshot
         } catch { self.error = "输入尚在本页，但草稿保存失败，请勿退出。\(error.localizedDescription)" }
     }
@@ -137,12 +192,18 @@ import Combine
     var notificationOperationID: String? { operationId }
 
     var canCompose: Bool { !isArchived && !busy && store.authenticated && scope == store.scope }
-    var canConfigure: Bool { !isArchived && store.authenticated && scope == store.scope }
-    var canSubmitMessage: Bool { canCompose && !synchronizing && !uncertain }
+    var configurationUnavailableReason: String? {
+        if isArchived { return "此会话已归档，取消归档后可修改设置。" }
+        if !store.authenticated { return "请先在 Hako 设置中登录服务器后修改会话设置。" }
+        if scope != store.scope { return "登录身份已变化，请返回会话列表后重新打开此会话。" }
+        return nil
+    }
+    var canConfigure: Bool { configurationUnavailableReason == nil }
+    var canSubmitMessage: Bool { canCompose && !restoringCache && !synchronizing && !uncertain }
     var canEditMessages: Bool { canSubmitMessage && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
-    var canRetry: Bool { !isArchived && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
+    var canRetry: Bool { !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
     var modelLabel: String { models.first { $0.id == choice.model }?.name ?? choice.model ?? "跟随会话设置" }
 
     var reuseKey: WorkshopConversationReuseKey? {
@@ -168,16 +229,22 @@ import Combine
         do {
             let result: WorkshopModelList = try await store.call(agent, "models.list")
             guard scope == store.scope else { return }
+            guard !result.models.isEmpty else { throw HakoError(message: "执行电脑未返回可用模型，请检查电脑上的模型配置后重试。") }
             models = result.models
-        } catch is CancellationError { }
+        } catch is CancellationError {
+            if models.isEmpty && scope == store.scope { modelError = "模型读取已中断，请重新读取。" }
+        }
         catch { modelError = error.localizedDescription }
     }
 
     func configure(_ next: WorkshopChoice) throws {
-        guard canConfigure else { throw HakoError(message: "当前会话不可修改设置，请确认登录状态且会话未归档。") }
+        if let reason = configurationUnavailableReason { throw HakoError(message: reason) }
         let selected = models.first { $0.id == next.model } ?? (next.model == nil ? models.first { $0.isDefault } : nil)
         if let tier = next.serviceTier, tier != "default", selected?.serviceTiers.contains(where: { $0.id == tier }) != true {
             throw HakoError(message: "所选模型暂不支持此速度，请刷新模型列表后重新选择。")
+        }
+        if let effort = next.reasoningEffort, selected?.reasoningEfforts.contains(where: { $0.id == effort }) != true {
+            throw HakoError(message: "所选模型暂不支持此推理强度，请刷新模型列表后重新选择。")
         }
         try store.saveChoice(next, agent: agent, thread: threadId, application: application)
         choice = next
@@ -212,7 +279,8 @@ import Combine
     }
 
     @discardableResult func loadHistory(more: Bool = false) async -> Bool {
-        guard let threadId, !loadingHistory, scope == store.scope else { return false }
+        await restoreTranscript()
+        guard !Task.isCancelled, let threadId, !loadingHistory, scope == store.scope else { return false }
         loadingHistory = true
         defer { loadingHistory = false }
         do {
@@ -224,6 +292,7 @@ import Combine
             var result: WorkshopHistory = try await store.call(agent, "history.read", params)
             guard scope == store.scope, result.threadId == threadId else { return false }
             let newestOperation = result.operationId
+            let newestCompletion = result.completionId
             let newestArtifacts = result.artifacts
             let newestCursor = result.nextCursor
             var page = result.entries
@@ -251,7 +320,14 @@ import Combine
             // connection. Keep the failure visible until both reads succeed.
             if !synchronizing, operationId == nil { connectionIssue = nil; error = nil }
             if !more, operation?.state == "unknown" { observedTerminal = nil }
-            if !more { latestCompletionID = result.completionId; markLatestRead() }
+            if !more {
+                latestCompletionID = newestCompletion; markLatestRead()
+                if let newestCompletion, newestOperation == nil ||
+                    (!uncertain && operation?.active == false && operationId == newestOperation && observedTerminal == operationId) {
+                    store.observeSession(threadId: threadId, operationId: newestOperation, state: "completed",
+                        completionId: newestCompletion, agent: agent, scope: scope)
+                }
+            }
             if !more, operationId == originalOperation, let newestOperation, newestOperation != operationId {
                 operationId = newestOperation; operation = nil; eventCursor = 0; streamText = [:]
                 observedTerminal = nil; uncertain = true; followups = []
@@ -270,6 +346,7 @@ import Combine
     }
 
     func watch() async {
+        await restoreTranscript()
         guard !Task.isCancelled, scope == store.scope else { return }
         let entryStep = WorkshopWatchStep.onEntry(lastVerifiedAt: lastVerifiedAt,
             operationId: operationId, observedTerminal: observedTerminal,
@@ -312,7 +389,11 @@ import Combine
             case .idle:
                 if !busy && !synchronizing {
                     idleChecks += 1
-                    if idleChecks >= 10 { idleChecks = 0; await loadHistory() }
+                    if idleChecks >= 10 {
+                        idleChecks = 0
+                        if threadId != nil { await loadHistory() }
+                        else { await loadModels() }
+                    }
                 }
             }
             do { try await Task.sleep(for: .milliseconds(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: hasMoreEvents, failures: failures))) }
@@ -321,7 +402,8 @@ import Combine
     }
 
     func synchronize() async {
-        guard !synchronizing, scope == store.scope else { return }
+        await restoreTranscript()
+        guard !Task.isCancelled, !synchronizing, scope == store.scope else { return }
         synchronizing = true
         defer { synchronizing = false }
         if let stream = eventStream {
@@ -340,7 +422,7 @@ import Combine
     }
 
     private func saveTranscript() {
-        guard let threadId, scope == store.scope else { return }
+        guard !restoringCache, let threadId, scope == store.scope else { return }
         let snapshot = WorkshopTranscript(key: WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId),
             entries: entries, artifacts: artifacts, followups: followups, historyCursor: historyCursor, operationId: operationId,
             eventCursor: eventCursor, streamText: streamText, savedAt: .now)
@@ -359,40 +441,48 @@ import Combine
 
     private func accept(_ result: WorkshopOperationPage, id: String) async throws {
         guard scope == store.scope, operationId == id, result.operation.id == id, result.cursor >= eventCursor else { throw CancellationError() }
-        operation = result.operation
-        if result.operation.active { error = nil }
-        connectionIssue = nil
-        uncertain = false
-        cachedAt = nil
-        followups = WorkshopFollowupState.merging(result.followups, into: followups)
+        if operation != result.operation { operation = result.operation }
+        if result.operation.active, error != nil { error = nil }
+        if connectionIssue != nil { connectionIssue = nil }
+        if uncertain { uncertain = false }
+        if cachedAt != nil { cachedAt = nil }
+        let nextFollowups = WorkshopFollowupState.merging(result.followups, into: followups)
+        if followups != nextFollowups { followups = nextFollowups }
         if let receipt, receipt.id == id { clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: id) }
-        if result.cursor > eventCursor { for event in result.events { apply(event) } }
+        var nextEntries = entries
+        if result.cursor > eventCursor { WorkshopTranscriptMerge.apply(result.events, entries: &nextEntries, streamText: &streamText) }
         for followup in followups {
             if let queued = pendingSend(followup.id) { clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id) }
-            try store.saveQueuedSend(nil, removing: followup.id)
-            if followup.state == "cancelled" { entries.removeAll { $0.id == followup.id }; continue }
-            if let index = entries.firstIndex(where: { $0.id == followup.id && $0.kind == "followup" }) {
-                let entry = entries[index]
-                entries[index] = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
+            try store.saveQueuedSend(nil, removing: followup.id, background: true)
+            if followup.state == "cancelled" { nextEntries.removeAll { $0.id == followup.id }; continue }
+            if let index = nextEntries.firstIndex(where: { $0.id == followup.id && $0.kind == "followup" && $0.state != followup.state }) {
+                let entry = nextEntries[index]
+                nextEntries[index] = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
                     state: followup.state, truncated: entry.truncated, questionId: entry.questionId)
             }
         }
+        if entries != nextEntries { entries = nextEntries }
         hasMoreEvents = result.hasMore && result.cursor > eventCursor
         eventCursor = result.cursor
-        approvals = result.approvals
+        if approvals != result.approvals { approvals = result.approvals }
         for artifact in result.artifacts where !artifacts.contains(where: { $0.id == artifact.id }) { artifacts.append(artifact) }
-        if let resolved = result.operation.threadId {
-            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application) }
+        if let resolved = result.operation.threadId, resolved != threadId {
+            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application, background: true) }
             threadId = resolved
         }
         if var receipt, receipt.id == id {
             receipt.threadId = threadId
             receipt.state = result.operation.active ? "pending" : result.operation.state
-            try store.saveReceipt(receipt)
+            try store.saveReceipt(receipt, background: true)
             self.receipt = receipt
         }
         saveTranscript()
         lastVerifiedAt = .now
+        if let threadId, result.operation.state != "completed" ||
+            (result.operation.turnId != nil && latestCompletionID == result.operation.turnId) {
+            store.observeSession(threadId: threadId, operationId: id, state: result.operation.state,
+                completionId: result.hasMore ? nil : result.operation.turnId, agent: agent, scope: scope)
+        }
         if !result.operation.active && !result.hasMore {
             observedTerminal = id
             if result.operation.state == "completed" { latestCompletionID = result.operation.turnId; markLatestRead() }
@@ -427,29 +517,34 @@ import Combine
         if let operationId, operation?.active == true || followups.contains(where: { $0.editable }) {
             let resume = operation?.active != true
             let queued = WorkshopQueuedSend(id: UUID().uuidString.lowercased(), operationId: operationId,
-                message: message, imageIds: photos.map(\.id))
+                message: message, imageIds: photos.map(\.id), reasoningEffort: choice.reasoningEffort)
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存排队消息，请重试。"; return }
             store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
             draftSendingID = queued.id
             entries.append(queued.entry); appendedMessageID = queued.id; error = nil
             saveTranscript()
+            await store.flushComposerDrafts()
             await submitQueued(queued)
             if resume, followups.contains(where: { $0.id == queued.id && $0.editable }) {
                 await mutateMessage(queued.id, action: "steer")
             }
             return
         }
+        if threadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
         let next = WorkshopReceipt(id: UUID().uuidString.lowercased(), agentId: agent.id, applicationId: application.id,
             originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now, state: "pending",
             model: choice.model, permission: choice.permission.rawValue, imageIds: photos.isEmpty ? nil : photos.map(\.id),
-            serviceTier: choice.serviceTier ?? "default")
+            serviceTier: choice.serviceTier ?? "default", systemPrompt: threadId == nil ? store.systemPrompt : nil,
+            reasoningEffort: choice.reasoningEffort)
+        guard next.fitsRequestBudget else { error = "首条消息与系统提示词合计过长，请缩短提示词或消息内容。"; return }
         do { try store.saveReceipt(next) }
         catch { self.error = "无法保存发送记录，请重试。"; return }
         draftSendingID = next.id
         receipt = next; uncertain = true; operationId = next.id; eventCursor = 0; streamText = [:]; observedTerminal = nil
         operation = nil; approvals = []; error = nil
         saveTranscript()
+        await store.flushComposerDrafts()
         await submit(next)
     }
 
@@ -463,7 +558,7 @@ import Combine
         let requestID = UUID().uuidString.lowercased()
         if let operationId {
             let queued = WorkshopQueuedSend(id: requestID, operationId: operationId, message: message,
-                imageIds: [], questionId: entry.id)
+                imageIds: [], questionId: entry.id, reasoningEffort: choice.reasoningEffort)
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存回答，请重试。"; return }
             entries.append(queued.entry); appendedMessageID = queued.id; saveTranscript()
@@ -473,10 +568,13 @@ import Combine
                 await mutateMessage(queued.id, action: "steer")
             }
         } else {
+            if threadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
             let next = WorkshopReceipt(id: requestID, agentId: agent.id, applicationId: application.id,
                 originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now,
                 state: "pending", model: choice.model, permission: choice.permission.rawValue,
-                serviceTier: choice.serviceTier ?? "default", questionId: entry.id)
+                serviceTier: choice.serviceTier ?? "default", questionId: entry.id,
+                systemPrompt: threadId == nil ? store.systemPrompt : nil, reasoningEffort: choice.reasoningEffort)
+            guard next.fitsRequestBudget else { error = "首条消息与系统提示词合计过长，请缩短提示词或消息内容。"; return }
             do { try store.saveReceipt(next) }
             catch { self.error = "无法保存回答，请重试。"; return }
             receipt = next; uncertain = true; operationId = next.id; operation = nil

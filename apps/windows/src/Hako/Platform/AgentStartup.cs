@@ -23,7 +23,7 @@ public sealed class AgentStartup
         }
     }
 
-    public AgentStartup(string executable, string profileDirectory, string? startupDirectory = null, string? assemblyPath = null)
+    public AgentStartup(string executable, string profileDirectory, string? startupDirectory = null, string? assemblyPath = null, string? managedArguments = null)
     {
         this.executable = Path.GetFullPath(executable);
         var profile = Path.TrimEndingDirectorySeparator(Path.GetFullPath(profileDirectory));
@@ -35,11 +35,16 @@ public sealed class AgentStartup
         arguments = assemblyPath is null ? "" : QuotePath(Path.GetFullPath(assemblyPath)) + " ";
         arguments += "--background";
         if (!isDefault) arguments += " --data-dir " + QuotePath(profile);
+        if (managedArguments is not null) arguments = managedArguments;
     }
 
     public static AgentStartup ForCurrentProcess(string profileDirectory)
     {
         var executable = Environment.ProcessPath ?? throw new IOException("无法找到 Hako 可执行文件。");
+        var configuration = AgentGuardianControl.FileFor(profileDirectory, "config.json");
+        var managedExecutable = Path.Combine(Path.GetDirectoryName(executable)!, "guardian", "Hako.Guardian.exe");
+        if (File.Exists(configuration) && File.Exists(managedExecutable))
+            return new AgentStartup(managedExecutable, profileDirectory, managedArguments: "--guardian --config " + QuotePath(configuration));
         var assembly = string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase)
             ? Path.Combine(AppContext.BaseDirectory, "Hako.dll") : null;
         return new AgentStartup(executable, profileDirectory, assemblyPath: assembly);

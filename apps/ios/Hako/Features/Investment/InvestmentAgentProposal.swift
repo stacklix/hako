@@ -154,8 +154,8 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         "asset_type": "标的类型", "account_type": "账户类型", "currency": "币种", "quote_currency": "报价币种", "symbol": "代码",
         "amount": "金额", "quantity": "数量", "unit_price": "单位价格", "fee": "手续费", "settled_amount": "交收金额 / 存款余额",
         "effective_date": "记账日期", "exchange": "交易所", "transfer_id": "划转编号", "transfer_account_id": "对侧账户",
-        "instrument_id": "行情标的", "collateral_asset_id": "结算币", "position_side": "方向", "settlement_unit": "结算单位",
-        "trade_action": "开平仓方向", "margin_delta": "保证金变动", "funding_target": "资金账户", "settlement_to_account_rate": "结算币兑美元",
+        "instrument_id": "行情标的", "position_side": "方向", "settlement_unit": "结算单位",
+        "trade_action": "开平仓方向", "margin_delta": "保证金变动",
         "annual_rate": "年利率", "maturity_date": "到期日", "sort_order": "顺序", "month_day": "每月执行日", "next_date": "下次执行",
         "enabled": "启用", "last_result": "最近结果", "plan_id": "定投编号", "scheduled_date": "计划日期", "executed_at": "执行时间",
         "result_detail": "执行结果", "recorded_at": "记录时间（北京时间）", "balance_account_id": "资产负债账户", "category": "分类",
@@ -164,7 +164,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         "is_final": "最终报价", "snapshot_date": "快照日期", "total_cny": "人民币总额", "total_usd": "美元总额", "status": "状态",
         "missing_inputs": "缺少数据", "computed_revision": "计算版本", "cash_native": "现金余额", "holdings_native": "持仓市值",
         "gain_native": "累计收益", "cumulative_gain_cny": "累计收益（CNY）", "daily_gain_cny": "当日收益（CNY）",
-        "cash_change": "现金变动", "contract_multiplier": "合约乘数", "pricing_model": "定价模型", "settlement_basis": "结算本位"
+        "cash_change": "现金变动", "contract_multiplier": "合约乘数"
     ]
 
     private struct Presentation {
@@ -181,7 +181,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
             accounts = Dictionary(book.accounts.map { ($0.id.uuidString, "\($0.name) · \($0.currency.rawValue)") }, uniquingKeysWith: { first, _ in first })
             balances = Dictionary((book.balanceSheet?.accounts ?? []).map { ($0.id.uuidString, $0.name) }, uniquingKeysWith: { first, _ in first })
             let entries = book.assets.values.sorted { $0.id.uuidString < $1.id.uuidString }
-            assets = Dictionary(entries.map { ($0.id.uuidString, $0.kind.isTermDeposit ? $0.name : "\($0.displayName) · \($0.displayCode)") }, uniquingKeysWith: { first, _ in first })
+            assets = Dictionary(entries.map { ($0.id.uuidString, $0.kind.usesBalance ? $0.name : "\($0.displayName) · \($0.displayCode)") }, uniquingKeysWith: { first, _ in first })
             instruments = Dictionary(entries.map { (($0.instrumentID ?? $0.id).uuidString, "\($0.displayCode) · \($0.currency.rawValue)") }, uniquingKeysWith: { first, _ in first })
             events = Dictionary(book.accounts.flatMap(\.events).map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
             var cash: [String: String] = [:]
@@ -197,7 +197,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         func title(_ row: InvestmentServerRow, section: Section) -> String {
             if section.name == "investment_events", let id = row["id"], let event = events[id] {
                 let asset = book.asset(event.assetID)
-                return [event.title(for: asset), asset.map { $0.kind.isTermDeposit ? $0.name : $0.displayCode }].compactMap { $0 }.joined(separator: " ")
+                return [event.title(for: asset), asset.map { $0.kind.usesBalance ? $0.name : $0.displayCode }].compactMap { $0 }.joined(separator: " ")
             }
             let asset = section.name == "investment_assets" ? row["id"].flatMap(UUID.init(uuidString:)).flatMap(book.asset) : nil
             let named = asset?.displayName ?? row["name"] ?? row["symbol"] ?? row["asset_id"].flatMap { assets[$0] }
@@ -220,7 +220,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
                 if event.kind == .buy || event.kind == .sell { row["fee"] = row["fee"] ?? "0" }
             }
             let references = ["account_id": accounts, "transfer_account_id": accounts, "asset_id": assets,
-                              "collateral_asset_id": assets, "instrument_id": instruments, "balance_account_id": balances]
+                              "instrument_id": instruments, "balance_account_id": balances]
             for (key, names) in references { if let value = row[key], let label = names[value] { row[key] = label } }
             if let value = row["account_type"] { row["account_type"] = InvestmentAgentAction.accountTypes[value]?.rawValue ?? value }
             if let value = row["asset_type"] { row["asset_type"] = InvestmentAgentAction.assetKinds[value]?.title ?? value }
@@ -361,7 +361,7 @@ extension InvestmentAgentProposal {
                 }
                 let retainedNames = involved.compactMap { book.asset($0)?.displayName }.sorted()
                 if !retainedNames.isEmpty {
-                    fields.append(.init(id: "retained_assets", label: "保留仍被引用的标的登记", before: retainedNames.joined(separator: "、") + "（其他流水、定投、关注或合约仍引用）", after: nil))
+                    fields.append(.init(id: "retained_assets", label: "保留仍被引用的标的登记", before: retainedNames.joined(separator: "、") + "（其他流水、定投或关注仍引用）", after: nil))
                 }
                 if !counterpartNames.isEmpty {
                     fields.append(.init(id: "transfers", label: "对应划转同时删除", before: counterpartNames.joined(separator: "、"), after: nil))
@@ -378,7 +378,7 @@ extension InvestmentAgentProposal {
             } else if action.kind == .distribution {
                 var kinds: Set<InvestmentEventKind> = []
                 related = related.filter { item in event(for: item).map { kinds.insert($0.kind).inserted } ?? false }
-            } else if [.addEvent, .cashBalance, .spotBalance, .fundingBalance, .plan, .balanceRecord].contains(action.kind) {
+            } else if [.addEvent, .cashBalance, .spotBalance, .assetBalance, .plan, .balanceRecord].contains(action.kind) {
                 related = Array(related.prefix(1))
             }
             if action.kind == .balanceAccount, let row = related.first {
@@ -396,7 +396,7 @@ extension InvestmentAgentProposal {
             switch action.kind {
             case .deleteEvent, .removeAccount, .removePosition, .removePlan, .deleteBalanceRecord: operation = .remove
             case .watch: operation = action.text("enabled") == "false" ? .remove : .add
-            case .editEvent, .editAccount, .archiveAccount, .restoreAccount, .editAsset, .editBalanceRecord, .cashBalance, .spotBalance, .fundingBalance: operation = .edit
+            case .editEvent, .editAccount, .archiveAccount, .restoreAccount, .editAsset, .editBalanceRecord, .cashBalance, .spotBalance, .assetBalance: operation = .edit
             case .plan: operation = action.text("plan_id") == nil ? .add : .edit
             default: operation = record?.operation ?? .add
             }
@@ -417,7 +417,7 @@ extension InvestmentAgentProposal {
                     display = original?.before ?? record?.title ?? display
                 }
                 var before = operation == .edit ? original?.before ?? display : operation == .remove ? display : nil
-                if field.key == "amount", [.cashBalance, .spotBalance, .fundingBalance].contains(action.kind) { before = nil }
+                if field.key == "amount", [.cashBalance, .spotBalance, .assetBalance].contains(action.kind) { before = nil }
                 if action.kind == .editEvent, field.key == "amount", let raw = before, let amount = Decimal(string: raw) {
                     before = NSDecimalNumber(decimal: abs(amount)).stringValue
                 }
@@ -426,7 +426,6 @@ extension InvestmentAgentProposal {
                 }
                 if action.kind == .editEvent, field.key == "direction", let raw = recordFields.first(where: { $0.id == "amount" })?.before,
                    let amount = Decimal(string: raw) { before = amount < 0 ? "减少 / 扣款" : "增加 / 入账" }
-                if field.key == "quantity", action.text("quantity_mode") == "coins" || action.text("quantity_mode") == "notional" { before = nil }
                 return .init(id: field.key, label: field.label, before: before, after: operation == .remove ? nil : display)
             }
             var groups: [Preview.Group] = []
@@ -443,7 +442,7 @@ extension InvestmentAgentProposal {
                 let fields = group.fields.filter { !hidden.contains($0.key) && $0.key != "event_id" }.map(present)
                 guard !fields.isEmpty else { continue }
                 let groupTitle = [.addEvent, .editEvent].contains(action.kind) ?
-                    ((try? action.asset(in: book))?.basis == .coin ? "使用结算币余额" : "交易信息") : group.title
+                    "交易信息" : group.title
                 groups.append(.init(title: groupTitle, fields: fields))
             }
             if let quote = entryQuoteIndex(for: index) {
@@ -451,10 +450,6 @@ extension InvestmentAgentProposal {
                     Change.Field(id: "valuation-" + field.key, label: field.label, before: nil, after: field.displayValue)
                 }
                 groups.append(.init(title: "估值信息", fields: fields))
-            }
-            if action.text("quantity_mode") == "coins" || action.text("quantity_mode") == "notional",
-               let quantity = recordFields.first(where: { $0.id == "quantity" }) {
-                groups.append(.init(title: "数量折算", fields: [.init(id: "contract_count", label: "折算张数", before: quantity.before, after: quantity.after)]))
             }
             if action.kind == .deleteBalanceRecord || action.kind == .removePlan || action.kind == .removeAccount {
                 let details = related.flatMap(\.groups).flatMap(\.fields)
@@ -467,7 +462,7 @@ extension InvestmentAgentProposal {
                     .init(id: "cash-\(index)", label: field.label, before: field.before, after: field.after)
                 }))
             }
-            let transaction = [.addEvent, .editEvent, .deleteEvent, .transfer, .distribution, .cashBalance, .spotBalance, .fundingBalance].contains(action.kind)
+            let transaction = [.addEvent, .editEvent, .deleteEvent, .transfer, .distribution, .cashBalance, .spotBalance, .assetBalance].contains(action.kind)
             let title = [.addEvent, .editEvent].contains(action.kind) ? record?.title ?? form.title : form.title
             result.append(.init(id: "action-\(index)", title: title, operation: operation, transaction: transaction, groups: groups, sourceIDs: sourceIDs))
         }
@@ -541,16 +536,8 @@ extension InvestmentAgentProposal {
             guard event.kind == action.text("event_type").flatMap({ InvestmentAgentAction.eventKinds[$0] }) else { return false }
             if let price = action.text("price"), Decimal(string: price) != event.price { return false }
             if let quantity = action.text("quantity").flatMap({ Decimal(string: $0) }) {
-                var expected = quantity
-                if let asset, asset.kind == .cryptoContract, asset.basis == .coin {
-                    let input: InvestmentCoinContractQuantity
-                    if action.text("quantity_mode") == "coins" {
-                        input = .coins(quantity, referencePrice: action.text("reference_price").flatMap { Decimal(string: $0) } ?? 0)
-                    } else if action.text("quantity_mode") == "notional" { input = .notionalUSD(quantity) }
-                    else { input = .contracts(quantity) }
-                    guard let count = try? input.contractCount(faceValue: asset.multiplier) else { return false }
-                    expected = count
-                }
+                let expected = quantity
+
                 if expected != (event.kind == .spotAdjustment ? abs(event.quantity) : event.quantity) { return false }
             }
             if let fee = action.text("fee").flatMap({ Decimal(string: $0) }), fee != (event.fee ?? 0) { return false }
@@ -562,7 +549,7 @@ extension InvestmentAgentProposal {
                 event.kind == .bonusShares && event.quantity == action.text("quantity").flatMap { Decimal(string: $0) }
         case .cashBalance: return event.kind == .adjustment && event.assetID == nil
         case .spotBalance: return event.kind == .stakingReward || event.kind == .spotAdjustment
-        case .fundingBalance: return event.kind == .funding
+        case .assetBalance: return event.kind == .adjustment && event.assetID != nil
         default: return false
         }
     }
@@ -596,7 +583,7 @@ extension InvestmentAgentProposal {
             let primary = eventChange ?? change
             let pair = owners.first { $0.1.id.uuidString == key }
             let asset = book.asset(pair?.1.assetID) ?? book.assets.values.first {
-                ($0.kind.isTermDeposit ? $0.name : "\($0.displayName) · \($0.displayCode)") == primary.value("asset_id")
+                ($0.kind.usesBalance ? $0.name : "\($0.displayName) · \($0.displayCode)") == primary.value("asset_id")
             }
             var fields = eventChange?.fields ?? []
             for field in detail?.fields ?? [] where !fields.contains(where: { $0.id == field.id }) { fields.append(field) }
@@ -639,32 +626,21 @@ extension InvestmentAgentProposal {
 
     private func assetForm(_ asset: InvestmentAsset, fields: [Change.Field], operation: Change.Operation) -> [Change.Field] {
         let form = FormFields(fields: fields, operation: operation)
-        let contract = asset.kind == .cryptoContract
         let selected = fields.first { $0.id == "asset_id" }.map {
             Change.Field(id: "selected_asset", label: "已选标的", before: $0.before, after: $0.after)
-        } ?? form.context("selected_asset", "已选标的", asset.kind.isTermDeposit ? asset.name : asset.displayName + " · " + asset.displayCode)
+        } ?? form.context("selected_asset", "已选标的", asset.kind.usesBalance ? asset.name : asset.displayName + " · " + asset.displayCode)
         var result = [
             form.context("quote_currency", "报价币种", asset.currency.title + " · " + asset.currency.rawValue),
-            form.context("asset_type", "资产类型", contract ? asset.basis.rawValue + "合约" : asset.kind.title),
+            form.context("asset_type", "资产类型", asset.kind.title),
             selected
         ]
-        if !asset.kind.isTermDeposit && asset.kind != .insurance && asset.kind != .wealth {
-            result.append(form.field("exchange", contract ? "报价交易所" : "交易所", asset.market))
+        if !asset.kind.usesBalance && asset.kind != .insurance && asset.kind != .wealth {
+            result.append(form.field("exchange", "交易所", asset.market))
         }
-        if contract {
-            result.append(form.field("settlement_unit", "结算币种", book.settlementUnit(for: asset)))
-            let quote = book.quote(asset.id)
-            let state: String
-            if let quote {
-                let unit = asset.basis == .coin ? "USD/" + book.settlementUnit(for: asset) : book.quoteUnit(for: asset)
-                state = [quote.source ?? "报价", NSDecimalNumber(decimal: quote.price).stringValue + " " + unit,
-                         InvestmentBook.snapshotDateFormatter().string(from: quote.day)].joined(separator: " · ")
-            } else { state = "暂未取得报价，可在行情恢复后刷新" }
-            result.append(form.context("quote_state", "行情报价", state))
-        }
+
         if asset.kind.usesMargin {
             result.append(form.context("position_side", "开仓方向", (asset.contractSide ?? .long).rawValue))
-            result.append(form.field("contract_multiplier", asset.basis == .coin ? "每张合约面值（USD）" : "合约乘数",
+            result.append(form.field("contract_multiplier", "合约乘数",
                                      NSDecimalNumber(decimal: asset.multiplier).stringValue))
         }
         // Existing asset edits must retain their before/after values, especially a renamed instrument.
@@ -698,25 +674,23 @@ extension InvestmentAgentProposal {
         let currency = account?.currency.rawValue ?? ""
         if trade, let asset {
             let settlement = book.settlementUnit(for: asset)
-            let coin = asset.kind == .cryptoContract && asset.basis == .coin
-            let unit = coin || (asset.kind == .cryptoContract && asset.market == "HTX") ? "张" : asset.kind.unit
-            if coin { values.append(form.context("quantity_mode", "数量录入方式", "按张数")) }
-            if asset.kind != .insurance && !asset.kind.isTermDeposit {
+            let unit = asset.kind.unit
+            if asset.kind != .insurance && !asset.kind.usesBalance {
                 values.append(form.field("quantity", "数量（\(unit)）", event.map { NSDecimalNumber(decimal: $0.quantity).stringValue }))
             }
-            let quote = coin ? "USD/" + settlement : book.quoteUnit(for: asset)
-            let priceLabel = asset.kind.isTermDeposit ? (event?.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）")
+            let quote = book.quoteUnit(for: asset)
+            let priceLabel = asset.kind == .generic ? (event?.kind == .sell ? "取出金额（USD）" : "投入金额（USD）") : asset.kind.usesBalance ? (event?.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）")
                 : asset.kind == .insurance ? (event?.kind == .sell ? "退保到账金额（HKD）" : "保费金额（HKD）") : "成交价（\(quote)）"
             values.append(form.field("unit_price", priceLabel, event.map { NSDecimalNumber(decimal: $0.price).stringValue }))
-            if asset.isStockConnect || asset.kind.isTermDeposit {
-                values.append(form.field("settled_amount", asset.kind.isTermDeposit ? "变动后余额（CNY）" :
+            if asset.isStockConnect || asset.kind.usesBalance {
+                values.append(form.field("settled_amount", asset.kind.usesBalance ? "变动后余额（\(asset.currency.rawValue)）" :
                     (event?.kind == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）")))
             }
             if asset.kind.supportsTradeFees && !asset.isStockConnect && event?.kind != .opening {
                 values.append(form.field("fee", "交易费用（\(settlement)，选填）", event?.fee.map { NSDecimalNumber(decimal: $0).stringValue } ?? "未填写"))
             }
             if asset.kind.usesMargin && event?.kind != .sell && !["平多", "平空"].contains(title) {
-                var margin = form.field("margin_delta", asset.kind == .cryptoContract ? "本次开仓保证金总额（\(settlement)）" : "每手初始保证金（\(settlement)）",
+                var margin = form.field("margin_delta", "每手初始保证金（\(settlement)）",
                                         event.map { NSDecimalNumber(decimal: $0.margin).stringValue })
                 if asset.kind == .future, let raw = fields.first(where: { $0.id == "margin_delta" }) {
                     let quantity = fields.first { $0.id == "quantity" }
@@ -728,17 +702,14 @@ extension InvestmentAgentProposal {
                 }
                 values.append(margin)
             }
-            if asset.collateralAssetID != nil {
-                values.append(form.field("settlement_to_account_rate", settlement + " 兑美元单价",
-                                         event?.settlementRate.map { NSDecimalNumber(decimal: $0).stringValue } ?? "未填写"))
-            }
+
         } else {
             values += fields.filter { !Self.internalPreviewFields.contains($0.id) && !["account_id", "asset_id", "event_type", "effective_date", "cash_change"].contains($0.id) }.map { field in
                 let labels = ["amount": "金额（\(asset.map { book.settlementUnit(for: $0) } ?? currency)）", "unit_price": "成交价（\(currency)）"]
                 return Change.Field(id: field.id, label: labels[field.id] ?? field.label, before: field.before, after: field.after)
             }
         }
-        let groupTitle = trade && asset?.basis == .coin ? "使用结算币余额" : trade ? "交易信息" : "流水信息"
+        let groupTitle = trade ? "交易信息" : "流水信息"
         groups.append(.init(title: groupTitle, fields: values))
         if let cash = fields.first(where: { $0.id == "cash_change" }) { groups.append(.init(title: "余额影响", fields: [cash])) }
         return groups

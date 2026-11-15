@@ -14,6 +14,7 @@ using Hako.Platform;
 internal static class CodeWorkshopChecks
 {
     private const string FixtureThread = "11111111-1111-4111-8111-111111111111";
+    private const string FixtureSystemPrompt = "每次原型修改都使用新路径，并在本次回复中发送新的原型卡片。";
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, WorkshopProtocol.Json);
     private static JsonElement Result(object? value) => Json(value!);
     private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -32,6 +33,23 @@ internal static class CodeWorkshopChecks
         } }));
         Check(runningSummary.Preview == "Newest user message" && runningSummary.State == "running" && runningSummary.CompletionId is null,
             "Running turns must use their latest user message and cannot be marked completed");
+        foreach (var state in new[] { "completed", "failed", "interrupted" })
+        {
+            var finishedJob = new WorkshopJob { TurnId = "next-turn", State = state };
+            var reconciled = CodeWorkshop.ReconcileSummary(runningSummary, finishedJob);
+            Check(reconciled.State == state && reconciled.CompletionId == (state == "completed" ? "next-turn" : null),
+                "A stale metadata summary overrode a matching finished worker: " + state);
+            Check(CodeWorkshop.ReconcileSummary(runningSummary, new WorkshopJob { TurnId = "older-turn", State = state }) == runningSummary,
+                "A previous local worker hid a newer external turn");
+        }
+        foreach (var state in new[] { "running", "waiting", "finishing", "queued", "paused" })
+        {
+            var active = CodeWorkshop.ReconcileSummary(summarized, new WorkshopJob { TurnId = "latest-turn", State = state });
+            Check(active.State == state && active.CompletionId is null,
+                "Catalog must not report completion while a local worker or queued request remains: " + state);
+        }
+        Check(CodeWorkshop.ReconcileSummary(runningSummary, null) == runningSummary,
+            "An external turn without a local worker must keep its reported state");
         var userItem = Json(new { id = "canonical", type = "userMessage", content = new object[] {
             new { type = "text", text = "Same" }, new { type = "localImage", path = "image.jpg" } } });
         var userJobs = new[] {
@@ -88,7 +106,7 @@ internal static class CodeWorkshopChecks
         var generatedBytes = new byte[3_133_248];
         new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }.CopyTo(generatedBytes, 0);
         File.WriteAllBytes(Path.Combine(project, "generated-fixture.png"), generatedBytes);
-        Task<CodexAppServer> Start(CancellationToken token, bool occupied = false)
+        Task<CodexAppServer> Start(CancellationToken token, bool occupied = false, string? scenario = null)
         {
             var start = new ProcessStartInfo(Environment.ProcessPath!);
             if (Path.GetFileNameWithoutExtension(Environment.ProcessPath!).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
@@ -97,6 +115,7 @@ internal static class CodeWorkshopChecks
             start.Environment["CODEX_WINDOWS_REGISTERED_CORE"] = "1";
             start.Environment["HAKO_CODEX_TEST_PROJECT"] = project;
             if (occupied) start.Environment["HAKO_CODEX_TEST_OCCUPIED"] = "1";
+            if (scenario is not null) start.Environment["HAKO_CODEX_TEST_SCENARIO"] = scenario;
             return CodexAppServer.StartAsync(token, start);
         }
         var storage = Path.Combine(directory, "state");
@@ -104,6 +123,8 @@ internal static class CodeWorkshopChecks
         {
             string applicationId;
             string requestId;
+            long completedStart;
+            long completedEnd;
             await using (var service = new CodeWorkshop(storage, code, Path.Combine(directory, ".codex"), token => Start(token)))
             {
                 // The worker is shared by LAN and cloud; a configured cloud identity
@@ -155,6 +176,8 @@ internal static class CodeWorkshopChecks
                 var models = Result(await service.ModelsAsync(Json(new { }), default));
                 Check(models.GetProperty("models")[0].GetProperty("supportsImages").GetBoolean(), "Model image capability was lost");
                 Check(models.GetProperty("models")[0].GetProperty("serviceTiers")[0].GetProperty("id").GetString() == "priority", "Fast service tier identity was lost");
+                Check(models.GetProperty("models")[0].GetProperty("reasoningEfforts").EnumerateArray().Select(value => CodexJson.Text(value, "id")).SequenceEqual(new[] { "high", "low", "future-effort" }), "Advertised reasoning efforts were reordered or hard-coded");
+                Check(CodexJson.Text(models.GetProperty("models")[0], "defaultReasoningEffort") == "low", "Default reasoning effort was lost");
                 var imageId = Guid.NewGuid().ToString();
                 var imageBytes = new byte[] { 0xff, 0xd8, 1, 2, 3, 4, 0xff, 0xd9 };
                 var digest = Convert.ToHexString(SHA256.HashData(imageBytes));
@@ -196,9 +219,11 @@ internal static class CodeWorkshopChecks
                 try { await service.ArtifactAsync(Json(new { threadId = FixtureThread, artifactId, offset = 0, revision = "changed" }), default); throw new Exception("Changed artifact accepted"); }
                 catch (WorkshopException e) when (e.Code == "codex_artifact_changed") { }
                 requestId = Guid.NewGuid().ToString();
-                var parameters = Json(new { requestId, applicationId, threadId = FixtureThread, name = "Fixture", message = "Run fixture" });
+                var parameters = Json(new { requestId, applicationId, threadId = FixtureThread, name = "Fixture", message = "Run fixture", reasoningEffort = "high" });
                 using var requestLife = new CancellationTokenSource();
                 var started = Result(await service.StartAsync(parameters, requestLife.Token));
+                Check(started.GetProperty("startedAt").GetInt64() > 0 && started.GetProperty("finishedAt").ValueKind == JsonValueKind.Null,
+                    "A new operation must expose its start without inventing a terminal time");
                 Check(JsonDocument.Parse(File.ReadAllBytes(Path.Combine(storage, requestId + ".json"))).RootElement.GetProperty("notificationScope").GetString() == "fixture-cloud",
                     "LAN/shared worker did not persist its configured cloud notification scope");
                 requestLife.Cancel();
@@ -244,6 +269,9 @@ internal static class CodeWorkshopChecks
                 try { await resumedStream; } catch (OperationCanceledException) { }
                 Check(CodexJson.Text(queued, "state") == "queued", "Follow-up did not enter queue");
                 await service.QueueAsync(queueRequest, default);
+                Check(CodexJson.Text(JsonDocument.Parse(File.ReadAllBytes(Path.Combine(storage, queuedId + ".json"))).RootElement, "reasoningEffort") == "high", "A queued message lost its inherited reasoning effort");
+                try { await service.QueueAsync(Json(new { operationId = requestId, requestId = queuedId, message = "Follow-up fixture", reasoningEffort = "low" }), default); throw new Exception("Reasoning change reused a queued request ID"); }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var editId = Guid.NewGuid().ToString();
                 var edit = Json(new { operationId = requestId, messageId = queuedId, requestId = editId, revision = 0, message = "Edited follow-up" });
                 var edited = Result(await service.UpdateMessageAsync(edit, default));
@@ -265,7 +293,7 @@ internal static class CodeWorkshopChecks
                 await service.QueueAsync(Json(new { operationId = requestId, requestId = cancelledId, message = "Cancelled follow-up" }), default);
                 await service.CancelMessageAsync(Json(new { operationId = requestId, messageId = cancelledId, requestId = Guid.NewGuid().ToString(), revision = 0 }), default);
                 var automaticId = Guid.NewGuid().ToString();
-                await service.QueueAsync(Json(new { operationId = requestId, requestId = automaticId, message = "Automatic follow-up" }), default);
+                await service.QueueAsync(Json(new { operationId = requestId, requestId = automaticId, message = "Automatic follow-up", reasoningEffort = "future-effort" }), default);
                 var approval = waiting.GetProperty("approvals")[0].GetProperty("id").GetString();
                 try { await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "invalid" }), default); throw new Exception("Invalid approval accepted"); }
                 catch (WorkshopException e) when (e.Code == "invalid_params") { }
@@ -292,14 +320,28 @@ internal static class CodeWorkshopChecks
                     await Task.Delay(30);
                 }
                 Check(nextTurn.GetProperty("operation").GetProperty("id").GetString() == requestId && nextTurn.GetProperty("approvals").GetArrayLength() == 1, "Queued turn did not keep root operation and approvals");
+                var firstTiming = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(storage, requestId + ".json")), WorkshopProtocol.Json)!;
+                Check(nextTurn.GetProperty("operation").GetProperty("startedAt").GetInt64() >= firstTiming.FinishedAt / 1000 &&
+                    nextTurn.GetProperty("operation").GetProperty("finishedAt").ValueKind == JsonValueKind.Null,
+                    "The next round's clock must start after the preceding round finishes, excluding queue wait");
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = nextTurn.GetProperty("approvals")[0].GetProperty("id").GetString(), decision = "accept" }), default);
                 var completed = await WaitAsync(service, requestId, "completed");
+                var latestTiming = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(storage, automaticId + ".json")), WorkshopProtocol.Json)!;
+                completedStart = completed.GetProperty("operation").GetProperty("startedAt").GetInt64();
+                completedEnd = completed.GetProperty("operation").GetProperty("finishedAt").GetInt64();
+                Check(completedStart == latestTiming.StartedAt && completedEnd == latestTiming.FinishedAt && completedEnd >= completedStart * 1000,
+                    "Grouped operation timing must belong to the displayed round and use its durable completion timestamp");
                 await liveDone.Task.WaitAsync(TimeSpan.FromSeconds(3));
                 liveLife.Cancel();
                 try { await liveStream; } catch (OperationCanceledException) { }
                 var completedSession = Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0];
                 Check(CodexJson.Text(completedSession, "state") == "completed" && CodexJson.Text(completedSession, "completionId").Length > 0,
                     "A finished worker stayed running in the catalog or lost its unread completion identity");
+                File.WriteAllText(summaryStatus, "inProgress");
+                var staleCompleted = Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0];
+                Check(CodexJson.Text(staleCompleted, "state") == "completed" && CodexJson.Text(staleCompleted, "completionId").Length > 0,
+                    "A later catalog poll restored running from a stale metadata connection after the worker completed");
+                File.Delete(summaryStatus);
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "accept" }), default);
                 Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "text") == "Fixture completed"), "Streamed answer was lost");
                 Check(completed.GetProperty("followups").GetArrayLength() == 3, "Follow-up ledger did not survive turn handoff");
@@ -322,7 +364,7 @@ internal static class CodeWorkshopChecks
                 await WaitAsync(service, stopId, "completed");
                 var imageRequest = Guid.NewGuid().ToString();
                 await service.StartAsync(Json(new { requestId = imageRequest, applicationId, threadId = FixtureThread,
-                    message = "Image fixture", model = "fixture-vision", permission = "auto", imageIds = new[] { imageId }, serviceTier = "priority" }), default);
+                    message = "Image fixture", model = "fixture-vision", permission = "auto", imageIds = new[] { imageId }, serviceTier = "priority", reasoningEffort = "high" }), default);
                 var imageWaiting = await WaitAsync(service, imageRequest, "waiting");
                 var downloaded = Result(await service.ImageAsync(Json(new { threadId = FixtureThread, messageId = imageRequest, index = 0, offset = 0 }), default));
                 Check(Convert.FromBase64String(CodexJson.Text(downloaded, "content")).SequenceEqual(imageBytes), "Message image bytes did not round trip");
@@ -341,7 +383,25 @@ internal static class CodeWorkshopChecks
                     message = "Image fixture", model = "fixture-vision", permission = "auto", imageIds = new[] { imageId }, serviceTier = "default" }), default); throw new Exception("Speed change reused an existing request ID"); }
                 catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var standardId = Guid.NewGuid().ToString();
-                await service.StartAsync(Json(new { requestId = standardId, applicationId, message = "Standard fixture", serviceTier = "default" }), default);
+                foreach (var invalidEffort in new object[] { 123, "", " ", "high\0bad", new string('x', 101) })
+                {
+                    try { await service.StartAsync(Json(new { requestId = Guid.NewGuid().ToString(), applicationId, message = "Invalid effort", reasoningEffort = invalidEffort }), default); throw new Exception("Invalid reasoning effort accepted"); }
+                    catch (WorkshopException e) when (e.Code == "invalid_params") { }
+                }
+                await service.StartAsync(Json(new { requestId = standardId, applicationId, message = "Standard fixture", serviceTier = "default", systemPrompt = FixtureSystemPrompt, reasoningEffort = "low" }), default);
+                try { await service.StartAsync(Json(new { requestId = standardId, applicationId, message = "Standard fixture", serviceTier = "default", systemPrompt = FixtureSystemPrompt, reasoningEffort = "high" }), default); throw new Exception("Reasoning change reused request ID"); }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
+                var savedPrompt = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(storage, standardId + ".json")));
+                Check(CodexJson.Text(savedPrompt.RootElement, "systemPrompt") == FixtureSystemPrompt, "Initial prompt was not durably captured with the first request");
+                try { await service.StartAsync(Json(new { requestId = standardId, applicationId, message = "Standard fixture", serviceTier = "default", systemPrompt = "Changed" }), default); throw new Exception("Prompt change reused the original request ID"); }
+                catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
+                foreach (var invalidPrompt in new object[] { 123, new string('x', 4001), "invalid\0prompt" })
+                {
+                    try { await service.StartAsync(Json(new { requestId = Guid.NewGuid().ToString(), applicationId, message = "Invalid", systemPrompt = invalidPrompt }), default); throw new Exception("Invalid prompt accepted"); }
+                    catch (WorkshopException e) when (e.Code == "invalid_params") { }
+                }
+                try { await service.StartAsync(Json(new { requestId = Guid.NewGuid().ToString(), applicationId, threadId = FixtureThread, message = "Existing", systemPrompt = FixtureSystemPrompt }), default); throw new Exception("Existing conversation accepted a replacement system prompt"); }
+                catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 var standardWaiting = await WaitAsync(service, standardId, "waiting");
                 await service.AnswerAsync(Json(new { operationId = standardId, approvalId = standardWaiting.GetProperty("approvals")[0].GetProperty("id").GetString(), decision = "accept" }), default);
                 await WaitAsync(service, standardId, "completed");
@@ -402,7 +462,10 @@ internal static class CodeWorkshopChecks
             }
             await using (var recovered = new CodeWorkshop(storage, code, startServer: token => Start(token)))
             {
-                Check(Result(await recovered.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("operation").GetProperty("state").GetString() == "completed", "Durable job recovery failed");
+                var reopened = Result(await recovered.OperationAsync(Json(new { operationId = requestId }), default)).GetProperty("operation");
+                Check(reopened.GetProperty("state").GetString() == "completed", "Durable job recovery failed");
+                Check(reopened.GetProperty("startedAt").GetInt64() == completedStart && reopened.GetProperty("finishedAt").GetInt64() == completedEnd,
+                    "Reopening a completed operation must preserve its duration instead of counting time since completion");
             }
             await using (var occupied = new CodeWorkshop(Path.Combine(directory, "occupied"), code, startServer: token => Start(token, true)))
             {
@@ -410,6 +473,46 @@ internal static class CodeWorkshopChecks
                 await occupied.StartAsync(Json(new { requestId = busyId, applicationId, threadId = FixtureThread, message = "Check lock" }), default);
                 var failed = await WaitAsync(occupied, busyId, "failed");
                 Check(CodexJson.Text(failed.GetProperty("operation"), "message").Contains("桌面版仍占用"), "Writer conflict was not translated");
+            }
+            await using (var slow = new CodeWorkshop(Path.Combine(directory, "slow"), code, startServer: token => Start(token, scenario: "slow-resume")))
+            {
+                var slowId = Guid.NewGuid().ToString();
+                await slow.StartAsync(Json(new { requestId = slowId, applicationId, threadId = FixtureThread, message = "Slow resume" }), default);
+                await WaitAsync(slow, slowId, "waiting");
+                await slow.StopAsync(Json(new { operationId = slowId }), default);
+                await WaitAsync(slow, slowId, "interrupted");
+            }
+            foreach (var scenario in new[] { "reject-resume", "lost-start-reply" })
+            {
+                await using var failing = new CodeWorkshop(Path.Combine(directory, scenario), code, startServer: token => Start(token, scenario: scenario));
+                var failedId = Guid.NewGuid().ToString();
+                var request = Json(new { requestId = failedId, applicationId, threadId = FixtureThread, message = "Fail safely" });
+                await failing.StartAsync(request, default);
+                var page = await WaitAsync(failing, failedId, scenario == "reject-resume" ? "failed" : "unknown");
+                var detail = CodexJson.Text(page.GetProperty("operation"), "message");
+                Check(scenario == "reject-resume" ? detail.Contains("恢复会话") && detail.Contains("尚未发送") : detail.Contains("结果尚未确认") && !detail.Contains("尚未发送"),
+                    "Startup rejection and an uncertain turn submission must have different recovery instructions: " + detail);
+                Check(!detail.Contains("登录"), "A startup error incorrectly diagnosed a login problem");
+                var duplicate = Result(await failing.StartAsync(request, default));
+                Check(CodexJson.Text(duplicate, "state") == CodexJson.Text(page.GetProperty("operation"), "state"),
+                    "Retrying the same request must not automatically submit a failed or uncertain turn");
+            }
+            var startupAttempts = 0;
+            await using (var timeout = new CodeWorkshop(Path.Combine(directory, "timeout"), code, startServer: _ =>
+            {
+                startupAttempts++;
+                return Task.FromException<CodexAppServer>(new TimeoutException());
+            }))
+            {
+                var timeoutId = Guid.NewGuid().ToString();
+                var request = Json(new { requestId = timeoutId, applicationId, threadId = FixtureThread, message = "Startup timeout" });
+                await timeout.StartAsync(request, default);
+                var page = await WaitAsync(timeout, timeoutId, "failed");
+                var detail = CodexJson.Text(page.GetProperty("operation"), "message");
+                Check(detail.Contains("启动 Codex") && detail.Contains("响应超时") && detail.Contains("尚未发送") && !detail.Contains("登录"),
+                    "Startup timeout was hidden behind an unrelated login error: " + detail);
+                await timeout.StartAsync(request, default);
+                Check(startupAttempts == 1, "A failed startup was retried without a new explicit send");
             }
             var recoveryStorage = Path.Combine(directory, "recovery");
             Directory.CreateDirectory(recoveryStorage);
@@ -490,6 +593,9 @@ internal static class CodeWorkshopChecks
                 Check(CodexJson.Text(options, "sortDirection") == "desc" && CodexJson.Text(options, "itemsView") == "summary" &&
                     CodexJson.Field(options, "limit").GetInt32() == 1, "Catalog hydrated the full transcript instead of one latest-turn summary");
             }
+            if (method == "thread/list")
+                Check(CodexJson.Field(CodexJson.Field(input, "params"), "useStateDbOnly").ValueKind == JsonValueKind.True,
+                    "Interactive catalog queries must use the state database instead of rescanning every rollout");
             if (method == "thread/archive")
             {
                 File.WriteAllText(Path.Combine(project, ".archive-entered"), "entered");
@@ -502,7 +608,14 @@ internal static class CodeWorkshopChecks
                 var options = CodexJson.Field(input, "params");
                 if (CodexJson.Text(options, "model") == "fixture-vision")
                     Check(CodexJson.Text(options, "serviceTier") == "priority", "Thread speed override was lost");
-                if (method == "thread/start") Check(CodexJson.Text(options, "serviceTier") == "default", "Standard thread speed was lost");
+                if (method == "thread/start")
+                {
+                    Check(CodexJson.Text(options, "serviceTier") == "default", "Standard thread speed was lost");
+                    Check(CodexJson.Text(options, "developerInstructions") == FixtureSystemPrompt,
+                        "New thread did not receive its system prompt as developer instructions");
+                }
+                else Check(CodexJson.Field(options, "developerInstructions").ValueKind == JsonValueKind.Undefined,
+                    "Resuming an existing or queued conversation resent/replaced its system prompt");
             }
             if (method == "turn/start")
             {
@@ -514,6 +627,9 @@ internal static class CodeWorkshopChecks
                         "Selected model or local image was not sent to App Server");
                 if (items.Any(value => CodexJson.Text(value, "text") == "Standard fixture"))
                     Check(CodexJson.Text(parameters, "serviceTier") == "default", "Standard turn speed was lost");
+                foreach (var (message, effort) in new[] { ("Run fixture", "high"), ("Image fixture", "high"), ("Standard fixture", "low"), ("Automatic follow-up", "future-effort") })
+                    if (items.Any(value => CodexJson.Text(value, "text") == message))
+                        Check(CodexJson.Text(parameters, "effort") == effort, "Reasoning effort was not sent to the actual Codex turn: " + message);
             }
             if (method == "turn/steer")
             {
@@ -528,6 +644,11 @@ internal static class CodeWorkshopChecks
             }
             if (method == "thread/resume" && Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_OCCUPIED") == "1")
             { Write(new { id, error = new { code = -32600, message = "thread-store conflict: already has an active writer" } }); continue; }
+            var scenario = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_SCENARIO");
+            if (method == "thread/resume" && scenario == "slow-resume") await Task.Delay(8500);
+            if (method == "thread/resume" && scenario == "reject-resume")
+            { Write(new { id, error = new { code = -32600, message = "Unable to resume this thread" } }); continue; }
+            if (method == "turn/start" && scenario == "lost-start-reply") return;
             var historyItems = new List<object>();
             var steeredInputs = Path.Combine(project, ".steered-inputs.jsonl");
             if (File.Exists(steeredInputs))
@@ -547,7 +668,7 @@ internal static class CodeWorkshopChecks
             };
             object result = method switch
             {
-                "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
+                "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
                 "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = new[] { new { id = "latest", type = "agentMessage", text = "Latest fixture reply" } } } }, nextCursor = (string?)null },
                 "thread/read" or "thread/resume" or "thread/start" => new { thread },

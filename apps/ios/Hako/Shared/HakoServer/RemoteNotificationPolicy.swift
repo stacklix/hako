@@ -1,6 +1,6 @@
 import Foundation
 
-enum RemoteNotificationDestination: Equatable {
+enum RemoteNotificationDestination: Hashable {
     case settings, codeWorkshop
 }
 
@@ -48,5 +48,33 @@ struct WorkshopPushNotice: Equatable, Identifiable, Sendable {
         title = alert?["title"] as? String ?? "代码工坊"
         subtitle = alert?["subtitle"] as? String ?? ""
         body = alert?["body"] as? String ?? "打开会话查看消息"
+    }
+}
+
+// A notification is acknowledged by the displayed destination, not by a list
+// that is about to be discarded when the host replaces its navigation stack.
+struct WorkshopNotificationNavigation: Equatable {
+    private(set) var id = UUID()
+    private(set) var notice: WorkshopPushNotice?
+    private(set) var awaitingHost = false
+
+    mutating func request(_ notice: WorkshopPushNotice?) {
+        id = UUID(); self.notice = notice; awaitingHost = true
+    }
+
+    mutating func hostReady(_ requestID: UUID) {
+        guard id == requestID else { return }
+        awaitingHost = false
+    }
+
+    func accepts(ownerID: UUID, noticeID: String) -> Bool {
+        ownerID == id && !awaitingHost && notice?.id == noticeID
+    }
+
+    @discardableResult mutating func displayed(ownerID: UUID, computerID: String, threadID: String?, operationID: String?) -> Bool {
+        guard let notice, accepts(ownerID: ownerID, noticeID: notice.id),
+              notice.belongsToConversation(computerId: computerID, threadId: threadID, operationId: operationID) else { return false }
+        self.notice = nil
+        return true
     }
 }

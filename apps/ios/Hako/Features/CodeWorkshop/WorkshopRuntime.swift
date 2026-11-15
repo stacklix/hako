@@ -6,7 +6,8 @@ import UIKit
     let store: WorkshopStore
     private struct Retained { let conversation: WorkshopConversation; var usedAt: Date }
     private var conversations: [UUID: Retained] = [:]
-    private var visibleConversations: Set<UUID> = []
+    private var visibility = WorkshopConversationVisibility()
+    let visibilityChanges = PassthroughSubject<Void, Never>()
     private let synchronization = WorkshopSynchronization()
     private let catalogID = UUID()
     private var context: String
@@ -31,7 +32,13 @@ import UIKit
             Task { @MainActor [weak self] in await self?.store.prepareNetwork() }
         }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification).sink { [weak self] _ in
-            Task { @MainActor [weak self] in self?.synchronization.setForeground(false) }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.synchronization.setForeground(false)
+                let background = UIApplication.shared.beginBackgroundTask(withName: "Save Workshop drafts")
+                await self.store.flushComposerDrafts()
+                if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+            }
         }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).sink { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -41,23 +48,28 @@ import UIKit
         }.store(in: &subscriptions)
     }
 
-    func enter(_ owner: UUID, conversation: WorkshopConversation? = nil) {
+    func enter(_ owner: UUID, conversation: WorkshopConversation? = nil, preview: Bool = false) {
         Task { await store.prepareNetwork() }
         resetContext()
         cleanup?.cancel(); cleanup = nil
         if let conversation {
-            visibleConversations.insert(conversation.id)
+            visibility.enter(owner, conversation: conversation.id, preview: preview)
             retain(conversation)
             if let notice = BuildPushSubscription.shared.workshopBanner, isViewing(notice) {
                 BuildPushSubscription.shared.dismissWorkshopNotice()
             }
         }
         synchronization.enter(owner, conversation: conversation != nil)
+        visibilityChanges.send()
+    }
+
+    func isForegroundConversation(_ id: UUID) -> Bool {
+        visibility.foreground.contains(id)
     }
 
     func isViewing(_ notice: WorkshopPushNotice) -> Bool {
         guard UIApplication.shared.applicationState == .active else { return false }
-        return visibleConversations.contains { id in
+        return visibility.foreground.contains { id in
             guard let conversation = conversations[id]?.conversation, conversation.scope == store.scope else { return false }
             return notice.belongsToConversation(computerId: conversation.agent.id, threadId: conversation.threadId,
                 operationId: conversation.notificationOperationID)
@@ -66,10 +78,11 @@ import UIKit
 
     func leave(_ owner: UUID, conversation: WorkshopConversation? = nil) {
         if let conversation {
-            visibleConversations.remove(conversation.id)
+            visibility.leave(owner)
             conversations[conversation.id]?.usedAt = .now
         }
         synchronization.leave(owner)
+        visibilityChanges.send()
         guard !synchronization.hasVisibleOwners else { return }
         cleanup?.cancel()
         cleanup = Task { [weak self] in
@@ -105,12 +118,55 @@ import UIKit
         return value
     }
 
+    // Resolve a notification without changing the project/computer selection
+    // underneath a preview. A later full-page switch reuses this same object.
+    func notificationConversation(_ notice: WorkshopPushNotice) async throws -> WorkshopConversation {
+        resetContext()
+        guard UUID(uuidString: notice.threadId) != nil else { throw HakoError(message: "这条通知没有可打开的会话。") }
+        if let existing = conversations.values.first(where: {
+            $0.conversation.scope == store.scope && $0.conversation.agent.id == notice.computerId &&
+            $0.conversation.threadId?.caseInsensitiveCompare(notice.threadId) == .orderedSame
+        })?.conversation {
+            retain(existing)
+            return existing
+        }
+        await store.prepareNetwork()
+        if !store.authenticated || !store.agents.contains(where: { $0.id == notice.computerId }) { await store.restore() }
+        try Task.checkCancellation()
+        let scope = store.scope
+        guard store.authenticated, let agent = store.agents.first(where: { $0.id == notice.computerId }) else {
+            throw HakoError(message: "通知对应的电脑当前不可用，请检查连接。")
+        }
+        if store.selectedAgentID == agent.id,
+           let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(notice.threadId) == .orderedSame }),
+           let application = store.applications.first(where: { $0.id == session.applicationId }) {
+            return open(session, agent: agent, application: application, archived: store.showingArchived)
+        }
+        let catalog: WorkshopCatalog = try await store.call(agent, "applications.list")
+        try Task.checkCancellation()
+        guard scope == store.scope else { throw CancellationError() }
+        if let session = catalog.sessions.first(where: { $0.id.caseInsensitiveCompare(notice.threadId) == .orderedSame }),
+           let application = catalog.applications.first(where: { $0.id == session.applicationId }) {
+            return open(session, agent: agent, application: application, archived: false)
+        }
+        let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": notice.threadId])
+        try Task.checkCancellation()
+        guard scope == store.scope else { throw CancellationError() }
+        guard let application = WorkshopApplication.containing(history.cwd, in: catalog.applications) else {
+            throw HakoError(message: "通知对应的项目已不可用。")
+        }
+        let session = WorkshopSession(id: notice.threadId, title: notice.subtitle.isEmpty ? "会话" : notice.subtitle,
+            applicationId: application.id, cwd: history.cwd, preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970),
+            state: "unknown", operationId: history.operationId, completionId: history.completionId)
+        return open(session, agent: agent, application: application, archived: false)
+    }
+
     private func retain(_ conversation: WorkshopConversation) {
         guard conversation.scope == store.scope else { return }
         conversations[conversation.id] = Retained(conversation: conversation, usedAt: .now)
         synchronization.register(conversation.id, kind: .conversation) { await conversation.watch() }
         if conversations.count > 6, let oldest = conversations.values
-            .filter({ $0.conversation.id != conversation.id && !visibleConversations.contains($0.conversation.id) })
+            .filter({ $0.conversation.id != conversation.id && !visibility.contains($0.conversation.id) })
             .min(by: { $0.usedAt < $1.usedAt })?.conversation.id {
             synchronization.remove(oldest)
             conversations[oldest] = nil
@@ -122,7 +178,7 @@ import UIKit
         context = store.scope
         cleanup?.cancel(); cleanup = nil
         synchronization.removeAll()
-        conversations.removeAll(); visibleConversations.removeAll()
+        conversations.removeAll(); visibility = WorkshopConversationVisibility()
         registerCatalog()
     }
 

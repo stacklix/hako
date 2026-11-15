@@ -121,12 +121,13 @@ async function refreshDatabaseSchemas() {
   $('system-refresh').disabled = true;
   $('system-status').textContent = '正在读取数据库结构…';
   try {
-    const {expectedVersion, databases} = await api('system/databases');
+    const {databases} = await api('system/databases');
     if (csrf !== session) return;
     const cards = databases.map(db => {
       const card = node('article', undefined, 'database-schema');
       const title = node('div', db.name, 'device-title');
       const schema = db.schema;
+      const expectedVersion = db.expectedVersion;
       const ready = schema?.version === expectedVersion;
       let status = {disabled: '未启用', not_created: '尚未创建', unreadable: '读取失败'}[db.status];
       if (schema) status = ready ? '版本已就绪' : schema.version < expectedVersion ? '需要迁移' : '版本过高';
@@ -143,7 +144,7 @@ async function refreshDatabaseSchemas() {
       return card;
     });
     $('system-databases').replaceChildren(...cards);
-    $('system-status').textContent = `当前服务要求数据库版本 ${expectedVersion}。标为「版本已就绪」的库已完成迁移或按当前版本创建。展开表名可查看字段、约束和索引。`;
+    $('system-status').textContent = '各数据库独立维护版本。标为「版本已就绪」的库已完成迁移或按当前版本创建。展开表名可查看字段、约束和索引。';
   } catch (e) {
     if (csrf === session) $('system-status').textContent = e.message;
   } finally {

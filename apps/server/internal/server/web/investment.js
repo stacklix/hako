@@ -5,14 +5,14 @@ const investmentAccountTypes = {
   deposits: '存款账户', crypto: '加密货币账户', insurance: '保险账户'
 };
 const investmentAssetTypes = {
-  stock: '股票', etf: 'ETF', fund: '基金', future: '期货', crypto: '现货', crypto_contract: '合约',
+  stock: '股票', etf: 'ETF', fund: '基金', future: '期货', crypto: '现货', generic: '通用',
   wealth: '理财产品', insurance: '保险', deposit: '定期存款', certificate: '大额存单'
 };
 const investmentEventTypes = {
   deposit: '转入', withdrawal: '提取', adjustment: '余额调整', opening: '首次录入', buy: '买入', sell: '卖出',
   transfer_in: '划入', transfer_out: '划出', income: '收益', dividend: '现金分红', bonus_shares: '送股',
   staking_reward: '质押奖励', spot_adjustment: '现货余额调整', derivative_margin: '保证金划转',
-  derivative_funding: '资金费', derivative_settlement: '实际结算', derivative_trade: '合约交易'
+  derivative_settlement: '实际结算', derivative_trade: '期货交易'
 };
 const investmentCategories = {cash: '流动资金', investments: '投资理财', fixed: '固定资产', receivables: '应收款', liabilities: '负债'};
 const investmentPeriods = [['近1周', 0, 7], ['近1月', 1], ['近3月', 3], ['近半年', 6], ['近1年', 12]];
@@ -264,18 +264,20 @@ function investmentAccounts(tables) {
       .sort((a, b) => b.effective_date.localeCompare(a.effective_date) || Number(b.sequence) - Number(a.sequence));
     const tracked = [...new Set(events.map(row => row.asset_id).filter(Boolean))].map(assetID => {
       const asset = assets.get(assetID);
-      return [asset?.name, asset?.symbol, investmentAssetTypes[asset?.asset_type], asset?.quote_currency];
+      return [asset?.name, asset?.asset_type === 'generic' ? '—' : asset?.symbol, investmentAssetTypes[asset?.asset_type], asset?.quote_currency];
     });
     const rows = events.map(event => {
       const asset = assets.get(event.asset_id), derivative = details.get(event.id);
       const deposit = ['deposit', 'certificate'].includes(asset?.asset_type);
-      const title = deposit ? ({buy: '存入', sell: '支取', income: '支取利息'}[event.event_type] ?? investmentEventTypes[event.event_type]) :
+      const generic = asset?.asset_type === 'generic', balanceAsset = deposit || generic;
+      const title = generic ? ({buy: '投入', sell: '取出', adjustment: '调整余额'}[event.event_type] ?? investmentEventTypes[event.event_type]) :
+        deposit ? ({buy: '存入', sell: '支取', income: '支取利息'}[event.event_type] ?? investmentEventTypes[event.event_type]) :
         ({open_long: '开多', close_long: '平多', open_short: '开空', close_short: '平空'}[derivative?.trade_action] ?? investmentEventTypes[event.event_type]);
-      const amount = deposit && ['buy', 'sell', 'opening'].includes(event.event_type) ? event.unit_price :
-        !deposit && event.settled_amount != null ? event.settled_amount : Number(event.amount) ? event.amount : undefined;
-      return [event.effective_date, title ?? event.event_type, asset?.name, deposit ? '—' : event.quantity,
-        deposit ? '—' : event.unit_price, investmentMoney(amount, currency),
-        deposit ? investmentMoney(event.settled_amount, currency) : '—'];
+      const amount = balanceAsset && ['buy', 'sell', 'opening'].includes(event.event_type) ? event.unit_price :
+        !balanceAsset && event.settled_amount != null ? event.settled_amount : Number(event.amount) ? event.amount : undefined;
+      return [event.effective_date, title ?? event.event_type, asset?.name, balanceAsset ? '—' : event.quantity,
+        balanceAsset ? '—' : event.unit_price, investmentMoney(amount, currency),
+        balanceAsset ? investmentMoney(event.settled_amount, currency) : '—'];
     });
     const plans = investmentByOrder(tables.investment_plans).filter(plan => plan.account_id === id).map(plan =>
       [assets.get(plan.asset_id)?.name ?? '定期转入', investmentMoney(plan.amount, currency), plan.next_date,
@@ -286,7 +288,7 @@ function investmentAccounts(tables) {
       investmentMetrics([['账户总资产', investmentMoney(accountTotal, currency)], ['现金余额', investmentMoney(snapshot?.cash_native, currency)],
         ['持仓估值', investmentMoney(snapshot?.holdings_native, currency)], ['累计盈亏', investmentMoney(snapshot?.gain_native, currency)]])),
       investmentCard('账本标的', investmentTable(['名称', '代码', '类型', '报价币种'], tracked, '暂无资产标的。')),
-      investmentCard('账户流水', investmentTable(['日期', '类型', '标的', '数量', '成交价', '金额', '操作后存款余额'], rows)),
+      investmentCard('账户流水', investmentTable(['日期', '类型', '标的', '数量', '成交价', '金额', '记录余额'], rows)),
       investmentCard('定投任务', investmentTable(['任务', '金额', '下次执行', '状态', '上次结果'], plans, '暂无定投任务。'))
     );
   }

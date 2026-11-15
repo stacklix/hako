@@ -2,6 +2,87 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        var visibility = WorkshopConversationVisibility()
+        let pageA = UUID(), sheetB = UUID(), pageB = UUID(), conversationA = UUID(), conversationB = UUID()
+        visibility.enter(pageA, conversation: conversationA, preview: false)
+        visibility.enter(sheetB, conversation: conversationB, preview: true)
+        precondition(visibility.foreground == [conversationB], "The preview, not the covered conversation, is being read")
+        precondition(visibility.contains(conversationA), "A covered conversation must retain its messages and draft")
+        visibility.leave(sheetB)
+        precondition(visibility.foreground == [conversationA], "Closing a preview returns to the original conversation")
+        visibility.enter(sheetB, conversation: conversationB, preview: true)
+        visibility.enter(pageB, conversation: conversationB, preview: false)
+        visibility.leave(sheetB); visibility.leave(pageA)
+        precondition(visibility.foreground == [conversationB], "A sheet's disappearance cannot unregister the full page's owner")
+        visibility.leave(pageB)
+        precondition(visibility.foreground.isEmpty)
+        precondition(WorkshopConnectionState.disconnected.beginningRequest == .connecting)
+        precondition(WorkshopConnectionState.connected.beginningRequest == .connected,
+            "Routine reads must not flash the project name on a healthy connection")
+        for code in ["computer_offline", "workshop_disconnected", "workshop_timeout", "stream_overflow"] {
+            precondition(WorkshopConnectionState.connected.afterFailure(WorkshopFailure(code: code, message: "Offline")) == .disconnected)
+        }
+        precondition(WorkshopConnectionState.connecting.afterFailure(URLError(.cannotConnectToHost)) == .disconnected)
+        precondition(WorkshopConnectionState.connecting.afterFailure(CancellationError()) == .disconnected)
+        precondition(WorkshopConnectionState.connected.afterFailure(CancellationError()) == .connected)
+        precondition(WorkshopConnectionState.connecting.afterFailure(WorkshopFailure(code: "codex_busy", message: "Busy")) == .connected,
+            "An application failure is still a reply from the Agent")
+        precondition(WorkshopConnectionState.connected.accessibilityDescription == "电脑已连接",
+            "Transport status must identify the computer connection, not imply Codex readiness")
+        for state in ["failed", "unknown", "interrupted", "cancelled", "starting", "running", "waiting", "finishing", "completed"] {
+            let operation = WorkshopOperation(id: "operation", applicationId: "app", threadId: "thread", turnId: nil,
+                state: state, message: nil, startedAt: 1)
+            precondition((operation.statusIcon == "checkmark.circle") == (state == "completed"),
+                "Only a confirmed completed task may display a success icon: " + state)
+        }
+        precondition(WorkshopConnectionState.connecting.afterFailure(WorkshopFailure(code: "workshop_busy", message: "Server busy")) == .disconnected,
+            "A broker response must not falsely verify an offline Agent")
+        func timedOperation(_ state: String, start: Int64 = 1000, finish: Int64? = nil) -> WorkshopOperation {
+            WorkshopOperation(id: "timed", applicationId: "app", threadId: "thread", turnId: "turn",
+                state: state, message: nil, startedAt: start, finishedAt: finish)
+        }
+        for state in ["starting", "running", "waiting", "stopping", "finishing"] {
+            let running = timedOperation(state)
+            precondition(running.elapsedText(at: Date(timeIntervalSince1970: 1083.9)) == "1 分 23 秒")
+            precondition(running.elapsedText(at: Date(timeIntervalSince1970: 1084)) == "1 分 24 秒",
+                "Elapsed time must advance from the Agent's start, including when the view is reopened")
+        }
+        for state in ["completed", "failed", "interrupted"] {
+            let ended = timedOperation(state, finish: 1083999)
+            let reopened = try JSONDecoder().decode(WorkshopOperation.self, from: JSONEncoder().encode(ended))
+            precondition(reopened.elapsedText(at: Date(timeIntervalSince1970: 5000)) == "1 分 23 秒",
+                "Terminal durations must use the persisted millisecond timestamp, not when the phone reads them")
+        }
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 1000)) == "0 秒")
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 1059)) == "59 秒")
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 1060)) == "1 分 0 秒")
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 4661)) == "1 小时 1 分 1 秒")
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 91061)) == "25 小时 1 分 1 秒")
+        precondition(timedOperation("running").elapsedText(at: Date(timeIntervalSince1970: 999)) == "0 秒",
+            "A clock difference must not display a negative duration")
+        precondition(timedOperation("starting", start: 0).elapsedText(at: .now) == nil,
+            "A queued task without a processing start must not count queue time")
+        for state in ["completed", "unknown", "paused"] {
+            precondition(timedOperation(state).elapsedText(at: .now) == nil, "Missing or uncertain end times must not be invented")
+        }
+        precondition(timedOperation("unknown", finish: 1083999).elapsedText(at: .now) == nil)
+        precondition(WorkshopSystemPrompt.defaultText.contains("新的原型卡片") && WorkshopSystemPrompt.defaultText.contains("唯一") && WorkshopSystemPrompt.defaultText.contains("不得覆盖或复用"))
+        precondition(WorkshopSystemPrompt.valid("") && !WorkshopSystemPrompt.valid(String(repeating: "a", count: 4001)) && !WorkshopSystemPrompt.valid("bad\0prompt"))
+        precondition(!WorkshopSystemPrompt.valid(String(repeating: "😀", count: 2001)), "Prompt length must agree with the Agent's UTF-16 limit")
+        var firstReceipt = WorkshopReceipt(id: "first", agentId: "pc", applicationId: "app", originalThreadId: nil,
+            threadId: nil, title: "New", message: "Start", createdAt: .now, state: "pending", systemPrompt: "Initial instructions")
+        precondition(firstReceipt.parameters["systemPrompt"] as? String == "Initial instructions")
+        firstReceipt.threadId = "resolved-thread"
+        let savedFirst = try JSONDecoder().decode(WorkshopReceipt.self, from: JSONEncoder().encode(firstReceipt))
+        precondition(savedFirst.parameters["systemPrompt"] as? String == "Initial instructions", "Retrying the first request must retain its original prompt after thread resolution")
+        let laterReceipt = WorkshopReceipt(id: "later", agentId: "pc", applicationId: "app", originalThreadId: "existing",
+            threadId: "existing", title: "Existing", message: "Continue", createdAt: .now, state: "pending", systemPrompt: "Do not resend")
+        precondition(laterReceipt.parameters["systemPrompt"] == nil, "Existing conversations never send the editable global prompt")
+        let largeInitial = WorkshopReceipt(id: "large", agentId: "pc", applicationId: "app", originalThreadId: nil,
+            threadId: nil, title: "New", message: String(repeating: "中", count: 4000), createdAt: .now, state: "pending", systemPrompt: String(repeating: "中", count: 4000))
+        precondition(!largeInitial.fitsRequestBudget && firstReceipt.fitsRequestBudget,
+            "Combined prompt/message size must be rejected locally before creating an uncertain send receipt")
+        precondition(WorkshopQueuedSend(id: "queue", operationId: "first", message: "Follow-up", imageIds: []).parameters["systemPrompt"] == nil)
         let account = WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "alice")
         precondition(account == WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "alice"))
         precondition(account != WorkshopCacheIdentity.account(serverURL: "https://hako.example", username: "bob"))
@@ -158,14 +239,72 @@ import Foundation
         activeList.confirm([acceptedSession], agentId: "Agent")
         activeList.record(continuing, isNew: false)
         precondition(activeListing([]).isEmpty, "After catalog acknowledgement, polling must not resurrect an archived thread")
+        var updates = WorkshopSessionUpdates()
+        let inFlight = updates.revision
+        let verifiedDone = WorkshopSession(id: acceptedSession.id, title: acceptedSession.title, applicationId: "app", cwd: "project",
+            preview: "Final reply", updatedAt: acceptedSession.updatedAt, state: "completed", operationId: continuing.id, completionId: "verified-turn")
+        updates.record(verifiedDone, agentId: "Agent")
+        let reconciled = updates.merging([acceptedSession], agentId: "Agent", since: inFlight)[0]
+        precondition(!reconciled.inProgress && reconciled.completionId == "verified-turn",
+            "A running catalog requested before detail confirmed completion must not restore a green icon")
+        precondition(updates.merging([], agentId: "Agent", since: inFlight).isEmpty,
+            "Verified state must not resurrect a session missing from a fresh catalog")
+        precondition(updates.merging([acceptedSession], agentId: "other", since: inFlight)[0].inProgress)
+        for _ in 0..<3 {
+            let repeated = updates.merging([acceptedSession], agentId: "Agent", since: updates.revision)[0]
+            precondition(!repeated.inProgress && repeated.completionId == "verified-turn",
+                "Returning to the list and polling again must not undo verified completion without new activity")
+        }
+        let newTurn = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "New task", updatedAt: verifiedDone.updatedAt + 1, state: "running", operationId: continuing.id)
+        precondition(updates.merging([newTurn], agentId: "Agent", since: inFlight)[0].inProgress,
+            "New activity in the same queue group must not be hidden by a previous completion")
+        let newOperation = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "New task", updatedAt: verifiedDone.updatedAt, state: "running", operationId: "different-operation")
+        precondition(updates.merging([newOperation], agentId: "Agent", since: inFlight)[0].inProgress)
+        let newCompletion = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+            preview: "Another completed turn", updatedAt: verifiedDone.updatedAt, state: "completed",
+            operationId: continuing.id, completionId: "new-completion")
+        precondition(updates.merging([newCompletion], agentId: "Agent", since: inFlight)[0].completionId == "new-completion",
+            "A newly completed turn in the same timestamp bucket must retain its unread identity")
+        for state in ["failed", "interrupted", "cancelled", "unknown", "paused"] {
+            var terminalUpdates = WorkshopSessionUpdates()
+            terminalUpdates.record(WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
+                preview: "Terminal", updatedAt: acceptedSession.updatedAt, state: state, operationId: continuing.id), agentId: "Agent")
+            let result = terminalUpdates.merging([acceptedSession], agentId: "Agent", since: terminalUpdates.revision)[0]
+            precondition(result.inProgress == ["unknown", "paused"].contains(state),
+                "Verified terminal states must survive stale polls, while uncertain or paused operations can recover")
+        }
+        updates.remove(threadId: previous, agentId: "other")
+        precondition(!updates.merging([acceptedSession], agentId: "Agent", since: updates.revision)[0].inProgress)
+        updates.remove(threadId: previous, agentId: "Agent")
+        precondition(updates.merging([acceptedSession], agentId: "Agent", since: updates.revision)[0].inProgress,
+            "An explicit new send must allow resumed activity even in the same timestamp bucket")
+        var settledActivity = WorkshopLocalSessions()
+        let skewedDone = WorkshopSession(id: verifiedDone.id, title: verifiedDone.title, applicationId: "app", cwd: "project",
+            preview: verifiedDone.preview, updatedAt: 100, state: "completed", operationId: continuing.id, completionId: "verified-turn")
+        settledActivity.record(continuing, isNew: true)
+        settledActivity.settle(threadId: previous, operationId: "unrelated", agentId: "Agent")
+        precondition(!settledActivity.merging([skewedDone], agentId: "Agent", applications: [application], archived: false)[0].inProgress,
+            "Completion of the exact operation must override a pending send even when the computer clock is behind")
+        settledActivity.confirm([skewedDone], agentId: "Agent")
+        precondition(settledActivity.merging([], agentId: "Agent", applications: [application], archived: false).isEmpty,
+            "Catalog completion must remove the pending overlay without opening conversation details")
+        settledActivity.settle(threadId: previous, operationId: continuing.id, agentId: "Agent")
+        let settled = settledActivity.merging([skewedDone], agentId: "Agent", applications: [application], archived: false)[0]
+        precondition(!settled.inProgress && settled.completionId == "verified-turn",
+            "Verified completion must remove a pending-send overlay and retain unread/read identity")
         let queuedActivity = WorkshopReceipt(id: continuing.id, agentId: "Agent", applicationId: "app", originalThreadId: previous,
             threadId: previous, title: "Existing", message: "Queued follow-up", createdAt: continuing.createdAt.addingTimeInterval(2), state: "pending")
-        activeList.record(queuedActivity, isNew: true)
+        activeList.record(queuedActivity, isNew: true, queued: true)
         activeList.record(continuing, isNew: false)
         activeList.confirm([acceptedSession], agentId: "Agent")
         let queuedListing = activeListing([acceptedSession, recent])
         precondition(queuedListing[0].preview == queuedActivity.message && queuedListing[0].updatedAt == Int64(queuedActivity.createdAt.timeIntervalSince1970),
             "Polling the parent operation must not replace a queued message's newer preview and activity time")
+        activeList.confirm([verifiedDone], agentId: "Agent")
+        precondition(activeListing([verifiedDone])[0].inProgress,
+            "Completion of the parent must not clear a newer queued follow-up sharing its operation ID")
         activeList.reject(operationId: continuing.id, agentId: "Agent")
         precondition(activeListing([]).isEmpty, "Rejected queue activity must not leave a phantom running row")
         let sameSecond = WorkshopReceipt(id: "same-second", agentId: "Agent", applicationId: "app", originalThreadId: "z",
@@ -182,11 +321,22 @@ import Foundation
         withImages.permission = WorkshopPermission.auto.rawValue
         withImages.imageIds = [UUID().uuidString]
         withImages.serviceTier = "priority"
+        withImages.reasoningEffort = "high"
         let roundTrip = try JSONDecoder().decode(WorkshopReceipt.self, from: JSONEncoder().encode(withImages))
         precondition(roundTrip.parameters["model"] as? String == "fixture-vision")
         precondition(roundTrip.parameters["permission"] as? String == "auto")
         precondition(roundTrip.parameters["imageIds"] as? [String] == withImages.imageIds)
         precondition(roundTrip.parameters["serviceTier"] as? String == "priority", "Retries must preserve the submitted speed")
+        precondition(roundTrip.parameters["reasoningEffort"] as? String == "high", "A retry must use its originally submitted Intelligence")
+        let reasoningModel = try JSONDecoder().decode(WorkshopModel.self, from: Data(#"{"id":"model","name":"Model","description":"Test","isDefault":true,"supportsImages":true,"serviceTiers":[],"defaultReasoningEffort":"low","reasoningEfforts":[{"id":"high","description":"Deep"},{"id":"low","description":"Quick"},{"id":"future-effort","description":"Future"}]}"#.utf8))
+        precondition(reasoningModel.reasoningEfforts.map(\.id) == ["high", "low", "future-effort"])
+        precondition(reasoningModel.reasoningEfforts.last?.title == "future-effort" && reasoningModel.defaultReasoningEffort == "low")
+        precondition(reasoningModel.reasoningEfforts.first?.title == "高")
+        precondition(reasoningModel.reasoningEfforts.first?.detail == "投入更多推理，适合复杂任务。")
+        precondition(reasoningModel.reasoningEfforts.last?.detail == "Future")
+        var reasoningChoice = WorkshopChoice(); reasoningChoice.reasoningEffort = "high"
+        let restoredReasoningChoice = try JSONDecoder().decode(WorkshopChoice.self, from: JSONEncoder().encode(reasoningChoice))
+        precondition(restoredReasoningChoice == reasoningChoice)
         precondition(WorkshopSpeed.standard.id == "default", "Standard must clear a previous priority override")
         let followup = try JSONDecoder().decode(WorkshopFollowupReply.self, from: Data("""
             {"id":"queued-message","message":"Focus on iOS","imageIds":[],"state":"queued","revision":2,"detail":null}
@@ -213,10 +363,11 @@ import Foundation
             "A rejected steer must still be allowed to return to paused within its revision")
         let another = WorkshopFollowupState(id: "another-message", state: "queued", revision: 0, imageIds: [])
         precondition(WorkshopFollowupState.merging([another, followup.status], into: statuses) == [steered, another])
-        let queued = WorkshopQueuedSend(id: "stable-message", operationId: "original-operation", message: "Hello", imageIds: ["image"])
+        let queued = WorkshopQueuedSend(id: "stable-message", operationId: "original-operation", message: "Hello", imageIds: ["image"], reasoningEffort: "high")
         let queuedRetry = try JSONDecoder().decode(WorkshopQueuedSend.self, from: JSONEncoder().encode(queued))
         precondition(queuedRetry.parameters["requestId"] as? String == "stable-message")
         precondition(queuedRetry.parameters["operationId"] as? String == "original-operation")
+        precondition(queuedRetry.parameters["reasoningEffort"] as? String == "high")
         precondition(queuedRetry.entry.role == "user" && queuedRetry.entry.state == "pending")
         print("PASS: immediate new-session listing, catalog reconciliation, activity ordering, unread expiry and stable request identity")
     }

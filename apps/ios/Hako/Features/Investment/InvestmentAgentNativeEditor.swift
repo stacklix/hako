@@ -65,13 +65,9 @@ private struct InvestmentAgentNativeEditor: View {
         case .cashBalance:
             if let account = account { InvestmentCashEditor(store: store, editing: draft, account: account, kind: .adjustment) }
             else { unavailable }
-        case .distribution, .spotBalance:
+        case .distribution, .spotBalance, .assetBalance:
             if let account = account, let asset = draft.asset {
                 InvestmentHoldingAdjustmentEditor(store: store, editing: draft, account: account, asset: asset)
-            } else { unavailable }
-        case .fundingBalance:
-            if let account = account, let asset = draft.asset {
-                InvestmentFundingAdjustmentEditor(store: store, editing: draft, account: account, asset: asset)
             } else { unavailable }
         case .addAsset, .editAsset:
             if let asset = draft.asset {

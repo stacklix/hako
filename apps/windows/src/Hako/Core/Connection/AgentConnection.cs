@@ -20,7 +20,7 @@ public sealed class AgentConnection : IAsyncDisposable
     private volatile ConnectionState status = new("disconnected", "未连接");
     public ConnectionState Status => status;
     public event Action<string>? StatusChanged;
-    public event Action<string>? VersionWarning;
+    public string? CompatibilityWarning { get; private set; }
     public event Action<Metrics>? MetricsReceived;
     private readonly AgentDispatcher dispatcher;
     private readonly SemaphoreSlim writing = new(1, 1);
@@ -42,10 +42,11 @@ public sealed class AgentConnection : IAsyncDisposable
     }
     public async Task StopAsync()
     {
-        if (lifetime is null) { SetStatus("disconnected", "未连接"); return; }
+        if (lifetime is null) { CompatibilityWarning = null; SetStatus("disconnected", "未连接"); return; }
         await lifetime.CancelAsync();
         if (running is not null) { try { await running; } catch (OperationCanceledException) { } }
         lifetime.Dispose(); lifetime = null;
+        CompatibilityWarning = null;
         SetStatus("disconnected", "未连接");
     }
     public async ValueTask DisposeAsync()
@@ -64,23 +65,18 @@ public sealed class AgentConnection : IAsyncDisposable
     {
         var origin = settings.Origin();
         var uri = new UriBuilder(origin) { Scheme = origin.Scheme == "https" ? "wss" : "ws", Path = "/ws/agent" }.Uri;
-        string? lastVersionWarning = null;
         var attempt = 0;
         while (!token.IsCancellationRequested)
         {
             try
             {
                 SetStatus("connecting", "正在连接…");
-                // A version check is advisory. Keep attempting the WebSocket if the probe is unavailable.
-                try
+                await ServerCompatibility.WaitAsync(origin, warning =>
                 {
-                    var warning = await ServerCompatibility.CheckAsync(origin, token);
-                    token.ThrowIfCancellationRequested();
-                    if (warning is not null && warning != lastVersionWarning) VersionWarning?.Invoke(warning);
-                    lastVersionWarning = warning;
-                }
-                catch (HttpRequestException) { }
-                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+                    CompatibilityWarning = warning;
+                    SetStatus(warning is null ? "connecting" : "version_mismatch",
+                        warning is null ? "版本检查通过，正在连接…" : warning + "\n每 30 秒自动检查，版本兼容后自动连接。");
+                }, token);
                 using var socket = new ClientWebSocket();
                 using (var authTimeout = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
@@ -192,7 +188,7 @@ public sealed class AgentConnection : IAsyncDisposable
             catch (AuthenticationException)
             { SetStatus("authentication_failed", "身份验证失败，请检查账号、公钥配置和私钥后重新连接。"); return; }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-            catch (Exception e) when (e is WebSocketException or IOException or OperationCanceledException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
+            catch (Exception e) when (e is HttpRequestException or WebSocketException or IOException or OperationCanceledException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
             { SetStatus("retrying", "连接中断，等待重连…"); }
             attempt = Math.Min(attempt + 1, 5);
             try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)) + Random.Shared.NextDouble()), token); }

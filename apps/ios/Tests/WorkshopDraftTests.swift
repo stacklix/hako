@@ -1,12 +1,30 @@
 import Foundation
 
+private final class DraftWrites: @unchecked Sendable {
+    private let lock = NSLock()
+    private var files: [URL] = []
+    private var failures = 0
+
+    var count: Int { lock.lock(); defer { lock.unlock() }; return files.count }
+    var failureCount: Int { lock.lock(); defer { lock.unlock() }; return failures }
+
+    func write(_ draft: WorkshopComposerDraft, to file: URL) throws {
+        lock.lock(); files.append(file); lock.unlock()
+        try WorkshopDraftDisk.write(draft, to: file)
+    }
+
+    func receive(_ result: Result<Void, Error>) {
+        if case .failure = result { lock.lock(); failures += 1; lock.unlock() }
+    }
+}
+
 @main struct WorkshopDraftTests {
     static func expect(_ expected: WorkshopComposerDraft?, at file: URL, _ message: String = "Saved draft mismatch") throws {
         let actual = try WorkshopDraftDisk.read(file)
         precondition(actual == expected, message)
     }
 
-    static func main() throws {
+    static func main() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hako-drafts-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = directory.appendingPathComponent("first.json")
@@ -57,6 +75,63 @@ import Foundation
             _ = try WorkshopDraftDisk.read(corrupt)
             preconditionFailure("A damaged draft must report an error instead of silently replacing it")
         } catch is DecodingError { }
+
+        let writes = DraftWrites()
+        let writer = WorkshopDraftWriter(delay: 60, writeFile: { try writes.write($0, to: $1) })
+        for index in 1...100 {
+            writer.write(WorkshopComposerDraft(input: WorkshopDraftInput(text: "输入 \(index)", imageIds: [])),
+                to: first, completion: writes.receive)
+        }
+        await writer.flush()
+        precondition(writes.count == 1, "Rapid edits must coalesce into one disk write")
+        try expect(WorkshopComposerDraft(input: WorkshopDraftInput(text: "输入 100", imageIds: [])), at: first)
+
+        let pendingFile = directory.appendingPathComponent("pending.json")
+        let threadFile = directory.appendingPathComponent("thread.json")
+        writer.write(draft, to: first, completion: writes.receive)
+        writer.write(sending, to: pendingFile, removing: first, completion: writes.receive)
+        writer.write(editing, to: threadFile, removing: pendingFile, completion: writes.receive)
+        writer.write(blankEdit, to: threadFile, completion: writes.receive)
+        await writer.flush()
+        try expect(nil, at: first, "Coalesced session migration must remove all obsolete keys")
+        try expect(nil, at: pendingFile)
+        try expect(blankEdit, at: threadFile, "Migration must retain edits and the original composer")
+
+        writer.write(draft, to: first, completion: writes.receive)
+        writer.write(sending, to: threadFile, removing: first, completion: writes.receive)
+        writer.write(editing, to: first, completion: writes.receive)
+        await writer.flush()
+        try expect(editing, at: first, "Migration cleanup must not delete newer input that reused an old key")
+        try expect(sending, at: threadFile)
+
+        writer.write(draft, to: first, completion: writes.receive)
+        writer.write(empty, to: first, completion: writes.receive)
+        writer.write(editing, to: second, completion: writes.receive)
+        await writer.flush()
+        await writer.flush()
+        try expect(nil, at: first, "A cleared draft must not reappear after a later flush")
+        try expect(editing, at: second, "Independent conversations must retain their own latest input")
+
+        try WorkshopDraftDisk.write(draft, to: first)
+        let impossible = corrupt.appendingPathComponent("cannot-write.json")
+        writer.write(sending, to: impossible, removing: first, completion: writes.receive)
+        await writer.flush()
+        precondition(writes.failureCount == 1, "Asynchronous disk failures must be reported")
+        try expect(draft, at: first, "Failed migration must preserve the recoverable original draft")
+        try FileManager.default.removeItem(at: corrupt)
+        await writer.flush()
+        try expect(sending, at: impossible, "A later flush must retry a failed migration")
+        try expect(nil, at: first, "Recovery must finish obsolete-key cleanup")
+
+        let timedWriter = WorkshopDraftWriter(delay: 0.01)
+        let completed: Bool = await withCheckedContinuation { continuation in
+            timedWriter.write(draft, to: first) { result in
+                if case .success = result { continuation.resume(returning: true) }
+                else { continuation.resume(returning: false) }
+            }
+        }
+        precondition(completed, "Input must persist automatically without waiting for the page to close")
+        try expect(draft, at: first)
         print("Workshop draft persistence tests passed")
     }
 }

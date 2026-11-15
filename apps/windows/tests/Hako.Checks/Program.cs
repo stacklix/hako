@@ -12,41 +12,71 @@ internal static class Program
 {
     private static void CheckServerCompatibility()
     {
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0") is not null)
             throw new Exception("Agent rejected the current compatibility line");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.4","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0")?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired server compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.2.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.2.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired Agent compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
             throw new Exception("Agent rejected matching version floors");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
             throw new Exception("Agent did not compare compatible patch versions numerically");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a patch version below the required floor");
-        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about its own version floor");
         var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about the server version floor");
-        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
+        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
         if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer minor version than the server supports");
-        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.4.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
+        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (newerServer?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer server minor version");
         var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (both != outdatedAgent + "\n\n" + outdatedServer)
             throw new Exception("Agent did not report both incompatible versions together");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.3.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.4.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
             throw new Exception("Agent accepted incomplete version metadata");
+    }
+
+    private static async Task CheckServerVersionRecoveryAsync()
+    {
+        var checks = 0;
+        var notices = new System.Collections.Generic.List<string?>();
+        await ServerCompatibility.WaitAsync(() => Task.FromResult<string?>(++checks < 3 ? "Upgrade server" : null),
+            notices.Add, TimeSpan.FromMilliseconds(5), CancellationToken.None);
+        if (checks != 3 || notices.Count != 3 || notices[0] is null || notices[^1] is not null)
+            throw new Exception("Compatibility polling did not wait for the upgrade and clear its warning.");
+        using var cancelled = new CancellationTokenSource();
+        var attempts = 0;
+        try
+        {
+            await ServerCompatibility.WaitAsync(() => { attempts++; return Task.FromResult<string?>("Upgrade server"); },
+                _ => cancelled.Cancel(), ServerCompatibility.PollInterval, cancelled.Token);
+            throw new Exception("Stopping during a version wait allowed connection startup.");
+        }
+        catch (OperationCanceledException) when (cancelled.IsCancellationRequested) { }
+        if (attempts != 1) throw new Exception("A stopped Agent continued polling for a server upgrade.");
+        try
+        {
+            await ServerCompatibility.WaitAsync(() => throw new System.Net.Http.HttpRequestException("Unavailable"),
+                _ => throw new Exception("A failed probe cleared the compatibility warning."), TimeSpan.Zero, CancellationToken.None);
+            throw new Exception("A failed version probe allowed connection startup.");
+        }
+        catch (System.Net.Http.HttpRequestException) { }
+        Console.WriteLine("PASS: server upgrade polling, warning removal, cancellation while waiting and failed version probes.");
     }
 
     private static async Task<int> Main(string[] args)
     {
         try
         {
+            if (args.Length == 2 && args[0] == "guardian") { await GuardianChecks.RunAsync(args[1]); return 0; }
+            if (args.Length == 1 && args[0] == "lifecycle") { LifecycleChecks.Run(); return 0; }
             if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
@@ -157,6 +187,8 @@ internal static class Program
                 return 0;
             }
             CheckServerCompatibility();
+            await CheckServerVersionRecoveryAsync();
+            LifecycleChecks.Run();
             await AgentRequestChecks.RunAsync();
             await WorkshopCloudChecks.RunAsync();
             await WorkshopNotificationChecks.RunAsync();

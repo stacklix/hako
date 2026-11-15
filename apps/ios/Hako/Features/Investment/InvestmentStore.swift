@@ -49,7 +49,6 @@ final class InvestmentStore: ObservableObject {
     private var cryptoCatalog: (loadedAt: Date, entries: [InvestmentAsset])?
     private var cryptoCatalogRequest: Task<[InvestmentAsset], Error>?
     private var selectedInstruments: [String: InvestmentAsset] = [:]
-    private var contractCatalogs: [InvestmentContractBasis: [InvestmentContractExchange: (loadedAt: Date, entries: [InvestmentContractListing])]] = [:]
     var hasLoaded: Bool { loaded }
     var configured: Bool { !configuredSources.isEmpty }
     var canRefresh: Bool { configured || !rateCurrencies.isEmpty || !publicQuoteIDs.isEmpty }
@@ -59,7 +58,6 @@ final class InvestmentStore: ObservableObject {
         preview.configuredSources = configuredSources
         preview.selectedInstruments = selectedInstruments
         preview.cryptoCatalog = cryptoCatalog
-        preview.contractCatalogs = contractCatalogs
         // No server state/session is installed: an editor cannot write through this store.
         return preview
     }
@@ -255,27 +253,6 @@ final class InvestmentStore: ObservableObject {
         var candidate = base.book
         for action in actions { try action.apply(to: &candidate) }
         try await validateCatalogChanges(candidate, previous: base.book)
-        let contracts = candidate.assets.values.filter { asset in
-            guard asset.kind == .cryptoContract else { return false }
-            guard let original = base.book.asset(asset.id) else { return true }
-            return original.code != asset.code || original.market != asset.market
-        }.sorted { $0.id.uuidString < $1.id.uuidString }
-        for asset in contracts {
-            try Task.checkCancellation()
-            guard let exchange = InvestmentContractExchange(asset: asset) else {
-                throw InvestmentError.invalid("请从交易所目录选择 U 本位或币本位合约，不能使用自定义代码代替行情合约。")
-            }
-            guard let entries = await contractCatalog(exchange, basis: asset.basis) else {
-                throw InvestmentError.invalid("\(exchange.title) 合约目录暂不可用，尚未核实行情关联，请稍后重试。")
-            }
-            guard let listing = entries.first(where: { $0.asset.code == asset.code }) else {
-                throw InvestmentError.invalid("\(exchange.title) 目录中没有合约 \(asset.code)。请用搜索结果中的真实代码，多空方向单独填写。")
-            }
-            try listing.validateSelection(asset, settlement: candidate.settlementUnit(for: asset))
-            if let quote = try? await InvestmentQuoteProvider().contractMark(asset) {
-                candidate.addQuotes([quote], assetID: asset.id)
-            }
-        }
         try Task.checkCancellation()
         let current = try agentSnapshot()
         guard current.session == base.session, current.generation == base.generation else { throw InvestmentAgentCommitError.stale }
@@ -286,14 +263,7 @@ final class InvestmentStore: ObservableObject {
         let changed = candidate.catalogAssetsRequiringValidation(comparedTo: previous)
         for asset in changed {
             try Task.checkCancellation()
-            if asset.kind == .cryptoContract {
-                guard let exchange = InvestmentContractExchange(asset: asset),
-                      let entries = await contractCatalog(exchange, basis: asset.basis),
-                      let listing = entries.first(where: { $0.asset.code == asset.code }) else {
-                    throw InvestmentError.invalid("请从 HTX 或 BIN（Binance）目录选择真实永续合约；不支持交割合约，目录暂不可用时不能手工录入。")
-                }
-                try listing.validateSelection(asset, settlement: candidate.settlementUnit(for: asset))
-            } else {
+            do {
                 let listed: InvestmentAsset
                 if let selected = selectedInstruments[asset.catalogKey] { listed = selected }
                 else {
@@ -535,56 +505,8 @@ final class InvestmentStore: ObservableObject {
         return entries
     }
 
-    func searchContracts(_ query: String, basis: InvestmentContractBasis) async throws -> [InvestmentContractListing] {
-        let request = try InvestmentContractSearch(query)
-        let entries: [InvestmentContractListing]
-        if let exchange = request.exchange {
-            guard let listings = await contractCatalog(exchange, basis: basis) else {
-                throw InvestmentError.invalid("\(exchange.title) 永续合约目录暂不可用，请稍后重试。")
-            }
-            entries = listings
-        } else {
-            async let binance = contractCatalog(.binance, basis: basis)
-            async let htx = contractCatalog(.htx, basis: basis)
-            let (first, second) = await (binance, htx)
-            guard let first, let second else {
-                throw InvestmentError.invalid("未能完整读取两家交易所的永续合约目录，请稍后重试，或在代码后指定 •HTX / •BIN 查询对应交易所。")
-            }
-            entries = first + second
-        }
-        try Task.checkCancellation()
-        func normalized(_ value: String) -> String {
-            String(value.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) })
-        }
-        let code = normalized(request.query)
-        let matches = entries.filter {
-            (!code.isEmpty && normalized($0.asset.code).contains(code)) || $0.asset.name.localizedCaseInsensitiveContains(request.query)
-        }.map { listing in
-            var asset = listing.asset
-            asset.contractSide = request.side
-            return InvestmentContractListing(asset: asset, settlementCode: listing.settlementCode)
-        }
-        return matches.sorted { lhs, rhs in
-            let left = normalized(lhs.asset.code), right = normalized(rhs.asset.code)
-            if (left == code) != (right == code) { return left == code }
-            if left.hasPrefix(code) != right.hasPrefix(code) { return left.hasPrefix(code) }
-            return (left, lhs.asset.market) < (right, rhs.asset.market)
-        }
-    }
-
-    private func contractCatalog(_ exchange: InvestmentContractExchange, basis: InvestmentContractBasis) async -> [InvestmentContractListing]? {
-        if let cached = contractCatalogs[basis]?[exchange], Date.now.timeIntervalSince(cached.loadedAt) < 900 {
-            return cached.entries
-        }
-        guard let entries = try? await InvestmentQuoteProvider().contractCatalog(exchange, basis: basis), !Task.isCancelled else {
-            return nil
-        }
-        contractCatalogs[basis, default: [:]][exchange] = (.now, entries)
-        return entries
-    }
-
     var publicQuoteIDs: Set<UUID> {
-        let supported = Set(book.assets.values.filter { $0.kind == .crypto || InvestmentContractExchange(asset: $0) != nil }.map(\.id))
+        let supported = Set(book.assets.values.filter { $0.kind == .crypto }.map(\.id))
         guard !supported.isEmpty else { return [] }
         let tracked = book.watched + book.plans.filter(\.enabled).compactMap(\.assetID)
         let held = book.accounts.flatMap { account -> [UUID] in
@@ -715,20 +637,7 @@ final class InvestmentStore: ObservableObject {
                 }
             }
             let publicAssets = publicIDs.compactMap { book.asset($0) }
-            let contracts = publicAssets.filter { $0.kind == .cryptoContract }
-            let byInstrument = Dictionary(grouping: contracts) { [$0.market, $0.basis.rawValue, $0.code] }
-            for positions in byInstrument.values {
-                guard let asset = positions.first else { continue }
-                try checkRefresh()
-                do {
-                    let quote = try await provider.contractMark(asset)
-                    for position in positions { prices[position.id] = [quote] }
-                } catch {
-                    try checkRefresh()
-                    failures.append(asset.displayCode + "（标记价格未更新）")
-                }
-            }
-            let tokens = Set(publicAssets.filter { $0.kind == .crypto }.map(\.id)).union(contracts.compactMap(\.collateralAssetID))
+            let tokens = Set(publicAssets.map(\.id))
             let usdtUSD = tokens.isEmpty ? nil : try? await provider.coinbaseSpotUSDQuote(code: "USDT")
             for id in tokens {
                 guard let token = book.asset(id) else { continue }
@@ -824,19 +733,17 @@ final class InvestmentStore: ObservableObject {
             for account in book.accounts where account.type == .crypto {
                 for event in account.events {
                     guard event.day <= end, let asset = book.asset(event.assetID),
-                          asset.kind == .crypto || InvestmentContractExchange(asset: asset) != nil else { continue }
+                          asset.kind == .crypto else { continue }
                     let date = max(event.day, limit)
                     firstDates[asset.id] = min(firstDates[asset.id] ?? date, date)
-                    if let collateral = asset.collateralAssetID {
-                        firstDates[collateral] = min(firstDates[collateral] ?? date, date)
-                    }
+
                 }
             }
         }
         let requestedRanges = missing ?? firstDates.mapValues { [$0...end] }
         let requests = requestedRanges.flatMap { id, ranges -> [(asset: InvestmentAsset, range: ClosedRange<Date>)] in
             guard let asset = book.asset(id),
-                  asset.kind == .crypto || InvestmentContractExchange(asset: asset) != nil else { return [] }
+                  asset.kind == .crypto else { return [] }
             let closes = Set((book.quotes[id] ?? []).filter { $0.isDailyClose == true }.map(\.day))
             return ranges.compactMap { range in
                 var start = range.lowerBound
@@ -864,10 +771,6 @@ final class InvestmentStore: ObservableObject {
                     result[asset.id, default: []].append(contentsOf: prices)
                 } else if let prices = try? await provider.coinbaseUSDDailyQuotes(for: asset.code, from: start, through: end) {
                     result[asset.id, default: []].append(contentsOf: prices)
-                }
-            } else {
-                if let quotes = try? await provider.contractDailyQuotes(for: asset, from: start, through: end) {
-                    result[asset.id, default: []].append(contentsOf: quotes)
                 }
             }
         }

@@ -17,9 +17,10 @@ final class BuildPushSubscription: ObservableObject {
 
     @Published var settingsRequested = false
     @Published private(set) var settingsRequestID = 0
-    @Published var workshopRequested = false
-    @Published private(set) var workshopNavigationID = UUID()
-    @Published var workshopLink: WorkshopPushNotice?
+    @Published private(set) var workshopNavigation = WorkshopNotificationNavigation()
+    var workshopRequested: Bool { workshopNavigation.awaitingHost }
+    var workshopNavigationID: UUID { workshopNavigation.id }
+    var workshopLink: WorkshopPushNotice? { workshopNavigation.notice }
     @Published private(set) var workshopBanner: WorkshopPushNotice?
     private var bannerDismissal: Task<Void, Never>?
     private var displayedNotices: Set<String> = []
@@ -28,7 +29,7 @@ final class BuildPushSubscription: ObservableObject {
         guard displayedNotices.insert(notice.id).inserted else { return }
         if displayedNotices.count > 200 { displayedNotices = [notice.id] }
         // Retained conversations do not count; only the foreground page suppresses its own banner.
-        guard !WorkshopRuntime.shared.isViewing(notice) else { return }
+        guard !HakoApplications.notifications.isViewing(notice, for: .codeWorkshop) else { return }
         bannerDismissal?.cancel()
         workshopBanner = notice
         bannerDismissal = Task { [weak self] in
@@ -39,9 +40,13 @@ final class BuildPushSubscription: ObservableObject {
     func dismissWorkshopNotice() { bannerDismissal?.cancel(); workshopBanner = nil }
     func openWorkshopNotice(_ notice: WorkshopPushNotice?) {
         dismissWorkshopNotice()
-        workshopLink = notice
-        workshopNavigationID = UUID()
-        workshopRequested = true
+        workshopNavigation.request(notice)
+    }
+
+    func workshopHostReady(_ requestID: UUID) { workshopNavigation.hostReady(requestID) }
+
+    func workshopDestinationDisplayed(ownerID: UUID, computerID: String, threadID: String?, operationID: String?) {
+        workshopNavigation.displayed(ownerID: ownerID, computerID: computerID, threadID: threadID, operationID: operationID)
     }
 
     private init() { }

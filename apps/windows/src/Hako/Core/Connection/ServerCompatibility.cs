@@ -10,7 +10,7 @@ namespace Hako.Core;
 
 internal static class ServerCompatibility
 {
-    private const string MinimumServerVersion = "0.3.1";
+    private const string MinimumServerVersion = "0.4.0";
     private const string InvalidMetadata = "服务端返回的版本信息无效，请检查 Hako 服务端版本。";
     private static readonly string AgentVersion = typeof(AgentConnection).Assembly.GetName().Version!.ToString(3);
     private static readonly HttpClient Client = new(new SocketsHttpHandler
@@ -24,6 +24,24 @@ internal static class ServerCompatibility
     };
 
     private sealed record Versions(string? ServerVersion, string? MinimumAgentVersion);
+
+    internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+
+    internal static Task WaitAsync(Uri origin, Action<string?> changed, CancellationToken token) =>
+        WaitAsync(() => CheckAsync(origin, token), changed, PollInterval, token);
+
+    internal static async Task WaitAsync(Func<Task<string?>> check, Action<string?> changed, TimeSpan interval, CancellationToken token)
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            var warning = await check();
+            token.ThrowIfCancellationRequested();
+            changed(warning);
+            if (warning is null) return;
+            await Task.Delay(interval, token);
+        }
+    }
 
     public static async Task<string?> CheckAsync(Uri origin, CancellationToken token)
     {

@@ -29,8 +29,8 @@ struct DeviceMonitorView: View {
         }
     }
     private var selectedAgent: ConsoleAgent? {
-        guard client.authenticated, !client.logoutPending, let id = requestedAgentID else { return nil }
-        return client.agents.first { $0.id == id }
+        guard client.authenticated || client.hasSavedSession, !client.logoutPending else { return nil }
+        return client.selectedAgent(id: requestedAgentID)
     }
     private var awaitingEntry: Bool {
         resolvedEntryScope != scope && !client.serverURL.isEmpty && !client.logoutPending
@@ -101,10 +101,18 @@ struct DeviceMonitorView: View {
                 Section {
                     ContentUnavailableView("尚未配置服务器", systemImage: "server.rack", description: Text("请前往 Hako 首页的「设置 → 服务器与登录」，导出本机公钥并填写连接信息。"))
                 }
-            } else if client.authenticated {
+            } else if (client.authenticated || client.hasSavedSession), !client.logoutPending {
                 Section {
-                    if client.agents.isEmpty, client.message == nil {
-                        Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary)
+                    if client.agents.isEmpty {
+                        if client.hasFetchedAgents {
+                            Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary)
+                        } else {
+                            ContentUnavailableView("暂时无法获取设备", systemImage: "wifi.slash",
+                                description: Text("请检查网络后重试，连接失败不会移除已登记的设备。"))
+                            Button("重新连接") { Task { await refreshDevices() } }
+                                .buttonStyle(HakoActionButtonStyle())
+                                .disabled(client.busy)
+                        }
                     }
                     ForEach(client.agents) { agent in
                         Button { selection = .device(agent.id) } label: {
@@ -112,7 +120,7 @@ struct DeviceMonitorView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if client.agents.isEmpty {
+                    if client.agents.isEmpty, client.hasFetchedAgents {
                         Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
                             .disabled(client.busy)
                             .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
@@ -121,7 +129,7 @@ struct DeviceMonitorView: View {
                     HStack {
                         Text("设备")
                         Spacer()
-                        if !client.agents.isEmpty {
+                        if !client.agents.isEmpty, client.authenticated {
                             Button { sheet = .addAgent } label: {
                                 Image(systemName: "plus").font(.body.weight(.medium)).frame(minWidth: 44, minHeight: 44)
                             }
@@ -130,13 +138,6 @@ struct DeviceMonitorView: View {
                         }
                     }
                 }
-            } else if client.hasSavedSession {
-                Section {
-                    Text(client.busy ? "正在验证已保存的登录凭据…" : "已保存本机登录凭据，暂未完成服务端验证。请检查网络后重试。")
-                        .foregroundStyle(.secondary)
-                    Button("验证并继续") { Task { await refreshDevices() } }
-                    Text("可在 Hako 首页的「设置 → 服务器与登录」中检查连接。").font(.footnote).foregroundStyle(.secondary)
-                }.disabled(client.busy)
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
@@ -153,7 +154,9 @@ struct DeviceMonitorView: View {
         SettingsSheet(title: "设备监控设置") {
             List {
                 Section("切换 Agent") {
-                    if client.agents.isEmpty { Text("暂无登记的设备").foregroundStyle(.secondary) }
+                    if client.agents.isEmpty {
+                        Text(client.hasFetchedAgents ? "暂无登记的设备" : "暂时无法获取设备列表").foregroundStyle(.secondary)
+                    }
                     ForEach(client.agents) { agent in
                         Button {
                             selection = .device(agent.id)
@@ -263,7 +266,7 @@ struct DeviceMetricsView: View {
             order: order,
             emptyMessage: currentAgent.capabilities == nil ? "尚未获取设备能力，请刷新数据。" : "此设备暂无可用能力。",
             tabTitle: capabilityTabTitle,
-            refresh: { if currentAgent.online { await client.query(currentAgent) } }) {
+            refresh: refreshDevice) {
             deviceOverview
         } content: { capability in
             if capability.name == "query.system.metrics", capability.version == 1 {
@@ -325,7 +328,28 @@ struct DeviceMetricsView: View {
             if let liveStatus { Text(liveStatus).font(.caption).foregroundStyle(.secondary) }
             if let error = state.error {
                 statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
+            } else if let message = client.message {
+                statusMessage("连接提示", detail: message)
+            } else if !currentAgent.online {
+                Text(client.hasFetchedAgents ? "等待设备重新连接…" : "尚未连接服务器，暂时无法确认设备状态。")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
+            if !currentAgent.online {
+                Button("重新连接") { Task { await refreshDevice() } }
+                    .buttonStyle(HakoActionButtonStyle())
+                    .disabled(client.busy)
+            }
+        }
+    }
+
+    @MainActor private func refreshDevice() async {
+        guard !client.busy, !client.logoutPending else { return }
+        if !client.authenticated { await client.restore() }
+        let context = client.requestContext
+        guard client.authenticated, await client.fetchAgents(), !Task.isCancelled,
+              context == client.requestContext else { return }
+        if let refreshed = client.agents.first(where: { $0.id == agent.id }), refreshed.online {
+            await client.query(refreshed)
         }
     }
 

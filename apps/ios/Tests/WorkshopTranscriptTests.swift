@@ -5,7 +5,7 @@ import Foundation
         WorkshopEntry(kind: kind, id: id, text: text, role: role, state: state, truncated: false)
     }
 
-    static func main() throws {
+    static func main() async throws {
         let questionEntry = WorkshopEntry(kind: "item", id: "async-card", text: "请选择升级方式", role: "assistant", state: "", truncated: false,
             questions: [WorkshopAsyncQuestion(title: "如何升级？", options: ["同步升级"])])
         var questionEntries: [WorkshopEntry] = []
@@ -83,7 +83,7 @@ import Foundation
             current: session(2, state: "completed", operation: "new-worker", completion: "turn-two"),
             operationId: "live", operationActive: false, completionId: "turn-two"),
             "A changed worker cannot be ignored even when the last completion is unchanged")
-        var scrolling = WorkshopScrollFollowing()
+        var scrolling = ConversationScrollFollowing()
         precondition(scrolling.shouldFollowUpdates, "Opening a conversation must follow its first asynchronously laid-out messages")
         scrolling.observe(nearBottom: false)
         precondition(scrolling.followsBottom, "A growing reply must not disable its own bottom anchor")
@@ -101,6 +101,34 @@ import Foundation
         scrolling.interacting(true); scrolling.observe(nearBottom: true); scrolling.interacting(false)
         precondition(scrolling.followsBottom, "Returning to the bottom must restore streaming response following")
         precondition(scrolling.shouldFollowUpdates)
+        var layoutFollowing = ConversationScrollFollowing()
+        func layout(_ content: Double, _ viewport: Double, _ bottom: Double) -> ConversationScrollFollowing.Layout {
+            .init(contentHeight: content, viewportHeight: viewport, visibleBottom: bottom)
+        }
+        precondition(layout(2400, 600, 1000) == layout(2400, 600, 1001),
+            "Scrolling within the same bottom thresholds must not invalidate the whole transcript for every pixel")
+        precondition(!layoutFollowing.observe(layout(0, 0, 0)), "Do not resolve a bottom offset before a viewport exists")
+        precondition(layoutFollowing.observe(layout(2400, 600, 600)),
+            "Opening cached history must correct the initial measured position without a new message revision")
+        precondition(!layoutFollowing.observe(layout(2400, 600, 2400)), "Reaching the bottom must not trigger a scroll loop")
+        precondition(layoutFollowing.observe(layout(2800, 600, 2400)),
+            "A late image or Markdown layout must move the bottom target even when message data is unchanged")
+        precondition(!layoutFollowing.observe(layout(2800, 600, 2800)))
+        precondition(layoutFollowing.observe(layout(2800, 300, 2500)),
+            "A smaller viewport must keep the latest message above the keyboard")
+        precondition(!layoutFollowing.observe(layout(2800, 300, 2800)))
+        layoutFollowing.interacting(true)
+        precondition(!layoutFollowing.observe(layout(2800, 300, 1800)))
+        precondition(!layoutFollowing.observe(layout(3200, 300, 1800)), "Layout corrections must not interrupt a drag")
+        layoutFollowing.interacting(false)
+        precondition(!layoutFollowing.observe(layout(3600, 300, 1800)), "Late content must preserve reading older messages")
+        precondition(!layoutFollowing.observe(layout(3600, 300, 1700)), "Offset changes alone must not request another scroll")
+        layoutFollowing.interacting(true)
+        precondition(!layoutFollowing.observe(layout(3600, 300, 3600)))
+        layoutFollowing.interacting(false)
+        precondition(layoutFollowing.observe(layout(4000, 300, 3600)), "Returning to the bottom must resume layout following")
+        layoutFollowing = ConversationScrollFollowing()
+        precondition(layoutFollowing.observe(layout(4000, 600, 1700)), "Reopening a retained conversation starts at its latest message")
         let queuedFirst = entry("queue-one", "Next request", kind: "followup", role: "user", state: "pending")
         let queuedSecond = entry("queue-two", "Another request", kind: "followup", role: "user", state: "queued")
         let beforeQueue = entry("before-queue", "Working")
@@ -289,17 +317,23 @@ import Foundation
         let url = directory.appendingPathComponent(String(repeating: "a", count: 64) + ".json")
         let disk = WorkshopTranscriptDisk()
         disk.write(snapshot, to: url)
-        precondition(disk.read(url, key: key)?.key == key, "A subsequent read must see earlier queued writes")
-        precondition(disk.read(url, key: WorkshopTranscriptKey(agentId: "other-computer", applicationId: "app", threadId: "thread")) == nil)
-        precondition(disk.read(url, key: WorkshopTranscriptKey(agentId: "computer", applicationId: "other-app", threadId: "thread")) == nil)
+        let pendingCache = await disk.read(url, key: key)
+        precondition(pendingCache?.key == key, "A subsequent read must see earlier queued writes")
+        let otherComputer = await disk.read(url, key: WorkshopTranscriptKey(agentId: "other-computer", applicationId: "app", threadId: "thread"))
+        let otherApplication = await disk.read(url, key: WorkshopTranscriptKey(agentId: "computer", applicationId: "other-app", threadId: "thread"))
+        precondition(otherComputer == nil && otherApplication == nil)
+        await disk.flush()
         try Data("broken cache".utf8).write(to: url, options: .atomic)
-        precondition(disk.read(url, key: key) == nil, "Invalid cache contents must not prevent online loading")
+        let brokenCache = await disk.read(url, key: key)
+        precondition(brokenCache == nil, "Invalid cache contents must not prevent online loading")
         var newest = url
         for index in 0..<55 {
             newest = directory.appendingPathComponent(String(format: "%064x", index) + ".json")
             disk.write(snapshot, to: newest)
         }
-        precondition(disk.read(newest, key: key) != nil, "Eviction must retain the just-written conversation")
+        await disk.flush()
+        let newestCache = await disk.read(newest, key: key)
+        precondition(newestCache != nil, "Eviction must retain the just-written conversation")
         let retained = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         precondition(retained.filter { $0.pathExtension == "json" }.count <= 50)
         print("PASS: complete turn ordering, queued-request consumption, canonical/replay stability, warm resume and cache isolation")

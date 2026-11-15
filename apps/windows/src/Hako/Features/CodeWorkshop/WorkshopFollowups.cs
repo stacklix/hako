@@ -25,7 +25,8 @@ internal sealed partial class CodeWorkshop
         var current = CurrentJob(root);
         return new { root.Id, root.ApplicationId, threadId = current.ThreadId ?? root.ThreadId,
             current.TurnId, state = current.State == "queued" ? "starting" : current.State,
-            current.Message, root.StartedAt };
+            current.Message, startedAt = current.State == "queued" ? 0 : current.StartedAt,
+            finishedAt = ProcessingFinishedAt(current) };
     }
     private object FollowupSummary(WorkshopJob job) => new { job.Id, message = job.InputMessage,
         job.ImageIds, state = job.State == "completed" ? "sent" : job.State, job.Revision, job.QueueOrder, detail = job.Message, job.QuestionId };
@@ -37,11 +38,12 @@ internal sealed partial class CodeWorkshop
 
     public Task<object?> QueueAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "operationId", "requestId", "message", "imageIds", "questionId");
+        CodexJson.Keys(parameters, "operationId", "requestId", "message", "imageIds", "questionId", "reasoningEffort");
         var operationId = OperationId(parameters);
         var id = OperationId(parameters, "requestId");
         var message = CodexJson.Text(parameters, "message");
         var images = ImageIds(parameters);
+        var reasoningEffort = ReasoningEffort(parameters);
         var questionId = CodexJson.Text(parameters, "questionId");
         if (questionId.Length > 200) throw CodexJson.Invalid();
         if (message.Length > 4000 || string.IsNullOrWhiteSpace(message) && images.Length == 0) throw CodexJson.Invalid();
@@ -51,6 +53,7 @@ internal sealed partial class CodeWorkshop
             RecoverJobs();
             var root = RootJob(GetJob(operationId));
             var fingerprint = Digest(root.Id + "\n" + message + "\n" + string.Join(",", images) + (questionId.Length > 0 ? "\n" + questionId : ""));
+            if (parameters.TryGetProperty("reasoningEffort", out var effortField)) fingerprint = Digest(fingerprint + "\nreasoningEffort:" + effortField.GetRawText());
             if (jobs.ContainsKey(id) || File.Exists(JobPath(id)))
             {
                 var existing = GetJob(id);
@@ -73,7 +76,8 @@ internal sealed partial class CodeWorkshop
                 ApplicationId = root.ApplicationId, Cwd = root.Cwd, ThreadId = current.ThreadId ?? root.ThreadId,
                 SessionName = current.SessionName,
                 InputMessage = message, ImageIds = images, Model = current.Model, Permission = current.Permission,
-                ServiceTier = current.ServiceTier, State = paused ? "paused" : "queued",
+                ServiceTier = current.ServiceTier, ReasoningEffort = reasoningEffort.Length > 0 ? reasoningEffort : current.ReasoningEffort,
+                State = paused ? "paused" : "queued",
                 QueueOrder = Math.Max(DateTime.UtcNow.Ticks, Group(root).Max(value => value.QueueOrder) + 1) };
             Persist(job); jobs.Add(id, job); AppendFollowup(job);
             if (!paused) job.Worker = Task.Run(() => ExecuteQueuedAsync(job, predecessor));
@@ -95,7 +99,8 @@ internal sealed partial class CodeWorkshop
                     jobs.Values.Any(value => value.Active && value.ThreadId == root.ThreadId))
                 { job.State = "paused"; job.Revision++; Persist(job); AppendFollowup(job); return; }
                 job.ThreadId = root.ThreadId;
-                job.State = "starting"; job.Revision++; Persist(job); AppendFollowup(job);
+                job.State = "starting"; job.StartedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                job.Revision++; Persist(job); AppendFollowup(job);
             }
             await ExecuteAsync(job, "", job.InputMessage, job.Model, job.Permission, job.ImageIds, job.ServiceTier);
         }
@@ -144,6 +149,7 @@ internal sealed partial class CodeWorkshop
                 var previousWorker = job.Worker;
                 root.StopRequested = false; Persist(root);
                 job.Commands[requestId] = identity; job.Revision++; job.State = "starting";
+                job.StartedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(); job.FinishedAt = 0;
                 job.ThreadId = root.ThreadId; job.StopRequested = false; job.Submitted = false;
                 job.Outcome = "completed";
                 job.Completed = new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Http;
 using System.Net.WebSockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -49,6 +50,8 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
             try
             {
                 State = "connecting";
+                await ServerCompatibility.WaitAsync(origin,
+                    warning => State = warning is null ? "connecting" : "version_mismatch", token);
                 using var socket = new ClientWebSocket();
                 using (var authentication = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
@@ -77,7 +80,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             catch (AuthenticationException) { State = "authentication_failed"; return; }
-            catch (Exception error) when (error is WebSocketException or IOException or OperationCanceledException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
+            catch (Exception error) when (error is HttpRequestException or WebSocketException or IOException or OperationCanceledException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
             { State = "retrying"; }
             try { await Task.Delay(TimeSpan.FromSeconds(3), token); } catch (OperationCanceledException) { break; }
         }

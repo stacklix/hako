@@ -13,13 +13,11 @@ enum InvestmentAgentTools {
             "offset": ["type": "integer", "minimum": 0],
             "limit": ["type": "integer", "minimum": 1, "maximum": 40]
         ], required: ["section"])
-    static let searchTool = LanguageModelTool(name: "search_instruments", description: "按名称或代码查找行情标的。非美元线性的加密合约需指定本位。搜索结果可以用于登记新标的；结果 ID 只有已登记时才能直接引用。",
+    static let searchTool = LanguageModelTool(name: "search_instruments", description: "按名称或代码查找行情标的。通用标的按名称登记，不查询行情。搜索结果可以用于登记新标的；结果 ID 只有已登记时才能直接引用。",
         properties: ["query": ["type": "string"],
                      "asset_type": ["type": "string", "enum": InvestmentAgentAction.assetKinds.keys.sorted()],
                      "currency": ["type": "string", "enum": ["CNY", "USD", "HKD"]],
-                     "stock_connect": ["type": "boolean"],
-                     "market": ["type": "string", "enum": ["BINANCE", "HTX"]],
-                     "basis": ["type": "string", "enum": ["coin", "stablecoin"]]], required: ["query", "asset_type", "currency"])
+                     "stock_connect": ["type": "boolean"]], required: ["query", "asset_type", "currency"])
     static let export = LanguageModelTool(name: "offer_ledger_export", description: "在应用内显示导出账本按钮，用户点击后保存服务端 ZIP。ZIP 内容不会返回给模型。",
                                           properties: [:], required: [])
     static let all = [read, searchTool, InvestmentAgentAction.inspectTool, InvestmentAgentAction.tool, export]
@@ -142,29 +140,9 @@ enum InvestmentAgentTools {
             throw InvestmentError.invalid("请提供标的代码或名称、类型和币种。")
         }
         var values: [InvestmentServerRow]
-        if kind == .cryptoContract {
-            guard currency == .usd, let basis = (args["basis"] as? String).flatMap({ InvestmentAgentAction.bases[$0] }), basis != .usd else {
-                throw InvestmentError.invalid("搜索加密合约需先明确 U 本位或币本位，报价币种使用 USD。")
-            }
-            let request = try InvestmentContractSearch(query)
-            let explicit = (args["market"] as? String).flatMap(InvestmentContractExchange.init(rawValue:))
-            guard args["market"] == nil || explicit != nil else {
-                throw InvestmentError.invalid("合约交易所仅支持 HTX 和 BIN（Binance）。")
-            }
-            guard request.exchange == nil || explicit == nil || request.exchange == explicit else {
-                throw InvestmentError.invalid("合约代号中的交易所与所选交易所不一致，请先核对。")
-            }
-            let scoped = explicit.map { [request.query, request.side?.shortCode, $0.shortCode].compactMap { $0 }.joined(separator: "•") } ?? query
-            values = try await store.searchContracts(scoped, basis: basis).prefix(20).map { listing in
-                var row = assetRow(listing.asset)
-                row["settlement_unit"] = listing.settlementCode
-                row["basis"] = args["basis"] as? String
-                return row
-            }
-        } else {
-            let search = InvestmentInstrumentSearch(query: query, kind: kind, currency: currency, stockConnect: args["stock_connect"] as? Bool ?? false)
-            values = try await store.searchInstruments(search).prefix(20).map(assetRow)
-        }
+        guard !kind.usesBalance else { throw InvestmentError.invalid("通用标的和存款按名称登记，无需搜索行情。") }
+        let search = InvestmentInstrumentSearch(query: query, kind: kind, currency: currency, stockConnect: args["stock_connect"] as? Bool ?? false)
+        values = try await store.searchInstruments(search).prefix(20).map(assetRow)
         for index in values.indices {
             if let id = values[index]["id"], base.book.asset(UUID(uuidString: id)) == nil { values[index].removeValue(forKey: "id") }
         }

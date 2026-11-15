@@ -1,13 +1,13 @@
 import Foundation
 
-struct ConsoleAgent: Decodable, Identifiable {
+struct ConsoleAgent: Codable, Identifiable {
     let id: String
     let name: String
     let online: Bool
     let lastSeen: String
     let capabilities: [ConsoleAgentCapability]?
 }
-struct ConsoleAgentCapability: Decodable, Identifiable {
+struct ConsoleAgentCapability: Codable, Identifiable {
     let name: String
     let version: Int
     var id: String { name }

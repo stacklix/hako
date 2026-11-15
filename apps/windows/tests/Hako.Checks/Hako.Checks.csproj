@@ -12,4 +12,9 @@
              Link="Features/%(RecursiveDir)%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Platform/*.cs" Link="Platform/%(Filename)%(Extension)"/>
   </ItemGroup>
+  <Target Name="UseAgentReleaseVersion" BeforeTargets="GetAssemblyVersion">
+    <XmlPeek XmlInputPath="$(MSBuildProjectDirectory)/../../src/Hako/Hako.csproj" Query="/Project/PropertyGroup/Version/text()">
+      <Output TaskParameter="Result" PropertyName="Version"/>
+    </XmlPeek>
+  </Target>
 </Project>

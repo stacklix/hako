@@ -8,15 +8,11 @@ struct InvestmentBookTests {
         try purchasesCanAutomaticallyFundCashShortfalls()
         try tradingFeesAffectCashAndDilutedCost()
         try futuresFeesStaySeparateFromMargin()
-        try cryptoContractsTrackDirectionAndMargin()
-        try stablecoinContractsShareUSDCash()
-        try coinContractInputConvertsToWholeContracts()
-        try coinContractsUseInversePricing()
-        try coinContractsOnlyRequireConversionForCashChanges()
-        try fundingBalanceAdjustmentsTrackSettlementAndAttribution()
-        try cashMarginFundingIsRecognizedOnce()
+
         try stockDistributionsKeepPurchaseCost()
         try fundsAndETFsRecordCashDividends()
+        try genericBalancesSeparateValuationFromCashFlows()
+        try genericBalancesValidateAndReplayHistory()
         try spotBalanceAdjustmentsUseTokenQuantity()
         try plansUseCashInExecutionOrder()
         try currencyConversionRequiresQuote()
@@ -40,7 +36,7 @@ struct InvestmentBookTests {
         try deletesOnlyTheSelectedHoldingAndItsRecords()
         try deletesAccountsAndPairedTransfersAtomically()
         try deletesUnreferencedRegistrationsAndTheirQuotes()
-        try deletionPreservesContractAndPlanReferences()
+        try deletionPreservesPlanReferences()
         print("Investment ledger checks passed")
     }
 
@@ -155,250 +151,19 @@ struct InvestmentBookTests {
         precondition(closed.cash == 239 && closed.positions[id]?.realized == 39)
     }
 
-    static func cryptoContractsTrackDirectionAndMargin() throws {
-        let account = InvestmentAccount(name: "加密货币账户", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let long = InvestmentAsset(name: "BTC 永续", code: "BTC-PERP", market: "", kind: .cryptoContract, currency: .usd,
-                                   contractSide: .long)
-        var short = long
-        short.id = UUID()
-        short.contractSide = .short
-        let longID = try book.register(long)
-        let shortID = try book.register(short)
-        precondition(longID != shortID && account.kinds == [.crypto, .cryptoContract])
-        let quantity = Decimal(string: "0.5")!
-        let partialQuantity = Decimal(string: "0.25")!
-        let day = date(1)
-        try book.post(.init(day: day, kind: .deposit, amount: 1000), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: longID, quantity: quantity, price: 100, margin: 50, fee: 2),
-                      accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: shortID, quantity: quantity, price: 100, margin: 60, fee: 3),
-                      accountID: account.id)
-        book.addQuotes([.init(day: day, price: 120)], assetID: longID)
-        book.addQuotes([.init(day: day, price: 120)], assetID: shortID)
-        let opened = try book.ledger(book.accounts[0], through: day)
-        precondition(opened.cash == 885 && opened.positions[shortID]?.margin == 60)
-        precondition(book.value(book.accounts[0], on: day)?.gain == -5)
 
-        let close = date(2)
-        try book.post(.init(day: close, kind: .sell, assetID: shortID, quantity: partialQuantity, price: 80, fee: 1),
-                      accountID: account.id)
-        let partial = try book.ledger(book.accounts[0], through: close)
-        precondition(partial.cash == 919 && partial.positions[shortID]?.margin == 30)
-        try book.post(.init(day: close, kind: .sell, assetID: longID, quantity: quantity, price: 120, fee: 2),
-                      accountID: account.id)
-        try book.post(.init(day: close, kind: .sell, assetID: shortID, quantity: partialQuantity, price: 80, fee: 1),
-                      accountID: account.id)
-        let closed = try book.ledger(book.accounts[0], through: close)
-        precondition(closed.cash == 1011 && closed.positions[longID]?.realized == 6 && closed.positions[shortID]?.realized == 5)
-    }
 
-    static func stablecoinContractsShareUSDCash() throws {
-        let account = InvestmentAccount(name: "加密货币", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let contract = try book.register(.init(name: "BTC 永续", code: "BTCUSDT", market: "", kind: .cryptoContract, currency: .usd,
-                                               contractSide: .long, contractBasis: .stablecoin, settlementStablecoin: .usdt))
-        let usdcContract = try book.register(.init(name: "BTC 永续", code: "BTCUSDC", market: "", kind: .cryptoContract, currency: .usd,
-                                                   contractSide: .short, contractBasis: .stablecoin, settlementStablecoin: .usdc))
-        let day = date(1), next = date(2)
-        try book.post(.init(day: day, kind: .deposit, amount: 1000), accountID: account.id)
-        for code in ["USD", "USDT", "USDC"] {
-            let token = try book.register(.init(name: code, code: code, market: "", kind: .crypto, currency: .usd))
-            do {
-                try book.post(.init(day: day, kind: .buy, assetID: token, quantity: 1, price: 1), accountID: account.id)
-                preconditionFailure("USD cash equivalents must not create separate spot positions")
-            } catch InvestmentError.invalid {}
-        }
-        try book.post(.init(day: day, kind: .buy, assetID: contract, quantity: 2, price: 100, margin: 50, fee: 1),
-                      accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: usdcContract, quantity: 1, price: 100, margin: 30, fee: 1),
-                      accountID: account.id)
-        do {
-            try book.post(.init(day: day, kind: .buy, assetID: usdcContract, quantity: 1, price: 100, margin: 918, fee: 1),
-                          accountID: account.id)
-            preconditionFailure("Margin and fee must fit within the shared cash balance")
-        } catch InvestmentError.insufficientCash {}
-        book.addQuotes([.init(day: day, price: 120)], assetID: contract)
-        book.addQuotes([.init(day: day, price: 100)], assetID: usdcContract)
-        let opened = try book.ledger(book.accounts[0], through: day)
-        precondition(opened.cash == 918 && opened.reservedCollateral.isEmpty && opened.positions.count == 2)
-        precondition(book.value(book.accounts[0], on: day)?.value == 1038)
-        try book.post(.init(day: day, kind: .marginTransfer, assetID: contract, amount: 10), accountID: account.id)
-        do {
-            try book.post(.init(day: day, kind: .marginTransfer, assetID: contract, amount: 909), accountID: account.id)
-            preconditionFailure("Additional margin must fit within available USD cash")
-        } catch InvestmentError.insufficientCash {}
-        do {
-            try book.post(.init(day: day, kind: .marginTransfer, assetID: contract, amount: -61), accountID: account.id)
-            preconditionFailure("Released margin cannot exceed the amount reserved for this position")
-        } catch InvestmentError.invalid {}
-        try book.post(.init(day: day, kind: .marginTransfer, assetID: contract, amount: -5), accountID: account.id)
-        let adjusted = try book.ledger(book.accounts[0], through: day, includeRows: true)
-        precondition(adjusted.cash == 913 && adjusted.positions[contract]?.margin == 55)
-        precondition(adjusted.cashRows.suffix(2).map(\.change) == [-10, 5])
-        precondition(adjusted.positions[contract]?.quantity == 2 && adjusted.positions[contract]?.lastEntry == 100)
-        precondition(adjusted.positions[contract]?.contractEntry == 200 && adjusted.positions[contract]?.realized == -1)
-        precondition(book.value(book.accounts[0], on: day)?.value == 1038)
-        let partial = InvestmentEvent(day: next, kind: .sell, assetID: contract, quantity: 1, price: 120, fee: 2)
-        try book.post(partial, accountID: account.id)
-        let remaining = try book.ledger(book.accounts[0], through: next, includeRows: true)
-        precondition(remaining.cash == Decimal(string: "958.5")! && remaining.positions[contract]?.margin == Decimal(string: "27.5")!)
-        precondition(remaining.cashRows.last?.change == Decimal(string: "45.5")! && remaining.collateralChanges[partial.id] == 18)
-        precondition(remaining.positions[contract]?.realized == 17)
-        try book.post(.init(day: next, kind: .sell, assetID: contract, quantity: 1, price: 90, fee: 1),
-                      accountID: account.id)
-        try book.post(.init(day: next, kind: .sell, assetID: usdcContract, quantity: 1, price: 90),
-                      accountID: account.id)
-        let closed = try book.ledger(book.accounts[0], through: next)
-        precondition(closed.cash == 1015 && closed.positions[contract]?.margin == 0)
-        precondition(closed.positions[contract]?.realized == 6 && closed.positions[usdcContract]?.realized == 9)
-        precondition(book.value(book.accounts[0], on: next)?.gain == 15)
-    }
 
-    static func coinContractInputConvertsToWholeContracts() throws {
-        let screenshot = InvestmentCoinContractQuantity.coins(Decimal(string: "36087.2")!,
-                                                              referencePrice: Decimal(string: "0.310913")!)
-        let estimated = try screenshot.contractCount(faceValue: 10)
-        let nominal = try InvestmentCoinContractQuantity.notionalUSD(11220).contractCount(faceValue: 10)
-        let direct = try InvestmentCoinContractQuantity.contracts(1122).contractCount(faceValue: 10)
-        precondition(estimated == 1122 && nominal == estimated && direct == estimated)
 
-        do {
-            _ = try InvestmentCoinContractQuantity.notionalUSD(11219).contractCount(faceValue: 10)
-            preconditionFailure("USD notional must correspond to whole contracts")
-        } catch InvestmentError.invalid {}
-        do {
-            _ = try InvestmentCoinContractQuantity.coins(35080, referencePrice: 0).contractCount(faceValue: 10)
-            preconditionFailure("A coin quantity needs a positive reference price")
-        } catch InvestmentError.invalid {}
-    }
 
-    static func coinContractsOnlyRequireConversionForCashChanges() throws {
-        let account = InvestmentAccount(name: "币本位", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let day = date(1)
-        let token = try book.register(.init(name: "TRX", code: "TRX", market: "", kind: .crypto, currency: .usd))
-        let contract = try book.register(.init(name: "TRXUSD", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
-                                              currency: .usd, multiplier: 10, contractSide: .long,
-                                              contractBasis: .coin, collateralAssetID: token))
-        try book.post(.init(day: day, kind: .deposit, amount: 100), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: token, quantity: 100, price: 1), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 5), accountID: account.id)
-        let opened = try book.ledger(book.accounts[0], through: day)
-        precondition(opened.reservedCollateral[token] == 5 && opened.positions[token]?.quantity == 100)
-        precondition(opened.positions[contract]?.realized == 0)
-        for event in [
-            InvestmentEvent(day: day, kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 5, fee: 1),
-            InvestmentEvent(day: day, kind: .sell, assetID: contract, quantity: 1, price: 2)
-        ] {
-            do {
-                try book.post(event, accountID: account.id)
-                preconditionFailure("Nonzero coin cash flows still need a USD conversion price")
-            } catch InvestmentError.invalid {}
-        }
-        try book.post(.init(day: day, kind: .sell, assetID: contract, quantity: 1, price: 1), accountID: account.id)
-        let closed = try book.ledger(book.accounts[0], through: day)
-        precondition(closed.reservedCollateral[token] == 0 && closed.positions[token]?.quantity == 100)
-        precondition(closed.positions[contract]?.quantity == 0 && closed.positions[contract]?.realized == 0)
-    }
 
-    static func coinContractsUseInversePricing() throws {
-        let account = InvestmentAccount(name: "加密货币", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let token = try book.register(.init(name: "Bitcoin", code: "BTC", market: "", kind: .crypto, currency: .usd))
-        let asset = InvestmentAsset(name: "BTCUSD 反向合约", code: "BTCUSD", market: "", kind: .cryptoContract, currency: .usd,
-                                    multiplier: 100, contractSide: .long, contractBasis: .coin, collateralAssetID: token)
-        let contract = try book.register(asset)
-        let open = date(1), close = date(2)
-        let fee = Decimal(string: "0.001")!
-        try book.post(.init(day: open, kind: .deposit, amount: 1000), accountID: account.id)
-        try book.post(.init(day: open, kind: .buy, assetID: token, quantity: Decimal(string: "0.1")!, price: 1000), accountID: account.id)
-        try book.post(.init(day: open, kind: .buy, assetID: contract, quantity: 2, price: 1000, margin: Decimal(string: "0.05")!,
-                            fee: fee, settlementRate: 1000), accountID: account.id)
-        book.addQuotes([.init(day: open, price: 1000), .init(day: close, price: 2000)], assetID: token)
-        book.addQuotes([.init(day: close, price: 2000)], assetID: contract)
-        precondition(book.value(book.accounts[0], on: close)?.value == 1298)
-        let original = try book.ledger(book.accounts[0], through: close)
-        try book.post(.init(day: close, kind: .marginTransfer, assetID: contract, amount: Decimal(string: "0.02")!),
-                      accountID: account.id)
-        try book.post(.init(day: close, kind: .marginTransfer, assetID: contract, amount: Decimal(string: "-0.01")!),
-                      accountID: account.id)
-        do {
-            try book.post(.init(day: close, kind: .marginTransfer, assetID: contract, amount: Decimal(string: "0.04")!),
-                          accountID: account.id)
-            preconditionFailure("Coin-margined collateral transfers must use only unreserved spot balance")
-        } catch InvestmentError.insufficientCollateral {}
-        let adjusted = try book.ledger(book.accounts[0], through: close)
-        precondition(adjusted.cash == original.cash && adjusted.positions[token]?.quantity == original.positions[token]?.quantity)
-        precondition(adjusted.positions[token]?.netCost == original.positions[token]?.netCost)
-        precondition(adjusted.positions[contract]?.quantity == original.positions[contract]?.quantity)
-        precondition(adjusted.positions[contract]?.contractEntry == original.positions[contract]?.contractEntry)
-        precondition(adjusted.positions[contract]?.realized == original.positions[contract]?.realized)
-        precondition(adjusted.positions[contract]?.margin == Decimal(string: "0.06")!)
-        precondition(adjusted.reservedCollateral[token] == Decimal(string: "0.06")!)
-        precondition(book.value(book.accounts[0], on: close)?.value == 1298)
-        for _ in 0..<2 {
-            try book.post(.init(day: close, kind: .sell, assetID: contract, quantity: 1, price: 2000, fee: fee, settlementRate: 2000),
-                          accountID: account.id)
-        }
-        let closed = try book.ledger(book.accounts[0], through: close)
-        precondition(closed.cash == 900 && closed.reservedCollateral[token] == 0)
-        precondition(closed.positions[token]?.quantity == Decimal(string: "0.197")!)
-        precondition(closed.positions[contract]?.realized == 195 && book.value(book.accounts[0], on: close)?.gain == 294)
-        var short = asset
-        short.contractSide = .short
-        let profit = short.contractProfit(entry: short.contractExposure(quantity: 1, price: 1000),
-                                          exit: short.contractExposure(quantity: 1, price: 2000))
-        precondition(profit == Decimal(string: "-0.05")!)
-    }
 
-    static func fundingBalanceAdjustmentsTrackSettlementAndAttribution() throws {
-        let account = InvestmentAccount(name: "加密货币", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let contract = try book.register(.init(name: "BTC 永续", code: "BTCUSDT", market: "", kind: .cryptoContract, currency: .usd,
-                                               contractSide: .long, contractBasis: .stablecoin, settlementStablecoin: .usdt))
-        let day = date(1), fundingDay = date(2)
-        try book.post(.init(day: day, kind: .deposit, amount: 1000), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: contract, quantity: 2, price: 100, margin: 50), accountID: account.id)
-        book.addQuotes([.init(day: day, price: 100)], assetID: contract)
 
-        try book.adjustFundingBalance(assetID: contract, accountID: account.id, target: .available, balance: 947,
-                                      rate: nil, attributeToContract: false, on: fundingDay)
-        precondition(book.accounts[0].events.last?.unallocatedFunding == true)
-        try book.adjustFundingBalance(assetID: contract, accountID: account.id, target: .margin, balance: 52,
-                                      rate: nil, attributeToContract: false, on: fundingDay)
-        let adjusted = try book.ledger(book.accounts[0], through: fundingDay, includeRows: true)
-        precondition(adjusted.cash == 947 && adjusted.cashRows.count == 3)
-        precondition(adjusted.reservedCollateral.isEmpty && adjusted.positions[contract]?.netCost == 52)
-        precondition(adjusted.positions[contract]?.margin == 52 && adjusted.positions[contract]?.realized == 2)
-        precondition(book.value(book.accounts[0], on: fundingDay)?.gain == -1)
 
-        try book.post(.init(day: fundingDay, kind: .sell, assetID: contract, quantity: 2, price: 110, fee: Decimal(string: "0.5")!),
-                      accountID: account.id)
-        let closed = try book.ledger(book.accounts[0], through: fundingDay)
-        precondition(closed.cash == Decimal(string: "1018.5")! && closed.positions[contract]?.margin == 0)
-        precondition(closed.positions[contract]?.realized == Decimal(string: "21.5")!)
-        precondition(book.value(book.accounts[0], on: fundingDay)?.gain == Decimal(string: "18.5")!)
-    }
 
-    static func cashMarginFundingIsRecognizedOnce() throws {
-        let account = InvestmentAccount(name: "加密货币", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account])
-        let contract = try book.register(.init(name: "BTC 永续", code: "BTC-PERP", market: "", kind: .cryptoContract,
-                                               currency: .usd, contractSide: .short))
-        let day = date(1), next = date(2)
-        try book.post(.init(day: day, kind: .deposit, amount: 100), accountID: account.id)
-        try book.post(.init(day: day, kind: .buy, assetID: contract, quantity: 1, price: 10, margin: 50), accountID: account.id)
-        try book.adjustFundingBalance(assetID: contract, accountID: account.id, target: .margin, balance: 52,
-                                      rate: nil, attributeToContract: true, on: next)
-        book.addQuotes([.init(day: next, price: 10)], assetID: contract)
-        let open = try book.ledger(book.accounts[0], through: next)
-        precondition(open.cash == 50 && open.positions[contract]?.netCost == 52 && open.positions[contract]?.realized == 2)
-        precondition(book.value(book.accounts[0], on: next)?.gain == 2)
-        try book.post(.init(day: next, kind: .sell, assetID: contract, quantity: 1, price: 10), accountID: account.id)
-        let closed = try book.ledger(book.accounts[0], through: next)
-        precondition(closed.cash == 102 && closed.positions[contract]?.realized == 2)
-    }
+
+
+
 
     static func stockDistributionsKeepPurchaseCost() throws {
         let account = InvestmentAccount(name: "证券", currency: .cny, type: .securities)
@@ -1064,7 +829,6 @@ struct InvestmentBookTests {
         let position = try require(book.ledger(book.accounts[0]).positions[id])
         precondition(book.positionIsEmpty(position, assetID: id))
         precondition(!book.positionIsEmpty(.init(quantity: 0, margin: 1), assetID: id))
-        precondition(!book.positionIsEmpty(.init(quantity: 0), assetID: id, reserved: 1))
         try book.setArchived(true, accountID: account.id, at: date(3))
         precondition(book.visibleAccounts(showArchived: false).isEmpty)
         precondition(book.visibleAccounts(showArchived: true).count == 1)
@@ -1158,36 +922,78 @@ struct InvestmentBookTests {
         precondition(restored.asset(unrelated) != nil && restored.accounts.isEmpty)
     }
 
-    static func deletionPreservesContractAndPlanReferences() throws {
-        let account = InvestmentAccount(name: "加密", currency: .usd, type: .crypto)
-        let other = InvestmentAccount(name: "另一账户", currency: .usd, type: .crypto)
-        var book = InvestmentBook(accounts: [account, other])
-        let token = try book.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
-        let contract = try book.register(.init(name: "TRX/USD 永续", code: "TRX-USD", market: "HTX", kind: .cryptoContract,
-            currency: .usd, multiplier: 10, contractSide: .short, contractBasis: .coin, collateralAssetID: token))
-        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
-        try book.post(.init(day: date(1), kind: .buy, assetID: token, quantity: 100, price: 1), accountID: account.id)
-        book.addQuotes([.init(day: date(2), price: 1)], assetID: token)
-        var withoutHolding = book
-        try withoutHolding.deleteInvestment(accountID: account.id, assetID: token)
-        precondition(withoutHolding.asset(token) != nil && withoutHolding.quotes[token] != nil)
-        precondition(withoutHolding.asset(contract)?.collateralAssetID == token)
+    static func deletionPreservesPlanReferences() throws {
+        let owner = InvestmentAccount(name: "证券", currency: .cny, type: .securities)
+        let other = InvestmentAccount(name: "另一账户", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [owner, other])
+        let id = try book.register(.init(name: "测试", code: "600000", market: "SH", kind: .stock, currency: .cny))
+        try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 10, price: 1), accountID: owner.id, autoFundCash: true)
+        book.plans = [.init(accountID: other.id, assetID: id, amount: 10, monthDay: 1, nextDay: date(3), enabled: false)]
+        try book.deleteInvestment(accountID: owner.id)
+        precondition(book.asset(id) != nil && book.plans.count == 1)
+    }
 
-        try book.post(.init(day: date(2), kind: .buy, assetID: contract, quantity: 1, price: 1, margin: 10), accountID: account.id)
-        let before = book.accounts.map(\.events)
-        do { try book.deleteInvestment(accountID: account.id, assetID: token); preconditionFailure("Collateral in use cannot be removed") }
+    static func genericBalancesSeparateValuationFromCashFlows() throws {
+        let owner = InvestmentAccount(name: "Binance", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [owner])
+        let id = try book.register(.init(name: "策略账户", code: UUID().uuidString, market: "", kind: .generic, currency: .usd))
+        precondition(owner.kinds == [.crypto, .generic])
+        try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 10000, settledAmount: 10400), accountID: owner.id, autoFundCash: true)
+        precondition(book.value(book.accounts[0], on: date(1))?.gain == 400)
+        try book.adjustAssetBalance(assetID: id, accountID: owner.id, balance: 10800, on: date(2))
+        let adjusted = try book.ledger(book.accounts[0], through: date(2), includeRows: true)
+        precondition(adjusted.cash == 0 && adjusted.flows == 10000 && adjusted.cashRows.count == 2)
+        precondition(adjusted.positions[id]?.depositBalance == 10800 && book.value(book.accounts[0], on: date(2))?.gain == 800)
+        try book.post(.init(day: date(3), kind: .buy, assetID: id, quantity: 1, price: 1000), accountID: owner.id, autoFundCash: true)
+        try book.post(.init(day: date(3), kind: .sell, assetID: id, quantity: 1, price: 500), accountID: owner.id)
+        let moved = try book.ledger(book.accounts[0], through: date(3))
+        precondition(moved.cash == 500 && moved.positions[id]?.depositBalance == 11300)
+        precondition(book.value(book.accounts[0], on: date(3))?.gain == 800)
+        try book.post(.init(day: date(4), kind: .sell, assetID: id, quantity: 1, price: 11300), accountID: owner.id)
+        let closed = try book.ledger(book.accounts[0], through: date(4))
+        precondition(closed.positions[id]?.quantity == 0 && closed.positions[id]?.realized == 800)
+        try book.post(.init(day: date(5), kind: .buy, assetID: id, quantity: 1, price: 2000), accountID: owner.id)
+        try book.adjustAssetBalance(assetID: id, accountID: owner.id, balance: 0, on: date(6))
+        precondition(book.value(book.accounts[0], on: date(6))?.gain == -1200)
+        try book.adjustAssetBalance(assetID: id, accountID: owner.id, balance: 2100, on: date(7))
+        precondition(book.value(book.accounts[0], on: date(7), requiresDailyPrices: true)?.gain == 900)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        precondition(tables["market_instruments"]?.isEmpty == true)
+        precondition(tables["investment_assets"]?.first?["asset_type"] == "generic")
+        let restored = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        precondition(restored.value(restored.accounts[0], on: date(7))?.gain == 900)
+        precondition(!restored.assets[id]!.kind.supportsPlan && !restored.assets[id]!.kind.requiresCatalog)
+    }
+
+    static func genericBalancesValidateAndReplayHistory() throws {
+        let owner = InvestmentAccount(name: "通用", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [owner])
+        let id = try book.register(.init(name: "策略", code: UUID().uuidString, market: "", kind: .generic, currency: .usd))
+        let repeated = try book.register(.init(name: "策略", code: UUID().uuidString, market: "", kind: .generic, currency: .usd))
+        precondition(id == repeated)
+        try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 100, settledAmount: 0), accountID: owner.id, autoFundCash: true)
+        precondition(book.value(book.accounts[0], on: date(1))?.gain == -100)
+        try book.adjustAssetBalance(assetID: id, accountID: owner.id, balance: 150, on: date(2))
+        for event in [InvestmentEvent(day: date(3), kind: .sell, assetID: id, quantity: 1, price: 151),
+                      .init(day: date(3), kind: .buy, assetID: id, quantity: 1, price: 10, settledAmount: 170),
+                      .init(day: date(3), kind: .adjustment, assetID: id, settledAmount: -1)] {
+            let before = book.accounts[0].events
+            do { try book.post(event, accountID: owner.id, autoFundCash: true); preconditionFailure("invalid balance operation") }
+            catch is InvestmentError { }
+            precondition(book.accounts[0].events == before)
+        }
+        do { try book.adjustAssetBalance(assetID: id, accountID: owner.id, balance: 150, on: date(2)); preconditionFailure("unchanged balance") }
         catch is InvestmentError { }
-        precondition(book.accounts.map(\.events) == before && book.asset(token) != nil)
-        var watched = book
-        watched.watched = [contract]
-        try watched.deleteInvestment(accountID: account.id)
-        precondition(watched.asset(contract) != nil && watched.asset(token) != nil && watched.watched == [contract])
-        var planned = book
-        planned.plans = [.init(accountID: other.id, assetID: token, amount: 10, monthDay: 1, nextDay: date(3), enabled: false)]
-        try planned.deleteInvestment(accountID: account.id)
-        precondition(planned.asset(contract) == nil && planned.asset(token) != nil && planned.plans.count == 1)
-        try book.deleteInvestment(accountID: account.id)
-        precondition(book.assets.isEmpty && book.quotes.isEmpty)
+        let original = book.accounts[0].events.last!
+        var edited = original; edited.settledAmount = 175
+        try book.replaceEvent(original, with: edited, accountID: owner.id)
+        precondition(book.value(book.accounts[0], on: date(1))?.gain == -100)
+        precondition(book.value(book.accounts[0], on: date(2))?.gain == 75)
+        try book.deleteEvent(book.accounts[0].events.last!, accountID: owner.id)
+        precondition(book.value(book.accounts[0], on: date(2))?.gain == -100)
+        do { try book.assets[id]!.validateEntry(in: .init(name: "人民币", currency: .cny, type: .securities)); preconditionFailure("generic currency") }
+        catch is InvestmentError { }
     }
 
     static func date(_ day: Int) -> Date {

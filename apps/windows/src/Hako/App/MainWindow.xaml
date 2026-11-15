@@ -11,6 +11,10 @@
      <Button Content="工具首页" Click="HomeClick"/>
      <Button Content="设备监控" Click="MonitorClick"/>
      <Button Content="服务器设置" Click="SettingsClick"/>
+     <Border x:Name="VersionNotice" Visibility="Collapsed" Background="#36291C" CornerRadius="6" Padding="10" Margin="0,16,0,0">
+      <TextBlock x:Name="VersionNoticeText" TextWrapping="Wrap" Foreground="#FFD59A" FontSize="12"
+                 AutomationProperties.Name="服务器版本提示"/>
+     </Border>
     </StackPanel>
     <TextBlock Text="个人工具箱" VerticalAlignment="Bottom" Foreground="#B6C2CF"/>
    </DockPanel>

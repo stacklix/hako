@@ -5,19 +5,21 @@ import Combine
     static let shared = DeviceMonitorClient()
     private let authentication: any AuthenticatedServerAccess
     private let socket: AgentRequestSocket
+    private let defaults: UserDefaults
     private var subscription: AnyCancellable?
     private struct State {
         var context = ""
-        var agents: [ConsoleAgent] = []
+        var inventory = DeviceMonitorInventory()
         var deviceData: [String: ConsoleDeviceData] = [:]
         var httpChecks: [String: ConsoleHTTPCheckState] = [:]
         var message: String?
     }
     @Published private var state = State()
     @Published private var working = false
-    init(authentication: (any AuthenticatedServerAccess)? = nil) {
+    init(authentication: (any AuthenticatedServerAccess)? = nil, defaults: UserDefaults = .standard) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
+        self.defaults = defaults
         self.socket = AgentRequestSocket(authentication: authentication, logSource: .devices)
         subscription = authentication.changes.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -31,11 +33,22 @@ import Combine
     var logoutPending: Bool { authentication.logoutPending }
     var busy: Bool { working || authentication.busy }
     var requestContext: String { authentication.requestContext }
-    private var current: State { state.context == requestContext ? state : State(context: requestContext) }
-    private func prepareContext() { if state.context != requestContext { state = State(context: requestContext) } }
+    private var inventoryStorage: DeviceMonitorInventory.Storage {
+        .init(server: serverURL, account: username, defaults: defaults)
+    }
+    private var current: State {
+        state.context == requestContext ? state : State(context: requestContext, inventory: inventoryStorage.load())
+    }
+    private func prepareContext() { if state.context != requestContext { state = current } }
     var agents: [ConsoleAgent] {
-        get { current.agents }
-        set { prepareContext(); state.agents = newValue }
+        get { current.inventory.agents }
+        set { prepareContext(); state.inventory.agents = newValue; inventoryStorage.save(state.inventory) }
+    }
+    var hasFetchedAgents: Bool { current.inventory.hasFetched }
+    func selectedAgent(id: String?) -> ConsoleAgent? { current.inventory.selectedAgent(id: id) }
+    private func markOffline(agentID: String? = nil) {
+        prepareContext()
+        state.inventory.markOffline(agentID: agentID)
     }
     var deviceData: [String: ConsoleDeviceData] {
         get { current.deviceData }
@@ -46,7 +59,10 @@ import Combine
         set { prepareContext(); state.httpChecks = newValue }
     }
     var message: String? {
-        get { current.message ?? authentication.message }
+        get {
+            current.message ?? (hasSavedSession && !authenticated
+                ? "暂时无法验证服务器连接，请检查网络后重试。" : authentication.message)
+        }
         set { prepareContext(); state.message = newValue }
     }
     func restore() async { await authentication.restore() }
@@ -60,8 +76,9 @@ import Combine
             guard context == requestContext else { throw CancellationError() }
             let text: String?
             switch error.code {
-            case "agent_offline": text = "设备当前离线。"
-            case "agent_disconnected": text = "设备连接已中断，请重试。"
+            case "agent_offline", "agent_disconnected":
+                markOffline(agentID: agentID)
+                text = "设备当前离线，等待设备重新连接。"
             case "agent_timeout": text = "设备响应超时，动作可能仍在执行，请先确认结果。"
             case "unsupported_method": text = "设备不支持此动作，请刷新设备列表。"
             case "duplicate_agent": text = "此公钥已登记，请刷新设备列表查看对应设备。"
@@ -75,16 +92,23 @@ import Combine
             throw error
         } catch {
             guard context == requestContext else { throw CancellationError() }
+            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+            if error is URLError { markOffline() }
             throw error
         }
     }
     private func execute(_ action: () async throws -> Void) async {
         guard !busy else { return }
+        let context = requestContext
         working = true; message = nil
         defer { working = false }
         do { try await action() }
         catch is CancellationError { }
-        catch { message = error.localizedDescription }
+        catch {
+            guard context == requestContext else { return }
+            markOffline()
+            message = DeviceMonitorFailure.message(for: error)
+        }
     }
     @discardableResult func fetchAgents() async -> Bool {
         var fetched = false
@@ -123,7 +147,10 @@ import Combine
 
     private func fetchAgentsInternal() async throws {
         struct List: Decodable { let agents: [ConsoleAgent] }
-        agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents
+        let agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents
+        prepareContext()
+        state.inventory.receive(agents)
+        inventoryStorage.save(state.inventory)
     }
     func query(_ agent: ConsoleAgent) async {
         guard authenticated, !logoutPending, deviceData[agent.id]?.loading != true else { return }
@@ -156,7 +183,7 @@ import Combine
                 deviceData[agent.id]?.loaded = true
             }
         } catch is CancellationError { }
-        catch { if context == requestContext { deviceData[agent.id]?.error = error.localizedDescription } }
+        catch { if context == requestContext { deviceData[agent.id]?.error = DeviceMonitorFailure.message(for: error) } }
     }
 
     func watchLive(_ agent: ConsoleAgent, onSubscribed: @MainActor () -> Void) async throws {
@@ -209,7 +236,7 @@ import Combine
             guard context == requestContext else { return }
             httpChecks[agent.id]?.result = result
         } catch is CancellationError { }
-        catch { if context == requestContext { httpChecks[agent.id]?.error = error.localizedDescription } }
+        catch { if context == requestContext { httpChecks[agent.id]?.error = DeviceMonitorFailure.message(for: error) } }
     }
     func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }

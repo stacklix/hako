@@ -34,14 +34,14 @@ struct InvestmentServerRecords {
     ]
     private static let kinds: [InvestmentKind: String] = [
         .stock: "stock", .etf: "etf", .fund: "fund", .future: "future", .crypto: "crypto",
-        .cryptoContract: "crypto_contract", .insurance: "insurance", .wealth: "wealth",
+        .generic: "generic", .insurance: "insurance", .wealth: "wealth",
         .deposit: "deposit", .certificate: "certificate"
     ]
     private static let eventTypes: [InvestmentEventKind: String] = [
         .deposit: "deposit", .withdrawal: "withdrawal", .adjustment: "adjustment", .opening: "opening",
         .buy: "buy", .sell: "sell", .transferOut: "transfer_out", .transferIn: "transfer_in", .income: "income",
         .dividend: "dividend", .bonusShares: "bonus_shares", .stakingReward: "staking_reward",
-        .spotAdjustment: "spot_adjustment", .marginTransfer: "derivative_margin", .funding: "derivative_funding",
+        .spotAdjustment: "spot_adjustment", .marginTransfer: "derivative_margin",
         .derivativeSettlement: "derivative_settlement"
     ]
     private static let categories: [InvestmentBalanceCategory: String] = [
@@ -76,24 +76,22 @@ struct InvestmentServerRecords {
         let currency: InvestmentCurrency
         let code, market: String
         let multiplier: Decimal
-        let basis: InvestmentContractBasis
-        let settlement: String
     }
 
     func encode(_ book: InvestmentBook, revision: Int64) throws -> InvestmentServerTables {
         var result = Dictionary(uniqueKeysWithValues: Self.names.map { ($0, [InvestmentServerRow]()) })
         let assets = book.assets.values.sorted { $0.id.uuidString < $1.id.uuidString }
-        let quotedAssets = assets.filter { ![.insurance, .wealth, .deposit, .certificate].contains($0.kind) }
+        let quotedAssets = assets.filter { ![.insurance, .wealth, .deposit, .certificate, .generic].contains($0.kind) }
         let byInstrument = Dictionary(grouping: quotedAssets) { asset in
             InstrumentKey(kind: asset.kind, currency: asset.currency, code: asset.code, market: asset.market,
-                          multiplier: asset.multiplier, basis: asset.basis, settlement: book.settlementUnit(for: asset))
+                          multiplier: asset.multiplier)
         }
         var instrumentIDs: [UUID: String] = [:]
         var priceTypes: [UUID: String] = [:]
         for (key, group) in byInstrument {
             guard let asset = group.first, let kind = Self.kinds[key.kind] else { throw invalid("asset_type") }
             let id = (group.compactMap(\.instrumentID).first ?? asset.id).uuidString
-            let priceType = asset.kind == .cryptoContract ? "mark" : (asset.kind == .fund ? "nav" : "close")
+            let priceType = asset.kind == .fund ? "nav" : "close"
             for item in group {
                 instrumentIDs[item.id] = id
                 priceTypes[item.id] = priceType
@@ -104,9 +102,7 @@ struct InvestmentServerRecords {
             ])
             if asset.kind.usesMargin {
                 result["market_derivative_specs", default: []].append([
-                    "instrument_id": id, "pricing_model": key.basis == .coin ? "inverse" : "linear",
-                    "contract_multiplier": string(key.multiplier)!, "settlement_unit": key.settlement,
-                    "settlement_basis": key.basis == .usd ? "cash" : (key.basis == .coin ? "coin" : "stablecoin")
+                    "instrument_id": id, "contract_multiplier": string(key.multiplier)!
                 ])
             }
         }
@@ -116,7 +112,6 @@ struct InvestmentServerRecords {
             var row = ["id": asset.id.uuidString, "asset_type": kind, "name": asset.name, "symbol": asset.code,
                        "quote_currency": asset.currency.rawValue, "settlement_unit": book.settlementUnit(for: asset)]
             row["instrument_id"] = instrumentIDs[asset.id]
-            row["collateral_asset_id"] = asset.collateralAssetID?.uuidString
             row["position_side"] = asset.contractSide.map { $0 == .short ? "short" : "long" }
             row["annual_rate"] = string(asset.depositTerms?.annualRate)
             row["maturity_date"] = asset.depositTerms.map { day.string(from: $0.maturity) }
@@ -124,7 +119,7 @@ struct InvestmentServerRecords {
             for quote in book.quotes[asset.id] ?? [] {
                 let date = day.string(from: quote.day)
                 let source = quote.source ?? ""
-                if let instrument = instrumentIDs[asset.id], source != "手动录入" && source != "结算币录入" {
+                if let instrument = instrumentIDs[asset.id], source != "手动录入" {
                     let priceType = priceTypes[asset.id] ?? "close"
                     let key = [instrument, date, priceType, source].joined(separator: "|")
                     var price = ["instrument_id": instrument, "session_date": date, "source": source,
@@ -233,13 +228,10 @@ struct InvestmentServerRecords {
         var detail = ["event_id": event.id.uuidString]
         let side = asset?.contractSide == .short ? "short" : "long"
         if trade { detail["trade_action"] = (event.kind == .buy ? "open_" : "close_") + side }
-        else if event.unallocatedFunding != true { detail["position_side"] = side }
+        else { detail["position_side"] = side }
         let margin = asset?.kind == .future && event.kind == .buy ? event.margin * event.quantity : event.margin
         detail["margin_delta"] = string(event.kind == .marginTransfer ? event.amount : margin)
-        detail["settlement_to_account_rate"] = string(event.settlementRate)
-        detail["funding_target"] = event.fundingTarget.map {
-            $0 == .margin ? "position_margin" : (event.unallocatedFunding == true ? "account_available" : "position_available")
-        }
+
         return (row, detail)
     }
 
@@ -284,18 +276,12 @@ struct InvestmentServerRecords {
             let kind = try mapped(Self.kinds, row, "asset_type")
             let instrument = row["instrument_id"].flatMap { instruments[$0]?.first }
             let spec = row["instrument_id"].flatMap { specs[$0]?.first }
-            let basis: InvestmentContractBasis? = if kind == .cryptoContract {
-                spec?["settlement_basis"] == "coin" ? .coin : (spec?["settlement_basis"] == "stablecoin" ? .stablecoin : .usd)
-            } else { nil }
             var asset = try InvestmentAsset(id: id, name: required(row, "name"),
                 code: row["symbol"] ?? instrument?["symbol"] ?? "", market: instrument?["exchange"] ?? "",
                 kind: kind, currency: currency(row, "quote_currency"), multiplier: decimal(spec?["contract_multiplier"]) ?? 1,
-                contractSide: row["position_side"].map { $0 == "short" ? .short : .long },
-                contractBasis: basis, collateralAssetID: row["collateral_asset_id"].flatMap(UUID.init(uuidString:)))
+                contractSide: row["position_side"].map { $0 == "short" ? .short : .long })
             asset.instrumentID = row["instrument_id"].flatMap(UUID.init(uuidString:))
-            if basis == .stablecoin, asset.collateralAssetID == nil {
-                asset.settlementStablecoin = row["settlement_unit"].flatMap(InvestmentStablecoin.init(rawValue:))
-            }
+
             if let rate = decimal(row["annual_rate"]), let maturity = row["maturity_date"].flatMap(day.date(from:)) {
                 asset.depositTerms = InvestmentDepositTerms(annualRate: rate, maturity: maturity)
             }
@@ -402,9 +388,6 @@ struct InvestmentServerRecords {
         var value = try InvestmentEvent(id: uuid(row, "id"), day: date(row, "effective_date"), kind: kind, assetID: id,
             amount: decimal(row["amount"]) ?? 0, quantity: quantity, price: decimal(row["unit_price"]) ?? 0,
             margin: margin, settledAmount: decimal(row["settled_amount"]), fee: decimal(row["fee"]),
-            settlementRate: decimal(detail?["settlement_to_account_rate"]),
-            fundingTarget: detail?["funding_target"].map { $0 == "position_margin" ? .margin : .available },
-            unallocatedFunding: detail?["funding_target"].map { $0 == "account_available" },
             transferAccountID: row["transfer_account_id"].flatMap(UUID.init(uuidString:)),
             transferID: row["transfer_id"].flatMap(UUID.init(uuidString:)))
         value.version = Int(row["version"] ?? "")

@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 
 struct WorkshopConversationView: View {
     @ObservedObject var conversation: WorkshopConversation
+    private let onSwitch: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detail: WorkshopEntry?
@@ -14,25 +16,25 @@ struct WorkshopConversationView: View {
     @State private var showingCommands = false
     @State private var showingCommandTask = false
     @StateObject private var commands: WorkshopCommands
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
-    @State private var scrollFollowing = WorkshopScrollFollowing()
+    @State private var scrollFollowing = ConversationScrollFollowing()
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
 
-    init(conversation: WorkshopConversation) {
+    init(conversation: WorkshopConversation, onSwitch: (() -> Void)? = nil) {
         self.conversation = conversation
+        self.onSwitch = onSwitch
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
     private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo && !showingCommands && !showingCommandTask }
 
     var body: some View {
-        let transcript = WorkshopTranscriptPresentation(entries: conversation.entries, followups: conversation.followups)
-        let artifactsByEntry = WorkshopArtifactPlacement.group(conversation.artifacts, entries: transcript.history,
-            projectPath: conversation.application.path)
-        let groups = WorkshopEntryGroup.group(transcript.history, artifactsAfter: Set(artifactsByEntry.keys))
+        let transcript = conversation.presentation
+        let artifactsByEntry = transcript.artifactsByEntry
+        let groups = transcript.groups
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if conversation.historyCursor != nil {
@@ -45,13 +47,13 @@ struct WorkshopConversationView: View {
                         Text(cachedAt, style: .relative)
                     }.font(.caption).foregroundStyle(HakoStyle.muted)
                 }
-                if conversation.entries.isEmpty {
+                if transcript.isEmpty {
                     VStack(spacing: 10) {
                         Text(conversation.threadId == nil ? "想在 \(conversation.application.name) 中完成什么？" : "暂未加载会话消息")
                             .font(.subheadline).foregroundStyle(HakoStyle.muted)
                         if conversation.threadId != nil {
-                            ProgressView().opacity(conversation.loadingHistory ? 1 : 0)
-                                .accessibilityHidden(!conversation.loadingHistory)
+                            ProgressView().opacity(conversation.loadingHistory || conversation.restoringCache ? 1 : 0)
+                                .accessibilityHidden(!conversation.loadingHistory && !conversation.restoringCache)
                         }
                     }.frame(maxWidth: .infinity).padding(.vertical, 40)
                 }
@@ -76,8 +78,7 @@ struct WorkshopConversationView: View {
                     WorkshopApprovalView(approval: approval, conversation: conversation)
                 }
                 if let operation = conversation.operation {
-                    Label(operationLabel(operation), systemImage: operation.active ? "circle.dotted" : "checkmark.circle")
-                        .font(.footnote).foregroundStyle(HakoStyle.muted)
+                    WorkshopOperationStatus(operation: operation)
                 }
                 if let error = conversation.error ?? conversation.connectionIssue {
                     VStack(alignment: .leading, spacing: 10) {
@@ -99,40 +100,48 @@ struct WorkshopConversationView: View {
             .padding(20)
         }
         .scrollPosition($scrollPosition)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .defaultScrollAnchor(scrollFollowing.shouldFollowUpdates ? .bottom : nil, for: .sizeChanges)
         .onAppear {
-            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation)
-            scrollFollowing = WorkshopScrollFollowing()
-            conversation.setReadingLatest(scenePhase == .active && transcriptVisible)
+            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil)
+            scrollFollowing = ConversationScrollFollowing()
+            updateReadingLatest(scenePhase == .active && transcriptVisible)
             // Keep an edge target through the initial lazy layout and later
             // streaming updates instead of resolving an unmeasured child ID.
             scrollPosition = ScrollPosition(edge: .bottom)
         }
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentSize.height - geometry.visibleRect.maxY <= 80
-        } action: { _, nearBottom in
-            scrollFollowing.observe(nearBottom: nearBottom)
-            conversation.setReadingLatest(nearBottom && scenePhase == .active && transcriptVisible)
+        .onScrollGeometryChange(for: ConversationScrollFollowing.Layout.self) { geometry in
+            ConversationScrollFollowing.Layout(contentHeight: geometry.contentSize.height,
+                viewportHeight: geometry.visibleRect.height, visibleBottom: geometry.visibleRect.maxY)
+        } action: { _, layout in
+            if scrollFollowing.observe(layout) { scrollPosition.scrollTo(edge: .bottom) }
+            updateReadingLatest(layout.nearBottom && scenePhase == .active && transcriptVisible)
         }
         .onDisappear {
             conversation.setReadingLatest(false)
             WorkshopRuntime.shared.leave(synchronizationOwner, conversation: conversation)
+            Task { await conversation.store.flushComposerDrafts() }
         }
         .onChange(of: scenePhase) { _, phase in
-            conversation.setReadingLatest(phase == .active && scrollFollowing.followsBottom && transcriptVisible)
+            updateReadingLatest(phase == .active && scrollFollowing.followsBottom && transcriptVisible)
+            if phase != .active { Task { await conversation.store.flushComposerDrafts() } }
         }
         .onChange(of: transcriptVisible) { _, visible in
-            conversation.setReadingLatest(visible && scenePhase == .active && scrollFollowing.followsBottom)
+            updateReadingLatest(visible && scenePhase == .active && scrollFollowing.followsBottom)
+        }
+        .onReceive(WorkshopRuntime.shared.visibilityChanges) { _ in
+            updateReadingLatest(scenePhase == .active && transcriptVisible && scrollFollowing.followsBottom)
         }
         .onScrollPhaseChange { _, phase in
             if phase == .tracking || phase == .interacting { scrollFollowing.interacting(true) }
             else if phase == .idle { scrollFollowing.interacting(false) }
         }
-        .onChange(of: conversation.entries) { _, _ in
+        .onChange(of: conversation.presentation.revision) { _, _ in
             if scrollFollowing.shouldFollowUpdates { scrollPosition.scrollTo(edge: .bottom) }
         }
         .onChange(of: conversation.appendedMessageID) { _, id in
             if id != nil {
-                scrollFollowing = WorkshopScrollFollowing()
+                scrollFollowing = ConversationScrollFollowing()
                 if reduceMotion { scrollPosition.scrollTo(edge: .bottom) }
                 else { withAnimation { scrollPosition.scrollTo(edge: .bottom) } }
             }
@@ -165,20 +174,38 @@ struct WorkshopConversationView: View {
                     Button("取消归档") { Task { await conversation.unarchive() } }.font(.subheadline)
                         .disabled(conversation.busy)
                 }.padding(.horizontal, 20).frame(minHeight: 44).background(HakoStyle.background)
-            } else { composer }
+            } else {
+                WorkshopComposerView(conversation: conversation, input: conversation.composerInput,
+                    selectedPhotos: $selectedPhotos, previewPhoto: $previewPhoto, loadingPhoto: loadingPhoto)
+            }
         }
         .refreshable { await conversation.synchronize() }
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button { showingCommands = true } label: { Image(systemName: "terminal") }.accessibilityLabel("快捷命令")
-                Button { showingInfo = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("更多会话设置")
+            if let onSwitch {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("切换", systemImage: "arrow.up.right", action: onSwitch)
+                        .accessibilityLabel("切换到此会话")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("关闭会话预览")
+                }
+            } else {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingCommands = true } label: { Image(systemName: "terminal") }.accessibilityLabel("快捷命令")
+                    Button { showingInfo = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("更多会话设置")
+                }
             }
         }
         .sheet(item: $detail) { entry in
             SettingsSheet(title: entry.recordTitle) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text(entry.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        if entry.kind == "fileChange" {
+                            WorkshopDiffView(text: entry.text)
+                        } else {
+                            Text(entry.text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        }
                         if entry.truncated { Text("此项内容过长，手机中显示前 8,000 个字符。完整内容保留在电脑的 Codex 会话中。")
                             .font(.footnote).foregroundStyle(.secondary) }
                     }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
@@ -191,8 +218,12 @@ struct WorkshopConversationView: View {
         .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands) }
         .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
         .task(id: commands.observationID) { await commands.observe() }
-        .task(id: selectedPhoto) { await loadPhoto(selectedPhoto) }
+        .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
+    }
+
+    private func updateReadingLatest(_ visible: Bool) {
+        conversation.setReadingLatest(visible && WorkshopRuntime.shared.isForegroundConversation(conversation.id))
     }
 
     @ViewBuilder private func entryView(_ entry: WorkshopEntry) -> some View {
@@ -209,7 +240,10 @@ struct WorkshopConversationView: View {
                 Label("Codex", systemImage: "terminal").font(.caption.weight(.medium))
                 if entry.kind == "imageGeneration" {
                     WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
-                } else { WorkshopMessageView(text: entry.text, store: conversation.store) }
+                } else {
+                    WorkshopMessageView(text: entry.text, parts: conversation.presentation.messageParts[entry.id] ?? [],
+                        store: conversation.store).equatable()
+                }
                 if entry.truncated {
                     Button("查看内容说明") { detail = entry }.font(.caption)
                 }
@@ -287,7 +321,8 @@ struct WorkshopConversationView: View {
 
     private var projectInfo: some View {
         HStack {
-            Label(conversation.application.name, systemImage: "folder")
+            WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
+                agentID: conversation.agent.id, scope: conversation.scope)
             Spacer()
             Text(conversation.modelLabel).lineLimit(1).truncationMode(.middle)
         }
@@ -298,7 +333,112 @@ struct WorkshopConversationView: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
-    private var composer: some View {
+    private func loadPhotos(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        loadingPhoto = true
+        defer { if selectedPhotos == items { loadingPhoto = false; selectedPhotos = [] } }
+        var failures: [String] = []
+        for (index, item) in items.enumerated() {
+            do {
+                try Task.checkCancellation()
+                guard let data = try await item.loadTransferable(type: Data.self) else { throw HakoError(message: "无法读取图片。") }
+                let encoded = await Task.detached(priority: .userInitiated) { Self.encodePhoto(data) }.value
+                try Task.checkCancellation()
+                guard let encoded else { throw HakoError(message: "图片处理失败，请选择其他图片。") }
+                try conversation.attach(encoded)
+            } catch is CancellationError { return }
+            catch { failures.append("第 \(index + 1) 张：\(error.localizedDescription)") }
+        }
+        if !failures.isEmpty { conversation.error = failures.joined(separator: "\n") }
+    }
+
+    nonisolated private static func encodePhoto(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                       kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
+        for quality in [0.86, 0.68, 0.5] {
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+            if CGImageDestinationFinalize(destination), data.length <= 2_000_000 { return data as Data }
+        }
+        return nil
+    }
+
+}
+
+private struct WorkshopOperationStatus: View {
+    let operation: WorkshopOperation
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Group {
+            if operation.active && operation.startedAt > 0 && scenePhase == .active {
+                // Keep the per-second update local to this footer, not the transcript.
+                TimelineView(.periodic(from: .now, by: 1)) { context in label(at: context.date) }
+            } else { label(at: .now) }
+        }
+        .font(.footnote).foregroundStyle(operation.state == "failed" ? Color.orange : HakoStyle.muted)
+    }
+
+    private func label(at date: Date) -> some View {
+        Label {
+            if let elapsed = operation.elapsedText(at: date) {
+                Text(operation.statusLabel + " · " + (operation.active ? "已处理 " : "用时 ") + elapsed)
+                    .monospacedDigit()
+            } else { Text(operation.statusLabel) }
+        } icon: { Image(systemName: operation.statusIcon) }
+    }
+}
+
+private struct WorkshopProjectConnectionLabel: View {
+    @ObservedObject var store: WorkshopStore
+    let name: String
+    let agentID: String
+    let scope: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var state: WorkshopConnectionState {
+        guard store.authenticated, scope == store.scope else { return .disconnected }
+        return store.connections[agentID] ?? .disconnected
+    }
+
+    private var connectedColor: Color { HakoStyle.adaptive(0x16803c, 0x6edb91) }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Group {
+                if state == .connecting && !reduceMotion {
+                    label.phaseAnimator([false, true]) { content, green in
+                        content.symbolVariant(green ? .fill : .none)
+                            .foregroundStyle(green ? connectedColor : HakoStyle.muted)
+                    } animation: { _ in .easeInOut(duration: 0.7) }
+                } else {
+                    label.symbolVariant(state == .connected ? .fill : .none)
+                        .foregroundStyle(state == .connected ? connectedColor : HakoStyle.muted)
+                }
+            }
+            Text(state.accessibilityDescription).foregroundStyle(HakoStyle.muted)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(state.accessibilityDescription)
+    }
+
+    private var label: some View { Label(name, systemImage: "folder") }
+}
+
+// Observe only the editor's text here; keystrokes must not invalidate the transcript.
+private struct WorkshopComposerView: View {
+    @ObservedObject var conversation: WorkshopConversation
+    @ObservedObject var input: WorkshopComposerInput
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selectedPhotos: [PhotosPickerItem]
+    @Binding var previewPhoto: WorkshopPhoto?
+    let loadingPhoto: Bool
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if conversation.editingMessageID != nil {
                 HStack {
@@ -308,35 +448,36 @@ struct WorkshopConversationView: View {
                         .accessibilityLabel("取消修改消息").disabled(conversation.busy)
                 }
             }
-            if !conversation.photos.isEmpty { photoAttachments }
+            if !conversation.photos.isEmpty { WorkshopComposerAttachments(conversation: conversation, previewPhoto: $previewPhoto) }
             if loadingPhoto { Text("正在处理图片…").font(.caption).foregroundStyle(HakoStyle.muted) }
             if let progress = conversation.uploadProgress {
                 ProgressView("正在上传图片 \(Int(progress * 100))%", value: progress).font(.caption)
             }
-            if conversation.canCompose && (conversation.synchronizing || conversation.uncertain) {
-                Text(conversation.synchronizing ? "正在同步会话，可先输入，同步完成后可发送" : "任务状态待确认，可先输入，确认后可发送")
+            if conversation.canCompose && (conversation.restoringCache || conversation.synchronizing || conversation.uncertain) {
+                Text(conversation.restoringCache || conversation.synchronizing ? "正在同步会话，可先输入，同步完成后可发送" : "任务状态待确认，可先输入，确认后可发送")
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }
             HStack(alignment: .bottom, spacing: 2) {
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                PhotosPicker(selection: $selectedPhotos, maxSelectionCount: max(1, 3 - conversation.photos.count),
+                             selectionBehavior: .ordered, matching: .images) {
                     Image(systemName: "plus").font(.system(size: 22, weight: .bold))
                         .foregroundStyle(HakoStyle.text).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("添加图片")
+                .accessibilityLabel("添加图片，最多还可选择 \(max(0, 3 - conversation.photos.count)) 张")
                 .disabled(!conversation.canCompose || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
-                TextField("描述你的想法…", text: $conversation.draft, axis: .vertical)
+                TextField("描述你的想法…", text: $input.text, axis: .vertical)
                     .font(.body).lineLimit(1...5).accessibilityLabel("发给 Codex 的消息")
                     .padding(.vertical, 11).frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(!conversation.canCompose)
-                if conversation.synchronizing || conversation.uncertain {
+                if conversation.restoringCache || conversation.synchronizing || conversation.uncertain {
                     Button {} label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 18, weight: .semibold))
                             .symbolEffect(.rotate, options: .repeating, isActive: !reduceMotion)
                     }
                     .buttonStyle(WorkshopSendButtonStyle())
-                    .accessibilityLabel(conversation.synchronizing ? "正在同步会话，等待发送" : "正在确认任务状态，等待发送")
+                    .accessibilityLabel(conversation.restoringCache || conversation.synchronizing ? "正在同步会话，等待发送" : "正在确认任务状态，等待发送")
                     .disabled(true)
                 } else if conversation.operation?.active == true && !conversation.hasDraftInput && conversation.editingMessageID == nil {
                     Button { Task { await conversation.stop() } } label: {
@@ -359,7 +500,14 @@ struct WorkshopConversationView: View {
         .padding(.horizontal, 16).padding(.vertical, 8).background(HakoStyle.background)
     }
 
-    private var photoAttachments: some View {
+
+}
+
+private struct WorkshopComposerAttachments: View {
+    @ObservedObject var conversation: WorkshopConversation
+    @Binding var previewPhoto: WorkshopPhoto?
+
+    var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 12) {
                 ForEach(conversation.photos) { photo in
@@ -381,47 +529,6 @@ struct WorkshopConversationView: View {
         }.scrollIndicators(.hidden)
     }
 
-    private func loadPhoto(_ item: PhotosPickerItem?) async {
-        guard let item else { return }
-        loadingPhoto = true
-        defer { loadingPhoto = false }
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self) else { throw HakoError(message: "无法读取图片。") }
-            let encoded = await Task.detached(priority: .userInitiated) { Self.encodePhoto(data) }.value
-            try Task.checkCancellation()
-            guard let encoded else { throw HakoError(message: "图片处理失败，请选择其他图片。") }
-            try conversation.attach(encoded)
-            selectedPhoto = nil
-        } catch is CancellationError { }
-        catch { conversation.error = error.localizedDescription; selectedPhoto = nil }
-    }
-
-    nonisolated private static func encodePhoto(_ data: Data) -> Data? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
-                       kCGImageSourceThumbnailMaxPixelSize: 2048] as CFDictionary
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else { return nil }
-        for quality in [0.86, 0.68, 0.5] {
-            let data = NSMutableData()
-            guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-            if CGImageDestinationFinalize(destination), data.length <= 2_000_000 { return data as Data }
-        }
-        return nil
-    }
-
-    private func operationLabel(_ operation: WorkshopOperation) -> String {
-        switch operation.state {
-        case "starting": "正在连接 Codex…"
-        case "running": "任务在电脑上执行中"
-        case "waiting": "等待你确认"
-        case "finishing": "正在保存结果并释放会话"
-        case "completed": "本轮已完成"
-        case "interrupted": "任务已停止"
-        case "failed": "本轮未完成"
-        default: "请核对本轮执行结果"
-        }
-    }
 }
 
 // Observe taps without consuming button actions or disturbing editing gestures.
@@ -466,27 +573,6 @@ private struct WorkshopKeyboardDismissal: UIViewRepresentable {
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
 
         @objc private func dismissKeyboard() { window?.endEditing(true) }
-    }
-}
-
-private struct WorkshopEntryGroup: Identifiable {
-    var entries: [WorkshopEntry]
-    var id: String { entries[0].id }
-    var isRecords: Bool { Self.isRecord(entries[0]) }
-
-    static func group(_ entries: [WorkshopEntry], artifactsAfter: Set<String>) -> [Self] {
-        var groups: [Self] = []
-        for entry in entries {
-            if isRecord(entry), let last = groups.last, last.isRecords,
-               !artifactsAfter.contains(last.entries.last!.id) {
-                groups[groups.count - 1].entries.append(entry)
-            } else { groups.append(Self(entries: [entry])) }
-        }
-        return groups
-    }
-
-    private static func isRecord(_ entry: WorkshopEntry) -> Bool {
-        entry.role != "user" && entry.role != "assistant" && entry.kind != "notice" && entry.kind != "followup"
     }
 }
 

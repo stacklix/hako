@@ -387,7 +387,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
         let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
         return InvestmentEditor(title: supportsDividends ? "记分红" : "调整余额", inSheet: true,
                                 hasChanges: !cash.isEmpty || !shares.isEmpty || !balance.isEmpty) {
-            Section(asset.displayName + " · " + asset.displayCode) {
+            Section(asset.kind == .generic ? asset.displayName : asset.displayName + " · " + asset.displayCode) {
                 InvestmentDatePicker(supportsDividends ? "到账日期" : "调整日期", selection: $date, latest: InvestmentBook.day())
                 if supportsDividends {
                     let suffix = stock ? "，选填）" : "）"
@@ -396,13 +396,17 @@ struct InvestmentHoldingAdjustmentEditor: View {
                         InvestmentField("送股股数（选填）", text: $shares, keyboard: .numberPad)
                         Text("可只填其中一项。").font(.footnote).foregroundStyle(.secondary)
                     }
+                } else if asset.kind == .generic {
+                    if let current = ledger?.positions[asset.id]?.depositBalance {
+                        LabeledContent("当前余额", value: InvestmentText.money(current, account.currency))
+                    }
+                    InvestmentField("变动后余额（" + account.currency.rawValue + "）", text: $balance, keyboard: .decimalPad)
+                    Text("按实际余额估值，余额差额计入标的盈亏。").font(.footnote).foregroundStyle(.secondary)
                 } else {
                     if let quantity = ledger?.positions[asset.id]?.quantity {
                         LabeledContent("账面总余额", value: InvestmentText.number(quantity) + " " + asset.code)
                     }
-                    if let reserved = ledger?.reservedCollateral[asset.id], reserved > 0 {
-                        LabeledContent("保证金占用", value: InvestmentText.number(reserved) + " " + asset.code)
-                    }
+
                     InvestmentField("调整后总余额（" + asset.code + "）", text: $balance, keyboard: .decimalPad)
                     Text("增加的数量记为同币种质押奖励，减少的数量记为现货余额调整。")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -421,7 +425,11 @@ struct InvestmentHoldingAdjustmentEditor: View {
                     try book.recordDistribution(assetID: asset.id, accountID: account.id, cash: cash, shares: shares, on: day)
                 } else {
                     let balance = try investmentDecimal(balance, "调整后余额", allowZero: true)
-                    try book.adjustSpotBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
+                    if asset.kind == .generic {
+                        try book.adjustAssetBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
+                    } else {
+                        try book.adjustSpotBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
+                    }
                 }
             }
         }
@@ -482,11 +490,11 @@ struct InvestmentMarginTransferEditor: View {
 
     var body: some View {
         let day = InvestmentBook.day(date)
-        let unit = store.book.fundingUnit(for: asset, target: .available)
-        let balanceTitle = asset.collateralAssetID == nil ? "可用现金余额" : "可用现货余额"
+        let unit = account.currency.rawValue
+        let balanceTitle = "可用现金余额"
         let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
-        let margin = ledger?.fundingBalance(for: asset, target: .margin)
-        let available = ledger?.fundingBalance(for: asset, target: .available)
+        let margin = ledger?.positions[asset.id].flatMap { $0.quantity > 0 ? $0.margin : nil }
+        let available = ledger?.cash
         return InvestmentEditor(title: "调整保证金", inSheet: true, hasChanges: !amount.isEmpty) {
             Section {
                 InvestmentDatePicker("划转日期", selection: $date, latest: InvestmentBook.day())
@@ -523,63 +531,6 @@ struct InvestmentMarginTransferEditor: View {
     }
 }
 
-struct InvestmentFundingAdjustmentEditor: View {
-    var editorDraft: InvestmentEditorDraft? = nil
-    @ObservedObject var store: InvestmentStore
-    let account: InvestmentAccount
-    let asset: InvestmentAsset
-    @State private var date = InvestmentBook.day()
-    @State private var target = InvestmentFundingTarget.available
-    @State private var balance = ""
-    @State private var settlementRate = ""
-    @State private var attributeToContract = true
-
-    var body: some View {
-        let day = InvestmentBook.day(date)
-        let unit = store.book.fundingUnit(for: asset, target: target)
-        let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
-        let current = ledger?.fundingBalance(for: asset, target: target)
-        return InvestmentEditor(title: "调整余额", inSheet: true, hasChanges: !balance.isEmpty) {
-            Section {
-                InvestmentDatePicker("对账日期", selection: $date, latest: InvestmentBook.day())
-                Picker("调整项目", selection: $target) {
-                    ForEach(InvestmentFundingTarget.allCases) { Text($0.rawValue).tag($0) }
-                }.onChange(of: target) { balance = "" }
-                if let current {
-                    LabeledContent("账面余额", value: InvestmentText.number(current) + " " + unit)
-                } else {
-                    Text("该日期没有可调整的余额。").font(.footnote).foregroundStyle(.secondary)
-                }
-                InvestmentField("调整后余额（" + unit + "）", text: $balance, keyboard: .decimalPad)
-                if asset.collateralAssetID != nil {
-                    InvestmentField(unit + " 兑美元单价（留空使用账本报价）", text: $settlementRate, keyboard: .decimalPad)
-                }
-                if target == .available { Toggle("计入当前合约", isOn: $attributeToContract) }
-            } header: {
-                Text(asset.displayName + " · " + asset.kindLabel)
-            } footer: {
-                if asset.settlementStablecoin != nil && target == .available {
-                    Text("可用余额填写 USD、USDC 和 USDT 按 1:1 折算后的合计。")
-                }
-                Text("记齐开平仓、手续费和划转后，填写交易所已结算的余额。差额记为资金费净额。共用余额无法拆分时，可将差额计入账户。")
-            }
-        } save: {
-            let balance = try investmentDecimal(balance, "调整后余额", allowZero: true)
-            let rate = investmentTrim(settlementRate).isEmpty ? nil : try investmentDecimal(settlementRate, "结算币兑美元单价")
-            if let editorDraft {
-                try await editorDraft.submit(["date": InvestmentEditorDraft.day.string(from: day), "amount": InvestmentEditorDraft.text(balance),
-                    "settlement_rate": InvestmentEditorDraft.text(rate), "funding_target": target == .available ? "available" : "margin",
-                    "attribute_to_contract": attributeToContract ? "true" : "false"])
-                return
-            }
-            try await store.update {
-                try $0.adjustFundingBalance(assetID: asset.id, accountID: account.id, target: target, balance: balance,
-                                            rate: rate, attributeToContract: attributeToContract, on: day)
-            }
-        }
-    }
-}
-
 private struct InvestmentAssetDraft: Equatable {
     init() {}
     init(_ asset: InvestmentAsset, book: InvestmentBook) {
@@ -588,16 +539,11 @@ private struct InvestmentAssetDraft: Equatable {
         multiplier = InvestmentEditorDraft.text(asset.multiplier)
         stockConnect = asset.isStockConnect
         contractSide = asset.contractSide ?? .long
-        contractBasis = asset.basis
-        collateralAssetID = asset.collateralAssetID
-        settlementStablecoin = asset.settlementStablecoin
         selectedAsset = asset.kind.requiresCatalog ? asset : nil
-        if asset.kind == .cryptoContract { contractSettlementCode = book.settlementUnit(for: asset) }
     }
     private var positionID = UUID()
     enum EntryType: Hashable {
         case standard(InvestmentKind)
-        case contract(InvestmentContractBasis)
         case stockConnect
     }
 
@@ -607,17 +553,13 @@ private struct InvestmentAssetDraft: Equatable {
     var kind = InvestmentKind.stock
     var multiplier = ""
     var contractSide = InvestmentContractSide.long
-    var contractBasis = InvestmentContractBasis.usd
-    var collateralAssetID: UUID?
-    var settlementStablecoin: InvestmentStablecoin?
     private(set) var stockConnect = false
     private(set) var selectedAsset: InvestmentAsset?
-    private(set) var contractSettlementCode: String?
 
     var entryType: EntryType {
         get {
             if stockConnect { return .stockConnect }
-            return kind == .cryptoContract ? .contract(contractBasis) : .standard(kind)
+            return .standard(kind)
         }
         set {
             guard newValue != entryType else { return }
@@ -626,11 +568,6 @@ private struct InvestmentAssetDraft: Equatable {
             case .standard(let kind):
                 stockConnect = false
                 self.kind = kind
-                contractBasis = .usd
-            case .contract(let basis):
-                stockConnect = false
-                kind = .cryptoContract
-                contractBasis = basis
             case .stockConnect:
                 stockConnect = true
                 if kind != .stock && kind != .etf { kind = .stock }
@@ -659,17 +596,6 @@ private struct InvestmentAssetDraft: Equatable {
         selectedAsset = asset
     }
 
-    mutating func select(_ listing: InvestmentContractListing, collateral: [InvestmentAsset]) {
-        select(listing.asset)
-        multiplier = NSDecimalNumber(decimal: listing.asset.multiplier).stringValue
-        contractSettlementCode = listing.settlementCode
-        if contractBasis == .coin {
-            collateralAssetID = collateral.first { $0.code == listing.settlementCode }?.id
-        } else {
-            settlementStablecoin = InvestmentStablecoin(rawValue: listing.settlementCode)
-        }
-    }
-
     mutating func clearInstrument() {
         positionID = UUID()
         name = ""
@@ -677,16 +603,12 @@ private struct InvestmentAssetDraft: Equatable {
         market = ""
         multiplier = ""
         contractSide = .long
-        collateralAssetID = nil
-        settlementStablecoin = nil
-        contractSettlementCode = nil
         selectedAsset = nil
     }
 
     func matches(_ asset: InvestmentAsset, currency: InvestmentCurrency) -> Bool {
-        let entered = InvestmentAsset(name: "", code: normalizedCode, market: venue, kind: kind, currency: currency,
-                                      contractSide: assetSide, contractBasis: kind == .cryptoContract ? contractBasis : nil,
-                                      collateralAssetID: collateralAssetID, settlementStablecoin: settlementStablecoin)
+        let entered = InvestmentAsset(name: name, code: normalizedCode, market: venue, kind: kind, currency: currency,
+                                      contractSide: assetSide)
         if asset.matches(entered) { return true }
         guard asset.kind == kind, asset.currency == currency,
               !kind.usesMargin || (asset.contractSide ?? .long) == contractSide else { return false }
@@ -705,13 +627,12 @@ private struct InvestmentAssetDraft: Equatable {
         }
         let name = investmentTrim(name)
         guard !name.isEmpty else { throw InvestmentError.invalid("请选择标的或填写产品名称。") }
-        let needsMultiplier = kind.derivative && (kind != .cryptoContract || contractBasis == .coin || !investmentTrim(multiplier).isEmpty)
+        let needsMultiplier = kind.derivative
         let multiplier = needsMultiplier ? try investmentDecimal(multiplier, "合约乘数") : 1
-        let code = kind.isTermDeposit && normalizedCode.isEmpty ? UUID().uuidString : normalizedCode
+        let code = kind.usesBalance && normalizedCode.isEmpty ? UUID().uuidString : normalizedCode
         var result = InvestmentAsset(name: selectedAsset?.name ?? name, code: selectedAsset?.code ?? code,
                                market: selectedAsset?.market ?? venue, kind: kind, currency: currency, multiplier: multiplier,
-                               contractSide: assetSide, contractBasis: kind == .cryptoContract ? contractBasis : nil,
-                               collateralAssetID: collateralAssetID, settlementStablecoin: settlementStablecoin)
+                               contractSide: assetSide)
         result.id = positionID
         result.instrumentID = existing?.instrumentID ?? selectedAsset?.instrumentID ?? selectedAsset?.id
         if let existing {
@@ -727,12 +648,10 @@ private struct InvestmentAssetDraft: Equatable {
 private struct InvestmentAssetFields: View {
     private enum SearchChoice: Identifiable {
         case instrument(InvestmentAsset)
-        case contract(InvestmentContractListing)
 
         var asset: InvestmentAsset {
             switch self {
             case .instrument(let asset): asset
-            case .contract(let listing): listing.asset
             }
         }
         var id: UUID { asset.id }
@@ -740,7 +659,6 @@ private struct InvestmentAssetFields: View {
 
     private struct SearchRequest: Equatable {
         let instrument: InvestmentInstrumentSearch
-        let contractBasis: InvestmentContractBasis?
     }
 
     private struct SearchResponse {
@@ -755,7 +673,6 @@ private struct InvestmentAssetFields: View {
     var allowsStockConnect = false
     var watchOnly = false
     var accountType: InvestmentAccountType?
-    var collateralOptions: [InvestmentAsset] = []
     var existing: InvestmentAsset?
     var locksSpecifications = false
     @State private var query = ""
@@ -768,13 +685,8 @@ private struct InvestmentAssetFields: View {
             if !locksSpecifications && (!watchOnly || currency != .hkd) {
                 Picker("资产类型", selection: $draft.entryType) {
                     ForEach(kinds) { kind in
-                        if kind == .cryptoContract {
-                            Text("U 本位合约").tag(InvestmentAssetDraft.EntryType.contract(.stablecoin))
-                            Text("币本位合约").tag(InvestmentAssetDraft.EntryType.contract(.coin))
-                        } else {
-                            let title = kind == .stock ? (currency == .usd ? "美股" : "A 股") : kind.title
-                            Text(title).tag(InvestmentAssetDraft.EntryType.standard(kind))
-                        }
+                        let title = kind == .stock ? (currency == .usd ? "美股" : "A 股") : kind.title
+                        Text(title).tag(InvestmentAssetDraft.EntryType.standard(kind))
                     }
                     if allowsStockConnect { Text("港股通").tag(InvestmentAssetDraft.EntryType.stockConnect) }
                 }
@@ -799,6 +711,8 @@ private struct InvestmentAssetFields: View {
                 InvestmentField("理财产品编号", text: $draft.code)
                     .autocorrectionDisabled()
                 InvestmentField("理财产品名称", text: $draft.name)
+            } else if draft.kind == .generic {
+                InvestmentField("标的名称", text: $draft.name)
             } else if draft.kind.isTermDeposit {
                 InvestmentField("存款名称", text: $draft.name)
             } else if draft.selected {
@@ -821,37 +735,11 @@ private struct InvestmentAssetFields: View {
                 .investmentListRow()
                 .accessibilityLabel("已选标的，" + selection)
                 .accessibilityHint("重新搜索并选择标的")
-                if let exchange = InvestmentContractExchange(rawValue: draft.venue), draft.kind == .cryptoContract {
-                    LabeledContent("报价交易所", value: exchange.title)
-                }
+
             } else {
                 searchFields
                 if !watchOnly && !draft.kind.requiresCatalog {
                     DisclosureGroup("手动录入", isExpanded: $manualEntry) { manualFields }
-                }
-            }
-            if draft.kind == .cryptoContract && !locksSpecifications {
-                if let code = draft.contractSettlementCode {
-                    LabeledContent("结算币种", value: code)
-                    if draft.contractBasis == .coin && draft.collateralAssetID == nil {
-                        Text("请先在此账户录入 \(code) 的现货余额。").font(.footnote).foregroundStyle(.secondary)
-                    }
-                } else if draft.contractBasis == .stablecoin {
-                    Picker("结算币种", selection: $draft.settlementStablecoin) {
-                        Text("请选择").tag(nil as InvestmentStablecoin?)
-                        ForEach(InvestmentStablecoin.allCases) { Text($0.rawValue).tag(Optional($0)) }
-                    }
-                    .pickerStyle(.menu)
-                } else {
-                    let options = collateralOptions.filter(draft.contractBasis.accepts)
-                    Picker("结算币种", selection: $draft.collateralAssetID) {
-                        Text("请选择").tag(nil as UUID?)
-                        ForEach(options) { token in Text(token.code).tag(Optional(token.id)) }
-                    }
-                    .pickerStyle(.menu)
-                    if options.isEmpty {
-                        Text("请先在此账户录入对应币种的现货余额。").font(.footnote).foregroundStyle(.secondary)
-                    }
                 }
             }
             if draft.kind.usesMargin, !watchOnly, !locksSpecifications {
@@ -861,13 +749,7 @@ private struct InvestmentAssetFields: View {
                 .pickerStyle(.menu)
             }
             if !watchOnly, !locksSpecifications, existing == nil, draft.kind.derivative {
-                let title = draft.kind != .cryptoContract ? "合约乘数"
-                    : (draft.contractBasis == .coin ? "每张合约面值（USD）" : "合约乘数（默认 1）")
-                if draft.kind == .cryptoContract {
-                    LabeledContent(title, value: draft.multiplier.isEmpty ? "选择合约后带入" : draft.multiplier)
-                } else {
-                    InvestmentField(title, text: $draft.multiplier, keyboard: .decimalPad)
-                }
+                InvestmentField("合约乘数", text: $draft.multiplier, keyboard: .decimalPad)
             }
         }
         .onChange(of: kinds, initial: true) { _, kinds in
@@ -887,16 +769,14 @@ private struct InvestmentAssetFields: View {
         let searchesCash = draft.kind == .crypto && accountType == .crypto && InvestmentStablecoin.isCashCode(text)
         let instrument = InvestmentInstrumentSearch(query: text, kind: draft.kind, currency: currency,
                                                     stockConnect: draft.stockConnect, accountType: accountType)
-        let request = SearchRequest(instrument: instrument, contractBasis: draft.kind == .cryptoContract ? draft.contractBasis : nil)
-        let searchesCrypto = draft.kind == .crypto || draft.kind == .cryptoContract
+        let request = SearchRequest(instrument: instrument)
+        let searchesCrypto = draft.kind == .crypto
         return Group {
-            InvestmentField(draft.kind == .cryptoContract ? "搜索合约代码" : (searchesCrypto ? "搜索币种代码或名称" : "搜索代码或名称"),
+            InvestmentField(searchesCrypto ? "搜索币种代码或名称" : "搜索代码或名称",
                             text: $query, focusesOnRowTap: true)
                 .autocorrectionDisabled()
                 .task(id: request) { await search(request) }
-            if draft.kind == .cryptoContract {
-                Text("仅支持 HTX 和 BIN（Binance）的永续合约，例如 TRXUSD•S•HTX（空）或 TRXUSD•L•HTX（多）。").font(.footnote).foregroundStyle(.secondary)
-            }
+
             if !text.isEmpty {
                 if searchesCash {
                     Text("USD、USDC 和 USDT 统一计入 USD 现金余额，请在现金管理中记账。")
@@ -913,9 +793,6 @@ private struct InvestmentAssetFields: View {
                             Button {
                                 switch choice {
                                 case .instrument(let asset): draft.select(asset)
-                                case .contract(let listing):
-                                    draft.select(listing, collateral: collateralOptions)
-                                    if !locksSpecifications, let side = listing.asset.contractSide { draft.contractSide = side }
                                 }
                                 manualEntry = false
                             } label: {
@@ -945,7 +822,7 @@ private struct InvestmentAssetFields: View {
     }
 
     @ViewBuilder private var manualFields: some View {
-        InvestmentField(draft.kind == .cryptoContract ? "合约代码" : "标的代码", text: $draft.code)
+        InvestmentField("标的代码", text: $draft.code)
             .textInputAutocapitalization(.characters).autocorrectionDisabled()
         if draft.kind == .future {
             Text("中国期货请填写带交易所后缀的完整合约代码，例如 CU1811.SHF。")
@@ -958,40 +835,32 @@ private struct InvestmentAssetFields: View {
             }
         }
         if let existing {
-            LabeledContent(draft.kind == .cryptoContract ? "合约名称" : "标的名称", value: existing.displayName)
+            LabeledContent("标的名称", value: existing.displayName)
         } else {
-            InvestmentField(draft.kind == .cryptoContract ? "合约名称" : "标的名称", text: $draft.name)
+            InvestmentField("标的名称", text: $draft.name)
         }
     }
 
     private func searchSubtitle(_ choice: SearchChoice) -> String {
         let asset = choice.asset
-        if case .contract(let listing) = choice {
-            let exchange = InvestmentContractExchange(asset: asset)?.title ?? asset.market
-            return [asset.displayCode, exchange, listing.settlementCode + " 结算"].joined(separator: " · ")
-        }
+
         let market = asset.isStockConnect ? "港交所" : asset.mainlandSymbol?.venue ?? asset.market
         return [asset.code, market, asset.currency.rawValue].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private func search(_ request: SearchRequest) async {
         let instrument = request.instrument
-        guard !instrument.query.isEmpty, request.contractBasis == nil || instrument.currency == .usd,
+        guard !instrument.query.isEmpty,
               instrument.kind != .crypto || accountType != .crypto || !InvestmentStablecoin.isCashCode(instrument.query) else {
             searchResponse = nil
             return
         }
         do {
             try await Task.sleep(for: .milliseconds(400))
-            let results: [SearchChoice]
-            if let basis = request.contractBasis {
-                results = try await store.searchContracts(instrument.query, basis: basis).map(SearchChoice.contract)
-            } else {
-                let assets = try await store.searchInstruments(instrument)
-                results = assets.filter {
-                    accountType != .crypto || $0.kind != .crypto || !InvestmentStablecoin.isCashCode($0.code)
-                }.map(SearchChoice.instrument)
-            }
+            let assets = try await store.searchInstruments(instrument)
+            let results = assets.filter {
+                accountType != .crypto || $0.kind != .crypto || !InvestmentStablecoin.isCashCode($0.code)
+            }.map(SearchChoice.instrument)
             try Task.checkCancellation()
             searchResponse = SearchResponse(request: request, matches: results)
         } catch {
@@ -1001,141 +870,26 @@ private struct InvestmentAssetFields: View {
     }
 }
 
-struct InvestmentAutomaticPriceField: View {
-    let title: String
-    let unit: String
-    let request: InvestmentEntryQuoteRequest?
-    let help: String
-    @Binding var state: InvestmentEntryQuoteState
-    @Binding var manualPrice: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            InvestmentFieldKey(title: title, help: help)
-                .font(.subheadline).foregroundStyle(.secondary)
-            if !investmentTrim(manualPrice).isEmpty {
-                Text(manualPrice + " " + unit).monospacedDigit()
-                Text("使用手动指定价格").font(.caption).foregroundStyle(.secondary)
-            } else if let quote = state.quote(for: request) {
-                Text(quote.price.formatted(.number.precision(.fractionLength(0...8))) + " " + unit).monospacedDigit()
-                Text("自动获取 · " + InvestmentText.quoteDetail(quote)).font(.caption).foregroundStyle(.secondary)
-            } else if request != nil && (state.request != request || state.loading) {
-                ProgressView("正在自动获取…").font(.footnote)
-            } else {
-                Text(state.failure ?? "暂无自动报价").font(.footnote).foregroundStyle(.secondary)
-            }
-            if request != nil {
-                Button("重新获取价格") { Task { await load() } }
-                    .font(.caption).buttonStyle(.borderless)
-                    .disabled(state.loading && state.request == request)
-            }
-            DisclosureGroup("手动指定价格（选填）") {
-                InvestmentField(title + "（" + unit + "）", text: $manualPrice, keyboard: .decimalPad)
-                Text("留空使用自动报价。").font(.caption).foregroundStyle(.secondary)
-            }.font(.subheadline)
-        }
-        .investmentListRow()
-        .onChange(of: request) { manualPrice = "" }
-        .task(id: request) { await load() }
-    }
-
-    private func load() async {
-        guard let request else { state = .init(); return }
-        state = .init(request: request, loading: true)
-        do {
-            let quote = try await request.fetch()
-            try Task.checkCancellation()
-            guard state.request == request else { return }
-            state = .init(request: request, quote: quote)
-        } catch {
-            guard !Task.isCancelled, state.request == request else { return }
-            state = .init(request: request, failure: "自动查询失败，可重新获取。" + error.localizedDescription)
-        }
-    }
-}
-
-private struct InvestmentCoinQuantityDraft {
-    init() {}
-    init(_ editing: InvestmentEditorDraft) {
-        referencePrice = editing.value("reference_price")
-        switch editing.value("quantity_mode") {
-        case "coins": mode = .coins; coins = editing.value("quantity")
-        case "notional": mode = .notional; notional = editing.value("quantity")
-        default: mode = .contracts; contracts = editing.value("quantity")
-        }
-    }
-    enum Mode: String, CaseIterable, Identifiable {
-        case coins = "按币量"
-        case notional = "按美元名义价值"
-        case contracts = "按张数"
-        var id: Self { self }
-    }
-
-    var mode = Mode.coins
-    var coins = ""
-    var referencePrice = ""
-    var notional = ""
-    var contracts = ""
-
-    var hasChanges: Bool { !coins.isEmpty || !referencePrice.isEmpty || !notional.isEmpty || !contracts.isEmpty }
-
-    func contractCount(faceValue: Decimal) throws -> Decimal {
-        let quantity: InvestmentCoinContractQuantity
-        switch mode {
-        case .coins:
-            quantity = .coins(try investmentDecimal(coins, "仓位折算量"),
-                              referencePrice: try investmentDecimal(referencePrice, "折算用价格"))
-        case .notional:
-            quantity = .notionalUSD(try investmentDecimal(notional, "美元名义价值"))
-        case .contracts:
-            quantity = .contracts(try investmentDecimal(contracts, "张数"))
-        }
-        return try quantity.contractCount(faceValue: faceValue)
-    }
-}
-
 private struct InvestmentTradeFields: View {
     let kind: InvestmentKind
     let currency: InvestmentCurrency
     let event: InvestmentEventKind
     let stockConnect: Bool
-    let contractBasis: InvestmentContractBasis
-    let collateral: InvestmentAsset?
-    var contractExchange: InvestmentContractExchange?
-    var contractSettlementCode: String?
-    var contractFaceValue: Decimal?
-    @Binding var coinQuantity: InvestmentCoinQuantityDraft
-    @Binding var settlementQuote: InvestmentEntryQuoteState
     @Binding var date: Date
     @Binding var quantity: String
     @Binding var price: String
     @Binding var fee: String
     @Binding var margin: String
     @Binding var settlement: String
-    @Binding var settlementRate: String
 
-    private var isCoinContract: Bool { kind == .cryptoContract && contractBasis == .coin }
-    private var isStablecoinContract: Bool { kind == .cryptoContract && contractBasis == .stablecoin }
-    private var settlementCode: String? { collateral?.code ?? contractSettlementCode }
-
-    private var settlementRequest: InvestmentEntryQuoteRequest? {
-        collateral.map { .settlement(code: $0.code, day: InvestmentBook.day(date)) }
-    }
-
-    var quoteUnit: String {
-        if isCoinContract { return "USD/" + (settlementCode ?? "币") }
-        return kind == .cryptoContract && contractBasis == .stablecoin ? settlementUnit : currency.rawValue
-    }
-
-    private var settlementUnit: String {
-        if kind == .cryptoContract, contractBasis != .usd { return settlementCode ?? "结算币" }
-        return currency.rawValue
-    }
+    private var showsFee: Bool { kind.supportsTradeFees && !stockConnect && (event == .buy || event == .sell) }
 
     var body: some View {
-        InvestmentDatePicker(dateTitle, selection: $date, latest: InvestmentBook.day())
+        InvestmentDatePicker(event == .income ? "到账日期" : kind.usesBalance ? "记账日期" : "成交日期", selection: $date, latest: InvestmentBook.day())
         if kind == .insurance {
-            InvestmentField(insuranceAmountTitle + "（HKD）", text: $price, keyboard: .decimalPad)
+            InvestmentField((event == .sell ? "退保到账金额" : "保费金额") + "（HKD）", text: $price, keyboard: .decimalPad)
+        } else if kind == .generic {
+            InvestmentField((event == .sell ? "取出金额" : "投入金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else if kind.isTermDeposit {
             switch event {
             case .adjustment: EmptyView()
@@ -1148,92 +902,22 @@ private struct InvestmentTradeFields: View {
                 Text("按实际余额估值，余额差额计入存款盈亏。").font(.footnote).foregroundStyle(.secondary)
             }
         } else if event == .income {
-            InvestmentField("实收收益（" + currency.rawValue + "）",
-                            text: $price, keyboard: .decimalPad)
+            InvestmentField("实收收益（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else {
-            if isCoinContract {
-                coinContractQuantityFields
-            } else {
-                let unit = kind == .cryptoContract && contractExchange == .htx ? "张" : kind.unit
-                InvestmentField("数量（" + unit + "）", text: $quantity, keyboard: .decimalPad)
-            }
-            InvestmentField("成交价（" + quoteUnit + "）",
-                            text: $price, keyboard: .decimalPad,
-                            help: isCoinContract
-                                ? "填写成交时每枚币的美元价格。把现有仓位一次录入时，可填交易所显示的开仓均价。"
-                                : nil)
+            InvestmentField("数量（" + kind.unit + "）", text: $quantity, keyboard: .decimalPad)
+            InvestmentField("成交价（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         }
         if stockConnect {
-            InvestmentField(event == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）",
-                            text: $settlement, keyboard: .decimalPad)
+            InvestmentField(event == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）", text: $settlement, keyboard: .decimalPad)
             Text("按券商交割单填写含费用的实际人民币金额。").font(.footnote).foregroundStyle(.secondary)
         }
         if showsFee {
-            InvestmentField("交易费用（" + settlementUnit + "，选填）", text: $fee, keyboard: .decimalPad,
-                            help: isCoinContract ? "按结算币填写实际支付的交易费用。" : nil)
-            if !isCoinContract {
-                Text("可合并填写佣金、手续费和税费。").font(.footnote).foregroundStyle(.secondary)
-            }
+            InvestmentField("交易费用（" + currency.rawValue + "，选填）", text: $fee, keyboard: .decimalPad)
+            Text("可合并填写佣金、手续费和税费。").font(.footnote).foregroundStyle(.secondary)
         }
         if kind.usesMargin && event != .sell {
-            let title = kind == .cryptoContract ? "本次开仓保证金总额" : "每手初始保证金"
-            let help = isStablecoinContract && collateral == nil
-                ? "填写交易所实际占用的保证金总额。账本按 1:1 从 USD 现金余额扣除，平仓时释放。杠杆倍数无需另填。"
-                : isCoinContract || isStablecoinContract
-                ? "填写交易所实际占用的保证金总额。保证金占用本账户的 \(settlementUnit) 现货余额。杠杆倍数无需另填。"
-                : nil
-            InvestmentField(title + "（" + settlementUnit + "）", text: $margin, keyboard: .decimalPad,
-                            help: help)
+            InvestmentField("每手初始保证金（" + currency.rawValue + "）", text: $margin, keyboard: .decimalPad)
         }
-        if let collateral {
-            InvestmentAutomaticPriceField(title: collateral.code + " 兑美元单价", unit: "USD/" + collateral.code,
-                request: settlementRequest,
-                help: "自动查询结算币的美元报价，用于换算手续费和已实现盈亏。历史日期使用所选日期的 UTC 日价，可手动指定实际结算时的价格。无手续费的开仓无需等待此报价。",
-                state: $settlementQuote, manualPrice: $settlementRate)
-        }
-    }
-
-    @ViewBuilder private var coinContractQuantityFields: some View {
-        Picker("数量录入方式", selection: $coinQuantity.mode) {
-            ForEach(InvestmentCoinQuantityDraft.Mode.allCases) { Text($0.rawValue).tag($0) }
-        }
-        .pickerStyle(.menu)
-        switch coinQuantity.mode {
-        case .coins:
-            InvestmentField("仓位折算量（" + (settlementCode ?? "币") + "）", text: $coinQuantity.coins, keyboard: .decimalPad,
-                            help: "填写交易所按币显示的仓位数量，例如 HTX 的持仓量（TRX）。")
-            InvestmentField("折算用价格（" + quoteUnit + "）", text: $coinQuantity.referencePrice, keyboard: .decimalPad,
-                            help: "填写交易所显示该持仓币量时使用的价格。币量和价格须取自同一张截图或同一时刻，并使用相同的价格口径。")
-            Text("请将持仓币量和对应价格一起抄录。保存后按固定张数记账，张数不随行情变化。")
-                .font(.footnote).foregroundStyle(.secondary)
-        case .notional:
-            InvestmentField("美元名义价值（USD）", text: $coinQuantity.notional, keyboard: .decimalPad,
-                            help: "填写仓位的美元名义价值。它等于合约张数乘以每张美元面值。")
-        case .contracts:
-            InvestmentField("数量（张）", text: $coinQuantity.contracts, keyboard: .numberPad,
-                            help: "填写交易所显示的实际成交张数，单位为整张。")
-        }
-        if coinQuantity.mode != .contracts, let contractFaceValue,
-           let count = try? coinQuantity.contractCount(faceValue: contractFaceValue) {
-            let prefix = coinQuantity.mode == .coins ? "约 " : ""
-            InvestmentHelpRow(title: "折算张数", help: "账本按这个张数保存，并据此计算仓位和盈亏。") {
-                Text(prefix + InvestmentText.number(count) + " 张")
-            }
-        }
-    }
-
-    private var dateTitle: String {
-        if event == .income { return "到账日期" }
-        if kind.isTermDeposit { return "记账日期" }
-        return "成交日期"
-    }
-
-    private var showsFee: Bool {
-        kind.supportsTradeFees && !stockConnect && (event == .buy || event == .sell)
-    }
-
-    private var insuranceAmountTitle: String {
-        event == .sell ? "退保到账金额" : "保费金额"
     }
 
     private func record(assetID: UUID, book: InvestmentBook) throws -> InvestmentEvent {
@@ -1243,60 +927,31 @@ private struct InvestmentTradeFields: View {
             let balance = kind.isTermDeposit ? try investmentDecimal(settlement, "变动后余额", allowZero: true) : nil
             return InvestmentEvent(day: day, kind: event, assetID: assetID, amount: amount, settledAmount: balance)
         }
-        if kind.isTermDeposit {
+        if kind.usesBalance {
             let change = event == .adjustment ? 0 : try investmentDecimal(price, "变动金额")
-            let balance = try investmentDecimal(settlement, "变动后余额", allowZero: true)
+            let balance = kind == .generic && investmentTrim(settlement).isEmpty ? nil : try investmentDecimal(settlement, "变动后余额", allowZero: true)
             return InvestmentEvent(day: day, kind: event, assetID: assetID, quantity: event == .adjustment ? 0 : 1,
                                    price: change, settledAmount: balance)
         }
-        let quantity: Decimal
-        if isCoinContract, let asset = book.asset(assetID) {
-            quantity = try coinQuantity.contractCount(faceValue: asset.multiplier)
-        } else {
-            quantity = kind == .insurance ? 1 : try investmentDecimal(self.quantity, "数量")
-        }
-        if ![.fund, .etf, .wealth, .crypto, .cryptoContract].contains(kind),
-           quantity != Decimal(NSDecimalNumber(decimal: quantity).int64Value) {
+        let quantity = kind == .insurance ? 1 : try investmentDecimal(self.quantity, "数量")
+        if ![.fund, .etf, .wealth, .crypto].contains(kind), quantity != Decimal(NSDecimalNumber(decimal: quantity).int64Value) {
             throw InvestmentError.invalid("该类型的数量必须是整数。")
         }
-        let rate: Decimal?
-        if collateral != nil {
-            if investmentTrim(settlementRate).isEmpty {
-                rate = settlementQuote.quote(for: settlementRequest)?.price
-            } else {
-                rate = try investmentDecimal(settlementRate, "结算币兑美元单价")
-            }
-        } else {
-            rate = nil
-        }
         return InvestmentEvent(day: day, kind: event, assetID: assetID,
-            quantity: quantity, price: try investmentDecimal(price, kind == .insurance ? insuranceAmountTitle : "价格",
-                                                               allowZero: kind == .insurance && event == .sell),
+            quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell),
             margin: kind.usesMargin && event != .sell ? try investmentDecimal(margin, "保证金") : 0,
             settledAmount: stockConnect ? try investmentDecimal(settlement, "实际人民币金额") : nil,
-            fee: showsFee && !investmentTrim(fee).isEmpty ? try investmentDecimal(fee, "交易费用", allowZero: true) : nil,
-            settlementRate: rate)
+            fee: showsFee && !investmentTrim(fee).isEmpty ? try investmentDecimal(fee, "交易费用", allowZero: true) : nil)
+    }
+
+    func entryValues(assetID: UUID, book: InvestmentBook) throws -> [String: String] {
+        InvestmentEditorDraft.eventValues(try record(assetID: assetID, book: book))
     }
 
     @discardableResult
-    func entryValues(assetID: UUID, book: InvestmentBook) throws -> [String: String] {
-        var values = InvestmentEditorDraft.eventValues(try record(assetID: assetID, book: book))
-        if isCoinContract {
-            values["quantity_mode"] = switch coinQuantity.mode { case .coins: "coins"; case .notional: "notional"; case .contracts: "contracts" }
-            values["quantity"] = switch coinQuantity.mode { case .coins: coinQuantity.coins; case .notional: coinQuantity.notional; case .contracts: coinQuantity.contracts }
-            values["reference_price"] = coinQuantity.referencePrice
-        }
-        return values
-    }
-
     func post(assetID: UUID, accountID: UUID, to book: inout InvestmentBook, autoFundCash: Bool = false) throws -> InvestmentEvent {
         let event = try record(assetID: assetID, book: book)
         try book.post(event, accountID: accountID, autoFundCash: autoFundCash)
-        if let collateral, let rate = event.settlementRate, book.quote(collateral.id, on: event.day)?.day != event.day {
-            let source = investmentTrim(settlementRate).isEmpty
-                ? settlementQuote.quote(for: settlementRequest)?.source : "结算币录入"
-            book.addQuotes([.init(day: event.day, price: rate, source: source)], assetID: collateral.id)
-        }
         return event
     }
 }
@@ -1304,29 +959,6 @@ private struct InvestmentTradeFields: View {
 struct InvestmentAssetEditor: View {
     var editorDraft: InvestmentEditorDraft? = nil
     var entryKind: InvestmentEventKind = .buy
-    private struct MarkRequest: Equatable {
-        let code: String
-        let market: String
-        let basis: InvestmentContractBasis
-
-        init?(_ draft: InvestmentAssetDraft) {
-            guard draft.kind == .cryptoContract, !draft.normalizedCode.isEmpty,
-                  InvestmentContractExchange(rawValue: draft.venue) != nil else { return nil }
-            code = draft.normalizedCode
-            market = draft.venue
-            basis = draft.contractBasis
-        }
-
-        var asset: InvestmentAsset {
-            InvestmentAsset(name: code, code: code, market: market, kind: .cryptoContract, currency: .usd, contractBasis: basis)
-        }
-    }
-
-    private struct MarkResult {
-        let request: MarkRequest
-        let quote: InvestmentQuote?
-    }
-
     private struct WatchQuoteResult {
         let asset: InvestmentAsset
         var quotes: [InvestmentQuote] = []
@@ -1336,8 +968,6 @@ struct InvestmentAssetEditor: View {
     @ObservedObject var store: InvestmentStore
     let accountID: UUID?
     @State private var draft = InvestmentAssetDraft()
-    @State private var coinQuantity = InvestmentCoinQuantityDraft()
-    @State private var settlementQuote = InvestmentEntryQuoteState()
     @State private var watchCurrency = InvestmentCurrency.cny
     @State private var watchQuoteResult: WatchQuoteResult?
     @State private var date = InvestmentBook.day()
@@ -1346,9 +976,7 @@ struct InvestmentAssetEditor: View {
     @State private var fee = ""
     @State private var margin = ""
     @State private var settlement = ""
-    @State private var settlementRate = ""
     @State private var manualValue = ""
-    @State private var markResult: MarkResult?
     @State private var annualRate = ""
     @State private var maturity = InvestmentBook.addDays(365, to: InvestmentBook.day())
     @State private var autoFundCash = false
@@ -1364,28 +992,20 @@ struct InvestmentAssetEditor: View {
                 account.events.contains { $0.assetID == known.id }
             }) { known } else { nil }
         let existing = watchOnlyDerivative == nil ? known : nil
+        let hasPriorPosition = existing.flatMap { asset in
+            account.flatMap { try? store.book.ledger($0, through: InvestmentBook.day(date)).positions[asset.id] }
+        } != nil
         let watchAsset = watchOnly && draft.selected ? try? draft.asset(currency: currency, reusing: existing) : nil
         let watchResult = watchAsset.flatMap { watchQuoteResult?.asset == $0 ? watchQuoteResult : nil }
-        let collateral = store.book.asset(draft.collateralAssetID)
-        let collateralOptions = Set(account?.events.compactMap(\.assetID) ?? []).compactMap { store.book.asset($0) }
-            .filter { $0.kind == .crypto }.sorted { $0.code < $1.code }
-        let markRequest = MarkRequest(draft)
-        let currentMark = markRequest.flatMap { markResult?.request == $0 ? markResult : nil }
-        let contractFaceValue = draft.contractBasis == .coin
-            ? (existing?.multiplier ?? (try? investmentDecimal(draft.multiplier, "每张合约面值"))) : nil
         let trade = InvestmentTradeFields(kind: draft.kind, currency: currency, event: entryKind,
-                                          stockConnect: draft.stockConnect, contractBasis: draft.contractBasis, collateral: collateral,
-                                          contractExchange: InvestmentContractExchange(rawValue: draft.venue),
-                                          contractSettlementCode: draft.settlementStablecoin?.rawValue ?? draft.contractSettlementCode,
-                                          contractFaceValue: contractFaceValue,
-                                          coinQuantity: $coinQuantity, settlementQuote: $settlementQuote,
+                                          stockConnect: draft.stockConnect,
                                           date: $date, quantity: $quantity, price: $price, fee: $fee, margin: $margin,
-                                          settlement: $settlement, settlementRate: $settlementRate)
+                                          settlement: $settlement)
         let kinds = account?.kinds ?? InvestmentKind.watchKinds(in: currency)
         let initialKind = kinds.first ?? .stock
         let hasChanges = draft.code != "" || draft.name != "" || draft.market != "" || draft.kind != initialKind || draft.stockConnect
-            || !quantity.isEmpty || coinQuantity.hasChanges || !price.isEmpty || !fee.isEmpty || !margin.isEmpty || !manualValue.isEmpty || !draft.multiplier.isEmpty
-            || !settlement.isEmpty || !settlementRate.isEmpty || !annualRate.isEmpty || InvestmentBook.day(date) != InvestmentBook.day()
+            || !quantity.isEmpty || !price.isEmpty || !fee.isEmpty || !margin.isEmpty || !manualValue.isEmpty || !draft.multiplier.isEmpty
+            || !settlement.isEmpty || !annualRate.isEmpty || InvestmentBook.day(date) != InvestmentBook.day()
         return InvestmentEditor(title: watchOnly ? "添加关注" : "录入资产", inSheet: true,
                                 hasChanges: hasChanges, saveEnabled: watchOnly ? watchResult?.quotes.last != nil : nil,
                                 inlineError: watchOnly ? nil : $saveError) {
@@ -1396,12 +1016,12 @@ struct InvestmentAssetEditor: View {
                     }
                     .pickerStyle(.menu)
                 } else {
-                    LabeledContent(draft.kind == .insurance ? "保单币种" : "报价币种",
+                    LabeledContent(draft.kind == .insurance ? "保单币种" : draft.kind == .generic ? "记账币种" : "报价币种",
                                    value: currency.title + " · " + currency.rawValue)
                 }
                 InvestmentAssetFields(draft: $draft, store: store, currency: currency, kinds: kinds,
                                       allowsStockConnect: account?.allowsStockConnect ?? false, watchOnly: watchOnly, accountType: account?.type,
-                                      collateralOptions: collateralOptions, existing: existing)
+                                      existing: existing)
                 if watchAsset != nil {
                     if let quote = watchResult?.quotes.last {
                         LabeledContent("最新报价", value: InvestmentText.number(quote.price) + " " + currency.rawValue)
@@ -1421,8 +1041,8 @@ struct InvestmentAssetEditor: View {
                             .id(saveError.id)
                     }
                 }
-                Section(draft.kind == .cryptoContract && draft.contractBasis == .coin ? "使用结算币余额" : "从现金余额扣款") {
-                    if draft.kind != .cryptoContract {
+                Section("从现金余额扣款") {
+                    Group {
                         Toggle("现金不足时自动补足", isOn: $autoFundCash)
                         if autoFundCash {
                             Text("按成交日期记入一笔现金转入，补足本次扣款的差额。")
@@ -1440,8 +1060,9 @@ struct InvestmentAssetEditor: View {
                     if draft.kind == .wealth {
                         InvestmentField("当前单位净值（CNY，可选）", text: $manualValue, keyboard: .decimalPad)
                     }
-                    if draft.kind == .cryptoContract {
-                        markField(currentMark, querying: markRequest != nil && currentMark == nil, unit: trade.quoteUnit)
+                    if draft.kind == .generic, !hasPriorPosition {
+                        InvestmentField("当前余额（" + currency.rawValue + "，可选）", text: $settlement, keyboard: .decimalPad,
+                                        help: "留空时等于投入金额；差额计入标的盈亏。")
                     }
                 }
             }
@@ -1496,21 +1117,13 @@ struct InvestmentAssetEditor: View {
                 }
                 let id = try book.register(asset)
                 try trade.post(assetID: id, accountID: account.id, to: &book, autoFundCash: autoFundCash)
-                if let quote = currentMark?.quote {
-                    if book.quote(id)?.day != quote.day { book.addQuotes([quote], assetID: id) }
-                } else if [.wealth, .insurance, .cryptoContract].contains(asset.kind), !investmentTrim(manualValue).isEmpty {
+                if [.wealth, .insurance].contains(asset.kind), !investmentTrim(manualValue).isEmpty {
                     let value = try investmentDecimal(manualValue, "估值", allowZero: asset.kind == .insurance)
                     book.addQuotes([.init(day: InvestmentBook.day(), price: value, source: "手动录入")], assetID: id)
                 }
             }
         }
         .environment(\.investmentFieldPlaceholders, false)
-        .onChange(of: draft.collateralAssetID) { settlementRate = "" }
-        .onChange(of: markRequest) {
-            if draft.kind == .cryptoContract { manualValue = "" }
-            coinQuantity.referencePrice = ""
-        }
-        .task(id: markRequest) { await lookupMark(markRequest) }
         .task(id: watchAsset) { await lookupWatchQuotes(watchAsset) }
     }
 
@@ -1538,36 +1151,6 @@ struct InvestmentAssetEditor: View {
         }
     }
 
-    @ViewBuilder private func markField(_ result: MarkResult?, querying: Bool, unit: String) -> some View {
-        let help = draft.contractBasis == .coin ? "交易所发布的标记价格，用于估算当前浮动盈亏。成交价仍取实际成交记录。" : nil
-        if let quote = result?.quote {
-            InvestmentHelpRow(title: "当前合约报价", help: help) {
-                Text(quote.price.formatted(.number.precision(.fractionLength(0...8))) + " " + unit)
-                    .monospacedDigit()
-            }
-        } else if querying {
-            InvestmentHelpRow(title: "当前合约报价", help: help) {
-                ProgressView("查询中…").font(.footnote)
-            }
-        } else {
-            InvestmentField("手动合约报价（" + unit + "，选填）", text: $manualValue, keyboard: .decimalPad,
-                            help: help.map { $0 + "自动报价暂不可用时，可填写交易所显示的标记价格。" })
-        }
-    }
-
-    private func lookupMark(_ request: MarkRequest?) async {
-        guard let request else { markResult = nil; return }
-        do {
-            try await Task.sleep(for: .milliseconds(250))
-            let quote = try? await InvestmentQuoteProvider().contractMark(request.asset)
-            try Task.checkCancellation()
-            markResult = MarkResult(request: request, quote: quote)
-        } catch is CancellationError {
-            return
-        } catch {
-            markResult = MarkResult(request: request, quote: nil)
-        }
-    }
 }
 
 struct InvestmentTradeEditor: View {
@@ -1576,27 +1159,21 @@ struct InvestmentTradeEditor: View {
     let account: InvestmentAccount
     let asset: InvestmentAsset
     let kind: InvestmentEventKind
-    @State private var coinQuantity = InvestmentCoinQuantityDraft()
-    @State private var settlementQuote = InvestmentEntryQuoteState()
     @State private var date = InvestmentBook.day()
     @State private var quantity = ""
     @State private var price = ""
     @State private var fee = ""
     @State private var margin = ""
     @State private var settlement = ""
-    @State private var settlementRate = ""
 
     var body: some View {
         let trade = InvestmentTradeFields(kind: asset.kind, currency: asset.currency, event: kind,
-            stockConnect: asset.isStockConnect, contractBasis: asset.basis, collateral: store.book.asset(asset.collateralAssetID),
-            contractExchange: InvestmentContractExchange(asset: asset), contractSettlementCode: asset.settlementStablecoin?.rawValue,
-            contractFaceValue: asset.multiplier,
-            coinQuantity: $coinQuantity, settlementQuote: $settlementQuote,
+            stockConnect: asset.isStockConnect,
             date: $date, quantity: $quantity, price: $price, fee: $fee, margin: $margin,
-            settlement: $settlement, settlementRate: $settlementRate)
-        let title = asset.kind.isTermDeposit ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
+            settlement: $settlement)
+        let title = asset.kind.usesBalance ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
         let hasChanges = !price.isEmpty || !settlement.isEmpty || date != InvestmentBook.day()
-        return InvestmentEditor(title: title, inSheet: asset.kind.isTermDeposit, hasChanges: hasChanges) {
+        return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance, hasChanges: hasChanges) {
             Section(asset.displayName + " · " + account.name) {
                 trade
             }
@@ -1669,8 +1246,7 @@ struct InvestmentQuoteEditor: View {
 
     var body: some View {
         let insurance = asset.kind == .insurance
-        let contractExchange = InvestmentContractExchange(asset: asset)
-        let hasPublicQuote = asset.kind == .crypto || contractExchange != nil
+        let hasPublicQuote = asset.kind == .crypto
         let unit = store.book.quoteUnit(for: asset)
         return InvestmentEditor(title: insurance ? "保单现金价值" : "行情与手动报价", hasChanges: !price.isEmpty) {
             Section(asset.displayName + " · " + asset.displayCode) {
@@ -1679,16 +1255,14 @@ struct InvestmentQuoteEditor: View {
                                    value: InvestmentText.number(quote.price) + " " + unit)
                     LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
                 }
-                if let contractExchange {
-                    LabeledContent("报价交易所", value: contractExchange.title)
-                }
+
                 if editorDraft == nil && (hasPublicQuote || (store.configured && !asset.kind.isManual)) {
                     Button(store.refreshing ? "正在刷新…" : "刷新行情") {
                         Task { await store.refresh(publicQuotesOnly: hasPublicQuote) }
                     }
                         .disabled(store.refreshing)
                 }
-                if (contractExchange != nil || !asset.kind.isManual), !store.quoteStatus.isEmpty {
+                if !asset.kind.isManual, !store.quoteStatus.isEmpty {
                     Text(store.quoteStatus).font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -1884,7 +1458,6 @@ struct InvestmentAssetInfoEditor: View {
                 LabeledContent("报价币种", value: asset.currency.rawValue)
                 if asset.kind.requiresCatalog || creating {
                     InvestmentAssetFields(draft: $draft, store: store, currency: asset.currency, kinds: [asset.kind],
-                        collateralOptions: Array(store.book.assets.values.filter { $0.kind == .crypto }),
                         existing: creating ? nil : asset, locksSpecifications: !creating)
                 } else {
                     InvestmentField("产品名称", text: $draft.name)
@@ -1992,16 +1565,6 @@ extension InvestmentMarginTransferEditor {
     }
 }
 
-extension InvestmentFundingAdjustmentEditor {
-    init(store: InvestmentStore, editing: InvestmentEditorDraft, account: InvestmentAccount, asset: InvestmentAsset) {
-        self.store = store; self.account = account; self.asset = asset; editorDraft = editing
-        _date = State(initialValue: editing.date); _balance = State(initialValue: editing.value("amount"))
-        _target = State(initialValue: InvestmentAgentAction.fundingTargets[editing.value("funding_target")] ?? .available)
-        _settlementRate = State(initialValue: editing.value("settlement_rate"))
-        _attributeToContract = State(initialValue: editing.value("attribute_to_contract") == "true")
-    }
-}
-
 extension InvestmentAssetEditor {
     init(store: InvestmentStore, editing: InvestmentEditorDraft, asset: InvestmentAsset) {
         self.store = store; editorDraft = editing
@@ -2009,11 +1572,9 @@ extension InvestmentAssetEditor {
         accountID = editing.action.kind == .watch ? nil : editing.account?.id
         _draft = State(initialValue: InvestmentAssetDraft(asset, book: editing.proposal.book))
         _watchCurrency = State(initialValue: asset.currency)
-        _coinQuantity = State(initialValue: InvestmentCoinQuantityDraft(editing))
         _date = State(initialValue: editing.date); _quantity = State(initialValue: editing.value("quantity"))
         _price = State(initialValue: editing.value("price")); _fee = State(initialValue: editing.value("fee"))
         _margin = State(initialValue: editing.value("margin")); _settlement = State(initialValue: editing.value("settled_amount"))
-        _settlementRate = State(initialValue: editing.value("settlement_rate"))
         _annualRate = State(initialValue: InvestmentEditorDraft.text(asset.depositTerms.map { $0.annualRate * 100 }))
         _maturity = State(initialValue: asset.depositTerms?.maturity ?? InvestmentBook.addDays(365, to: editing.date))
         _autoFundCash = State(initialValue: editing.value("auto_fund") == "true")
@@ -2024,11 +1585,10 @@ extension InvestmentAssetEditor {
 extension InvestmentTradeEditor {
     init(store: InvestmentStore, editing: InvestmentEditorDraft, account: InvestmentAccount, asset: InvestmentAsset, kind: InvestmentEventKind) {
         self.store = store; self.account = account; self.asset = asset; self.kind = kind; editorDraft = editing
-        _coinQuantity = State(initialValue: InvestmentCoinQuantityDraft(editing))
         _date = State(initialValue: editing.date); _quantity = State(initialValue: editing.value("quantity"))
         _price = State(initialValue: kind == .income ? editing.value("amount") : editing.value("price"))
         _fee = State(initialValue: editing.value("fee")); _margin = State(initialValue: editing.value("margin"))
-        _settlement = State(initialValue: editing.value("settled_amount")); _settlementRate = State(initialValue: editing.value("settlement_rate"))
+        _settlement = State(initialValue: editing.value("settled_amount"))
     }
 }
 

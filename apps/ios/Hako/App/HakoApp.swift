@@ -37,6 +37,8 @@ struct HomeView: View {
     @StateObject private var notifications = HakoNotificationsStore()
     @State private var path: [Destination] = []
     @State private var loginLink: HakoLoginLink?
+    @State private var workshopPreview: WorkshopPushNotice?
+    @State private var workshopSwitch: WorkshopPushNotice?
     @State private var category = Category.it
     @State private var versionWarning: String?
     @State private var lastVersionWarning: String?
@@ -64,8 +66,7 @@ struct HomeView: View {
             .navigationTitle("Hako")
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
-                case .application(let app):
-                    app.destination.id(app == .codeWorkshop ? buildPush.workshopNavigationID : nil)
+                case .application(let app): app.destination
                 case .notifications: NotificationsView(store: notifications)
                 case .settings: SettingsView()
                 }
@@ -94,34 +95,44 @@ struct HomeView: View {
                     NavigationLink(value: Destination.settings) { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }
             }
-        }.tint(.primary)
+        }
+            // Reset the stack owner, including an already-pushed conversation.
+            // Re-identifying only the workshop list leaves its old destination above it.
+            .id(buildPush.workshopNavigationID)
+            .tint(.primary)
             .overlay(alignment: .top) {
                 if let notice = buildPush.workshopBanner {
-                    HStack(alignment: .top, spacing: 12) {
-                        Button { buildPush.openWorkshopNotice(notice) } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.title2)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(notice.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                    if !notice.subtitle.isEmpty { Text(notice.subtitle).font(.caption).lineLimit(1) }
-                                    Text(notice.body).font(.subheadline).lineLimit(3)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
-                            }.contentShape(Rectangle())
-                        }.buttonStyle(.plain).accessibilityLabel("打开会话：" + notice.subtitle + "，" + notice.body)
-                        Button { buildPush.dismissWorkshopNotice() } label: { Image(systemName: "xmark").frame(width: 36, height: 36) }
-                            .buttonStyle(.plain).accessibilityLabel("关闭消息提示")
-                    }.padding(14).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-                        .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+                    WorkshopNotificationBanner(notice: notice, open: {
+                        buildPush.dismissWorkshopNotice()
+                        loginLink = nil
+                        workshopPreview = notice
+                    }, dismiss: { buildPush.dismissWorkshopNotice() })
+                        .id(notice.id)
                         .padding(.horizontal, 12).padding(.top, 6)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: buildPush.workshopBanner?.id)
-            .task(id: scenePhase == .active && buildPush.workshopRequested) {
-                guard scenePhase == .active, buildPush.workshopRequested else { return }
+            .sheet(item: $workshopPreview, onDismiss: {
+                if let notice = workshopSwitch {
+                    workshopSwitch = nil
+                    buildPush.openWorkshopNotice(notice)
+                }
+            }) { notice in
+                HakoApplications.notifications.preview(for: notice, destination: .codeWorkshop) {
+                    workshopSwitch = notice
+                    workshopPreview = nil
+                }
+            }
+            .onChange(of: buildPush.workshopNavigationID) { _, _ in
+                workshopSwitch = nil; workshopPreview = nil
+            }
+            .task(id: scenePhase == .active && buildPush.workshopRequested ? buildPush.workshopNavigationID : nil) {
+                guard !Task.isCancelled, scenePhase == .active, buildPush.workshopRequested else { return }
+                let requestID = buildPush.workshopNavigationID
                 loginLink = nil
                 path = [.application(.codeWorkshop)]
-                buildPush.workshopRequested = false
+                buildPush.workshopHostReady(requestID)
             }
             .task(id: scenePhase == .active && buildPush.settingsRequested) {
                 guard !Task.isCancelled, scenePhase == .active, buildPush.settingsRequested else { return }
@@ -249,5 +260,39 @@ struct HomeView: View {
                 .foregroundStyle(HakoStyle.muted.opacity(0.65)).accessibilityHidden(true)
         }
         .padding(.vertical, 19).frame(minHeight: 78).contentShape(Rectangle())
+    }
+}
+
+private struct WorkshopNotificationBanner: View {
+    let notice: WorkshopPushNotice
+    let open: () -> Void
+    let dismiss: () -> Void
+    @GestureState private var translation: CGSize = .zero
+
+    var body: some View {
+        Button(action: open) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: HakoApplications.Application.codeWorkshop.symbol)
+                    .font(.title2).frame(width: 30).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(notice.title).font(.caption.weight(.semibold)).lineLimit(1)
+                    if !notice.subtitle.isEmpty { Text(notice.subtitle).font(.subheadline).lineLimit(1) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 44).padding(.horizontal, 14).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundStyle(HakoStyle.text)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+        .offset(y: min(0, translation.height))
+        .highPriorityGesture(DragGesture(minimumDistance: 12)
+            .updating($translation) { value, state, _ in state = value.translation }
+            .onEnded { value in
+                if value.translation.height < -32 && abs(value.translation.height) > abs(value.translation.width) * 1.2 { dismiss() }
+            })
+        .accessibilityLabel("预览会话：" + (notice.subtitle.isEmpty ? notice.title : notice.subtitle))
+        .accessibilityHint("向上滑动关闭通知")
+        .accessibilityAction(named: Text("关闭通知"), dismiss)
     }
 }

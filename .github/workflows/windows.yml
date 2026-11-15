@@ -38,7 +38,26 @@ jobs:
         run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe
       - name: Verify startup under a restrictive Windows job
         run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe -RestrictBackgroundLaunch
+      - name: Verify guardian update and recovery
+        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian ../../dist/windows/Hako.exe
       - uses: actions/upload-artifact@v7
         with:
           name: Hako-Windows
           path: dist/windows/Hako.exe
+  release:
+    needs: build
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download verified Agent artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh run download ${{ github.run_id }} --repo ${{ github.repository }} --name Hako-Windows --dir dist/windows
+      - name: Publish immutable Agent release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./apps/windows/scripts/publish-github-release.ps1 -Executable dist/windows/Hako.exe -Repository ${{ github.repository }} -Commit ${{ github.sha }} -BuildId ${{ github.run_id }} -Attempt ${{ github.run_attempt }}

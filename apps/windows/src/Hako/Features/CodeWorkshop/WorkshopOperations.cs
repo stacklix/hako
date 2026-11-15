@@ -33,10 +33,12 @@ internal sealed class WorkshopJob
     public string ReplySummary { get; set; } = "";
     public string[] ImageIds { get; set; } = [];
     public string? QuestionId { get; set; }
+    public string? SystemPrompt { get; set; }
     public Dictionary<string, WorkshopQuestionNotice> QuestionNotifications { get; set; } = new();
     public string Model { get; set; } = "";
     public string Permission { get; set; } = "auto";
     public string ServiceTier { get; set; } = "";
+    public string ReasoningEffort { get; set; } = "";
     public int Revision { get; set; }
     public long QueueOrder { get; set; }
     public string? NotificationScope { get; set; }
@@ -106,7 +108,7 @@ internal sealed partial class CodeWorkshop
 
     public Task<object?> StartAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier", "questionId");
+        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort");
         var id = OperationId(parameters, "requestId");
         var applicationId = CodexJson.Required(parameters, "applicationId", 16);
         var cwd = ResolveApplication(applicationId);
@@ -118,16 +120,21 @@ internal sealed partial class CodeWorkshop
         var model = CodexJson.Text(parameters, "model");
         if (model.Length > 200) throw CodexJson.Invalid();
         var serviceTier = CodexJson.Text(parameters, "serviceTier");
+        var reasoningEffort = ReasoningEffort(parameters);
         if (serviceTier.Length > 100) throw CodexJson.Invalid();
         var permission = CodexJson.Text(parameters, "permission");
         if (permission.Length == 0) permission = "auto";
         if (permission is not ("ask" or "auto" or "full" or "custom")) throw CodexJson.Invalid();
         var threadId = CodexJson.Text(parameters, "threadId");
         if (threadId.Length > 0 && !Guid.TryParse(threadId, out _)) throw CodexJson.Invalid();
+        var promptField = CodexJson.Field(parameters, "systemPrompt");
+        if (promptField.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.String)) throw CodexJson.Invalid();
+        var systemPrompt = promptField.ValueKind == JsonValueKind.String ? promptField.GetString() : null;
+        if (systemPrompt is not null && (threadId.Length > 0 || systemPrompt.Length > 4000 || systemPrompt.Contains('\0'))) throw CodexJson.Invalid();
         var name = CodexJson.Text(parameters, "name");
         if (name.Length > 120) throw CodexJson.Invalid();
         var identity = applicationId + "\n" + threadId + "\n" + name + "\n" + message;
-        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier", "questionId" })
+        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort" })
             if (parameters.TryGetProperty(key, out var option)) identity += "\n" + key + ":" + option.GetRawText();
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         token.ThrowIfCancellationRequested();
@@ -148,9 +155,10 @@ internal sealed partial class CodeWorkshop
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
                 NotificationScope = notificationScope,
                 QuestionId = questionId.Length > 0 ? questionId : null,
+                SystemPrompt = systemPrompt,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
                 SessionName = name.Length > 0 ? NotificationText(name, 120) : "未命名会话",
-                Model = model, Permission = permission, ServiceTier = serviceTier, QueueOrder = DateTime.UtcNow.Ticks };
+                Model = model, Permission = permission, ServiceTier = serviceTier, ReasoningEffort = reasoningEffort, QueueOrder = DateTime.UtcNow.Ticks };
             Persist(job);
             jobs.Add(id, job);
             try { Append(job, new("item", id, message + (images.Length > 0 ? $"\n[图片 × {images.Length}]" : ""), "user", QuestionId: job.QuestionId)); }
@@ -166,10 +174,15 @@ internal sealed partial class CodeWorkshop
         }
     }
 
-    private static object Summary(WorkshopJob job) => new { job.Id, job.ApplicationId, job.ThreadId, job.TurnId, job.State, job.Message, job.StartedAt };
+    private static long? ProcessingFinishedAt(WorkshopJob job) =>
+        job.State is "completed" or "failed" or "interrupted" && job.FinishedAt > 0 ? job.FinishedAt : null;
+
+    private static object Summary(WorkshopJob job) => new { job.Id, job.ApplicationId, job.ThreadId, job.TurnId,
+        job.State, job.Message, job.StartedAt, finishedAt = ProcessingFinishedAt(job) };
 
     private async Task ExecuteAsync(WorkshopJob job, string name, string message, string model, string permission, string[] images, string serviceTier)
     {
+        var startupStage = "启动 Codex";
         try
         {
             await using (var server = await startServer(stopping.Token))
@@ -181,7 +194,9 @@ internal sealed partial class CodeWorkshop
                 if (serviceTier.Length > 0) options["serviceTier"] = serviceTier;
                 if (job.ThreadId is null)
                 {
+                    if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
                     options["cwd"] = job.Cwd;
+                    startupStage = "创建会话";
                     var reply = await server.RequestAsync("thread/start", options, stopping.Token);
                     lock (gate)
                     {
@@ -189,10 +204,15 @@ internal sealed partial class CodeWorkshop
                         if (!Guid.TryParse(job.ThreadId, out _)) throw new InvalidDataException("Codex 未返回会话 ID。");
                         Persist(job);
                     }
-                    if (name.Length > 0) await server.RequestAsync("thread/name/set", new { threadId = job.ThreadId, name }, stopping.Token);
+                    if (name.Length > 0)
+                    {
+                        startupStage = "设置会话名称";
+                        await server.RequestAsync("thread/name/set", new { threadId = job.ThreadId, name }, stopping.Token);
+                    }
                 }
                 else
                 {
+                    startupStage = "读取会话";
                     var thread = await ThreadAsync(job.ThreadId, false, stopping.Token);
                     var cwd = CodexJson.Text(thread, "cwd");
                     if (ApplicationFor(cwd)?.Id != job.ApplicationId) throw new WorkshopException("codex_workspace_invalid", "会话与所选应用不一致，请刷新会话列表。");
@@ -202,6 +222,7 @@ internal sealed partial class CodeWorkshop
                     job.SessionName = NotificationText(threadName.Length > 0 ? threadName : preview.Length > 0 ? preview : "未命名会话", 120);
                     options["threadId"] = job.ThreadId;
                     options["excludeTurns"] = true;
+                    startupStage = "恢复会话";
                     await server.RequestAsync("thread/resume", options, stopping.Token);
                 }
                 lock (gate)
@@ -217,6 +238,7 @@ internal sealed partial class CodeWorkshop
                 var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
                 if (model.Length > 0) turnOptions["model"] = model;
                 if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
+                if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;
                 var turn = await server.RequestAsync("turn/start", turnOptions, stopping.Token);
                 lock (gate)
                 {
@@ -251,7 +273,7 @@ internal sealed partial class CodeWorkshop
                 job.Message = writerConflict ? "桌面版仍占用此会话。释放会话后，再发送新消息。" :
                     e is WorkshopException action ? action.Message :
                     job.Submitted ? "任务结果尚未确认，请先刷新会话历史。此消息不会自动重发。" :
-                    e is OperationCanceledException ? "任务已在发送前停止。" : "Codex 未能开始任务，请检查本机登录和配置后重试。";
+                    StartupFailureMessage(e, startupStage);
                 try
                 {
                     Append(job, new("notice", "error-" + job.Id, job.Message));
@@ -263,6 +285,15 @@ internal sealed partial class CodeWorkshop
             }
         }
     }
+
+    internal static string StartupFailureMessage(Exception error, string stage) => error switch
+    {
+        OperationCanceledException => "任务已在发送前停止。",
+        TimeoutException => $"Codex 在{stage}时响应超时，本条消息尚未发送。请稍后重试。",
+        CodexRpcException => $"Codex 拒绝了{stage}请求，本条消息尚未发送。请在电脑端检查此会话。",
+        IOException => $"Codex 在{stage}时读写失败，本条消息尚未发送。请检查电脑端 Codex 状态和目录权限。",
+        _ => $"Codex 在{stage}时发生错误，本条消息尚未发送。请检查电脑端 Codex 状态后重试。"
+    };
 
     private void Receive(WorkshopJob job, JsonElement message)
     {
@@ -350,6 +381,7 @@ internal sealed partial class CodeWorkshop
         token.ThrowIfCancellationRequested();
         lock (gate)
         {
+            RecoverJobs();
             var root = RootJob(GetJob(id));
             var job = CurrentJob(root);
             var events = new List<WorkshopEvent>();

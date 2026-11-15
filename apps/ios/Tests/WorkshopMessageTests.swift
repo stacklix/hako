@@ -2,6 +2,36 @@ import Foundation
 
 @main struct WorkshopMessageTests {
     static func main() {
+        let table = """
+            | 依赖方向 | 实际引用 |
+            |---|---|
+            | 青龙 → 投资记账 | `InvestmentAgentHTML`、`InvestmentAgentReplyView`，用于助手回复解析与展示 |
+            | 青龙 → 代码工坊 | `WorkshopScrollFollowing`，用于对话滚动跟随 |
+            | 青龙 → 容器管理 | `ArcaneCodeEditor`，用于文件编辑 |
+            """
+        let expectedTable = WorkshopMarkdownTable(headers: ["依赖方向", "实际引用"], alignments: [.leading, .leading], rows: [
+            ["青龙 → 投资记账", "`InvestmentAgentHTML`、`InvestmentAgentReplyView`，用于助手回复解析与展示"],
+            ["青龙 → 代码工坊", "`WorkshopScrollFollowing`，用于对话滚动跟随"],
+            ["青龙 → 容器管理", "`ArcaneCodeEditor`，用于文件编辑"]])
+        precondition(WorkshopMessage.parts(table) == [.table(expectedTable)], "The reported Markdown table must render as a table instead of raw pipes")
+        precondition(WorkshopMessage.parts("前文\n\n" + table + "\n\n后文") == [.text("前文\n\n"), .table(expectedTable), .text("\n后文")])
+        precondition(WorkshopMessage.parts(table.replacingOccurrences(of: "\n", with: "\r\n")) == [.table(expectedTable)])
+        precondition(WorkshopMessage.parts("```markdown\n" + table + "\n```") == [.code(table, language: "markdown")],
+            "Literal table examples in code fences must remain code")
+        precondition(WorkshopMessage.parts("A | B | C\n:--- | :---: | ---:\nleft | center\nx | y | z | ignored") == [.table(
+            WorkshopMarkdownTable(headers: ["A", "B", "C"], alignments: [.leading, .center, .trailing], rows: [["left", "center", ""], ["x", "y", "z"]]))])
+        precondition(WorkshopMessage.parts(#"| A | B |"# + "\n|---|---|\n" + #"| a\|b | `x\|y` |"#) == [.table(
+            WorkshopMarkdownTable(headers: ["A", "B"], alignments: [.leading, .leading], rows: [["a|b", "`x|y`"]]))])
+        for incomplete in ["| A | B |", "| A | B |\n|--|---|", "| A | B |\n|---|"] {
+            precondition(WorkshopMessage.parts(incomplete) == [.text(incomplete)], "Incomplete streamed table syntax must not drop text")
+        }
+        let diff = "C:\\Code\\项目.swift\r\n--- a/file\r\n+++ b/file\r\n@@ -1,2 +1,2 @@\r\n 保留中文 😀\r\n-old\r\n+new\r\n--- deleted content\r\n+++ added content\r\n"
+        let colored = WorkshopDiff.lines(diff)
+        precondition(colored.map(\.text).joined() == diff, "Diff highlighting must preserve whitespace, Unicode, CRLF and trailing newlines")
+        precondition(colored.map(\.kind) == [.context, .metadata, .metadata, .hunk, .context, .removal, .addition, .removal, .addition, .context],
+            "File headers must remain distinct from added/deleted content inside a hunk")
+        let multipleFiles = WorkshopDiff.lines("@@ -1 +1 @@\n-old\n+new\n\n/another.swift\n--- a/another\n+++ b/another\n@@ -1 +1 @@\n+x")
+        precondition(multipleFiles[5].kind == .metadata && multipleFiles[6].kind == .metadata && multipleFiles[8].kind == .addition)
         let pictureURL = URL(string: "https://example.com/cat.png")!
         precondition(WorkshopMessage.parts("![小猫](https://example.com/cat.png)") == [.image("小猫", pictureURL)])
         precondition(WorkshopMessage.parts("看图\n![小猫](https://example.com/cat.png)\n结束") == [.text("看图\n"), .image("小猫", pictureURL), .text("\n结束")])
@@ -10,6 +40,30 @@ import Foundation
         }
         let nestedImage = "https://example.com/cat_(1).png"
         precondition(WorkshopMessage.parts("![](\(nestedImage))") == [.image("", URL(string: nestedImage)!)])
+        let linkedPicture = "[![小猫](https://example.com/cat.png)](https://example.com/cat.png)"
+        precondition(WorkshopMessage.parts(linkedPicture) == [.image("小猫", pictureURL)],
+            "A linked image must consume its outer brackets and destination instead of displaying them as text")
+        precondition(WorkshopMessage.parts("看图\n" + linkedPicture + "\n结束") == [
+            .text("看图\n"), .image("小猫", pictureURL), .text("\n结束")])
+        precondition(WorkshopMessage.parts(linkedPicture + "\n" + linkedPicture) == [
+            .image("小猫", pictureURL), .image("小猫", pictureURL)])
+        precondition(WorkshopMessage.parts("[![](\(nestedImage))](https://example.com/gallery_(1)) 后文") == [
+            .image("", URL(string: nestedImage)!), .text(" 后文")],
+            "Both image and enclosing link destinations can contain balanced parentheses")
+        let adjacentLink = " [查看说明](https://example.com/help)"
+        precondition(WorkshopMessage.parts(linkedPicture + adjacentLink) == [.image("小猫", pictureURL), .text(adjacentLink)],
+            "Only the image's own wrapper may be consumed; adjacent links must remain intact")
+        precondition(WorkshopMessage.parts("`" + linkedPicture + "`") == [.text("`" + linkedPicture + "`")])
+        precondition(WorkshopMessage.parts("```markdown\n" + linkedPicture + "\n```") == [.code(linkedPicture, language: "markdown")])
+        precondition(WorkshopMessage.parts("\\" + linkedPicture) == [
+            .text("\\["), .image("小猫", pictureURL), .text("](https://example.com/cat.png)")],
+            "An escaped opening bracket must not become a linked image")
+        for suffix in ["", "]", "](", "](https://example.com", "](not a link)", "](file:///private/cat.png)"] {
+            var expected: [WorkshopMessagePart] = [.text("["), .image("小猫", pictureURL)]
+            if !suffix.isEmpty { expected.append(.text(suffix)) }
+            precondition(WorkshopMessage.parts("[![小猫](https://example.com/cat.png)" + suffix) == expected,
+                "Incomplete or unsupported wrappers must not discard surrounding text")
+        }
         let command = "xkode tasks status 3cbd83c3c89b463098c2ef75065ada82 --details"
         let windows = #"Get-Item "C:\Users\xliqi\Code\hako""#
         let cases: [(String, [WorkshopMessagePart])] = [
