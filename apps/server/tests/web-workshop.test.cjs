@@ -72,10 +72,11 @@ function text(element) { return [element.textContent || '', ...element.children.
 
 test('workshop groups sessions under projects and preserves drafts when switching', async () => {
   const w = await workshop();
-  assert.match(text(w.group), /hako.*新建会话.*修复菜单.*已有内容/);
+  assert.match(text(w.group), /hako.*＋.*修复菜单/);
+  assert.doesNotMatch(text(w.group), /已有内容/);
   assert.match(text(w.el('workshop-transcript')), /已有内容/);
   w.el('workshop-message').value = '尚未发送'; w.el('workshop-message').events.input();
-  await w.group.children.find(child => child.className === 'workshop-project-new').events.click();
+  await w.group.children[0].children.find(child => child.className === 'workshop-project-new').events.click({preventDefault() {}, stopPropagation() {}});
   assert.equal(w.el('workshop-message').value, '');
   await w.group.children.find(child => child.className === 'workshop-session').events.click();
   assert.equal(w.el('workshop-message').value, '尚未发送');

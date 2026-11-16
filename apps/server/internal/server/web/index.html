@@ -67,18 +67,17 @@
     </div>
     <div id="dashboard" hidden>
       <section id="workshop-page" hidden>
+        <div class="workshop-toolbar"><label class="workshop-computer-label">执行电脑<select id="workshop-computer" aria-label="执行电脑"></select></label></div>
         <div class="workshop-layout">
           <section class="workshop-sidebar" aria-label="项目与会话菜单">
             <div class="workshop-sidebar-head"><p class="eyebrow">WORKSPACE</p><button id="workshop-refresh" type="button" class="quiet" aria-label="刷新项目与会话">↻</button></div>
-            <label class="workshop-computer-label">执行电脑<select id="workshop-computer" aria-label="执行电脑"></select></label>
-            <input id="workshop-search" type="search" placeholder="搜索项目或会话" aria-label="搜索项目或会话">
             <label class="workshop-archive-filter"><input id="workshop-archived" type="checkbox">已归档会话</label>
             <p id="workshop-catalog-status" class="muted" role="status"></p>
             <div id="workshop-projects"></div>
             <button id="workshop-more" type="button" class="quiet" hidden>加载更多会话</button>
           </section>
           <section class="workshop-conversation" aria-label="编程会话">
-            <div class="workshop-conversation-head"><div><p id="workshop-project-name" class="eyebrow">CODE WORKSHOP</p><h2 id="workshop-title">从一个项目开始</h2><p id="workshop-state" class="muted" role="status">选择在线电脑和项目，打开会话或开始新的任务。</p></div><div class="workshop-head-actions"><button id="workshop-commands-open" type="button" class="quiet" disabled>快捷命令</button><button id="workshop-new" type="button" class="quiet" disabled>＋ 新会话</button><button id="workshop-archive" type="button" class="quiet" hidden>归档</button></div></div>
+            <div class="workshop-conversation-head"><div><p id="workshop-project-name" class="eyebrow">CODE WORKSHOP</p><h2 id="workshop-title">从一个项目开始</h2><p id="workshop-state" class="muted" role="status">选择在线电脑和项目，打开会话或开始新的任务。</p></div><div class="workshop-head-actions"><button id="workshop-commands-open" type="button" class="quiet" disabled>快捷命令</button><button id="workshop-archive" type="button" class="quiet" hidden>归档</button></div></div>
             <div id="workshop-error" class="form-error" role="alert" hidden></div>
             <button id="workshop-history-more" type="button" class="quiet" hidden>加载更早消息</button>
             <div id="workshop-transcript" class="workshop-transcript" tabindex="0" aria-label="会话消息"><div class="workshop-welcome"><span aria-hidden="true">⌘</span><h3>想做点什么？</h3><p>项目与会话就在左侧。<br>在这里提问、修改代码，或继续未完成的工作。</p></div></div>

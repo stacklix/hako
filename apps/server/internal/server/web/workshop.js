@@ -48,25 +48,34 @@
     clearTimeout(reconnect); reconnect = null;
   }
   function drawProjects() {
-    const search = $('workshop-search').value.trim().toLocaleLowerCase();
     const content = [];
     for (const app of applications) {
       const all = sessions.filter(item => item.applicationId === app.id);
-      const rows = all.filter(item => !search || app.name.toLocaleLowerCase().includes(search) || (item.title + ' ' + item.preview).toLocaleLowerCase().includes(search));
-      if (search && !rows.length && !app.name.toLocaleLowerCase().includes(search)) continue;
       const group = node('details', undefined, 'workshop-project');
-      group.open = !!search || !collapsed.has(app.id);
-      const summary = node('summary'); summary.append(node('strong', app.name), node('span', String(all.length)));
+      group.open = !collapsed.has(app.id);
+      const summary = node('summary'); summary.append(node('strong', app.name));
+      if (!$('workshop-archived').checked) {
+        const create = node('button', '＋', 'workshop-project-new'); create.type = 'button';
+        create.title = '新建会话'; create.setAttribute('aria-label', '在 ' + app.name + ' 中新建会话');
+        create.disabled = !online();
+        create.addEventListener('click', async event => {
+          event.preventDefault(); event.stopPropagation();
+          create.disabled = true;
+          try { await openConversation(app); } catch (e) { if (enabled) error(e.message); }
+          finally { create.disabled = !online(); }
+        });
+        summary.append(create);
+      }
+      summary.append(node('span', String(all.length)));
       group.addEventListener('toggle', () => { if (group.open) collapsed.delete(app.id); else collapsed.add(app.id); });
       group.append(summary);
-      if (!$('workshop-archived').checked) group.append(button('＋ 新建会话', () => openConversation(app), 'workshop-project-new'));
-      for (const session of rows) {
+      for (const session of all) {
         const view = conversations.get(key(computer, app.id, session.id));
         const row = button('', () => openConversation(app, session), 'workshop-session');
         row.title = session.title;
         if (view?.draft || view?.attachments.length || view?.pending) row.classList.add('has-draft');
         row.setAttribute('aria-current', String(selected?.computer === computer && selected?.thread === session.id));
-        row.append(node('strong', session.title), node('small', session.preview || '暂无消息'));
+        row.append(node('strong', session.title));
         const state = view?.state || session.state;
         if (running(state) || state === 'unknown' || state === 'failed') row.append(node('span', stateName(state), 'workshop-session-state'));
         group.append(row);
@@ -74,7 +83,7 @@
       if (!all.length) group.append(node('p', $('workshop-archived').checked ? '没有已归档会话' : '开始这个项目的第一段会话', 'empty'));
       content.push(group);
     }
-    if (!content.length) content.push(node('p', search ? '没有匹配的项目或会话。' : online() ? '电脑尚未发现项目。' : '选择在线电脑以读取项目。', 'empty'));
+    if (!content.length) content.push(node('p', online() ? '电脑尚未发现项目。' : '选择在线电脑以读取项目。', 'empty'));
     $('workshop-projects').replaceChildren(...content);
     $('workshop-more').hidden = !catalogCursor;
   }
@@ -237,7 +246,6 @@
   }
   function drawControls(view) {
     $('workshop-state').textContent = view ? (!online() ? '执行电脑已离线，任务结果需重新连接后核对。' : stateName(view.state)) : '选择在线电脑和项目，打开会话或开始新的任务。';
-    $('workshop-new').disabled = !view || !online();
     $('workshop-archive').hidden = !view?.thread;
     $('workshop-archive').textContent = view?.archived ? '恢复会话' : '归档';
     $('workshop-archive').disabled = !!view?.sending || !!view?.pending || running(view?.state);
@@ -503,9 +511,7 @@
     drawProjects(); drawConversation(); void refreshAll(false);
   });
   $('workshop-archived').addEventListener('change', () => { saveDraft(); stopStream(); catalogVersion++; selected = null; sessions = []; catalogCursor = null; drawConversation(); drawProjects(); void refreshCatalog(false, false); });
-  $('workshop-search').addEventListener('input', drawProjects);
   $('workshop-more').addEventListener('click', () => refreshCatalog(true, false));
-  $('workshop-new').addEventListener('click', () => { if (selected) void openConversation(selected.app); });
   $('workshop-history-more').addEventListener('click', () => { if (selected) void loadHistory(selected, true); });
   $('workshop-model').addEventListener('change', () => { if (selected) { selected.model = $('workshop-model').value; selected.effort = ''; selected.tier = ''; } drawModelDetails(); });
   $('workshop-message').addEventListener('input', saveDraft);
