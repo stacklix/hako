@@ -31,16 +31,17 @@ internal static class ServiceMonitorChecks
         var startup = Path.Combine(directory, "startups");
         var now = DateTimeOffset.UtcNow.ToString("O");
         ListenerSnapshot listeners = new(now, [], []);
+        var expectedProbePath = "/";
         using var monitor = new RegisteredServices(registry, _ => Task.FromResult(listeners), new Handler(async (request, token) =>
         {
-            if (request.Method != HttpMethod.Get || request.RequestUri!.AbsolutePath != "/" || request.Headers.Authorization is not null)
-                throw new Exception("Probe must be a credential-free GET of root");
+            if (request.Method != HttpMethod.Get || request.RequestUri!.AbsolutePath != expectedProbePath || request.Headers.Authorization is not null)
+                throw new Exception("Probe must be a credential-free GET of the configured path");
             var port = request.RequestUri.Port;
             if (port == 8106) await Task.Delay(Timeout.Infinite, token);
             if (port == 8104) throw new HttpRequestException("fixture connection refused");
             if (port == 8103 && request.RequestUri.Host != "192.168.0.10") throw new Exception("LAN-only listener was probed through loopback");
             if (port == 8105 && request.RequestUri.Host != "[::1]") throw new Exception("IPv6 wildcard was not mapped to IPv6 loopback");
-            return new HttpResponseMessage((HttpStatusCode)(port == 8101 ? 404 : port == 8102 ? 503 : 200)) { Content = new UnreadBody() };
+            return new HttpResponseMessage((HttpStatusCode)(port == 8101 ? 404 : port == 8102 ? 503 : port == 8108 ? 302 : 200)) { Content = new UnreadBody() };
         }), TimeSpan.FromMilliseconds(100), startup);
         async Task Registry(object[] services) => await File.WriteAllTextAsync(registry, JsonSerializer.Serialize(new { version = 1, services }));
         async Task ExpectError(string code, Func<Task> action)
@@ -68,6 +69,22 @@ internal static class ServiceMonitorChecks
             listeners = new(now, [], ["TCP IPv6 端口读取失败，结果可能不完整。"]);
             if ((await monitor.ReadAsync(default)).Services.Any(service => service.Status != "unknown" || service.CanStart))
                 throw new Exception("An incomplete listener table must not mark services stopped/startable");
+            foreach (var path in new[] { "/health", "/status/ready" })
+            {
+                expectedProbePath = path;
+                await Registry(new[] { 8100, 8101, 8102, 8108 }.Select(port => (object)new { name = "health-" + port, port, healthPath = path }).ToArray());
+                listeners = new(now, [Port(8100), Port(8101), Port(8102), Port(8108)], []);
+                var health = await monitor.ReadAsync(default);
+                if (!health.Services.Select(service => service.Status).SequenceEqual(["responding", "responding", "http_error", "responding"])
+                    || health.Services.Any(service => !service.Http!.Url.EndsWith(path, StringComparison.Ordinal)))
+                    throw new Exception("Health probes must use the registered path without changing HTTP status semantics or falling back to root");
+            }
+            expectedProbePath = "/";
+            foreach (var path in new object?[] { null, 7, "", "health", "http://example.org/health", "//example.org/health", "/\\example.org", "/health?token=private", "/health#fragment", "/health\r\nInjected: value", "/" + new string('x', 1000) })
+            {
+                await Registry([new { name = "invalid-health", port = 8100, healthPath = path }]);
+                await ExpectError("registry_invalid", async () => await monitor.ReadAsync(default));
+            }
             foreach (var json in new[] { "{", "{\"version\":\"1\",\"services\":[]}", "{\"version\":2,\"services\":[]}",
                 "{\"version\":1,\"services\":[{\"name\":\"bad\",\"port\":65536}]}",
                 "{\"version\":1,\"services\":[{\"name\":\"same\",\"port\":1},{\"name\":\"same\",\"port\":2}]}" })
@@ -106,7 +123,7 @@ internal static class ServiceMonitorChecks
             listeners = new(now, [], []);
             await Registry([new { name = "no-command", port = 8100 }]);
             await ExpectError("start_command_missing", async () => await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "no-command", requestId = Guid.NewGuid().ToString("D") }), default));
-            Console.WriteLine("PASS: service registry reload/validation/privacy, HTTP status/body/timeout, LAN/IPv6/UDP, partial listener failure, detached startup, restart replay and duplicate/occupied-port protection");
+            Console.WriteLine("PASS: service registry reload/validation/privacy, configured health paths, HTTP status/body/timeout, LAN/IPv6/UDP, partial listener failure, detached startup, restart replay and duplicate/occupied-port protection");
         }
         finally
         {

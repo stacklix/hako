@@ -1,12 +1,34 @@
 package agent
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 type TelemetryUpdate struct {
 	Reply
-	Type    string `json:"type"`
-	Method  string `json:"method"`
-	Version int    `json:"version"`
+	Type    string          `json:"type"`
+	Method  string          `json:"method"`
+	Version int             `json:"version"`
+	Payload json.RawMessage `json:"-"`
+}
+
+func (update TelemetryUpdate) MarshalJSON() ([]byte, error) {
+	if update.Payload != nil {
+		return update.Payload, nil
+	}
+	type fields TelemetryUpdate
+	return json.Marshal(fields(update))
+}
+
+// Bound memory independently of the contents of device-provided metadata.
+func makeRoom(items map[string]TelemetryUpdate, key string) {
+	if _, exists := items[key]; !exists && len(items) >= 64 {
+		for old := range items {
+			delete(items, old)
+			break
+		}
+	}
 }
 
 type Subscription struct {
@@ -18,6 +40,7 @@ type Subscription struct {
 func (sub *Subscription) queue(update TelemetryUpdate) {
 	sub.mu.Lock()
 	defer sub.mu.Unlock()
+	makeRoom(sub.pending, update.Method)
 	sub.pending[update.Method] = update
 	select {
 	case sub.changed <- struct{}{}:
@@ -79,7 +102,8 @@ func (c *Connection) publishTelemetry(message Message) {
 	if message.ID != c.telemetryID || len(c.subscribers) == 0 {
 		return
 	}
-	update := TelemetryUpdate{message.Reply, "update", message.Method, message.Version}
+	update := TelemetryUpdate{Reply: message.Reply, Type: "update", Method: message.Method, Version: message.Version, Payload: message.Payload}
+	makeRoom(c.latestTelemetry, message.Method)
 	c.latestTelemetry[message.Method] = update
 	for sub := range c.subscribers {
 		sub.queue(update)

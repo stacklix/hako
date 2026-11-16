@@ -60,7 +60,7 @@ internal static class WorkshopCloudChecks
             if (pendingVersion.IsCompleted || identity is not null) throw new Exception("Workshop connected before the server was upgraded");
             version=await pendingVersion.WaitAsync(lifetime.Token);
             if (version.Request.Url?.AbsolutePath!="/api/v1/version") throw new Exception("Workshop did not poll the version endpoint while waiting");
-            versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.5.0",minimumAgentVersion=agentVersion});
+            versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.6.0",minimumAgentVersion=agentVersion});
             version.Response.ContentType="application/json";
             version.Response.ContentLength64=versionBody.Length;
             await version.Response.OutputStream.WriteAsync(versionBody,lifetime.Token);

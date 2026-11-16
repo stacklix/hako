@@ -272,15 +272,18 @@ struct ConsoleCapabilityData: Decodable {
     }
 }
 struct ConsoleQueryResult: Decodable { let data: [String: ConsoleCapabilityData] }
-struct ConsoleQueryEnvelope: Decodable {
-    let capabilities: [ConsoleAgentCapability]
-}
 struct ConsoleDeviceData {
     var loading = false
     var loaded = false
     var error: String?
     var entries: [String: ConsoleCapabilityData] = [:]
     var liveUpdates: [String: UUID] = [:]
+    mutating func mergeQueries(_ data: [String: ConsoleCapabilityData], since revisions: [String: UUID]) {
+        entries = data.merging(entries.filter {
+            $0.key.hasPrefix("admin.") || liveUpdates[$0.key] != revisions[$0.key]
+        }) { _, current in current }
+        loaded = true
+    }
 }
 struct ConsoleHTTPCheck: Decodable {
     let url: String

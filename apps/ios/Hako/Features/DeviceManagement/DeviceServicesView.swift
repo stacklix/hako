@@ -53,7 +53,7 @@ struct DeviceServicesView: View {
         ForEach(Array(snapshot.warnings.enumerated()), id: \.offset) { _, warning in
             Text(warning).font(.caption).foregroundStyle(.orange)
         }
-        Text("读取设备的 ~/.codex/server.json，按登记端口检查 TCP 监听和 HTTP 根路径。开启实时刷新后约每 10 秒检查一次。")
+        Text("读取设备的 ~/.codex/server.json，检查登记端口与 HTTP 检测地址。开启实时刷新后约每 10 秒检查一次。")
             .font(.caption).foregroundStyle(.secondary)
         Text("HTTP 4xx 仍表示服务已响应，5xx 标记为服务异常；HTTP 响应不代表业务健康检查通过。")
             .font(.caption).foregroundStyle(.secondary)

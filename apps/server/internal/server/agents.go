@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -32,8 +33,14 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	authFail := func() {
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authentication failed"), time.Now().Add(time.Second))
 	}
-	var hello agent.Message
-	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" || hello.Version != agent.ProtocolVersion || !agent.ValidCapabilities(hello.Capabilities) {
+	var hello struct {
+		Type         string          `json:"type"`
+		Username     string          `json:"username"`
+		KeyID        string          `json:"keyId"`
+		Capabilities json.RawMessage `json:"capabilities"`
+		SSHTunnel    bool            `json:"sshTunnel"`
+	}
+	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" {
 		authFail()
 		return
 	}
@@ -162,9 +169,6 @@ func (s *Server) forwardAgentRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) callAgent(ctx context.Context, id string, request agent.Request) agentAPIReply {
-	if !request.Valid() {
-		return agentAPIFailure(400, "invalid_request")
-	}
 	select {
 	case s.requests <- struct{}{}:
 		defer func() { <-s.requests }()
@@ -174,9 +178,6 @@ func (s *Server) callAgent(ctx context.Context, id string, request agent.Request
 	c, _ := s.agentHub.Lookup(id)
 	if c == nil {
 		return agentAPIFailure(409, "agent_offline")
-	}
-	if !c.Supports(request.Method, request.Version) {
-		return agentAPIFailure(400, "unsupported_method")
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
 	defer cancel()
@@ -190,11 +191,5 @@ func (s *Server) callAgent(ctx context.Context, id string, request agent.Request
 			return agentAPIFailure(409, "agent_disconnected")
 		}
 	}
-	if request.Method == "query.all" {
-		return agentAPIReply{200, struct {
-			agent.Reply
-			Capabilities []agent.Capability `json:"capabilities"`
-		}{result.Reply, c.Capabilities()}}
-	}
-	return agentAPIReply{200, result.Reply}
+	return agentAPIReply{200, result.Payload}
 }

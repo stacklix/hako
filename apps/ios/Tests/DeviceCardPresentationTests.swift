@@ -30,13 +30,25 @@ import Foundation
         precondition(DeviceCardOrder.names(from: order.initialData) == ["query.b", "query.a", "action.c"])
         precondition(order.key != other.key && DeviceCardOrder.names(from: other.initialData).isEmpty)
 
-        // The terminal stays pinned. The first four movable pages get tabs.
+        // The terminal participates in the same saved order and tab/menu boundary.
         let manifest = ["system", "codex", "ports", "http", "disk", "processes", "services"]
-        let reordered = ["system", "codex", "ports", "processes", "http", "disk", "services"]
+        let terminal = DeviceCardOrder.terminalPageName
+        let initialPages = DeviceCardOrder.pageNames(capabilities: manifest, saved: [])
+        precondition(initialPages == manifest + [terminal])
+        precondition(DeviceCardOrder.pageNames(capabilities: [], saved: []) == [terminal],
+                     "The terminal is a local page, independent of the Agent capability manifest")
+        let reordered = [terminal, "system", "codex", "ports", "processes", "http", "disk", "services"]
         let saved = DeviceCardOrder.saving(visible: reordered, previous: manifest)
-        let restored = DeviceCardOrder.arranged(available: manifest, saved: saved)
-        precondition(Array(restored.prefix(DeviceCardOrder.visiblePageLimit)) == ["system", "codex", "ports", "processes"])
+        let restored = DeviceCardOrder.pageNames(capabilities: manifest, saved: saved)
+        precondition(Array(restored.prefix(DeviceCardOrder.visiblePageLimit)) == [terminal, "system", "codex", "ports", "processes"])
         precondition(Array(restored.dropFirst(DeviceCardOrder.visiblePageLimit)) == ["http", "disk", "services"])
-        print("PASS: per-device page order, legacy order fallback, manifest changes, and the visible-page boundary")
+        let terminalInMenu = DeviceCardOrder.saving(visible: manifest + [terminal], previous: restored)
+        let menuPages = DeviceCardOrder.pageNames(capabilities: manifest, saved: terminalInMenu)
+        precondition(menuPages.dropFirst(DeviceCardOrder.visiblePageLimit).contains(terminal))
+        precondition(DeviceCardOrder.pageNames(capabilities: manifest, saved: menuPages + [terminal]) == menuPages,
+                     "Reopening settings must not duplicate the terminal")
+        precondition(DeviceCardOrder.pageNames(capabilities: ["system"], saved: restored) == [terminal, "system"],
+                     "Capability refreshes must preserve the terminal's saved position")
+        print("PASS: per-device page order, terminal reordering, manifest changes, and the visible-page boundary")
     }
 }

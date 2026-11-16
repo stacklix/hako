@@ -45,7 +45,7 @@
   <ScrollViewer VerticalScrollBarVisibility="Auto">
    <StackPanel Margin="12" Loaded="ServicesLoaded">
     <TextBlock Text="服务监控" FontSize="26" FontWeight="Bold" Margin="0,12,0,12"/>
-    <TextBlock Text="读取本机 ~/.codex/server.json，按登记端口检查 TCP 监听与 HTTP 根路径响应。" TextWrapping="Wrap" Foreground="#526175" Margin="0,0,0,16"/>
+    <TextBlock Text="读取本机 ~/.codex/server.json，检查登记端口与 HTTP 检测地址。可通过 healthPath 指定路径；未指定时检查根路径是否响应。" TextWrapping="Wrap" Foreground="#526175" Margin="0,0,0,16"/>
     <Button x:Name="RefreshServices" Content="刷新服务状态" Click="RefreshServicesClick" HorizontalAlignment="Left"/>
     <TextBlock x:Name="ServiceStatus" Text="等待检查服务状态" TextWrapping="Wrap" Foreground="#526175" Margin="0,16"/>
     <ItemsControl x:Name="Services">

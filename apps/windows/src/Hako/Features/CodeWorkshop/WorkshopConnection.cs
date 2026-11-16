@@ -13,7 +13,7 @@ using Hako.Core;
 
 namespace Hako.Platform;
 
-internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<string> identified, bool commandHost = false) : IAsyncDisposable
+internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<string> identified, bool commandHost = false) : IAsyncDisposable
 {
     private CancellationTokenSource? lifetime;
     private Task? running;
@@ -125,7 +125,7 @@ internal sealed class WorkshopConnection(WorkshopDispatcher dispatcher, Action<s
                 {
                     var operationId = CodexJson.Text(frame, "operationId");
                     if (!Guid.TryParse(operationId, out var acknowledged)) throw new InvalidDataException("Invalid terminal acknowledgement.");
-                    dispatcher.AcknowledgeTerminal(scope, acknowledged.ToString("D"), CodexJson.Text(frame, "questionId"));
+                    await dispatcher.AcknowledgeTerminalAsync(scope, acknowledged.ToString("D"), CodexJson.Text(frame, "questionId"), connection.Token);
                     continue;
                 }
                 var id = frame.GetProperty("id").GetString()!;

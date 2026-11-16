@@ -3,12 +3,9 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 
 	"hako/server/internal/agent"
 )
@@ -95,17 +92,10 @@ func TestAgentActionErrorAndValidation(t *testing.T) {
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"future_error"`)) || !bytes.Contains(data, []byte(`"message":"A new error from the agent"`)) || bytes.Contains(data, []byte(`"result"`)) {
 		t.Fatal("agent error was lost", status, string(data))
 	}
-	for _, invalid := range []string{
-		`{}`, `null`, `{"method":"query.system.metrics","version":1}`, `{"method":"bad method","version":1,"params":{}}`,
-		`{"method":"query.system.metrics","version":1,"params":null}`, `{"method":"query.system.metrics","version":1,"params":[]}`,
-		`{"method":"query.system.metrics","version":1,"params":"{}"}`, `{"method":"query.system.metrics","version":1,"params":{},"extra":true}`,
-		`{"method":"future.unsupported","version":1,"params":{}}`, `{"method":"query.system.metrics","version":1,"params":{}} {}`,
-		`{"method":"query.system.metrics","params":{}}`, `{"method":"query.system.metrics","version":0,"params":{}}`,
-		`{"method":"query.system.metrics","version":-1,"params":{}}`, `{"method":"query.system.metrics","version":"1","params":{}}`,
-	} {
-		status, _ = f.call("POST", "/api/v1/agents/PC/requests", json.RawMessage(invalid), f.tokens.AccessToken)
+	for _, malformed := range []string{`null`, `[]`, `{"method":"x"} {}`} {
+		status, _ = f.call("POST", "/api/v1/agents/PC/requests", json.RawMessage(malformed), f.tokens.AccessToken)
 		if status != 400 {
-			t.Fatal("invalid request accepted", invalid, status)
+			t.Fatal("malformed transport envelope accepted", status)
 		}
 	}
 	status, _ = f.call("POST", "/api/v1/agents/PC/requests", body, "")
@@ -159,7 +149,7 @@ func TestLateAgentReplyCannotCompleteNextRequest(t *testing.T) {
 	}
 }
 
-func TestInvalidAgentResponseDisconnects(t *testing.T) {
+func TestAgentResponseSemanticsAreNotValidated(t *testing.T) {
 	for _, response := range []agent.Reply{
 		{}, {Result: json.RawMessage(`null`), Error: &agent.Error{Code: "failed"}},
 		{Error: &agent.Error{Code: ""}}, {Error: &agent.Error{Code: "failed", Message: strings.Repeat("x", 1025)}},
@@ -173,24 +163,9 @@ func TestInvalidAgentResponseDisconnects(t *testing.T) {
 			}
 		}()
 		status, _ := f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
-		if status != 409 {
-			t.Fatal("invalid response accepted", status)
+		if status != 200 {
+			t.Fatal("server interpreted an opaque response", status)
 		}
-	}
-}
-
-func TestAgentMethodManifestValidation(t *testing.T) {
-	for _, methods := range [][]agent.Capability{
-		nil, {{Name: "bad method", Version: 1}}, {{Name: "query.system.metrics", Version: 0}},
-		{{Name: "query.system.metrics", Version: 1}, {Name: "query.system.metrics", Version: 2}},
-		{{Name: strings.Repeat("x", 101) + ".metrics", Version: 1}}, make([]agent.Capability, 65),
-	} {
-		if agent.ValidCapabilities(methods) {
-			t.Fatal("invalid manifest accepted", methods)
-		}
-	}
-	if !agent.ValidCapabilities([]agent.Capability{{Name: "action.future.execute", Version: 7}}) {
-		t.Fatal("future method rejected")
 	}
 }
 
@@ -223,30 +198,6 @@ func TestAgentConnectionReplacesCapabilities(t *testing.T) {
 	status, data = f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 	if status != 200 || !bytes.Contains(data, []byte(`"capabilities":[{"name":"action.future.execute","version":2}]`)) || !bytes.Contains(data, []byte(`"online":false`)) {
 		t.Fatal("offline capabilities lost", status, string(data))
-	}
-}
-
-func TestAgentRejectsLegacyHelloAndInvalidManifest(t *testing.T) {
-	f := newFixture(t, true)
-	for _, hello := range []agent.Message{
-		{Type: "hello", Version: 1, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agent.Capability{{Name: "query.system.metrics", Version: 1}}},
-		{Type: "hello", Version: 2, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agent.Capability{{Name: "query.system.metrics", Version: 1}}},
-		{Type: "hello", Version: 3, Username: "owner", KeyID: f.s.config.Agents[0].keyID, Capabilities: []agent.Capability{{Name: "query.system.metrics", Version: 1}}},
-		{Type: "hello", Version: agent.ProtocolVersion, Username: "owner", KeyID: f.s.config.Agents[0].keyID},
-	} {
-		dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
-		ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = ws.SetReadDeadline(time.Now().Add(time.Second))
-		_ = ws.WriteJSON(hello)
-		var response any
-		err = ws.ReadJSON(&response)
-		_ = ws.Close()
-		if !websocket.IsCloseError(err, websocket.ClosePolicyViolation) {
-			t.Fatal("invalid hello accepted", err)
-		}
 	}
 }
 

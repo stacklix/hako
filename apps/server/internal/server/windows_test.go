@@ -45,6 +45,9 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := exec.Command(program, "agent", plain.URL, "owner", keyPath)
+	var agentOutput bytes.Buffer
+	command.Stdout = &agentOutput
+	command.Stderr = &agentOutput
 	codexHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(codexHome, "sessions"), 0700); err != nil {
 		t.Fatal(err)
@@ -66,7 +69,13 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	if err = command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = command.Process.Kill(); _ = command.Wait() })
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		if t.Failed() {
+			t.Log(agentOutput.String())
+		}
+	})
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		peer, _ := f.s.agentHub.Lookup("PC")
@@ -88,7 +97,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
 	for _, name := range []string{"query.system.metrics", "query.codex.usage", "query.network.listeners",
-		"query.services.status", "action.services.start", "action.network.http.check", "query.git.repositories"} {
+		"admin.services.status", "admin.services.start", "action.network.http.check", "query.git.repositories"} {
 		if !slices.Contains(agents.Agents[0].Capabilities, agent.Capability{Name: name, Version: 1}) {
 			t.Fatalf("Windows capability %q version 1 missing: %s", name, data)
 		}
@@ -117,7 +126,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	for range 8 {
 		update := readAgentFrame[agent.TelemetryUpdate](t, live)
 		if update.Type != "update" || update.Version != 1 || (update.Error != nil &&
-			(update.Method != "query.services.status" || update.Error.Code != "registry_missing")) {
+			(update.Method != "admin.services.status" || update.Error.Code != "registry_missing")) {
 			t.Fatalf("real Windows telemetry: %+v, error=%+v", update, update.Error)
 		}
 		switch update.Method {
@@ -131,7 +140,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 			} else if firstMetric != metrics.SampledAt {
 				seen[update.Method] = true
 			}
-		case "query.codex.usage", "query.network.listeners", "query.services.status":
+		case "query.codex.usage", "query.network.listeners", "admin.services.status":
 			seen[update.Method] = true
 		default:
 			t.Fatalf("unexpected telemetry method %q", update.Method)
@@ -262,14 +271,12 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		Capabilities []agent.Capability
 	}
 	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() ||
-		len(aggregate.Result.Data) != 4 || aggregate.Result.Data["query.network.listeners"].Version != 1 ||
-		aggregate.Result.Data["query.services.status"].Version != 1 ||
-		!slices.Contains(aggregate.Capabilities, agent.Capability{Name: "query.git.repositories", Version: 1}) {
+		len(aggregate.Result.Data) != 3 || aggregate.Result.Data["query.network.listeners"].Version != 1 || len(aggregate.Capabilities) != 0 {
 		t.Fatalf("real aggregate query failed: status=%d, result count=%d, capability count=%d",
 			status, len(aggregate.Result.Data), len(aggregate.Capabilities))
 	}
-	if serviceError := aggregate.Result.Data["query.services.status"].Error; serviceError != nil && serviceError.Code != "registry_missing" {
-		t.Fatalf("real aggregate service query failed: %+v", serviceError)
+	if _, exists := aggregate.Result.Data["admin.services.status"]; exists {
+		t.Fatal("main aggregate included guardian administration")
 	}
 	select {
 	case data := <-probeDone:
@@ -289,6 +296,51 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	status, data = check(tlsTarget.URL)
 	if status != 200 || !bytes.Contains(data, []byte(`"code":"tls_failed"`)) {
 		t.Fatal("Agent bypassed TLS verification", status, string(data))
+	}
+	peerBefore, _ := f.s.agentHub.Lookup("PC")
+	setMain := func(paused bool) {
+		t.Helper()
+		if paused {
+			if err := os.WriteFile(keyPath+".pause-main", nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.Remove(keyPath + ".pause-main"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		expected := "running"
+		if paused {
+			expected = "stopped"
+		}
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			state, _ := os.ReadFile(keyPath + ".main-state")
+			if string(state) == expected {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("main runtime did not become", expected)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	setMain(true)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	if status != 200 || !bytes.Contains(data, []byte(`"code":"process_unavailable"`)) {
+		t.Fatal("main unavailability was not reported", status, string(data))
+	}
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "admin.services.status", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	if status != 200 || (!bytes.Contains(data, []byte(`"services"`)) && !bytes.Contains(data, []byte(`"code":"registry_missing"`))) {
+		t.Fatal("guardian admin failed with main stopped", status, string(data))
+	}
+	setMain(false)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	if status != 200 || json.Unmarshal(data, &reply) != nil || !reply.Result.valid() {
+		t.Fatal("main queries did not recover", status, string(data))
+	}
+	if peerAfter, _ := f.s.agentHub.Lookup("PC"); peerAfter != peerBefore {
+		t.Fatal("main restart replaced the guardian's server connection")
 	}
 }
 

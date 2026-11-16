@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace Hako.Core;
 
-internal static class AgentGuardianControl
+internal static partial class AgentGuardianControl
 {
     internal static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     internal static string DirectoryFor(string profile) => Path.Combine(profile, "guardian");

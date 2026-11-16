@@ -40,6 +40,22 @@ jobs:
         run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe -RestrictBackgroundLaunch
       - name: Verify guardian update and recovery
         run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian ../../dist/windows/Hako.exe
+      - name: Verify guardian image refresh
+        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian-refresh ../../dist/windows/Hako.exe
+      - name: Verify commands survive main and guardian replacement
+        shell: pwsh
+        run: |
+          $project = Join-Path $env:USERPROFILE ('Code/hako-command-fixture-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path (Join-Path $project '.git') -Force | Out-Null
+          try {
+            dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-host ../../dist/windows/Hako.exe $project
+            if ($LASTEXITCODE -ne 0) { throw 'Command guardian checks failed.' }
+          } finally {
+            $resolved = [IO.Path]::GetFullPath($project)
+            $prefix = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE 'Code/hako-command-fixture-'))
+            if (!$resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe fixture cleanup path.' }
+            Remove-Item -LiteralPath $resolved -Recurse -Force
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: Hako-Windows

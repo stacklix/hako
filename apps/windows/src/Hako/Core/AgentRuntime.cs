@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Hako.Platform;
@@ -12,7 +13,7 @@ public sealed class AgentRuntime : IAsyncDisposable
 {
     public AgentSettingsStore Store { get; }
     public SystemMetrics Metrics { get; } = new();
-    public AgentConnection Connection { get; }
+    public GuardianConnection Connection { get; }
     internal WorkshopService Workshop { get; }
     public event Action<string>? StatusChanged;
     public event Action<AgentSettings, bool>? SettingsChanged;
@@ -22,15 +23,19 @@ public sealed class AgentRuntime : IAsyncDisposable
     private readonly bool running;
     private string? configurationError;
     private readonly CodexUsage codexUsage;
+    private readonly AgentDispatcher dispatcher;
+    private readonly LocalRpcServer? rpc;
 
     public AgentRuntime(AgentSettingsStore store, bool running)
     {
         Store = store; this.running = running;
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
-        Connection = new AgentConnection(Metrics, codexUsage, store.DirectoryPath);
-        Workshop = new WorkshopService(store.DirectoryPath);
+        dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath);
+        Connection = new GuardianConnection(store.DirectoryPath);
+        Workshop = new WorkshopService(store.DirectoryPath, Connection);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
-        Connection.MetricsReceived += value => MetricsReceived?.Invoke(value);
+        dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
+        if (running) rpc = new LocalRpcServer(LocalRpc.MainPipe(store.DirectoryPath), HandleLocalAsync);
     }
     public async Task InitializeAsync(bool autoConnect)
     {
@@ -44,7 +49,7 @@ public sealed class AgentRuntime : IAsyncDisposable
                 try { await Workshop.ConfigureLocalAsync(saved.DirectPort); Workshop.ConfigurationError = null; }
                 catch (Exception) { Workshop.ConfigurationError = "代码工坊局域网端口启动失败，请检查端口配置。"; }
             }
-            if (autoConnect && saved.Url.Length > 0) { saved.Validate(); await Connection.StartAsync(saved); await Workshop.StartAsync(saved); }
+            if (autoConnect && saved.Url.Length > 0) { saved.Validate(); await Connection.StartAsync(saved); }
         }
         catch (Exception) { configurationError = "配置读取失败或配置不完整，请检查服务器设置。"; StatusChanged?.Invoke(configurationError); }
     }
@@ -72,12 +77,12 @@ public sealed class AgentRuntime : IAsyncDisposable
             if (url != null || account != null || connect) next.ValidateConnectionSettings();
             else next.ValidateDirectPort();
             if (connect) next.Validate();
-            if (url != null || account != null || connect) { await Connection.StopAsync(); await Workshop.StopAsync(); }
+            if (url != null || account != null || connect) await Connection.StopAsync();
             token.ThrowIfCancellationRequested();
             if (running) await Workshop.ConfigureLocalAsync(next.DirectPort);
             Store.Save(next); configurationError = null;
             SettingsChanged?.Invoke(next, reloadForm);
-            if (connect) { await Connection.StartAsync(next); await Workshop.StartAsync(next); }
+            if (connect) await Connection.StartAsync(next);
         }
         finally { operations.Release(); }
     }
@@ -90,7 +95,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     private async Task SaveKeyLockedAsync(string pem, bool reloadForm, CancellationToken token)
     {
         var current = Store.Load();
-        await Connection.StopAsync(); await Workshop.StopAsync();
+        await Connection.StopAsync();
         token.ThrowIfCancellationRequested();
         var next = current with { PrivateKey = pem };
         Store.Save(next); configurationError = null;
@@ -102,7 +107,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         await operations.WaitAsync();
         try
         {
-            await Connection.StopAsync(); await Workshop.StopAsync(); await Workshop.ConfigureLocalAsync(0); Store.Save(new()); configurationError = null;
+            await Connection.StopAsync(); await Workshop.ConfigureLocalAsync(0); Store.Save(new()); configurationError = null;
             SettingsChanged?.Invoke(new(), true);
         }
         finally { operations.Release(); }
@@ -161,10 +166,10 @@ public sealed class AgentRuntime : IAsyncDisposable
                     case "connect":
                         if (!running) return CommandReply.Failure(3, "instance_unavailable", "需要后台实例保持连接。");
                         var connectionSettings = Store.Load(); connectionSettings.Validate(); configurationError = null;
-                        await Connection.StartAsync(connectionSettings); await Workshop.StartAsync(connectionSettings);
+                        await Connection.StartAsync(connectionSettings);
                         return CommandReply.Success(Status(), "已发起连接；请使用 status 查看身份验证结果。");
                     case "disconnect":
-                        await Connection.StopAsync(); await Workshop.StopAsync(); return CommandReply.Success(Status(), "已断开连接，并停止自动重试。");
+                        await Connection.StopAsync(); return CommandReply.Success(Status(), "已断开连接，并停止自动重试。");
                     case "exit": return CommandReply.Success(new { exiting = running }, running ? "正在退出后台实例。" : "后台实例未运行。");
                     case "show": ShowRequested?.Invoke(); return CommandReply.Success(Status(), "已请求打开 Hako 窗口。");
                     default: throw new CliUsageException("未知命令。");
@@ -176,10 +181,40 @@ public sealed class AgentRuntime : IAsyncDisposable
         catch (OperationCanceledException) { return CommandReply.Failure(4, "timeout", "操作超时，结果可能尚未确认，请查询状态后重试。"); }
         catch (Exception error) { return CommandReply.Failure(1, "operation_failed", error.Message); }
     }
+    private async Task HandleLocalAsync(LocalRequest request, Func<object?, Task> publish, CancellationToken token)
+    {
+        if (request.Kind == "agent")
+        {
+            await publish(await dispatcher.InvokeAsync(request.Method, request.Version, request.Parameters, token));
+            return;
+        }
+        if (request.Version != 1) throw new AgentActionException("unsupported_method", "不支持的本机通信版本。");
+        if (request.Kind == "telemetry")
+        { await dispatcher.RunTelemetryAsync((method, data) => publish(new { method, data }), token); return; }
+        var workshop = Workshop.Dispatcher;
+        switch (request.Kind)
+        {
+            case "workshop":
+                workshop.SetNotificationScope(request.Scope);
+                await publish(await workshop.CallAsync(request.Method, request.Parameters, token)); break;
+            case "workshop.watch": await workshop.WatchAsync(request.Parameters, value => publish(value), token); break;
+            case "workshop.terminals":
+                if (string.IsNullOrEmpty(request.Scope)) throw new AgentActionException("invalid_params", "通知上下文为空。");
+                workshop.SetNotificationScope(request.Scope);
+                await workshop.WatchTerminalsAsync(request.Scope, value => publish(value), token); break;
+            case "workshop.ack":
+                await workshop.AcknowledgeTerminalAsync(request.Scope ?? "", request.Parameters.GetProperty("id").GetString()!,
+                    request.Parameters.GetProperty("questionId").GetString()!, token);
+                await publish(new { acknowledged = true }); break;
+            default: throw new AgentActionException("unsupported_method", "主进程不处理此类请求。");
+        }
+    }
     public async ValueTask DisposeAsync()
     {
+        if (rpc is not null) await rpc.DisposeAsync();
         await Connection.DisposeAsync();
         await Workshop.DisposeAsync();
+        await dispatcher.DisposeAsync();
         await codexUsage.DisposeAsync();
     }
 }

@@ -378,6 +378,10 @@ func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, meth
 	if methods == nil {
 		methods = []agent.Capability{{Name: "query.system.metrics", Version: 1}}
 	}
+	return f.connectAgentMetadata(id, wrongKey, sshTunnel, methods, agent.ProtocolVersion)
+}
+
+func (f *fixture) connectAgentMetadata(id string, wrongKey, sshTunnel bool, metadata, version any) *websocket.Conn {
 	f.t.Helper()
 	previous, _ := f.s.agentHub.Lookup(id)
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
@@ -386,7 +390,7 @@ func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, meth
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": agent.ProtocolVersion, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": methods, "sshTunnel": sshTunnel})
+	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": version, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": metadata, "sshTunnel": sshTunnel})
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`

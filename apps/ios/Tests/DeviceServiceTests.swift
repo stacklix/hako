@@ -2,6 +2,16 @@ import Foundation
 
 @main struct DeviceServiceTests {
     static func main() throws {
+        precondition(DeviceServiceCommand.status == "admin.services.status" && DeviceServiceCommand.start == "admin.services.start")
+        var device = ConsoleDeviceData()
+        device.entries[DeviceServiceCommand.status] = ConsoleCapabilityData(version: 1, result: .string("guardian"))
+        device.entries["query.system.metrics"] = ConsoleCapabilityData(version: 1, result: .string("new live sample"))
+        device.liveUpdates["query.system.metrics"] = UUID()
+        device.mergeQueries(["query.system.metrics": ConsoleCapabilityData(version: 1, result: .string("old query"))], since: [:])
+        precondition(device.entries[DeviceServiceCommand.status]?.result?.decode(String.self) == "guardian")
+        precondition(device.entries["query.system.metrics"]?.result?.decode(String.self) == "new live sample")
+        device.mergeQueries([:], since: device.liveUpdates)
+        precondition(device.entries.count == 1 && device.entries[DeviceServiceCommand.status] != nil && device.loaded)
         let decoder = JSONDecoder()
         func snapshot(_ services: String) throws -> DeviceServiceSnapshot {
             try decoder.decode(DeviceServiceSnapshot.self, from: Data("{\"collectedAt\":\"2026-11-15T10:00:00Z\",\"services\":\(services),\"warnings\":[]}".utf8))

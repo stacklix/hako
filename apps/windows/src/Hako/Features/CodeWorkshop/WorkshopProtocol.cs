@@ -22,7 +22,16 @@ internal static class WorkshopProtocol
         ? new(failure.Code, failure.Message) : new("execution_failed", "代码工坊请求失败，请检查电脑端状态。");
 }
 
-internal sealed class WorkshopDispatcher : IAsyncDisposable
+internal interface IWorkshopDispatcher
+{
+    Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token);
+    void SetNotificationScope(string? scope);
+    Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token);
+    Task AcknowledgeTerminalAsync(string scope, string id, string questionId, CancellationToken token);
+    Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token);
+}
+
+internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
 {
     private readonly CodeWorkshop workshop;
     private readonly string directory;
@@ -38,14 +47,16 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable
         if (Commands is not null) await Commands.DisposeAsync();
         await workshop.DisposeAsync();
     }
-    internal void SetNotificationScope(string? scope) => workshop.SetNotificationScope(scope);
-    internal Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) =>
+    public void SetNotificationScope(string? scope) => workshop.SetNotificationScope(scope);
+    public Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token) =>
         Commands is null ? workshop.WatchTerminalsAsync(scope, publish, token) : Task.Delay(Timeout.Infinite, token);
     internal void AcknowledgeTerminal(string scope, string id, string questionId = "") => workshop.AcknowledgeTerminal(scope, id, questionId);
-    internal Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
+    public Task AcknowledgeTerminalAsync(string scope, string id, string questionId, CancellationToken token)
+    { token.ThrowIfCancellationRequested(); AcknowledgeTerminal(scope, id, questionId); return Task.CompletedTask; }
+    public Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token) =>
         workshop.WatchOperationAsync(parameters, publish, token);
 
-    internal async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
+    public async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
     {
         if (parameters.ValueKind != JsonValueKind.Object) throw CodexJson.Invalid();
         if (Commands is not null) return await Commands.CallAsync(method, parameters, token);
@@ -53,7 +64,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable
         {
             CodexJson.Keys(parameters);
             try { return await CommandHost.OpenAsync(directory, token); }
-            catch (System.ComponentModel.Win32Exception error) { throw new WorkshopException("command_host_start_failed", $"独立执行器启动失败（Windows {error.NativeErrorCode}）。"); }
+            catch (System.ComponentModel.Win32Exception error) { throw new WorkshopException("command_host_start_failed", $"守护进程的命令服务启动失败（Windows {error.NativeErrorCode}）。"); }
             catch (System.IO.IOException error) { throw new WorkshopException("command_host_start_failed", error.Message); }
         }
         Func<JsonElement, CancellationToken, Task<object?>> handler = method switch

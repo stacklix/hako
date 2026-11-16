@@ -20,23 +20,32 @@ public sealed class AgentActionException(string code, string message) : Exceptio
 }
 
 // Queries are data providers; actions are invoked explicitly and never by query.all.
-public sealed class AgentDispatcher : IAsyncDisposable
+public interface IAgentDispatcher : IAsyncDisposable
+{
+    IReadOnlyList<AgentCapability> Capabilities { get; }
+    Task<object?> InvokeAsync(string method, int version, JsonElement parameters, CancellationToken token);
+    Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token);
+}
+
+public sealed class AgentDispatcher : IAgentDispatcher
 {
     private sealed record Handler(int Version, Func<JsonElement, CancellationToken, Task<object?>> Invoke);
     private readonly Dictionary<string, Handler> queries;
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
-    private readonly RegisteredServices services;
+    public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = new AgentCapability[] {
+        new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
+        new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
+        new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1)
+    };
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
-    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null,
-        RegisteredServices? registeredServices = null)
+    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
-        services = registeredServices ?? new RegisteredServices();
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -58,12 +67,6 @@ public sealed class AgentDispatcher : IAsyncDisposable
                     throw new AgentActionException("invalid_params", "query.codex.usage 不接受参数。");
                 return await codex.ReadAsync(token);
             }),
-            [RegisteredServices.Command] = new(1, async (parameters, token) =>
-            {
-                if (parameters.EnumerateObject().Any())
-                    throw new AgentActionException("invalid_params", "query.services.status 不接受参数。");
-                return await services.ReadAsync(token);
-            }),
             ["query.network.listeners"] = new(1, async (parameters, token) =>
             {
                 if (parameters.EnumerateObject().Any())
@@ -75,7 +78,6 @@ public sealed class AgentDispatcher : IAsyncDisposable
         var git = new GitRepositoryMonitor();
         actions = new()
         {
-            [RegisteredServices.StartCommand] = new(1, async (parameters, token) => await services.StartAsync(parameters, token)),
             ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
             ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
             ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
@@ -90,16 +92,15 @@ public sealed class AgentDispatcher : IAsyncDisposable
         };
     }
 
-    public ValueTask DisposeAsync() { services.Dispose(); return ValueTask.CompletedTask; }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    internal async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
+    public async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {
         using var streams = CancellationTokenSource.CreateLinkedTokenSource(token);
         Task[] workers =
         [
             PublishPeriodicallyAsync("query.system.metrics", TimeSpan.FromSeconds(1), publish, streams.Token),
             PublishPeriodicallyAsync("query.network.listeners", TimeSpan.FromSeconds(10), publish, streams.Token),
-            PublishPeriodicallyAsync(RegisteredServices.Command, TimeSpan.FromSeconds(10), publish, streams.Token),
             codex.WatchAsync(value => publish("query.codex.usage", value is null
                 ? new CapabilityData(1, Error: new("query_failed", "Codex 数据采集失败。"))
                 : new CapabilityData(1, JsonSerializer.SerializeToElement(value, AgentConnection.Json))), streams.Token)

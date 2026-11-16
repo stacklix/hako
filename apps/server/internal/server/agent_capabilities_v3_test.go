@@ -8,54 +8,6 @@ import (
 	"hako/server/internal/agent"
 )
 
-func TestV3CapabilityRules(t *testing.T) {
-	for _, name := range []string{"system.metrics", "query.all", "query.cpu", "action.network", "Query.system.metrics", "query.system.1bad"} {
-		if agent.ValidCapabilities([]agent.Capability{{Name: name, Version: 1}}) {
-			t.Fatal("invalid capability accepted", name)
-		}
-	}
-	if !agent.ValidCapabilities([]agent.Capability{}) {
-		t.Fatal("known empty manifest rejected")
-	}
-	f := newFixture(t, true)
-	ws := f.connectAgent(false, agent.Capability{Name: "query.system.metrics", Version: 1}, agent.Capability{Name: "action.network.http.check", Version: 2})
-	for _, request := range []agent.Request{
-		{Method: "query.all", Version: 2, Params: json.RawMessage(`{}`)},
-		{Method: "query.system.metrics", Version: 2, Params: json.RawMessage(`{}`)},
-		{Method: "action.network.http.check", Version: 1, Params: json.RawMessage(`{}`)},
-		{Method: "action.unknown.execute", Version: 1, Params: json.RawMessage(`{}`)},
-	} {
-		status, data := f.call("POST", "/api/v1/agents/PC/requests", request, f.tokens.AccessToken)
-		if status != 400 || !bytes.Contains(data, []byte("unsupported_method")) {
-			t.Fatal("version/name mismatch accepted", status, string(data))
-		}
-	}
-	// Both a single query and an operation use exact declared versions.
-	for _, method := range []agent.Request{
-		{Method: "query.system.metrics", Version: 1, Params: json.RawMessage(`{}`)},
-		{Method: "action.network.http.check", Version: 2, Params: json.RawMessage(`{"url":"http://localhost"}`)},
-		{Method: "query.all", Version: 1, Params: json.RawMessage(`{}`)},
-	} {
-		done := make(chan bool, 1)
-		go func() {
-			var message agent.Message
-			ok := ws.ReadJSON(&message) == nil && message.Method == method.Method && message.Version == method.Version && bytes.Equal(message.Params, method.Params)
-			if ok {
-				ok = ws.WriteJSON(agent.Message{Type: "response", ID: message.ID, Reply: agent.Reply{Result: json.RawMessage(`{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}}}}`)}}) == nil
-			}
-			done <- ok
-		}()
-		status, data := f.call("POST", "/api/v1/agents/PC/requests", method, f.tokens.AccessToken)
-		if status != 200 || !<-done {
-			t.Fatal("request changed", status, string(data))
-		}
-		hasManifest := bytes.Contains(data, []byte(`"capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":2}]`))
-		if hasManifest != (method.Method == "query.all") {
-			t.Fatal("aggregate connection manifest missing or leaking into single reply", string(data))
-		}
-	}
-}
-
 func TestAuthenticatedCapabilitiesPersistAcrossRestart(t *testing.T) {
 	f := newFixture(t, true)
 	_, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
@@ -71,8 +23,8 @@ func TestAuthenticatedCapabilitiesPersistAcrossRestart(t *testing.T) {
 	}
 	defer restarted.Close()
 	items := restarted.agentItems(false)
-	manifest, ok := items[0]["capabilities"].([]agent.Capability)
-	if !ok || len(manifest) != 1 || manifest[0].Name != "query.system.metrics" || manifest[0].Version != 3 || items[0]["online"] != false {
+	manifest, ok := items[0]["capabilities"].(json.RawMessage)
+	if !ok || string(manifest) != `[{"name":"query.system.metrics","version":3}]` || items[0]["online"] != false {
 		t.Fatal("authenticated offline manifest not persisted", items)
 	}
 }
@@ -89,8 +41,8 @@ func TestKnownEmptyCapabilitiesAreNotUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	manifest := restarted.agentItems(false)[0]["capabilities"].([]agent.Capability)
-	if manifest == nil || len(manifest) != 0 {
+	manifest := restarted.agentItems(false)[0]["capabilities"].(json.RawMessage)
+	if string(manifest) != "[]" {
 		t.Fatal("empty manifest not preserved across restart")
 	}
 }

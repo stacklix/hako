@@ -28,10 +28,13 @@ private final class DraftWrites: @unchecked Sendable {
         var textState = WorkshopComposerText()
         let composingID = textState.editorID
         textState.update("持仓标题行单独出来，不要放在 section 内部，画原型", editorID: composingID)
+        let renderedBeforeSending = textState
         precondition(textState.editorID == composingID)
         textState.clearAfterSending()
         precondition(textState.text.isEmpty && textState.editorID != composingID,
             "Acknowledgement must atomically publish empty text with a new editing identity")
+        precondition(renderedBeforeSending.text == "持仓标题行单独出来，不要放在 section 内部，画原型" && renderedBeforeSending != textState,
+            "A native editor must receive an immutable render value that changes when the attachment row disappears")
         textState.update("持仓标题行单独出来，不要放在 section 内部，画原型", editorID: composingID)
         precondition(textState.text.isEmpty, "A delayed pre-send edit must not restore sent text as a new draft")
         let nextID = textState.editorID
@@ -43,10 +46,13 @@ private final class DraftWrites: @unchecked Sendable {
         let editor = WorkshopComposerInput()
         let originalEditor = editor.editorID
         editor.updateText("已发送的消息", editorID: originalEditor)
+        let originalSnapshot = editor.snapshot
         precondition(editor.editorID == originalEditor, "Typing must retain native editor identity and selection")
         editor.clearAfterSending()
         precondition(editor.text.isEmpty && editor.editorID != originalEditor,
             "Acknowledged sends must invalidate old edits as well as clearing persisted input")
+        precondition(originalSnapshot.text == "已发送的消息" && originalSnapshot != editor.snapshot,
+            "The representable input must change even though the observable input object is reused")
         editor.updateText("已发送的消息", editorID: originalEditor)
         precondition(editor.text.isEmpty, "A delayed callback from the cleared editor must not restore sent text")
         let clearedEditor = editor.editorID
@@ -79,6 +85,19 @@ private final class DraftWrites: @unchecked Sendable {
         precondition(pending.matchesSentMessage("未发送的输入\n`code` 👋", imageIds: ["photo-one"], id: "request"))
         precondition(!pending.matchesSentMessage("未发送的输入\n`code` 👋", imageIds: [], id: "request"))
         precondition(!pending.matchesSentMessage("未发送的输入\n`code` 👋", imageIds: ["photo-one"], id: "other-request"))
+        for count in 1...3 {
+            let ids = (1...count).map { "photo-\($0)" }
+            var photoDraft = WorkshopComposerDraft(input: WorkshopDraftInput(text: "图片说明\n第二行", imageIds: ids),
+                sendingMessageID: "image-request")
+            precondition(photoDraft.matchesSentMessage("图片说明\n第二行", imageIds: ids, id: "image-request"))
+            photoDraft.input.imageIds.append("new-photo")
+            precondition(!photoDraft.matchesSentMessage("图片说明\n第二行", imageIds: ids, id: "image-request"),
+                "An old image acknowledgement must preserve a newly attached image")
+            photoDraft.input.imageIds = ids
+            photoDraft.input.text += "\n新的草稿"
+            precondition(!photoDraft.matchesSentMessage("图片说明\n第二行", imageIds: ids, id: "image-request"),
+                "An old acknowledgement must not erase newer typing during image upload")
+        }
 
         let editing = WorkshopComposerDraft(input: WorkshopDraftInput(text: "修改后的排队消息", imageIds: []),
             editingMessageID: "queued", originalInput: input)

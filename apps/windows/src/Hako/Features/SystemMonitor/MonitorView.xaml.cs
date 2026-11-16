@@ -6,15 +6,16 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Hako.Platform;
+using Hako.Core;
 
 namespace Hako.Features.SystemMonitor;
 
 public partial class MonitorView : UserControl, IDisposable
 {
     private readonly SystemMetrics metrics;
-    private readonly RegisteredServices registeredServices = new();
+    private readonly GuardianConnection guardian;
     private readonly CancellationTokenSource lifetime = new();
-    public MonitorView(SystemMetrics metrics) { InitializeComponent(); this.metrics = metrics; }
+    public MonitorView(SystemMetrics metrics, GuardianConnection guardian) { InitializeComponent(); this.metrics = metrics; this.guardian = guardian; }
     public void Display(Metrics value)
     {
         Cpu.Text = $"{value.CpuUsagePercent:F1}%";
@@ -80,7 +81,7 @@ public partial class MonitorView : UserControl, IDisposable
         ServiceStatus.Text = "正在检查登记服务…";
         try
         {
-            var snapshot = await registeredServices.ReadAsync(lifetime.Token);
+            var snapshot = await guardian.AdminAsync<RegisteredServiceSnapshot>(RegisteredServices.Command, new { }, lifetime.Token);
             Services.ItemsSource = snapshot.Services.Select(service => new
             {
                 service.Name, service.CanStart,
@@ -109,7 +110,7 @@ public partial class MonitorView : UserControl, IDisposable
         button.IsEnabled = false;
         try
         {
-            var reply = await registeredServices.StartAsync(JsonSerializer.SerializeToElement(new { name, requestId = Guid.NewGuid().ToString("D") }), lifetime.Token);
+            var reply = await guardian.AdminAsync<ServiceStartReply>(RegisteredServices.StartCommand, new { name, requestId = Guid.NewGuid().ToString("D") }, lifetime.Token);
             await ReadServicesAsync();
             ServiceStatus.Text += "\n" + reply.Message;
         }
@@ -121,5 +122,5 @@ public partial class MonitorView : UserControl, IDisposable
         "responding" => "已响应", "http_error" => "服务异常", "stopped" => "未监听",
         "unreachable" => "HTTP 探测失败", _ => "状态未知"
     };
-    public void Dispose() { lifetime.Cancel(); registeredServices.Dispose(); lifetime.Dispose(); }
+    public void Dispose() { lifetime.Cancel(); lifetime.Dispose(); }
 }

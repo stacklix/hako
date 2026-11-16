@@ -24,7 +24,7 @@ public partial class MainWindow : Window
         this.runtime = runtime;
         InitializeComponent();
         UpdateVersionNotice();
-        monitor = new MonitorView(runtime.Metrics);
+        monitor = new MonitorView(runtime.Metrics, runtime.Connection);
         settings = new ServerSettingsView(ApplyAsync, ClearAsync, SaveKeyAsync, AgentStartup.ForCurrentProcess(runtime.Store.DirectoryPath),
             port => runtime.UpdateConfigurationAsync(null, null, connect: false, directPort: port));
         runtime.StatusChanged += StatusChanged;

@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: View {
-    private enum TerminalTab { case unopened, visible, hidden }
     private let capabilities: [ConsoleAgentCapability]
     private let emptyMessage: String
     private let tabTitle: (ConsoleAgentCapability) -> String
@@ -12,9 +11,11 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     @AppStorage private var savedOrder: Data
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedName: String?
-    @State private var terminalTab = TerminalTab.unopened
+    @State private var terminalOpened = false
     @State private var terminalFullScreen = false
-    private var showingTerminal: Bool { terminalTab == .visible }
+    private var pages: [DevicePage] { DeviceCardOrder.pages(capabilities, savedOrder: savedOrder) }
+    private var selected: DevicePage { pages.first { $0.name == selectedName } ?? pages.first ?? .terminal }
+    private var showingTerminal: Bool { selected.name == DeviceCardOrder.terminalPageName }
     private var showingFullScreen: Bool { showingTerminal && terminalFullScreen }
 
     init(capabilities: [ConsoleAgentCapability], order: DeviceCardOrder.Storage, emptyMessage: String,
@@ -34,19 +35,19 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
     }
 
     var body: some View {
-        let pages = DeviceCardOrder.pages(capabilities, savedOrder: savedOrder)
-        let selected = pages.first { $0.name == selectedName } ?? pages.first
+        let pages = self.pages
+        let selected = self.selected
         ZStack {
             if !showingTerminal {
-                scrollablePages(pages, selected: selected)
+                scrollablePages(pages, selected: selected.capability)
             }
-            if terminalTab != .unopened {
+            if terminalOpened || showingTerminal {
                 // Keep the SSH session and its renderer mounted until the device changes.
                 VStack(spacing: 0) {
                     if !showingFullScreen {
                         overview()
                             .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
-                        tabBar(pages, selected: nil)
+                        tabBar(pages, selected: selected.name)
                             .padding(.horizontal, 20)
                     }
                     terminal(showingTerminal, $terminalFullScreen)
@@ -60,9 +61,14 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
         .foregroundStyle(HakoStyle.text)
         .toolbar(showingFullScreen ? .hidden : .visible, for: .navigationBar)
         .statusBarHidden(showingFullScreen)
+        .onChange(of: selected.name, initial: true) { _, name in
+            selectedName = name
+            if name == DeviceCardOrder.terminalPageName { terminalOpened = true }
+            else { terminalFullScreen = false }
+        }
     }
 
-    private func scrollablePages(_ pages: [ConsoleAgentCapability], selected: ConsoleAgentCapability?) -> some View {
+    private func scrollablePages(_ pages: [DevicePage], selected: ConsoleAgentCapability?) -> some View {
         ScrollViewReader { scroll in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
@@ -97,26 +103,18 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
             .refreshable { await refresh() }
             .onChange(of: selected?.name, initial: true) { previous, name in
                 // Keep the selected page when it moves between the bar and the menu.
-                selectedName = name
                 if previous != name { scroll.scrollTo("device-overview", anchor: .top) }
             }
         }
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private func tabBar(_ pages: [ConsoleAgentCapability], selected: String?) -> some View {
+    private func tabBar(_ pages: [DevicePage], selected: String?) -> some View {
         let visible = pages.prefix(DeviceCardOrder.visiblePageLimit)
         let overflow = pages.dropFirst(DeviceCardOrder.visiblePageLimit)
         let overflowSelection = overflow.first { $0.name == selected }
         return HStack(spacing: 4) {
-            if visible.isEmpty {
-                Button(action: hideTerminal) {
-                    Text("概览").frame(maxWidth: .infinity, minHeight: 44)
-                        .modifier(DevicePageTabStyle(selected: !showingTerminal))
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(showingTerminal ? [] : .isSelected)
-            } else if dynamicTypeSize.isAccessibilitySize {
+            if dynamicTypeSize.isAccessibilitySize {
                 ScrollView(.horizontal) {
                     HStack(spacing: 12) {
                         ForEach(visible) { page in tab(page, selected: selected, expands: false) }
@@ -126,13 +124,6 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
             } else {
                 ForEach(visible) { page in tab(page, selected: selected, expands: true) }
             }
-            Button { terminalTab = .visible } label: {
-                Text("终端").frame(minWidth: 44, maxWidth: dynamicTypeSize.isAccessibilitySize ? nil : .infinity, minHeight: 44)
-                    .modifier(DevicePageTabStyle(selected: showingTerminal))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(showingTerminal ? .isSelected : [])
             if !overflow.isEmpty {
                 Menu {
                     ForEach(overflow) { page in
@@ -146,7 +137,7 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     }
                 } label: {
                     HStack(spacing: 4) {
-                        Text(overflowSelection.map(tabTitle) ?? "更多").lineLimit(1)
+                        Text(overflowSelection.map(title) ?? "更多").lineLimit(1)
                             .minimumScaleFactor(0.85)
                         Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                     }
@@ -163,19 +154,19 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
         .accessibilityLabel("设备页面")
     }
 
-    private func select(_ page: ConsoleAgentCapability) {
+    private func select(_ page: DevicePage) {
         selectedName = page.name
-        hideTerminal()
+        if page.name == DeviceCardOrder.terminalPageName { terminalOpened = true }
+        else { terminalFullScreen = false }
     }
 
-    private func hideTerminal() {
-        terminalFullScreen = false
-        if showingTerminal { terminalTab = .hidden }
+    private func title(_ page: DevicePage) -> String {
+        page.capability.map(tabTitle) ?? "终端"
     }
 
-    private func tab(_ page: ConsoleAgentCapability, selected: String?, expands: Bool) -> some View {
+    private func tab(_ page: DevicePage, selected: String?, expands: Bool) -> some View {
         Button { select(page) } label: {
-            Text(tabTitle(page)).lineLimit(1).minimumScaleFactor(0.85)
+            Text(title(page)).lineLimit(1).minimumScaleFactor(0.85)
                 .frame(minWidth: expands ? nil : 44, maxWidth: expands ? .infinity : nil, minHeight: 44)
                 .modifier(DevicePageTabStyle(selected: selected == page.name))
                 .contentShape(Rectangle())
@@ -247,16 +238,31 @@ struct DevicePageOrderSection: View {
             .textCase(nil)
         } footer: {
             if pages.count > 1 {
-                Text("拖动右侧手柄，松手后自动保存。")
+                Text("拖动右侧手柄，松手后自动保存。前 \(DeviceCardOrder.visiblePageLimit) 项显示在标签栏，其余页面收进“更多”。")
             }
         }
     }
 }
 
+private enum DevicePage: Identifiable {
+    case capability(ConsoleAgentCapability)
+    case terminal
+
+    var capability: ConsoleAgentCapability? {
+        if case .capability(let value) = self { return value }
+        return nil
+    }
+    var name: String { capability?.name ?? DeviceCardOrder.terminalPageName }
+    var id: String { name }
+    var pageTitle: String { capability?.pageTitle ?? "终端" }
+}
+
 private extension DeviceCardOrder {
-    static func pages(_ capabilities: [ConsoleAgentCapability], savedOrder: Data) -> [ConsoleAgentCapability] {
+    static func pages(_ capabilities: [ConsoleAgentCapability], savedOrder: Data) -> [DevicePage] {
         let byName = Dictionary(capabilities.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-        return arranged(available: capabilities.map(\.name), saved: names(from: savedOrder)).compactMap { byName[$0] }
+        return pageNames(capabilities: capabilities.map(\.name), saved: names(from: savedOrder)).compactMap { name in
+            name == terminalPageName ? .terminal : byName[name].map(DevicePage.capability)
+        }
     }
 }
 

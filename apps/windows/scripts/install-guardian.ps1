@@ -13,6 +13,10 @@ $DataDirectory = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath(
 $root = Join-Path $DataDirectory 'guardian'
 $destination = Join-Path $InstallDirectory 'guardian/Hako.Guardian.exe'
 $configuration = Join-Path $root 'config.json'
+if ($env:HAKO_COMMAND_TASK_DIRECTORY -and $env:HAKO_COMMAND_EXECUTABLE -and
+    [string]::Equals([IO.Path]::GetFullPath($env:HAKO_COMMAND_EXECUTABLE), $destination, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Run the guardian installer from an independent terminal or updater. A guardian command cannot wait for its own host to exit.'
+}
 New-Item -ItemType Directory -Path $root,(Split-Path -Parent $destination) -Force | Out-Null
 $lock = [IO.File]::Open((Join-Path $root 'install.lock'),'OpenOrCreate','ReadWrite','None')
 try {
@@ -23,7 +27,9 @@ try {
         if ($old) {
             if ($old.Path -ne $destination) { throw 'Guardian PID belongs to another executable.' }
             & $destination --stop-guardian --config $configuration
-            if (!$old.WaitForExit(90000)) { throw 'Guardian is still completing an update. Its executable was not replaced.' }
+            if ($LASTEXITCODE -ne 0) { throw 'Guardian did not accept the graceful stop request.' }
+            Write-Host 'Waiting for running commands and any Agent update to finish before replacing the guardian...'
+            $old.WaitForExit()
             $old.Dispose()
         }
     }

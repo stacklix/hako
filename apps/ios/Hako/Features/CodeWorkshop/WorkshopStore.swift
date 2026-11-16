@@ -95,8 +95,9 @@ import CryptoKit
             + applications.filter { !preferences.order.contains($0.id) }
     }
     var visibleSessions: [WorkshopSession] {
-        localSessions.merging(sessions, agentId: selectedAgentID, applications: applications, archived: showingArchived)
+        let visible = localSessions.merging(sessions, agentId: selectedAgentID, applications: applications, archived: showingArchived)
             .filter { $0.applicationId == selectedApplicationID }
+        return WorkshopCatalog.prioritizingDrafts(visible, ids: Set(visible.filter { hasDraft($0) }.map(\.id)))
     }
     var hasMore: Bool { cursor != nil }
 

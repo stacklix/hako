@@ -109,9 +109,7 @@ import Foundation
         precondition(malformedDisk.isValid && malformedDisk.diskReported && malformedDisk.disk == nil)
         let invalidDisk = try metrics(disk: ["volumes": [["name": "C:", "usedBytes": 500, "totalBytes": 400]]])
         precondition(invalidDisk.isValid && invalidDisk.disk?.isValid == false)
-        let payload = Data(#"{"capabilities":[{"name":"query.system.metrics","version":1}],"result":{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}},"query.future.data":{"version":7,"result":{"bytes":9007199254740993}},"query.future.null":{"version":1,"result":null},"query.future.invalid":{"version":1,"error":{},"result":0}}}}"#.utf8)
-        let envelope = try decoder.decode(ConsoleQueryEnvelope.self, from: payload)
-        precondition(envelope.capabilities.first?.name == "query.system.metrics")
+        let payload = Data(#"{"result":{"data":{"query.system.metrics":{"version":1,"error":{"code":"sample_failed","message":"采样失败"}},"query.future.data":{"version":7,"result":{"bytes":9007199254740993}},"query.future.null":{"version":1,"result":null},"query.future.invalid":{"version":1,"error":{},"result":0}}}}"#.utf8)
         let reply = try decoder.decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: payload)
         guard case .result(let queries) = reply else { fatalError("Expected aggregate") }
         precondition(queries.data["query.system.metrics"]?.error?.code == "sample_failed")

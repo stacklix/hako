@@ -17,7 +17,7 @@ public sealed record ServiceStartReply(string Name, string RequestId, string Sta
 
 public sealed partial class RegisteredServices
 {
-    public const string StartCommand = "action.services.start";
+    public const string StartCommand = "admin.services.start";
     private readonly string startupDirectory;
     private sealed record StartReceipt(string Name, string RequestId, string State, string RequestedAt,
         int? ProcessId = null, long? ProcessStartedAt = null);

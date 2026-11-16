@@ -12,34 +12,34 @@ internal static class Program
 {
     private static void CheckServerCompatibility()
     {
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.3.0"}"""u8, "1.3.0") is not null)
             throw new Exception("Agent rejected the current compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.4","minimumAgentVersion":"1.2.0"}"""u8, "1.2.0")?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.4","minimumAgentVersion":"1.3.0"}"""u8, "1.3.0")?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired server compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.2.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.3.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired Agent compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
             throw new Exception("Agent rejected matching version floors");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
             throw new Exception("Agent did not compare compatible patch versions numerically");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a patch version below the required floor");
-        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
+        var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about its own version floor");
         var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about the server version floor");
-        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
+        var newerAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1","minimumAgentVersion":"1.9.0"}"""u8, "1.10.0");
         if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer minor version than the server supports");
-        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.6.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
+        var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.7.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (newerServer?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer server minor version");
         var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (both != outdatedAgent + "\n\n" + outdatedServer)
             throw new Exception("Agent did not report both incompatible versions together");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.5.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.6.1"}"""u8, "1.0.0")?.Contains("版本信息无效") != true)
             throw new Exception("Agent accepted incomplete version metadata");
     }
 
@@ -76,12 +76,14 @@ internal static class Program
         try
         {
             if (args.Length == 2 && args[0] == "guardian") { await GuardianChecks.RunAsync(args[1]); return 0; }
+            if (args.Length == 2 && args[0] == "guardian-refresh") { await GuardianRefreshChecks.RunAsync(args[1]); return 0; }
             if (args.Length == 1 && args[0] == "lifecycle") { LifecycleChecks.Run(); return 0; }
             if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "guardian-broker") { await GuardianBrokerChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "registered-services")
             {
                 using var services = new RegisteredServices();
@@ -187,16 +189,14 @@ internal static class Program
             }
             if (args.Length == 4 && args[0] == "agent")
             {
-                await using var agent = new AgentConnection(new SystemMetrics());
-                agent.StatusChanged += text => Console.WriteLine(text);
-                await agent.StartAsync(new AgentSettings(args[1], args[2], File.ReadAllText(args[3])));
-                await Task.Delay(TimeSpan.FromSeconds(30));
+                await GuardianBrokerChecks.RunAgentAsync(args[1], args[2], args[3]);
                 return 0;
             }
             CheckServerCompatibility();
             await CheckServerVersionRecoveryAsync();
             LifecycleChecks.Run();
             await AgentRequestChecks.RunAsync();
+            await GuardianBrokerChecks.RunAsync();
             await WorkshopCloudChecks.RunAsync();
             await WorkshopNotificationChecks.RunAsync();
             StartupChecks.Run();
@@ -233,14 +233,20 @@ internal static class Program
             var dispatcher = new AgentDispatcher(new SystemMetrics());
             if (!dispatcher.Capabilities.SequenceEqual(new[] {
                 new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
-                new AgentCapability(RegisteredServices.Command, 1), new AgentCapability("query.network.listeners", 1),
-                new AgentCapability(RegisteredServices.StartCommand, 1), new AgentCapability("action.network.http.check", 1),
+                new AgentCapability("query.network.listeners", 1), new AgentCapability("action.network.http.check", 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
                 new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1),
             }))
                 throw new Exception("Agent capabilities do not match registered actions");
+            if (!dispatcher.Capabilities.SequenceEqual(AgentDispatcher.MainCapabilities))
+                throw new Exception("Guardian's forwarding manifest differs from the main dispatcher");
+            foreach (var method in new[] { RegisteredServices.Command, RegisteredServices.StartCommand })
+            {
+                try { await dispatcher.InvokeAsync(method, 1, JsonSerializer.SerializeToElement(new { }), default); throw new Exception("Main process accepted admin"); }
+                catch (AgentActionException error) when (error.Code == "unsupported_method") { }
+            }
             using var emptyParams = JsonDocument.Parse("{}");
             using var invalidParams = JsonDocument.Parse("{\"unexpected\":true}");
             using var arrayParams = JsonDocument.Parse("[]");

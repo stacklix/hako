@@ -191,6 +191,24 @@ internal static class CommandTaskChecks
             var list = await Call(tasks, "commands.list", new { applicationId = application });
             Check(list.GetProperty("tasks").GetArrayLength() == 12, "Task history not persisted or an invalid request created a task");
             Check(!list.GetProperty("tasks")[0].TryGetProperty("command", out _), "History repeated full commands and can overflow the wire frame");
+            var draining = Guid.NewGuid().ToString();
+            var drainRequest = new { requestId = draining, applicationId = application, name = "guardian draining", command = "Start-Sleep -Seconds 30", timeoutSeconds = 40, allowBackgroundProcesses = false };
+            await Call(tasks, "commands.start", drainRequest);
+            tasks.BeginDrain();
+            Check(tasks.HasRunning, "Draining immediately terminated an active command");
+            await Call(tasks, "commands.start", drainRequest);
+            try
+            {
+                await Call(tasks, "commands.start", new { requestId = Guid.NewGuid().ToString(), applicationId = application, name = "rejected while draining", command = "exit 0", timeoutSeconds = 10, allowBackgroundProcesses = false });
+                throw new Exception("Draining accepted a new command");
+            }
+            catch (WorkshopException error) when (error.Code == "command_host_stopping") { }
+            Check((await Call(tasks, "commands.list", new { applicationId = application })).GetProperty("tasks").GetArrayLength() == 13,
+                "Draining lost history or persisted a rejected command");
+            await Call(tasks, "commands.read", new { taskId = draining, cursor = 0 });
+            await Call(tasks, "commands.stop", new { taskId = draining });
+            Check(CodexJson.Text(CodexJson.Field(await Finish(tasks, draining), "task"), "state") == "cancelled", "Draining disabled cancellation");
+            Console.WriteLine("PASS: graceful guardian drain preserves reads, history, idempotency and cancellation while rejecting new tasks");
         }
         finally { Directory.Delete(root, true); }
         Console.WriteLine("PASS: real shell output/exit codes, duplicate request isolation, cursor resume, cancellation, timeout and installation transaction survival");

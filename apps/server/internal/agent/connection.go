@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +22,7 @@ type Connection struct {
 	pending         map[string]chan Message
 	done            chan struct{}
 	once            sync.Once
-	capabilities    []Capability
+	capabilities    json.RawMessage
 	sshTunnel       bool
 	ssh             *agentSSH
 	telemetryMu     sync.Mutex
@@ -39,16 +39,16 @@ func (c *Connection) Send(v any) error {
 }
 func (c *Connection) Close() { c.once.Do(func() { close(c.done); _ = c.conn.Close() }) }
 
-func NewConnection(ws *websocket.Conn, capabilities []Capability, sshTunnel bool, newID func() string) *Connection {
+func NewConnection(ws *websocket.Conn, capabilities json.RawMessage, sshTunnel bool, newID func() string) *Connection {
 	return &Connection{
 		conn: ws, pending: make(map[string]chan Message), done: make(chan struct{}),
-		capabilities: append([]Capability{}, capabilities...), sshTunnel: sshTunnel, newID: newID,
+		capabilities: append(json.RawMessage(nil), capabilities...), sshTunnel: sshTunnel, newID: newID,
 	}
 }
 
-func (c *Connection) Capabilities() []Capability { return c.capabilities }
-func (c *Connection) HasSSHTunnel() bool         { return c.sshTunnel }
-func (c *Connection) Done() <-chan struct{}      { return c.done }
+func (c *Connection) Capabilities() json.RawMessage { return c.capabilities }
+func (c *Connection) HasSSHTunnel() bool            { return c.sshTunnel }
+func (c *Connection) Done() <-chan struct{}         { return c.done }
 
 func (c *Connection) run(onPong func()) {
 	go func() {
@@ -68,31 +68,43 @@ func (c *Connection) run(onPong func()) {
 	}()
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		var message Message
-		if c.conn.ReadJSON(&message) != nil {
+		var fields map[string]json.RawMessage
+		if c.conn.ReadJSON(&fields) != nil {
 			return
 		}
+		var message Message
+		if json.Unmarshal(fields["type"], &message.Type) != nil {
+			return
+		}
+		_ = json.Unmarshal(fields["id"], &message.ID)
 		if message.Type == "pong" {
 			onPong()
 			continue
 		}
 		if message.Type == "telemetry_update" {
-			if !message.Reply.valid() || !strings.HasPrefix(message.Method, "query.") || !c.Supports(message.Method, message.Version) || message.Method == "query.all" {
-				return
-			}
+			// The method is only a cache key. Its spelling, version and payload
+			// belong to the device and Console, not to this relay.
+			message.Method = string(fields["method"])
+			fields["type"] = json.RawMessage(`"update"`)
+			delete(fields, "id")
+			message.Payload, _ = json.Marshal(fields)
 			c.publishTelemetry(message)
 			continue
 		}
 		if message.Type == "ssh_data" || message.Type == "ssh_closed" {
+			data, _ := json.Marshal(fields)
+			if json.Unmarshal(data, &message) != nil {
+				return
+			}
 			c.publishSSH(message)
 			continue
 		}
 		if message.Type != "response" || message.ID == "" {
 			return
 		}
-		if !message.Reply.valid() {
-			return
-		}
+		delete(fields, "type")
+		delete(fields, "id")
+		message.Payload, _ = json.Marshal(fields)
 		c.mu.Lock()
 		ch := c.pending[message.ID]
 		c.mu.Unlock()
@@ -103,21 +115,6 @@ func (c *Connection) run(onPong func()) {
 			}
 		}
 	}
-}
-
-func (c *Connection) Supports(method string, version int) bool {
-	if (strings.HasPrefix(method, "query.codex.") && method != "query.codex.usage") || strings.HasPrefix(method, "action.codex.") {
-		return false
-	}
-	if method == "query.all" && version == 1 {
-		return true
-	}
-	for _, capability := range c.capabilities {
-		if capability.Name == method && capability.Version == version {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Connection) Request(ctx context.Context, request Request) (Message, error) {
@@ -136,7 +133,7 @@ func (c *Connection) Request(ctx context.Context, request Request) (Message, err
 		delete(c.pending, id)
 		c.mu.Unlock()
 	}()
-	if err := c.Send(Message{Type: "request", ID: id, Method: request.Method, Version: request.Version, Params: request.Params}); err != nil {
+	if err := c.Send(request.envelope(id)); err != nil {
 		c.Close()
 		return Message{}, err
 	}

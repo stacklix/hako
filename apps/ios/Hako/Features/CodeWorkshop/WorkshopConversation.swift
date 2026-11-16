@@ -40,6 +40,8 @@ import Combine
     @Published private(set) var synchronizing = false
     private var editingDraft: (text: String, photos: [WorkshopPhoto])? { didSet { persistDraft() } }
     private var draftReady = false
+    private var resettingComposer = false
+    private var composerAcknowledgements: Set<String> = []
     private var draftSessionID = "new"
     private var savedDraft: WorkshopComposerDraft?
     private var draftSendingID: String? { didSet { persistDraft() } }
@@ -159,7 +161,7 @@ import Combine
     }
 
     private func persistDraft() {
-        guard draftReady, scope == store.scope else { return }
+        guard draftReady, !resettingComposer, scope == store.scope else { return }
         let snapshot = composerDraft
         let sessionID = composerSessionID
         guard snapshot != savedDraft || sessionID != draftSessionID else { return }
@@ -175,13 +177,28 @@ import Combine
     }
 
     private func composerChanged() {
+        guard !resettingComposer else { return }
         if draftReady { draftSendingID = nil }
         persistDraft()
     }
 
     private func clearSentDraft(_ message: String, imageIds: [String], id: String) {
-        guard composerDraft.matchesSentMessage(message, imageIds: imageIds, id: id) else { return }
+        let snapshot = composerDraft
+        let matches = snapshot.matchesSentMessage(message, imageIds: imageIds, id: id)
+        if composerAcknowledgements.insert(id).inserted {
+            HakoLog.record(.codeWorkshop, "发送确认时核验输入草稿",
+                detail: "requestId=\(id); imageCount=\(imageIds.count); requestMatches=\(snapshot.sendingMessageID == id); textMatches=\(snapshot.input.text.trimmingCharacters(in: .whitespacesAndNewlines) == message); imagesMatch=\(snapshot.input.imageIds == imageIds); willClear=\(matches)")
+        }
+        guard matches else { return }
+        // Text and attachments have separate observation callbacks. Persist
+        // only their final empty value, never an intermediate partial draft.
+        resettingComposer = true
         composerInput.clearAfterSending(); photos = []
+        draftSendingID = nil
+        resettingComposer = false
+        persistDraft()
+        HakoLog.record(.codeWorkshop, "已确认发送并清空输入草稿",
+            detail: "requestId=\(id); imageCount=\(imageIds.count); editorId=\(composerInput.editorID); textLength=\(draft.utf16.count); remainingImages=\(photos.count)")
     }
 
     var notificationOperationID: String? { operationId }

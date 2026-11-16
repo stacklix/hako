@@ -211,8 +211,12 @@ func TestWorkshopAuthenticationAndDeviceProtocolIsolation(t *testing.T) {
 		t.Fatal("unauthenticated workshop accepted")
 	}
 	device := f.connectAgent(false, agent.Capability{Name: "action.codex.turn.start", Version: 1})
-	if reply := f.s.callAgent(context.Background(), "PC", agent.Request{Method: "action.codex.turn.start", Version: 1, Params: json.RawMessage(`{}`)}); reply.Status != 400 {
-		t.Fatal("device channel accepted workshop operation", reply)
+	go func() {
+		request := readAgentFrame[agent.Message](t, device)
+		writeAgentFrame(t, device, agent.Message{Type: "response", ID: request.ID, Reply: agent.Reply{Error: &agent.Error{Code: "unsupported_method", Message: "Rejected by device"}}})
+	}()
+	if reply := f.s.callAgent(context.Background(), "PC", agent.Request{Method: "action.codex.turn.start", Version: 1, Params: json.RawMessage(`{}`)}); reply.Status != 200 {
+		t.Fatal("server interpreted a device command", reply)
 	}
 	worker := connectWorkshop(t, f)
 	peer, _ := f.s.workshopHub.Lookup("PC")

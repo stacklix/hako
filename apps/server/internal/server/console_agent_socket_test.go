@@ -93,7 +93,7 @@ func TestConsoleAgentSocketRequestsAndAuthentication(t *testing.T) {
 	writeAgentFrame(t, peer, agent.Message{Type: "response", ID: request.ID, Reply: agent.Reply{Result: json.RawMessage(`{"data":{}}`)}})
 	reply := readAgentFrame[consoleAgentReply](t, console)
 	body, ok := reply.Body.(map[string]any)
-	if reply.ID != "query" || reply.Status != 200 || !ok || body["capabilities"] == nil || body["result"] == nil {
+	if reply.ID != "query" || reply.Status != 200 || !ok || body["capabilities"] != nil || body["result"] == nil {
 		t.Fatalf("query reply: %+v", reply)
 	}
 }

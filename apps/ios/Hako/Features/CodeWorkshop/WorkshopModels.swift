@@ -130,6 +130,10 @@ struct WorkshopCatalog: Codable, Sendable {
             return $0.id < $1.id
         }
     }
+
+    static func prioritizingDrafts(_ sessions: [WorkshopSession], ids: Set<String>) -> [WorkshopSession] {
+        sessions.filter { ids.contains($0.id) } + sessions.filter { !ids.contains($0.id) }
+    }
 }
 
 // Detail reads fence older catalog responses. A verified terminal state also
@@ -624,7 +628,8 @@ struct WorkshopLocalSessions {
             if let remote, acknowledges(remote, activity: activity) { continue }
             let local = WorkshopSession(id: receipt.threadId ?? remote?.id ?? "pending-" + receipt.id, title: remote?.title ?? receipt.title,
                 applicationId: receipt.applicationId, cwd: application.path,
-                preview: receipt.threadId == nil ? "发送结果等待确认" : activity.preview,
+                preview: receipt.threadId == nil ? "发送结果等待确认" :
+                    (!activity.queued && remote?.operationId == receipt.id ? remote!.preview : activity.preview),
                 updatedAt: max(Int64(activity.date.timeIntervalSince1970), remote?.updatedAt ?? 0),
                 state: receipt.state == "pending" ? (receipt.threadId == nil ? "unknown" : "starting") : receipt.state,
                 operationId: receipt.id, lastSentAt: max(Int64(activity.date.timeIntervalSince1970), remote?.lastSentAt ?? 0))

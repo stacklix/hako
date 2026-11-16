@@ -2,7 +2,9 @@
 
 单用户、多设备。Agent 是跨平台的设备代理角色，仓库当前提供 Windows 实现；iOS 为 Console，服务端为 Hako 统一后端，设备管理是其中的业务模块。三端各自实现协议，不共享代码包。
 
-本版在通用设备请求基础上增加实时订阅。部署时同步更新服务端、Windows Agent 和 iOS Console，Agent 连接要求 v4。应用级认证与扫码登录见 [Hako 服务器认证协议](server-authentication.md)。
+当前部署版本线为服务端 / iOS 0.6.x、Windows Agent 1.3.x，需要协同升级。连接使用 v4 认证信封；服务端只处理认证、路由和资源限制，不按业务版本或能力清单过滤消息。应用级认证与扫码登录见 [Hako 服务器认证协议](server-authentication.md)。
+
+Windows 常驻进程为主 Agent 和守护进程。守护进程持有设备、代码工坊及快捷命令到服务端的连接；主进程通过当前用户专用命名管道收发数据。`query`、`action` 由主进程处理，`admin` 由守护进程处理。主进程退出或更新不会断开守护连接、终止快捷命令或影响服务管理；普通请求明确返回 `process_unavailable` / `process_disconnected`，不自动重放操作。
 
 ## 应用级身份与认证
 
@@ -30,9 +32,9 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 ## 命令与能力
 
-命名遵循 [Agent 命令命名规范](agent-command-naming.md)：查询固定使用 `query.`，操作固定使用 `action.`，版本使用独立正整数 `version` 字段。CPU 与内存合为 `query.system.metrics` v1；`action.network.http.check` v1 检查 URL。普通名称为至少三段的小写点分段名称，每段以字母开头，允许字母、数字、下划线，总长最多 100 字符。名称唯一，最多 64 项。
+设备与调用端的命名约定遵循 [Agent 命令命名规范](agent-command-naming.md)：查询使用 `query.`，操作使用 `action.`，守护进程管理命令使用 `admin.`，版本使用独立正整数 `version` 字段。CPU 与内存合为 `query.system.metrics` v1；`action.network.http.check` v1 检查 URL。普通名称为至少三段的小写点分段名称，每段以字母开头，允许字母、数字、下划线，总长最多 100 字符。设备声明的名称唯一，最多 64 项；服务端不校验这些业务约定。
 
-`query.all` v1 为协议内置聚合命令，不加入能力清单；只汇总查询提供器。支持按完整名称单独查询或操作，两者都严格匹配清单中的名称和版本。首次连接前 `capabilities: null` 表示未知，已认证空清单为 `[]`；服务端保存最近成功认证的清单，离线和重启后保留，在线状态单独返回。
+`query.all` v1 由主进程实现，不加入能力清单；只汇总主进程常规查询提供器，不包含管理命令。单项调用的名称、版本和参数由设备校验。首次连接前 `capabilities: null` 表示未知，设备声明空清单为 `[]`；服务端原样保存最近成功认证的清单，离线和重启后保留，在线状态单独返回。能力清单是展示元数据，不是服务端命令白名单。
 
 ```json
 {"id":"N100","name":"我的设备","online":true,"lastSeen":"2026-10-28T08:00:00Z","capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}]}
@@ -54,7 +56,7 @@ Console 通过 DPoP 认证访问 `GET /ws/console/agents/terminal/{id}`。服务
 
 ## 通用设备调用
 
-iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /admin/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证。命令参数必须为 JSON 对象，包含 `method`、`version`、对象 `params`，不接受额外顶层字段，正文上限 16 KiB。
+iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /admin/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证，正文上限 16 KiB。当前设备实现要求命令为 JSON 对象，包含 `method`、`version`、对象 `params`，由设备拒绝额外业务顶层字段；服务端只要求可转发的 JSON 对象信封。
 
 ```json
 {"method":"query.all","version":1,"params":{}}
@@ -68,21 +70,21 @@ iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1
 {"method":"action.network.http.check","version":1,"params":{"url":"https://example.com/"}}
 ```
 
-服务端只校验格式、能力名和版本，保留原始 JSON 参数与结果，不维护具体数据字段及业务错误码。成功转发 HTTP 200，`result` 与 `error` 二选一；单项命令返回直接结果，聚合返回按能力名组织的数据，且附上实际执行连接的清单：
+服务端不解释命令类别、名称、版本、参数、结果和业务错误，保留未知字段及 JSON 数值精度；仅解析路由所需的对象信封和关联 ID。成功转发 HTTP 200。调用端与设备约定 `result` / `error` 二选一，并负责验证；单项命令返回直接结果，聚合返回按能力名组织的数据。服务端不对 `query.all` 添加清单或执行其他特殊处理，能力清单从设备列表读取：
 
 ```json
-{"capabilities":[{"name":"query.system.metrics","version":1},{"name":"action.network.http.check","version":1}],"result":{"data":{"query.system.metrics":{"version":1,"result":{"cpuUsagePercent":12.3,"memoryUsagePercent":50,"memoryUsedBytes":8589934592,"memoryTotalBytes":17179869184,"sampledAt":"2026-10-28T08:00:00Z","sampleWindowMs":1000}}}}}
+{"result":{"data":{"query.system.metrics":{"version":1,"result":{"cpuUsagePercent":12.3,"memoryUsagePercent":50,"memoryUsedBytes":8589934592,"memoryTotalBytes":17179869184,"sampledAt":"2026-10-28T08:00:00Z","sampleWindowMs":1000}}}}}
 ```
 
 聚合每项 `result` / `error` 二选一，一项失败不影响其他项。无查询能力返回空 `data`。单项错误或聚合顶层错误使用 `{"error":{"code":"invalid_params","message":"参数无效。"}}`；错误码匹配 `[A-Za-z0-9_-]{1,80}`，消息最多 1024 UTF-8 字节。`result` 支持对象、数组、标量或 null，不丢失大整数精度。每项结果受消息大小预算约束，超限返回 `result_too_large`。
 
-鉴权及转发失败使用状态码和 `{"error":"错误码"}`：格式无效 400 `invalid_request`，未声明或版本不匹配 400 `unsupported_method`，离线或断开 409，并发上限 429，超时 504。每设备最多 4 个待处理请求，全局最多 32 个。服务端等待 10 秒，聚合采集预算 8 秒。断线取消 Agent 连接下的任务，超时不表示请求从未执行。客户端不自动重试操作；明确鉴权失败后的会话续期不属于操作重试。
+鉴权及转发失败使用状态码和 `{"error":"错误码"}`：路由信封无效 400 `invalid_request`，离线或断开 409，并发上限 429，超时 504。每设备最多 4 个待处理请求，全局最多 32 个。服务端等待 10 秒，聚合采集预算 8 秒。断线取消 Agent 连接下的任务，超时不表示请求从未执行。客户端不自动重试操作；明确鉴权失败后的会话续期不属于操作重试。
 
 ## 实时刷新
 
 iOS 在设备详情勾选「实时刷新」后连接 `/ws/console/agents/live/{id}`，同样使用 DPoP 会话认证。服务端发送 `ready` 后，成功订阅返回 `{"type":"subscribed"}`，失败返回 `type: "error"`、`status` 和 `body`。勾选默认关闭。取消勾选、离开详情或进入后台会关闭订阅，回到前台时恢复仍勾选的订阅。设备列表定时更新、详情的进入和下拉刷新仍可发起普通 WebSocket 查询。
 
-首个订阅触发 `{"type":"telemetry_start","id":"…"}`，末个订阅结束时发送 `telemetry_stop`，使用同一个 `id`。Agent 在此期间发送 `telemetry_update`，包含订阅 `id`、已声明的查询 `method`、`version`，以及二选一的 `result` 或 `error`。服务器按设备转发给订阅方，将 `type` 改为 `update` 并省略内部订阅 ID。并发订阅共用 Agent 的采集任务，较慢的连接按能力接收最新数据。
+首个订阅触发 `{"type":"telemetry_start","id":"…"}`，末个订阅结束时发送 `telemetry_stop`，使用同一个 `id`。Agent 在此期间发送 `telemetry_update`，包含订阅 `id`、设备选择推送的 `method`、`version`，以及二选一的 `result` 或 `error`。服务器按设备转发给订阅方，将 `type` 改为 `update` 并省略内部订阅 ID。并发订阅共用 Agent 的采集任务，较慢的连接按能力接收最新数据。
 
 Windows Agent 开始订阅时采集初始数据。系统指标约每秒上报一次，监听端口每 10 秒上报一次。Codex 每秒检查本机任务状态，发现任务开始或结束时重新采集并上报。短任务在两次检查之间结束时，完成记录也会触发上报。其他能力按需调用。上报内容与节奏由 Agent 决定。
 
@@ -100,15 +102,19 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 ### 服务监控与手工启动
 
-设备详情的「服务」页签（标题「服务监控」）通过 `query.services.status` v1 读取 Agent 用户目录的 `.codex/server.json`。参数为 `{}`，参与 `query.all`；开启实时刷新后约每 10 秒更新。每次查询重新读取文件，登记增删即时生效。Windows 本机设备监控也提供「服务监控」页签。
+设备详情的「服务」页签（标题「服务监控」）通过 `admin.services.status` v1 由守护进程读取用户目录的 `.codex/server.json`。参数为 `{}`，独立于 `query.all`；开启实时刷新后约每 10 秒更新。每次查询重新读取文件，登记增删即时生效。Windows 本机设备监控的「服务监控」页签也通过守护进程调用这两项管理能力。
 
 登记格式为 `{"version":1,"services":[{"name":"example","port":8000,"description":"示例服务","workingDirectory":"C:\\apps\\example","startCommand":"python server.py --port 8000"}]}`。每个服务必须登记唯一名称、端口和可重复使用的 PowerShell 启动命令 `startCommand`，需要相对路径时登记绝对 `workingDirectory`。启动命令应固定绑定已登记端口，不存密码、Token 等秘密。没有启动命令的条目仍可监控，不能通过页面启动。Agent 不根据脚本名猜测启动命令，也不在页面接收任意命令或可执行路径。
 
-查询返回 `collectedAt,services,warnings`。服务字段为 `name,port,description,status,processes,http,canStart,startup`；`processes` 复用监听端口的进程结构，按登记端口匹配当前 TCP 监听者，并不验证该进程一定由登记命令启动。`http` 包含 `url,statusCode,elapsedMs,failure`；地址取自操作系统实际监听 IP，通配地址转换为相同地址族的回环地址，支持仅绑定局域网地址的服务。使用 HTTP GET 根路径、只读取响应头、不跟随重定向、不使用代理、Cookie 或登录凭据；每项检查预算 3 秒，最多 8 个 HTTP 探测并发。
+服务可登记 `"healthPath":"/health"` 指定 HTTP 健康检查路径。该字段须为以单个 `/` 开头的路径（最多 1000 字符），不能包含主机、查询参数、片段、反斜杠或控制字符。未指定时检查根路径 `/`。路径不替换登记端口或实际监听 IP，也不会在探测失败后改用其他路径。
 
-`status` 为 `responding`（收到 100–499 响应）、`http_error`（5xx）、`unreachable`（仍有监听，但 HTTP 失败或超时）、`stopped`（未监听）或 `unknown`（无法确认）。401、403、404 仍表示 HTTP 服务有响应；HTTPS-only 或非 HTTP 端口可能显示探测失败，不等同于进程停止。端口和根路径响应不代替业务健康检查。部分 TCP 表读取失败时，未发现的服务标记未知，避免误判停机；登记文件缺失、损坏或不可读返回明确错误，不当作空列表。最多 128 项、登记文件最多 256 KiB、结果最多 48 KiB，超限显式报错。
+查询返回 `collectedAt,services,warnings`。服务字段为 `name,port,description,status,processes,http,canStart,startup`；`processes` 复用监听端口的进程结构，按登记端口匹配当前 TCP 监听者，并不验证该进程一定由登记命令启动。`http` 包含 `url,statusCode,elapsedMs,failure`；地址取自操作系统实际监听 IP，通配地址转换为相同地址族的回环地址，支持仅绑定局域网地址的服务。使用 HTTP GET、只读取响应头、不跟随重定向、不使用代理、Cookie 或登录凭据；每项检查预算 3 秒，最多 8 个 HTTP 探测并发。
 
-`action.services.start` v1 参数为 `{"name":"example","requestId":"UUID"}`，仅在用户点击「启动服务」时调用，不参与聚合查询或实时采集。Agent 在登记表同目录持有 `server.json.lock` 独占文件句柄，重新核对登记命令、工作目录和 TCP 端口；已有监听或状态不明时不启动。命令使用隐藏的独立 PowerShell 进程执行。启动意图、幂等回执、退出码和日志保存于本机 Agent 数据区域的 `service-starts`，不放入公开目录；命令及日志不通过监控接口上传。同一 requestId 在 Agent 重启后仍不会重复执行；同一服务有未确认的启动时拒绝创建第二个进程。
+`status` 为 `responding`（收到 100–499 响应）、`http_error`（5xx）、`unreachable`（仍有监听，但 HTTP 失败或超时）、`stopped`（未监听）或 `unknown`（无法确认）。401、403、404 仍表示 HTTP 服务有响应；HTTPS-only 或非 HTTP 端口可能显示探测失败，不等同于进程停止。`healthPath` 只选择检测地址，不改变状态分类；页面显示实际 HTTP 状态码，HTTP 响应不代替业务健康检查。部分 TCP 表读取失败时，未发现的服务标记未知，避免误判停机；登记文件缺失、损坏或不可读返回明确错误，不当作空列表。最多 128 项、登记文件最多 256 KiB、结果最多 48 KiB，超限显式报错。
+
+Agent 的局域网代码工坊监听端口同时提供 `GET /health`，返回 HTTP 200、`Content-Type: application/json` 和 `{"status":"ok"}`，并禁止缓存、关闭本次 HTTP 连接。该端点仅表示本地监听服务可响应，不检查云端连接或工坊任务；沿用局域网来源及原生客户端限制。共享监听实现的独立命令执行器仍须携带任务凭据，健康路由不绕过鉴权。WebSocket 路径 `/workshop/v1` 与事件订阅路径保持原有行为。登记该局域网服务时配置 `"healthPath":"/health"`。
+
+`admin.services.start` v1 参数为 `{"name":"example","requestId":"UUID"}`，仅在用户点击「启动服务」时调用，不参与聚合查询或实时采集。Agent 在登记表同目录持有 `server.json.lock` 独占文件句柄，重新核对登记命令、工作目录和 TCP 端口；已有监听或状态不明时不启动。命令使用隐藏的独立 PowerShell 进程执行。启动意图、幂等回执、退出码和日志保存于本机 Agent 数据区域的 `service-starts`，不放入公开目录；命令及日志不通过监控接口上传。同一 requestId 在 Agent 重启后仍不会重复执行；同一服务有未确认的启动时拒绝创建第二个进程。
 
 启动响应的 `starting` 只表示命令已提交。iOS 随后查询实际端口与 HTTP 状态；命令失败、命令已结束但未监听、结果不确定分别提示。断线不终止已提交的服务，也不自动重试启动动作。通过刷新查询结果确认，不将“已提交”显示为“服务已正常运行”。服务端复用通用能力转发，无新增路由。
 
@@ -166,7 +172,7 @@ Hako iOS 在「设置 → 构建进度 → 本地」通过 chore 的只读接口
 
 iOS 设备列表右上角的滑杆打开「服务器与登录」，设备详情右上角的滑杆打开页面排序。详情显示设备名称、在线状态和 ID，顶部沿用运动记录的下划线标签栏。排序前五项显示在顶部，其余通过「更多」切换。长按行尾手柄拖动整行，点「完成」后按服务器、账号和设备保存顺序。能力临时消失时保留排序记录，新增能力追加到末尾。
 
-进入详情和下拉刷新使用 `query.all` 更新常规数据和能力清单。「Git」页首次没有缓存时自动扫描，结果按服务器、账号和设备保存在本机。之后打开页面读取缓存，点「重新扫描」才更新仓库清单。扫描失败会保留上次结果。提交与推送只在相应确认页执行。系统页并列显示最新 CPU 和内存仪表盘，下方显示实时网卡速率。Codex 保留处理中会话和最近 7 天的双轴分组柱状图，点击日期查看当天明细。未知查询以只读 JSON 显示，未知操作提示暂不支持。
+进入详情和下拉刷新使用 `query.all` 更新常规数据，能力清单从设备列表读取，服务监控通过 `admin.services.status` 独立刷新。「Git」页首次没有缓存时自动扫描，结果按服务器、账号和设备保存在本机。之后打开页面读取缓存，点「重新扫描」才更新仓库清单。扫描失败会保留上次结果。提交与推送只在相应确认页执行。系统页并列显示最新 CPU 和内存仪表盘，下方显示实时网卡速率。Codex 保留处理中会话和最近 7 天的双轴分组柱状图，点击日期查看当天明细。未知查询以只读 JSON 显示，未知操作提示暂不支持。
 
 网页端只识别 Agent 上报的能力清单：按清单显示名称与版本，用户选择能力、输入 JSON 对象参数，再通过通用请求接口调用，完整响应统一以 JSON 展示。网页不插入清单外命令，不内置系统指标或 URL 检测的专用逻辑、参数模板及结果字段校验。状态刷新仅更新清单与在线状态，不自动调用能力。
 

@@ -18,13 +18,13 @@ public sealed record RegisteredServiceStatus(string Name, int Port, string? Desc
     ListenerProcess[] Processes, ServiceHttpStatus? Http, bool CanStart = false, ServiceStartupStatus? Startup = null);
 public sealed record RegisteredServiceSnapshot(string CollectedAt, RegisteredServiceStatus[] Services, string[] Warnings);
 
-// Only names, ports and descriptions are copied from the local registry.
-// Probe addresses come from the OS listener table, never from arbitrary URLs in JSON.
+// Probe hosts come from the OS listener table, never from arbitrary URLs in JSON.
+// Startup commands and other private registry fields are not copied to results.
 public sealed partial class RegisteredServices : IDisposable
 {
-    public const string Command = "query.services.status";
+    public const string Command = "admin.services.status";
     private const int MaximumRegistryBytes = 256 * 1024;
-    private sealed record Registration(string Name, int Port, string? Description, string? StartCommand, string? WorkingDirectory);
+    private sealed record Registration(string Name, int Port, string? Description, string? StartCommand, string? WorkingDirectory, string? HealthPath);
     private readonly string registryPath;
     private readonly Func<CancellationToken, Task<ListenerSnapshot>>? readListeners;
     private readonly HttpClient client;
@@ -81,7 +81,7 @@ public sealed partial class RegisteredServices : IDisposable
             ServiceHttpStatus? http = null;
             foreach (var address in addresses)
             {
-                http = await ProbeAsync(new UriBuilder("http", address.ToString(), service.Port, "/").Uri, token, budget.Token);
+                http = await ProbeAsync(new UriBuilder("http", address.ToString(), service.Port, service.HealthPath ?? "/").Uri, token, budget.Token);
                 if (http.StatusCode is not null || budget.IsCancellationRequested) break;
             }
             var status = http?.StatusCode is int code ? code >= 500 ? "http_error" : "responding" : "unreachable";
@@ -153,7 +153,16 @@ public sealed partial class RegisteredServices : IDisposable
                         || string.IsNullOrWhiteSpace(text) || text.Contains('\0') || !Path.IsPathFullyQualified(text)) throw InvalidRegistry();
                     directory = text;
                 }
-                result.Add(new(name, port, description, command, directory));
+                string? healthPath = null;
+                if (entry.TryGetProperty("healthPath", out var health))
+                {
+                    if (health.ValueKind != JsonValueKind.String || health.GetString() is not { Length: > 0 and <= 1000 } text
+                        || text[0] != '/' || text.StartsWith("//", StringComparison.Ordinal)
+                        || text.Any(char.IsControl) || text.IndexOfAny(['\\', '?', '#']) >= 0)
+                        throw new AgentActionException("registry_invalid", "healthPath 必须是以 / 开头的路径，不能包含主机、查询参数、片段或控制字符（最多 1000 字符）。");
+                    healthPath = text;
+                }
+                result.Add(new(name, port, description, command, directory, healthPath));
             }
             return result.ToArray();
         }

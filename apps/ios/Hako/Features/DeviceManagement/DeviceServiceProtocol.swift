@@ -1,8 +1,8 @@
 import Foundation
 
 enum DeviceServiceCommand {
-    static let status = "query.services.status"
-    static let start = "action.services.start"
+    static let status = "admin.services.status"
+    static let start = "admin.services.start"
 }
 
 struct DeviceServiceSnapshot: Decodable {

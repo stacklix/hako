@@ -22,6 +22,7 @@ import Combine
         set { updateText(newValue, editorID: editorID) }
     }
     var editorID: UUID { value.editorID }
+    var snapshot: WorkshopComposerText { value }
     var onChange: (() -> Void)?
 
     func updateText(_ value: String, editorID: UUID) {

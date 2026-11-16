@@ -472,7 +472,7 @@ private struct WorkshopComposerView: View {
                         Text("描述你的想法…").font(.body).foregroundStyle(Color(uiColor: .placeholderText))
                             .padding(.vertical, 11).allowsHitTesting(false).accessibilityHidden(true)
                     }
-                    WorkshopComposerTextEditor(input: input)
+                    WorkshopComposerTextEditor(input: input, snapshot: input.snapshot)
                         .disabled(!conversation.canCompose)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 if conversation.restoringCache || conversation.synchronizing || conversation.uncertain {
@@ -513,6 +513,9 @@ private struct WorkshopComposerView: View {
 // during submission, including after replacing the field's view identity.
 private struct WorkshopComposerTextEditor: UIViewRepresentable {
     let input: WorkshopComposerInput
+    // A reference alone is unchanged when text resets. Keep the rendered
+    // value in the representable so attachment/layout changes cannot hide it.
+    let snapshot: WorkshopComposerText
     @Environment(\.isEnabled) private var enabled
 
     func makeCoordinator() -> Coordinator { Coordinator(input) }
@@ -532,21 +535,27 @@ private struct WorkshopComposerTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        guard snapshot == input.snapshot else { return }
         let coordinator = context.coordinator
         coordinator.applying = true
-        defer { coordinator.applying = false }
-        let reset = coordinator.editorID != input.editorID
+        view.delegate = nil
+        defer { view.delegate = coordinator; coordinator.applying = false }
+        let reset = coordinator.editorID != snapshot.editorID
         coordinator.input = input
-        coordinator.editorID = input.editorID
-        if reset || view.text != input.text {
+        coordinator.editorID = snapshot.editorID
+        if reset || view.text != snapshot.text {
             view.unmarkText()
-            view.text = input.text
+            view.text = snapshot.text
             if reset {
                 view.undoManager?.removeAllActions()
                 view.selectedRange = NSRange(location: 0, length: 0)
                 view.setContentOffset(.zero, animated: false)
             }
             view.invalidateIntrinsicContentSize()
+        }
+        if reset {
+            HakoLog.record(.codeWorkshop, "输入框已应用发送后重置",
+                detail: "editorId=\(snapshot.editorID); textLength=\(view.text?.utf16.count ?? 0)")
         }
         view.isEditable = enabled
         if !enabled, view.isFirstResponder { view.resignFirstResponder() }

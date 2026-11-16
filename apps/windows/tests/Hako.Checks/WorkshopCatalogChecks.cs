@@ -15,7 +15,7 @@ internal static class WorkshopCatalogChecks
         var accepted = new WorkshopJob { Id = "request", TurnId = "turn", InputMessage = "Question",
             QueueOrder = DateTime.UnixEpoch.AddSeconds(100).Ticks, StartedAt = 500 };
         var summary = CodeWorkshop.SummarizeTurn(Json(new { id = "turn", status = "inProgress", items = new object[] {
-            new { type = "userMessage", id = "canonical", clientUserMessageId = "request", content = new[] { new { type = "text", text = "Question" } } }
+            new { type = "userMessage", id = "canonical", clientId = "request", content = new[] { new { type = "text", text = "Question" } } }
         } }));
         Check(CodeWorkshop.CatalogSendTime(thread, summary, [accepted]) == 100,
             "Starting an accepted queued message later changed its send time");

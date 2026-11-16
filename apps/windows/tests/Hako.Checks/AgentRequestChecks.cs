@@ -8,6 +8,14 @@ internal static class AgentRequestChecks
 {
     internal static async Task RunAsync()
     {
+        foreach (var json in new[] { "{}", "{\"method\":false,\"version\":1,\"params\":{}}",
+            "{\"method\":\"admin.services.status\",\"version\":\"next\",\"params\":{}}",
+            "{\"method\":\"query.all\",\"version\":1,\"params\":[],\"extra\":true}" })
+        {
+            using var invalid = System.Text.Json.JsonDocument.Parse(json);
+            try { AgentConnection.ReadRequest(invalid.RootElement); throw new Exception("Device accepted invalid command schema"); }
+            catch (AgentActionException error) when (error.Code == "invalid_request") { }
+        }
         var slots = new AgentRequestSlots();
         var requests = new List<IDisposable>();
         for (var i = 0; i < 16; i++) requests.Add(slots.TryAcquire() ?? throw new Exception("Device capacity below sixteen"));

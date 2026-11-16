@@ -105,17 +105,22 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     {
         var page = await ReadAsync("thread/turns/list", new { threadId, limit = 1, sortDirection = "desc", itemsView = "summary" }, token);
         var latest = SummarizeTurn(CodexJson.Items(CodexJson.Field(page, "data")).FirstOrDefault());
-        var cursor = CodexJson.Text(page, "nextCursor");
-        // A turn containing only tools still uses the last actual chat message.
-        for (var pages = 1; latest.Preview.Length == 0 && cursor.Length > 0 && pages < 8; pages++)
+        string? cursor = null;
+        var seen = new HashSet<string>();
+        // Turn summaries omit intervening Steers and commentary. Read actual
+        // items backwards so a later message in the same turn wins as well.
+        do
         {
-            var older = await ReadAsync("thread/turns/list", new { threadId, limit = 1, sortDirection = "desc", itemsView = "summary", cursor }, token);
-            latest = latest with { Preview = SummarizeTurn(CodexJson.Items(CodexJson.Field(older, "data")).FirstOrDefault()).Preview };
-            var next = CodexJson.Text(older, "nextCursor");
-            if (next == cursor) break;
-            cursor = next;
-        }
-        return latest;
+            var items = await ReadAsync("thread/items/list", new { threadId, limit = 32, sortDirection = "desc", cursor }, token);
+            var message = CodexJson.Items(CodexJson.Field(items, "data")).Select(entry => Item(CodexJson.Field(entry, "item")))
+                .FirstOrDefault(item => item?.Role is "user" or "assistant" && !string.IsNullOrWhiteSpace(item.Text));
+            if (message is not null)
+                return latest with { Preview = CodexJson.Clip(Regex.Replace(message.Text, @"\s+", " ").Trim(), 240) };
+            cursor = CodexJson.Text(items, "nextCursor");
+            if (cursor.Length > 0 && !seen.Add(cursor))
+                throw new WorkshopException("codex_catalog_cursor", "会话消息游标未前进，请重新刷新。");
+        } while (cursor.Length > 0);
+        return latest with { Preview = "" };
     }
 
     public async Task<object?> ArchiveAsync(JsonElement parameters, CancellationToken token)

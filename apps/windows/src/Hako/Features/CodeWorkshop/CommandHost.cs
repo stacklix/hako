@@ -15,11 +15,12 @@ internal sealed record CommandHostEndpoint(int Port, string Token, int ProcessId
 internal static class CommandHost
 {
     private static string EndpointPath(string directory) => Path.Combine(directory, "command-host.dat");
-    internal static string Scope(AgentSettingsStore store)
+    private static string RequestPath(string directory) => AgentGuardianControl.FileFor(directory, "commands.requested");
+    internal static string Scope(AgentSettingsStore store) => Scope(store.DirectoryPath, store.Load());
+    internal static string Scope(string directory, AgentSettings settings)
     {
-        var settings = store.Load();
         var key = settings.PrivateKey.Length == 0 ? "" : AgentKeys.ExportPublicKey(settings.PrivateKey);
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(store.DirectoryPath + "\n" + settings.Url + "\n" + settings.Username + "\n" + key)));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(directory + "\n" + settings.Url + "\n" + settings.Username + "\n" + key)));
     }
     internal static void Save(string path, byte[] bytes)
     {
@@ -41,12 +42,13 @@ internal static class CommandHost
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var bytes = new MemoryStream(); file.CopyTo(bytes); return bytes.ToArray();
     }
-    private static CommandHostEndpoint? Endpoint(AgentSettingsStore store)
+    private static CommandHostEndpoint? Endpoint(AgentSettingsStore store, int guardianId)
     {
         var path = EndpointPath(store.DirectoryPath);
         if (!File.Exists(path)) return null;
         var endpoint = JsonSerializer.Deserialize<CommandHostEndpoint>(DataProtection.Unprotect(ReadShared(path)), WorkshopProtocol.Json)
             ?? throw new IOException("无效的命令执行器状态。");
+        if (endpoint.ProcessId != guardianId) return null;
         try
         {
             using var process = Process.GetProcessById(endpoint.ProcessId);
@@ -61,44 +63,47 @@ internal static class CommandHost
         var store = new AgentSettingsStore(directory);
         Directory.CreateDirectory(directory);
         using var startup = new FileStream(Path.Combine(directory, "command-host-start.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        var existing = Endpoint(store);
+        var guardianId = await AgentGuardianControl.EnsureRunningAsync(directory, token);
+        var existing = Endpoint(store, guardianId);
         if (existing is not null) return existing;
-        var executable = Environment.ProcessPath ?? throw new IOException("找不到 Agent 程序。");
-        var frameworkHost = Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
-        if (!frameworkHost && !File.Exists(Path.Combine(Path.GetDirectoryName(executable)!, "Hako.dll")))
-        {
-            using var input = File.OpenRead(executable);
-            var hash = Convert.ToHexString(SHA256.HashData(input));
-            var cache = Path.Combine(directory, "command-runners", hash);
-            Directory.CreateDirectory(cache);
-            var target = Path.Combine(cache, "Hako.exe");
-            if (!File.Exists(target)) File.Copy(executable, target);
-            using var cached = File.OpenRead(target);
-            if (Convert.ToHexString(SHA256.HashData(cached)) != hash) throw new IOException("独立执行器副本校验失败。");
-            executable = target;
-        }
-        var arguments = new[] { "--command-host", "--data-dir", directory };
-        if (frameworkHost)
-            arguments = new[] { Path.Combine(AppContext.BaseDirectory, "Hako.dll"), "--command-host", "--data-dir", directory };
-        using var launched = DetachedAgentProcess.Start(executable, arguments);
+        Save(RequestPath(directory), []);
+        using var guardian = Process.GetProcessById(guardianId);
         var deadline = DateTime.UtcNow.AddSeconds(12);
         do
         {
             token.ThrowIfCancellationRequested();
-            var endpoint = Endpoint(store);
+            var endpoint = Endpoint(store, guardianId);
             if (endpoint is not null) return endpoint;
-            if (launched.HasExited) throw new IOException("独立命令执行器启动失败。");
+            if (guardian.HasExited) throw new IOException("守护进程已退出，命令服务启动失败。");
             await Task.Delay(100, token);
         } while (DateTime.UtcNow < deadline);
-        throw new TimeoutException("执行器启动结果尚未确认，请重新打开快捷命令查询。");
+        throw new TimeoutException("守护进程的命令服务尚未就绪，请检查守护进程状态后重新打开快捷命令。");
     }
-    internal static async Task RunAsync(string directory)
+    // This supervisor runs alongside, never inside, the guardian's update/recovery loop.
+    internal static async Task RunRequestedAsync(string directory, CancellationToken stopping)
+    {
+        var stop = AgentGuardianControl.FileFor(directory, "stop");
+        while (!stopping.IsCancellationRequested && !File.Exists(stop))
+        {
+            if (File.Exists(RequestPath(directory)))
+            {
+                try { await RunAsync(directory, stopping); }
+                catch (Exception error)
+                {
+                    try { AgentGuardianControl.Write(AgentGuardianControl.FileFor(directory, "commands-status.json"),
+                        new { state = "retrying", error = error.GetType().Name, updatedAt = DateTimeOffset.UtcNow }); }
+                    catch (Exception logError) when (logError is IOException or UnauthorizedAccessException) { Debug.WriteLine(logError.GetType().Name); }
+                    if (!stopping.IsCancellationRequested) await Task.Delay(1000);
+                }
+            }
+            else await Task.Delay(200);
+        }
+    }
+    private static async Task RunAsync(string directory, CancellationToken stopping)
     {
         var profile = new AgentProfile(directory);
         Directory.CreateDirectory(directory);
-        FileStream owner;
-        try { owner = new FileStream(Path.Combine(directory, "command-host-owner.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-        catch (IOException) { return; }
+        var owner = new FileStream(Path.Combine(directory, "command-host-owner.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         using (owner)
         {
             var scope = Scope(profile.Store);
@@ -110,12 +115,40 @@ internal static class CommandHost
             await using var local = new WorkshopLocalServer(dispatcher, 0, () => computerId, directory, token);
             await using var cloud = new WorkshopConnection(dispatcher, id => computerId = id, commandHost: true);
             var settings = profile.Store.Load();
-            if (settings.Url.Length > 0 && settings.PrivateKey.Length > 0) await cloud.StartAsync(settings);
+            var connected = false;
             using var self = Process.GetCurrentProcess();
             Save(EndpointPath(directory), DataProtection.Protect(JsonSerializer.SerializeToUtf8Bytes(
                 new CommandHostEndpoint(local.Port, token, self.Id, self.StartTime.ToUniversalTime().Ticks, scope), WorkshopProtocol.Json)));
-            while (!dispatcher.Commands!.RetireIfIdle())
-                await Task.Delay(1000);
+            try
+            {
+                AgentGuardianControl.Write(AgentGuardianControl.FileFor(directory, "commands-status.json"),
+                    new { state = "ready", processId = self.Id, updatedAt = DateTimeOffset.UtcNow });
+                var draining = false;
+                while (true)
+                {
+                    bool changed;
+                    try { changed = Scope(profile.Store) != scope; }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or CryptographicException or ArgumentException)
+                    { changed = true; }
+                    var enabled = !changed && !File.Exists(AgentGuardianControl.FileFor(directory, "connection-paused"))
+                        && settings.Url.Length > 0 && settings.PrivateKey.Length > 0;
+                    if (connected != enabled)
+                    {
+                        if (enabled) await cloud.StartAsync(settings); else await cloud.StopAsync();
+                        connected = enabled;
+                    }
+                    if (stopping.IsCancellationRequested || File.Exists(AgentGuardianControl.FileFor(directory, "stop")) || changed)
+                    {
+                        dispatcher.Commands!.BeginDrain();
+                        if (!draining) AgentGuardianControl.Write(AgentGuardianControl.FileFor(directory, "commands-status.json"),
+                            new { state = "draining", processId = self.Id, updatedAt = DateTimeOffset.UtcNow });
+                        draining = true;
+                        if (!dispatcher.Commands.HasRunning) break;
+                    }
+                    await Task.Delay(200);
+                }
+            }
+            finally { File.Delete(EndpointPath(directory)); }
         }
     }
 }

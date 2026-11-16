@@ -27,7 +27,7 @@ CLI 配置：`Hako.exe config set --direct-port <端口> --json`；查看 `Hako.
 
 EXE、窗口与系统托盘统一使用由 iOS `AppIcon.appiconset/icon.png` 转换的 Hako 图标（`src/Hako/Assets/Hako.ico`，包含 16–256 像素尺寸）。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
 
-Agent 使用 WebSocket v4，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 统一注册和分发动作，新增动作时维护此注册表即可同步更新能力清单；服务端透传 JSON 参数、结果和结构化业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。部署时同步更新服务端与客户端。
+Agent 使用 WebSocket v4，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 注册和分发主进程动作，新增动作时同步维护处理器与 `MainCapabilities`，测试核对二者一致；`GuardianDispatcher` 加入守护进程的管理能力。服务端透传 JSON 参数、结果和业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。部署时同步更新服务端与客户端。
 
 新版 Agent 的 Git 功能需要本机安装 Git，使用 Agent 当前 Windows 用户的 Git 身份与凭据。iOS 可查看 `~/Code` 下的仓库并创建提交、推送。操作仅针对手机确认的仓库、文件或分支。命令详见 [设备监控协议](../../docs/device-monitoring.md#git-仓库)。
 
@@ -45,15 +45,17 @@ Python / pythonw 在端口列表中显示正在运行的脚本名或 `-m` 模块
 
 ## 更新与进程守护
 
-`scripts/install-guardian.ps1` 将已验证的发布产物部署为独立的 `Hako.Guardian.exe` 固定副本，启动独立后台进程，并将当前配置的登录启动项交给守护程序。服务器设置中的自启动开关同步管理这个启动项，避免主 Agent 与守护程序重复启动。主 Agent 更新不会覆盖正在运行的守护程序，也不会停止独立命令执行器。开发验证时可用 `-NoStartup` 不登记登录启动项。
+`scripts/install-guardian.ps1` 将已验证的发布产物部署为独立的 `Hako.Guardian.exe` 固定副本，启动独立后台进程，并将当前配置的登录启动项交给守护程序。服务器设置中的自启动开关同步管理这个启动项，避免主 Agent 与守护程序重复启动。主 Agent 更新不会覆盖正在运行的守护程序，也不会停止守护进程中的命令任务。开发验证时可用 `-NoStartup` 不登记登录启动项。
 
 默认每 5 秒检查主进程，每 5 分钟检查仓库 `stacklix/hako` 的 GitHub Releases。Windows 流水线在默认分支验证通过后发布带 `windows-agent-` 前缀的独立版本，包含 `Hako.exe` 和 `agent-update.json`；不覆盖其他平台的 latest release。守护程序校验发布来源、文件大小、SHA-256 和版本，拒绝降级以及早于最近一次本机直接安装的发布。
 
 兼容更新仍由 Codex 验证后直接替换，无需等待 GitHub。只有服务端版本不兼容或无法确认时，才保留候选产物并登记到守护队列，待满足条件后安装。守护程序与本机直接安装共用 `update.lock`；替换前用候选 EXE 再次检查服务端版本，替换后回查新进程与本机接口。启动失败恢复原文件，保留备份、事务记录和被拒绝产物哈希，避免循环安装坏版本。中断的事务在守护程序重启后恢复。
 
-主 Agent 异常退出持续 30 秒后自动拉起，连续短时退出或启动失败时逐步退避，最长 5 分钟。版本等待、网络断开和命令执行器的正常空闲退出不属于主进程异常退出。用户通过 CLI 或托盘退出时暂停拉起，手动重新打开主 Agent 后恢复守护。下载和更新检查在后台执行，不阻塞主进程检查。
+主 Agent 异常退出持续 30 秒后自动拉起，连续短时退出或启动失败时逐步退避，最长 5 分钟。版本等待和网络断开不属于主进程异常退出。守护进程同时负责服务端连接、命令执行与 `admin` 管理能力；命令模块不再启动独立执行器进程。用户通过 CLI 或托盘退出时暂停拉起，手动重新打开主 Agent 后恢复守护。下载和更新检查在后台执行，不阻塞主进程检查。
 
 配置、状态和控制文件位于当前配置目录 `guardian/`，其中 `status.json` 包含守护 PID、主进程状态、更新状态和最近检查时间，`pending-update.json` 保留暂缓的本机候选版本。停止守护使用 `Hako.Guardian.exe --stop-guardian --config <配置目录>/guardian/config.json`；重新启动使用 `--start-guardian`。停止守护不会停止主 Agent。
+
+主程序与守护副本内容不一致时，主程序启动独立的临时更新工具，先用候选版本验证服务端兼容性，再按 `update.lock`、`guardian/install.lock` 的顺序等待安装互斥。工具请求守护进程停止接收新命令，等待已有命令结束（仍可查询和取消），备份并原子替换守护副本，启动后回查 PID 和本机通信接口。更新完成后工具退出，常驻仍为主 Agent 和守护进程两个进程。`guardian/refresh.json` 记录等待、排空、启动及完成状态；失败保留错误类型和备份。主程序的本机接口先就绪，避免更新器等待主程序、主程序又等待守护程序的循环等待。
 
 ## 运行与退出记录
 
@@ -130,7 +132,7 @@ dotnet run --project src/Hako/Hako.csproj -c Release
 
 检查程序验证 DPAPI 加解密和篡改拒绝、RSA 3072 位密钥生成、公钥导出与验签、私钥导入、URL 约束、CLI 参数和帮助、配置隔离、命名管道控制，以及真实 Windows CPU/内存/网络采样。网络检查另覆盖网卡筛选（排除硬件不存在的 USB 接口记录，保留未连接的物理网卡）、多网卡汇总、真实时间窗口、64 位计数器精度、空闲、计数器重置、网卡增减和读取失败。
 
-快捷命令由手机保存和传入，Windows 按需启动独立执行器，直接运行 PowerShell 7。执行器使用缓存的程序副本及单独连接，主 Agent 更新时仍能查询日志。运行 `dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-tasks` 验证日志游标、去重、取消、超时和安装事务；独立执行器协议与更新脚本集成见[代码工坊](../../docs/code-workshop.md#快捷命令)。
+快捷命令由手机保存和传入，在守护进程内按需启用执行器，运行 PowerShell 7。守护进程使用独立程序副本并持有命令连接，主 Agent 更新时仍能查询日志；守护进程自身更新时停止接收新任务，等待现有任务结束。运行 `dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-tasks` 验证日志游标、去重、取消、超时和安装事务；命令协议与更新脚本集成见[代码工坊](../../docs/code-workshop.md#快捷命令)。
 
 `query.all` 能力检查使用独立的临时 Codex 日志，验证已知调用数、Token 用量及日志缺失场景，避免本机真实日志量和运行状态影响聚合查询断言；CPU、内存、网络仍执行真实 Windows 采样。失败信息分别标识采样次数、结果结构和 Codex 用量错误。监听端口检查创建短期回环 TCP / UDP 套接字，验证 IPv4 / IPv6 及多 IP 合并、PID 和进程启动时长、非监听连接排除，并覆盖多进程、重复地址、未知进程信息、参数和取消处理。
 
@@ -151,4 +153,4 @@ CLI 冒烟检查使用独立配置目录，验证发布 EXE 的帮助、JSON、�
 
 返回 [仓库说明](../../README.md)。
 
-命令固定使用 `query.` / `action.` 前缀，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v4 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。
+设备命令使用 `query.` / `action.` / `admin.` 前缀，前两类在主进程执行，管理命令在守护进程执行，详见 [命名规范](../../docs/agent-command-naming.md) 与 [v4 协议](../../docs/device-monitoring.md)。查询支持 `query.all` 聚合及 `query.system.metrics` 单项；操作 `action.network.http.check` v1 接收 `{ "url": "https://example.com/" }`，由 Agent 检测连通性。所有调用均包含独立 `version`。

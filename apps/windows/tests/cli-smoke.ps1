@@ -200,5 +200,21 @@ finally {
         $owned = Get-CimInstance Win32_Process -Filter "ProcessId=$backgroundId" -ErrorAction SilentlyContinue
         if ($null -ne $owned -and $owned.CommandLine -and $owned.CommandLine.Contains($profileDirectory)) { Stop-Process -Id $backgroundId -Force -ErrorAction SilentlyContinue }
     }
+    # A main-process exit intentionally leaves its guardian running. The smoke
+    # fixture owns an isolated profile, so stop its updater and guardian too.
+    $guardianRoot = Join-Path $profileDirectory 'guardian'
+    foreach ($stateFile in @('refresh.json','status.json')) {
+        $path = Join-Path $guardianRoot $stateFile
+        if (!(Test-Path -LiteralPath $path)) { continue }
+        $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $owned = Get-CimInstance Win32_Process -Filter "ProcessId=$($state.processId)" -ErrorAction SilentlyContinue
+        if (!$owned -or !$owned.CommandLine -or !$owned.CommandLine.Contains($profileDirectory)) { continue }
+        $process = Get-Process -Id $state.processId -ErrorAction Stop
+        try {
+            if ($stateFile -eq 'refresh.json') { $process.Kill() }
+            else { [IO.File]::WriteAllText((Join-Path $guardianRoot 'stop'), 'test cleanup') }
+            if (!$process.WaitForExit(20000)) { throw 'Isolated guardian did not stop during cleanup.' }
+        } finally { $process.Dispose() }
+    }
     if ($null -ne $controlledHost) { $controlledHost.Dispose() }
 }

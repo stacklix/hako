@@ -26,18 +26,9 @@ internal sealed class CommandTasks : IAsyncDisposable
     private readonly string profile;
     private readonly string scope;
     private readonly CodeWorkshop projects;
-    private DateTime lastRequest = DateTime.UtcNow;
-    private bool retiring;
+    private bool draining;
     internal bool HasRunning { get { lock (gate) return running.Values.Any(value => !value.Worker.IsCompleted); } }
-    internal DateTime LastRequest { get { lock (gate) return lastRequest; } }
-    internal bool RetireIfIdle()
-    {
-        lock (gate)
-        {
-            if (HasRunning || DateTime.UtcNow - lastRequest < TimeSpan.FromMinutes(5)) return false;
-            retiring = true; return true;
-        }
-    }
+    internal void BeginDrain() { lock (gate) draining = true; }
 
     internal CommandTasks(string profile, CodeWorkshop projects)
     {
@@ -70,9 +61,7 @@ internal sealed class CommandTasks : IAsyncDisposable
         token.ThrowIfCancellationRequested();
         lock (gate)
         {
-            if (retiring) throw new WorkshopException("command_host_stopping", "空闲执行器正在退出，请重新连接后重试原请求。");
             if (scope != CommandHost.Scope(new Hako.Core.AgentSettingsStore(profile))) throw new WorkshopException("command_context_changed", "电脑账号配置已改变，请重新打开快捷命令。");
-            lastRequest = DateTime.UtcNow;
             object result = method switch
             {
                 "commands.start" => Start(parameters),
@@ -104,6 +93,8 @@ internal sealed class CommandTasks : IAsyncDisposable
             if (original != request) throw new WorkshopException("command_request_conflict", "请求 ID 已用于另一条命令。");
             return Read(directory);
         }
+        if (draining || File.Exists(Hako.Core.AgentGuardianControl.FileFor(profile, "stop")))
+            throw new WorkshopException("command_host_stopping", "守护进程正在等待任务结束，暂不接受新命令。现有任务仍可查看或取消。");
         if (HasRunning) throw new WorkshopException("command_busy", "电脑已有命令任务正在执行，请先查看该任务。");
         var workingDirectory = projects.ResolveApplication(application);
         var shell = FindPowerShell();

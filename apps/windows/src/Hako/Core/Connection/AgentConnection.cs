@@ -22,16 +22,18 @@ public sealed class AgentConnection : IAsyncDisposable
     public event Action<string>? StatusChanged;
     public string? CompatibilityWarning { get; private set; }
     public event Action<Metrics>? MetricsReceived;
-    private readonly AgentDispatcher dispatcher;
+    private readonly IAgentDispatcher dispatcher;
     private readonly SemaphoreSlim writing = new(1, 1);
     private CancellationTokenSource? lifetime;
     private Task? running;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
-        dispatcher = new AgentDispatcher(metrics, codexUsage: codexUsage, dataDirectory: dataDirectory);
-        dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
+        var local = new AgentDispatcher(metrics, codexUsage: codexUsage, dataDirectory: dataDirectory);
+        local.MetricsReceived += value => MetricsReceived?.Invoke(value);
+        dispatcher = local;
     }
+    internal AgentConnection(IAgentDispatcher dispatcher) { this.dispatcher = dispatcher; }
 
     public async Task StartAsync(AgentSettings settings)
     {
@@ -228,8 +230,8 @@ public sealed class AgentConnection : IAsyncDisposable
             object response;
             try
             {
-                var result = await dispatcher.InvokeAsync(request.GetProperty("method").GetString()!,
-                    request.GetProperty("version").GetInt32(), request.GetProperty("params"), token);
+                var (method, version, parameters) = ReadRequest(request);
+                var result = await dispatcher.InvokeAsync(method, version, parameters, token);
                 response = new { type = "response", id, result };
             }
             catch (AgentActionException e)
@@ -240,6 +242,18 @@ public sealed class AgentConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { socket.Abort(); }
+    }
+
+    internal static (string Method, int Version, JsonElement Parameters) ReadRequest(JsonElement request)
+    {
+        if (!request.TryGetProperty("method", out var method) || method.ValueKind != JsonValueKind.String || string.IsNullOrEmpty(method.GetString())
+            || !request.TryGetProperty("version", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number < 1
+            || !request.TryGetProperty("params", out var parameters) || parameters.ValueKind != JsonValueKind.Object)
+            throw new AgentActionException("invalid_request", "命令需要名称、正整数版本及对象参数。");
+        foreach (var field in request.EnumerateObject())
+            if (field.Name is not ("type" or "id" or "method" or "version" or "params"))
+                throw new AgentActionException("invalid_request", "命令包含不支持的字段。");
+        return (method.GetString()!, number, parameters);
     }
 
     private Task SendAsync(ClientWebSocket socket, object value, CancellationToken token) =>

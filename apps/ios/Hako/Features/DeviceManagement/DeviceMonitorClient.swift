@@ -154,30 +154,36 @@ import Combine
     }
     func query(_ agent: ConsoleAgent) async {
         guard authenticated, !logoutPending, deviceData[agent.id]?.loading != true else { return }
-        if let capabilities = agent.capabilities, !capabilities.contains(where: { $0.name.hasPrefix("query.") }) { return }
+        if let capabilities = agent.capabilities, !capabilities.contains(where: {
+            $0.name.hasPrefix("query.") || $0.name == DeviceServiceCommand.status
+        }) { return }
         let context = requestContext
         deviceData[agent.id, default: ConsoleDeviceData()].loading = true
         let liveUpdates = deviceData[agent.id]?.liveUpdates ?? [:]
         deviceData[agent.id]?.error = nil
         defer { if context == requestContext { deviceData[agent.id]?.loading = false } }
+        // The guardian can answer service administration while the main process
+        // is offline. Keep its result independent of the main query aggregate.
+        if agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.status }) != false {
+            await refreshServices(agent)
+        }
+        guard context == requestContext, !Task.isCancelled else { return }
+        if agent.capabilities?.contains(where: { $0.name.hasPrefix("query.") }) == false { return }
         do {
             let data = try await authorized("request", agentID: agent.id,
                                             body: ["method": "query.all", "version": 1, "params": [String: Any]()])
-            let manifest = try JSONDecoder().decode(ConsoleQueryEnvelope.self, from: data)
             guard context == requestContext else { return }
             if let index = agents.firstIndex(where: { $0.id == agent.id }) {
                 let old = agents[index]
                 agents[index] = ConsoleAgent(id: old.id, name: old.name, online: true,
-                                            lastSeen: old.lastSeen, capabilities: manifest.capabilities)
+                                            lastSeen: old.lastSeen, capabilities: old.capabilities)
             }
             let reply = try JSONDecoder().decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: data)
             switch reply {
             case .failure(let error): throw error
             case .result(let result):
                 if var state = deviceData[agent.id] {
-                    state.entries = result.data.merging(state.entries.filter {
-                        state.liveUpdates[$0.key] != liveUpdates[$0.key]
-                    }) { _, live in live }
+                    state.mergeQueries(result.data, since: liveUpdates)
                     deviceData[agent.id] = state
                 }
                 deviceData[agent.id]?.loaded = true
@@ -209,7 +215,7 @@ import Combine
                 case "update" where subscribed:
                     let update = try decoder.decode(Update.self, from: data)
                     let value = try decoder.decode(ConsoleCapabilityData.self, from: data)
-                    guard update.method.hasPrefix("query."), value.version > 0 else { continue }
+                    guard (update.method.hasPrefix("query.") || update.method == DeviceServiceCommand.status), value.version > 0 else { continue }
                     var state = deviceData[agent.id] ?? ConsoleDeviceData()
                     state.entries[update.method] = value
                     state.liveUpdates[update.method] = UUID()
@@ -226,9 +232,11 @@ import Combine
     }
     @discardableResult func refreshServices(_ agent: ConsoleAgent) async -> Bool {
         let context = requestContext
+        let revision = deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status]
         do {
             let result = try await invokeAgent(agent, method: DeviceServiceCommand.status, version: 1, as: ConsoleJSON.self)
             guard context == requestContext, !Task.isCancelled else { return false }
+            guard deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] == revision else { return true }
             deviceData[agent.id, default: ConsoleDeviceData()].entries[DeviceServiceCommand.status] =
                 ConsoleCapabilityData(version: 1, result: result)
             deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] = UUID()
@@ -236,6 +244,7 @@ import Combine
             return true
         } catch {
             guard context == requestContext, !Task.isCancelled else { return false }
+            guard deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] == revision else { return false }
             deviceData[agent.id, default: ConsoleDeviceData()].entries[DeviceServiceCommand.status] =
                 ConsoleCapabilityData(version: 1, error: ConsoleAgentError(code: "query_failed", message: error.localizedDescription))
             deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] = UUID()

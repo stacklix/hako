@@ -231,6 +231,13 @@ import Foundation
             preview: "Recent tool output", updatedAt: 999999, state: "running", operationId: "active", lastSentAt: 50)
         precondition(WorkshopCatalog.ordered([executing, recent, old]).map(\.id) == [recent.id, old.id, executing.id],
             "Opening, tool output or assistant activity must not outrank a later user send")
+        let sendOrder = WorkshopCatalog.ordered([executing, recent, old])
+        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: [executing.id]).map(\.id) == [executing.id, recent.id, old.id],
+            "An unsent draft must precede newer sends, including while the conversation is running")
+        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: [executing.id, recent.id]).map(\.id) == [recent.id, executing.id, old.id],
+            "Multiple drafts must retain their send order")
+        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: []).map(\.id) == sendOrder.map(\.id),
+            "Clearing drafts must restore the original send order without changing stored timestamps")
         let decodedOrder = try JSONDecoder().decode(WorkshopSession.self, from: JSONEncoder().encode(executing))
         precondition(decodedOrder.lastSentAt == 50 && decodedOrder.updatedAt == 999999,
             "List snapshots must preserve the send timestamp separately from execution freshness")
@@ -259,6 +266,11 @@ import Foundation
         activeList.record(continuing, isNew: true)
         let acceptedSession = WorkshopSession(id: previous, title: "Existing", applicationId: "app", cwd: "project",
             preview: "Current", updatedAt: Int64(continuing.createdAt.timeIntervalSince1970), state: "running", operationId: continuing.id, lastSentAt: Int64(continuing.createdAt.timeIntervalSince1970))
+        var runningReceipt = continuing; runningReceipt.state = "running"
+        activeList.record(runningReceipt, isNew: false)
+        precondition(activeListing([acceptedSession])[0].preview == "Current",
+            "An unsettled send receipt must not hide the latest confirmed message of its running operation")
+        activeList.record(continuing, isNew: false)
         activeList.confirm([acceptedSession], agentId: "Agent")
         activeList.record(continuing, isNew: false)
         precondition(activeListing([]).isEmpty, "After catalog acknowledgement, polling must not resurrect an archived thread")

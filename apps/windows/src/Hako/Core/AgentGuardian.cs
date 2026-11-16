@@ -41,23 +41,35 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         catch (IOException) { return; }
         using (owner)
         using (var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token))
+        using (var commandsStopping = CancellationTokenSource.CreateLinkedTokenSource(token))
         using (var source = new GitHubAgentUpdates(options.Repository, AgentGuardianControl.FileFor(options.ProfileDirectory, "downloads")))
         {
             var guardian = new AgentGuardian(options, source);
+            await using var broker = new GuardianBroker(options.ProfileDirectory);
             guardian.saved = AgentGuardianControl.Read<Saved>(guardian.PathFor("state.json")) ?? new Saved();
             guardian.Status("starting", "守护进程已启动。");
-            while (!token.IsCancellationRequested && !File.Exists(guardian.PathFor("stop")))
+            var commandsWork = Task.Run(() => CommandHost.RunRequestedAsync(options.ProfileDirectory, commandsStopping.Token));
+            try
             {
-                try { await guardian.TickAsync(lifetime.Token, waitForUpdate: false); }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-                catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or System.Net.Http.HttpRequestException or InvalidOperationException or Win32Exception or ArgumentException or TimeoutException or FormatException or System.Collections.Generic.KeyNotFoundException)
-                { guardian.Status("retrying", "守护检查失败，将自动重试（" + error.GetType().Name + "）。"); }
-                try { await Task.Delay(TimeSpan.FromSeconds(options.PollSeconds), token); }
-                catch (OperationCanceledException) { break; }
+                while (!token.IsCancellationRequested && !File.Exists(guardian.PathFor("stop")))
+                {
+                    try { await guardian.TickAsync(lifetime.Token, waitForUpdate: false); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+                    catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException or System.Net.Http.HttpRequestException or InvalidOperationException or Win32Exception or ArgumentException or TimeoutException or FormatException or System.Collections.Generic.KeyNotFoundException)
+                    { guardian.Status("retrying", "守护检查失败，将自动重试（" + error.GetType().Name + "）。"); }
+                    try { await Task.Delay(TimeSpan.FromSeconds(options.PollSeconds), token); }
+                    catch (OperationCanceledException) { break; }
+                }
             }
-            if (!File.Exists(guardian.PathFor("transaction.json"))) await lifetime.CancelAsync();
-            if (guardian.updateWork is not null) await guardian.updateWork;
-            guardian.Status("stopped", "守护进程已停止。");
+            finally
+            {
+                await commandsStopping.CancelAsync();
+                guardian.Status("draining", "守护进程正在退出，等待现有命令完成；仍可查看或取消任务。");
+                await commandsWork;
+                if (!File.Exists(guardian.PathFor("transaction.json"))) await lifetime.CancelAsync();
+                if (guardian.updateWork is not null) await guardian.updateWork;
+                guardian.Status("stopped", "守护进程已停止。");
+            }
         }
     }
     internal async Task TickAsync(CancellationToken token, bool waitForUpdate = true)

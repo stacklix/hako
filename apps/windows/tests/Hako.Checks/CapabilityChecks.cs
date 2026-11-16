@@ -68,10 +68,10 @@ internal static class CapabilityChecks
         var data = (QueryData)(await real.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
         if (samples != 1)
             throw new Exception($"query.all must sample system metrics once; observed {samples}, error={data.Data["query.system.metrics"].Error?.Code}");
-        if (data.Data.Count != 4 || !data.Data.ContainsKey(RegisteredServices.Command)
+        if (data.Data.Count != 3 || data.Data.ContainsKey(RegisteredServices.Command)
             || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics
             || data.Data["query.network.listeners"].Result?.Deserialize<ListenerSnapshot>(AgentConnection.Json) is not ListenerSnapshot)
-            throw new Exception("query.all did not return all four queries with system metrics and listeners");
+            throw new Exception("query.all must contain the three main-process queries and exclude guardian administration");
         var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
         if (usage is not { Available: true, Days.Count: 7 })
             throw new Exception($"query.all did not return seven Codex usage days; error={data.Data["query.codex.usage"].Error?.Code}");

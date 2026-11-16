@@ -1,9 +1,10 @@
 import Foundation
 
-// Stored per server, account, device and command group. Missing commands retain their
-// saved place; newly advertised commands are appended in the Agent's manifest order.
+// Stored per server, account and device. Missing pages retain their saved place;
+// newly available pages are appended in their default order.
 enum DeviceCardOrder {
-    static let visiblePageLimit = 4
+    static let visiblePageLimit = 5
+    static let terminalPageName = "terminal"
 
     struct Storage {
         let key: String
@@ -27,6 +28,10 @@ enum DeviceCardOrder {
         let availableSet = Set(available)
         var seen = Set<String>()
         return (saved + available).filter { availableSet.contains($0) && seen.insert($0).inserted }
+    }
+
+    static func pageNames(capabilities: [String], saved: [String]) -> [String] {
+        arranged(available: capabilities + [terminalPageName], saved: saved)
     }
 
     static func saving(visible: [String], previous: [String]) -> [String] {

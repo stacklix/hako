@@ -130,6 +130,7 @@ internal static class CodeWorkshopChecks
             File.WriteAllBytes(Path.Combine(catalogStorage, accepted.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(accepted, WorkshopProtocol.Json));
             var catalogPages = Path.Combine(project, ".catalog-pages");
             File.WriteAllText(catalogPages, "enabled");
+            File.WriteAllText(Path.Combine(project, ".catalog-owner"), accepted.Id);
             try
             {
                 await using var listing = new CodeWorkshop(catalogStorage, code, Path.Combine(directory, ".codex"), token => Start(token));
@@ -148,12 +149,23 @@ internal static class CodeWorkshopChecks
                 } while (true);
                 Check(all.Count == 65 && all.Distinct().Count() == 65, "Global send-order pagination lost or duplicated a thread");
                 await listing.HistoryAsync(Json(new { threadId = FixtureThread }), default);
+                File.WriteAllText(Path.Combine(project, ".catalog-delayed"), "enabled");
                 var afterOpen = Result(await listing.CatalogAsync(Json(new { }), default));
                 Check(firstPage.GetProperty("sessions").EnumerateArray().Select(row => CodexJson.Text(row, "id"))
                     .SequenceEqual(afterOpen.GetProperty("sessions").EnumerateArray().Select(row => CodexJson.Text(row, "id"))),
                     "Reading a running/completed thread changed the send-order page");
+                Check(afterOpen.GetProperty("sessions")[0].GetProperty("lastSentAt").GetInt64() == 2000,
+                    "A queued send starting later acquired its execution time as its send time");
+                File.WriteAllText(Path.Combine(project, ".catalog-outside"), "enabled");
+                var outside = Result(await listing.CatalogAsync(Json(new { }), default));
+                Check(outside.GetProperty("sessions")[0].GetProperty("lastSentAt").GetInt64() == 10000,
+                    "The last actual desktop user input was hidden by the first user message in a turn summary");
             }
-            finally { File.Delete(catalogPages); }
+            finally
+            {
+                foreach (var marker in new[] { ".catalog-pages", ".catalog-owner", ".catalog-delayed", ".catalog-outside" })
+                    File.Delete(Path.Combine(project, marker));
+            }
             string applicationId;
             string requestId;
             long completedStart;
@@ -183,6 +195,19 @@ internal static class CodeWorkshopChecks
                     "An active thread flag must not override its completed latest turn");
                 Check(CodexJson.Text(catalog.GetProperty("sessions")[0], "preview") == "Latest fixture reply" &&
                     CodexJson.Text(catalog.GetProperty("sessions")[0], "completionId") == "fixture-turn", "Catalog still used the initial preview");
+                var previewFile = Path.Combine(project, ".catalog-preview");
+                try
+                {
+                    foreach (var text in new[] { "Latest same-turn Steer", "Newest assistant commentary" })
+                    {
+                        File.WriteAllText(previewFile, text);
+                        var refreshed = Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0];
+                        Check(CodexJson.Text(refreshed, "preview") == text && refreshed.GetProperty("lastSentAt").GetInt64() == 1 &&
+                            CodexJson.Text(refreshed, "completionId") == "fixture-turn",
+                            "Same-turn messages must refresh the preview without changing send order or turn state");
+                    }
+                }
+                finally { File.Delete(previewFile); }
                 var summaryStatus = Path.Combine(project, ".summary-status");
                 foreach (var status in new[] { "inProgress", "failed", "interrupted" })
                 {
@@ -640,9 +665,36 @@ internal static class CodeWorkshopChecks
                 var offset = cursor.Length == 0 ? 0 : int.Parse(cursor.Replace("native-", ""));
                 var data = Enumerable.Range(offset, Math.Min(20, 65 - offset)).Select(index => new {
                     id = index == 64 ? FixtureThread : new Guid(index + 1, 0, 0, new byte[8]).ToString("D"),
-                    cwd = project, name = "Catalog fixture", preview = "Preview", updatedAt = 999999 - index, recencyAt = 1000 - index
+                    cwd = project, name = "Catalog fixture", preview = "Preview", updatedAt = 999999 - index,
+                    recencyAt = index == 64 && File.Exists(Path.Combine(project, ".catalog-outside")) ? 10000 :
+                        index == 64 && File.Exists(Path.Combine(project, ".catalog-delayed")) ? 9000 : 1000 - index
                 }).ToArray();
                 Write(new { id, result = new { data, nextCursor = offset + 20 < 65 ? "native-" + (offset + 20) : null } });
+                continue;
+            }
+            if (method == "thread/items/list")
+            {
+                Check(CodexJson.Text(CodexJson.Field(input, "params"), "sortDirection") == "desc", "Latest user reads must scan backwards");
+                var cursor = CodexJson.Text(CodexJson.Field(input, "params"), "cursor");
+                var previewFile = Path.Combine(project, ".catalog-preview");
+                if (!File.Exists(Path.Combine(project, ".catalog-owner")))
+                {
+                    var text = File.Exists(previewFile) ? File.ReadAllText(previewFile) : "Latest fixture reply";
+                    object[] messages = cursor.Length == 0 ? new object[] {
+                        new { turnId, item = new { type = "commandExecution", id = "last-tool", command = "ignored" } },
+                        new { turnId, item = new { type = "agentMessage", id = "empty-message", text = "  " } }
+                    } : new object[] {
+                        new { turnId, item = new { type = text.Contains("Steer") ? "userMessage" : "agentMessage", id = "actual-latest",
+                            text, content = new[] { new { type = "text", text } } } }
+                    };
+                    Write(new { id, result = new { data = messages, nextCursor = cursor.Length == 0 ? "older-message" : null } });
+                    continue;
+                }
+                var outside = File.Exists(Path.Combine(project, ".catalog-outside"));
+                object[] data = cursor.Length == 0 ? new object[] { new { turnId, item = new { type = "commandExecution", id = "tool", command = "ignored" } } } :
+                    new object[] { new { turnId, item = new { type = "userMessage", id = "canonical-user", clientId = outside ? "external" : File.ReadAllText(Path.Combine(project, ".catalog-owner")),
+                        content = new[] { new { type = "text", text = outside ? "Desktop follow-up" : "Accepted queued input" } } } } };
+                Write(new { id, result = new { data, nextCursor = cursor.Length == 0 ? "older-user" : null } });
                 continue;
             }
             if (method == "thread/archive")
@@ -719,7 +771,7 @@ internal static class CodeWorkshopChecks
             {
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
-                "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = new[] { new { id = "latest", type = "agentMessage", text = "Latest fixture reply" } } } }, nextCursor = (string?)null },
+                "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = new[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } } }, nextCursor = (string?)null },
                 "thread/read" or "thread/resume" or "thread/start" => new { thread },
                 "turn/start" => new { turn = new { id = turnId, status = "inProgress" } },
                 "turn/steer" => new { turnId },

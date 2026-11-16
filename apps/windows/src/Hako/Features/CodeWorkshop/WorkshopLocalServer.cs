@@ -106,7 +106,8 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 var stream = client.GetStream();
                 using var handshake = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 handshake.CancelAfter(TimeSpan.FromSeconds(5));
-                var path = await UpgradeAsync(stream, handshake.Token, accessToken);
+                var path = await AcceptRequestAsync(stream, handshake.Token, accessToken);
+                if (path is null) return;
                 using var socket = WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(15));
                 using var writing = new SemaphoreSlim(1, 1);
                 async Task Send(object frame)
@@ -208,7 +209,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
         }
     }
 
-    private static async Task<string> UpgradeAsync(NetworkStream stream, CancellationToken token, string? accessToken)
+    private static async Task<string?> AcceptRequestAsync(NetworkStream stream, CancellationToken token, string? accessToken)
     {
         var bytes = new List<byte>();
         var one = new byte[1];
@@ -228,16 +229,26 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
             var colon = line.IndexOf(':');
             if (colon < 1 || !headers.TryAdd(line[..colon].Trim(), line[(colon + 1)..].Trim())) throw new InvalidDataException("Invalid headers.");
         }
-        if (request.Length != 3 || request[0] != "GET" || request[2] != "HTTP/1.1" || headers.ContainsKey("Origin") || !headers.ContainsKey("Host") ||
-            !headers.TryGetValue("Upgrade", out var upgrade) || !upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase) ||
+        if (request.Length != 3 || request[0] != "GET" || request[2] != "HTTP/1.1" || headers.ContainsKey("Origin") || !headers.ContainsKey("Host"))
+            throw new InvalidDataException("Invalid HTTP request.");
+        if (accessToken is not null && (!headers.TryGetValue("X-Hako-Command", out var supplied)
+            || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(accessToken), Encoding.UTF8.GetBytes(supplied))))
+            throw new InvalidDataException("Command connection requires its task credential.");
+        if (request[1] == "/health")
+        {
+            // Liveness of this LAN listener; no cloud, task or device information is exposed.
+            const string body = "{\"status\":\"ok\"}";
+            var health = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.Length +
+                "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" + body);
+            await stream.WriteAsync(health, token);
+            return null;
+        }
+        if (!headers.TryGetValue("Upgrade", out var upgrade) || !upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase) ||
             !headers.TryGetValue("Connection", out var connection) || !connection.Split(',').Any(value => value.Trim().Equals("Upgrade", StringComparison.OrdinalIgnoreCase)) ||
             !headers.TryGetValue("Sec-WebSocket-Version", out var version) || version != "13" ||
             !headers.TryGetValue("Sec-WebSocket-Key", out var key) || Convert.FromBase64String(key).Length != 16 ||
             (request[1] != "/workshop/v1" && !request[1].StartsWith("/workshop/v1/events/", StringComparison.Ordinal)))
             throw new InvalidDataException("Invalid WebSocket upgrade.");
-        if (accessToken is not null && (!headers.TryGetValue("X-Hako-Command", out var supplied)
-            || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(accessToken), Encoding.UTF8.GetBytes(supplied))))
-            throw new InvalidDataException("Command connection requires its task credential.");
         var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         var response = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");
         await stream.WriteAsync(response, token);

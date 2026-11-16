@@ -69,13 +69,17 @@ public partial class App : Application
             FinishCommand(reply, true);
             return;
         }
-        if (e.Args.Length > 0 && e.Args[0] is "--command-host" or "--launch-agent")
+        if (e.Args.Length == 5 && e.Args[0] == "--refresh-guardian" && e.Args[1] == "--config" && e.Args[3] == "--sha256")
+        {
+            try { await AgentGuardianRefresh.RunAsync(Path.GetFullPath(e.Args[2]), e.Args[4]); Shutdown(); }
+            catch { Shutdown(1); }
+            return;
+        }
+        if (e.Args.Length > 0 && e.Args[0] == "--launch-agent")
         {
             try
             {
-                if (e.Args.Length == 3 && e.Args[0] == "--command-host" && e.Args[1] == "--data-dir")
-                    await CommandHost.RunAsync(Path.GetFullPath(e.Args[2]));
-                else if (e.Args.Length == 6 && e.Args[0] == "--launch-agent" && e.Args[1] == "--target" && e.Args[3] == "--data-dir" && e.Args[5] == "--json")
+                if (e.Args.Length == 6 && e.Args[1] == "--target" && e.Args[3] == "--data-dir" && e.Args[5] == "--json")
                 {
                     using var launched = DetachedAgentProcess.Start(e.Args[2], ["--background", "--data-dir", Path.GetFullPath(e.Args[4])], breakAway: true);
                     CliConsole.Initialize(); CliConsole.Write(CommandReply.Success(new { processId = launched.Id }), true);
@@ -85,9 +89,7 @@ public partial class App : Application
             }
             catch (Exception error)
             {
-                if (e.Args[0] == "--command-host" && e.Args.Length == 3)
-                    try { System.IO.File.WriteAllText(System.IO.Path.Combine(e.Args[2], "command-host-error.log"), error.ToString()); } catch (System.IO.IOException) { }
-                CliConsole.Initialize(); CliConsole.Write(CommandReply.Failure(1, "command_host_failed", error.Message), true); Shutdown(1);
+                CliConsole.Initialize(); CliConsole.Write(CommandReply.Failure(1, "agent_launch_failed", error.Message), true); Shutdown(1);
             }
             return;
         }
