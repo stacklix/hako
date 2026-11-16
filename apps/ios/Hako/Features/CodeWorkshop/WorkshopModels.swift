@@ -131,8 +131,12 @@ struct WorkshopCatalog: Codable, Sendable {
         }
     }
 
-    static func prioritizingDrafts(_ sessions: [WorkshopSession], ids: Set<String>) -> [WorkshopSession] {
-        sessions.filter { ids.contains($0.id) } + sessions.filter { !ids.contains($0.id) }
+    static func prioritizing(_ sessions: [WorkshopSession], draftIDs: Set<String>, unreadIDs: Set<String>) -> [WorkshopSession] {
+        let chronological = ordered(sessions)
+        let drafts = chronological.filter { draftIDs.contains($0.id) }
+        let attention = chronological.filter { !draftIDs.contains($0.id) && ($0.inProgress || unreadIDs.contains($0.id)) }
+        let read = chronological.filter { !draftIDs.contains($0.id) && !$0.inProgress && !unreadIDs.contains($0.id) }
+        return drafts + attention + read
     }
 }
 
@@ -296,7 +300,7 @@ struct WorkshopGenerationSettings: Equatable {
         return history
     }
     var effortLabel: String {
-        reasoningEffort.map { WorkshopReasoningEffort(id: $0, description: "").title } ?? "推理强度待确认"
+        reasoningEffort.map { WorkshopReasoningEffort(id: $0, description: "").title } ?? "Reasoning pending"
     }
 }
 
@@ -727,14 +731,14 @@ struct WorkshopReasoningEffort: Decodable, Identifiable {
     let description: String
     var title: String {
         switch id {
-        case "none": "无"
-        case "minimal": "最低"
-        case "low": "低"
-        case "medium": "中"
-        case "high": "高"
-        case "xhigh": "超高"
-        case "max": "最高"
-        case "ultra": "极高"
+        case "none": "None"
+        case "minimal": "Minimal"
+        case "low": "Low"
+        case "medium": "Medium"
+        case "high": "High"
+        case "xhigh": "Extra High"
+        case "max": "Max"
+        case "ultra": "Ultra"
         default: id
         }
     }

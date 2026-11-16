@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script>
+  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script><script src="/admin/workshop.js" defer></script><script src="/admin/workshop-commands.js" defer></script><link rel="stylesheet" href="/admin/workshop.css">
 </head>
 <body>
 <nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
@@ -15,6 +15,7 @@
       <a id="nav-notifications-messages" href="/admin/notifications/messages">消息中心</a>
       <a id="nav-notifications-webhooks" href="/admin/notifications/webhooks">Webhooks</a>
     </div>
+    <a id="nav-workshop" href="/admin/workshop">代码工坊 <span>Code</span></a>
     <a id="nav-investment" href="/admin/investment">投资记账 <span>Invest</span></a>
     <div id="investment-subnav" class="admin-subnav" role="group" aria-label="投资记账二级菜单" hidden>
       <a id="nav-investment-overview" href="/admin/investment/overview">总览</a>
@@ -65,6 +66,34 @@
       </section>
     </div>
     <div id="dashboard" hidden>
+      <section id="workshop-page" hidden>
+        <div class="workshop-layout">
+          <section class="workshop-sidebar" aria-label="项目与会话菜单">
+            <div class="workshop-sidebar-head"><p class="eyebrow">WORKSPACE</p><button id="workshop-refresh" type="button" class="quiet" aria-label="刷新项目与会话">↻</button></div>
+            <label class="workshop-computer-label">执行电脑<select id="workshop-computer" aria-label="执行电脑"></select></label>
+            <input id="workshop-search" type="search" placeholder="搜索项目或会话" aria-label="搜索项目或会话">
+            <label class="workshop-archive-filter"><input id="workshop-archived" type="checkbox">已归档会话</label>
+            <p id="workshop-catalog-status" class="muted" role="status"></p>
+            <div id="workshop-projects"></div>
+            <button id="workshop-more" type="button" class="quiet" hidden>加载更多会话</button>
+          </section>
+          <section class="workshop-conversation" aria-label="编程会话">
+            <div class="workshop-conversation-head"><div><p id="workshop-project-name" class="eyebrow">CODE WORKSHOP</p><h2 id="workshop-title">从一个项目开始</h2><p id="workshop-state" class="muted" role="status">选择在线电脑和项目，打开会话或开始新的任务。</p></div><div class="workshop-head-actions"><button id="workshop-commands-open" type="button" class="quiet" disabled>快捷命令</button><button id="workshop-new" type="button" class="quiet" disabled>＋ 新会话</button><button id="workshop-archive" type="button" class="quiet" hidden>归档</button></div></div>
+            <div id="workshop-error" class="form-error" role="alert" hidden></div>
+            <button id="workshop-history-more" type="button" class="quiet" hidden>加载更早消息</button>
+            <div id="workshop-transcript" class="workshop-transcript" tabindex="0" aria-label="会话消息"><div class="workshop-welcome"><span aria-hidden="true">⌘</span><h3>想做点什么？</h3><p>项目与会话就在左侧。<br>在这里提问、修改代码，或继续未完成的工作。</p></div></div>
+            <div id="workshop-approvals"></div>
+            <div id="workshop-artifacts" class="workshop-artifacts"></div>
+            <form id="workshop-compose" class="workshop-compose" hidden>
+              <details class="workshop-settings"><summary>会话设置</summary><div class="workshop-options"><label>模型<select id="workshop-model"></select></label><label>推理强度<select id="workshop-effort"></select></label><label>速度<select id="workshop-tier"></select></label><label>权限<select id="workshop-permission"><option value="auto">自动 · 项目内修改</option><option value="ask">每次询问</option><option value="full">完全访问</option><option value="custom">沿用 Codex 配置</option></select></label></div><label>新会话名称<input id="workshop-session-name" maxlength="120" placeholder="留空由首条消息命名"></label><label>新会话系统提示词<textarea id="workshop-system-prompt" rows="2" maxlength="4000" placeholder="留空沿用 Codex 默认设置"></textarea></label></details>
+              <div id="workshop-attachments" class="workshop-attachments"></div>
+              <textarea id="workshop-message" rows="3" maxlength="4000" placeholder="描述你的任务…" aria-label="消息内容"></textarea>
+              <div class="workshop-compose-actions"><div><button id="workshop-attach" type="button" class="quiet">＋ 图片</button><input id="workshop-files" type="file" accept="image/*" multiple hidden><span class="muted">Ctrl / ⌘ + Enter 发送</span></div><div><button id="workshop-stop" type="button" class="danger" hidden>停止任务</button><button id="workshop-send" type="submit" class="primary">发送 ↑</button></div></div>
+              <p id="workshop-send-status" class="muted" role="status"></p><button id="workshop-retry" type="button" hidden>核对并重试原消息</button>
+            </form>
+          </section>
+        </div>
+      </section>
       <section id="investment-page" hidden>
         <div class="refresh-row">
           <p id="investment-status" class="muted" role="status" aria-live="polite"></p>
@@ -136,4 +165,12 @@
 <dialog id="request-dialog"><form id="request-form"><div class="section-heading"><h2>调用设备能力</h2><button type="button" id="close-request" class="quiet" aria-label="关闭">✕</button></div><p id="request-agent"></p><label>能力<select id="request-method" required></select></label><label>参数（JSON 对象）<textarea id="request-params" rows="5" required spellcheck="false">{}</textarea></label><p class="muted">填写该能力需要的 JSON 参数，无参数时使用 {}。请求超时后，请先确认结果再决定是否重试。</p><div id="request-error" class="form-error" role="alert" hidden></div><button id="execute-request" type="submit" class="primary">执行</button><pre id="request-result" aria-live="polite"></pre></form></dialog>
 <dialog id="application-dialog"><form id="application-form"><div class="section-heading"><h2>创建应用</h2><button type="button" id="application-close" class="quiet" aria-label="关闭">✕</button></div><label>应用名称<input id="application-name" required maxlength="80" placeholder="例如：通知服务"></label><label>应用地址<input id="application-origin" type="url" required placeholder="http://192.168.0.2:8001 或 https://notify.example.com"></label><p class="muted">扫码确认时会向手机展示此名称与地址，支持 HTTPS，以及局域网 IP、localhost、.local 主机的 HTTP 地址（可带端口）。</p><label><input type="checkbox" id="application-oidc">启用通用 OIDC 登录</label><label>OIDC 精确回调地址（每行一个）<textarea id="application-redirects" rows="3" placeholder="https://app.example.com/callback"></textarea></label><label><input type="checkbox" id="application-profile" checked>允许 profile（账号名称）</label><label><input type="checkbox" id="application-pkce" checked>要求 PKCE S256</label><label>OIDC 客户端认证<select id="application-auth"><option value="client_secret_basic">client_secret_basic</option><option value="client_secret_post">client_secret_post</option></select></label><p id="application-error" class="form-error" role="alert" hidden></p><button id="application-submit" type="submit" class="primary">创建应用并生成 SK</button></form></dialog>
 <dialog id="application-secret-dialog"><div class="section-heading"><h2>应用凭证</h2><button type="button" id="application-secret-close" class="quiet" aria-label="关闭">✕</button></div><p id="application-secret-title"></p><p class="muted">SK 仅显示这一次。请保存到对应应用的部署环境中；关闭后无法再次查看，可轮换生成新 SK。不要提交到仓库或发送到聊天。</p><label>应用配置（包含 SK）<textarea id="application-configuration" readonly rows="5" spellcheck="false"></textarea></label><button type="button" id="application-secret-copy" class="primary">复制配置</button></dialog>
+<dialog id="workshop-commands-dialog"><div class="section-heading"><div><p id="workshop-command-project" class="eyebrow"></p><h2>快捷命令</h2></div><button id="workshop-commands-close" type="button" class="quiet" aria-label="关闭快捷命令">✕</button></div>
+  <p class="muted">在所选电脑的项目目录中运行 PowerShell 7。关闭窗口后任务继续执行，执行历史保存在电脑上。</p>
+  <form id="workshop-command-form"><label>命令名称<input id="workshop-command-name" required maxlength="120" placeholder="例如：运行测试"></label><label>命令内容<textarea id="workshop-command-text" required rows="4" maxlength="8000" placeholder="填写要执行的项目命令"></textarea></label><div class="workshop-options"><label>超时（秒）<input id="workshop-command-timeout" type="number" min="1" max="86400" value="600" required></label><label class="workshop-archive-filter"><input id="workshop-command-background" type="checkbox">允许后台子进程继续运行</label></div><button id="workshop-command-run" type="submit" class="primary">执行命令</button></form>
+  <p id="workshop-command-status" class="muted" role="status"></p><p id="workshop-command-error" class="form-error" role="alert" hidden></p><button id="workshop-command-retry" type="button" hidden>核对并重试原命令</button>
+  <div class="section-heading"><h3>执行历史</h3><button id="workshop-command-refresh" type="button" class="quiet">刷新历史</button></div><div id="workshop-command-tasks"></div>
+  <div class="section-heading"><strong id="workshop-command-task-state"></strong><div><button id="workshop-command-copy" type="button" class="quiet" hidden>填入此命令</button><button id="workshop-command-stop" type="button" class="danger" hidden>停止命令</button></div></div><pre id="workshop-command-output" tabindex="0" aria-label="命令日志"></pre>
+</dialog>
+<dialog id="workshop-preview-dialog"><div class="section-heading"><h2 id="workshop-preview-title">原型预览</h2><button id="workshop-preview-close" type="button" class="quiet" aria-label="关闭预览">✕</button></div><p class="muted">静态预览。页面脚本和外部网络资源已隔离。</p><iframe id="workshop-preview-frame" title="原型静态预览" sandbox="" referrerpolicy="no-referrer"></iframe></dialog>
 </body></html>

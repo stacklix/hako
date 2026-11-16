@@ -32,7 +32,7 @@ import Foundation
             restoredSend.entry.text == "图片说明\n[图片 × 2]", "The first pending bubble must survive reopening with its image references")
         let generationHistory = try JSONDecoder().decode(WorkshopHistory.self, from: Data(
             #"{"threadId":"thread","cwd":"project","entries":[],"artifacts":[],"model":"session-model","reasoningEffort":"max"}"#.utf8))
-        precondition(generationHistory.generation.model == "session-model" && generationHistory.generation.effortLabel == "最高")
+        precondition(generationHistory.generation.model == "session-model" && generationHistory.generation.effortLabel == "Max")
         var currentOperation = WorkshopOperation(id: "operation", applicationId: "app", threadId: "thread", turnId: "turn",
             state: "running", message: nil, startedAt: 1, model: "running-model", reasoningEffort: "high")
         precondition(WorkshopGenerationSettings.displayed(history: generationHistory.generation, operation: currentOperation)
@@ -197,7 +197,7 @@ import Foundation
             state: "idle", operationId: nil, lastSentAt: 999)
         let activityOrder = WorkshopCatalog.ordered([ordinary, completion, recentUnread])
         precondition(activityOrder.map(\.id) == [ordinary.id, recentUnread.id, completion.id],
-            "Activity ordering must follow update times without granting unread conversations a separate priority")
+            "Catalog paging must retain send-time order before local display priorities are applied")
         let equalTimeA = WorkshopSession(id: "a", title: "A", applicationId: "app", cwd: "project", preview: "", updatedAt: 999,
             state: "idle", operationId: nil, lastSentAt: 999)
         let equalTimeB = WorkshopSession(id: "b", title: "B", applicationId: "app", cwd: "project", preview: "", updatedAt: 999,
@@ -276,12 +276,35 @@ import Foundation
         precondition(WorkshopCatalog.ordered([executing, recent, old]).map(\.id) == [recent.id, old.id, executing.id],
             "Opening, tool output or assistant activity must not outrank a later user send")
         let sendOrder = WorkshopCatalog.ordered([executing, recent, old])
-        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: [executing.id]).map(\.id) == [executing.id, recent.id, old.id],
+        precondition(WorkshopCatalog.prioritizing(sendOrder, draftIDs: [executing.id], unreadIDs: []).map(\.id) == [executing.id, recent.id, old.id],
             "An unsent draft must precede newer sends, including while the conversation is running")
-        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: [executing.id, recent.id]).map(\.id) == [recent.id, executing.id, old.id],
+        precondition(WorkshopCatalog.prioritizing(sendOrder, draftIDs: [executing.id, recent.id], unreadIDs: []).map(\.id) == [recent.id, executing.id, old.id],
             "Multiple drafts must retain their send order")
-        precondition(WorkshopCatalog.prioritizingDrafts(sendOrder, ids: []).map(\.id) == sendOrder.map(\.id),
-            "Clearing drafts must restore the original send order without changing stored timestamps")
+        precondition(WorkshopCatalog.prioritizing(sendOrder, draftIDs: [], unreadIDs: []).map(\.id) == [executing.id, recent.id, old.id],
+            "A running conversation must stay before read conversations after its draft is cleared")
+        precondition(WorkshopCatalog.prioritizing(sendOrder, draftIDs: [], unreadIDs: [old.id]).map(\.id) == [old.id, executing.id, recent.id],
+            "Unread and running sessions share one tier ordered by send time, ahead of newer read sessions")
+        precondition(WorkshopCatalog.prioritizing(sendOrder, draftIDs: [old.id], unreadIDs: [recent.id]).map(\.id) == [old.id, recent.id, executing.id],
+            "Drafts precede both unread and processing sessions")
+        let pagedPriority = WorkshopCatalog.merge([executing], existing: [recent, old], more: true)
+        precondition(WorkshopCatalog.prioritizing(pagedPriority, draftIDs: [], unreadIDs: [old.id]).map(\.id) == [old.id, executing.id, recent.id],
+            "A processing session on a later page must join the attention tier without dropping existing sessions")
+        var priorityReads = WorkshopReadState()
+        let prioritySource = [ordinary, old, executing, recentUnread]
+        func prioritized(at date: Date) -> [String] {
+            WorkshopCatalog.prioritizing(prioritySource, draftIDs: [old.id],
+                unreadIDs: Set(prioritySource.filter { priorityReads.isUnread($0, agentId: "Agent", now: date) }.map(\.id))).map(\.id)
+        }
+        precondition(prioritized(at: now) == [old.id, recentUnread.id, executing.id, ordinary.id])
+        precondition(prioritized(at: now.addingTimeInterval(WorkshopReadState.unreadLifetime + 1)) == [old.id, executing.id, ordinary.id, recentUnread.id],
+            "Expired unread sessions must return to chronological read order while processing sessions stay prioritized")
+        priorityReads.markRead(threadId: recentUnread.id, completionId: "recent-turn", agentId: "Agent")
+        precondition(prioritized(at: now) == [old.id, executing.id, ordinary.id, recentUnread.id],
+            "Reading a completed session must lower only that session's priority")
+        let tiedProcessing = WorkshopSession(id: "a", title: "Processing", applicationId: "app", cwd: "project",
+            preview: "", updatedAt: 999999, state: "waiting", operationId: "wait", lastSentAt: 999)
+        precondition(WorkshopCatalog.prioritizing([equalTimeB, tiedProcessing], draftIDs: [], unreadIDs: [equalTimeB.id]).map(\.id) == ["a", "b"],
+            "Processing and unread sessions with equal send times must use the same stable ID tie-breaker")
         let decodedOrder = try JSONDecoder().decode(WorkshopSession.self, from: JSONEncoder().encode(executing))
         precondition(decodedOrder.lastSentAt == 50 && decodedOrder.updatedAt == 999999,
             "List snapshots must preserve the send timestamp separately from execution freshness")
@@ -480,7 +503,7 @@ import Foundation
         let reasoningModel = try JSONDecoder().decode(WorkshopModel.self, from: Data(#"{"id":"model","name":"Model","description":"Test","isDefault":true,"supportsImages":true,"serviceTiers":[],"defaultReasoningEffort":"low","reasoningEfforts":[{"id":"high","description":"Deep"},{"id":"low","description":"Quick"},{"id":"future-effort","description":"Future"}]}"#.utf8))
         precondition(reasoningModel.reasoningEfforts.map(\.id) == ["high", "low", "future-effort"])
         precondition(reasoningModel.reasoningEfforts.last?.title == "future-effort" && reasoningModel.defaultReasoningEffort == "low")
-        precondition(reasoningModel.reasoningEfforts.first?.title == "高")
+        precondition(reasoningModel.reasoningEfforts.first?.title == "High")
         precondition(reasoningModel.reasoningEfforts.first?.detail == "投入更多推理，适合复杂任务。")
         precondition(reasoningModel.reasoningEfforts.last?.detail == "Future")
         var reasoningChoice = WorkshopChoice(); reasoningChoice.reasoningEffort = "high"

@@ -186,6 +186,7 @@ private struct WorkshopMessageCopy: ViewModifier {
 
 private struct WorkshopInlineProse: View {
     let source: String
+    @Environment(\.openURL) private var openURL
     @State private var rendered: (text: Text, copies: [URL: String])?
 
     var body: some View {
@@ -195,7 +196,10 @@ private struct WorkshopInlineProse: View {
             .textRenderer(WorkshopInlineCodeRenderer())
             .accessibilityHint(current.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
             .environment(\.openURL, OpenURLAction { url in
-                guard let code = current.copies[url] else { return .systemAction }
+                guard let code = current.copies[url] else {
+                    openURL(url)
+                    return .handled
+                }
                 UIPasteboard.general.string = code
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 UIAccessibility.post(notification: .announcement, argument: "已复制")

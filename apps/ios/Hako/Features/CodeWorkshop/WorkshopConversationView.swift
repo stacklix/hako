@@ -12,6 +12,7 @@ struct WorkshopConversationView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
+    @State private var browserLink: WorkshopBrowserLink?
     @State private var showingInfo = false
     @State private var showingCommands = false
     @State private var showingCommandTask = false
@@ -29,7 +30,7 @@ struct WorkshopConversationView: View {
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && previewPhoto == nil && !showingInfo && !showingCommands && !showingCommandTask }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingInfo && !showingCommands && !showingCommandTask }
 
     var body: some View {
         let transcript = conversation.presentation
@@ -98,6 +99,12 @@ struct WorkshopConversationView: View {
                 }
             }
             .padding(20)
+            .environment(\.openURL, OpenURLAction { url in
+                if url.absoluteString == UIApplication.openSettingsURLString { return .systemAction }
+                guard let link = WorkshopBrowserLink(url: url) else { return .discarded }
+                browserLink = link
+                return .handled
+            })
         }
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -213,6 +220,7 @@ struct WorkshopConversationView: View {
             }
         }
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
+        .sheet(item: $browserLink) { link in WorkshopBrowserView(link: link) }
         .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo) }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
         .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands) }
@@ -335,7 +343,7 @@ struct WorkshopConversationView: View {
             Spacer()
             Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
                 .layoutPriority(1)
-                .accessibilityLabel("模型：\(conversation.modelLabel)，推理强度：\(conversation.generation.effortLabel)")
+                .accessibilityLabel("Model: \(conversation.modelLabel), Speed: \(conversation.speedLabel), Reasoning: \(conversation.generation.effortLabel)")
         }
         .font(.caption).foregroundStyle(HakoStyle.muted)
         .padding(.horizontal, 20).padding(.vertical, 12)

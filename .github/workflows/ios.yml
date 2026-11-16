@@ -51,6 +51,8 @@ jobs:
           /tmp/hako-investment-market-tests
       - name: Test code workshop request identity and message rendering
         run: |
+          swiftc Hako/Features/CodeWorkshop/WorkshopBrowserLink.swift Tests/WorkshopBrowserTests.swift -o /tmp/hako-workshop-browser-tests
+          /tmp/hako-workshop-browser-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopCommandModels.swift Tests/WorkshopCommandTests.swift -o /tmp/hako-workshop-command-tests
           /tmp/hako-workshop-command-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Tests/WorkshopModelTests.swift -o /tmp/hako-workshop-tests

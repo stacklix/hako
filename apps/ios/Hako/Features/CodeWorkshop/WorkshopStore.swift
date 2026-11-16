@@ -97,7 +97,10 @@ import CryptoKit
     var visibleSessions: [WorkshopSession] {
         let visible = localSessions.merging(sessions, agentId: selectedAgentID, applications: applications, archived: showingArchived)
             .filter { $0.applicationId == selectedApplicationID }
-        return WorkshopCatalog.prioritizingDrafts(visible, ids: Set(visible.filter { hasDraft($0) }.map(\.id)))
+        let now = Date()
+        return WorkshopCatalog.prioritizing(visible,
+            draftIDs: Set(visible.filter { hasDraft($0) }.map(\.id)),
+            unreadIDs: Set(visible.filter { isUnread($0, at: now) }.map(\.id)))
     }
     var hasMore: Bool { cursor != nil }
 

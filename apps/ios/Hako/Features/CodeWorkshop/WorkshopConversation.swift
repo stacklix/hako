@@ -225,8 +225,15 @@ import Combine
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
     var canRetry: Bool { !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
     var generation: WorkshopGenerationSettings { .displayed(history: historyGeneration, operation: operation) }
-    var modelLabel: String { models.first { $0.id == generation.model }?.name ?? generation.model ?? "模型待确认" }
-    var generationLabel: String { modelLabel + " · " + generation.effortLabel }
+    var modelLabel: String { models.first { $0.id == generation.model }?.name ?? generation.model ?? "Model pending" }
+    var speedLabel: String {
+        let tier = choice.serviceTier ?? WorkshopSpeed.standard.id
+        if tier == WorkshopSpeed.standard.id { return WorkshopSpeed.standard.name }
+        let modelID = choice.model ?? generation.model
+        let selectedModel = models.first { $0.id == modelID } ?? (modelID == nil ? models.first { $0.isDefault } : nil)
+        return selectedModel?.serviceTiers.first { $0.id == tier }?.name ?? tier
+    }
+    var generationLabel: String { modelLabel + " · " + speedLabel + " · " + generation.effortLabel }
 
     var reuseKey: WorkshopConversationReuseKey? {
         guard let sessionId = threadId ?? operationId.map({ "pending-" + $0 }) else { return nil }

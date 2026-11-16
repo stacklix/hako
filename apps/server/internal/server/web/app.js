@@ -8,6 +8,7 @@ const investmentPages = {overview:'总览', accounts:'账户', watchlist:'关注
 const investmentPath = /^\/admin\/investment(?:\/(overview|accounts|watchlist|balance-sheet))?$/.exec(window.location.pathname);
 const investmentPage = investmentPath ? investmentPath[1] || 'overview' : null;
 const adminPages = {
+  '/admin/workshop': {id: 'workshop', title: '代码工坊', description: '连接执行电脑，在项目中继续你的编程会话。'},
   '/admin/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
   '/admin/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
   '/admin/applications': {id: 'applications', title: '应用管理', description: '创建应用、管理 SK 与扫码登录授权。'},
@@ -32,6 +33,7 @@ function showNotificationFrame(visible) {
 function showPage() {
   const agents = currentPage === 'agents';
   $('agents-page').hidden = !agents;
+  $('workshop-page').hidden = currentPage !== 'workshop';
   $('access-logs').hidden = currentPage !== 'access-logs';
   $('applications-page').hidden = currentPage !== 'applications';
   $('system-page').hidden = currentPage !== 'system';
@@ -82,6 +84,7 @@ function loggedIn(yes) {
     refreshApplications();
     refreshDatabaseSchemas();
     if (investmentPage) refreshInvestment();
+    if (currentPage === 'workshop') void window.hakoWorkshop?.start();
   } else {
     document.title = 'Hako · 你的日常，收进一个盒子';
     csrf = '';
@@ -90,6 +93,7 @@ function loggedIn(yes) {
     $('system-databases').replaceChildren();
     $('system-status').textContent = '';
     if (investmentPage) resetInvestment();
+    window.hakoWorkshop?.reset();
     agentListing = null;
     requestAgentId = null;
     $('request-dialog').close();
@@ -97,8 +101,9 @@ function loggedIn(yes) {
     $('key-dialog').close();
   }
 }
-async function api(path, method = 'GET', data) {
+async function api(path, method = 'GET', data, passive = false) {
   const headers = { 'Content-Type':'application/json' };
+  if (passive) headers['X-Hako-Passive'] = '1';
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;
   const response = await fetch('/admin/api/' + path, { method, headers, credentials:'same-origin', cache:'no-store', body:data === undefined ? undefined : JSON.stringify(data), signal:AbortSignal.timeout(20000) });
   const result = await response.json();
