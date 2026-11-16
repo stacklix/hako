@@ -6,6 +6,14 @@ import Foundation
     }
 
     static func main() async throws {
+        let pendingRequest = WorkshopReceipt(id: "local-first", agentId: "agent", applicationId: "app", originalThreadId: "thread",
+            threadId: "thread", title: "Session", message: "立即显示", createdAt: .now, state: "pending", imageIds: ["photo"])
+        var optimisticEntries = [pendingRequest.entry]
+        var optimisticStream: [String: String] = [:]
+        let acceptedRequest = entry("local-first", "立即显示\n[图片 × 1]", role: "user", state: "sent")
+        WorkshopTranscriptMerge.apply(acceptedRequest, entries: &optimisticEntries, streamText: &optimisticStream)
+        optimisticEntries = WorkshopTranscriptMerge.history(optimisticEntries, page: [acceptedRequest])
+        precondition(optimisticEntries == [acceptedRequest], "Live acknowledgement and history must replace the optimistic message by request ID")
         let questionEntry = WorkshopEntry(kind: "item", id: "async-card", text: "请选择升级方式", role: "assistant", state: "", truncated: false,
             questions: [WorkshopAsyncQuestion(title: "如何升级？", options: ["同步升级"])])
         var questionEntries: [WorkshopEntry] = []

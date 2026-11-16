@@ -316,8 +316,16 @@ struct WorkshopConversationView: View {
     }
 
     private func userMessage(_ entry: WorkshopEntry) -> some View {
-        WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent,
-            replies: conversation.presentation.questionReplies[entry.id] ?? [])
+        VStack(alignment: .leading, spacing: 10) {
+            WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent,
+                replies: conversation.presentation.questionReplies[entry.id] ?? [])
+            if let delivery = conversation.outbox.states[entry.id] {
+                WorkshopMessageDeliveryView(state: delivery, canRetry: conversation.canRetryDelivery(entry.id),
+                    retry: { Task { await conversation.retryDelivery(entry.id) } },
+                    cancel: { conversation.cancelUpload(entry.id) },
+                    check: { Task { await conversation.checkResult() } })
+            }
+        }
     }
 
     private var projectInfo: some View {
@@ -451,10 +459,7 @@ private struct WorkshopComposerView: View {
             }
             if !conversation.photos.isEmpty { WorkshopComposerAttachments(conversation: conversation, previewPhoto: $previewPhoto) }
             if loadingPhoto { Text("正在处理图片…").font(.caption).foregroundStyle(HakoStyle.muted) }
-            if let progress = conversation.uploadProgress {
-                ProgressView("正在上传图片 \(Int(progress * 100))%", value: progress).font(.caption)
-            }
-            if conversation.canCompose && (conversation.restoringCache || conversation.synchronizing || conversation.uncertain) {
+            if conversation.canCompose && conversation.awaitingSubmissionCheck {
                 Text(conversation.restoringCache || conversation.synchronizing ? "正在同步会话，可先输入，同步完成后可发送" : "任务状态待确认，可先输入，确认后可发送")
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }
@@ -475,7 +480,7 @@ private struct WorkshopComposerView: View {
                     WorkshopComposerTextEditor(input: input, snapshot: input.snapshot)
                         .disabled(!conversation.canCompose)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                if conversation.restoringCache || conversation.synchronizing || conversation.uncertain {
+                if conversation.awaitingSubmissionCheck {
                     Button {} label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 18, weight: .semibold))

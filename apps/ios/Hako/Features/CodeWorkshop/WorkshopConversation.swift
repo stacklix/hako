@@ -28,7 +28,9 @@ import Combine
     @Published var error: String?
     @Published private(set) var connectionIssue: String?
     @Published private(set) var photos: [WorkshopPhoto] = [] { didSet { composerChanged() } }
-    @Published private(set) var uploadProgress: Double?
+    @Published private(set) var outbox = WorkshopOutbox()
+    private var imageUpload: Task<Void, Error>?
+    private var cancelledUploadID: String?
     @Published private(set) var models: [WorkshopModel] = []
     @Published private(set) var loadingModels = false
     @Published private(set) var modelError: String?
@@ -79,10 +81,14 @@ import Combine
         threadId = session.flatMap { UUID(uuidString: $0.id) == nil ? nil : $0.id }
         receipt = store.receipt(for: session, agent: agent)
         operationId = session?.operationId ?? receipt?.id
-        if let receipt, receipt.id == operationId, receipt.state == "pending" { uncertain = true }
+        if let receipt, receipt.id == operationId, receipt.state == "pending" {
+            uncertain = true; entries.append(receipt.entry); outbox.restore(receipt.id)
+        }
         choice = store.choice(agent: agent, thread: threadId, application: application)
         if let operationId {
-            for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) { entries.append(pending.entry) }
+            for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) {
+                entries.append(pending.entry); outbox.restore(pending.id)
+            }
         }
         draftSessionID = composerSessionID
         do {
@@ -187,7 +193,7 @@ import Combine
         let snapshot = composerDraft
         let matches = snapshot.matchesSentMessage(message, imageIds: imageIds, id: id)
         if composerAcknowledgements.insert(id).inserted {
-            HakoLog.record(.codeWorkshop, "发送确认时核验输入草稿",
+            HakoLog.record(.codeWorkshop, "发送记录持久化后核验输入草稿",
                 detail: "requestId=\(id); imageCount=\(imageIds.count); requestMatches=\(snapshot.sendingMessageID == id); textMatches=\(snapshot.input.text.trimmingCharacters(in: .whitespacesAndNewlines) == message); imagesMatch=\(snapshot.input.imageIds == imageIds); willClear=\(matches)")
         }
         guard matches else { return }
@@ -198,13 +204,13 @@ import Combine
         draftSendingID = nil
         resettingComposer = false
         persistDraft()
-        HakoLog.record(.codeWorkshop, "已确认发送并清空输入草稿",
+        HakoLog.record(.codeWorkshop, "消息已交给发送记录并清空输入草稿",
             detail: "requestId=\(id); imageCount=\(imageIds.count); editorId=\(composerInput.editorID); textLength=\(draft.utf16.count); remainingImages=\(photos.count)")
     }
 
     var notificationOperationID: String? { operationId }
 
-    var canCompose: Bool { !isArchived && !busy && store.authenticated && scope == store.scope }
+    var canCompose: Bool { !isArchived && (!busy || outbox.activeID != nil) && store.authenticated && scope == store.scope }
     var configurationUnavailableReason: String? {
         if isArchived { return "此会话已归档，取消归档后可修改设置。" }
         if !store.authenticated { return "请先在 Hako 设置中登录服务器后修改会话设置。" }
@@ -212,8 +218,9 @@ import Combine
         return nil
     }
     var canConfigure: Bool { configurationUnavailableReason == nil }
-    var canSubmitMessage: Bool { canCompose && !restoringCache && !synchronizing && !uncertain }
-    var canEditMessages: Bool { canSubmitMessage && !hasMoreEvents }
+    var awaitingSubmissionCheck: Bool { restoringCache || synchronizing || (uncertain && outbox.activeID == nil) }
+    var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck }
+    var canEditMessages: Bool { canSubmitMessage && !busy && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
     var canRetry: Bool { !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
@@ -345,7 +352,8 @@ import Combine
                         completionId: newestCompletion, agent: agent, scope: scope)
                 }
             }
-            if !more, operationId == originalOperation, let newestOperation, newestOperation != operationId {
+            if !more, operationId == originalOperation, let newestOperation, newestOperation != operationId,
+               !(receipt?.id == operationId && receipt?.state == "pending") {
                 operationId = newestOperation; operation = nil; eventCursor = 0; streamText = [:]
                 observedTerminal = nil; uncertain = true; followups = []
                 if receipt?.id != newestOperation { receipt = nil }
@@ -353,7 +361,10 @@ import Combine
             if !more, operationId == nil {
                 operationId = newestOperation
                 if let operationId {
-                    for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) { entries.append(pending.entry) }
+                    for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) {
+                        entries.append(pending.entry)
+                        if outbox.states[pending.id] == nil { outbox.restore(pending.id) }
+                    }
                 }
             }
             if !more, !uncertain, operationId == nil || observedTerminal == operationId { lastVerifiedAt = .now }
@@ -367,16 +378,16 @@ import Combine
         guard !Task.isCancelled, scope == store.scope else { return }
         let entryStep = WorkshopWatchStep.onEntry(lastVerifiedAt: lastVerifiedAt,
             operationId: operationId, observedTerminal: observedTerminal,
-            needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing)
+            needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing || outbox.holdsOperation(operationId))
         if entryStep == .synchronize { await synchronize() }
         // A completed/external conversation only needs its latest history page;
         // keep the verified composer usable while checking for changes.
-        else if entryStep == .idle, !busy, !synchronizing, threadId != nil { await loadHistory() }
+        else if entryStep == .idle, !busy, !synchronizing, !outbox.holdsOperation(operationId), threadId != nil { await loadHistory() }
         var failures = 0
         var idleChecks = 0
         while !Task.isCancelled, scope == store.scope {
             switch WorkshopWatchStep.next(operationId: operationId, observedTerminal: observedTerminal,
-                needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing) {
+                needsRecovery: needsHistoryRefresh || connectionIssue != nil || uncertain, busy: busy || synchronizing || outbox.holdsOperation(operationId)) {
             case .synchronize:
                 idleChecks = 0
                 await synchronize()
@@ -404,7 +415,7 @@ import Combine
                     readFailed(error)
                 }
             case .idle:
-                if !busy && !synchronizing {
+                if !busy && !synchronizing && !outbox.holdsOperation(operationId) {
                     idleChecks += 1
                     if idleChecks >= 10 {
                         idleChecks = 0
@@ -420,9 +431,9 @@ import Combine
 
     func synchronize() async {
         await restoreTranscript()
-        guard !Task.isCancelled, !synchronizing, scope == store.scope else { return }
+        guard !Task.isCancelled, !synchronizing, !outbox.holdsOperation(operationId), scope == store.scope else { return }
         synchronizing = true
-        defer { synchronizing = false }
+        defer { synchronizing = false; resumePendingSends() }
         if let stream = eventStream {
             stream.cancel()
             _ = try? await stream.value
@@ -470,10 +481,14 @@ import Combine
         if cachedAt != nil { cachedAt = nil }
         let nextFollowups = WorkshopFollowupState.merging(result.followups, into: followups)
         if followups != nextFollowups { followups = nextFollowups }
-        if let receipt, receipt.id == id { clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: id) }
+        if let receipt, receipt.id == id {
+            outbox.acknowledge(id)
+            clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: id)
+        }
         var nextEntries = entries
         if result.cursor > eventCursor { WorkshopTranscriptMerge.apply(result.events, entries: &nextEntries, streamText: &streamText) }
         for followup in followups {
+            outbox.acknowledge(followup.id)
             if let queued = pendingSend(followup.id) { clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id) }
             try store.saveQueuedSend(nil, removing: followup.id, background: true)
             if followup.state == "cancelled" { nextEntries.removeAll { $0.id == followup.id }; continue }
@@ -515,6 +530,7 @@ import Combine
             if result.operation.state == "completed" || result.operation.state == "interrupted" { await loadHistory() }
             await store.refresh()
         }
+        resumePendingSends()
     }
 
     private func apply(_ event: WorkshopEntry) {
@@ -536,7 +552,8 @@ import Combine
         if !photos.isEmpty, let model = models.first(where: { $0.id == choice.model }), !model.supportsImages {
             error = "当前模型不支持图片，请在更多页面选择支持图片的模型。"; return
         }
-        if let operationId, operation?.active == true || followups.contains(where: { $0.editable }) {
+        if let operationId, outbox.activeID != nil || operation?.active == true || followups.contains(where: { $0.editable }) ||
+            !store.pendingQueue(operationId: operationId).isEmpty {
             let resume = operation?.active != true
             let queued = WorkshopQueuedSend(id: UUID().uuidString.lowercased(), operationId: operationId,
                 message: message, imageIds: photos.map(\.id), reasoningEffort: choice.reasoningEffort)
@@ -545,6 +562,8 @@ import Combine
             store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
             draftSendingID = queued.id
             entries.append(queued.entry); appendedMessageID = queued.id; error = nil
+            outbox.enqueue(queued.id)
+            clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id)
             saveTranscript()
             await store.flushComposerDrafts()
             await submitQueued(queued)
@@ -565,6 +584,8 @@ import Combine
         draftSendingID = next.id
         receipt = next; uncertain = true; operationId = next.id; eventCursor = 0; streamText = [:]; observedTerminal = nil
         operation = nil; approvals = []; error = nil
+        entries.append(next.entry); appendedMessageID = next.id; outbox.enqueue(next.id)
+        clearSentDraft(next.message, imageIds: next.imageIds ?? [], id: next.id)
         saveTranscript()
         await store.flushComposerDrafts()
         await submit(next)
@@ -583,7 +604,7 @@ import Combine
                 imageIds: [], questionId: entry.id, reasoningEffort: choice.reasoningEffort)
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存回答，请重试。"; return }
-            entries.append(queued.entry); appendedMessageID = queued.id; saveTranscript()
+            entries.append(queued.entry); appendedMessageID = queued.id; outbox.enqueue(queued.id); saveTranscript()
             store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
             await submitQueued(queued)
             if followups.contains(where: { $0.id == queued.id && $0.editable }) {
@@ -601,8 +622,7 @@ import Combine
             catch { self.error = "无法保存回答，请重试。"; return }
             receipt = next; uncertain = true; operationId = next.id; operation = nil
             eventCursor = 0; streamText = [:]; observedTerminal = nil
-            entries.append(WorkshopEntry(kind: "item", id: next.id, text: message, role: "user",
-                state: "pending", truncated: false, questionId: entry.id))
+            entries.append(next.entry); appendedMessageID = next.id; outbox.enqueue(next.id)
             saveTranscript()
             await submit(next)
         }
@@ -613,42 +633,88 @@ import Combine
         await submit(receipt)
     }
 
+    func canRetryDelivery(_ id: String) -> Bool {
+        guard !busy, scope == store.scope, !isArchived else { return false }
+        if receipt?.id == id { return canRetry }
+        guard !uncertain, let operationId else { return false }
+        return store.pendingQueue(operationId: operationId).first?.id == id
+    }
+
+    func retryDelivery(_ id: String) async {
+        guard canRetryDelivery(id) else { return }
+        if receipt?.id == id { await retryOriginal() }
+        else { await retryQueued(id) }
+    }
+
+    func cancelUpload(_ id: String) {
+        guard outbox.activeID == id, case .uploading = outbox.states[id] else { return }
+        cancelledUploadID = id; imageUpload?.cancel()
+    }
+
+    private func uploadMessageImages(_ ids: [String], id: String) async throws {
+        guard !ids.isEmpty else { return }
+        let task = Task { try await store.uploadImages(ids, agent: agent) { outbox.progress($0, id: id) } }
+        imageUpload = task
+        do { try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() } }
+        catch {
+            if cancelledUploadID == id { throw CancellationError() }
+            throw error
+        }
+        if cancelledUploadID == id { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
+    private func resumePendingSends() {
+        guard !busy, !synchronizing, !uncertain, scope == store.scope, let operationId,
+              let id = outbox.nextQueued(store.pendingQueue(operationId: operationId).map(\.id)),
+              let queued = pendingSend(id) else { return }
+        Task { await submitQueued(queued) }
+    }
+
     private func submit(_ receipt: WorkshopReceipt) async {
         guard scope == store.scope, !busy else { return }
-        busy = true
-        defer { busy = false; uploadProgress = nil }
+        busy = true; error = nil; cancelledUploadID = nil
+        outbox.begin(receipt.id, images: !(receipt.imageIds ?? []).isEmpty)
+        var submitted = false, accepted = false
+        defer {
+            busy = false; imageUpload = nil; outbox.finish(receipt.id)
+            resumePendingSends()
+        }
         do {
-            if let ids = receipt.imageIds, !ids.isEmpty {
-                uploadProgress = 0
-                try await store.uploadImages(ids, agent: agent) { uploadProgress = $0 }
-            }
+            try await uploadMessageImages(receipt.imageIds ?? [], id: receipt.id)
+            guard scope == store.scope else { throw CancellationError() }
+            outbox.sending(receipt.id); submitted = true
             let result: WorkshopOperation = try await store.call(agent, "turn.start", receipt.parameters)
             guard scope == store.scope, result.id == receipt.id else { throw CancellationError() }
+            accepted = true; outbox.acknowledge(receipt.id)
             operation = result; uncertain = false; error = nil
             clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: receipt.id)
             if let id = result.threadId {
                 if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application) }
                 threadId = id
             }
-            var accepted = receipt
-            accepted.threadId = threadId
-            accepted.state = result.active ? "pending" : result.state
-            try store.saveReceipt(accepted)
-            self.receipt = accepted
+            var confirmed = receipt
+            confirmed.threadId = threadId
+            confirmed.state = result.active ? "pending" : result.state
+            try store.saveReceipt(confirmed)
+            self.receipt = confirmed
             try await poll(result.id)
-        } catch is CancellationError { }
+        } catch is CancellationError {
+            if !accepted, outbox.states[receipt.id] != nil, scope == store.scope {
+                outbox.failed(receipt.id, message: submitted ? "发送结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
+            }
+        }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_application_missing", "codex_workspace_invalid", "codex_busy", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {
             guard scope == store.scope else { return }
-            uncertain = false; operationId = nil; operation = nil
-            var rejected = receipt; rejected.state = "rejected"
-            self.receipt = rejected
-            try? store.saveReceipt(rejected)
-            if draftSendingID == receipt.id { draftSendingID = nil }
-            if draft.isEmpty && photos.isEmpty { draft = receipt.message }
-            error = failure.message
+            if accepted || outbox.states[receipt.id] == nil { readFailed(failure); return }
+            outbox.failed(receipt.id, message: failure.message, submitted: false)
             saveTranscript()
         }
-        catch { if scope == store.scope { self.error = "发送结果尚未确认。\(error.localizedDescription) 可以检查进度，或用原请求 ID 重试。" } }
+        catch {
+            guard scope == store.scope else { return }
+            if accepted || outbox.states[receipt.id] == nil { readFailed(error) }
+            else { outbox.failed(receipt.id, message: (submitted ? "发送结果尚未确认。" : "图片上传失败。") + error.localizedDescription, submitted: submitted) }
+        }
     }
 
     func checkResult() async {
@@ -671,49 +737,48 @@ import Combine
     }
 
     func retryQueued(_ id: String) async {
-        guard let queued = pendingSend(id), !busy else { return }
+        guard canRetryDelivery(id), let queued = pendingSend(id) else { return }
         await submitQueued(queued)
     }
 
     private func submitQueued(_ queued: WorkshopQueuedSend) async {
-        guard scope == store.scope, !busy else { return }
-        busy = true
-        defer { busy = false; uploadProgress = nil }
+        guard scope == store.scope, !busy, !uncertain,
+              store.pendingQueue(operationId: queued.operationId).first?.id == queued.id else { return }
+        busy = true; error = nil; cancelledUploadID = nil
+        outbox.begin(queued.id, images: !queued.imageIds.isEmpty)
+        var submitted = false, accepted = false
+        defer {
+            busy = false; imageUpload = nil; outbox.finish(queued.id)
+            resumePendingSends()
+        }
         do {
-            if !queued.imageIds.isEmpty {
-                uploadProgress = 0
-                try await store.uploadImages(queued.imageIds, agent: agent) { uploadProgress = $0 }
-            }
+            try await uploadMessageImages(queued.imageIds, id: queued.id)
+            guard scope == store.scope else { throw CancellationError() }
+            outbox.sending(queued.id); submitted = true
             let result: WorkshopFollowupReply = try await store.call(agent, "message.queue", queued.parameters)
             guard scope == store.scope, operationId == queued.operationId, result.id == queued.id else { throw CancellationError() }
+            accepted = true; outbox.acknowledge(queued.id)
             acceptFollowup(result)
             clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id)
             try store.saveQueuedSend(nil, removing: queued.id)
             observedTerminal = nil
             try await poll(queued.operationId)
-        } catch is CancellationError { }
+        } catch is CancellationError {
+            if !accepted, outbox.states[queued.id] != nil, scope == store.scope {
+                outbox.failed(queued.id, message: submitted ? "排队结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
+            }
+        }
         catch let failure as WorkshopFailure where ["invalid_params", "codex_queue_full", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {
             guard scope == store.scope else { return }
+            if accepted || outbox.states[queued.id] == nil { readFailed(failure); return }
             store.rejectQueuedActivity(queued, agent: agent, scope: scope)
-            if draftSendingID == queued.id {
-                do {
-                    try store.saveQueuedSend(nil, removing: queued.id)
-                    entries.removeAll { $0.id == queued.id }
-                    draftSendingID = nil
-                    saveTranscript()
-                } catch { self.error = "排队未成功，输入草稿已保留。\(error.localizedDescription)"; return }
-            } else if draft.isEmpty && photos.isEmpty {
-                do {
-                    let restoredPhotos = try queued.imageIds.map { try store.savedPhoto($0) }
-                    try store.saveQueuedSend(nil, removing: queued.id)
-                    entries.removeAll { $0.id == queued.id }
-                    draft = queued.message; photos = restoredPhotos
-                    saveTranscript()
-                } catch { self.error = "排队未成功，原消息已保留，可在检查后重试。\(error.localizedDescription)"; return }
-            }
-            self.error = failure.message
+            outbox.failed(queued.id, message: failure.message, submitted: false)
         }
-        catch { if scope == store.scope { self.error = "排队结果尚未确认。\(error.localizedDescription) 可检查结果或重试这条原消息。" } }
+        catch {
+            guard scope == store.scope else { return }
+            if accepted || outbox.states[queued.id] == nil { readFailed(error) }
+            else { outbox.failed(queued.id, message: (submitted ? "排队结果尚未确认。" : "图片上传失败。") + error.localizedDescription, submitted: submitted) }
+        }
     }
 
     private func acceptFollowup(_ result: WorkshopFollowupReply) {

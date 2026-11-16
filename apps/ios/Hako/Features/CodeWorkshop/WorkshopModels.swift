@@ -497,6 +497,10 @@ struct WorkshopReceipt: Codable, Identifiable, Equatable, Sendable {
     var systemPrompt: String? = nil
     var reasoningEffort: String? = nil
 
+    var entry: WorkshopEntry { WorkshopEntry(kind: "item", id: id,
+        text: message + ((imageIds ?? []).isEmpty ? "" : "\n[图片 × \((imageIds ?? []).count)]"),
+        role: "user", state: "pending", truncated: false, questionId: questionId) }
+
     var parameters: [String: Any] {
         var result: [String: Any] = ["requestId": id, "applicationId": applicationId, "name": title, "message": message]
         result["threadId"] = originalThreadId
@@ -513,6 +517,46 @@ struct WorkshopReceipt: Codable, Identifiable, Equatable, Sendable {
     var fitsRequestBudget: Bool {
         guard let data = try? JSONSerialization.data(withJSONObject: ["method": "turn.start", "params": parameters]) else { return false }
         return data.count <= 16 * 1024
+    }
+}
+
+// Local transfer state is separate from the durable request and server task.
+// Reopening restores the request identity; an interrupted transfer is never
+// assumed to have completed or automatically submitted a second time.
+enum WorkshopDeliveryState: Equatable, Sendable {
+    case waiting, uploading(Double), sending, failed(String), unconfirmed(String)
+
+    var awaitingRetry: Bool {
+        switch self { case .failed, .unconfirmed: true; default: false }
+    }
+    var holdsOperation: Bool {
+        switch self { case .waiting, .uploading, .failed: true; default: false }
+    }
+}
+
+struct WorkshopOutbox: Equatable, Sendable {
+    private(set) var states: [String: WorkshopDeliveryState] = [:]
+    private(set) var activeID: String?
+
+    mutating func enqueue(_ id: String) { states[id] = .waiting }
+    mutating func restore(_ id: String) { states[id] = .unconfirmed("发送结果待确认，文字和图片已保留。") }
+    mutating func begin(_ id: String, images: Bool) {
+        activeID = id; states[id] = images ? .uploading(0) : .sending
+    }
+    mutating func progress(_ value: Double, id: String) {
+        guard activeID == id, case .uploading = states[id] else { return }
+        states[id] = .uploading(min(1, max(0, value)))
+    }
+    mutating func sending(_ id: String) { if activeID == id { states[id] = .sending } }
+    mutating func failed(_ id: String, message: String, submitted: Bool) {
+        states[id] = submitted ? .unconfirmed(message) : .failed(message)
+    }
+    mutating func acknowledge(_ id: String) { states[id] = nil }
+    mutating func finish(_ id: String) { if activeID == id { activeID = nil } }
+    func holdsOperation(_ id: String?) -> Bool { id.flatMap { states[$0] }?.holdsOperation == true }
+    func nextQueued(_ ids: [String]) -> String? {
+        guard activeID == nil, let first = ids.first, states[first] == .waiting else { return nil }
+        return first
     }
 }
 

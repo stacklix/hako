@@ -50,6 +50,9 @@ struct DeviceServicesView: View {
         }
         ForEach(snapshot.services) { service in
             serviceRow(service).devicePagePanel()
+                .contentShape(Rectangle())
+                .onTapGesture { toggleDetails(service) }
+                .accessibilityAction(named: "展开或收起服务详情") { toggleDetails(service) }
         }
         ForEach(Array(snapshot.warnings.enumerated()), id: \.offset) { _, warning in
             Text(warning).font(.caption).foregroundStyle(.orange)
@@ -109,13 +112,15 @@ struct DeviceServicesView: View {
                     || agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.start && $0.version == 1 }) != true)
             }
             if !service.processes.isEmpty {
-                DisclosureGroup("监听进程 · \(service.processes.count)", isExpanded: Binding(
-                    get: { expandedServiceID == service.id },
-                    set: { expanded in
-                        if expanded { expandedServiceID = service.id }
-                        else if expandedServiceID == service.id { expandedServiceID = nil }
-                    }
-                )) {
+                HStack {
+                    Text("监听进程 · \(service.processes.count)")
+                    Spacer()
+                    Image(systemName: expandedServiceID == service.id ? "chevron.down" : "chevron.right")
+                        .accessibilityHidden(true)
+                }
+                .font(.footnote).foregroundStyle(HakoStyle.text)
+                .accessibilityValue(expandedServiceID == service.id ? "已展开" : "已收起")
+                if expandedServiceID == service.id {
                     VStack(alignment: .leading, spacing: 12) {
                         if let url = service.http?.url {
                             Text("探测地址：\(url)").textSelection(.enabled)
@@ -132,9 +137,13 @@ struct DeviceServicesView: View {
                     }
                     .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                 }
-                .font(.footnote).tint(HakoStyle.text)
             }
         }
+    }
+
+    private func toggleDetails(_ service: DeviceServiceStatus) {
+        guard !service.processes.isEmpty else { return }
+        expandedServiceID = expandedServiceID == service.id ? nil : service.id
     }
 
     @MainActor private func start(_ service: DeviceServiceStatus) async {

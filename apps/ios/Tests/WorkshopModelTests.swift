@@ -2,6 +2,34 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        var outbox = WorkshopOutbox()
+        outbox.enqueue("first"); outbox.enqueue("second")
+        precondition(outbox.nextQueued(["first", "second"]) == "first")
+        precondition(outbox.holdsOperation("first"), "A locally saved request must not be queried as an accepted server operation")
+        outbox.begin("first", images: true)
+        outbox.progress(0.49, id: "first")
+        precondition(outbox.states["first"] == .uploading(0.49) && outbox.nextQueued(["first", "second"]) == nil)
+        outbox.progress(0.9, id: "second")
+        precondition(outbox.states["first"] == .uploading(0.49) && outbox.states["second"] == .waiting,
+            "Upload callbacks must stay attached to their own message")
+        outbox.failed("first", message: "Network lost", submitted: false); outbox.finish("first")
+        precondition(outbox.states["first"]?.awaitingRetry == true && outbox.holdsOperation("first"))
+        precondition(outbox.nextQueued(["first", "second"]) == nil, "A failed head must not let later input overtake it")
+        outbox.begin("first", images: true); outbox.sending("first")
+        precondition(!outbox.holdsOperation("first"), "Once submitted, uncertain results must be checked on the server")
+        outbox.failed("first", message: "Reply lost", submitted: true); outbox.finish("first")
+        precondition(!outbox.holdsOperation("first") && outbox.nextQueued(["first", "second"]) == nil)
+        outbox.acknowledge("first"); outbox.progress(0.8, id: "first")
+        precondition(outbox.states["first"] == nil && outbox.nextQueued(["second"]) == "second",
+            "Acknowledgement must finish the original row without resurrecting progress")
+        outbox.restore("second")
+        precondition(outbox.nextQueued(["second"]) == nil && outbox.states["second"]?.awaitingRetry == true,
+            "Reopening must preserve uncertain requests without automatically resending them")
+        let savedSend = WorkshopReceipt(id: "request", agentId: "agent", applicationId: "app", originalThreadId: nil,
+            threadId: nil, title: "Session", message: "图片说明", createdAt: .now, state: "pending", imageIds: ["image-a", "image-b"])
+        let restoredSend = try JSONDecoder().decode(WorkshopReceipt.self, from: JSONEncoder().encode(savedSend))
+        precondition(restoredSend.entry.id == "request" && restoredSend.entry.role == "user" &&
+            restoredSend.entry.text == "图片说明\n[图片 × 2]", "The first pending bubble must survive reopening with its image references")
         let generationHistory = try JSONDecoder().decode(WorkshopHistory.self, from: Data(
             #"{"threadId":"thread","cwd":"project","entries":[],"artifacts":[],"model":"session-model","reasoningEffort":"max"}"#.utf8))
         precondition(generationHistory.generation.model == "session-model" && generationHistory.generation.effortLabel == "最高")
