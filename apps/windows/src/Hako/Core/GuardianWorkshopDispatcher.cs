@@ -6,6 +6,10 @@ using Hako.Platform;
 
 namespace Hako.Core;
 
+// WorkshopTerminal omits OperationId from the cloud result body. Preserve it
+// separately on the local hop so the guardian can rebuild the cloud envelope.
+internal sealed record LocalWorkshopTerminal(string OperationId, WorkshopTerminal Result);
+
 internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDispatcher
 {
     private string? scope;
@@ -33,7 +37,11 @@ internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDisp
             try
             {
                 await LocalRpc.StreamAsync(LocalRpc.MainPipe(profile), LocalRpc.Request("workshop.terminals", scope: scope),
-                    value => publish(value.Deserialize<WorkshopTerminal>(WorkshopProtocol.Json)!), token);
+                    value =>
+                    {
+                        var terminal = value.Deserialize<LocalWorkshopTerminal>(WorkshopProtocol.Json)!;
+                        return publish(terminal.Result with { OperationId = terminal.OperationId });
+                    }, token);
             }
             catch (AgentActionException) { /* Reattach this read-only stream when the main process returns. */ }
             await Task.Delay(1000, token);

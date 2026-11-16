@@ -201,7 +201,8 @@ public sealed class AgentRuntime : IAsyncDisposable
             case "workshop.terminals":
                 if (string.IsNullOrEmpty(request.Scope)) throw new AgentActionException("invalid_params", "通知上下文为空。");
                 workshop.SetNotificationScope(request.Scope);
-                await workshop.WatchTerminalsAsync(request.Scope, value => publish(value), token); break;
+                await workshop.WatchTerminalsAsync(request.Scope,
+                    value => publish(new LocalWorkshopTerminal(value.OperationId, value)), token); break;
             case "workshop.ack":
                 await workshop.AcknowledgeTerminalAsync(request.Scope ?? "", request.Parameters.GetProperty("id").GetString()!,
                     request.Parameters.GetProperty("questionId").GetString()!, token);

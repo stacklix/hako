@@ -37,12 +37,19 @@ internal static class WorkshopCloudChecks
         var probe=new TcpListener(IPAddress.Loopback,0);probe.Start();var port=((IPEndPoint)probe.LocalEndpoint).Port;probe.Stop();
         var origin=$"http://127.0.0.1:{port}";
         var settings=new AgentSettings(origin,"owner",key.ExportPkcs8PrivateKeyPem());
-        File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob{Id=operation,State="completed",ApplicationId="fixture",Cwd=Path.Combine(directory,"fixture"),SessionName="Cloud session",ReplySummary="Last round reply",NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()},WorkshopProtocol.Json));
+        var finishedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        File.WriteAllBytes(Path.Combine(directory,"code-workshop",operation+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob {
+            Id=operation,State="completed",ApplicationId="fixture",Cwd=Path.Combine(directory,"fixture"),
+            SessionName="Cloud session",ReplySummary="Last round reply",ThreadId="fixture-thread",
+            NotificationScope=WorkshopConnection.NotificationScope(settings),FinishedAt=finishedAt,
+            QuestionNotifications=new() { ["fixture-question"]=new() { CreatedAt=finishedAt-1000,Summary="Choose an option" } }
+        },WorkshopProtocol.Json));
         using var listener=new HttpListener();listener.Prefixes.Add(origin+"/");listener.Start();
         using var lifetime=new CancellationTokenSource(TimeSpan.FromSeconds(50));
         try
         {
-            await using var dispatcher=new WorkshopDispatcher(directory);
+            await using var main=new AgentRuntime(new AgentSettingsStore(directory),true);
+            var dispatcher=new GuardianWorkshopDispatcher(directory);
             string? identity=null;
             await using var connection=new WorkshopConnection(dispatcher,id=>identity=id);
             await connection.StartAsync(settings);
@@ -75,9 +82,18 @@ internal static class WorkshopCloudChecks
             var proof=await Read(socket,lifetime.Token);
             if (CodexJson.Text(proof,"kind")!="proof" || !key.VerifyData(payload,Convert.FromBase64String(CodexJson.Text(proof,"signature")),HashAlgorithmName.SHA256,RSASignaturePadding.Pss)) throw new Exception("Workshop proof failed");
             await Send(socket,new{kind="welcome",protocol=WorkshopProtocol.Name,computerId="PC"},lifetime.Token);
+            var question=await Read(socket,lifetime.Token);
+            var questionContent=CodexJson.Field(question,"result");
+            if (CodexJson.Text(question,"kind")!="terminal" || CodexJson.Text(question,"operationId")!=operation
+                || CodexJson.Text(question,"questionId")!="fixture-question" || CodexJson.Text(questionContent,"state")!="input_required"
+                || CodexJson.Text(questionContent,"threadId")!="fixture-thread" || CodexJson.Text(questionContent,"summary")!="Choose an option")
+                throw new Exception("Question notification lost its identity or content across main/guardian IPC");
+            if (questionContent.TryGetProperty("operationId",out _)) throw new Exception("Cloud question body duplicated its envelope identity");
+            await Send(socket,new{kind="terminal_ack",operationId=operation,questionId="fixture-question"},lifetime.Token);
             var terminal=await Read(socket,lifetime.Token);
             if(CodexJson.Text(terminal,"kind")!="terminal" || CodexJson.Text(terminal,"operationId")!=operation || CodexJson.Text(CodexJson.Field(terminal,"result"),"state")!="completed") throw new Exception("Durable terminal not reported without an iOS subscription");
             var content = CodexJson.Field(terminal, "result");
+            if (content.TryGetProperty("operationId", out _)) throw new Exception("Cloud terminal body duplicated its envelope identity");
             if (CodexJson.Text(content, "projectName") != "fixture" || CodexJson.Text(content, "sessionName") != "Cloud session" || CodexJson.Text(content, "summary") != "Last round reply")
                 throw new Exception("Cloud terminal frame lost the notification content");
             await Send(socket,new{kind="terminal_ack",operationId=operation},lifetime.Token);
@@ -88,10 +104,12 @@ internal static class WorkshopCloudChecks
             if (CodexJson.Text(result,"kind")!="result" || CodexJson.Text(result,"id")!="fixture" || CodexJson.Text(CodexJson.Field(CodexJson.Field(result,"result"),"operation"),"id")!=operation) throw new Exception("Workshop request/result protocol failed");
             if (identity!="PC" || connection.State!="connected") throw new Exception("Independent Workshop identity not confirmed");
             if (!JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory,"code-workshop",operation+".json"))).RootElement.GetProperty("notificationAcknowledged").GetBoolean()) throw new Exception("Server ACK was not persisted");
+            var saved=JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(directory,"code-workshop",operation+".json")),WorkshopProtocol.Json)!;
+            if (!saved.QuestionNotifications["fixture-question"].Acknowledged) throw new Exception("Question ACK was not persisted across main/guardian IPC");
             await connection.StopAsync();
             if (connection.State!="disconnected") throw new Exception("Workshop did not stop independently");
         }
         finally { listener.Stop(); Directory.Delete(directory,true); }
-        Console.WriteLine("PASS: real Workshop cloud socket, dedicated endpoint/hello, bound RSA proof, heartbeat and request/result exchange");
+        Console.WriteLine("PASS: real Workshop cloud socket through main/guardian IPC, durable terminal identity/ACK, bound RSA proof, heartbeat and request/result exchange");
     }
 }

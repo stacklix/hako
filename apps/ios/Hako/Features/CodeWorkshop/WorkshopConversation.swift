@@ -430,7 +430,12 @@ import Combine
         if let operationId {
             do { try await poll(operationId); needsHistoryRefresh = false }
             catch { readFailed(error) }
-        } else { needsHistoryRefresh = false }
+        } else {
+            needsHistoryRefresh = false
+            // External conversations have no operation stream to confirm recovery.
+            // A successful history read is their complete connection check.
+            if loadedHistory { connectionIssue = nil }
+        }
     }
 
     private func saveTranscript() {
