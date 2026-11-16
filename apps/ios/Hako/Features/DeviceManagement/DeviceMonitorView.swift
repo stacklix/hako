@@ -61,7 +61,7 @@ struct DeviceMonitorView: View {
             if client.authenticated, !client.logoutPending {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
-                        .accessibilityLabel("设备监控配置与 Agent 版本")
+                        .accessibilityLabel("设备监控设置")
                 }
             }
         }
@@ -182,19 +182,36 @@ struct DeviceMonitorView: View {
                     Text("下次打开设备监控时直接进入默认设备。")
                 }
                 if let agent = selectedAgent {
-                    DeviceAgentVersionSection(agent: agent)
-                        .id(client.requestContext + "\n" + agent.id)
                     let order = pageOrderStorage(for: agent)
                     DevicePageOrderSection(agent: agent, capabilities: agent.monitorPages, order: order)
                         .id(order.key)
                         .environment(\.editMode, .constant(.active))
-                } else {
-                    Section("Agent 版本信息") {
-                        Text("选择一个 Agent 后查看版本信息。").foregroundStyle(.secondary)
+                }
+                Section {
+                    NavigationLink { about } label: {
+                        Label("关于", systemImage: "info.circle")
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
             }
         }
+    }
+
+    private var about: some View {
+        List {
+            if let agent = selectedAgent {
+                DeviceAgentVersionSection(agent: agent)
+                    .id(client.requestContext + "\n" + agent.id)
+            } else {
+                Section("Agent 版本信息") {
+                    Text("选择一个 Agent 后查看版本信息。").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("关于")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func deviceRow(_ agent: ConsoleAgent, current: Bool) -> some View {
@@ -760,6 +777,7 @@ private extension ConsoleAgent {
         (capabilities ?? []).filter {
             $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
                 && $0.name != DeviceServiceCommand.start
+                && $0.name != DeviceAgentVersions.command
         }
     }
 }
