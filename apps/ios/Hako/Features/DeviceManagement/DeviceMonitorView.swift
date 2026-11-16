@@ -55,13 +55,13 @@ struct DeviceMonitorView: View {
                 deviceList
             }
         }
-        .navigationTitle(showsDetail ? "设备详情" : "设备监控")
+        .navigationTitle(showsDetail ? "设备详情" : "设备管理")
         .navigationBarTitleDisplayMode(showsDetail ? .inline : .automatic)
         .toolbar {
             if client.authenticated, !client.logoutPending {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
-                        .accessibilityLabel("设备监控设置")
+                        .accessibilityLabel("设备管理设置")
                 }
             }
         }
@@ -151,7 +151,7 @@ struct DeviceMonitorView: View {
     }
 
     private var settings: some View {
-        SettingsSheet(title: "设备监控设置") {
+        SettingsSheet(title: "设备管理设置") {
             List {
                 Section("切换 Agent") {
                     if client.agents.isEmpty {
@@ -179,7 +179,7 @@ struct DeviceMonitorView: View {
                     }
                     .pickerStyle(.navigationLink)
                 } footer: {
-                    Text("下次打开设备监控时直接进入默认设备。")
+                    Text("下次打开设备管理时直接进入默认设备。")
                 }
                 if let agent = selectedAgent {
                     let order = pageOrderStorage(for: agent)

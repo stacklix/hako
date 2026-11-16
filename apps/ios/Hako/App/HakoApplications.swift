@@ -15,7 +15,7 @@ enum HakoApplications {
 
     enum Application: String, Identifiable {
         case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
-        case containers = "容器管理", devices = "设备监控", sports = "运动记录", usage = "使用时间"
+        case containers = "容器管理", devices = "设备管理", sports = "运动记录", usage = "使用时间"
         case investment = "投资记账", crypto = "加密资产"
         case codeWorkshop = "代码工坊"
 

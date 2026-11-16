@@ -59,7 +59,7 @@ enum DeviceMonitorFailure {
         guard let error = error as? URLError else { return error.localizedDescription }
         switch error.code {
         case .badURL, .unsupportedURL:
-            return "设备监控连接地址无效，请检查服务器地址和网络后重试。"
+            return "设备管理连接地址无效，请检查服务器地址和网络后重试。"
         case .timedOut:
             return "连接服务器超时，暂时无法确认设备状态，请稍后重试。"
         default:

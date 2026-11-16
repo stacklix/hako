@@ -131,7 +131,7 @@ struct CodeWorkshopView: View {
                         }
                     } else {
                         ContentUnavailableView("尚无可用电脑", systemImage: "desktopcomputer",
-                            description: Text("请先在「设备监控」添加 Windows Agent。"))
+                            description: Text("请先在「设备管理」添加 Windows Agent。"))
                     }
                 }
                 .buttonStyle(.plain)
@@ -395,7 +395,7 @@ private struct WorkshopSettingsView: View {
                             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                         }.disabled(store.loading)
                     }
-                    if store.agents.isEmpty { Text("请先在设备监控中登记 Windows Agent。").foregroundStyle(.secondary) }
+                    if store.agents.isEmpty { Text("请先在设备管理中登记 Windows Agent。").foregroundStyle(.secondary) }
                 }
                 Section("Codex") {
                     Button { editingSystemPrompt = true } label: {
