@@ -84,7 +84,7 @@ func TestEmptyPlanSchemaUpgradePreservesLedger(t *testing.T) {
 	defer db.Close()
 	var version int
 	var amount, total string
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != investmentSchemaVersion {
 		t.Fatalf("schema = %d (%v)", version, err)
 	}
 	if err := db.QueryRow("SELECT amount FROM investment_events WHERE id='event'").Scan(&amount); err != nil || amount != "100.123456789" {

@@ -1,7 +1,7 @@
 'use strict';
 
 const investmentAccountTypes = {
-  securities: '证券账户', fund: '基金账户', futures: '期货账户', wealth: '理财账户',
+  securities: '证券账户', fund_wealth: '基金理财账户', futures: '期货账户',
   deposits: '存款账户', crypto: '加密货币账户', insurance: '保险账户'
 };
 const investmentAssetTypes = {

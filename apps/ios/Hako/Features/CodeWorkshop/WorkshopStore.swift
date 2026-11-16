@@ -18,6 +18,7 @@ import CryptoKit
     @Published private(set) var applications: [WorkshopApplication] = []
     @Published private(set) var sessions: [WorkshopSession] = []
     @Published private(set) var loading = false
+    @Published private(set) var loadingMore = false
     @Published private(set) var showingArchived = false
     @Published private(set) var archivingSessionID: String?
     @Published var error: String?
@@ -325,7 +326,7 @@ import CryptoKit
     }
 
     private func saveLists(background: Bool = false) throws {
-        let values = sessions.filter { UUID(uuidString: $0.id) != nil }.prefix(300)
+        let values = sessions.filter { UUID(uuidString: $0.id) != nil }
         cachedCatalogs[catalogKey(selectedAgentID, archived: showingArchived)] = WorkshopCachedCatalog(catalog: WorkshopCatalog(
             applications: applications, sessions: Array(values), nextCursor: cursor), savedAt: .now)
         // A direct connection exposes only its own computer. Its inventory is not
@@ -422,9 +423,43 @@ import CryptoKit
         await refresh()
     }
 
+    func loadMore() async {
+        guard !loadingMore, hasMore else { return }
+        let ticket = scope
+        let agentID = selectedAgentID
+        let applicationID = selectedApplicationID
+        let archived = showingArchived
+        loadingMore = true
+        defer { loadingMore = false }
+        func isCurrent() -> Bool {
+            !Task.isCancelled && scope == ticket && selectedAgentID == agentID &&
+                selectedApplicationID == applicationID && showingArchived == archived
+        }
+        // A user request waits for the current poll instead of being dropped.
+        while loading {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            guard isCurrent() else { return }
+        }
+        guard isCurrent() else { return }
+        guard selectedAgent?.online == true else {
+            error = "电脑当前离线，联网后可加载更早的会话。"
+            return
+        }
+        let existing = Set(visibleSessions.map(\.id))
+        var visited = Set<String>()
+        // Catalog pages span all projects. Continue until this project gains a
+        // row, rather than completing an apparently empty load for another one.
+        while isCurrent(), let next = cursor, visited.insert(next).inserted {
+            await refresh(more: true)
+            guard isCurrent(), error == nil, cursor != next else { return }
+            if visibleSessions.contains(where: { !existing.contains($0.id) }) { return }
+        }
+    }
+
     func refresh(more: Bool = false) async {
         await prepareNetwork()
-        guard authenticated, !loading, archivingSessionID == nil else { return }
+        guard authenticated, !loading, !loadingMore || more, archivingSessionID == nil,
+              !more || hasMore else { return }
         let ticket = scope
         let revision = catalogRevision
         let sessionCheckpoint = sessionUpdates.revision
@@ -457,17 +492,17 @@ import CryptoKit
             cachedAt = nil
             var freshSessions = page.sessions
             var nextCursor = page.nextCursor
-            var pages = 1
-            let loadedCount = min(300, previousSessions.filter { UUID(uuidString: $0.id) != nil }.count)
+            let loadedCount = previousSessions.filter { UUID(uuidString: $0.id) != nil }.count
+            var visited = Set<String>()
             // Refresh all previously loaded pages so externally archived/restored
             // threads cannot survive in a stale merged catalog.
-            while !more, freshSessions.count < loadedCount, let next = nextCursor, pages < 10 {
+            while !more, freshSessions.count < loadedCount, let next = nextCursor, visited.insert(next).inserted {
                 var nextParams: [String: Any] = ["cursor": next]
                 if archived { nextParams["archived"] = true }
                 let older: WorkshopCatalog = try await call(agent, "applications.list", nextParams)
                 guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
                 freshSessions += older.sessions
-                nextCursor = older.nextCursor; pages += 1
+                nextCursor = older.nextCursor
                 if nextCursor == next { break }
             }
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }

@@ -70,16 +70,14 @@ struct CodeWorkshopView: View {
                   push.workshopNavigation.accepts(ownerID: navigationOwner, noticeID: link.id) else { return }
             await openNotification(link)
         }
-        .sheet(item: $pendingArchive) { session in
-            SettingsSheet(title: "归档会话", onSave: { archive(session) }, saveAccessibilityLabel: "确认归档") {
-                Form {
-                    Section {
-                        Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
-                        Button("确认归档") { archive(session) }
-                            .buttonStyle(HakoActionButtonStyle())
-                    }
-                }
-            }
+        .alert("归档会话", isPresented: Binding(
+            get: { pendingArchive != nil },
+            set: { if !$0 { pendingArchive = nil } }
+        ), presenting: pendingArchive) { session in
+            Button("取消", role: .cancel) { pendingArchive = nil }
+            Button("确认归档") { archive(session) }
+        } message: { session in
+            Text("确定归档「\(session.title)」吗？归档后可在「已归档」列表中查看和恢复。")
         }
     }
 
@@ -146,10 +144,16 @@ struct CodeWorkshopView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     if store.authenticated, let agent = store.selectedAgent {
                         if store.hasMore && agent.supported {
-                            Button("加载更早的会话") { Task { await store.refresh(more: true) } }
-                                .font(.subheadline)
+                            Button { Task { await store.loadMore() } } label: {
+                                HStack(spacing: 8) {
+                                    if store.loadingMore { ProgressView() }
+                                    Text(store.loadingMore ? "正在加载更早的会话…" : "加载更早的会话")
+                                }
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                .contentShape(Rectangle()).disabled(store.loading)
+                                .contentShape(Rectangle())
+                            }
+                                .font(.subheadline)
+                                .disabled(store.loadingMore || store.archivingSessionID != nil)
                         }
                         if !agent.online { Text("电脑当前离线，联网后下拉刷新。已发送的任务由电脑端继续执行。")
                             .font(.footnote).foregroundStyle(HakoStyle.muted) }

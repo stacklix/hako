@@ -69,14 +69,14 @@ enum InvestmentStablecoin: String, Codable, CaseIterable, Identifiable {
 }
 
 enum InvestmentAccountType: String, Codable, CaseIterable, Identifiable {
-    case securities = "证券账户", fund = "基金账户", futures = "期货账户", wealth = "理财账户"
+    case securities = "证券账户", fundWealth = "基金理财账户", futures = "期货账户"
     case deposits = "存款账户", crypto = "加密货币账户", insurance = "保险账户"
 
     var id: Self { self }
 
     static func available(in currency: InvestmentCurrency) -> [Self] {
         switch currency {
-        case .cny: [.securities, .fund, .futures, .wealth, .deposits]
+        case .cny: [.securities, .fundWealth, .futures, .deposits]
         case .usd: [.securities, .crypto]
         case .hkd: [.insurance]
         }
@@ -86,9 +86,8 @@ enum InvestmentAccountType: String, Codable, CaseIterable, Identifiable {
         guard Self.available(in: currency).contains(self) else { return [] }
         return switch self {
         case .securities: [.stock, .etf]
-        case .fund: [.fund]
+        case .fundWealth: [.fund, .wealth]
         case .futures: [.future]
-        case .wealth: [.wealth]
         case .deposits: [.deposit, .certificate]
         case .crypto: [.crypto, .generic]
         case .insurance: [.insurance]
@@ -237,8 +236,8 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
             throw InvestmentError.invalid("此账户类型不支持该资产。")
         }
         try validateMarket(settlingIn: account.currency)
-        if type == .fund, mainlandSymbol?.venue != "OF" {
-            throw InvestmentError.invalid("基金账户只录入场外基金。")
+        if type == .fundWealth, kind == .fund, mainlandSymbol?.venue != "OF" {
+            throw InvestmentError.invalid("基金理财账户中的基金仅支持场外基金。")
         }
     }
 
@@ -1410,4 +1409,43 @@ struct InvestmentBook: Codable {
         }
         return due
     }
+}
+
+
+struct InvestmentHoldingHistoryPoint: Identifiable, Sendable {
+    let day: Date
+    let value: Decimal
+    let segment: Int
+    var id: Date { day }
+}
+
+extension InvestmentBook {
+    func holdingHistory(accountID: UUID, assetID: UUID, on dates: [Date], today: Date = Self.day()) -> [InvestmentHoldingHistoryPoint] {
+        guard let account = account(accountID), let asset = asset(assetID),
+              let firstDay = account.events.filter({ $0.assetID == assetID }).map(\.day).min() else { return [] }
+        // Replay this account only: another account's incomplete records must not hide this holding.
+        var scoped = self
+        scoped.accounts = [account]
+        var points: [InvestmentHoldingHistoryPoint] = []
+        var segment = 0
+        scoped.visitDailyLedgers(on: dates.filter { $0 >= firstDay && $0 <= today }) { day, ledgers in
+            guard let position = ledgers[0].positions[assetID],
+                  let value = asset.historyUsesInvestment
+                    ? Optional(position.netCost - position.realized)
+                    : (asset.historyUsesAmount
+                        ? scoped.positionValue(position, asset: asset, on: day, requiresDailyPrices: day < today)
+                        : Optional(position.quantity)) else {
+                segment += 1
+                return
+            }
+            points.append(.init(day: day, value: value, segment: segment))
+        }
+        return points
+    }
+}
+
+extension InvestmentAsset {
+    var historyUsesInvestment: Bool { kind == .fund || kind == .wealth }
+    var historyUsesAmount: Bool { historyUsesInvestment || kind.usesBalance || kind == .insurance }
+    var historyUnit: String { kind == .crypto ? code : kind.unit }
 }

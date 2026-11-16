@@ -22,6 +22,7 @@ struct InvestmentBookTests {
         try stockConnectSettlesInRenminbi()
         try insuranceKeepsOnePolicyPosition()
         try typedAccountsFilterAssets()
+        try fundWealthAccountsKeepBothKindsAndRoundTrip()
         try transfersMoveCashAsOneOperation()
         try depositsUseRecordedBalancesAndCashMovements()
         try balanceSheetKeepsDatedBalancesAndUsesInvestmentValuation()
@@ -31,9 +32,12 @@ struct InvestmentBookTests {
         try balanceTrendKeepsMissingDaysAndManualBalances()
         try balanceTrendCarriesSnapshotsFromNovemberFirst()
         try balanceTrendStopsCarryAtNovemberFirst()
+        try fundAndWealthHistoryTracksNetInvestment()
+        try holdingHistoryTracksQuantitiesAndAmounts()
         try dailyGainsRequireCompleteMarketPrices()
         try portfolioHistoryMatchesIndividualValuations()
         try dailySnapshotsUseBeijingCloseAndDatedRates()
+        try deletedAndRecreatedHoldingsInvalidateSnapshotsWithoutCache()
         try changingHistoricalEntriesInvalidatesOnlyTheAffectedDays()
         try changingTransfersIsAtomic()
         try dailyQuotesReuseCachedMarketCloses()
@@ -194,7 +198,7 @@ struct InvestmentBookTests {
 
     static func fundsAndETFsRecordCashDividends() throws {
         let cases: [(InvestmentAccount, InvestmentAsset)] = [
-            (.init(name: "基金账户", currency: .cny, type: .fund),
+            (.init(name: "基金账户", currency: .cny, type: .fundWealth),
              .init(name: "测试基金", code: "110022.OF", market: "", kind: .fund, currency: .cny)),
             (.init(name: "美元证券账户", currency: .usd, type: .securities),
              .init(name: "QQQ", code: "QQQ", market: "", kind: .etf, currency: .usd)),
@@ -637,7 +641,7 @@ struct InvestmentBookTests {
             preconditionFailure("Hong Kong listings must be rejected in every account")
         } catch InvestmentError.invalid {}
         for (code, kind, type) in [
-            ("AAPL", InvestmentKind.stock, InvestmentAccountType.securities), ("VFIAX", .fund, .fund),
+            ("AAPL", InvestmentKind.stock, InvestmentAccountType.securities), ("VFIAX", .fund, .fundWealth),
             ("CLZ6.NYM", .future, .futures), ("000001.SH", .stock, .securities)
         ] {
             let asset = InvestmentAsset(name: code, code: code, market: "", kind: kind, currency: .cny)
@@ -719,17 +723,41 @@ struct InvestmentBookTests {
         precondition(allows(.securities, .cny, .stock, "600519"))
         precondition(allows(.securities, .cny, .etf, "510300"))
         precondition(allows(.securities, .cny, .stock, "00700.HK", market: InvestmentAsset.stockConnectMarket))
-        precondition(!allows(.fund, .cny, .stock, "00700.HK", market: InvestmentAsset.stockConnectMarket))
+        precondition(!allows(.fundWealth, .cny, .stock, "00700.HK", market: InvestmentAsset.stockConnectMarket))
         precondition(!allows(.securities, .cny, .option, "10001313.SH"))
         precondition(!allows(.securities, .cny, .option, "IO2611-C-4000.CFX"))
         precondition(!allows(.futures, .cny, .option, "IO2611-C-4000.CFX"))
         precondition(!allows(.futures, .cny, .option, "10001313.SH"))
-        precondition(allows(.fund, .cny, .fund, "110022.OF"))
-        precondition(!allows(.fund, .cny, .fund, "501018.SH"))
+        precondition(allows(.fundWealth, .cny, .fund, "110022.OF"))
+        precondition(!allows(.fundWealth, .cny, .fund, "501018.SH"))
+        precondition(allows(.fundWealth, .cny, .wealth, "理财产品"))
+        precondition(!allows(.fundWealth, .cny, .stock, "600519"))
+        precondition(!InvestmentAccountType.available(in: .usd).contains(.fundWealth))
         precondition(allows(.securities, .usd, .etf, "QQQ", market: "XNAS"))
         precondition(allows(.crypto, .usd, .crypto, "BTC"))
         precondition(!allows(.securities, .usd, .crypto, "BTC"))
         precondition(allows(.insurance, .hkd, .insurance, "POLICY"))
+    }
+
+    static func fundWealthAccountsKeepBothKindsAndRoundTrip() throws {
+        let account = InvestmentAccount(name: "基金理财", currency: .cny, type: .fundWealth)
+        var book = InvestmentBook(accounts: [account])
+        let fund = try book.register(.init(name: "场外基金", code: "110022.OF", market: "OF", kind: .fund, currency: .cny))
+        let wealth = try book.register(.init(name: "银行理财", code: "理财", market: "", kind: .wealth, currency: .cny))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: fund, quantity: 100, price: 2), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: wealth, quantity: 300, price: 1), accountID: account.id)
+        book.addQuotes([.init(day: date(2), price: 3)], assetID: fund)
+        book.addQuotes([.init(day: date(2), price: 1.1)], assetID: wealth)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        precondition(tables["investment_accounts"]?.first?["account_type"] == "fund_wealth")
+        let saved = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        precondition(saved.accounts.count == 1 && saved.accounts[0].type == .fundWealth)
+        let ledger = try saved.ledger(saved.accounts[0], through: date(2))
+        precondition(ledger.cash == 500 && ledger.positions[fund]?.quantity == 100 && ledger.positions[wealth]?.quantity == 300)
+        precondition(saved.value(saved.accounts[0], on: date(2))?.value == 1130)
+        precondition(saved.value(saved.accounts[0], on: date(2))?.gain == 130)
     }
 
     static func transfersMoveCashAsOneOperation() throws {
@@ -1195,6 +1223,95 @@ struct InvestmentBookTests {
         precondition(book.value(book.accounts[0], on: date(2))?.gain == -100)
         do { try book.assets[id]!.validateEntry(in: .init(name: "人民币", currency: .cny, type: .securities)); preconditionFailure("generic currency") }
         catch is InvestmentError { }
+    }
+
+    static func holdingHistoryTracksQuantitiesAndAmounts() throws {
+        let account = InvestmentAccount(name: "持仓", currency: .usd, type: .crypto)
+        let other = InvestmentAccount(name: "另一账户", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account, other])
+        let token = try book.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        try book.post(.init(day: date(1), kind: .opening, assetID: token, quantity: 2, price: 10), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .opening, assetID: token, quantity: 99, price: 10), accountID: other.id)
+        try book.adjustSpotBalance(assetID: token, accountID: account.id, balance: 3, on: date(3))
+        try book.post(.init(day: date(4), kind: .sell, assetID: token, quantity: 1, price: 12), accountID: account.id)
+        book.addQuotes([.init(day: date(1), price: 10, isDailyClose: true),
+                        .init(day: date(3), price: 11, isDailyClose: true),
+                        .init(day: date(4), price: 12, isDailyClose: true),
+                        .init(day: date(5), price: 13)], assetID: token)
+        let days = (0...6).map { InvestmentBook.addDays($0 - 1, to: date(1)) }
+        let points = book.holdingHistory(accountID: account.id, assetID: token, on: days, today: date(5))
+        precondition(points.map(\.day) == [date(1), date(2), date(3), date(4), date(5)])
+        precondition(points.map(\.value) == [2, 2, 3, 2, 2], "Quantity history must be independent of quotes and other accounts")
+        precondition(points.allSatisfy { $0.segment == 0 }, "Missing prices must not create gaps in quantity history")
+        let one = book.holdingHistory(accountID: account.id, assetID: token, on: [date(5)], today: date(5))
+        precondition(one.count == 1 && one[0].value == 2)
+        try book.post(.init(day: date(6), kind: .sell, assetID: token, quantity: 2, price: 13), accountID: account.id)
+        let closed = book.holdingHistory(accountID: account.id, assetID: token, on: [date(6)], today: date(6))
+        precondition(closed.first?.value == 0, "Closing a holding must show zero without requiring a quote")
+
+        let cash = InvestmentAccount(name: "手工资产", currency: .usd, type: .crypto)
+        var manual = InvestmentBook(accounts: [cash])
+        let balance = try manual.register(.init(name: "余额", code: "BALANCE", market: "", kind: .generic, currency: .usd))
+        try manual.post(.init(day: date(1), kind: .opening, assetID: balance, quantity: 1, price: 100), accountID: cash.id)
+        try manual.post(.init(day: date(2), kind: .adjustment, assetID: balance, settledAmount: 150), accountID: cash.id)
+        let balances = manual.holdingHistory(accountID: cash.id, assetID: balance, on: [date(1), date(2)], today: date(3))
+        precondition(balances.map(\.value) == [100, 150], "Manual balances must not require market quotes")
+    }
+
+    static func deletedAndRecreatedHoldingsInvalidateSnapshotsWithoutCache() throws {
+        let owner = InvestmentAccount(name: "重建持仓", currency: .usd, type: .crypto)
+        var original = InvestmentBook(accounts: [owner])
+        let id = try original.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        try original.post(.init(day: date(1), kind: .opening, assetID: id, quantity: 10, price: 1), accountID: owner.id)
+        original.addQuotes((1...4).map { .init(day: date($0), price: 1, isDailyClose: true) }, assetID: id)
+        original.addExchangeRates((1...4).map { .init(day: date($0), price: 7) }, for: .usd)
+        original.dailySnapshots = original.makeDailySnapshots(through: date(4), rebuild: true)
+        var deleted = original
+        try deleted.deleteInvestment(accountID: owner.id, assetID: id)
+        precondition(deleted.snapshotInputChange(comparedTo: original) == date(1))
+        // The previous cutoff may be absent after the last holding is removed.
+        deleted.dailySnapshots = nil
+        var recreated = deleted
+        let nextID = try recreated.register(.init(name: "TRON", code: "TRX", market: "", kind: .crypto, currency: .usd))
+        try recreated.post(.init(day: date(2), kind: .opening, assetID: nextID, quantity: 20, price: 2), accountID: owner.id)
+        precondition(recreated.snapshotInputChange(comparedTo: deleted) == date(2))
+        precondition(recreated.snapshotInputChange(comparedTo: recreated) == nil)
+        recreated.addQuotes((2...4).map { .init(day: date($0), price: 2, isDailyClose: true) }, assetID: nextID)
+        recreated.dailySnapshots = recreated.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(recreated.dailySnapshots?.values[date(2)]?.value == 280)
+        precondition(recreated.inconsistentDailySnapshotStart(through: date(4)) == nil)
+        var stale = recreated
+        stale.dailySnapshots?.values[date(2)] = .init(value: 70, gain: 0, valueUSD: 10)
+        precondition(stale.inconsistentDailySnapshotStart(through: date(4)) == date(2), "Loading stale persisted snapshots must trigger automatic repair")
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(recreated, revision: 3)
+        let loaded = try records.decode(.init(generation: 3, revision: 3, through: records.day.string(from: date(4)), tables: tables))
+        precondition(loaded.dailySnapshots?.values[date(2)]?.value == 280)
+        var moved = recreated
+        let event = try require(moved.account(owner.id)?.events.first)
+        var changed = event
+        changed.day = date(1)
+        try moved.replaceEvent(event, with: changed, accountID: owner.id)
+        precondition(moved.snapshotInputChange(comparedTo: recreated) == date(1))
+    }
+
+    static func fundAndWealthHistoryTracksNetInvestment() throws {
+        for kind in [InvestmentKind.fund, .wealth] {
+            let account = InvestmentAccount(name: kind.rawValue, currency: .cny, type: .fundWealth)
+            var book = InvestmentBook(accounts: [account])
+            let id = try book.register(.init(name: "投入测试", code: "000001", market: "", kind: kind, currency: .cny))
+            try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
+            try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 10, price: 10, fee: 1), accountID: account.id)
+            try book.post(.init(day: date(2), kind: .buy, assetID: id, quantity: 5, price: 20, fee: 2), accountID: account.id)
+            try book.post(.init(day: date(3), kind: .sell, assetID: id, quantity: 4, price: 25, fee: 1), accountID: account.id)
+            try book.post(.init(day: date(5), kind: .sell, assetID: id, quantity: 11, price: 10, fee: 1), accountID: account.id)
+            book.addQuotes([.init(day: date(4), price: 99)], assetID: id)
+            let points = book.holdingHistory(accountID: account.id, assetID: id, on: (1...5).map(date), today: date(5))
+            precondition(points.map(\.value) == [101, 203, 104, 104, -5], "Fund and wealth charts must show net invested cash, independent of quantity and quotes")
+            precondition(book.asset(id)?.historyUsesInvestment == true && book.asset(id)?.historyUsesAmount == true)
+        }
+        let etf = InvestmentAsset(name: "ETF", code: "TEST", market: "", kind: .etf, currency: .cny)
+        precondition(!etf.historyUsesAmount, "ETF remains a quantity-based asset")
     }
 
     static func date(_ day: Int) -> Date {

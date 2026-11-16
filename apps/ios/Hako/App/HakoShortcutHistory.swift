@@ -54,8 +54,22 @@ struct HakoShortcutRun: Codable, Identifiable {
 
     func recordStep(_ name: String, status: HakoShortcutRun.Status, runID: UUID) {
         guard let index = runs.firstIndex(where: { $0.id == runID }) else { return }
-        runs[index].steps.append(.init(name: name, status: status))
+        let step = HakoShortcutRun.Step(name: name, status: status)
+        if let stepIndex = runs[index].steps.firstIndex(where: { $0.name == name }) {
+            runs[index].steps[stepIndex] = step
+        } else {
+            runs[index].steps.append(step)
+        }
         save()
+    }
+
+    func beginRetry(_ id: UUID) -> Bool {
+        guard !runs.contains(where: { $0.status == .running }),
+              let index = runs.firstIndex(where: { $0.id == id }), runs[index].status == .failed else { return false }
+        runs[index].status = .running
+        runs[index].finishedAt = nil
+        save()
+        return true
     }
 
     func finish(_ id: UUID, status: HakoShortcutRun.Status) {

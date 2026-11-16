@@ -225,3 +225,52 @@ extension InvestmentBook {
         return first...last
     }
 }
+
+
+extension InvestmentBook {
+    // Compare source records rather than relying on a cached snapshot cutoff. The cache
+    // can already be truncated or absent when a holding is deleted and registered again.
+    func snapshotInputChange(comparedTo previous: InvestmentBook) -> Date? {
+        var first: Date?
+        func include(_ day: Date?) {
+            if let day { first = min(first ?? day, day) }
+        }
+        let oldAccounts = Dictionary(uniqueKeysWithValues: previous.accounts.map { ($0.id, $0) })
+        let newAccounts = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        for id in Set(oldAccounts.keys).union(newAccounts.keys) {
+            let old = oldAccounts[id], new = newAccounts[id]
+            let before = Dictionary(uniqueKeysWithValues: (old?.events ?? []).map { ($0.id, $0) })
+            let after = Dictionary(uniqueKeysWithValues: (new?.events ?? []).map { ($0.id, $0) })
+            for eventID in Set(before.keys).union(after.keys) where before[eventID] != after[eventID] {
+                include(before[eventID]?.day)
+                include(after[eventID]?.day)
+            }
+            if old?.currency != new?.currency || old?.type != new?.type {
+                include(old?.events.map(\.day).min())
+                include(new?.events.map(\.day).min())
+            }
+        }
+        for id in Set(assets.keys).union(previous.assets.keys) where assets[id] != previous.assets[id] {
+            include((accounts + previous.accounts).flatMap(\.events).filter { $0.assetID == id }.map(\.day).min())
+        }
+        return first
+    }
+}
+
+
+extension InvestmentBook {
+    func inconsistentDailySnapshotStart(through end: Date) -> Date? {
+        guard let snapshots = dailySnapshots else { return nil }
+        let dates = snapshots.values.keys.filter { $0 <= end && $0 <= snapshots.through }.sorted()
+        let current = portfolioHistory(on: dates, requiresDailyPrices: true)
+        for day in dates {
+            guard !Task.isCancelled else { return nil }
+            guard let saved = snapshots.values[day] else { continue }
+            guard let fresh = current[day] else { return day }
+            if saved.value != fresh.value || saved.gain != fresh.gain { return day }
+            let usd = fresh.value == 0 ? Decimal.zero : rateToCNY(.usd, on: day, requiresDailyPrice: true).map { fresh.value / $0 }
+            if let usd, saved.valueUSD != usd { return day }
+        }
+        return nil
+    }
+}

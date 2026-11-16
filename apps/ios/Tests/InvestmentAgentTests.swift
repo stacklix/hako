@@ -507,7 +507,7 @@ struct InvestmentAgentTests {
     }
 
     private static func nativeEditorKeepsOptionalValuationInTheSamePreview() throws {
-        let account = InvestmentAccount(name: "理财", currency: .cny, type: .wealth)
+        let account = InvestmentAccount(name: "理财", currency: .cny, type: .fundWealth)
         var book = InvestmentBook(accounts: [account])
         let date = InvestmentEditorDraft.day.string(from: InvestmentBook.day())
         try book.post(.init(day: InvestmentBook.day(), kind: .deposit, amount: 100), accountID: account.id)

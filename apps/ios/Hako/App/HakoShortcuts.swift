@@ -1,54 +1,6 @@
 import AppIntents
 import Foundation
 
-@MainActor final class HakoShortcutRegistry {
-    private static let shared: HakoShortcutRegistry = {
-        let registry = HakoShortcutRegistry()
-        HakoApplications.registerShortcuts(in: registry)
-        return registry
-    }()
-
-    private var callbacks: [String: @MainActor () async throws -> String] = [:]
-
-    func register(_ name: String, run: @escaping @MainActor () async throws -> String) {
-        callbacks[name] = run
-    }
-
-    static func run(_ title: String) async throws -> String {
-        try await shared.runCallbacks(title: title)
-    }
-
-    private func runCallbacks(title: String) async throws -> String {
-        let history = HakoShortcutHistory.shared
-        let runID = history.start(title)
-        var status = HakoShortcutRun.Status.failed
-        defer { history.finish(runID, status: Task.isCancelled ? .cancelled : status) }
-        guard !callbacks.isEmpty else { throw HakoError(message: "没有已注册的同步任务。") }
-        var results: [String] = []
-        var failed = false
-        for (name, run) in callbacks.sorted(by: { $0.key < $1.key }) {
-            try Task.checkCancellation()
-            do {
-                results.append("\(name)：\(try await run())")
-                history.recordStep(name, status: .succeeded, runID: runID)
-            } catch is CancellationError {
-                status = .cancelled
-                history.recordStep(name, status: .cancelled, runID: runID)
-                throw CancellationError()
-            } catch {
-                failed = true
-                results.append("\(name)失败：\(error.localizedDescription)")
-                history.recordStep(name, status: .failed, runID: runID)
-            }
-        }
-        try Task.checkCancellation()
-        let summary = results.joined(separator: "\n")
-        if failed { throw HakoError(message: summary) }
-        status = .succeeded
-        return summary
-    }
-}
-
 struct SyncHakoDataIntent: AppIntent {
     static var title: LocalizedStringResource = "同步 Hako 数据"
     static var description = IntentDescription("在后台更新各子应用数据，包括投资行情、到期定投和每日快照，并汇总执行结果。")

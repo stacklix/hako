@@ -68,7 +68,7 @@ struct InvestmentAgentAction: Codable {
         "derivative_margin": .marginTransfer, "derivative_settlement": .derivativeSettlement
     ]
     static let accountTypes: [String: InvestmentAccountType] = [
-        "securities": .securities, "fund": .fund, "futures": .futures, "wealth": .wealth,
+        "securities": .securities, "fund_wealth": .fundWealth, "futures": .futures,
         "deposits": .deposits, "crypto": .crypto, "insurance": .insurance
     ]
     static let assetKinds: [String: InvestmentKind] = [

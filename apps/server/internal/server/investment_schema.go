@@ -6,7 +6,9 @@ import (
 )
 
 // Investment is a separate SQLite database with its own schema version.
-const investmentSchemaVersion = 4
+const investmentSchemaVersion = 5
+
+const investmentAccountTypesSQL = "'securities','fund_wealth','futures','deposits','crypto','insurance'"
 
 // Existing ledgers can adopt the new schedule schema when they have no plans to convert.
 func upgradeEmptyInvestmentPlans(db *sql.DB) error {

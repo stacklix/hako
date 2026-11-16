@@ -105,6 +105,14 @@ jobs:
           /tmp/hako-application-tests
           swiftc Hako/Shared/Infrastructure/SecureStorage.swift -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Tests/ConsoleIdentityTests.swift -o /tmp/hako-identity-tests
           /tmp/hako-identity-tests
+      - name: Test application ordering
+        run: |
+          swiftc Hako/App/HakoApplicationOrder.swift Tests/HakoApplicationOrderTests.swift -o /tmp/hako-application-order-tests
+          /tmp/hako-application-order-tests
+      - name: Test shortcut history retries
+        run: |
+          swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/App/HakoShortcutHistory.swift Hako/App/HakoShortcutRegistry.swift Tests/HakoShortcutRetryTests.swift -o /tmp/hako-shortcut-retry-tests
+          /tmp/hako-shortcut-retry-tests
       - name: Test host secure storage contract
         run: |
           swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneKeychain.swift Hako/Features/CloudServers/ECSModels.swift Hako/Features/CloudServers/ECSKeychain.swift Tests/CredentialStorageTests.swift -o /tmp/hako-credential-tests

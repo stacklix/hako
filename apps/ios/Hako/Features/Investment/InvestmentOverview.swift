@@ -204,12 +204,32 @@ private struct InvestmentAssetHistory: View {
                                  series: .value("连续区间", point.segment))
                         .foregroundStyle(Color.teal)
                     }
+                    RuleMark(x: .value("日期", selected.day))
+                        .foregroundStyle(HakoStyle.muted.opacity(0.65))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     PointMark(x: .value("日期", selected.day),
                               y: .value("总资产", NSDecimalNumber(decimal: selected.value).doubleValue))
                     .foregroundStyle(Color.teal)
                 }
                 .chartYScale(domain: .automatic(includesZero: false))
-                .chartXSelection(value: $chartDay)
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        if let anchor = proxy.plotFrame {
+                            let frame = geometry[anchor]
+                            HakoChartInteraction { point, toggle in
+                                let x = min(max(point.x, 0), frame.width)
+                                guard let day = proxy.value(atX: x, as: Date.self),
+                                      let nearest = points.min(by: { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) }) else { return }
+                                chartDay = toggle && chartDay == nearest.day ? nil : nearest.day
+                            }
+                            .frame(width: max(0, frame.width), height: max(0, frame.height))
+                            .position(x: frame.midX, y: frame.midY)
+                        }
+                    }
+                }
+                .environment(\.calendar, InvestmentBook.calendar)
+                .environment(\.timeZone, InvestmentBook.calendar.timeZone)
+                .accessibilityHint("点击或左右拖动查看日期和金额，松手保留选择，再次点击收起。")
                 .frame(height: 175)
                 HStack {
                     Text(InvestmentText.date(selected.day) + (selected.day == today ? " · 暂估" : ""))

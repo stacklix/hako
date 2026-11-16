@@ -1,0 +1,217 @@
+<div id="hako-account-a73f">
+  <style>
+    #hako-account-a73f {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+    #hako-account-a73f * {box-sizing:border-box}
+    #hako-account-a73f [hidden] {display:none!important}
+    #hako-account-a73f .stage {display:flex;justify-content:center;padding:24px 0;min-height:872px}
+    #hako-account-a73f .phone {--ha-bg:light-dark(#f3f3f7,#1c1c1e);--ha-surface:light-dark(#fff,#2b2b2e);--ha-text:light-dark(#18181b,#f5f5f7);--ha-sub:light-dark(#62626a,#aaaab2);--ha-line:light-dark(#e3e3e8,#414145);--ha-primary:light-dark(#202023,#f0f0f3);--ha-on-primary:light-dark(#fff,#19191c);--ha-secondary:light-dark(#e8e8ee,#262629);--ha-green:light-dark(#247349,#81caa0);--ha-green-bg:light-dark(#e8f3ec,#27382e);--ha-red:light-dark(#ec3544,#ff454e);--ha-red-on:#fff;--ha-dim:light-dark(#0005,#0008);--ha-icon:light-dark(#ececf3,#36363b);color-scheme:dark;background:var(--ha-bg);color:var(--ha-text);width:100%;max-width:390px;min-height:824px;border:1px solid var(--ha-line);border-radius:34px;position:relative;display:flex;flex-direction:column;overflow:hidden;font-size:15px;line-height:1.5;--ha-gap:24px}
+    #hako-account-a73f button,#hako-account-a73f input,#hako-account-a73f select {font:inherit}
+    #hako-account-a73f button {color:inherit;background:none;border:0;cursor:inherit}
+    #hako-account-a73f button:disabled {opacity:.32}
+    #hako-account-a73f button:active {opacity:.7}
+    #hako-account-a73f button:focus-visible,#hako-account-a73f input:focus-visible,#hako-account-a73f select:focus-visible {outline:2px solid var(--ha-text);outline-offset:3px}
+    #hako-account-a73f svg {width:20px;height:20px;flex-shrink:0;stroke-width:1.7}
+    #hako-account-a73f .statusbar {height:49px;display:flex;align-items:center;justify-content:space-between;padding:0 26px;font-size:14px;font-weight:600}
+    #hako-account-a73f .status-icons {display:flex;align-items:center;gap:6px}
+    #hako-account-a73f .status-icons svg {width:16px;height:16px}
+    #hako-account-a73f .handle {margin:5px auto 0;width:36px;height:5px;border-radius:6px;background:var(--ha-sub);opacity:.42}
+    #hako-account-a73f .nav {display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:8px;padding:8px 16px 12px}
+    #hako-account-a73f .nav strong {font-size:17px;text-align:center;font-weight:600}
+    #hako-account-a73f .icon-button {width:44px;height:44px;display:grid;place-items:center;border-radius:50%}
+    #hako-account-a73f .close {background:var(--ha-icon);width:34px;height:34px;margin:5px}
+    #hako-account-a73f .content {padding:4px 22px 16px;display:flex;flex-direction:column;gap:var(--ha-gap)}
+    #hako-account-a73f h2,#hako-account-a73f h3,#hako-account-a73f p {margin:0}
+    #hako-account-a73f .identity {display:flex;align-items:center;gap:13px;padding:8px 0 3px}
+    #hako-account-a73f .account-icon {width:48px;height:48px;display:grid;place-items:center;background:var(--ha-icon);border-radius:14px;flex-shrink:0}
+    #hako-account-a73f .account-icon svg {width:24px;height:24px}
+    #hako-account-a73f .identity-text {min-width:0;flex:1}
+    #hako-account-a73f .identity h2 {font-size:23px;font-weight:600;letter-spacing:-.6px;overflow-wrap:anywhere}
+    #hako-account-a73f .account-label {font-size:12px;color:var(--ha-sub);margin-bottom:2px}
+    #hako-account-a73f .badge {display:inline-flex;align-items:center;gap:5px;padding:3px 8px;background:var(--ha-green-bg);color:var(--ha-green);border-radius:20px;font-size:11px;white-space:nowrap}
+    #hako-account-a73f .badge:before {content:"";width:4px;height:4px;border-radius:50%;background:currentColor}
+    #hako-account-a73f .badge.archived {background:var(--ha-icon);color:var(--ha-sub)}
+    #hako-account-a73f .group {background:var(--ha-surface);border-radius:14px;padding:0 16px}
+    #hako-account-a73f .row {display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:49px;padding:12px 0}
+    #hako-account-a73f .row+.row {border-top:1px solid var(--ha-line)}
+    #hako-account-a73f .key {color:var(--ha-sub);font-size:14px}
+    #hako-account-a73f .value {text-align:right;font-size:14px;overflow-wrap:anywhere}
+    #hako-account-a73f .action {min-height:46px;padding:12px 15px;width:100%;border-radius:10px;font-size:15px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px}
+    #hako-account-a73f .primary {background:var(--ha-primary);color:var(--ha-on-primary)}
+    #hako-account-a73f .secondary {background:var(--ha-secondary);color:var(--ha-text);border:1px solid var(--ha-line)}
+    #hako-account-a73f .delete {background:var(--ha-red);color:var(--ha-red-on);border-radius:40px}
+    #hako-account-a73f .overview {display:flex;flex-direction:column;gap:14px}
+    #hako-account-a73f .section {display:flex;flex-direction:column;gap:12px}
+    #hako-account-a73f .section-title {font-size:13px;font-weight:500;display:flex;gap:7px;align-items:center;color:var(--ha-sub)}
+    #hako-account-a73f .section-title svg {width:15px;height:15px}
+    #hako-account-a73f .description {font-size:13px;color:var(--ha-sub);line-height:1.65}
+    #hako-account-a73f .divider {border:0;border-top:1px solid var(--ha-line);margin:0}
+    #hako-account-a73f .home {width:110px;height:5px;border-radius:5px;background:var(--ha-text);margin: auto auto 9px;opacity:.85}
+    #hako-account-a73f .feedback {font-size:12px;color:var(--ha-sub);text-align:center;padding:0 22px 13px;min-height:31px}
+    #hako-account-a73f .form {padding:3px 0}
+    #hako-account-a73f .field {display:flex;flex-direction:column;gap:7px;padding:13px 0}
+    #hako-account-a73f .field+.field {border-top:1px solid var(--ha-line)}
+    #hako-account-a73f label {color:var(--ha-sub);font-size:13px}
+    #hako-account-a73f input,#hako-account-a73f select {width:100%;min-width:0;background:transparent;color:var(--ha-text);border:0;border-radius:5px;padding:2px 0;font-size:16px;min-height:30px}
+    #hako-account-a73f select {padding-right:8px}
+    #hako-account-a73f option {background:var(--ha-surface);color:var(--ha-text)}
+    #hako-account-a73f .field-error {font-size:12px;color:var(--ha-red);padding-top:3px}
+    #hako-account-a73f .readonly-note {font-size:12px;color:var(--ha-sub);padding:0 3px}
+    #hako-account-a73f .overlay {position:absolute;inset:0;background:var(--ha-dim);display:flex;align-items:flex-end;padding:18px;z-index:5;border-radius:inherit}
+    #hako-account-a73f .dialog {width:100%;border-radius:22px;background:var(--ha-surface);padding:24px 20px 20px;box-shadow:0 12px 40px #0003;display:flex;flex-direction:column;gap:18px}
+    #hako-account-a73f .dialog h3 {font-size:19px;font-weight:600;overflow-wrap:anywhere}
+    #hako-account-a73f .dialog p {font-size:14px;color:var(--ha-sub);line-height:1.65}
+    #hako-account-a73f .dialog-actions {display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    #hako-account-a73f .empty {display:flex;flex-direction:column;align-items:center;text-align:center;gap:20px;min-height:585px;justify-content:center;padding:35px}
+    #hako-account-a73f .empty h2 {font-size:22px}
+    #hako-account-a73f .empty p {font-size:14px;color:var(--ha-sub)}
+    @media(max-width:420px) {#hako-account-a73f .stage {padding:8px 0;min-height:840px}#hako-account-a73f .phone {border-radius:25px}#hako-account-a73f .content {padding-left:18px;padding-right:18px}#hako-account-a73f .identity {gap:10px}}
+  </style>
+  <div class="viz-carousel viz-dotted-background" aria-label="账户管理设计方案" data-previous-label="上一个方案" data-next-label="下一个方案">
+    <section data-variant="分区管理" aria-label="分区管理方案">
+      <div class="stage"><article class="phone" data-layout="overview" aria-label="分区管理外观">
+        <div class="statusbar"><span>9:41</span><span class="status-icons"><i data-lucide="signal" aria-hidden="true"></i><i data-lucide="wifi" aria-hidden="true"></i><i data-lucide="battery-full" aria-hidden="true"></i></span></div>
+        <div class="handle"></div>
+        <header class="nav"><button class="icon-button close cursor-interaction" data-action="close" aria-label="关闭管理账户"><i data-lucide="x" aria-hidden="true"></i></button><strong data-nav-title>管理账户</strong><button class="icon-button cursor-interaction" data-action="save" aria-label="保存账户" hidden><i data-lucide="check" aria-hidden="true"></i></button></header>
+        <main class="content" data-main>
+          <div class="identity"><span class="account-icon"><i data-lucide="landmark" aria-hidden="true"></i></span><div class="identity-text"><div class="account-label">账户名称</div><h2 data-name>个人养老金</h2></div><span class="badge" data-status>使用中</span></div>
+          <section class="overview" aria-label="账户信息">
+            <div class="group"><div class="row"><span class="key">账户类型</span><span class="value">基金账户</span></div><div class="row"><span class="key">账户币种</span><span class="value">人民币 · CNY</span></div></div>
+            <button class="action primary cursor-interaction" data-action="edit"><i data-lucide="pencil" aria-hidden="true"></i>编辑账户</button>
+          </section>
+          <section class="section"><h3 class="section-title"><i data-lucide="archive" aria-hidden="true"></i>账户归档</h3><p class="description" data-archive-copy>保留全部数据，暂停定投并默认隐藏账户。<br>可在设置中显示已归档账户，随时恢复。</p><button class="action secondary cursor-interaction" data-action="archive">归档账户</button></section>
+          <hr class="divider">
+          <section class="section"><h3 class="section-title"><i data-lucide="trash-2" aria-hidden="true"></i>删除账户</h3><p class="description">永久删除账户及对应交易记录。<br>删除后无法撤销。</p><button class="action delete cursor-interaction" data-action="delete">删除账户</button></section>
+        </main>
+        <section class="content" data-editor hidden aria-label="编辑账户表单"><div class="group form"><div class="field"><label for="ha-name-a">账户名称</label><input id="ha-name-a" data-name-input value="个人养老金" maxlength="40"><p class="field-error" data-error role="alert" hidden>请填写账户名称</p></div><div class="field"><label for="ha-order-a">账户顺序</label><select id="ha-order-a" data-order-input><option value="1">第 1 个</option><option value="2">第 2 个</option><option value="3">第 3 个</option></select></div></div><div class="group"><div class="row"><span class="key">账户类型</span><span class="value">基金账户</span></div><div class="row"><span class="key">账户币种</span><span class="value">人民币 · CNY</span></div></div><p class="readonly-note">账户类型与币种创建后不可修改。</p></section>
+        <section class="empty" data-empty hidden><span class="account-icon"><i data-lucide="check" aria-hidden="true"></i></span><h2 data-empty-title>管理已关闭</h2><p data-empty-copy>账户数据已保留。</p><button class="action secondary cursor-interaction" data-action="reset">重新预览</button></section>
+        <div class="feedback" aria-live="polite" data-feedback></div><div class="home"></div>
+        <div class="overlay" data-overlay hidden><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="ha-dialog-a"><h3 id="ha-dialog-a" data-dialog-title></h3><p data-dialog-copy></p><div class="dialog-actions"><button class="action secondary cursor-interaction" data-action="cancel">取消</button><button class="action primary cursor-interaction" data-action="confirm">确认</button></div></section></div>
+      </article></div>
+    </section>
+    <section data-variant="直接编辑" aria-label="直接编辑方案" hidden>
+      <div class="stage"><article class="phone" data-layout="inline" aria-label="直接编辑外观">
+        <div class="statusbar"><span>9:41</span><span class="status-icons"><i data-lucide="signal" aria-hidden="true"></i><i data-lucide="wifi" aria-hidden="true"></i><i data-lucide="battery-full" aria-hidden="true"></i></span></div><div class="handle"></div>
+        <header class="nav"><button class="icon-button close cursor-interaction" data-action="close" aria-label="关闭管理账户"><i data-lucide="x" aria-hidden="true"></i></button><strong data-nav-title>管理账户</strong><button class="icon-button cursor-interaction" data-action="save" aria-label="保存账户" disabled><i data-lucide="check" aria-hidden="true"></i></button></header>
+        <main class="content" data-main>
+          <section class="section" aria-label="账户信息"><div class="section-title" style="justify-content:space-between"><h3 class="section-title">基本信息</h3><span class="badge" data-status>使用中</span></div><div class="group form"><div class="field"><label for="ha-name-b">账户名称</label><input id="ha-name-b" data-name-input value="个人养老金" maxlength="40"><p class="field-error" data-error role="alert" hidden>请填写账户名称</p></div><div class="field"><label for="ha-order-b">账户顺序</label><select id="ha-order-b" data-order-input><option value="1">第 1 个</option><option value="2">第 2 个</option><option value="3">第 3 个</option></select></div><div class="row" style="border-top:1px solid var(--ha-line)"><span class="key">账户类型</span><span class="value">基金账户</span></div><div class="row"><span class="key">账户币种</span><span class="value">人民币 · CNY</span></div></div><p class="readonly-note">账户类型与币种创建后不可修改。</p></section>
+          <section class="section"><h3 class="section-title"><i data-lucide="archive" aria-hidden="true"></i>账户归档</h3><p class="description" data-archive-copy>保留全部数据，暂停定投并默认隐藏账户。<br>可在设置中显示已归档账户，随时恢复。</p><button class="action secondary cursor-interaction" data-action="archive">归档账户</button></section>
+          <hr class="divider"><section class="section"><h3 class="section-title"><i data-lucide="trash-2" aria-hidden="true"></i>删除账户</h3><p class="description">永久删除账户及对应交易记录，无法撤销。</p><button class="action delete cursor-interaction" data-action="delete">删除账户</button></section>
+        </main>
+        <section class="empty" data-empty hidden><span class="account-icon"><i data-lucide="check" aria-hidden="true"></i></span><h2 data-empty-title>管理已关闭</h2><p data-empty-copy>账户数据已保留。</p><button class="action secondary cursor-interaction" data-action="reset">重新预览</button></section>
+        <div class="feedback" aria-live="polite" data-feedback></div><div class="home"></div>
+        <div class="overlay" data-overlay hidden><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="ha-dialog-b"><h3 id="ha-dialog-b" data-dialog-title></h3><p data-dialog-copy></p><div class="dialog-actions"><button class="action secondary cursor-interaction" data-action="cancel">取消</button><button class="action primary cursor-interaction" data-action="confirm">确认</button></div></section></div>
+      </article></div>
+    </section>
+  </div>
+  <script>
+    (() => {
+      const root = document.getElementById('hako-account-a73f');
+      const controllers = [];
+      root.querySelectorAll('.phone').forEach(phone => {
+        const $ = selector => phone.querySelector(selector);
+        const inline = phone.dataset.layout === 'inline';
+        const state = { name: '个人养老金', order: '1', archived: false };
+        let editing = false, pending = null, returnFocus = null;
+        const input = $('[data-name-input]'), order = $('[data-order-input]');
+        const main = $('[data-main]'), editor = $('[data-editor]'), empty = $('[data-empty]');
+        const save = $('[data-action="save"]'), overlay = $('[data-overlay]');
+        function dirty() { return input.value !== state.name || order.value !== state.order; }
+        function changed() { save.disabled = !dirty() || !input.value.trim(); $('[data-error]').hidden = Boolean(input.value.trim()); }
+        function persist() {
+          const states = controllers.map(controller => controller.snapshot());
+          if (window.openai?.setWidgetState) window.openai.setWidgetState({ modelContent: null, privateContent: { accounts: states } }).catch(() => {});
+        }
+        function render() {
+          phone.querySelectorAll('[data-name]').forEach(el => el.textContent = state.name);
+          const badge = $('[data-status]');
+          badge.textContent = state.archived ? '已归档' : '使用中';
+          badge.classList.toggle('archived', state.archived);
+          $('[data-action="archive"]').textContent = state.archived ? '恢复账户' : '归档账户';
+          $('[data-archive-copy]').innerHTML = state.archived ? '账户已隐藏，历史数据完整保留。<br>恢复后可重新显示，定投需手动启用。' : '保留全部数据，暂停定投并默认隐藏账户。<br>可在设置中显示已归档账户，随时恢复。';
+          changed();
+        }
+        function setEditor(on) {
+          editing = on;
+          if (editor) { editor.hidden = !on; main.hidden = on; }
+          $('[data-nav-title]').textContent = on ? '编辑账户' : '管理账户';
+          save.hidden = !inline && !on;
+          input.value = state.name; order.value = state.order; changed();
+          if (on) input.focus();
+        }
+        function hideDialog() {
+          overlay.hidden = true;
+          main.inert = false; if (editor) editor.inert = false;
+          phone.querySelector('.nav').inert = false;
+          pending = null;
+          returnFocus?.focus();
+        }
+        function dialog(action, trigger) {
+          returnFocus = trigger; pending = action;
+          const titles = { archive: state.archived ? '恢复此账户？' : '归档此账户？', delete: '删除“' + state.name + '”？', discard: '放弃未保存的修改？' };
+          const copies = { archive: state.archived ? '账户将重新显示。已暂停的定投不会自动恢复。' : '全部数据会保留，定投将暂停，账户默认隐藏。之后可随时恢复。', delete: '将永久删除此账户及对应交易记录，删除后无法撤销。', discard: '账户名称或顺序的修改尚未保存。' };
+          $('[data-dialog-title]').textContent = titles[action]; $('[data-dialog-copy]').textContent = copies[action];
+          const confirm = $('[data-action="confirm"]');
+          confirm.textContent = action === 'delete' ? '确认删除' : action === 'discard' ? '放弃修改' : state.archived ? '确认恢复' : '确认归档';
+          confirm.classList.toggle('delete', action === 'delete'); confirm.classList.toggle('primary', action !== 'delete');
+          overlay.hidden = false; main.inert = true; if (editor) editor.inert = true; phone.querySelector('.nav').inert = true;
+          $('[data-action="cancel"]').focus();
+        }
+        function showEmpty(deleted) {
+          main.hidden = true; if (editor) editor.hidden = true;
+          empty.hidden = false; save.hidden = true;
+          $('[data-empty-title]').textContent = deleted ? '账户已删除' : '管理已关闭';
+          $('[data-empty-copy]').textContent = deleted ? '本次为原型演示，未修改真实账本。' : '账户数据已保留。';
+          $('[data-feedback]').textContent = '';
+        }
+        input.addEventListener('input', changed); order.addEventListener('change', changed);
+        phone.addEventListener('click', event => {
+          const button = event.target.closest('button[data-action]'); if (!button || button.disabled) return;
+          switch (button.dataset.action) {
+            case 'edit': setEditor(true); break;
+            case 'save':
+              if (!input.value.trim()) { changed(); input.focus(); break; }
+              state.name = input.value.trim(); state.order = order.value;
+              input.value = state.name; setEditor(false); render();
+              $('[data-feedback]').textContent = '账户已保存'; persist(); break;
+            case 'archive': case 'delete':
+              if (inline && dirty()) { $('[data-feedback]').textContent = '请先保存或放弃基本信息的修改'; input.focus(); break; }
+              dialog(button.dataset.action, button); break;
+            case 'cancel': hideDialog(); break;
+            case 'confirm': {
+              const action = pending; hideDialog();
+              if (action === 'archive') { state.archived = !state.archived; render(); $('[data-feedback]').textContent = state.archived ? '账户已归档，历史数据已保留' : '账户已恢复，定投可手动启用'; persist(); }
+              if (action === 'delete') showEmpty(true);
+              if (action === 'discard') { input.value = state.name; order.value = state.order; changed(); if (editing) setEditor(false); else showEmpty(false); }
+              break;
+            }
+            case 'close':
+              if (dirty()) dialog('discard', button); else if (editing) setEditor(false); else showEmpty(false);
+              break;
+            case 'reset':
+              empty.hidden = true; main.hidden = false; setEditor(false); render(); break;
+          }
+        });
+        overlay.addEventListener('keydown', event => {
+          if (event.key === 'Escape') { event.preventDefault(); hideDialog(); }
+          if (event.key === 'Tab') { const first = $('[data-action="cancel"]'), last = $('[data-action="confirm"]'); if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
+        });
+        controllers.push({ snapshot: () => ({...state}), restore: saved => {
+          if (!saved || typeof saved.name !== 'string') return;
+          state.name = saved.name.slice(0,40) || '个人养老金'; state.order = ['1','2','3'].includes(saved.order) ? saved.order : '1'; state.archived = saved.archived === true;
+          input.value = state.name; order.value = state.order; render();
+        }});
+        render();
+      });
+      function restore(widget) { widget?.privateContent?.accounts?.forEach((state,index) => controllers[index]?.restore(state)); }
+      restore(window.openai?.widgetState);
+      window.addEventListener('openai:set_globals', event => restore(event.detail?.globals?.widgetState));
+      const design = { theme:'dark', spacing:'舒展' };
+      function applyDesign() { root.querySelectorAll('.phone').forEach(phone => { phone.style.colorScheme = design.theme; phone.style.setProperty('--ha-gap', design.spacing === '紧凑' ? '18px' : '24px'); }); }
+      if (globalThis.Tweak) {
+        const tweak = new Tweak({container:root,onChange:applyDesign});
+        tweak.addSelect(design,'theme',{label:'外观',options:[{label:'深色',value:'dark'},{label:'浅色',value:'light'}]});
+        tweak.addSelect(design,'spacing',{label:'分区间距',options:['舒展','紧凑']});
+      }
+    })();
+  </script>
+</div>

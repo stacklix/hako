@@ -117,6 +117,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 		err = upgradeEmptyInvestmentPlans(db)
 	}
 	if err == nil {
+		err = upgradeInvestmentFundWealthAccounts(db)
+	}
+	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
@@ -130,6 +133,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 				definitions := []string{"book_id TEXT NOT NULL"}
 				for i, column := range table.columns() {
 					definition := column + " TEXT"
+					if table.name == "investment_accounts" && column == "account_type" {
+						definition += " CHECK(account_type IN (" + investmentAccountTypesSQL + "))"
+					}
 					if strings.Contains(investmentIntegerFields, " "+column+" ") {
 						definition = column + " INTEGER"
 					}
@@ -414,6 +420,11 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 		if kind, exists := row["asset_type"]; exists && !slices.Contains([]string{
 			"stock", "etf", "fund", "future", "crypto", "generic", "insurance", "wealth", "deposit", "certificate",
 		}, kind) {
+			return errInvestmentInvalid
+		}
+		if t.name == "investment_accounts" && !slices.Contains([]string{
+			"securities", "fund_wealth", "futures", "deposits", "crypto", "insurance",
+		}, row["account_type"]) {
 			return errInvestmentInvalid
 		}
 		if kind, exists := row["event_type"]; exists && !slices.Contains([]string{

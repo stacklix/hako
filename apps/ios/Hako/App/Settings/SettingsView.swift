@@ -75,6 +75,14 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.menu)
             }
+            Section("应用") {
+                NavigationLink { HakoApplicationOrderView() } label: {
+                    Label("子应用排序", systemImage: "arrow.up.arrow.down")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+            }
             Section("Hako 服务") {
                 Button { sheet = .server } label: {
                     settingsEntry("服务器与登录", systemImage: "server.rack")
@@ -89,13 +97,12 @@ struct SettingsView: View {
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
-            Section("GitHub") {
+            Section("服务配置") {
                 Button { sheet = .github } label: {
                     settingsEntry("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
-                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-            }
-            Section("大模型") {
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 Button { sheet = .languageModel } label: {
                     settingsEntry("大模型配置", systemImage: "sparkles")
                 }
@@ -104,7 +111,6 @@ struct SettingsView: View {
             }
             Section("网络") {
                 LabeledContent("网络检测", value: network.isLocal ? "当前在局域网" : "当前在外网或未识别 Wi-Fi")
-                LabeledContent("应用更新连接", value: choreRoute == .local ? "局域网" : choreRoute == nil ? "正在检测…" : "公网")
                 NavigationLink { NetworkSettingsView() } label: {
                     LabeledContent("网络配置", value: network.currentSSID ?? "Wi-Fi 与局域网地址")
                 }

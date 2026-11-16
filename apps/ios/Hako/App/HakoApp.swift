@@ -39,6 +39,7 @@ struct HomeView: View {
     @State private var loginLink: HakoLoginLink?
     @State private var workshopPreview: WorkshopPushNotice?
     @State private var workshopSwitch: WorkshopPushNotice?
+    @AppStorage(HakoApplicationOrder.storageKey) private var applicationOrderData = Data()
     @State private var category = Category.it
     @State private var versionWarning: String?
     @State private var lastVersionWarning: String?
@@ -202,6 +203,12 @@ struct HomeView: View {
         .accessibilityElement(children: .contain).accessibilityLabel("子应用分类")
     }
 
+    private var orderedApplications: [Application] {
+        HakoApplicationOrder(data: applicationOrderData)
+            .applications(in: category.rawValue, available: category.applications.map(\.rawValue))
+            .compactMap(Application.init(rawValue:))
+    }
+
     private var applications: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
@@ -225,8 +232,8 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity).padding(.horizontal, 12).padding(.vertical, 75)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(category.applications) { app in
-                        if app != category.applications.first {
+                    ForEach(orderedApplications) { app in
+                        if app != orderedApplications.first {
                             Rectangle().fill(HakoStyle.line).frame(height: 1).accessibilityHidden(true)
                         }
                         NavigationLink(value: Destination.application(app)) {

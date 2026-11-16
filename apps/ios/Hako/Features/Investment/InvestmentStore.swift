@@ -156,6 +156,12 @@ final class InvestmentStore: ObservableObject {
         try Task.checkCancellation()
         guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
         var dirty = serverState?.dirtyFrom
+        if let first = draft.snapshotInputChange(comparedTo: book) {
+            draft.invalidateDailySnapshots(from: first)
+            draft.balanceSheet?.discardInvestmentSnapshots(from: first)
+            let day = records.day.string(from: first)
+            dirty = min(day, dirty ?? day)
+        }
         if let previous = book.dailySnapshots?.through, let next = draft.dailySnapshots?.through, next < previous {
             let day = records.day.string(from: InvestmentBook.addDays(1, to: next))
             dirty = min(day, dirty ?? day)
@@ -375,7 +381,10 @@ final class InvestmentStore: ObservableObject {
             guard ledgerRevision == resetVersion else { throw CancellationError() }
             var source = book
             let dirty = serverState?.dirtyFrom.flatMap(records.day.date(from:))
-            if let dirty { source.invalidateDailySnapshots(from: dirty) }
+            if let dirty {
+                source.invalidateDailySnapshots(from: dirty)
+                source.balanceSheet?.discardInvestmentSnapshots(from: dirty)
+            }
             if !rebuild, dirty == nil, !source.needsDailySnapshots(through: end) {
                 return source.dailySnapshotReport(through: end)
             }
@@ -395,6 +404,9 @@ final class InvestmentStore: ObservableObject {
             var result = source
             if let snapshots = source.makeDailySnapshots(through: end, rebuild: rebuild) { result.dailySnapshots = snapshots }
             if source.earliest == nil { result.dailySnapshots = nil }
+            if rebuild, let first = source.earliest {
+                result.balanceSheet?.discardInvestmentSnapshots(from: first)
+            }
             _ = result.recordCompletedInvestmentMonths()
             return result
         }
@@ -405,13 +417,22 @@ final class InvestmentStore: ObservableObject {
 
     private func scheduleDailySnapshots() {
         let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
-        guard book.needsDailySnapshots(through: end) || serverState?.dirtyFrom != nil else { return }
         dailySnapshotTask?.cancel()
         dailySnapshotTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(300))
-                try await self?.refreshSnapshotHistory(fullHistory: false)
-                _ = try await self?.saveDailySnapshots()
+                guard let self else { return }
+                if !self.book.needsDailySnapshots(through: end), self.serverState?.dirtyFrom == nil {
+                    let version = self.bookVersion
+                    let source = self.book
+                    let worker = Task.detached(priority: .utility) { source.inconsistentDailySnapshotStart(through: end) }
+                    let stale = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                    try Task.checkCancellation()
+                    guard version == self.bookVersion, let stale else { return }
+                    try await self.write(self.book, dirtyFrom: self.records.day.string(from: stale), includeInputs: false, includeSnapshots: false)
+                }
+                try await self.refreshSnapshotHistory(fullHistory: false)
+                _ = try await self.saveDailySnapshots()
             } catch is CancellationError {
                 return
             } catch {

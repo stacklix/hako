@@ -98,7 +98,8 @@ class SubappBoundariesTests(unittest.TestCase):
         catalog = (APP / "App/HakoApplications.swift").read_text(encoding="utf-8")
         self.assertEqual(len(re.findall(r"\bAppShortcut\s*\(", host)), 1)
         self.assertNotRegex(host, r"\b(UsageShortcutContributor|CryptoShortcutContributor|Recorder|CryptoStore)\b")
-        self.assertIn("HakoApplications.registerShortcuts(in: registry)", host)
+        registry = (APP / "App/HakoShortcutRegistry.swift").read_text(encoding="utf-8")
+        self.assertIn("HakoApplications.registerShortcuts(in: registry)", registry)
         self.assertNotIn("import ObjectiveC", host)
         self.assertIn("Category.allCases.flatMap(\\.applications)", catalog)
         for folder in ("Usage", "Crypto", "Investment"):

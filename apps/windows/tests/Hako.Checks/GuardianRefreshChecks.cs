@@ -29,7 +29,7 @@ internal static class GuardianRefreshChecks
                     using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
                     string? line;
                     do { line = await reader.ReadLineAsync(stopping.Token); } while (!string.IsNullOrEmpty(line));
-                    var body = "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.3.0\"}";
+                    var body = "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.4.0\"}";
                     var response = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + Encoding.UTF8.GetByteCount(body) + "\r\nConnection: close\r\n\r\n" + body);
                     await stream.WriteAsync(response, stopping.Token);
                 }
@@ -75,7 +75,7 @@ internal static class GuardianRefreshChecks
             await Task.Delay(500, token);
             if (old.HasExited || AgentGuardian.Hash(guardian) != oldHash || File.Exists(AgentGuardianControl.FileFor(profile, "stop")))
                 throw new Exception("Incompatible refresh touched the running guardian");
-            server.Version = "0.6.0";
+            server.Version = "0.7.0";
             await WaitFor(() => AgentGuardianControl.Read<AgentGuardianRefresh.State>(AgentGuardianRefresh.StatePath(profile))?.StateName == "waiting_update", token);
             if (old.HasExited || AgentGuardian.Hash(guardian) != oldHash) throw new Exception("Refresh bypassed the main update lock");
             updateLock.Dispose(); updateLock = null;

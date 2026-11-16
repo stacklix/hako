@@ -24,7 +24,7 @@ internal static class GuardianChecks
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource stopping = new();
         private readonly Task worker;
-        internal volatile string Version = "0.6.0";
+        internal volatile string Version = "0.7.0";
         internal string Origin { get; }
         internal Server()
         {
@@ -41,7 +41,7 @@ internal static class GuardianChecks
                         var request = await reader.ReadLineAsync(stopping.Token);
                         while (!string.IsNullOrEmpty(await reader.ReadLineAsync(stopping.Token))) { }
                         var body = request?.StartsWith("GET /api/v1/version ") == true
-                            ? "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.3.0\"}" : "";
+                            ? "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.4.0\"}" : "";
                         var bytes = Encoding.ASCII.GetBytes("HTTP/1.1 " + (body.Length > 0 ? "200 OK" : "404 Not Found") +
                             "\r\nContent-Type: application/json\r\nContent-Length: " + body.Length + "\r\nConnection: close\r\n\r\n" + body);
                         await stream.WriteAsync(bytes, stopping.Token);
@@ -160,7 +160,7 @@ internal static class GuardianChecks
             var configHash = AgentGuardian.Hash(Path.Combine(fixture.Profile, "agent.dat"));
             await guardian.TickAsync(default);
             Check(!old.HasExited && AgentGuardian.Hash(fixture.Target) == oldHash, "Incompatible update stopped or replaced the original Agent.");
-            server.Version = "0.6.0";
+            server.Version = "0.7.0";
             await Task.Delay(5100); await guardian.TickAsync(default);
             Check(old.HasExited && AgentGuardian.Hash(fixture.Target) == source.Candidate.Sha256, "Guardian did not update when the server became compatible.");
             Check(AgentGuardian.Hash(Path.Combine(fixture.Profile, "agent.dat")) == configHash, "Update changed the Agent configuration.");

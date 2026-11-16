@@ -56,6 +56,13 @@ private struct HakoShortcutRunView: View {
                         LabeledContent("耗时", value: "\(max(0, Int(finished.timeIntervalSince(run.startedAt)))) 秒")
                     }
                 }
+                if run.status == .failed {
+                    Section {
+                        HakoShortcutRetryButton(history: history, runID: runID)
+                    } footer: {
+                        Text("仅重新执行未成功的子任务，成功后更新本条记录。")
+                    }
+                }
                 if !run.steps.isEmpty {
                     Section("子任务") {
                         ForEach(run.steps) { step in
@@ -72,5 +79,32 @@ private struct HakoShortcutRunView: View {
         }
         .navigationTitle("执行详情")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct HakoShortcutRetryButton: View {
+    @ObservedObject var history: HakoShortcutHistory
+    let runID: UUID
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                error = nil
+                Task {
+                    do { _ = try await HakoShortcutRegistry.retry(runID) }
+                    catch { self.error = error.localizedDescription }
+                }
+            } label: {
+                Label("重试失败任务", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(HakoActionButtonStyle())
+            .disabled(history.runs.contains { $0.status == .running })
+            if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .listRowBackground(Color.clear)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 }

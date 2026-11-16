@@ -29,7 +29,7 @@ struct InvestmentServerRecords {
         "investment_balance_records", "investment_month_snapshots"
     ]
     private static let accountTypes: [InvestmentAccountType: String] = [
-        .securities: "securities", .fund: "fund", .futures: "futures", .wealth: "wealth",
+        .securities: "securities", .fundWealth: "fund_wealth", .futures: "futures",
         .deposits: "deposits", .crypto: "crypto", .insurance: "insurance"
     ]
     private static let kinds: [InvestmentKind: String] = [
