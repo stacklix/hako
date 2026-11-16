@@ -8,6 +8,7 @@ struct DeviceServicesView: View {
     @State private var starting: Set<String> = []
     @State private var requestIDs: [String: String] = [:]
     @State private var messages: [String: String] = [:]
+    @State private var expandedServiceID: String?
     private var online: Bool { agent.online }
 
     var body: some View {
@@ -108,7 +109,13 @@ struct DeviceServicesView: View {
                     || agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.start && $0.version == 1 }) != true)
             }
             if !service.processes.isEmpty {
-                DisclosureGroup("监听进程 · \(service.processes.count)") {
+                DisclosureGroup("监听进程 · \(service.processes.count)", isExpanded: Binding(
+                    get: { expandedServiceID == service.id },
+                    set: { expanded in
+                        if expanded { expandedServiceID = service.id }
+                        else if expandedServiceID == service.id { expandedServiceID = nil }
+                    }
+                )) {
                     VStack(alignment: .leading, spacing: 12) {
                         if let url = service.http?.url {
                             Text("探测地址：\(url)").textSelection(.enabled)
