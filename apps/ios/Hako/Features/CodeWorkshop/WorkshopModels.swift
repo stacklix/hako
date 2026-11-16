@@ -279,6 +279,25 @@ struct WorkshopHistory: Decodable {
     let nextCursor: String?
     let operationId: String?
     let completionId: String?
+    var model: String? = nil
+    var reasoningEffort: String? = nil
+    var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
+}
+
+struct WorkshopGenerationSettings: Equatable {
+    let model: String?
+    let reasoningEffort: String?
+    init(model: String? = nil, reasoningEffort: String? = nil) {
+        self.model = model.flatMap { $0.isEmpty ? nil : $0 }
+        self.reasoningEffort = reasoningEffort.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    static func displayed(history: Self, operation: WorkshopOperation?) -> Self {
+        if let operation, operation.active { return operation.generation }
+        return history
+    }
+    var effortLabel: String {
+        reasoningEffort.map { WorkshopReasoningEffort(id: $0, description: "").title } ?? "推理强度待确认"
+    }
 }
 
 struct WorkshopReadState: Codable, Sendable {
@@ -312,6 +331,9 @@ struct WorkshopOperation: Codable, Equatable {
     let message: String?
     let startedAt: Int64
     var finishedAt: Int64? = nil
+    var model: String? = nil
+    var reasoningEffort: String? = nil
+    var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
     var active: Bool { ["starting", "running", "waiting", "stopping", "finishing"].contains(state) }
 
     func elapsedText(at now: Date) -> String? {

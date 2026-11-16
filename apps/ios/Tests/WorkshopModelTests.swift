@@ -2,6 +2,22 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let generationHistory = try JSONDecoder().decode(WorkshopHistory.self, from: Data(
+            #"{"threadId":"thread","cwd":"project","entries":[],"artifacts":[],"model":"session-model","reasoningEffort":"max"}"#.utf8))
+        precondition(generationHistory.generation.model == "session-model" && generationHistory.generation.effortLabel == "最高")
+        var currentOperation = WorkshopOperation(id: "operation", applicationId: "app", threadId: "thread", turnId: "turn",
+            state: "running", message: nil, startedAt: 1, model: "running-model", reasoningEffort: "high")
+        precondition(WorkshopGenerationSettings.displayed(history: generationHistory.generation, operation: currentOperation)
+            == WorkshopGenerationSettings(model: "running-model", reasoningEffort: "high"))
+        currentOperation.model = nil; currentOperation.reasoningEffort = nil
+        precondition(WorkshopGenerationSettings.displayed(history: generationHistory.generation, operation: currentOperation)
+            == WorkshopGenerationSettings(), "An unconfirmed new turn must not display the previous turn's settings")
+        currentOperation = WorkshopOperation(id: "operation", applicationId: "app", threadId: "thread", turnId: "turn",
+            state: "completed", message: nil, startedAt: 1, model: "older-model", reasoningEffort: "low")
+        precondition(WorkshopGenerationSettings.displayed(history: generationHistory.generation, operation: currentOperation)
+            == generationHistory.generation, "Completed operation records must not overwrite the current session metadata")
+        precondition(WorkshopGenerationSettings(model: "", reasoningEffort: "").model == nil)
+        precondition(WorkshopGenerationSettings(reasoningEffort: "future-effort").effortLabel == "future-effort")
         var visibility = WorkshopConversationVisibility()
         let pageA = UUID(), sheetB = UUID(), pageB = UUID(), conversationA = UUID(), conversationB = UUID()
         visibility.enter(pageA, conversation: conversationA, preview: false)

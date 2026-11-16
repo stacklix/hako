@@ -230,7 +230,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             operationId = latest?.RootId ?? latest?.Id;
         }
         var completionId = turns.Length == 0 ? null : SummarizeTurn(turns[^1]).CompletionId;
-        object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor = start > 0 ? start.ToString() : null, operationId, completionId };
+        object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor = start > 0 ? start.ToString() : null, operationId, completionId,
+            model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort") };
         while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];
         return Page();

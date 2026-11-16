@@ -39,6 +39,8 @@ internal sealed class WorkshopJob
     public string Permission { get; set; } = "auto";
     public string ServiceTier { get; set; } = "";
     public string ReasoningEffort { get; set; } = "";
+    public string? EffectiveModel { get; set; }
+    public string? EffectiveReasoningEffort { get; set; }
     public int Revision { get; set; }
     public long QueueOrder { get; set; }
     public string? NotificationScope { get; set; }
@@ -178,7 +180,8 @@ internal sealed partial class CodeWorkshop
         job.State is "completed" or "failed" or "interrupted" && job.FinishedAt > 0 ? job.FinishedAt : null;
 
     private static object Summary(WorkshopJob job) => new { job.Id, job.ApplicationId, job.ThreadId, job.TurnId,
-        job.State, job.Message, job.StartedAt, finishedAt = ProcessingFinishedAt(job) };
+        job.State, job.Message, job.StartedAt, finishedAt = ProcessingFinishedAt(job),
+        model = job.EffectiveModel, reasoningEffort = job.EffectiveReasoningEffort };
 
     private async Task ExecuteAsync(WorkshopJob job, string name, string message, string model, string permission, string[] images, string serviceTier)
     {
@@ -192,12 +195,14 @@ internal sealed partial class CodeWorkshop
                 var options = ThreadOptions(permission);
                 if (model.Length > 0) options["model"] = model;
                 if (serviceTier.Length > 0) options["serviceTier"] = serviceTier;
+                JsonElement settings;
                 if (job.ThreadId is null)
                 {
                     if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
                     options["cwd"] = job.Cwd;
                     startupStage = "创建会话";
                     var reply = await server.RequestAsync("thread/start", options, stopping.Token);
+                    settings = reply;
                     lock (gate)
                     {
                         job.ThreadId = CodexJson.Text(CodexJson.Field(reply, "thread"), "id");
@@ -223,7 +228,7 @@ internal sealed partial class CodeWorkshop
                     options["threadId"] = job.ThreadId;
                     options["excludeTurns"] = true;
                     startupStage = "恢复会话";
-                    await server.RequestAsync("thread/resume", options, stopping.Token);
+                    settings = await server.RequestAsync("thread/resume", options, stopping.Token);
                 }
                 lock (gate)
                 {
@@ -243,6 +248,8 @@ internal sealed partial class CodeWorkshop
                 lock (gate)
                 {
                     job.TurnId = CodexJson.Text(CodexJson.Field(turn, "turn"), "id");
+                    job.EffectiveModel = CodexJson.Text(settings, "model");
+                    job.EffectiveReasoningEffort = job.ReasoningEffort.Length > 0 ? job.ReasoningEffort : CodexJson.Text(settings, "reasoningEffort");
                     Persist(job);
                 }
                 if (job.StopRequested) await InterruptAsync(job, stopping.Token);

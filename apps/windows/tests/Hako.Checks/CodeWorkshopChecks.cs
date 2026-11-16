@@ -255,6 +255,8 @@ internal static class CodeWorkshopChecks
                     (string)CodeWorkshop.ThreadOptions("ask")["approvalsReviewer"] == "user" && CodeWorkshop.ThreadOptions("custom").Count == 0,
                     "Permission presets do not map to App Server policies");
                 var history = Result(await service.HistoryAsync(Json(new { threadId = FixtureThread }), default));
+                Check(CodexJson.Text(history, "model") == "fixture-session" && CodexJson.Text(history, "reasoningEffort") == "max",
+                    "History did not expose the session's actual model and reasoning effort");
                 Check(history.GetProperty("entries").EnumerateArray().Any(entry => CodexJson.Text(entry, "kind") == "imageGeneration" && CodexJson.Text(entry, "id") == "generated-fixture"),
                     "Completed image generation disappeared when reopening the thread history");
                 using (var imageData = new MemoryStream())
@@ -292,6 +294,9 @@ internal static class CodeWorkshopChecks
                 try { await service.StartAsync(Json(new { requestId, applicationId, threadId = FixtureThread, message = "different" }), default); throw new Exception("Request ID reused for different payload"); }
                 catch (WorkshopException e) when (e.Code == "codex_request_conflict") { }
                 var waiting = await WaitAsync(service, requestId, "waiting");
+                Check(CodexJson.Text(waiting.GetProperty("operation"), "model") == "fixture-resolved" &&
+                    CodexJson.Text(waiting.GetProperty("operation"), "reasoningEffort") == "high",
+                    "Running task lost its resolved model or explicit turn reasoning effort");
                 Check(!notifications.ContainsKey(requestId), "Waiting for user input was reported as task completion");
                 Check(CodexJson.Text(Result(await service.CatalogAsync(Json(new { }), default)).GetProperty("sessions")[0], "state") == "waiting",
                     "An executing job awaiting approval must take precedence over older completed history");
@@ -387,6 +392,9 @@ internal static class CodeWorkshopChecks
                     "The next round's clock must start after the preceding round finishes, excluding queue wait");
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = nextTurn.GetProperty("approvals")[0].GetProperty("id").GetString(), decision = "accept" }), default);
                 var completed = await WaitAsync(service, requestId, "completed");
+                Check(CodexJson.Text(completed.GetProperty("operation"), "model") == "fixture-resolved" &&
+                    CodexJson.Text(completed.GetProperty("operation"), "reasoningEffort") == "future-effort",
+                    "Grouped operation settings must belong to the latest round, not the original request");
                 var latestTiming = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(storage, automaticId + ".json")), WorkshopProtocol.Json)!;
                 completedStart = completed.GetProperty("operation").GetProperty("startedAt").GetInt64();
                 completedEnd = completed.GetProperty("operation").GetProperty("finishedAt").GetInt64();
@@ -410,7 +418,9 @@ internal static class CodeWorkshopChecks
                 Check(Result(await service.OperationAsync(Json(new { operationId = requestId, cursor }), default)).GetProperty("events").GetArrayLength() == 0, "Cursor replay duplicated events");
                 var stopId = Guid.NewGuid().ToString();
                 await service.StartAsync(Json(new { requestId = stopId, applicationId, threadId = FixtureThread, message = "Stop fixture" }), default);
-                await WaitAsync(service, stopId, "waiting");
+                var inherited = await WaitAsync(service, stopId, "waiting");
+                Check(CodexJson.Text(inherited.GetProperty("operation"), "reasoningEffort") == "medium",
+                    "Following the session substituted the model catalog's default reasoning effort");
                 Check(CodexJson.Text(Result(await service.HistoryAsync(Json(new { threadId = FixtureThread }), default)), "operationId") == stopId,
                     "Latest thread history was associated with an older follow-up group");
                 var pausedId = Guid.NewGuid().ToString();
@@ -764,6 +774,7 @@ internal static class CodeWorkshopChecks
             {
                 id = FixtureThread, cwd = CodexJson.Text(CodexJson.Field(input, "params"), "threadId") == "22222222-2222-4222-8222-222222222222" ? Path.GetDirectoryName(project)! : project,
                 name = "Fixture", preview = "Fixture history", updatedAt = 1000, recencyAt = 1,
+                model = "fixture-session", reasoningEffort = "max",
                 status = new { type = method == "thread/list" ? "active" : "idle", activeFlags = Array.Empty<string>() },
                 turns = new[] { new { id = turnId, status = "completed", items = historyItems.ToArray() } }
             };
@@ -772,7 +783,8 @@ internal static class CodeWorkshopChecks
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
                 "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = new[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } } }, nextCursor = (string?)null },
-                "thread/read" or "thread/resume" or "thread/start" => new { thread },
+                "thread/read" => new { thread },
+                "thread/resume" or "thread/start" => new { thread, model = "fixture-resolved", reasoningEffort = "medium" },
                 "turn/start" => new { turn = new { id = turnId, status = "inProgress" } },
                 "turn/steer" => new { turnId },
                 _ => new { }

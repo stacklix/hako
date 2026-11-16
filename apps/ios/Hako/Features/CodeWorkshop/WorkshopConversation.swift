@@ -33,6 +33,7 @@ import Combine
     @Published private(set) var loadingModels = false
     @Published private(set) var modelError: String?
     @Published private(set) var choice = WorkshopChoice()
+    @Published private(set) var historyGeneration = WorkshopGenerationSettings()
     @Published private(set) var followups: [WorkshopFollowupState] = [] { didSet { schedulePresentation() } }
     @Published private(set) var editingMessageID: String? { didSet { persistDraft() } }
     @Published private(set) var appendedMessageID: String?
@@ -216,7 +217,9 @@ import Combine
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
     var canRetry: Bool { !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
-    var modelLabel: String { models.first { $0.id == choice.model }?.name ?? choice.model ?? "跟随会话设置" }
+    var generation: WorkshopGenerationSettings { .displayed(history: historyGeneration, operation: operation) }
+    var modelLabel: String { models.first { $0.id == generation.model }?.name ?? generation.model ?? "模型待确认" }
+    var generationLabel: String { modelLabel + " · " + generation.effortLabel }
 
     var reuseKey: WorkshopConversationReuseKey? {
         guard let sessionId = threadId ?? operationId.map({ "pending-" + $0 }) else { return nil }
@@ -251,7 +254,8 @@ import Combine
 
     func configure(_ next: WorkshopChoice) throws {
         if let reason = configurationUnavailableReason { throw HakoError(message: reason) }
-        let selected = models.first { $0.id == next.model } ?? (next.model == nil ? models.first { $0.isDefault } : nil)
+        let modelID = next.model ?? generation.model
+        let selected = models.first { $0.id == modelID } ?? (modelID == nil ? models.first { $0.isDefault } : nil)
         if let tier = next.serviceTier, tier != "default", selected?.serviceTiers.contains(where: { $0.id == tier }) != true {
             throw HakoError(message: "所选模型暂不支持此速度，请刷新模型列表后重新选择。")
         }
@@ -303,6 +307,7 @@ import Combine
             if more { params["cursor"] = historyCursor }
             var result: WorkshopHistory = try await store.call(agent, "history.read", params)
             guard scope == store.scope, result.threadId == threadId else { return false }
+            if !more { historyGeneration = result.generation }
             let newestOperation = result.operationId
             let newestCompletion = result.completionId
             let newestArtifacts = result.artifacts

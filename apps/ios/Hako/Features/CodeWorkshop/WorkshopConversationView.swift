@@ -325,7 +325,9 @@ struct WorkshopConversationView: View {
             WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
                 agentID: conversation.agent.id, scope: conversation.scope)
             Spacer()
-            Text(conversation.modelLabel).lineLimit(1).truncationMode(.middle)
+            Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
+                .layoutPriority(1)
+                .accessibilityLabel("模型：\(conversation.modelLabel)，推理强度：\(conversation.generation.effortLabel)")
         }
         .font(.caption).foregroundStyle(HakoStyle.muted)
         .padding(.horizontal, 20).padding(.vertical, 12)
@@ -420,8 +422,6 @@ private struct WorkshopProjectConnectionLabel: View {
                         .foregroundStyle(state == .connected ? connectedColor : HakoStyle.muted)
                 }
             }
-            Text(state.accessibilityDescription).foregroundStyle(HakoStyle.muted)
-                .accessibilityHidden(true)
         }
         .accessibilityElement(children: .combine)
         .accessibilityValue(state.accessibilityDescription)

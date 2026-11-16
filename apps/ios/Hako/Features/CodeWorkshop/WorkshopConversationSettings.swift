@@ -13,8 +13,19 @@ struct WorkshopConversationSettings: View {
         _selection = State(initialValue: conversation.choice)
     }
 
+    private var selectedModelID: String? { selection.model ?? conversation.generation.model }
+    private var modelSelection: Binding<String?> {
+        Binding(get: { selectedModelID }, set: { selection.model = $0 })
+    }
+    private var selectedEffort: String? {
+        selection.reasoningEffort ?? (selectedModelID == conversation.generation.model
+            ? conversation.generation.reasoningEffort : model?.defaultReasoningEffort)
+    }
+    private var effortSelection: Binding<String?> {
+        Binding(get: { selectedEffort }, set: { selection.reasoningEffort = $0 })
+    }
     private var model: WorkshopModel? {
-        if let id = selection.model { return conversation.models.first { $0.id == id } }
+        if let id = selectedModelID { return conversation.models.first { $0.id == id } }
         return conversation.models.first { $0.isDefault }
     }
 
@@ -32,10 +43,10 @@ struct WorkshopConversationSettings: View {
             saveAccessibilityLabel: "保存会话设置") {
             Form {
                 Section {
-                    Picker("模型", selection: $selection.model) {
+                    Picker("模型", selection: modelSelection) {
                         Text("跟随会话设置").tag(Optional<String>.none)
                         ForEach(conversation.models) { model in Text(model.name).tag(Optional(model.id)) }
-                        if let id = selection.model, !conversation.models.contains(where: { $0.id == id }) {
+                        if let id = selectedModelID, !conversation.models.contains(where: { $0.id == id }) {
                             Text(id).tag(Optional(id))
                         }
                     }
@@ -45,13 +56,13 @@ struct WorkshopConversationSettings: View {
                     }
                     .pickerStyle(.menu).workshopSettingsRow()
                     .disabled(model == nil && selection.serviceTier == nil)
-                    Picker("推理强度", selection: $selection.reasoningEffort) {
+                    Picker("推理强度", selection: effortSelection) {
                         Text("跟随会话设置").tag(Optional<String>.none)
                         ForEach(model?.reasoningEfforts ?? []) { effort in
                             Text(effort.title).tag(Optional(effort.id))
                         }
-                        if let effort = selection.reasoningEffort, model?.reasoningEfforts.contains(where: { $0.id == effort }) != true {
-                            Text(effort).tag(Optional(effort))
+                        if let effort = selectedEffort, model?.reasoningEfforts.contains(where: { $0.id == effort }) != true {
+                            Text(WorkshopReasoningEffort(id: effort, description: "").title).tag(Optional(effort))
                         }
                     }
                     .pickerStyle(.menu).workshopSettingsRow()

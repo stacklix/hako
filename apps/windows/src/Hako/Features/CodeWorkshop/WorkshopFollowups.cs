@@ -26,7 +26,8 @@ internal sealed partial class CodeWorkshop
         return new { root.Id, root.ApplicationId, threadId = current.ThreadId ?? root.ThreadId,
             current.TurnId, state = current.State == "queued" ? "starting" : current.State,
             current.Message, startedAt = current.State == "queued" ? 0 : current.StartedAt,
-            finishedAt = ProcessingFinishedAt(current) };
+            finishedAt = ProcessingFinishedAt(current),
+            model = current.EffectiveModel, reasoningEffort = current.EffectiveReasoningEffort };
     }
     private object FollowupSummary(WorkshopJob job) => new { job.Id, message = job.InputMessage,
         job.ImageIds, state = job.State == "completed" ? "sent" : job.State, job.Revision, job.QueueOrder, detail = job.Message, job.QuestionId };
