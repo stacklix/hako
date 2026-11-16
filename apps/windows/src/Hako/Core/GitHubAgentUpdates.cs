@@ -14,17 +14,22 @@ internal interface IAgentUpdateSource
     Task<AgentUpdateCandidate?> LatestAsync(CancellationToken token);
 }
 
-internal sealed class GitHubAgentUpdates(string repository, string cache) : IAgentUpdateSource, IDisposable
+internal sealed record GitHubAgentRelease(string Version, long BuildId, string Sha256, long Size,
+    DateTimeOffset PublishedAt, string ExecutableUrl);
+
+internal sealed class GitHubAgentUpdates(string repository, string cache, HttpMessageHandler? handler = null) : IAgentUpdateSource, IDisposable
 {
-    private readonly HttpClient http = CreateClient();
-    private static HttpClient CreateClient()
+    private readonly HttpClient http = CreateClient(handler);
+    private static HttpClient CreateClient(HttpMessageHandler? handler)
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5), MaxResponseContentBufferSize = 2 * 1024 * 1024 };
+        var client = handler is null ? new HttpClient() : new HttpClient(handler);
+        client.Timeout = TimeSpan.FromMinutes(5);
+        client.MaxResponseContentBufferSize = 2 * 1024 * 1024;
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Hako-Agent-Guardian/1.0");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return client;
     }
-    public async Task<AgentUpdateCandidate?> LatestAsync(CancellationToken token)
+    internal async Task<GitHubAgentRelease?> LatestReleaseAsync(CancellationToken token)
     {
         using var response = await http.GetAsync($"https://api.github.com/repos/{repository}/releases?per_page=30", token);
         response.EnsureSuccessStatusCode();
@@ -53,37 +58,44 @@ internal sealed class GitHubAgentUpdates(string repository, string cache) : IAge
                 !System.Text.RegularExpressions.Regex.IsMatch(hash, "\\A[a-f0-9]{64}\\z") || build <= 0 ||
                 !System.Version.TryParse(version, out _) || size is < 1024 or > 268435456)
                 throw new InvalidDataException("Invalid Agent release manifest.");
-            Directory.CreateDirectory(cache);
-            var destination = System.IO.Path.Combine(cache, hash + ".exe");
-            if (!File.Exists(destination) || AgentGuardian.Hash(destination) != hash)
-            {
-                var temporary = destination + ".download";
-                try
-                {
-                    using var download = await http.GetAsync(executableUrl, HttpCompletionOption.ResponseHeadersRead, token);
-                    download.EnsureSuccessStatusCode();
-                    if (download.Content.Headers.ContentLength is long length && length != size) throw new InvalidDataException("Agent release length mismatch.");
-                    await using (var source = await download.Content.ReadAsStreamAsync(token))
-                    await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-                    {
-                        var buffer = new byte[65536]; long total = 0; int count;
-                        while ((count = await source.ReadAsync(buffer, token)) > 0)
-                        {
-                            total += count;
-                            if (total > size) throw new InvalidDataException("Agent release exceeds declared size.");
-                            await output.WriteAsync(buffer.AsMemory(0, count), token);
-                        }
-                        if (total != size) throw new InvalidDataException("Agent release download is incomplete.");
-                        output.Flush(true);
-                    }
-                    if (AgentGuardian.Hash(temporary) != hash) throw new InvalidDataException("Agent release hash mismatch.");
-                    File.Move(temporary, destination, true);
-                }
-                finally { if (File.Exists(temporary)) File.Delete(temporary); }
-            }
-            return new AgentUpdateCandidate(destination, hash, build, version, data.GetProperty("publishedAt").GetDateTimeOffset());
+            return new(version, build, hash, size, data.GetProperty("publishedAt").GetDateTimeOffset(), executableUrl);
         }
         return null;
+    }
+    public async Task<AgentUpdateCandidate?> LatestAsync(CancellationToken token)
+    {
+        var release = await LatestReleaseAsync(token);
+        if (release is null) return null;
+        var (version, build, hash, size, publishedAt, executableUrl) = release;
+        Directory.CreateDirectory(cache);
+        var destination = System.IO.Path.Combine(cache, hash + ".exe");
+        if (!File.Exists(destination) || AgentGuardian.Hash(destination) != hash)
+        {
+            var temporary = destination + ".download";
+            try
+            {
+                using var download = await http.GetAsync(executableUrl, HttpCompletionOption.ResponseHeadersRead, token);
+                download.EnsureSuccessStatusCode();
+                if (download.Content.Headers.ContentLength is long length && length != size) throw new InvalidDataException("Agent release length mismatch.");
+                await using (var source = await download.Content.ReadAsStreamAsync(token))
+                await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    var buffer = new byte[65536]; long total = 0; int count;
+                    while ((count = await source.ReadAsync(buffer, token)) > 0)
+                    {
+                        total += count;
+                        if (total > size) throw new InvalidDataException("Agent release exceeds declared size.");
+                        await output.WriteAsync(buffer.AsMemory(0, count), token);
+                    }
+                    if (total != size) throw new InvalidDataException("Agent release download is incomplete.");
+                    output.Flush(true);
+                }
+                if (AgentGuardian.Hash(temporary) != hash) throw new InvalidDataException("Agent release hash mismatch.");
+                File.Move(temporary, destination, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+        return new AgentUpdateCandidate(destination, hash, build, version, publishedAt);
     }
     private void ValidateAsset(string address, string tag)
     {

@@ -8,11 +8,12 @@ using Hako.Platform;
 
 namespace Hako.Core;
 
-internal sealed class GuardianDispatcher(string profile, RegisteredServices? registeredServices = null) : IAgentDispatcher
+internal sealed class GuardianDispatcher(string profile, RegisteredServices? registeredServices = null, AgentVersions? agentVersions = null) : IAgentDispatcher
 {
     private readonly RegisteredServices services = registeredServices ?? new RegisteredServices();
+    private readonly AgentVersions versions = agentVersions ?? new AgentVersions(profile);
     public IReadOnlyList<AgentCapability> Capabilities => [.. AgentDispatcher.MainCapabilities,
-        new(RegisteredServices.Command, 1), new(RegisteredServices.StartCommand, 1)];
+        new(RegisteredServices.Command, 1), new(RegisteredServices.StartCommand, 1), new(AgentVersions.Command, 1)];
 
     public async Task<object?> InvokeAsync(string method, int version, JsonElement parameters, CancellationToken token)
     {
@@ -29,6 +30,11 @@ internal sealed class GuardianDispatcher(string profile, RegisteredServices? reg
             if (System.IO.File.Exists(AgentGuardianControl.FileFor(profile, "stop")))
                 throw new AgentActionException("guardian_stopping", "守护进程正在退出，请稍后再启动服务。");
             return await services.StartAsync(parameters, token);
+        }
+        if (method == AgentVersions.Command)
+        {
+            if (parameters.EnumerateObject().Any()) throw new AgentActionException("invalid_params", "admin.agent.versions 不接受参数。");
+            return await versions.ReadAsync(token);
         }
         // Administrative methods never cross the main-process boundary.
         if (!method.StartsWith("query.", StringComparison.Ordinal) && !method.StartsWith("action.", StringComparison.Ordinal))
@@ -72,5 +78,5 @@ internal sealed class GuardianDispatcher(string profile, RegisteredServices? reg
             await publish(RegisteredServices.Command, data);
         } while (await timer.WaitForNextTickAsync(token));
     }
-    public ValueTask DisposeAsync() { services.Dispose(); return ValueTask.CompletedTask; }
+    public ValueTask DisposeAsync() { services.Dispose(); versions.Dispose(); return ValueTask.CompletedTask; }
 }

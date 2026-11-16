@@ -100,6 +100,12 @@ Windows Agent 在约 1 秒采样窗口前后读取 `GetIfTable2` 的 64 位收�
 
 `query.system.metrics` v1 也可包含 `disk`。其中 `volumes` 列出已就绪的固定盘符卷及其已用、总容量，`readBytesPerSecond` 与 `writeBytesPerSecond` 是同一采样窗口内物理磁盘的合计速度。单项速度不可用时返回 null，空闲时返回 0。磁盘数据缺失时，已有的 CPU、内存和网卡指标照常显示。 [Windows 物理磁盘性能计数器](https://learn.microsoft.com/en-us/windows-server/storage/storage-spaces/performance-history-for-drives)
 
+### Agent 版本信息
+
+设备监控配置页按所选设备调用 `admin.agent.versions` v1，参数为 `{}`。守护进程返回 `currentVersion`、`currentBuild`、`minimumServerVersion`、`latestVersion`、`latestBuildId`、`latestCheckedAt` 和 `latestCheckState`，无需主进程运行。`minimumServerVersion` 的前两段指定兼容版本线，补丁版本为下限。
+
+最新版本来自守护进程配置的发布源，只查询发布元数据，不下载或安装产物。`latestCheckState` 为 `available`、`no_release` 或 `unavailable`；后两种情况下最新版本和构建号为空，不使用当前版本代替。成功检查缓存 5 分钟，查询失败缓存 30 秒。此信息属于设备监控，不加入主应用设置或服务端业务协议。
+
 ### 服务监控与手工启动
 
 设备详情的「服务」页签（标题「服务监控」）通过 `admin.services.status` v1 由守护进程读取用户目录的 `.codex/server.json`。参数为 `{}`，独立于 `query.all`；开启实时刷新后约每 10 秒更新。每次查询重新读取文件，登记增删即时生效。Windows 本机设备监控的「服务监控」页签也通过守护进程调用这两项管理能力。

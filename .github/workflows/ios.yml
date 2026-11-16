@@ -87,6 +87,8 @@ jobs:
           /tmp/hako-agent-protocol-tests
           swiftc Hako/Shared/HakoServer/ServerJSON.swift Hako/Features/DeviceManagement/ConsoleAgentProtocol.swift Hako/Features/DeviceManagement/DeviceServiceProtocol.swift Tests/DeviceServiceTests.swift -o /tmp/hako-service-tests
           /tmp/hako-service-tests
+          swiftc Hako/Features/DeviceManagement/DeviceAgentVersions.swift Tests/DeviceAgentVersionTests.swift -o /tmp/hako-agent-version-tests
+          /tmp/hako-agent-version-tests
           swiftc Hako/Shared/HakoServer/ServerJSON.swift Hako/Features/DeviceManagement/ConsoleAgentProtocol.swift Hako/Features/DeviceManagement/DeviceMonitorInventory.swift Tests/DeviceMonitorInventoryTests.swift -o /tmp/hako-device-monitor-tests
           /tmp/hako-device-monitor-tests
           swiftc Hako/Features/DeviceManagement/ConsoleAgentRegistration.swift Tests/ConsoleAgentRegistrationTests.swift -o /tmp/hako-agent-registration-tests

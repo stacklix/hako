@@ -61,7 +61,7 @@ struct DeviceMonitorView: View {
             if client.authenticated, !client.logoutPending {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
-                        .accessibilityLabel("切换 Agent 与默认设备设置")
+                        .accessibilityLabel("设备监控配置与 Agent 版本")
                 }
             }
         }
@@ -182,10 +182,16 @@ struct DeviceMonitorView: View {
                     Text("下次打开设备监控时直接进入默认设备。")
                 }
                 if let agent = selectedAgent {
+                    DeviceAgentVersionSection(agent: agent)
+                        .id(client.requestContext + "\n" + agent.id)
                     let order = pageOrderStorage(for: agent)
                     DevicePageOrderSection(agent: agent, capabilities: agent.monitorPages, order: order)
                         .id(order.key)
                         .environment(\.editMode, .constant(.active))
+                } else {
+                    Section("Agent 版本信息") {
+                        Text("选择一个 Agent 后查看版本信息。").foregroundStyle(.secondary)
+                    }
                 }
             }
         }

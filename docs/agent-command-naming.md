@@ -8,7 +8,7 @@
 | Codex 本机统计 | `query.` | `query.codex.usage` |
 | 本机监听端口 | `query.` | `query.network.listeners` |
 | 操作：按需执行 | `action.` | `action.network.http.check` |
-| 守护管理：在守护进程执行 | `admin.` | `admin.services.status`、`admin.services.start` |
+| 守护管理：在守护进程执行 | `admin.` | `admin.services.status`、`admin.services.start`、`admin.agent.versions` |
 | 内置聚合查询 | `query.all` | 获取支持聚合的查询数据 |
 
 - 普通能力按 `前缀.领域.功能` 命名，可以增加子领域；操作末段使用动词。

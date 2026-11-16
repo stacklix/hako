@@ -32,7 +32,9 @@ internal static class GuardianBrokerChecks
         LocalRpcServer? main = null;
         try
         {
-            await using var dispatcher = new GuardianDispatcher(profile, services);
+            await AgentVersionChecks.RunAsync(profile, token);
+            var versionSource = new AgentVersions(profile, _ => Task.FromResult<GitHubAgentRelease?>(null));
+            await using var dispatcher = new GuardianDispatcher(profile, services, versionSource);
             var empty = JsonSerializer.SerializeToElement(new { });
             var calls = 0;
             var mutation = Signal();
@@ -81,6 +83,10 @@ internal static class GuardianBrokerChecks
             await Expect("process_unavailable", async () => await dispatcher.InvokeAsync("query.system.metrics", 1, empty, token));
 
             // Admin reads and starts stay available with no main process at all.
+            var versions = (AgentVersionSnapshot)(await dispatcher.InvokeAsync(AgentVersions.Command, 1, empty, token))!;
+            if (versions.CurrentVersion != ServerCompatibility.AgentVersion || calls != before ||
+                !dispatcher.Capabilities.Any(capability => capability.Name == AgentVersions.Command && capability.Version == 1))
+                throw new Exception("Guardian version administration depends on the main process");
             var snapshot = (RegisteredServiceSnapshot)(await dispatcher.InvokeAsync(RegisteredServices.Command, 1, empty, token))!;
             if (snapshot.Services.Length != 1 || !snapshot.Services[0].CanStart) throw new Exception("Guardian lost service monitor while main stopped");
             var request = JsonSerializer.SerializeToElement(new { name = "fixture", requestId = Guid.NewGuid().ToString("D") });
@@ -92,6 +98,8 @@ internal static class GuardianBrokerChecks
             await Expect("unsupported_method", async () => await dispatcher.InvokeAsync("admin.unknown.execute", 1, empty, token));
             await Expect("unsupported_method", async () => await dispatcher.InvokeAsync(RegisteredServices.Command, 2, empty, token));
             await Expect("invalid_params", async () => await dispatcher.InvokeAsync(RegisteredServices.Command, 1, request, token));
+            await Expect("invalid_params", async () => await dispatcher.InvokeAsync(AgentVersions.Command, 1, request, token));
+            await Expect("unsupported_method", async () => await dispatcher.InvokeAsync(AgentVersions.Command, 2, empty, token));
 
             var observed = Signal();
             using (var streamStop = CancellationTokenSource.CreateLinkedTokenSource(token))
