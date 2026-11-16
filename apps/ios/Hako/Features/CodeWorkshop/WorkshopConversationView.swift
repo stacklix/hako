@@ -341,9 +341,11 @@ struct WorkshopConversationView: View {
             WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
                 agentID: conversation.agent.id, scope: conversation.scope)
             Spacer()
-            Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
-                .layoutPriority(1)
-                .accessibilityLabel("Model: \(conversation.modelLabel), Speed: \(conversation.speedLabel), Reasoning: \(conversation.generation.effortLabel)")
+            if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
+                    .layoutPriority(1)
+                    .accessibilityLabel("Model: \(conversation.modelLabel), Speed: \(conversation.speedLabel), Reasoning: \(conversation.generation.effortLabel)")
+            }
         }
         .font(.caption).foregroundStyle(HakoStyle.muted)
         .padding(.horizontal, 20).padding(.vertical, 12)
