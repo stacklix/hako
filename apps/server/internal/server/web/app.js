@@ -12,7 +12,8 @@ const adminPages = {
   '/admin/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
   '/admin/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
   '/admin/applications': {id: 'applications', title: '应用管理', description: '创建应用、管理 SK 与扫码登录授权。'},
-  '/admin/system': {id: 'system', title: '系统配置', description: '查看 SQLite 数据库版本、迁移状态和表结构。'}
+  '/admin/system': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'},
+  '/admin/system/data': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'}
 };
 const adminPage = adminPages[window.location.pathname] ?? adminPages['/admin/agents'];
 const currentPage = notificationPage ? 'notifications' : investmentPage ? 'investment' : adminPage.id;
@@ -37,6 +38,8 @@ function showPage() {
   $('access-logs').hidden = currentPage !== 'access-logs';
   $('applications-page').hidden = currentPage !== 'applications';
   $('system-page').hidden = currentPage !== 'system';
+  $('system-subnav').hidden = currentPage !== 'system';
+  document.body.classList.toggle('is-data-management', currentPage === 'system');
   $('notifications-page').hidden = !notificationPage;
   $('notification-subnav').hidden = !notificationPage;
   $('investment-page').hidden = !investmentPage;
@@ -44,6 +47,7 @@ function showPage() {
   $('nav-' + currentPage).setAttribute('aria-current', notificationPage || investmentPage ? 'true' : 'page');
   if (notificationPage) $('nav-notifications-' + notificationPage).setAttribute('aria-current', 'page');
   if (investmentPage) $('nav-investment-' + investmentPage).setAttribute('aria-current', 'page');
+  if (currentPage === 'system') $('nav-system-data').setAttribute('aria-current', 'page');
   $('page-title').textContent = notificationPage ? '通知网关 · ' + notificationPages[notificationPage] :
     investmentPage ? '投资记账 · ' + investmentPages[investmentPage] : adminPage.title;
   $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' :
@@ -90,8 +94,7 @@ function loggedIn(yes) {
     csrf = '';
     resetAccessLogs();
     resetApplications();
-    $('system-databases').replaceChildren();
-    $('system-status').textContent = '';
+    resetDatabaseManager();
     if (investmentPage) resetInvestment();
     window.hakoWorkshop?.reset();
     agentListing = null;
@@ -118,47 +121,6 @@ async function api(path, method = 'GET', data, passive = false) {
   return result;
 }
 function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
-let databaseSchemasRefreshing = false;
-async function refreshDatabaseSchemas() {
-  if (currentPage !== 'system' || !csrf || databaseSchemasRefreshing) return;
-  const session = csrf;
-  databaseSchemasRefreshing = true;
-  $('system-refresh').disabled = true;
-  $('system-status').textContent = '正在读取数据库结构…';
-  try {
-    const {databases} = await api('system/databases');
-    if (csrf !== session) return;
-    const cards = databases.map(db => {
-      const card = node('article', undefined, 'database-schema');
-      const title = node('div', db.name, 'device-title');
-      const schema = db.schema;
-      const expectedVersion = db.expectedVersion;
-      const ready = schema?.version === expectedVersion;
-      let status = {disabled: '未启用', not_created: '尚未创建', unreadable: '读取失败'}[db.status];
-      if (schema) status = ready ? '版本已就绪' : schema.version < expectedVersion ? '需要迁移' : '版本过高';
-      title.append(node('span', status, 'badge' + (ready ? ' online' : '')));
-      card.append(title, node('p', db.file + (schema ? ` · 版本 ${schema.version} · ${schema.tables.length} 张表` : ''), 'device-meta'));
-      for (const table of schema?.tables ?? []) {
-        const details = node('details');
-        const summary = node('summary');
-        summary.append(node('code', table.name));
-        const ddl = [table.sql, ...(table.indexes ?? [])].join(';\n\n') + ';';
-        details.append(summary, node('pre', ddl));
-        card.append(details);
-      }
-      return card;
-    });
-    $('system-databases').replaceChildren(...cards);
-    $('system-status').textContent = '各数据库独立维护版本。标为「版本已就绪」的库已完成迁移或按当前版本创建。展开表名可查看字段、约束和索引。';
-  } catch (e) {
-    if (csrf === session) $('system-status').textContent = e.message;
-  } finally {
-    databaseSchemasRefreshing = false;
-    $('system-refresh').disabled = false;
-    if (csrf && csrf !== session) void refreshDatabaseSchemas();
-  }
-}
-$('system-refresh').addEventListener('click', refreshDatabaseSchemas);
 function action(text, fn, className = '') { const el = node('button', text, className); el.type = 'button'; el.addEventListener('click', async () => { el.disabled = true; try { await fn(); } catch (e) { notice(e.message); } finally { el.disabled = false; } }); return el; }
 function date(text) { return text ? new Date(text).toLocaleString('zh-CN', { hour12:false }) : '尚未连接'; }
 function empty(target, text) { $(target).replaceChildren(node('p', text, 'empty')); }

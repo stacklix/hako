@@ -12,6 +12,14 @@ Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子�
 
 两类客户端使用配置中的唯一账号及预先登记的设备公钥：Agent 使用 RSA-PSS/SHA-256，Console 使用 Secure Enclave P-256 和 DPoP。所有已登记 Console 都是管理员，可以批准网页登录。没有密码、TOTP、管理密钥登录或公开注册入口。
 
+### 数据管理
+
+后台「系统管理 → 数据管理」（`/admin/system/data`）采用三栏布局：主菜单、数据库及表、数据工作区。工作区可在「数据」和「表结构」之间切换，结构包括字段类型、NULL 约束、默认值、主键、生成列及建表和索引 SQL。支持服务端主库、通知网关、访问日志与投资记账库；未启用或尚未创建的库会显示对应状态。主库中加密保存的内容仍以 BLOB 展示，不在页面解密。
+
+`GET /admin/api/system/databases` 返回带稳定 ID 的数据库清单、表及字段结构；`POST /admin/api/system/databases/{database}/query` 接受 `sql`、`limit` 和 `offset`，其中数据库 ID 为 `main`、`notifications`、`access` 或 `investment`。查询仅支持单条只读 SELECT / WITH，不执行写入、DDL、PRAGMA、ATTACH 或多语句。沿用后台 Cookie、同源与 CSRF 校验；查询执行计入用户操作。服务端版本为 `0.6.2`，两端最低版本不变。
+
+默认每页 100 行，可选 50 / 100 / 200 行；接口范围为 1–200 行、offset 为 0–1,000,000，执行时间最多 5 秒。结果返回列名、行数据及 `hasMore`，64 位整数以字符串返回以保留精度，BLOB 显示字节数，超长文本截断到约 8 KiB 并标记，单页内容最多 2 MiB。翻页沿用上次执行的 SQL；编辑后需重新执行。跨页期间数据可能变化，需要固定顺序时在 SQL 中指定 ORDER BY。
+
 ## 源码目录
 
 - `cmd/hako-server/` 读取运行配置并启动 HTTP 服务。

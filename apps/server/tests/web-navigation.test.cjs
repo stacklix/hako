@@ -7,8 +7,8 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
   const elements = new Map(), calls = [], timers = [];
   let ready;
   class TestNode {
-    constructor() { this.hidden = false; this.value = ''; this.attributes = {}; this.children = []; this.dataset = {}; }
-    addEventListener() {}
+    constructor() { this.hidden = false; this.value = ''; this.attributes = {}; this.children = []; this.dataset = {}; this.events = {}; }
+    addEventListener(name, callback) { this.events[name] = callback; }
     setAttribute(name, value) { this.attributes[name] = value; }
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
@@ -33,7 +33,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
   const context = vm.createContext({document, window: {location: {pathname}},
     AbortSignal, URLSearchParams, Node: TestNode, clearTimeout() {}, clearInterval() {},
     setInterval(callback) { timers.push(callback); },
-    fetch: async url => {
+    fetch: async (url, options) => {
       calls.push(url);
       if (url.startsWith('/admin/api/access-logs/records?')) {
         assert.ok(recordPages.length, 'unexpected records request');
@@ -42,13 +42,19 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
       if (url.startsWith('/admin/api/investment/') && investmentData) {
         return {ok: true, json: async () => investmentData};
       }
+      if (/\/system\/databases\/[^/]+\/query$/.test(url)) {
+        const request = JSON.parse(options.body);
+        assert.equal(options.headers['X-CSRF-Token'], 'test');
+        const rows = request.offset ? [['2', null]] : [['1', '<script>unsafe</script>']];
+        return {ok: true, json: async () => ({columns: ['id', 'name'], rows, offset: request.offset, limit: request.limit, hasMore: request.offset === 0})};
+      }
       const responses = {
         '/admin/api/system/databases': {databases: [
-          {name: '服务端主库', file: 'hako.db', status: 'available', expectedVersion: 2, schema: {
-            version: 2, tables: [{name: 'state', sql: 'CREATE TABLE state(id INTEGER PRIMARY KEY)'}]
+          {id: 'main', name: '服务端主库', file: 'hako.db', status: 'available', expectedVersion: 2, schema: {
+            version: 2, tables: [{name: 'state', sql: 'CREATE TABLE state(id INTEGER PRIMARY KEY)', columns: [{name:'id', type:'INTEGER', notNull:false, default:null, primaryKey:1, hidden:0}]}]
           }},
-          {name: '访问日志', file: 'hako.db.access.db', status: 'not_created', expectedVersion: 2},
-          {name: '投资记账', file: 'investment.db', status: 'available', expectedVersion: 3, schema: {
+          {id:'access', name: '访问日志', file: 'hako.db.access.db', status: 'not_created', expectedVersion: 2},
+          {id:'investment', name: '投资记账', file: 'investment.db', status: 'available', expectedVersion: 3, schema: {
             version: 3, tables: [{name: 'investment_accounts', sql: 'CREATE TABLE investment_accounts(id TEXT PRIMARY KEY)'}]
           }}
         ]},
@@ -64,7 +70,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
       return {ok: true, json: async () => responses[url]};
     }
   });
-  for (const file of ['app.js', 'access-logs.js', 'applications.js', 'investment.js']) {
+  for (const file of ['app.js', 'system-data.js', 'access-logs.js', 'applications.js', 'investment.js']) {
     vm.runInContext(readFileSync(new URL(`../internal/server/web/${file}`, `file://${__filename}`), 'utf8'), context);
   }
   await ready();
@@ -243,15 +249,57 @@ test('balance charts align recorded balances to Beijing dates and leave missing 
   assert.equal(deficit.net, '-40');
 });
 
-test('system configuration loads database versions and table definitions', async () => {
-  const {document, calls} = await openPage('/admin/system');
-  assert.deepEqual(calls, ['/admin/api/session', '/admin/api/system/databases']);
+test('data management shows database tables, queries rows and switches to structure', async () => {
+  const {document, calls, context} = await openPage('/admin/system/data');
+  assert.deepEqual(calls, ['/admin/api/session', '/admin/api/system/databases', '/admin/api/system/databases/main/query']);
   assert.equal(document.getElementById('system-page').hidden, false);
   assert.equal(document.getElementById('nav-system').attributes['aria-current'], 'page');
-  assert.equal(document.getElementById('page-title').textContent, '系统配置');
+  assert.equal(document.getElementById('page-title').textContent, '系统管理 · 数据管理');
+  assert.equal(document.getElementById('system-subnav').hidden, false);
+  assert.equal(document.getElementById('nav-system-data').attributes['aria-current'], 'page');
   const text = node => [node.textContent || '', ...node.children.map(text)].join(' ');
   const content = text(document.getElementById('system-databases'));
-  assert.match(content, /版本已就绪.*hako.db · 版本 2.*CREATE TABLE state/);
-  assert.match(content, /投资记账.*版本已就绪.*investment\.db · 版本 3.*CREATE TABLE investment_accounts/);
+  assert.match(content, /服务端主库.*hako.db · 版本 2.*state/);
+  assert.match(content, /投资记账.*investment\.db · 版本 3.*investment_accounts/);
   assert.match(content, /尚未创建/);
+  assert.match(text(document.getElementById('data-results')), /<script>unsafe<\/script>/);
+  document.getElementById('data-tab-schema').events.click();
+  assert.equal(document.getElementById('data-schema-panel').hidden, false);
+  assert.equal(document.getElementById('data-rows-panel').hidden, true);
+  assert.match(text(document.getElementById('data-columns')), /id.*INTEGER/);
+  assert.match(document.getElementById('data-ddl').textContent, /CREATE TABLE state/);
+  document.getElementById('data-sql').value = 'SELECT edited';
+  await document.getElementById('data-next').events.click();
+  assert.match(document.getElementById('data-result-status').textContent, /101–101/);
+  assert.match(text(document.getElementById('data-results')), /NULL/);
+  await vm.runInContext('selectDataTable("investment", "investment_accounts")', context);
+  await new Promise(setImmediate);
+  assert.match(document.getElementById('data-ddl').textContent, /investment_accounts/);
+  assert.equal(calls.at(-1), '/admin/api/system/databases/investment/query');
+  vm.runInContext('resetDatabaseManager()', context);
+  assert.equal(document.getElementById('data-results').children.length, 0);
+  assert.equal(document.getElementById('data-sql').value, '');
+  assert.equal(document.getElementById('data-run').disabled, true);
+});
+
+test('late database query responses cannot replace a new table or restore logged-out data', async () => {
+  const {document, context} = await openPage('/admin/system/data');
+  let finish;
+  const nativeFetch = context.fetch;
+  context.fetch = (url, options) => url.includes('/main/query') ? new Promise(resolve => { finish = resolve; }) : nativeFetch(url, options);
+  const old = vm.runInContext('executeDatabaseQuery()', context);
+  assert.equal(typeof finish, 'function');
+  vm.runInContext('selectDataTable("investment", "investment_accounts")', context);
+  await new Promise(setImmediate);
+  const current = document.getElementById('data-results').children[0];
+  finish({ok:true, json:async () => ({columns:['late'], rows:[['old database']],offset:0,limit:100,hasMore:false})});
+  await old;
+  assert.equal(document.getElementById('data-results').children[0], current);
+  vm.runInContext('selectDataTable("main", "state")', context);
+  const pending = finish;
+  vm.runInContext('resetDatabaseManager()', context);
+  pending({ok:true, json:async () => ({columns:['late'],rows:[['old session']],offset:0,limit:100,hasMore:false})});
+  await new Promise(setImmediate);
+  assert.equal(document.getElementById('data-results').children.length,0);
+  assert.equal(document.getElementById('data-run').disabled,true);
 });

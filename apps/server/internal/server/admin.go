@@ -31,6 +31,9 @@ func (s *Server) adminRoutes() {
 	for view := range investmentAdminTables {
 		pages["/admin/investment/"+view] = "index.html"
 	}
+	pages["/admin/system/data"] = "index.html"
+	pages["/admin/system-data.js"] = "system-data.js"
+	pages["/admin/system-data.css"] = "system-data.css"
 	for route, file := range pages {
 		s.mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != route {
@@ -54,6 +57,7 @@ func (s *Server) adminRoutes() {
 	s.applicationManagementRoutes()
 	s.mux.HandleFunc("GET /admin/api/investment/{view}", s.admin(s.adminInvestment))
 	s.mux.HandleFunc("GET /admin/api/system/databases", s.admin(s.adminDatabaseSchemas))
+	s.mux.HandleFunc("POST /admin/api/system/databases/{database}/query", s.admin(s.adminDatabaseQuery))
 	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
 	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
 	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))

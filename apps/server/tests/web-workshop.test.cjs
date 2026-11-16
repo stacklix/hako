@@ -125,6 +125,36 @@ test('switching the workshop computer clears the previous transcript immediately
   w.context.window.hakoWorkshop.reset();
 });
 
+test('server disconnect frames reconnect from the applied cursor and clear the recovered warning', async () => {
+  const w = await workshop(); await w.send('开始');
+  const source = w.sources.at(-1);
+  source.emit(w.page(20, [{kind:'delta',id:'answer',role:'assistant',text:'已收到'}]));
+  source.onmessage({data:JSON.stringify({kind:'failure',error:{code:'workshop_disconnected',message:'代码工坊连接已中断。'}})});
+  assert.equal(source.closed, true);
+  assert.equal(w.el('workshop-error').textContent, '代码工坊连接已中断。');
+  assert.equal(w.timers.length, 1, 'A server failure must schedule recovery without relying on onerror');
+  await w.timers.at(-1)();
+  const recovered = w.sources.at(-1);
+  assert.notEqual(recovered, source);
+  assert.match(recovered.url, /\/operation-1\/20$/);
+  // Successfully reading history is insufficient while the operation stream is still disconnected.
+  await w.el('workshop-refresh').events.click();
+  assert.equal(w.el('workshop-error').hidden, false);
+  recovered.emit(w.page(30, [{kind:'delta',id:'answer',role:'assistant',text:'继续'}]));
+  assert.equal(w.el('workshop-error').hidden, true);
+  assert.match(text(w.el('workshop-transcript')), /已收到继续/);
+  const timers = w.timers.length;
+  source.onerror();
+  assert.equal(w.timers.length, timers, 'An old stream cannot schedule another reconnect');
+  recovered.onerror();
+  const retry = w.timers.at(-1);
+  w.context.window.hakoWorkshop.reset();
+  const calls = w.calls.length, sources = w.sources.length;
+  await retry();
+  assert.equal(w.calls.length, calls, 'A queued reconnect cannot read after logout');
+  assert.equal(w.sources.length, sources);
+});
+
 test('workshop commands submit explicit execution settings and read independent task logs', async () => {
   const w = await workshop();
   await w.el('workshop-commands-open').events.click();

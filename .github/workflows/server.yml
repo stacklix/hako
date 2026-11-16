@@ -32,6 +32,7 @@ jobs:
       - run: node --check internal/server/web/app.js
       - run: node --check internal/server/web/access-logs.js
       - run: node --check internal/server/web/applications.js
+      - run: node --check internal/server/web/system-data.js
       - run: node --check internal/server/web/workshop.js
       - run: node --check internal/server/web/workshop-commands.js
       - run: node --test tests/*.test.cjs

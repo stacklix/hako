@@ -193,6 +193,7 @@ private struct WorkshopInlineProse: View {
         let current = rendered ?? (text: Text(verbatim: source), copies: [:])
         current.text
             .font(.subheadline).lineSpacing(5).textSelection(.enabled)
+            .tint(HakoStyle.link)
             .textRenderer(WorkshopInlineCodeRenderer())
             .accessibilityHint(current.copies.isEmpty ? "双击复制整条消息，长按可选择文本" : "轻点行内代码复制该段，双击复制整条消息，长按可选择文本")
             .environment(\.openURL, OpenURLAction { url in
@@ -220,7 +221,7 @@ private struct WorkshopInlineProse: View {
         var text = parsed
         var copies: [URL: String] = [:]
         // Keep one Text layout so code wraps naturally with the surrounding prose.
-        let spans = text.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true }
+        let spans = text.runs.filter { $0.inlinePresentationIntent?.contains(.code) == true && $0.link == nil }
             .map { (range: $0.range, value: String(text[$0.range].characters)) }
         for (index, span) in spans.enumerated() {
             guard let url = URL(string: "hako-inline-copy://snippet/\(index)") else { continue }
@@ -229,10 +230,27 @@ private struct WorkshopInlineProse: View {
             text[span.range].foregroundColor = HakoStyle.text
             text[span.range].link = url
         }
-        let rendered = text.runs.reduce(Text("")) { result, run in
-            var fragment = Text(AttributedString(text[run.range]))
+        let runs = Array(text.runs)
+        let rendered = runs.enumerated().reduce(Text("")) { result, item in
+            let (index, run) = item
+            var value = AttributedString(text[run.range])
+            if let link = run.link, copies[link] == nil, !WorkshopBrowserLink.allows(link) {
+                value.link = nil
+            }
+            var fragment = Text(value)
             if let link = run.link, copies[link] != nil {
                 fragment = fragment.customAttribute(WorkshopInlineCodeAttribute(id: link))
+            } else if let link = run.link, WorkshopBrowserLink.allows(link) {
+                fragment = fragment.foregroundColor(HakoStyle.link).underline(true, color: HakoStyle.link)
+                // A link can contain several styled runs. Add one marker at its end,
+                // with the same destination so tapping the marker also opens it.
+                if index + 1 == runs.count || runs[index + 1].link != link {
+                    var marker = AttributedString("\u{202F}↗")
+                    marker.link = link
+                    marker.font = .caption2
+                    marker.foregroundColor = HakoStyle.link
+                    fragment = Text("\(fragment)\(Text(marker))")
+                }
             }
             return Text("\(result)\(fragment)")
         }

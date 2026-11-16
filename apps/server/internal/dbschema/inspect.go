@@ -9,6 +9,16 @@ type Table struct {
 	Name    string   `json:"name"`
 	SQL     string   `json:"sql"`
 	Indexes []string `json:"indexes,omitempty"`
+	Columns []Column `json:"columns"`
+}
+
+type Column struct {
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	NotNull    bool    `json:"notNull"`
+	Default    *string `json:"default"`
+	PrimaryKey int     `json:"primaryKey"`
+	Hidden     int     `json:"hidden"`
 }
 
 type Schema struct {
@@ -50,5 +60,31 @@ func InspectTx(ctx context.Context, tx *sql.Tx) (Schema, error) {
 			schema.Tables[n-1].Indexes = append(schema.Tables[n-1].Indexes, definition)
 		}
 	}
-	return schema, rows.Err()
+	if err := rows.Err(); err != nil {
+		return schema, err
+	}
+	if err := rows.Close(); err != nil {
+		return schema, err
+	}
+	for i := range schema.Tables {
+		columns, err := tx.QueryContext(ctx, `SELECT name,type,"notnull",dflt_value,pk,hidden FROM pragma_table_xinfo(?)`, schema.Tables[i].Name)
+		if err != nil {
+			return schema, err
+		}
+		schema.Tables[i].Columns = []Column{}
+		for columns.Next() {
+			var c Column
+			if err := columns.Scan(&c.Name, &c.Type, &c.NotNull, &c.Default, &c.PrimaryKey, &c.Hidden); err != nil {
+				columns.Close()
+				return schema, err
+			}
+			schema.Tables[i].Columns = append(schema.Tables[i].Columns, c)
+		}
+		err = columns.Err()
+		columns.Close()
+		if err != nil {
+			return schema, err
+		}
+	}
+	return schema, nil
 }

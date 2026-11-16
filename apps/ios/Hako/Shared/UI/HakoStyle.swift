@@ -30,6 +30,7 @@ enum HakoStyle {
     static let text = adaptive(0x202124, 0xf2f2f4)
     static let muted = adaptive(0x76777d, 0xaaaab0)
     static let line = adaptive(0xe9e9ee, 0x38383c)
+    static let link = adaptive(0x0964c8, 0x79b2ff)
 
     static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in

@@ -70,3 +70,53 @@ func TestAdminDatabaseSchemas(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminDatabaseQuery(t *testing.T) {
+	f := newFixture(t, true)
+	_, err := f.s.store.db.Exec(`CREATE TABLE preview(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO preview VALUES (1,'<script>text</script>'),(2,NULL);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := &adminClient{f: f}
+	path := "/admin/api/system/databases/main/query"
+	body := map[string]any{"sql": "SELECT * FROM preview ORDER BY id", "limit": 1}
+	if code, _, _ := guest.request("POST", path, body, f.s.config.PublicURL, ""); code != 401 {
+		t.Fatalf("guest query: %d", code)
+	}
+	admin := loginAdmin(f)
+	if code, _, _ := admin.request("POST", path, body, f.s.config.PublicURL, "wrong"); code != 403 {
+		t.Fatalf("missing CSRF protection: %d", code)
+	}
+	if code, _, _ := admin.request("POST", path, body, "https://other.example", admin.csrf); code != 403 {
+		t.Fatalf("missing origin protection: %d", code)
+	}
+	data := admin.call("POST", "system/databases/main/query", body, 200)
+	var result dbschema.QueryResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Columns) != 2 || len(result.Rows) != 1 || !result.HasMore {
+		t.Fatalf("bad result: %s", data)
+	}
+	admin.call("POST", "system/databases/main/query", map[string]any{"sql": "DELETE FROM preview"}, 400)
+	admin.call("POST", "system/databases/main/query", map[string]any{"sql": "SELECT 1; DROP TABLE preview"}, 400)
+	admin.call("POST", "system/databases/missing/query", body, 404)
+	admin.call("POST", "system/databases/notifications/query", body, 409)
+	admin.call("POST", "system/databases/access/query", body, 409)
+	admin.call("POST", "system/databases/investment/query", map[string]any{"sql": "SELECT * FROM preview"}, 400)
+	admin.call("POST", "system/databases/investment/query", map[string]any{"sql": "SELECT * FROM investment_accounts"}, 200)
+	f.s.config.NotificationDataDir = t.TempDir()
+	if err := f.s.startNotifications(); err != nil {
+		t.Fatal(err)
+	}
+	admin.call("POST", "system/databases/notifications/query", map[string]any{"sql": "SELECT * FROM notification_deliveries"}, 200)
+	logs, err := sql.Open("sqlite", f.s.config.Database+".access.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := logs.Exec("CREATE TABLE test_counts(count INTEGER); INSERT INTO test_counts VALUES (42)"); err != nil {
+		t.Fatal(err)
+	}
+	logs.Close()
+	admin.call("POST", "system/databases/access/query", map[string]any{"sql": "SELECT * FROM test_counts"}, 200)
+}

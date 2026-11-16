@@ -187,6 +187,10 @@ func (a *Service) DatabaseSchema(ctx context.Context) (dbschema.Schema, error) {
 	return dbschema.Inspect(ctx, a.db)
 }
 
+func (a *Service) DatabaseQuery(ctx context.Context, query string, limit, offset int) (dbschema.QueryResult, error) {
+	return dbschema.Query(ctx, a.db, query, limit, offset)
+}
+
 func (a *Service) Close() { a.cancel(); <-a.done; _ = a.db.Close() }
 func (a *Service) Status() Status {
 	a.mu.Lock()

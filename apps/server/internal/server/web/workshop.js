@@ -10,6 +10,10 @@
   const online = () => computers.some(item => item.id === computer && item.online);
   const key = (pc, app, thread) => JSON.stringify([pc, app, thread || 'new']);
   const error = message => { $('workshop-error').textContent = message; $('workshop-error').hidden = !message; };
+  function connectionRecovered(view) {
+    if (current(view) && view.connectionIssue && $('workshop-error').textContent === view.connectionIssue) error('');
+    view.connectionIssue = '';
+  }
   function button(text, callback, className = 'quiet') {
     return action(text, async () => { try { await callback(); } catch (e) { if (enabled) error(e.message); } }, className);
   }
@@ -165,7 +169,10 @@
         view.operation = result.operationId; view.cursor = 0; view.live.clear(); view.approvals = []; view.followups = [];
         if (current(view)) { stopStream(); startStream(view); }
       }
-      if (current(view)) { drawTranscript(view, !more); drawArtifacts(view); }
+      if (current(view)) {
+        if (!view.operation) connectionRecovered(view);
+        drawTranscript(view, !more); drawArtifacts(view);
+      }
     } catch (e) { if (current(view)) error(e.message); }
     finally { view.loading = false; if (current(view)) { $('workshop-history-more').disabled = false; $('workshop-history-more').hidden = !view.historyCursor; drawControls(view); } }
   }
@@ -290,25 +297,37 @@
     const generation = streamVersion, operation = view.operation;
     const source = new EventSource('/admin/api/workshop/events/' + [view.computer, operation, view.cursor].map(encodeURIComponent).join('/'));
     stream = source;
-    source.onmessage = event => {
-      if (!current(view) || stream !== source || operation !== view.operation) return;
-      try {
-        const frame = JSON.parse(event.data);
-        if (frame.kind === 'failure') throw new Error(frame.error.message);
-        const wasRunning = running(view.state);
-        applyPage(view, frame.result);
-        if (wasRunning && !running(view.state)) { void loadHistory(view); void refreshCatalog(); }
-      } catch (e) { error(e.message); source.close(); stream = null; }
-    };
-    source.onerror = () => {
-      source.close(); if (stream === source) stream = null;
-      if (!current(view) || generation !== streamVersion || document.hidden) return;
+    const disconnected = message => {
+      if (!current(view) || stream !== source || generation !== streamVersion || operation !== view.operation) return;
+      source.close(); stream = null;
+      view.connectionIssue = message;
+      error(message);
+      if (document.hidden) return;
       $('workshop-state').textContent = '连接中断，正在重新核对任务进度…';
       reconnect = setTimeout(async () => {
+        reconnect = null;
+        if (!current(view) || generation !== streamVersion || operation !== view.operation || document.hidden) return;
         try { await refreshComputers(); } catch (e) { if (current(view)) error(e.message); }
         if (current(view) && generation === streamVersion && online()) startStream(view);
       }, 3000);
     };
+    source.onmessage = event => {
+      if (!current(view) || stream !== source || operation !== view.operation) return;
+      try {
+        const frame = JSON.parse(event.data);
+        if (frame.kind === 'failure') {
+          if (['workshop_disconnected', 'computer_offline', 'workshop_timeout', 'stream_overflow', 'workshop_busy'].includes(frame.error?.code)) {
+            disconnected(frame.error.message); return;
+          }
+          throw new Error(frame.error?.message || '工坊事件读取失败。');
+        }
+        const wasRunning = running(view.state);
+        applyPage(view, frame.result);
+        connectionRecovered(view);
+        if (wasRunning && !running(view.state)) { void loadHistory(view); void refreshCatalog(); }
+      } catch (e) { error(e.message); source.close(); stream = null; }
+    };
+    source.onerror = () => disconnected('连接中断，正在重新核对任务进度…');
   }
   function drawApprovals(view) {
     const signature = JSON.stringify([view.computer, view.app.id, view.thread, view.approvals]);

@@ -2,10 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script><script src="/admin/workshop.js" defer></script><script src="/admin/workshop-commands.js" defer></script><link rel="stylesheet" href="/admin/workshop.css">
+  <title>Hako · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script><script src="/admin/system-data.js" defer></script><link rel="stylesheet" href="/admin/system-data.css"><script src="/admin/workshop.js" defer></script><script src="/admin/workshop-commands.js" defer></script><link rel="stylesheet" href="/admin/workshop.css">
 </head>
 <body>
-<nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">进入工作空间 <span aria-hidden="true">↗</span></a></div></nav>
+<nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span><span>hako<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">扫码登录 <span aria-hidden="true">↗</span></a></div></nav>
 <div class="shell">
   <aside><a class="brand" href="/admin/"><span class="mark"><img class="hako-logo" src="/admin/hako-logo.svg" alt=""></span> HAKO</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a>
     <a id="nav-notifications" href="/admin/notifications">通知网关 <span>Push</span></a>
@@ -22,7 +22,7 @@
       <a id="nav-investment-accounts" href="/admin/investment/accounts">账户</a>
       <a id="nav-investment-watchlist" href="/admin/investment/watchlist">关注</a>
       <a id="nav-investment-balance-sheet" href="/admin/investment/balance-sheet">资产负债</a>
-    </div><a id="nav-system" href="/admin/system">系统配置 <span>System</span></a></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
+    </div><a id="nav-system" href="/admin/system/data">系统管理 <span>System</span></a><div id="system-subnav" class="admin-subnav" role="group" aria-label="系统管理二级菜单" hidden><a id="nav-system-data" href="/admin/system/data">数据管理</a></div></nav><p class="aside-footer">你的日常，收进一个盒子。<br>Hako Server</p></aside>
   <main>
     <header class="dashboard-header"><div><p class="eyebrow">HAKO SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Hako 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -115,13 +115,26 @@
         <p class="muted">先创建应用，再将应用 ID 和 SK 配置到对应应用。SK 仅在创建或轮换时显示一次。</p>
         <div id="application-list" class="device-list"></div>
       </section>
-      <section id="system-page" class="card" hidden>
-        <div class="section-heading">
-          <div><p class="eyebrow">DATABASES</p><h2>数据库结构</h2></div>
-          <button id="system-refresh" class="quiet" type="button">刷新结构 ↻</button>
+      <section id="system-page" hidden>
+        <div class="data-layout">
+          <section class="data-sidebar" aria-label="数据库与表">
+            <div class="section-heading"><div><p class="eyebrow">DATABASES</p><h2>数据库与表</h2></div><button id="system-refresh" type="button" class="quiet" aria-label="刷新数据库与表">↻</button></div>
+            <label>筛选数据库或表<input id="system-filter" type="search" placeholder="输入名称"></label>
+            <p id="system-status" class="muted" role="status"></p>
+            <div id="system-databases"></div>
+          </section>
+          <section class="data-workspace" aria-label="表数据与结构">
+            <div class="data-workspace-heading"><div><p id="data-database" class="eyebrow">DATA EXPLORER</p><h2 id="data-table-title">选择一张表</h2></div><span class="pill">只读</span></div>
+            <div class="data-tabs" role="tablist" aria-label="表视图"><button id="data-tab-rows" role="tab" aria-selected="true" aria-controls="data-rows-panel" type="button">数据</button><button id="data-tab-schema" role="tab" aria-selected="false" aria-controls="data-schema-panel" type="button">表结构</button></div>
+            <section id="data-rows-panel" role="tabpanel" aria-labelledby="data-tab-rows">
+              <form id="data-query-form"><label>SQL 查询<textarea id="data-sql" rows="5" spellcheck="false" placeholder="选择数据库与表后编写 SELECT 查询" maxlength="20000"></textarea></label><div class="data-query-actions"><span class="muted">支持 SELECT / WITH · Ctrl / ⌘ + Enter 执行</span><button id="data-run" type="submit" class="primary" disabled>执行查询</button></div></form>
+              <p id="data-error" class="form-error" role="alert" hidden></p>
+              <div class="data-results-heading"><p id="data-result-status" class="muted" role="status">在左侧选择一张表以查看数据。</p><div class="data-pagination"><label>每页<select id="data-limit"><option value="50">50 行</option><option value="100" selected>100 行</option><option value="200">200 行</option></select></label><button id="data-prev" class="quiet" type="button" disabled>上一页</button><button id="data-next" class="quiet" type="button" disabled>下一页</button></div></div>
+              <div id="data-results" class="data-grid-wrap" tabindex="0" aria-label="查询结果"></div>
+            </section>
+            <section id="data-schema-panel" role="tabpanel" aria-labelledby="data-tab-schema" hidden><p class="muted">字段定义、主键与索引</p><div id="data-columns" class="data-grid-wrap"></div><h3>建表与索引 SQL</h3><pre id="data-ddl">选择一张表以查看结构。</pre></section>
+          </section>
         </div>
-        <p id="system-status" class="muted" role="status"></p>
-        <div id="system-databases"></div>
       </section>
       <section id="access-logs" class="card" hidden>
         <div class="section-heading"><div><p class="eyebrow">CADDY ACCESS LOGS</p><h2>访问日志</h2></div><button id="logs-refresh" class="quiet" type="button">刷新统计 ↻</button></div>
