@@ -779,11 +779,19 @@ import CryptoKit
               !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
         connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest
         do {
-            try await requests.watch(computerID: agent.id, operationID: id, cursor: cursor) { data in
+            var appliedCursor = cursor
+            try await requests.watchBatches(computerID: agent.id, operationID: id, cursor: cursor) { batch in
+                let pages = try await WorkshopSocketDecoder.shared.operationPages(batch, operationID: id, after: appliedCursor)
+                try Task.checkCancellation()
                 guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
-                let page = try JSONDecoder().decode(WorkshopOperationPage.self, from: data)
                 if self.connections[agent.id] != .connected { self.connections[agent.id] = .connected }
-                return try await receive(page)
+                for page in pages {
+                    try Task.checkCancellation()
+                    guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                    if try await receive(page) == false { return false }
+                    appliedCursor = page.cursor
+                }
+                return true
             }
         } catch {
             if ticket == scope, route == transportRevision {

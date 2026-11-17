@@ -145,7 +145,7 @@ internal sealed partial class CodeWorkshop
             if (action == "steer" && !current.Active && current.State is "completed" or "interrupted" or "failed")
             {
                 if (root.ThreadId is null || jobs.Values.Any(value => value.Active && value.ThreadId == root.ThreadId) ||
-                    jobs.Values.Count(value => value.Active) >= 3 || Group(root).Any(value => value.State is "unknown" or "steering"))
+                    Group(root).Any(value => value.State is "unknown" or "steering"))
                     throw new WorkshopException("codex_busy", "请先核对已有任务的状态。");
                 var previousWorker = job.Worker;
                 root.StopRequested = false; Persist(root);

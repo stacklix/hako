@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -30,12 +31,22 @@ internal static class ProcessSnapshot
         public IntPtr ProcessId;
         public IntPtr InheritedFromProcessId;
         public uint HandleCount, SessionId;
+        public UIntPtr UniqueProcessKey, PeakVirtualSize, VirtualSize;
+        public uint PageFaultCount;
+        public UIntPtr PeakWorkingSetSize, WorkingSetSize;
     }
+
+    internal sealed record ResourceInfo(string? Name, DateTimeOffset? StartedAt, int SessionId,
+        ulong CpuTime100ns, ulong WorkingSetBytes);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
     private delegate int QueryInformation(int informationClass, IntPtr buffer, uint size, out uint required);
 
     public static IReadOnlyDictionary<int, NetworkListeners.ProcessInfo>? Capture(CancellationToken token)
+        => CaptureResources(token)?.ToDictionary(entry => entry.Key,
+            entry => new NetworkListeners.ProcessInfo(entry.Value.Name, entry.Value.StartedAt, entry.Value.SessionId));
+
+    internal static IReadOnlyDictionary<int, ResourceInfo>? CaptureResources(CancellationToken token)
     {
         // This native API may change; load dynamically and fall back to individual
         // process reads if unavailable or if the returned layout is invalid.
@@ -61,7 +72,7 @@ internal static class ProcessSnapshot
                         continue;
                     }
                     if (status < 0 || required > size || required < Marshal.SizeOf<Header>()) return null;
-                    try { return Parse(buffer, (int)required, token); }
+                    try { return ParseResources(buffer, (int)required, token); }
                     catch (InvalidDataException) { return null; }
                 }
                 finally { Marshal.FreeHGlobal(buffer); }
@@ -72,8 +83,12 @@ internal static class ProcessSnapshot
     }
 
     internal static IReadOnlyDictionary<int, NetworkListeners.ProcessInfo> Parse(IntPtr buffer, int length, CancellationToken token)
+        => ParseResources(buffer, length, token).ToDictionary(entry => entry.Key,
+            entry => new NetworkListeners.ProcessInfo(entry.Value.Name, entry.Value.StartedAt, entry.Value.SessionId));
+
+    internal static IReadOnlyDictionary<int, ResourceInfo> ParseResources(IntPtr buffer, int length, CancellationToken token)
     {
-        var processes = new Dictionary<int, NetworkListeners.ProcessInfo>();
+        var processes = new Dictionary<int, ResourceInfo>();
         var headerSize = Marshal.SizeOf<Header>();
         var offset = 0;
         while (true)
@@ -105,7 +120,10 @@ internal static class ProcessSnapshot
                     catch (ArgumentOutOfRangeException) { throw new InvalidDataException("进程快照时间无效。"); }
                 }
                 if (header.SessionId > int.MaxValue) throw new InvalidDataException("进程快照会话无效。");
-                if (!processes.TryAdd((int)pid, new(name, started, (int)header.SessionId))) throw new InvalidDataException("进程快照 PID 重复。");
+                if (header.UserTime < 0 || header.KernelTime < 0) throw new InvalidDataException("进程 CPU 时间无效。");
+                if (!processes.TryAdd((int)pid, new(name, started, (int)header.SessionId,
+                    (ulong)header.UserTime + (ulong)header.KernelTime, header.WorkingSetSize.ToUInt64())))
+                    throw new InvalidDataException("进程快照 PID 重复。");
             }
             if (header.NextEntryOffset == 0) break;
             offset += (int)header.NextEntryOffset;

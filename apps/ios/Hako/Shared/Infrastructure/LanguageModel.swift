@@ -134,6 +134,12 @@ enum LanguageModelError: LocalizedError {
     case connection(URLError.Code, retries: Int)
     case incompleteResponse(retries: Int)
 
+    // Manual retries are separate from the transport's bounded automatic retries.
+    var allowsManualRetry: Bool {
+        if case .invalid = self { return false }
+        return true
+    }
+
     var errorDescription: String? {
         switch self {
         case .invalid(let message): message

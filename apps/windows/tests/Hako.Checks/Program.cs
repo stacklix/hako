@@ -83,6 +83,7 @@ internal static class Program
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "processes") { await ProcessMetricsChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "guardian-broker") { await GuardianBrokerChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "registered-services")
             {
@@ -203,6 +204,7 @@ internal static class Program
             StartupChecks.Run();
             NetworkTrafficChecks.Run();
             await NetworkListenerChecks.RunAsync();
+            await ProcessMetricsChecks.RunAsync();
             await ServiceMonitorChecks.RunAsync();
             await PythonProcessLaunchChecks.RunAsync();
             byte[] secret = RandomNumberGenerator.GetBytes(64);
@@ -234,7 +236,8 @@ internal static class Program
             var dispatcher = new AgentDispatcher(new SystemMetrics());
             if (!dispatcher.Capabilities.SequenceEqual(new[] {
                 new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
-                new AgentCapability("query.network.listeners", 1), new AgentCapability("action.network.http.check", 1),
+                new AgentCapability("query.network.listeners", 1), new AgentCapability(ProcessMetrics.Command, 1),
+                new AgentCapability("action.network.http.check", 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),

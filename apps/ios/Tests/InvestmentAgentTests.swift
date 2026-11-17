@@ -8,6 +8,11 @@ struct InvestmentAgentTests {
     @MainActor
     static func main() async throws {
         try genericDraftsUseBalanceFormsAndRejectContracts()
+        precondition(LanguageModelError.response(400).allowsManualRetry)
+        precondition(LanguageModelError.rejected(400, "请求参数无效").allowsManualRetry)
+        precondition(LanguageModelError.connection(.timedOut, retries: 2).allowsManualRetry)
+        precondition(LanguageModelError.unreadable.allowsManualRetry)
+        precondition(!LanguageModelError.invalid("请先配置模型").allowsManualRetry)
         try insuranceFormsAndPreviewsFollowPolicyCurrency()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()

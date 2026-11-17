@@ -263,6 +263,8 @@ private struct WorkshopInlineCodeAttribute: TextAttribute {
 }
 
 private struct WorkshopInlineCodeRenderer: TextRenderer {
+    private static let background = HakoStyle.adaptive(0xdedee5, 0x3c3c43)
+    private static let border = HakoStyle.adaptive(0xcacbd3, 0x575760)
     var displayPadding: EdgeInsets { EdgeInsets(top: 2, leading: 3, bottom: 2, trailing: 3) }
 
     func draw(layout: Text.Layout, in context: inout GraphicsContext) {
@@ -282,7 +284,8 @@ private struct WorkshopInlineCodeRenderer: TextRenderer {
             for background in backgrounds {
                 let rect = background.rect.insetBy(dx: -3, dy: -1.5)
                 let path = RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: rect)
-                context.fill(path, with: .color(HakoStyle.line.opacity(0.55)))
+                context.fill(path, with: .color(Self.background))
+                context.stroke(path, with: .color(Self.border), lineWidth: 0.5)
             }
             context.draw(line)
         }

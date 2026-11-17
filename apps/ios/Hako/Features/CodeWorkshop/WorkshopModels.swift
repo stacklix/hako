@@ -356,7 +356,7 @@ struct WorkshopReadState: Codable, Sendable {
     }
 }
 
-struct WorkshopOperation: Codable, Equatable {
+struct WorkshopOperation: Codable, Equatable, Sendable {
     let id: String
     let applicationId: String
     let threadId: String?
@@ -410,20 +410,20 @@ struct WorkshopOperation: Codable, Equatable {
     }
 }
 
-struct WorkshopQuestion: Decodable, Identifiable, Equatable {
+struct WorkshopQuestion: Decodable, Identifiable, Equatable, Sendable {
     let id: String
     let question: String
     let options: [String]
 }
 
-struct WorkshopApproval: Decodable, Identifiable, Equatable {
+struct WorkshopApproval: Decodable, Identifiable, Equatable, Sendable {
     let id: String
     let kind: String
     let detail: String
     let questions: [WorkshopQuestion]
 }
 
-struct WorkshopOperationPage: Decodable {
+struct WorkshopOperationPage: Decodable, Sendable {
     let operation: WorkshopOperation
     let events: [WorkshopEntry]
     let cursor: Int64

@@ -89,6 +89,24 @@ final class InvestmentAgentSession: ObservableObject {
         _ = start(message.text, images: message.images, retry: true)
     }
 
+    var retryMessageID: UUID? {
+        guard canRetry, !working, !committing else { return nil }
+        return messages.last(where: \.isUser)?.id
+    }
+
+    func retryReply(messageID: UUID) {
+        guard messageID == retryMessageID else { return }
+        retryReply()
+    }
+
+    @discardableResult
+    func select(_ choice: AssistantReplyChoices.Choice, replyingTo messageID: UUID) -> Bool {
+        guard !working, !committing, !canRetry, messages.last?.id == messageID,
+              let html = messages.last?.html,
+              AssistantReplyChoices(html).choices.contains(choice) else { return false }
+        return send(choice.reply, images: [])
+    }
+
     private func start(_ text: String, images: [Data], retry: Bool) -> Bool {
         restoreConversation()
         guard !working, !committing, !text.isEmpty || !images.isEmpty else { return false }
@@ -182,6 +200,7 @@ final class InvestmentAgentSession: ObservableObject {
                 查询资产总额、净资产或负债时读取 balance。查询投资账户市值时读取 overview。用户追问这些金额时读取对应汇总。overview 的 gain 字段表示累计投资收益。
                 最终回复直接输出 HTML 片段。可用标签：\(AssistantHTML.tags.joined(separator: "、"))。只用这些标签组织内容，样式由 App 提供。
                 \(AssistantHTML.formattingInstructions)
+                需要用户选择时先写“请选择”，候选使用 ol/li 编号列表，每个 li 保留完整含义和条件。App 可点击选项发送回答；选择选项不等于确认写入，仍须生成预览并由用户点击确认。
                 简短回复使用 p。需要汇总时使用 section，h2 写标题，p 内的 strong 显示主要金额，small 标注日期、时区或口径，dl 中用 dt 和 dd 成对展示指标。回复用于手机阅读。内容较长、单元格需要多次换行或列数较多时使用纵向列表，字段名称和值上下排列；表格只用于少量列、短内容的对比。
                 金额保留原始精度和币种，缺少数据时明确说明。文字中的 &、<、> 使用 HTML 实体。直接返回片段，省略 Markdown 代码围栏和标签属性。
                 只记录用户已发生的事项。修改、删除、行情刷新、重算和其他写入都必须通过 propose_changes 生成预览。
@@ -285,14 +304,15 @@ final class InvestmentAgentSession: ObservableObject {
         } catch is CancellationError {
             if !Task.isCancelled { resetLedgerSession() }
         } catch let error as URLError where error.code == .cancelled {
-            if !Task.isCancelled { self.error = "模型连接已中断，请重试。" }
+            if !Task.isCancelled {
+                self.error = "模型连接已中断，请重试。"
+                canRetry = !history.isEmpty && messages.contains(where: \.isUser)
+            }
         } catch let error as LanguageModelError {
             self.error = error.localizedDescription
-            switch error {
-            case .connection, .incompleteResponse:
+            if error.allowsManualRetry, !history.isEmpty, messages.contains(where: \.isUser) {
                 canRetry = true
                 self.error = error.localizedDescription + "本轮问题和已有查询结果已保留。"
-            default: break
             }
         } catch { self.error = error.localizedDescription }
     }

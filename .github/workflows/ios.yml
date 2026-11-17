@@ -39,6 +39,8 @@ jobs:
         run: |
           swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Tests/AssistantRenderingTests.swift -o /tmp/hako-assistant-rendering-tests
           /tmp/hako-assistant-rendering-tests
+          swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Shared/UI/AssistantReplyChoices.swift Tests/AssistantReplyChoicesTests.swift -o /tmp/hako-assistant-choice-tests
+          /tmp/hako-assistant-choice-tests
       - name: Test secure credential masking and editing
         run: |
           swiftc Hako/Shared/UI/HakoSecureTextBuffer.swift Tests/HakoSecureTextBufferTests.swift -o /tmp/hako-secure-text-tests
@@ -93,6 +95,8 @@ jobs:
           /tmp/hako-session-restoration-tests
           swiftc Hako/Shared/HakoServer/ServerJSON.swift Hako/Features/DeviceManagement/ConsoleAgentProtocol.swift Tests/ConsoleAgentProtocolTests.swift -o /tmp/hako-agent-protocol-tests
           /tmp/hako-agent-protocol-tests
+          swiftc Hako/Features/DeviceManagement/DeviceProcessProtocol.swift Tests/DeviceProcessTests.swift -o /tmp/hako-process-tests
+          /tmp/hako-process-tests
           swiftc Hako/Shared/HakoServer/ServerJSON.swift Hako/Features/DeviceManagement/ConsoleAgentProtocol.swift Hako/Features/DeviceManagement/DeviceServiceProtocol.swift Tests/DeviceServiceTests.swift -o /tmp/hako-service-tests
           /tmp/hako-service-tests
           swiftc Hako/Features/DeviceManagement/DeviceAgentVersions.swift Tests/DeviceAgentVersionTests.swift -o /tmp/hako-agent-version-tests

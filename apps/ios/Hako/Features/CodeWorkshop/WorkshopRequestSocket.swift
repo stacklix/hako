@@ -3,7 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-@MainActor protocol WorkshopSocketConnection: AnyObject {
+@MainActor protocol WorkshopSocketConnection: AnyObject, Sendable {
     var workshopUsable: Bool { get }
     func sendWorkshop(_ message: URLSessionWebSocketTask.Message) async throws
     func receiveWorkshopData() async throws -> Data
@@ -74,6 +74,97 @@ enum WorkshopJSON: Codable {
     }
 }
 
+struct WorkshopDecodedSocketFrame: Sendable {
+    let kind: String
+    let id: String?
+    let result: Result<Data, Error>
+}
+
+// Decode and unwrap payloads away from the UI actor. Only routing and publishing
+// the prepared values belong on MainActor, including when the socket is local.
+actor WorkshopSocketDecoder {
+    static let shared = WorkshopSocketDecoder()
+
+    func frame(_ data: Data) throws -> WorkshopDecodedSocketFrame {
+        try Task.checkCancellation()
+        let frame = try JSONDecoder().decode(WorkshopSocketFrame.self, from: data)
+        return WorkshopDecodedSocketFrame(kind: frame.kind, id: frame.id, result: Result { try frame.resultData() })
+    }
+
+    func operationPages(_ payloads: [Data], operationID: String, after initialCursor: Int64) throws -> [WorkshopOperationPage] {
+        var pages: [WorkshopOperationPage] = []
+        var cursor = initialCursor
+        for data in payloads {
+            try Task.checkCancellation()
+            let page = try JSONDecoder().decode(WorkshopOperationPage.self, from: data)
+            guard page.operation.id == operationID, page.cursor >= cursor else { throw CocoaError(.coderReadCorrupt) }
+            // A metadata-only frame may repeat the cursor. Never apply its
+            // events twice, even when it shares a batch with a newer page.
+            let events = page.cursor > cursor ? page.events : []
+            if let previous = pages.last, previous.operation == page.operation,
+               previous.approvals == page.approvals, previous.artifacts == page.artifacts,
+               previous.followups == page.followups {
+                pages[pages.count - 1] = WorkshopOperationPage(operation: page.operation, events: previous.events + events,
+                    cursor: page.cursor, hasMore: page.hasMore, approvals: page.approvals,
+                    artifacts: page.artifacts, followups: page.followups)
+            } else {
+                pages.append(WorkshopOperationPage(operation: page.operation, events: events, cursor: page.cursor,
+                    hasMore: page.hasMore, approvals: page.approvals, artifacts: page.artifacts, followups: page.followups))
+            }
+            cursor = page.cursor
+        }
+        return pages
+    }
+}
+
+// A bounded, lossless batch: overflow fails the subscription so its caller can
+// recover from the last applied cursor instead of silently skipping deltas.
+@MainActor private final class WorkshopSocketSubscription {
+    private let continuation: AsyncThrowingStream<[Data], Error>.Continuation
+    private let interval: Duration
+    private var buffered: [Data] = []
+    private var bufferedBytes = 0
+    private var timer: Task<Void, Never>?
+    private var finished = false
+
+    init(_ continuation: AsyncThrowingStream<[Data], Error>.Continuation, interval: Duration) {
+        self.continuation = continuation; self.interval = interval
+    }
+
+    func yield(_ data: Data) {
+        guard !finished else { return }
+        buffered.append(data)
+        bufferedBytes += data.count
+        if interval == .zero || buffered.count >= 32 || bufferedBytes >= 256 * 1024 { flush(); return }
+        guard timer == nil else { return }
+        let delay = interval
+        timer = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            self?.flush()
+        }
+    }
+
+    private func flush() {
+        timer?.cancel(); timer = nil
+        guard !finished, !buffered.isEmpty else { return }
+        let batch = buffered; buffered.removeAll(keepingCapacity: true)
+        bufferedBytes = 0
+        switch continuation.yield(batch) {
+        case .dropped: finish(URLError(.dataLengthExceedsMaximum))
+        case .terminated: finish()
+        case .enqueued: break
+        @unknown default: finish(URLError(.badServerResponse))
+        }
+    }
+
+    func finish(_ error: Error? = nil) {
+        guard !finished else { return }
+        finished = true
+        timer?.cancel(); timer = nil; buffered.removeAll(); bufferedBytes = 0
+        continuation.finish(throwing: error)
+    }
+}
+
 @MainActor final class WorkshopRequestSocket {
     static let path = "/ws/workshop/client"
     var onDisconnect: (() -> Void)?
@@ -81,7 +172,7 @@ enum WorkshopJSON: Codable {
     private var persistent = false
     private var binaryActive = 0
     private var binaryWaiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
-    private var streams: [String: AsyncThrowingStream<Data, Error>.Continuation] = [:]
+    private var streams: [String: WorkshopSocketSubscription] = [:]
 
     private let requestContext: () -> String
     private let openSocket: () async throws -> (any WorkshopSocketConnection, Data)
@@ -125,12 +216,22 @@ enum WorkshopJSON: Codable {
 
     func watch(computerID: String, operationID: String, cursor: Int64,
                receive: (Data) async throws -> Bool) async throws {
+        try await watchBatches(computerID: computerID, operationID: operationID, cursor: cursor, interval: .zero) { batch in
+            for data in batch {
+                if try await receive(data) == false { return false }
+            }
+            return true
+        }
+    }
+
+    func watchBatches(computerID: String, operationID: String, cursor: Int64, interval: Duration = .milliseconds(40),
+                      receive: ([Data]) async throws -> Bool) async throws {
         let id = UUID().uuidString
         let socket = try await connection()
         try Task.checkCancellation()
         idle?.cancel()
-        let stream = AsyncThrowingStream<Data, Error>(bufferingPolicy: .bufferingOldest(32)) {
-            streams[id] = $0
+        let stream = AsyncThrowingStream<[Data], Error>(bufferingPolicy: .bufferingOldest(interval == .zero ? 32 : 1)) {
+            streams[id] = WorkshopSocketSubscription($0, interval: interval)
         }
         defer {
             streams.removeValue(forKey: id)?.finish()
@@ -265,21 +366,22 @@ enum WorkshopJSON: Codable {
                     do {
                         while !Task.isCancelled {
                             let data = try await opened.receiveWorkshopData()
+                            let frame = try await WorkshopSocketDecoder.shared.frame(data)
+                            try Task.checkCancellation()
                             guard let self, self.socket === opened else { return }
-                            let frame = try JSONDecoder().decode(WorkshopSocketFrame.self, from: data)
                             guard ["result", "failure", "event", "unwatched"].contains(frame.kind), let id = frame.id else { throw CocoaError(.coderReadCorrupt) }
                             if let stream = self.streams[id] {
                                 if frame.kind == "failure" {
                                     self.streams[id] = nil
-                                    stream.finish(throwing: frame.error.map { $0 as Error } ?? URLError(.badServerResponse))
-                                } else if frame.kind == "event" {
-                                    if case .dropped = stream.yield(try frame.resultData()) {
-                                        self.streams[id] = nil
-                                        stream.finish(throwing: URLError(.dataLengthExceedsMaximum))
+                                    switch frame.result {
+                                    case .failure(let error): stream.finish(error)
+                                    case .success: stream.finish(URLError(.badServerResponse))
                                     }
+                                } else if frame.kind == "event" {
+                                    stream.yield(try frame.result.get())
                                 }
                             } else if self.pending[id] != nil {
-                                self.finish(id, with: Result { try frame.resultData() })
+                                self.finish(id, with: frame.result)
                             }
                         }
                     } catch {
@@ -320,7 +422,7 @@ enum WorkshopJSON: Codable {
         let waiting = binaryWaiters; binaryWaiters.removeAll()
         for entry in waiting { entry.continuation.resume(throwing: error) }
         let subscriptions = streams; streams.removeAll()
-        for stream in subscriptions.values { stream.finish(throwing: error) }
+        for stream in subscriptions.values { stream.finish(error) }
         let cancelled = pending
         pending.removeAll()
         for continuation in cancelled.values { continuation.resume(throwing: error) }

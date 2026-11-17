@@ -294,6 +294,9 @@ struct DeviceMetricsView: View {
         } content: { capability in
             if capability.name == "query.system.metrics", capability.version == 1 {
                 metricsContent(capability)
+            } else if capability.name == DeviceProcessCommand.status, capability.version == 1 {
+                DeviceProcessesView(agent: currentAgent, entry: state.entries[capability.name],
+                    metrics: metrics(for: .init(name: "query.system.metrics", version: 1)), loaded: state.loaded)
             } else if capability.name == DeviceGitCommand.list, capability.version == 1 {
                 DeviceGitRepositoriesView(agent: currentAgent,
                     cacheFile: DeviceGitInventory.cacheFile(server: client.serverURL, account: client.username, agent: currentAgent.id))
@@ -432,6 +435,7 @@ struct DeviceMetricsView: View {
     private func capabilityTabTitle(_ capability: ConsoleAgentCapability) -> String {
         switch (capability.name, capability.version) {
         case ("query.system.metrics", 1): return "系统"
+        case (DeviceProcessCommand.status, 1): return "进程"
         case ("query.codex.usage", 1): return "Codex"
         case ("query.network.listeners", 1): return "端口"
         case (DeviceServiceCommand.status, 1): return "服务"

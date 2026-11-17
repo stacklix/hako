@@ -60,7 +60,7 @@ internal sealed class GuardianDispatcher(string profile, RegisteredServices? reg
             }
             catch (AgentActionException error)
             {
-                foreach (var method in new[] { "query.system.metrics", "query.codex.usage", "query.network.listeners" })
+                foreach (var method in new[] { "query.system.metrics", "query.codex.usage", "query.network.listeners", ProcessMetrics.Command })
                     await publish(method, new(1, Error: new(error.Code, error.Message)));
             }
             await Task.Delay(2000, token);

@@ -119,11 +119,6 @@ struct InvestmentAgentSheet: View {
                             .disabled(exporting || agent.committing || agent.working)
                     }
                     if let error = agent.error { Text(error).font(.footnote).foregroundStyle(.red) }
-                    if agent.canRetry {
-                        Button("重试回复", action: agent.retryReply)
-                            .buttonStyle(HakoActionButtonStyle(primary: false))
-                            .disabled(agent.working || agent.committing)
-                    }
                     if let issue = agent.storageIssue { Text(issue).font(.footnote).foregroundStyle(.red) }
                     if agent.working {
                         HStack(spacing: 8) {
@@ -191,7 +186,8 @@ struct InvestmentAgentSheet: View {
     @ViewBuilder
     private func messageRow(_ item: InvestmentAgentSession.Message) -> some View {
         if item.isUser {
-            AssistantUserMessage(text: item.text, images: item.images) { images, index in
+            AssistantUserMessage(text: item.text, images: item.images,
+                                 retry: agent.retryMessageID == item.id ? { agent.retryReply(messageID: item.id) } : nil) { images, index in
                 imagePreview = AssistantImageSelection(images: images, index: index)
             }
         } else if let record = agent.toolCalls[item.id] {
@@ -207,7 +203,9 @@ struct InvestmentAgentSheet: View {
                         Text(verbatim: agent.streamContent.displayText).textSelection(.enabled)
                     }
                 } else if let html = item.html {
-                    AssistantReplyView(html: html)
+                    AssistantReplyView(html: html, onChoice: !agent.working && !agent.committing && !agent.canRetry && !loadingPhoto && agent.messages.last?.id == item.id ? { choice in
+                        if agent.select(choice, replyingTo: item.id) { composing = false }
+                    } : nil)
                 } else {
                     Text(verbatim: item.text).textSelection(.enabled)
                 }

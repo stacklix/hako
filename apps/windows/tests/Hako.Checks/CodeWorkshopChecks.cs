@@ -22,6 +22,7 @@ internal static class CodeWorkshopChecks
     public static async Task RunAsync()
     {
         await WorkshopReadChecks.RunAsync();
+        await WorkshopConcurrencyChecks.RunAsync();
         WorkshopCatalogChecks.Run();
         var summarized = CodeWorkshop.SummarizeTurn(Json(new { id = "latest-turn", status = "completed", items = new object[] {
             new { id = "first", type = "userMessage", content = new[] { new { type = "text", text = "First prompt" } } },

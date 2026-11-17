@@ -270,6 +270,7 @@ private extension ConsoleAgentCapability {
     var pageTitle: String {
         switch (name, version) {
         case ("query.system.metrics", 1): "系统指标"
+        case (DeviceProcessCommand.status, 1): "进程占用"
         case ("query.codex.usage", 1): "Codex 活动"
         case ("query.network.listeners", 1): "监听端口"
         case (DeviceServiceCommand.status, 1): "服务监控"

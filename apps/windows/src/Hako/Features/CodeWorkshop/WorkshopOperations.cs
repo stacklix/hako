@@ -149,9 +149,10 @@ internal sealed partial class CodeWorkshop
                 if (old.Fingerprint != fingerprint) throw new WorkshopException("codex_request_conflict", "请求 ID 已用于其他消息，请先确认原消息结果。");
                 return Task.FromResult<object?>(Summary(old));
             }
-            if (threadId.Length > 0 && changingArchive.Contains(threadId) || jobs.Values.Count(job => job.Active) >= 3 ||
-                threadId.Length > 0 && jobs.Values.Any(job => (job.Active || job.State is "queued" or "paused" or "steering") && job.ThreadId == threadId))
-                throw new WorkshopException("codex_busy", "此会话已有任务，或电脑的 Codex 并发任务已满。");
+            if (threadId.Length > 0 && changingArchive.Contains(threadId))
+                throw new WorkshopException("codex_busy", "会话正在归档，请稍后再发送消息。");
+            if (threadId.Length > 0 && jobs.Values.Any(job => (job.Active || job.State is "queued" or "paused" or "steering") && job.ThreadId == threadId))
+                throw new WorkshopException("codex_busy", "此会话已有执行中或待处理的任务，请在该任务中追加消息。");
             if (images.Any(image => !File.Exists(UploadPath(image))))
                 throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重新发送。");
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,

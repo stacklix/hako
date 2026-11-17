@@ -36,6 +36,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     private readonly CodexUsage codex;
     public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = new AgentCapability[] {
         new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
+        new(ProcessMetrics.Command, 1),
         new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1)
     };
@@ -46,6 +47,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
+        var processes = new ProcessMetrics();
         queries = new()
         {
             ["query.system.metrics"] = new(1, async (parameters, token) =>
@@ -74,6 +76,12 @@ public sealed class AgentDispatcher : IAgentDispatcher
                 return await new NetworkListeners().ReadAsync(token);
             })
         };
+        queries[ProcessMetrics.Command] = new(1, (parameters, token) =>
+        {
+            if (parameters.EnumerateObject().Any())
+                throw new AgentActionException("invalid_params", "进程资源查询不接受参数。");
+            return processes.SampleAsync(token);
+        });
         var probe = connectivity ?? new HttpConnectivity();
         var git = new GitRepositoryMonitor();
         actions = new()
@@ -101,6 +109,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
         [
             PublishPeriodicallyAsync("query.system.metrics", TimeSpan.FromSeconds(1), publish, streams.Token),
             PublishPeriodicallyAsync("query.network.listeners", TimeSpan.FromSeconds(10), publish, streams.Token),
+            PublishPeriodicallyAsync(ProcessMetrics.Command, TimeSpan.FromSeconds(1), publish, streams.Token),
             codex.WatchAsync(value => publish("query.codex.usage", value is null
                 ? new CapabilityData(1, Error: new("query_failed", "Codex 数据采集失败。"))
                 : new CapabilityData(1, JsonSerializer.SerializeToElement(value, AgentConnection.Json))), streams.Token)

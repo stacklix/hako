@@ -127,6 +127,7 @@ enum HakoLogSource { case codeWorkshop }
         try replacement.push(["kind":"event", "id":replacement.sent[0]["id"]!, "result":["cursor":13]])
         try await restarted.value
         reconnecting.close()
+        try await checkEventBatches(welcome: welcome)
         let imageID = "11111111-1111-4111-8111-111111111111"
         let image = Data(repeating: 123, count: 200_000)
         var initializations = 0, activeChunks = 0, maximumInFlight = 0
@@ -199,5 +200,95 @@ enum HakoLogSource { case codeWorkshop }
         print("PASS: binary upload window, resume offsets, raw JPEG bytes, monotonic progress and draining cancellation")
         print("PASS: shared calls/streams, per-view cancellation, timeout isolation, foreground lifetime and reconnect cursors")
         print("PASS: Workshop-only handshake, independent call schema, multiplexing and out-of-order reply identity")
+    }
+
+    static func checkEventBatches(welcome: Data) async throws {
+        let transport = WorkshopTestSocket()
+        let client = WorkshopRequestSocket(context: { "account" }, open: { (transport, welcome) })
+        var batches: [[Int]] = []
+        let watcher = Task {
+            try await client.watchBatches(computerID: "PC", operationID: "op", cursor: 0, interval: .seconds(60)) { batch in
+                batches.append(try batch.map { data in
+                    let value = try JSONSerialization.jsonObject(with: data) as! [String: Int]
+                    return value["cursor"]!
+                })
+                return false
+            }
+        }
+        while transport.sent.isEmpty { await Task.yield() }
+        let id = transport.sent[0]["id"]!
+        for cursor in 1...32 { try transport.push(["kind": "event", "id": id, "result": ["cursor": cursor]]) }
+        try await watcher.value
+        precondition(batches == [Array(1...32)], "A burst must publish once at the batch limit without reordering or dropping events")
+
+        var quietDeliveries = 0
+        let quiet = Task {
+            try await client.watchBatches(computerID: "PC", operationID: "quiet", cursor: 0, interval: .milliseconds(5)) { batch in
+                quietDeliveries += batch.count; return false
+            }
+        }
+        while !transport.sent.contains(where: { $0["operationId"] as? String == "quiet" }) { await Task.yield() }
+        let quietID = transport.sent.first { $0["operationId"] as? String == "quiet" }!["id"]!
+        try transport.push(["kind": "event", "id": quietID, "result": ["cursor": 1]])
+        try await quiet.value
+        precondition(quietDeliveries == 1, "A single event must flush without waiting for another event")
+
+        var cancelledDeliveries = 0
+        let cancelled = Task {
+            try await client.watchBatches(computerID: "PC", operationID: "cancelled", cursor: 0, interval: .seconds(60)) { _ in
+                cancelledDeliveries += 1; return true
+            }
+        }
+        while !transport.sent.contains(where: { $0["operationId"] as? String == "cancelled" }) { await Task.yield() }
+        let cancelledID = transport.sent.first { $0["operationId"] as? String == "cancelled" }!["id"]!
+        try transport.push(["kind": "event", "id": cancelledID, "result": ["cursor": 1]])
+        while !transport.queued.isEmpty || transport.receiver == nil { await Task.yield() }
+        cancelled.cancel(); _ = try? await cancelled.value
+        precondition(cancelledDeliveries == 0 && transport.workshopUsable, "Cancelling a pending batch must preserve the shared socket and prevent late delivery")
+
+        var release: CheckedContinuation<Void, Never>?
+        let overloaded = Task {
+            try await client.watchBatches(computerID: "PC", operationID: "overloaded", cursor: 0, interval: .seconds(60)) { _ in
+                if release == nil { await withCheckedContinuation { release = $0 } }
+                return true
+            }
+        }
+        while !transport.sent.contains(where: { $0["operationId"] as? String == "overloaded" }) { await Task.yield() }
+        let overloadedID = transport.sent.first { $0["operationId"] as? String == "overloaded" }!["id"]!
+        for cursor in 1...32 { try transport.push(["kind": "event", "id": overloadedID, "result": ["cursor": cursor]]) }
+        while release == nil { await Task.yield() }
+        for cursor in 33...96 { try transport.push(["kind": "event", "id": overloadedID, "result": ["cursor": cursor]]) }
+        while !transport.queued.isEmpty || transport.receiver == nil { await Task.yield() }
+        release!.resume()
+        do { try await overloaded.value; preconditionFailure("A stalled consumer must recover instead of silently losing events") }
+        catch { precondition((error as? URLError)?.code == .dataLengthExceedsMaximum) }
+        precondition(transport.workshopUsable, "One overflowing subscription must not interrupt other conversations")
+        client.close()
+
+        func payload(_ cursor: Int, _ text: String, state: String = "running", approvals: [[String: Any]] = []) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["operation": ["id": "op", "applicationId": "app", "state": state, "startedAt": 1],
+                "events": [["kind": "delta", "id": "reply", "text": text, "role": "assistant", "state": "", "truncated": false]],
+                "cursor": cursor, "hasMore": state == "running", "approvals": approvals, "artifacts": [], "followups": []])
+        }
+        let pages = try await WorkshopSocketDecoder.shared.operationPages([
+            payload(1, "你"), payload(2, "好 👋"), payload(2, "DUPLICATE"),
+            payload(3, "确认", state: "waiting", approvals: [["id": "approval", "kind": "command", "detail": "run", "questions": []]]),
+            payload(4, "完成", state: "completed")], operationID: "op", after: 0)
+        precondition(pages.count == 3 && pages.map(\.cursor) == [2, 3, 4])
+        precondition(pages[0].events.map(\.text) == ["你", "好 👋"] && pages[0].hasMore)
+        precondition(pages[1].approvals.first?.id == "approval" && pages[2].operation.state == "completed" && !pages[2].hasMore,
+            "Batching must retain approval and terminal boundaries with their own cursor")
+        do {
+            _ = try await WorkshopSocketDecoder.shared.operationPages([payload(1, "old")], operationID: "op", after: 2)
+            preconditionFailure("A regressing cursor must trigger recovery")
+        } catch { }
+        do {
+            _ = try await WorkshopSocketDecoder.shared.operationPages([payload(1, "wrong operation")], operationID: "other", after: 0)
+            preconditionFailure("A mismatched operation must not publish")
+        } catch { }
+        let largeInteger = try await WorkshopSocketDecoder.shared.frame(Data(#"{"kind":"result","id":"integer","result":{"cursor":9223372036854775807}}"#.utf8))
+        let value = try JSONSerialization.jsonObject(with: largeInteger.result.get()) as! [String: NSNumber]
+        precondition(value["cursor"]?.int64Value == Int64.max, "Background decoding must preserve exact integer cursors")
+        print("PASS: bounded event batches, timed delivery, cancellation, overflow recovery, Unicode, duplicate cursors, approval/terminal boundaries and integer precision")
     }
 }

@@ -4,12 +4,17 @@ import WebKit
 
 struct AssistantReplyView: View {
     let html: AssistantHTML
+    var onChoice: ((AssistantReplyChoices.Choice) -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
     @ScaledMetric(relativeTo: .body) private var fontSize = 14.0
 
     var body: some View {
         let page = document
-        AssistantHTMLLayout(document: page).id(page)
+        AssistantHTMLLayout(document: page, onChoice: onChoice.map { action in
+            { index in
+                if let choice = AssistantReplyChoices(html).choices.first(where: { $0.id == index }) { action(choice) }
+            }
+        }).id(page)
     }
 
     private var document: String {
@@ -21,6 +26,7 @@ struct AssistantReplyView: View {
             color.getRed(&red, green: &green, blue: &blue, alpha: nil)
             return String(format: "#%02x%02x%02x", Int((red * 255).rounded()), Int((green * 255).rounded()), Int((blue * 255).rounded()))
         }
+        let fragment = onChoice == nil ? html.fragment : AssistantReplyChoices(html).fragment
         return """
         <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -64,14 +70,17 @@ struct AssistantReplyView: View {
         :is(h2, h3, h4) code, li > p:first-child > strong:only-child code { font-size: var(--title-code-size); }
         pre { padding: var(--title-gap); font-size: 1rem; white-space: pre-wrap; }
         pre code { padding: 0; font-size: inherit; background: transparent; }
+        a[href^="hako-choice:"] { display: block; padding: .65rem .7rem; margin: .2rem 0; border: 1px solid var(--line); border-radius: .65rem; color: inherit; text-decoration: none; background: var(--code-background); }
+        a[href^="hako-choice:"]:active { opacity: .6; }
         \(AssistantTableLayout.style)
-        </style></head><body><main>\(html.fragment)</main></body></html>
+        </style></head><body><main>\(fragment)</main></body></html>
         """
     }
 }
 
 private struct AssistantHTMLLayout: View {
     let document: String
+    let onChoice: ((Int) -> Void)?
     @State private var width: CGFloat = 0
     @State private var height: CGFloat = 1
     @State private var failed = false
@@ -85,7 +94,7 @@ private struct AssistantHTMLLayout: View {
             ZStack(alignment: .topLeading) {
                 Color.clear
                 if layoutWidth > 0 {
-                    AssistantHTMLWebView(document: document, onHeight: { value in
+                    AssistantHTMLWebView(document: document, onChoice: onChoice, onHeight: { value in
                         if width == layoutWidth { height = value }
                     }, onFailure: {
                         if width == layoutWidth { failed = true }
@@ -106,10 +115,11 @@ private struct AssistantHTMLLayout: View {
 
 private struct AssistantHTMLWebView: UIViewRepresentable {
     let document: String
+    let onChoice: ((Int) -> Void)?
     let onHeight: (CGFloat) -> Void
     let onFailure: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onHeight: onHeight, onFailure: onFailure) }
+    func makeCoordinator() -> Coordinator { Coordinator(onChoice: onChoice, onHeight: onHeight, onFailure: onFailure) }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -138,13 +148,15 @@ private struct AssistantHTMLWebView: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate {
+        private let onChoice: ((Int) -> Void)?
         private let onHeight: (CGFloat) -> Void
         private let onFailure: () -> Void
         private var observation: NSKeyValueObservation?
         private var ready = false
         private var active = true
 
-        init(onHeight: @escaping (CGFloat) -> Void, onFailure: @escaping () -> Void) {
+        init(onChoice: ((Int) -> Void)?, onHeight: @escaping (CGFloat) -> Void, onFailure: @escaping () -> Void) {
+            self.onChoice = onChoice
             self.onHeight = onHeight
             self.onFailure = onFailure
         }
@@ -171,6 +183,11 @@ private struct AssistantHTMLWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             let url = action.request.url
+            if active, action.navigationType == .linkActivated, let url, let index = AssistantReplyChoices.selection(url) {
+                decisionHandler(.cancel)
+                onChoice?(index)
+                return
+            }
             let isInlineDocument = action.navigationType == .other && action.targetFrame?.isMainFrame == true
                 && (url == nil || url?.absoluteString == "about:blank")
             decisionHandler(isInlineDocument ? .allow : .cancel)

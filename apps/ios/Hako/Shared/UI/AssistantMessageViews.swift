@@ -34,10 +34,19 @@ struct AssistantPhotoThumbnail: View {
 struct AssistantUserMessage: View {
     let text: String
     let images: [Data]
+    var retry: (() -> Void)? = nil
     let preview: ([Data], Int) -> Void
     var body: some View {
         HStack {
             Spacer(minLength: 28)
+            if let retry {
+                Button(action: retry) {
+                    Image(systemName: "arrow.clockwise").font(.body.weight(.medium))
+                        .foregroundStyle(.red).frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("重试这条消息")
+            }
             VStack(alignment: .leading, spacing: 7) {
                 if !images.isEmpty {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 100))], alignment: .leading, spacing: 8) {

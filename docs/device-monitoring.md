@@ -44,6 +44,12 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 `query.codex.usage` v1 是 Windows Agent 新增的数据提供器，返回本机最近 7 天每日用户发送调用数、token 用量和当前处理中会话数、项目名与显示标题，参数 `{}`，同时加入 `query.all`；详细口径、隐私边界及缓存策略见 [Codex 用量采集](codex-usage.md)。服务端继续通用转发，无新增业务路由。
 
+## 进程资源排行
+
+`query.system.processes` v1 参数为 `{}`，由主进程采样，加入 `query.all` 及实时推送。结果包含 `collectedAt`、`sampleWindowMs`、`processCount`、`cpuTop` 和 `memoryTop`；两个榜单各最多 10 个进程。每项含 `processId`、`processName`、`cpuUsagePercent` 和 `memoryBytes`。CPU 使用相邻两次快照的累计 CPU 时间差，除以实际采样时长及逻辑处理器数，范围为 0–100；PID 与启动时间共同识别进程，新增或复用 PID 不伪造 CPU 值。内存为采样时的工作集字节数，包含共享页面，不能直接将各进程相加当作物理内存总占用。系统进程使用原生快照读取，不逐个打开受保护进程，不上传命令行或路径。
+
+iOS 在设备详情新增「进程」页，顶部显示系统 CPU、内存使用率，可切换 CPU 与内存前十排行，每行显示进程名、PID、CPU 百分比及内存大小。进入页面和下拉刷新随常规查询更新；勾选设备详情已有的「实时刷新」后约每秒推送新样本，离开详情或进入后台沿用原有订阅生命周期。服务端继续通用透传，不增加业务命令判断。
+
 ## Windows SSH 终端
 
 iOS 在「设备监控 → 设备详情 → 终端」中配置 Windows OpenSSH 账号和密码。首次连接自动读取主机密钥 SHA256 指纹并展示确认界面；可在 Windows 上运行 `ssh-keygen -lf "$env:ProgramData\ssh\ssh_host_ed25519_key.pub"` 核对默认 Ed25519 主机密钥指纹。点击「信任并连接」后，先将指纹保存到 iPhone 的设备专属钥匙串，再重新建立连接，严格校验指纹后进行 SSH 密码认证。取消确认不保存指纹、不登录 Windows；钥匙串保存失败也不会继续登录。后续连接自动校验，指纹变化时中止，不自动覆盖已信任指纹。重装系统或重建主机密钥后，可在 SSH 设置中明确清除已信任指纹，保存后重新核对。
