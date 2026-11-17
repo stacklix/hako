@@ -3,6 +3,7 @@ import UIKit
 import PhotosUI
 import ImageIO
 import UniformTypeIdentifiers
+import AVFoundation
 
 struct WorkshopConversationView: View {
     @ObservedObject var conversation: WorkshopConversation
@@ -20,6 +21,9 @@ struct WorkshopConversationView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
+    @State private var showingCamera = false
+    @State private var cameraPermissionDenied = false
+    @State private var capturedPhoto: Data?
     @State private var scrollFollowing = ConversationScrollFollowing()
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
@@ -30,7 +34,7 @@ struct WorkshopConversationView: View {
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingInfo && !showingCommands && !showingCommandTask }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingCommands && !showingCommandTask }
 
     var body: some View {
         let transcript = conversation.presentation
@@ -183,7 +187,8 @@ struct WorkshopConversationView: View {
                 }.padding(.horizontal, 20).frame(minHeight: 44).background(HakoStyle.background)
             } else {
                 WorkshopComposerView(conversation: conversation, input: conversation.composerInput,
-                    selectedPhotos: $selectedPhotos, previewPhoto: $previewPhoto, loadingPhoto: loadingPhoto)
+                    selectedPhotos: $selectedPhotos, previewPhoto: $previewPhoto, loadingPhoto: loadingPhoto,
+                    takePhoto: { Task { await openCamera() } })
             }
         }
         .refreshable { await conversation.synchronize() }
@@ -222,6 +227,18 @@ struct WorkshopConversationView: View {
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
         .sheet(item: $browserLink) { link in WorkshopBrowserView(link: link) }
         .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo) }
+        .sheet(isPresented: $showingCamera, onDismiss: finishCamera) {
+            WorkshopCameraPicker { image in
+                capturedPhoto = image?.jpegData(compressionQuality: 0.9)
+                showingCamera = false
+            }.ignoresSafeArea()
+        }
+        .alert("需要相机权限", isPresented: $cameraPermissionDenied) {
+            Button("取消", role: .cancel) { }
+            Button("打开设置") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+        } message: { Text("请在系统设置中允许 Hako 使用相机，以拍照添加图片。") }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
         .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands) }
         .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
@@ -354,6 +371,32 @@ struct WorkshopConversationView: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
+    private func openCamera() async {
+        guard conversation.canCompose, conversation.editingMessageID == nil,
+              !loadingPhoto, conversation.photos.count < 3 else { return }
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            conversation.error = "当前设备无法使用相机，请从相册选择图片。"; return
+        }
+        let allowed = await AVCaptureDevice.requestAccess(for: .video)
+        guard allowed else { cameraPermissionDenied = true; return }
+        guard conversation.canCompose, conversation.editingMessageID == nil,
+              !loadingPhoto, conversation.photos.count < 3 else { return }
+        capturedPhoto = nil; showingCamera = true
+    }
+
+    private func finishCamera() {
+        guard let data = capturedPhoto else { return }
+        capturedPhoto = nil; loadingPhoto = true
+        Task {
+            defer { loadingPhoto = false }
+            let encoded = await Task.detached(priority: .userInitiated) { Self.encodePhoto(data) }.value
+            do {
+                guard let encoded else { throw HakoError(message: "拍摄的图片处理失败，请重新拍照。") }
+                try conversation.attach(encoded)
+            } catch { conversation.error = error.localizedDescription }
+        }
+    }
+
     private func loadPhotos(_ items: [PhotosPickerItem]) async {
         guard !items.isEmpty else { return }
         loadingPhoto = true
@@ -456,6 +499,8 @@ private struct WorkshopComposerView: View {
     @Binding var selectedPhotos: [PhotosPickerItem]
     @Binding var previewPhoto: WorkshopPhoto?
     let loadingPhoto: Bool
+    let takePhoto: () -> Void
+    @State private var showingPhotoLibrary = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -474,12 +519,16 @@ private struct WorkshopComposerView: View {
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }
             HStack(alignment: .bottom, spacing: 2) {
-                PhotosPicker(selection: $selectedPhotos, maxSelectionCount: max(1, 3 - conversation.photos.count),
-                             selectionBehavior: .ordered, matching: .images) {
+                Menu {
+                    Button(action: takePhoto) { Label("拍照", systemImage: "camera") }
+                    Button { showingPhotoLibrary = true } label: { Label("从相册选择", systemImage: "photo.on.rectangle") }
+                } label: {
                     Image(systemName: "plus").font(.system(size: 22, weight: .bold))
                         .foregroundStyle(HakoStyle.text).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .photosPicker(isPresented: $showingPhotoLibrary, selection: $selectedPhotos,
+                    maxSelectionCount: max(1, 3 - conversation.photos.count), selectionBehavior: .ordered, matching: .images)
                 .accessibilityLabel("添加图片，最多还可选择 \(max(0, 3 - conversation.photos.count)) 张")
                 .disabled(!conversation.canCompose || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
                 ZStack(alignment: .topLeading) {
