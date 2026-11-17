@@ -48,6 +48,33 @@ enum WorkshopConnectionState: Equatable {
     }
 }
 
+enum WorkshopReadIssue {
+    static func message(for error: Error) -> String? {
+        if let failure = error as? WorkshopFailure {
+            switch failure.code {
+            case "query_timeout":
+                return "电脑读取会话数据超时，最新消息和任务状态暂未同步。正在自动重试；这不表示任务失败，请勿重复发送原消息。"
+            case "process_unavailable", "process_disconnected":
+                return "电脑端会话服务暂时不可用，可能正在启动、更新或重启。正在自动重试；任务是否结束需恢复后确认。"
+            case "computer_offline":
+                return "服务器暂未连接到执行电脑，正在尝试恢复。当前任务状态尚未确认，请勿重复发送原消息。"
+            case "workshop_timeout":
+                return "等待电脑响应超时，最新消息和任务状态暂未同步。正在自动重试，请勿重复发送原消息。"
+            case "workshop_busy":
+                return "会话查询较多，最新数据尚未同步。稍后会自动重试，请勿重复发送原消息。"
+            case "workshop_disconnected", "codex_connection_closed", "stream_overflow":
+                return "会话同步连接已中断，正在重新连接。最新任务结果暂未确认，请勿重复发送原消息。"
+            default: return nil
+            }
+        }
+        let underlying = error as NSError
+        if underlying.domain == NSURLErrorDomain || underlying.domain == NSPOSIXErrorDomain {
+            return "手机与服务器的同步连接暂时中断，正在重新连接。最新任务结果尚未确认，请勿重复发送原消息。"
+        }
+        return nil
+    }
+}
+
 enum WorkshopSystemPrompt {
     static let maximumLength = 4000
     static let defaultText = """

@@ -2,6 +2,18 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        for code in ["query_timeout", "process_unavailable", "process_disconnected", "computer_offline", "workshop_timeout", "workshop_busy", "workshop_disconnected", "codex_connection_closed", "stream_overflow"] {
+            let failure = WorkshopFailure(code: code, message: "Raw internal message")
+            let message = WorkshopReadIssue.message(for: failure)
+            precondition(message != nil && message != failure.message, "Recoverable read failures need actionable synchronization guidance: " + code)
+            precondition(WorkshopConnectionState.connected.afterFailure(failure) != .disconnected || code == "computer_offline",
+                "A local read failure must not label the computer offline")
+        }
+        precondition(WorkshopReadIssue.message(for: WorkshopFailure(code: "query_timeout", message: ""))!.contains("不表示任务失败"))
+        precondition(WorkshopReadIssue.message(for: WorkshopFailure(code: "process_unavailable", message: ""))!.contains("恢复后确认"))
+        precondition(WorkshopReadIssue.message(for: URLError(.timedOut))!.contains("手机与服务器"))
+        precondition(WorkshopReadIssue.message(for: WorkshopFailure(code: "codex_workspace_invalid", message: "Invalid workspace")) == nil,
+            "Permanent business errors must not promise automatic recovery")
         var outbox = WorkshopOutbox()
         outbox.enqueue("first"); outbox.enqueue("second")
         precondition(outbox.nextQueued(["first", "second"]) == "first")

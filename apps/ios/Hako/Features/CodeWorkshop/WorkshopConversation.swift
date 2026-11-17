@@ -449,9 +449,10 @@ import Combine
         if operationId != nil { uncertain = true }
         let loadedHistory = await loadHistory()
         guard !Task.isCancelled, scope == store.scope else { return }
-        guard threadId == nil || loadedHistory else { return }
+        // A slow history read must not prevent the independent task-state
+        // check from discovering that the computer has already finished.
         if let operationId {
-            do { try await poll(operationId); needsHistoryRefresh = false }
+            do { try await poll(operationId); needsHistoryRefresh = !loadedHistory }
             catch { readFailed(error) }
         } else {
             needsHistoryRefresh = false
@@ -732,9 +733,11 @@ import Combine
         guard !Task.isCancelled, scope == store.scope else { return }
         lastVerifiedAt = nil
         hasMoreEvents = false
-        let underlying = failure as NSError
-        if failure is CancellationError || underlying.domain == NSURLErrorDomain || underlying.domain == NSPOSIXErrorDomain {
-            connectionIssue = "与服务器的连接已中断，正在重新连接。电脑上的任务会继续执行。"
+        if failure is CancellationError { return }
+        if let message = WorkshopReadIssue.message(for: failure) {
+            error = nil
+            connectionIssue = message
+            needsHistoryRefresh = true
         } else { error = failure.localizedDescription }
     }
 

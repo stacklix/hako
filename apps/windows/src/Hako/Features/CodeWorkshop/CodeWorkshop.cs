@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -26,6 +27,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly string storage;
     private readonly object gate = new();
     private readonly SemaphoreSlim metadataGate = new(1, 1);
+    private readonly WorkshopReads reads = new();
+    private readonly WorkshopQueryLog queryLog;
+    private readonly Dictionary<string, (JsonElement Thread, long Saved)> historyPages = new();
     private readonly CancellationTokenSource stopping = new();
     private CodexAppServer? metadata;
     private readonly Func<CancellationToken, Task<CodexAppServer>> startServer;
@@ -39,6 +43,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     {
         this.startServer = startServer ?? (token => CodexAppServer.StartAsync(token));
         this.storage = Path.GetFullPath(storage);
+        queryLog = new WorkshopQueryLog(this.storage);
         this.root = Path.GetFullPath(root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Code"));
         home = Path.GetFullPath(codexHome ?? Environment.GetEnvironmentVariable("CODEX_HOME") ??
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
@@ -59,18 +64,53 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
 
     private async Task<JsonElement> ReadAsync(string method, object parameters, CancellationToken token)
     {
-        await metadataGate.WaitAsync(token);
+        if (method.EndsWith("/read", StringComparison.Ordinal) || method.EndsWith("/list", StringComparison.Ordinal))
+            return await reads.RunAsync(method + "\n" + JsonSerializer.Serialize(parameters, WorkshopProtocol.Json),
+                () => ReadCoreAsync(method, parameters, stopping.Token), token);
+        return await ReadCoreAsync(method, parameters, token);
+    }
+
+    private async Task<JsonElement> ReadCoreAsync(string method, object parameters, CancellationToken token)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
+        budget.CancelAfter(TimeSpan.FromSeconds(8));
+        var watch = Stopwatch.StartNew();
+        long waitMs = -1;
+        var outcome = "completed";
+        CodexAppServer? server = null;
         try
         {
-            metadata ??= await startServer(token);
-            try { return await metadata.RequestAsync(method, parameters, token); }
-            catch (Exception e) when (e is IOException or TimeoutException)
-            {
-                await metadata.DisposeAsync(); metadata = null;
-                throw new WorkshopException("codex_connection_closed", "Codex 连接中断，请重新读取会话。");
-            }
+            await metadataGate.WaitAsync(budget.Token);
+            try { server = metadata ??= await startServer(budget.Token); }
+            finally { metadataGate.Release(); waitMs = watch.ElapsedMilliseconds; }
+            // CodexAppServer already correlates concurrent RPCs by ID. The gate
+            // protects initialization/replacement, never the duration of a query.
+            return await server.RequestAsync(method, parameters, budget.Token);
         }
-        finally { metadataGate.Release(); }
+        catch (Exception error) when (error is TimeoutException || error is OperationCanceledException && !token.IsCancellationRequested)
+        {
+            outcome = "query_timeout";
+            // A slow read does not prove that the shared connection is broken.
+            throw new WorkshopException("query_timeout", "电脑读取会话数据超时，最新消息与任务状态尚未同步；请重新同步确认结果，勿重复发送原消息。");
+        }
+        catch (IOException)
+        {
+            outcome = "codex_connection_closed";
+            await metadataGate.WaitAsync(token);
+            try
+            {
+                if (server is not null && ReferenceEquals(metadata, server))
+                { metadata = null; await server.DisposeAsync(); }
+            }
+            finally { metadataGate.Release(); }
+            throw new WorkshopException("codex_connection_closed", "电脑端的会话读取连接已中断，请重新同步确认任务结果。");
+        }
+        catch { outcome = "cancelled_or_failed"; throw; }
+        finally
+        {
+            if (waitMs < 0) waitMs = watch.ElapsedMilliseconds;
+            queryLog.Write(method, waitMs, watch.ElapsedMilliseconds - waitMs, outcome);
+        }
     }
 
     internal sealed record ThreadSummary(string Preview, string State, string? CompletionId, string TurnId, JsonElement UserInput = default);
@@ -192,7 +232,22 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var id = ThreadId(parameters);
         var cursor = CodexJson.Text(parameters, "cursor");
         var before = cursor.Length == 0 ? int.MaxValue : int.TryParse(cursor, out var parsed) && parsed >= 0 ? parsed : throw CodexJson.Invalid();
-        var thread = await ThreadAsync(id, true, token);
+        JsonElement thread = default;
+        // A page cursor refers to the snapshot already read for this thread.
+        // A fresh head read always goes back to Codex, even inside this window.
+        lock (gate)
+            if (cursor.Length > 0 && historyPages.TryGetValue(id, out var cached) &&
+                Environment.TickCount64 - cached.Saved < 30_000) thread = cached.Thread;
+        if (thread.ValueKind == JsonValueKind.Undefined)
+        {
+            thread = await ThreadAsync(id, true, token);
+            lock (gate)
+            {
+                if (!historyPages.ContainsKey(id) && historyPages.Count >= 4)
+                    historyPages.Remove(historyPages.MinBy(value => value.Value.Saved).Key);
+                historyPages[id] = (thread, Environment.TickCount64);
+            }
+        }
         var cwd = CodexJson.Text(thread, "cwd");
         var turns = CodexJson.Items(CodexJson.Field(thread, "turns")).ToArray();
         lock (gate)

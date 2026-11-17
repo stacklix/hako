@@ -170,6 +170,12 @@ iOS 使用独立的临时 WebKit 数据存储预览 HTML。HTML 片段补齐页�
 
 ## 验证
 
+### 查询与同步诊断
+
+Agent 的 Codex 查询连接按请求 ID 并发处理不同读取；同时发生的相同读取合并执行，单个客户端取消等待不取消其他客户端的读取。历史翻页最多复用四个会话在最近 30 秒内读取的快照；刷新最新一页始终重新查询，不复用已完成请求的结果。查询超时不销毁仍正常工作的共享连接。
+
+Agent 数据目录的 `code-workshop/queries.jsonl` 记录查询方法、初始化等待耗时 `waitMs`、RPC 耗时 `readMs` 和结果分类，达到 1 MB 后轮换至 `.previous`。日志不写参数、消息正文、响应内容或凭据。手机端区分查询超时、网络中断、电脑离线和本机会话服务暂不可用；同步历史失败时仍独立核对任务状态，避免将未同步误报为任务执行失败。
+
 Windows `Hako.Checks code-workshop` 使用真实 stdio 子进程夹具验证线程关联、重复请求、断连后继续执行、审批、停止、持久化、事件游标、写锁冲突和原型修订校验。`code-workshop-local <状态目录>` 只读验证已安装的 Codex；`code-workshop-local-turn <状态目录>` 提交固定短回复并归档测试会话，仅用于明确授权的本机联调。
 
 iOS `WorkshopModelTests.swift` 验证请求身份和恢复参数；`WorkshopRequestSocketTests.swift` 与 `WorkshopEventStreamTests.swift` 独立验证握手、帧格式、回复关联、推送和取消，不依赖设备监控传输。服务端验证工坊满载和任一连接关闭时，另一应用仍可请求。iOS 工程编译验证全部 SwiftUI 与 WebKit 页面。

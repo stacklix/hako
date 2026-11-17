@@ -23,13 +23,17 @@ internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDisp
             return await CommandHost.OpenAsync(profile, token);
         }
         try { return await LocalRpc.CallAsync(LocalRpc.MainPipe(profile), new("workshop", method, 1, parameters, scope), token); }
-        catch (AgentActionException error) { throw new WorkshopException(error.Code, error.Message); }
+        catch (AgentActionException error) { throw Failure(error); }
     }
     public async Task WatchAsync(JsonElement parameters, Func<JsonElement, Task> publish, CancellationToken token)
     {
         try { await LocalRpc.StreamAsync(LocalRpc.MainPipe(profile), new("workshop.watch", "", 1, parameters, scope), publish, token); }
-        catch (AgentActionException error) { throw new WorkshopException(error.Code, error.Message); }
+        catch (AgentActionException error) { throw Failure(error); }
     }
+    private static WorkshopException Failure(AgentActionException error) => new(error.Code,
+        error.Code is "process_unavailable" or "process_disconnected"
+            ? "电脑端会话服务暂时不可用，可能正在启动、更新或重启。请稍后重新同步；任务是否结束需恢复后确认。"
+            : error.Message);
     public async Task WatchTerminalsAsync(string scope, Func<WorkshopTerminal, Task> publish, CancellationToken token)
     {
         while (!token.IsCancellationRequested)

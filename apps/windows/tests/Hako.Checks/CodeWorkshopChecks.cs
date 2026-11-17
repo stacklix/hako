@@ -21,6 +21,7 @@ internal static class CodeWorkshopChecks
 
     public static async Task RunAsync()
     {
+        await WorkshopReadChecks.RunAsync();
         WorkshopCatalogChecks.Run();
         var summarized = CodeWorkshop.SummarizeTurn(Json(new { id = "latest-turn", status = "completed", items = new object[] {
             new { id = "first", type = "userMessage", content = new[] { new { type = "text", text = "First prompt" } } },
@@ -122,6 +123,23 @@ internal static class CodeWorkshopChecks
         var storage = Path.Combine(directory, "state");
         try
         {
+            await using (var parallel = new CodeWorkshop(Path.Combine(directory, "parallel-state"), code, directory,
+                token => Start(token, scenario: "concurrent-reads")))
+            {
+                var models = parallel.ModelsAsync(Json(new { }), default);
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (!File.Exists(Path.Combine(project, ".model-waiting")) && DateTime.UtcNow < deadline)
+                    await Task.Delay(10);
+                Check(File.Exists(Path.Combine(project, ".model-waiting")), "Fixture did not receive the held model query");
+                await Task.WhenAll(models,
+                    parallel.HistoryAsync(Json(new { threadId = FixtureThread }), default)).WaitAsync(TimeSpan.FromSeconds(7));
+                var marker = Path.Combine(project, ".history-reads");
+                var before = File.ReadAllLines(marker).Length;
+                await parallel.HistoryAsync(Json(new { threadId = FixtureThread, cursor = "0" }), default);
+                Check(File.ReadAllLines(marker).Length == before, "History pagination reread the entire Codex thread");
+                await parallel.HistoryAsync(Json(new { threadId = FixtureThread }), default);
+                Check(File.ReadAllLines(marker).Length == before + 1, "A fresh history head reused stale page data");
+            }
             var catalogStorage = Path.Combine(directory, "catalog-state");
             Directory.CreateDirectory(catalogStorage);
             var accepted = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread, TurnId = "fixture-turn",
@@ -631,6 +649,7 @@ internal static class CodeWorkshopChecks
         var project = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_PROJECT")!;
         var turnId = "fixture-turn";
         var archived = false;
+        JsonElement? waitingModel = null;
         void Write(object message) { Console.WriteLine(JsonSerializer.Serialize(message, WorkshopProtocol.Json)); Console.Out.Flush(); }
         while (await Console.In.ReadLineAsync() is { } line)
         {
@@ -756,6 +775,17 @@ internal static class CodeWorkshopChecks
             if (method == "thread/resume" && Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_OCCUPIED") == "1")
             { Write(new { id, error = new { code = -32600, message = "thread-store conflict: already has an active writer" } }); continue; }
             var scenario = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_SCENARIO");
+            if (scenario == "concurrent-reads" && method == "model/list" && waitingModel is null)
+            { waitingModel = id.Clone(); File.WriteAllText(Path.Combine(project, ".model-waiting"), "waiting"); continue; }
+            if (scenario == "concurrent-reads" && method == "thread/read")
+            {
+                File.AppendAllText(Path.Combine(project, ".history-reads"), "read\n");
+                if (waitingModel is { } modelId)
+                {
+                    Write(new { id = modelId, result = new { data = Array.Empty<object>(), nextCursor = (string?)null } });
+                    waitingModel = null;
+                }
+            }
             if (method == "thread/resume" && scenario == "slow-resume") await Task.Delay(8500);
             if (method == "thread/resume" && scenario == "reject-resume")
             { Write(new { id, error = new { code = -32600, message = "Unable to resume this thread" } }); continue; }

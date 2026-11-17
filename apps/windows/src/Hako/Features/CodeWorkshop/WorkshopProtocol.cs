@@ -85,6 +85,6 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
         budget.CancelAfter(TimeSpan.FromSeconds(8));
         try { return await handler(parameters, budget.Token).WaitAsync(budget.Token); }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        { throw new WorkshopException("query_timeout", "代码工坊查询超时，请稍后刷新。"); }
+        { throw new WorkshopException("query_timeout", "电脑读取会话数据超时，最新消息与任务状态尚未同步；请重新同步确认结果，勿重复发送原消息。"); }
     }
 }

@@ -87,9 +87,13 @@ struct WorkshopConversationView: View {
                 }
                 if let error = conversation.error ?? conversation.connectionIssue {
                     VStack(alignment: .leading, spacing: 10) {
+                        if conversation.error == nil {
+                            Label("会话数据尚未同步", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.footnote.weight(.medium))
+                        }
                         Text(error).font(.footnote).textSelection(.enabled)
-                        Button("检查会话与任务结果") { Task { await conversation.checkResult() } }
-                            .font(.footnote).disabled(conversation.busy)
+                        Button(conversation.synchronizing ? "正在重新同步…" : "重新同步会话与任务状态") { Task { await conversation.checkResult() } }
+                            .font(.footnote).disabled(conversation.busy || conversation.synchronizing)
                         if conversation.canRetry {
                             Button("重试原消息") { Task { await conversation.retryOriginal() } }
                                 .font(.footnote).disabled(conversation.busy)
@@ -515,7 +519,8 @@ private struct WorkshopComposerView: View {
             if !conversation.photos.isEmpty { WorkshopComposerAttachments(conversation: conversation, previewPhoto: $previewPhoto) }
             if loadingPhoto { Text("正在处理图片…").font(.caption).foregroundStyle(HakoStyle.muted) }
             if conversation.canCompose && conversation.awaitingSubmissionCheck {
-                Text(conversation.restoringCache || conversation.synchronizing ? "正在同步会话，可先输入，同步完成后可发送" : "任务状态待确认，可先输入，确认后可发送")
+                Text(conversation.connectionIssue != nil ? "会话数据尚未同步，可先输入；恢复后可发送" :
+                    (conversation.restoringCache || conversation.synchronizing ? "正在获取最新消息与任务状态，可先输入" : "任务状态待确认，可先输入，确认后可发送"))
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }
             HStack(alignment: .bottom, spacing: 2) {
