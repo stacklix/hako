@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
-	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -56,69 +54,5 @@ func TestInvestmentPlanPeriodsValidateAndRoundTrip(t *testing.T) {
 		if !validInvestmentPlan(row) || row["month_day"] != "" {
 			t.Fatalf("invalid persisted schedule: %v", row)
 		}
-	}
-}
-
-func TestEmptyPlanSchemaUpgradePreservesLedger(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hako.sqlite")
-	db, err := openInvestmentDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO investment_books(owner_id,id) VALUES('owner','book');
-		INSERT INTO investment_events(book_id,id,account_id,event_type,effective_date,amount) VALUES('book','event','account','deposit','2026-11-15','100.123456789');
-		INSERT INTO investment_daily_snapshots(book_id,snapshot_date,total_cny,status) VALUES('book','2026-11-15','200.12','complete');
-		ALTER TABLE investment_plans DROP COLUMN frequency;
-		ALTER TABLE investment_plans RENAME COLUMN schedule_day TO month_day;
-		PRAGMA user_version = 3;`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = openInvestmentDB(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var version int
-	var amount, total string
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != investmentSchemaVersion {
-		t.Fatalf("schema = %d (%v)", version, err)
-	}
-	if err := db.QueryRow("SELECT amount FROM investment_events WHERE id='event'").Scan(&amount); err != nil || amount != "100.123456789" {
-		t.Fatalf("event = %s (%v)", amount, err)
-	}
-	if err := db.QueryRow("SELECT total_cny FROM investment_daily_snapshots").Scan(&total); err != nil || total != "200.12" {
-		t.Fatalf("snapshot = %s (%v)", total, err)
-	}
-	if err := upgradeEmptyInvestmentPlans(db); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPlanSchemaUpgradeRefusesUnconvertedPlans(t *testing.T) {
-	db, err := openInvestmentDB(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.Exec(`ALTER TABLE investment_plans DROP COLUMN frequency;
-		ALTER TABLE investment_plans RENAME COLUMN schedule_day TO month_day;
-		INSERT INTO investment_plans(book_id,id,account_id,amount,month_day,next_date,enabled) VALUES('book','plan','account','100','8','2026-12-08',1);
-		PRAGMA user_version = 3;`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := upgradeEmptyInvestmentPlans(db); err == nil || !strings.Contains(err.Error(), "no data was changed") {
-		t.Fatalf("upgrade = %v", err)
-	}
-	var version, day int
-	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
-		t.Fatalf("schema changed: %d (%v)", version, err)
-	}
-	if err := db.QueryRow("SELECT month_day FROM investment_plans WHERE id='plan'").Scan(&day); err != nil || day != 8 {
-		t.Fatalf("plan changed: %d (%v)", day, err)
 	}
 }

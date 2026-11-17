@@ -114,12 +114,6 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err == nil {
-		err = upgradeEmptyInvestmentPlans(db)
-	}
-	if err == nil {
-		err = upgradeInvestmentFundWealthAccounts(db)
-	}
-	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
