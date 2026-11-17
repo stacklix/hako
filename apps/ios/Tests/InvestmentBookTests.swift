@@ -21,6 +21,8 @@ struct InvestmentBookTests {
         try accountCurrencyRestrictsEntries()
         try stockConnectSettlesInRenminbi()
         try insuranceKeepsOnePolicyPosition()
+        try insurancePremiumTitlesFollowPaymentOrder()
+        try increasingPremiumUsesOnlyAdditionalCash()
         try renminbiInsuranceCountsCashValueAndRoundTrips()
         try insuranceWithdrawalsKeepPolicyAndMoveCash()
         try insuranceWithdrawalsAllowMissingValues()
@@ -112,7 +114,7 @@ struct InvestmentBookTests {
         try book.post(.init(day: day, kind: .buy, assetID: id, quantity: 4, price: 10, fee: 5),
                       accountID: account.id, autoFundCash: true)
         let ledger = try book.ledger(book.accounts[0], through: day, includeRows: true)
-        precondition(ledger.cashRows.map(\.change) == [105, -105, 30, 15, -45, 100, -45])
+        precondition(ledger.cashRows.map(\.change) == [105, 30, 15, 100, -105, -45, -45])
         precondition(ledger.cash == 55 && ledger.flows == 250 && ledger.positions[id]?.netCost == 195)
 
         try book.post(.init(day: date(2), kind: .withdrawal, amount: -55), accountID: account.id)
@@ -672,6 +674,58 @@ struct InvestmentBookTests {
         precondition(book.value(book.accounts[0], on: date(2))?.value == 125)
         try book.post(.init(day: date(3), kind: .sell, assetID: id, quantity: 1, price: 130), accountID: account.id)
         precondition(book.value(book.accounts[0], on: date(3))?.gain == -45)
+    }
+
+    static func insurancePremiumTitlesFollowPaymentOrder() throws {
+        let owner = InvestmentAccount(name: "保险", currency: .cny, type: .insurance)
+        var book = InvestmentBook(accounts: [owner])
+        let policy = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: .cny))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 300), accountID: owner.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: policy, quantity: 1, price: 100), accountID: owner.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: policy, quantity: 1, price: 100), accountID: owner.id)
+        let entries = book.accounts[0].events.filter { $0.kind == .buy }
+        precondition(book.eventTitle(entries[0], accountID: owner.id) == "首期保费")
+        precondition(book.eventTitle(entries[1], accountID: owner.id) == "续期保费")
+        precondition(book.eventTitle(entries[0]) == "首期保费")
+        precondition(book.asset(policy)?.transactionTitle(.buy) == "缴纳保费")
+        try book.deleteEvent(entries[0], accountID: owner.id)
+        precondition(book.eventTitle(entries[1], accountID: owner.id) == "首期保费")
+    }
+
+    static func increasingPremiumUsesOnlyAdditionalCash() throws {
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            let owner = InvestmentAccount(name: "保险", currency: currency, type: .insurance)
+            var book = InvestmentBook(accounts: [owner])
+            let policy = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: currency))
+            try book.post(.init(day: date(1), kind: .deposit, amount: 110_000), accountID: owner.id)
+            try book.post(.init(day: date(1), kind: .buy, assetID: policy, quantity: 1, price: 110_000), accountID: owner.id)
+            let original = book.accounts[0].events.last!
+            try book.post(.init(day: date(1), kind: .deposit, amount: 110_000), accountID: owner.id)
+            let before = try book.ledger(book.accounts[0], through: date(1))
+            precondition(before.cash == 110_000)
+            var edited = original
+            edited.price = 220_000
+            try book.replaceEvent(original, with: edited, accountID: owner.id)
+            let after = try book.ledger(book.accounts[0], through: date(1))
+            precondition(after.cash == 0 && after.positions[policy]?.netCost == 220_000)
+            precondition(book.accounts[0].events.count == 3 && after.flows == 220_000)
+            let confirmed = book.accounts[0].events.first { $0.id == original.id }!
+            var excessive = confirmed
+            excessive.price = 220_001
+            do {
+                try book.replaceEvent(confirmed, with: excessive, accountID: owner.id)
+                preconditionFailure("An actual shortfall must still be rejected")
+            } catch InvestmentError.insufficientCash { }
+
+            var nextDay = book
+            var laterFunding = nextDay.accounts[0].events.last!
+            let incoming = laterFunding
+            laterFunding.day = date(2)
+            do {
+                try nextDay.replaceEvent(incoming, with: laterFunding, accountID: owner.id)
+                preconditionFailure("A later day's cash must not fund an earlier premium")
+            } catch InvestmentError.insufficientCash { }
+        }
     }
 
     static func renminbiInsuranceCountsCashValueAndRoundTrips() throws {

@@ -63,7 +63,7 @@ struct InvestmentCashHistory: View {
                             let asset = book.asset(row.event.assetID)
                             let otherAccount = row.event.transferAccountID.flatMap { book.account($0)?.name }
                             let name = otherAccount ?? asset?.displayName
-                            let title = row.event.title(for: asset) + (name.map { " · " + $0 } ?? "")
+                            let title = store.book.eventTitle(row.event, accountID: account.id) + (name.map { " · " + $0 } ?? "")
                             InvestmentTitle(title, subtitle: InvestmentText.date(row.event.day))
                             Spacer(minLength: 8)
                             VStack(alignment: .trailing, spacing: 3) {
@@ -86,7 +86,7 @@ struct InvestmentCashHistory: View {
                         let name = asset.map { " · " + $0.displayName } ?? ""
                         Button { editing = event } label: {
                             HStack {
-                                InvestmentTitle(event.title(for: asset) + name, subtitle: InvestmentText.date(event.day))
+                                InvestmentTitle(store.book.eventTitle(event, accountID: account.id) + name, subtitle: InvestmentText.date(event.day))
                                 Spacer()
                                 if let asset, event.amount != 0 {
                                     Text((event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount)

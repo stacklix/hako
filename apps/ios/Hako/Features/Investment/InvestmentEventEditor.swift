@@ -54,7 +54,7 @@ struct InvestmentEventEditor: View {
     private var account: InvestmentAccount? { store.book.account(accountID) }
     private var asset: InvestmentAsset? { store.book.asset(event.assetID) }
     private var editsSpotBalance: Bool { editorDraft == nil && asset?.kind == .crypto && [.stakingReward, .spotAdjustment].contains(event.kind) }
-    private var recordTitle: String { editsSpotBalance ? "余额调整" : event.title(for: asset) }
+    private var recordTitle: String { editsSpotBalance ? "余额调整" : (editorDraft?.proposal.book ?? store.book).eventTitle(event, accountID: accountID) }
     private var hasChanges: Bool { date != event.day || values != originalValues || decreases != (event.amount < 0) }
 
     var body: some View {

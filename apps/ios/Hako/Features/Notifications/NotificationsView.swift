@@ -3,6 +3,7 @@ import SwiftUI
 struct NotificationsView: View {
     @ObservedObject var store: HakoNotificationsStore
     @State private var selection: NotificationSelection?
+    @State private var selectedPush: HakoPushNotification?
     @State private var showingServer = false
     @State private var confirmingClearAll = false
     @State private var clearAllContext: String?
@@ -18,39 +19,38 @@ struct NotificationsView: View {
         List {
             if !store.authenticated {
                 Section {
-                    Text("登录 Hako 服务器后，可查看需要处理的通知。").foregroundStyle(.secondary)
+                    Text("登录 Hako 服务器后，可查看登录请求。").foregroundStyle(.secondary)
                     Button("服务器与登录") { showingServer = true }
                 }
-            } else {
-                if let message = store.message {
-                    Section { Label(message, systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.secondary) }
-                }
-                if store.notifications.isEmpty && store.message == nil {
-                    ContentUnavailableView("暂无通知", systemImage: "bell", description: Text("有新的消息时，会显示在这里。"))
-                }
-                ForEach(HakoNotification.Category.allCases, id: \.self) { category in
-                    let items = store.notifications.filter { $0.category == category }
-                    if !items.isEmpty {
-                        Section {
-                            ForEach(items) { notification in
-                                Button { open(notification) } label: { notificationRow(notification) }
-                                    .buttonStyle(.plain)
-                                    .listRowInsets(EdgeInsets())
-                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                        Button(role: .destructive) {
-                                            store.clear(notification)
-                                            showNotice(notification.clearFeedback)
-                                        } label: { Label("清除", systemImage: "trash") }
-                                        .tint(.red)
-                                    }
-                            }
-                        } header: {
-                            HStack { Text(category.title); Spacer(); Text("\(items.count) 条待处理") }
-                        } footer: {
-                            Text(category.footer)
+            }
+            if let message = store.message, store.authenticated {
+                Section { Label(message, systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.secondary) }
+            }
+            if store.notifications.isEmpty && store.message == nil {
+                ContentUnavailableView("暂无通知", systemImage: "bell", description: Text("有新的消息时，会显示在这里。"))
+            }
+            ForEach(HakoNotification.Category.allCases, id: \.self) { category in
+                let items = store.notifications.filter { $0.category == category }
+                if !items.isEmpty {
+                    Section {
+                        ForEach(items) { notification in
+                            Button { open(notification) } label: { notificationRow(notification) }
+                                .buttonStyle(.plain)
+                                .listRowInsets(EdgeInsets())
+                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        store.clear(notification)
+                                        showNotice(notification.clearFeedback)
+                                    } label: { Label("清除", systemImage: "trash") }
+                                    .tint(.red)
+                                }
                         }
+                    } header: {
+                        HStack { Text(category.title); Spacer(); Text(category == .loginRequests ? "\(items.count) 条待处理" : "\(items.count) 条") }
+                    } footer: {
+                        Text(category.footer)
                     }
                 }
             }
@@ -96,6 +96,21 @@ struct NotificationsView: View {
             }
         }
         .sheet(isPresented: $showingServer) { ServerSettingsView() }
+        .sheet(item: $selectedPush) { push in
+            SettingsSheet(title: "推送详情") {
+                Form {
+                    Section(push.source) {
+                        Text(push.title).font(.headline)
+                        if !push.subtitle.isEmpty { Text(push.subtitle).foregroundStyle(.secondary) }
+                        if !push.body.isEmpty { Text(push.body) }
+                    }
+                    Section("收到时间") {
+                        Text(push.receivedAt, format: .dateTime.year().month().day().hour().minute().second())
+                    }
+                }
+                .textSelection(.enabled)
+            }
+        }
         .onChange(of: store.context) { _, _ in
             selection?.session.active = false; selection = nil; noticeTask?.cancel(); notice = nil
             clearAllContext = nil
@@ -120,7 +135,7 @@ struct NotificationsView: View {
                         Text(created, style: .relative).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
-                Text(notification.summary).font(.subheadline).foregroundStyle(.secondary)
+                Text(notification.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
             }
             Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).padding(.top, 5)
         }
@@ -134,6 +149,7 @@ struct NotificationsView: View {
         noticeTask?.cancel(); notice = nil
         switch notification.content {
         case .loginRequest(let prompt): selection = NotificationSelection(notification: notification, session: ConsoleLoginPromptSession(prompt: prompt, context: store.context))
+        case .push(let push): selectedPush = push
         }
     }
     private func showNotice(_ text: String) {

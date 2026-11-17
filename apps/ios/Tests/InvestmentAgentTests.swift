@@ -14,6 +14,7 @@ struct InvestmentAgentTests {
         precondition(LanguageModelError.unreadable.allowsManualRetry)
         precondition(!LanguageModelError.invalid("请先配置模型").allowsManualRetry)
         try insuranceFormsAndPreviewsFollowPolicyCurrency()
+        try premiumEditUsesBackfilledSameDayCash()
         try insuranceWithdrawalsUseOptionalCashValue()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()
@@ -605,6 +606,26 @@ struct InvestmentAgentTests {
             precondition(book.accounts[0].events.last?.settledAmount == nil)
             precondition(book.value(book.accounts[0])?.gain == -2_000)
         }
+    }
+
+    private static func premiumEditUsesBackfilledSameDayCash() throws {
+        let owner = InvestmentAccount(name: "保险", currency: .cny, type: .insurance)
+        var book = InvestmentBook(accounts: [owner])
+        let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: .cny))
+        let day = InvestmentBook.day()
+        try book.post(.init(day: day, kind: .deposit, amount: 110_000), accountID: owner.id)
+        try book.post(.init(day: day, kind: .buy, assetID: id, quantity: 1, price: 110_000), accountID: owner.id)
+        let entry = book.accounts[0].events.last!
+        try book.post(.init(day: day, kind: .deposit, amount: 110_000), accountID: owner.id)
+        let edit = InvestmentAgentAction(kind: .editEvent, values: ["account_id": owner.id.uuidString,
+            "event_id": entry.id.uuidString, "price": "220000"])
+        let form = edit.form(in: book)
+        precondition(form.fields.first { $0.key == "event_type" }?.value == "首期保费")
+        let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [edit])
+        let ledger = try proposal.book.ledger(proposal.book.accounts[0])
+        precondition(ledger.cash == 0 && ledger.positions[id]?.netCost == 220_000)
+        precondition(proposal.book.accounts[0].events.count == 3)
+        precondition(proposal.preview.items.contains { $0.title.contains("首期保费") })
     }
 
     private static func insuranceFormsAndPreviewsFollowPolicyCurrency() throws {

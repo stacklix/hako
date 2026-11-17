@@ -14,7 +14,7 @@ struct InvestmentTransactionRecords: View {
     private func isSpotAdjustment(_ event: InvestmentEvent) -> Bool {
         asset.kind == .crypto && [.stakingReward, .spotAdjustment].contains(event.kind)
     }
-    private func title(_ event: InvestmentEvent) -> String { isSpotAdjustment(event) ? "余额调整" : event.title(for: asset) }
+    private func title(_ event: InvestmentEvent) -> String { isSpotAdjustment(event) ? "余额调整" : book.eventTitle(event, accountID: account.id) }
     private func quantity(_ value: Decimal, signed: Bool = false) -> String {
         (signed && value > 0 ? "+" : "") + InvestmentText.number(value) + " " + asset.historyUnit
     }

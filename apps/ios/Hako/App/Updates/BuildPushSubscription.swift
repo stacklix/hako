@@ -166,6 +166,7 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        await HakoPushNotifications.shared.record(notification)
         if !RemoteNotificationPolicy.presentsInForeground(notification.request.content.userInfo) {
             let notice = WorkshopPushNotice(notification.request.content.userInfo)
             await MainActor.run { if let notice { BuildPushSubscription.shared.presentWorkshopNotice(notice) } }
@@ -182,6 +183,7 @@ final class BuildPushDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         DispatchQueue.main.async {
             // UIKit updates its scene snapshot when the response completes.
             defer { completionHandler() }
+            HakoPushNotifications.shared.record(response.notification)
             if destination == .codeWorkshop {
                 BuildPushSubscription.shared.openWorkshopNotice(WorkshopPushNotice(response.notification.request.content.userInfo))
                 return

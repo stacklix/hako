@@ -11,20 +11,29 @@ import Combine
     private let authentication: any AuthenticatedServerAccess
     private let defaults: UserDefaults
     private var subscription: AnyCancellable?
+    private var pushSubscription: AnyCancellable?
+    private let pushes: HakoPushNotifications
 
-    init(authentication: (any AuthenticatedServerAccess)? = nil, defaults: UserDefaults = .standard) {
+    init(authentication: (any AuthenticatedServerAccess)? = nil, defaults: UserDefaults = .standard, pushes: HakoPushNotifications? = nil) {
         self.authentication = authentication ?? AuthenticatedServerService.shared
         self.defaults = defaults
+        self.pushes = pushes ?? .shared
         dismissals = defaults.data(forKey: Self.dismissalKey).flatMap { try? JSONDecoder().decode(NotificationDismissals.self, from: $0) } ?? NotificationDismissals()
         if dismissals.prune(), let data = try? JSONEncoder().encode(dismissals) { defaults.set(data, forKey: Self.dismissalKey) }
         subscription = self.authentication.changes.sink { [weak self] _ in self?.objectWillChange.send() }
+        pushSubscription = self.pushes.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
     var context: String { authentication.requestContext }
     var authenticated: Bool { authentication.authenticated && !authentication.logoutPending }
     private var scope: String { NotificationDismissals.scope(server: authentication.serverURL, account: authentication.username) }
     var notifications: [HakoNotification] {
-        guard authenticated, snapshot.context == context else { return [] }
-        return snapshot.items.filter { $0.expiresAt > now && !dismissals.contains($0.id, scope: scope, now: now) }
+        let login = authenticated && snapshot.context == context ? snapshot.items.filter {
+            $0.expiresAt > now && !dismissals.contains($0.id, scope: scope, now: now)
+        } : []
+        return (login + pushes.items.map { HakoNotification(push: $0) }).sorted {
+            if $0.createdAt != $1.createdAt { return ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+            return $0.id < $1.id
+        }
     }
     // Include cleared reminders when checking whether an open request is still
     // actionable. Dismissing a reminder must never invalidate its authorization.
@@ -35,6 +44,7 @@ import Combine
     func clear(_ notification: HakoNotification) {
         now = .now
         guard notifications.contains(where: { $0.id == notification.id }) else { return }
+        if case .push(let push) = notification.content { pushes.clear([push]); return }
         dismissals.clear(notification, scope: scope)
         saveDismissals()
     }
@@ -45,7 +55,9 @@ import Combine
     }
     func clearAll() {
         now = .now
-        for notification in notifications { dismissals.clear(notification, scope: scope) }
+        let current = notifications
+        pushes.clear(current.compactMap { if case .push(let push) = $0.content { return push }; return nil })
+        for notification in current where notification.category == .loginRequests { dismissals.clear(notification, scope: scope) }
         saveDismissals()
     }
     private func saveDismissals() {
@@ -74,7 +86,7 @@ import Combine
             } catch {
                 guard !Task.isCancelled, context == expected, authenticated else { return }
                 now = .now
-                message = "通知连接已断开，正在重连，已保留尚未到期的内容。\n" + error.localizedDescription
+                message = "登录请求连接已断开，正在重连，已保留尚未到期的内容。\n" + error.localizedDescription
             }
             do { try await Task.sleep(for: .seconds(retrySeconds)) } catch { return }
             retrySeconds = min(retrySeconds * 2, 60)

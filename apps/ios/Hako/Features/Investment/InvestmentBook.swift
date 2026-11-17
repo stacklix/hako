@@ -157,7 +157,7 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
         }
         guard kind == .insurance else { return event.rawValue }
         switch event {
-        case .buy: return "续缴保费"
+        case .buy: return "缴纳保费"
         case .sell: return "退保"
         default: return event.rawValue
         }
@@ -699,8 +699,28 @@ struct InvestmentBook: Codable {
 
     func orderedEvents(_ account: InvestmentAccount, through day: Date) -> [InvestmentEvent] {
         account.events.enumerated().filter { $0.element.day <= day }
-            .sorted { $0.element.day == $1.element.day ? $0.offset < $1.offset : $0.element.day < $1.element.day }
+            .sorted {
+                if $0.element.day != $1.element.day { return $0.element.day < $1.element.day }
+                // Records have a date, not an intraday execution time. A cash top-up
+                // backfilled on that date is available to that day's payments.
+                let leftFunding = $0.element.kind == .deposit || $0.element.kind == .transferIn
+                let rightFunding = $1.element.kind == .deposit || $1.element.kind == .transferIn
+                if leftFunding != rightFunding { return leftFunding }
+                return $0.offset < $1.offset
+            }
             .map(\.element)
+    }
+
+    func eventTitle(_ event: InvestmentEvent, accountID: UUID? = nil) -> String {
+        let asset = asset(event.assetID)
+        guard asset?.kind == .insurance, event.kind == .buy,
+              let owner = accountID.flatMap({ account($0) }) ?? accounts.first(where: { $0.events.contains { $0.id == event.id } }) else {
+            return event.title(for: asset)
+        }
+        let hasPremium = orderedEvents(owner, through: event.day).prefix { $0.id != event.id }.contains {
+            $0.assetID == event.assetID && ($0.kind == .buy || $0.kind == .opening)
+        }
+        return hasPremium ? "续期保费" : "首期保费"
     }
 
     func ledger(_ account: InvestmentAccount, through day: Date = Self.day(), includeRows: Bool = false) throws -> InvestmentLedger {

@@ -16,6 +16,7 @@ import SwiftUI
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .active {
+                        Task { await HakoPushNotifications.shared.syncDelivered() }
                         Task { await AppNetworkService.shared.refresh() }
                         Task { await BuildPushSubscription.shared.refresh() }
                     }
@@ -92,7 +93,7 @@ struct HomeView: View {
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.red, .primary)
                         }
-                    }.accessibilityLabel("通知，\(notifications.notifications.count) 条待处理")
+                    }.accessibilityLabel("通知，\(notifications.notifications.count) 条通知")
                     NavigationLink(value: Destination.settings) { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }
             }

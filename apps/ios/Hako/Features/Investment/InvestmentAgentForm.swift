@@ -101,6 +101,8 @@ extension InvestmentAgentAction {
         let record = balance?.records.first { $0.id.uuidString == text("record_id") }
         let plan = book.plans.first { $0.id.uuidString == text("plan_id") }
         let eventKind = original?.kind ?? text("event_type").flatMap { Self.eventKinds[$0] }
+        let recordTitle = original.map { book.eventTitle($0, accountID: account?.id) }
+            ?? eventKind.map { selected?.transactionTitle($0) ?? $0.rawValue }
         let day = InvestmentBook.snapshotDateFormatter()
         let currency = account?.currency.rawValue ?? selected?.currency.rawValue ?? "币种"
         let settlement = selected.map { book.settlementUnit(for: $0) } ?? currency
@@ -126,7 +128,7 @@ extension InvestmentAgentAction {
             case "event_id":
                 return (account?.events ?? []).map { event in
                     let asset = book.asset(event.assetID)
-                    return .init(id: event.id.uuidString, title: [day.string(from: event.day), event.title(for: asset), asset.map { $0.kind.usesBalance ? $0.name : $0.displayCode },
+                    return .init(id: event.id.uuidString, title: [day.string(from: event.day), book.eventTitle(event, accountID: account?.id), asset.map { $0.kind.usesBalance ? $0.name : $0.displayCode },
                         decimal(event.quantity != 0 ? event.quantity : event.amount)].compactMap { $0 }.joined(separator: " · "))
                 }
             case "plan_id":
@@ -222,12 +224,12 @@ extension InvestmentAgentAction {
                            field("maturity_date", "到期日", required: true, value: selected?.depositTerms.map { day.string(from: $0.maturity) })]
             }
         case .addEvent, .editEvent, .deleteEvent:
-            title = kind == .deleteEvent ? "删除流水" : kind == .editEvent ? "编辑流水" : eventKind.map { selected?.transactionTitle($0) ?? $0.rawValue } ?? "新增流水"
+            title = kind == .deleteEvent ? "删除流水" : kind == .editEvent ? "编辑流水" : recordTitle ?? "新增流水"
             inputs = [owner]
             if kind != .addEvent { inputs.append(field("event_id", "交易流水", required: true)) }
             if kind == .deleteEvent { break }
             if kind == .addEvent { inputs.append(field("event_type", "流水类型", required: true)) }
-            else { inputs.append(readOnly("event_type", "流水类型", eventKind.map { selected?.transactionTitle($0) ?? $0.rawValue })) }
+            else { inputs.append(readOnly("event_type", "流水类型", recordTitle)) }
             if let eventKind, ![.deposit, .withdrawal, .transferIn, .transferOut].contains(eventKind),
                eventKind != .adjustment || selected != nil {
                 var selectedInstrument = instrument

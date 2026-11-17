@@ -197,7 +197,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         func title(_ row: InvestmentServerRow, section: Section) -> String {
             if section.name == "investment_events", let id = row["id"], let event = events[id] {
                 let asset = book.asset(event.assetID)
-                return [event.title(for: asset), asset.map { $0.kind.usesBalance ? $0.name : $0.displayCode }].compactMap { $0 }.joined(separator: " ")
+                return [book.eventTitle(event), asset.map { $0.kind.usesBalance ? $0.name : $0.displayCode }].compactMap { $0 }.joined(separator: " ")
             }
             let asset = section.name == "investment_assets" ? row["id"].flatMap(UUID.init(uuidString:)).flatMap(book.asset) : nil
             let named = asset?.displayName ?? row["name"] ?? row["symbol"] ?? row["asset_id"].flatMap { assets[$0] }
@@ -214,7 +214,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
             }
             for metadata in ["id", "created_at", "updated_at", "version", "sequence", "transfer_id"] { row.removeValue(forKey: metadata) }
             if let id = source["id"], let event = events[id], section == "investment_events" {
-                row["event_type"] = event.title(for: book.asset(event.assetID))
+                row["event_type"] = book.eventTitle(event)
                 for key in ["amount", "quantity", "unit_price"] where row[key] == "0" { row.removeValue(forKey: key) }
                 row["cash_change"] = cashChanges[id]
                 if event.kind == .buy || event.kind == .sell { row["fee"] = row["fee"] ?? "0" }
@@ -600,7 +600,7 @@ extension InvestmentAgentProposal {
             consumed.insert(eventID)
             let groups = eventForm(fields: fields, operation: primary.operation, account: pair?.0, event: pair?.1, asset: asset)
             let title = eventChange?.title ?? pair.map { pair in
-                [pair.1.title(for: asset), asset?.displayCode].compactMap { $0 }.joined(separator: " ")
+                [book.eventTitle(pair.1, accountID: pair.0.id), asset?.displayCode].compactMap { $0 }.joined(separator: " ")
             } ?? primary.title
             items.append(.init(id: eventID, title: title, operation: primary.operation, transaction: true,
                                groups: groups, sourceIDs: sources))
@@ -663,7 +663,7 @@ extension InvestmentAgentProposal {
     private func eventForm(fields: [Change.Field], operation: Change.Operation, account: InvestmentAccount?,
                            event: InvestmentEvent?, asset: InvestmentAsset?) -> [Preview.Group] {
         let form = FormFields(fields: fields, operation: operation)
-        let title = event?.title(for: asset) ?? fields.first { $0.id == "event_type" }.map { $0.after ?? $0.before ?? "" } ?? "流水"
+        let title = event.map { book.eventTitle($0, accountID: account?.id) } ?? fields.first { $0.id == "event_type" }.map { $0.after ?? $0.before ?? "" } ?? "流水"
         let trade = event.map { [.buy, .sell, .opening].contains($0.kind) } ??
             ["买入", "卖出", "开多", "开空", "平多", "平空", "首次录入"].contains(title)
         var groups: [Preview.Group] = []
