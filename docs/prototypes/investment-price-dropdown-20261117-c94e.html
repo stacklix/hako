@@ -1,0 +1,292 @@
+<div id="hako-price-c94e">
+  <style>
+    #hako-price-c94e {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+    #hako-price-c94e * {box-sizing:border-box}
+    #hako-price-c94e [hidden] {display:none!important}
+    #hako-price-c94e .preview-bar {display:flex;justify-content:center;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 0 18px;max-width:410px;margin:0 auto}
+    #hako-price-c94e .preview-note {text-align:center;padding:10px 0 4px;color:var(--muted-foreground);font-size:12px}
+    #hako-price-c94e .stage {display:flex;justify-content:center;padding:16px 0}
+    #hako-price-c94e .phone {--hp-bg:light-dark(#f3f4f7,#161618);--hp-panel:light-dark(#fff,#242427);--hp-text:light-dark(#1b1b20,#f5f5f7);--hp-muted:light-dark(#6a6b73,#a3a4ad);--hp-line:light-dark(#e5e6eb,#3b3b40);--hp-chip:light-dark(#eeeef4,#333339);--hp-teal:light-dark(#087c83,#62cdd0);--hp-red:light-dark(#d84050,#ff7d88);--hp-green:light-dark(#25885f,#76d2a9);--hp-button:light-dark(#202023,#efeff2);--hp-button-text:light-dark(#fff,#202023);color:var(--hp-text);background:var(--hp-bg);color-scheme:dark;width:100%;max-width:410px;border:1px solid var(--hp-line);border-radius:32px;overflow:hidden;font-size:14px;line-height:1.5;position:relative}
+    #hako-price-c94e .phone button {font:inherit;color:inherit;border:0;background:none;padding:0;cursor:inherit;touch-action:manipulation}
+    #hako-price-c94e .phone button:active {opacity:.7}
+    #hako-price-c94e .phone button:focus-visible {outline:2px solid var(--hp-teal);outline-offset:2px}
+    #hako-price-c94e .phone svg:not(.price-svg) {width:19px;height:19px;flex-shrink:0;stroke-width:1.8}
+    #hako-price-c94e h2,#hako-price-c94e h3,#hako-price-c94e p {margin:0}
+    #hako-price-c94e .statusbar {height:44px;padding:0 25px;display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:600}
+    #hako-price-c94e .status-icons {display:flex;align-items:center;gap:6px}
+    #hako-price-c94e .status-icons svg {width:15px!important;height:15px!important}
+    #hako-price-c94e .nav {display:grid;grid-template-columns:44px 1fr 44px;align-items:center;padding:1px 12px 7px}
+    #hako-price-c94e .nav strong {text-align:center;font-weight:600;font-size:16px}
+    #hako-price-c94e .icon-button {width:44px;height:44px;display:grid;place-items:center}
+    #hako-price-c94e .main {padding:0 16px 18px;display:flex;flex-direction:column;gap:16px}
+    #hako-price-c94e .identity {padding:7px 4px 1px;display:flex;align-items:center;gap:11px}
+    #hako-price-c94e .logo {width:42px;height:42px;border-radius:12px;background:var(--hp-chip);display:grid;place-items:center;font-size:13px;font-weight:600;flex-shrink:0}
+    #hako-price-c94e .identity h2 {font-size:23px;font-weight:600;letter-spacing:-.6px}
+    #hako-price-c94e .sub {font-size:12px;color:var(--hp-muted)}
+    #hako-price-c94e .identity .sub {margin-top:3px}
+    #hako-price-c94e .summary {display:grid;grid-template-columns:1.25fr 1fr;gap:12px;padding:3px 4px 1px}
+    #hako-price-c94e .summary .label {font-size:12px;color:var(--hp-muted)}
+    #hako-price-c94e .summary .number {font-size:21px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.5px;margin-top:3px}
+    #hako-price-c94e .summary .number.small {font-size:18px}
+    #hako-price-c94e .panel {background:var(--hp-panel);border-radius:16px;padding:0 15px 14px}
+    #hako-price-c94e .chart-tabs {display:flex;gap:27px;border-bottom:1px solid var(--hp-line);padding:0 1px}
+    #hako-price-c94e .chart-tabs button {min-height:49px;position:relative;font-size:15px;color:var(--hp-muted);white-space:nowrap}
+    #hako-price-c94e .chart-tabs button[aria-selected="true"] {color:var(--hp-text);font-weight:600}
+    #hako-price-c94e .chart-tabs button[aria-selected="true"]:after {content:"";position:absolute;bottom:-1px;left:0;right:0;height:2px;border-radius:2px;background:var(--hp-text)}
+    #hako-price-c94e .readout {display:flex;align-items:flex-end;justify-content:space-between;gap:10px;padding:15px 0 7px;min-height:91px}
+    #hako-price-c94e .readout-label {font-size:11px;color:var(--hp-muted)}
+    #hako-price-c94e .price {font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-1px;line-height:1.22;margin-top:3px}
+    #hako-price-c94e .price-unit {font-size:12px;margin-left:4px;font-weight:400;letter-spacing:0;color:var(--hp-muted)}
+    #hako-price-c94e .change {font-size:14px;font-variant-numeric:tabular-nums;color:var(--hp-red);text-align:right}
+    #hako-price-c94e .change.negative {color:var(--hp-green)}
+    #hako-price-c94e .change-label {font-size:11px;color:var(--hp-muted);margin-top:3px;text-align:right}
+    #hako-price-c94e .time-row {display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--hp-line);padding:3px 0 10px}
+    #hako-price-c94e .time-label {font-size:12px;color:var(--hp-muted)}
+    #hako-price-c94e .range-picker {position:relative}
+    #hako-price-c94e .range-trigger {display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:40px;padding:8px 12px!important;background:var(--hp-chip)!important;border-radius:9px;font-size:13px!important;min-width:105px}
+    #hako-price-c94e .range-trigger svg {width:14px!important;height:14px!important}
+    #hako-price-c94e .range-menu {position:absolute;right:0;top:calc(100% + 7px);width:164px;padding:5px;background:light-dark(#fff,#323237);border:1px solid var(--hp-line);border-radius:12px;box-shadow:0 10px 28px #0003;z-index:8}
+    #hako-price-c94e .range-menu button {display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:42px;padding:9px 12px!important;text-align:left;font-size:13px;border-radius:7px}
+    #hako-price-c94e .range-menu button[aria-checked="true"] {background:var(--hp-chip)}
+    #hako-price-c94e .range-menu button:after {content:"";width:13px}
+    #hako-price-c94e .range-menu button[aria-checked="true"]:after {content:"✓"}
+    #hako-price-c94e .plot {position:relative;height:231px;margin-top:6px;touch-action:pan-y}
+    #hako-price-c94e .price-svg {display:block;width:100%;height:231px;overflow:visible;user-select:none}
+    #hako-price-c94e .price-svg text {font-family:inherit;font-size:11px;fill:var(--hp-muted)}
+    #hako-price-c94e .price-svg .grid {stroke:var(--hp-line);stroke-width:.6}
+    #hako-price-c94e .price-svg .trend {fill:none;stroke:var(--hp-teal);stroke-width:1.9;stroke-linejoin:round;stroke-linecap:round}
+    #hako-price-c94e .price-svg .selected-line {stroke:var(--hp-muted);stroke-width:1;stroke-dasharray:3 4}
+    #hako-price-c94e .price-svg .selected-dot {fill:var(--hp-teal);stroke:var(--hp-panel);stroke-width:2}
+    #hako-price-c94e .trade-pin {position:absolute;width:26px;height:26px;transform:translate(-50%,-50%);border-radius:50%;display:grid;place-items:center;z-index:2;background:transparent!important}
+    #hako-price-c94e .trade-pin:after {content:"";display:block;width:8px;height:8px;border-radius:50%;background:var(--hp-green)}
+    #hako-price-c94e .trade-pin.sell:after {background:var(--hp-red)}
+    #hako-price-c94e .group-trades {display:flex;flex-direction:column;gap:0}
+    #hako-price-c94e .group-trades button {display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;min-height:40px;font-size:12px;border-top:1px solid var(--hp-line);padding:7px 0}
+    #hako-price-c94e .trade-pin[aria-pressed="true"]:after {width:11px;height:11px}
+    #hako-price-c94e .legend {display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:0 0 10px;font-size:11px;color:var(--hp-muted)}
+    #hako-price-c94e .legend-items {display:flex;gap:12px;align-items:center}
+    #hako-price-c94e .legend-label {display:inline-flex;gap:5px;align-items:center}
+    #hako-price-c94e .mini-buy,#hako-price-c94e .mini-sell {color:var(--hp-green);font-size:13px}
+    #hako-price-c94e .mini-sell {color:var(--hp-red)}
+    #hako-price-c94e .detail {border-top:1px solid var(--hp-line);padding-top:12px;display:flex;flex-direction:column;gap:7px;min-height:77px}
+    #hako-price-c94e .detail-top {display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px}
+    #hako-price-c94e .detail-title {display:flex;gap:6px;align-items:center}
+    #hako-price-c94e .trade-badge {font-size:11px;padding:1px 6px;border-radius:4px;color:var(--hp-green);background:color-mix(in srgb,var(--hp-green) 12%,transparent)}
+    #hako-price-c94e .trade-badge.sell {color:var(--hp-red);background:color-mix(in srgb,var(--hp-red) 12%,transparent)}
+    #hako-price-c94e .detail-close {width:30px;height:25px;display:grid;place-items:center}
+    #hako-price-c94e .detail-close svg {width:14px!important;height:14px!important}
+    #hako-price-c94e .detail-values {display:flex;justify-content:space-between;gap:10px;font-size:13px;font-variant-numeric:tabular-nums}
+    #hako-price-c94e .detail-values span:last-child {color:var(--hp-muted)}
+    #hako-price-c94e .hint {font-size:11px;color:var(--hp-muted)}
+    #hako-price-c94e .transactions-header {display:flex;align-items:center;justify-content:space-between;padding:0 4px}
+    #hako-price-c94e h3 {font-size:15px;font-weight:600}
+    #hako-price-c94e .records {background:var(--hp-panel);border-radius:15px;padding:0 15px}
+    #hako-price-c94e .record {display:flex;align-items:center;gap:10px;width:100%;text-align:left;min-height:64px;padding:12px 0!important}
+    #hako-price-c94e .record+.record {border-top:1px solid var(--hp-line)!important}
+    #hako-price-c94e .record-icon {color:var(--hp-green);background:color-mix(in srgb,var(--hp-green) 10%,transparent);border-radius:9px;width:30px;height:30px;display:grid;place-items:center;font-size:12px;flex-shrink:0}
+    #hako-price-c94e .record-icon.sell {color:var(--hp-red);background:color-mix(in srgb,var(--hp-red) 10%,transparent)}
+    #hako-price-c94e .record-text {flex:1}
+    #hako-price-c94e .record-price {text-align:right;font-size:13px;font-variant-numeric:tabular-nums}
+    #hako-price-c94e .record .sub {font-size:11px;margin-top:2px}
+    #hako-price-c94e .home {width:110px;height:5px;border-radius:4px;background:var(--hp-text);margin:3px auto 9px}
+    @media(max-width:360px) {#hako-price-c94e .main {padding-left:12px;padding-right:12px}#hako-price-c94e .panel {padding-left:12px;padding-right:12px}#hako-price-c94e .phone {border-radius:23px}#hako-price-c94e .identity h2 {font-size:21px}}
+    @media(pointer:coarse) {#hako-price-c94e .trade-pin:before {content:"";position:absolute;inset:-9px}#hako-price-c94e .range-trigger,#hako-price-c94e .range-menu button {min-height:44px}}
+  </style>
+  <div class="preview-bar">
+    <label class="form-label" for="hp-example-c94e">预览标的</label>
+    <select class="form-select" id="hp-example-c94e"><option value="etf">ETF · 沪深300ETF</option><option value="fund">基金 · 示例成长混合</option><option value="stock">股票 · 示例科技</option></select>
+  </div>
+  <div class="stage viz-dotted-background">
+    <article class="phone" aria-label="标的详情价格走势图原型">
+      <div class="statusbar"><span>9:41</span><span class="status-icons"><i data-lucide="signal" aria-hidden="true"></i><i data-lucide="wifi" aria-hidden="true"></i><i data-lucide="battery-full" aria-hidden="true"></i></span></div>
+      <header class="nav"><button class="icon-button cursor-interaction" data-action="back" aria-label="返回投资账户"><i data-lucide="chevron-left" aria-hidden="true"></i></button><strong>标的详情</strong><button class="icon-button cursor-interaction" data-action="more" aria-label="更多标的操作"><i data-lucide="ellipsis" aria-hidden="true"></i></button></header>
+      <main class="main">
+        <section class="identity"><div class="logo" data-logo>300</div><div><h2 data-name>沪深300ETF</h2><p class="sub" data-code>510300.SH · ETF · 银河证券</p></div></section>
+        <section class="summary" aria-label="当前持仓"><div><div class="label">持仓市值 · CNY</div><div class="number" data-market-value>¥26,880.00</div></div><div><div class="label" data-quantity-label>持有份额</div><div class="number small" data-quantity>6,000.00 份</div></div></section>
+        <section class="panel" aria-label="走势与交易">
+          <div class="chart-tabs" role="tablist" aria-label="走势图类型"><button id="hp-price-tab-c94e" type="button" role="tab" aria-selected="true" aria-controls="hp-chart-c94e" class="cursor-interaction" data-tab="price">价格走势</button><button id="hp-holding-tab-c94e" type="button" role="tab" aria-selected="false" aria-controls="hp-chart-c94e" class="cursor-interaction" data-tab="holding">持仓数量</button></div>
+          <div id="hp-chart-c94e" role="tabpanel" aria-labelledby="hp-price-tab-c94e">
+            <div class="readout"><div><div class="readout-label" data-readout-label>2026-11-17 · 收盘价</div><div class="price"><span data-price>4.480</span><span class="price-unit" data-unit>CNY / 份</span></div></div><div data-change-wrap><div class="change" data-change>+8.63%</div><div class="change-label">区间涨跌幅</div></div></div>
+            <div class="time-row"><span class="time-label">时间范围</span><div class="range-picker"><button type="button" class="range-trigger cursor-interaction" aria-label="选择时间范围" aria-haspopup="menu" aria-expanded="false" aria-controls="hp-range-menu-c94e" data-range-trigger><span data-range-label>近3个月</span><i data-lucide="chevron-down" aria-hidden="true"></i></button><div id="hp-range-menu-c94e" class="range-menu" role="menu" aria-label="时间范围" hidden><button type="button" role="menuitemradio" data-range="all" aria-checked="false" class="cursor-interaction">建仓后</button><button type="button" role="menuitemradio" data-range="1m" aria-checked="false" class="cursor-interaction">近1个月</button><button type="button" role="menuitemradio" data-range="3m" aria-checked="true" class="cursor-interaction">近3个月</button><button type="button" role="menuitemradio" data-range="6m" aria-checked="false" class="cursor-interaction">近半年</button><button type="button" role="menuitemradio" data-range="1y" aria-checked="false" class="cursor-interaction">近1年</button><button type="button" role="menuitemradio" data-range="2y" aria-checked="false" class="cursor-interaction">近2年</button><button type="button" role="menuitemradio" data-range="5y" aria-checked="false" class="cursor-interaction">近5年</button></div></div></div>
+            <div class="plot" data-plot><svg class="price-svg" data-chart role="img" aria-label="示例日线价格，绿色圆点代表买入，红色圆点代表卖出，可点击查看成交信息"></svg><div data-markers></div></div>
+            <div class="legend"><span class="legend-items" data-legend><span class="legend-label"><span class="mini-buy">●</span>买入</span><span class="legend-label"><span class="mini-sell">●</span>卖出</span></span><span data-interval>2026-08-17 — 11-17</span></div>
+            <section class="detail" aria-live="polite" aria-atomic="true" data-detail><div class="detail-top"><span data-detail-date>2026-08-17 — 2026-11-17</span><span class="sub" data-trade-count>5 笔交易</span></div><p class="hint" data-hint>点按买卖标记查看成交，拖动曲线查看每日价格。</p></section>
+          </div>
+        </section>
+        <div class="transactions-header"><h3>买卖记录</h3><span class="sub" data-record-count>共 8 笔</span></div>
+        <section class="records" data-records aria-label="最近买卖记录"></section>
+        <p class="hint" style="padding:0 4px" data-footnote>日线按收盘价绘制，买卖点按实际成交价标注。</p>
+      </main>
+      <div class="home"></div>
+    </article>
+  </div>
+  <p class="preview-note">交互原型 · 行情与交易均为示例数据</p>
+  <script>
+    (() => {
+      const root = document.getElementById('hako-price-c94e');
+      const $ = s => root.querySelector(s);
+      const phone = $('.phone'), chart = $('[data-chart]'), plot = $('[data-plot]');
+      const DAY = 86400000, end = Date.UTC(2026,10,17), first = Date.UTC(2021,10,17);
+      const instruments = {
+        etf: {name:'沪深300ETF',code:'510300.SH',kind:'ETF',logo:'300',account:'银河证券',unit:'份',precision:3,last:4.48,scale:1},
+        fund: {name:'示例成长混合',code:'000001.OF',kind:'基金',logo:'基',account:'基金理财账户',unit:'份',precision:4,last:2.6384,scale:1.4},
+        stock: {name:'示例科技',code:'600000.SH',kind:'股票',logo:'股',account:'银河证券',unit:'股',precision:2,last:38.56,scale:.1}
+      };
+      const sourceTrades = [
+        {date:'2022-03-18',side:'buy',quantity:3000},
+        {date:'2024-02-06',side:'buy',quantity:2000},
+        {date:'2025-11-20',side:'sell',quantity:1000},
+        {date:'2026-09-04',side:'buy',quantity:1500},
+        {date:'2026-09-28',side:'sell',quantity:500},
+        {date:'2026-10-16',side:'buy',quantity:1000},
+        {date:'2026-11-04',side:'buy',quantity:600},
+        {date:'2026-11-12',side:'sell',quantity:600}
+      ].map((t,i) => ({...t,id:i,time:Date.parse(t.date+'T00:00:00Z')}));
+      const state = {asset:'etf',tab:'price',range:'3m',trade:null,day:null,group:null};
+      let points=[], trades=[], geometry=null;
+      const formatDate = time => new Date(time).toISOString().slice(0,10);
+      const number = (value,digits=2) => value.toLocaleString('en-US',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+      const money = value => '¥'+number(value,2);
+      const item = () => instruments[state.asset];
+      function dailyPrice(time) {
+        const t = (time-first)/DAY, total = (end-first)/DAY;
+        const base = x => 0.68 + x/total*.32 + Math.sin(x/48)*.055 + Math.sin(x/11)*.017 + Math.cos(x/3.8)*.008;
+        return Number((item().last*base(t)/base(total)).toFixed(item().precision));
+      }
+      function startDate() {
+        if(state.range==='all') return sourceTrades[0].time;
+        const d = new Date(end);
+        if(state.range.endsWith('m')) d.setUTCMonth(d.getUTCMonth()-parseInt(state.range));
+        else d.setUTCFullYear(d.getUTCFullYear()-parseInt(state.range));
+        return Math.max(first,d.getTime());
+      }
+      function holdings(time) {
+        let quantity=0,net=0;
+        for(const t of sourceTrades) if(t.time<=time) {
+          const q=t.quantity*item().scale,sign=t.side==='buy'?1:-1;
+          quantity+=q*sign; net+=q*dailyPrice(t.time)*sign;
+        }
+        return item().kind==='基金'?net:quantity;
+      }
+      function saveState() {
+        if(window.openai?.setWidgetState) window.openai.setWidgetState({modelContent:{example:state.asset,chart:state.tab,range:state.range},privateContent:{...state}}).catch(()=>{});
+      }
+      function rebuildData() {
+        const start=startDate();points=[];
+        for(let day=start;day<=end;day+=DAY) {
+          const weekday=new Date(day).getUTCDay();
+          if(weekday!==0&&weekday!==6) points.push({time:day,price:dailyPrice(day),value:state.tab==='price'?dailyPrice(day):holdings(day)});
+        }
+        trades=sourceTrades.filter(t=>t.time>=start&&t.time<=end).map(t=>({...t,quantity:t.quantity*item().scale,price:dailyPrice(t.time)}));
+      }
+      function paintChart() {
+        const width=Math.max(240,plot.clientWidth),height=231;
+        chart.setAttribute('viewBox',`0 0 ${width} ${height}`);
+        const pad={left:3,right:43,top:23,bottom:29};
+        const x=t=>pad.left+(t-startDate())/(end-startDate())*(width-pad.left-pad.right);
+        const rawMin=Math.min(...points.map(p=>p.value)),rawMax=Math.max(...points.map(p=>p.value));
+        const delta=Math.max(rawMax-rawMin,rawMax*.025,1e-5),lo=Math.max(0,rawMin-delta*.2),hi=rawMax+delta*.2;
+        const y=v=>pad.top+(hi-v)/(hi-lo)*(height-pad.top-pad.bottom);
+        geometry={x,y,width,height};
+        const levels=Array.from({length:4},(_,i)=>lo+(hi-lo)*i/3);
+        const compact=v=>state.tab==='price'?number(v,item().precision):v>=10000?(v/10000).toFixed(1)+'万':number(v,0);
+        const grid=levels.map(v=>`<line class="grid" x1="${pad.left}" x2="${width-pad.right}" y1="${y(v)}" y2="${y(v)}"/><text x="${width-1}" y="${y(v)+4}" text-anchor="end">${compact(v)}</text>`).join('');
+        const tickDates=[startDate(),Math.round((startDate()+end)/2/DAY)*DAY,end];
+        const tickLabel=t=>state.range==='5y'||state.range==='2y'||state.range==='all'?formatDate(t).slice(0,7):formatDate(t).slice(5);
+        const ticks=tickDates.map((t,i)=>`<text x="${x(t)}" y="${height-5}" text-anchor="${i===0?'start':i===2?'end':'middle'}">${tickLabel(t)}</text>`).join('');
+        let path='';
+        points.forEach((p,i)=>{const px=x(p.time),py=y(p.value);if(i===0)path+=`M${px},${py}`;else path+=state.tab==='holding'?`H${px}V${py}`:`L${px},${py}`;});
+        chart.innerHTML=`<title>${item().name} ${state.tab==='price'?'日线价格':'持仓变化'}，${formatDate(startDate())}至${formatDate(end)}</title>${grid}<path class="trend" d="${path}"/>${ticks}<g data-selection></g>`;
+        const markerRoot=$('[data-markers]');markerRoot.replaceChildren();
+        if(state.tab==='price') for(const trade of trades) {
+          const button=document.createElement('button');button.type='button';button.className='trade-pin cursor-interaction'+(trade.side==='sell'?' sell':'');
+          button.dataset.trade=trade.id;
+          button.style.left=x(trade.time)+'px';button.style.top=y(trade.price)+'px';
+          button.setAttribute('aria-label',`${trade.date} ${trade.side==='buy'?'买入':'卖出'} ${number(trade.quantity,0)}${item().unit}，成交价 ${number(trade.price,item().precision)} CNY`);
+          button.setAttribute('aria-pressed',String(state.trade===trade.id));
+          button.addEventListener('click',()=>{
+            const nearby=trades.filter(t=>Math.abs(x(t.time)-x(trade.time))<9&&Math.abs(y(t.price)-y(trade.price))<18);
+            state.trade=nearby.length>1?null:state.trade===trade.id?null:trade.id;
+            state.group=nearby.length>1?nearby.map(t=>t.id):null;state.day=null;updateDetail();saveState();
+          });markerRoot.append(button);
+        }
+        updateDetail();
+      }
+      function renderRecords() {
+        const records=$('[data-records]');records.replaceChildren();
+        for(const trade of sourceTrades.slice(-2).reverse()) {
+          const buy=trade.side==='buy',button=document.createElement('button');button.type='button';button.className='record cursor-interaction';
+          button.innerHTML=`<span class="record-icon${buy?'':' sell'}">${buy?'买':'卖'}</span><span class="record-text"><span>${buy?'买入':'卖出'}</span><span class="sub" style="display:block">${trade.date}</span></span><span class="record-price">${number(trade.quantity*item().scale,0)} ${item().unit}<span class="sub" style="display:block">成交价 ${number(dailyPrice(trade.time),item().precision)}</span></span>`;
+          button.addEventListener('click',()=>{state.tab='price';if(trade.time<startDate())state.range='all';state.trade=trade.id;state.group=null;state.day=null;render();saveState();});records.append(button);
+        }
+      }
+      function updateDetail() {
+        const active=state.tab==='price'?trades.find(t=>t.id===state.trade):null;
+        const selected=active?{time:active.time,value:active.price}:state.day!==null?points.reduce((a,b)=>Math.abs(a.time-state.day)<Math.abs(b.time-state.day)?a:b):null;
+        const last=points[points.length-1],p=selected||last,isPrice=state.tab==='price';
+        $('[data-readout-label]').textContent=formatDate(p.time)+' · '+(active?'成交价':isPrice?(item().kind==='基金'?'单位净值':'收盘价'):'日终'+(item().kind==='基金'?'净投入':'持仓'));
+        $('[data-price]').textContent=number(p.value,isPrice?item().precision:item().kind==='基金'?2:0);
+        $('[data-unit]').textContent=isPrice?'CNY / '+item().unit:item().kind==='基金'?'CNY':item().unit;
+        const change=(last.price/points[0].price-1)*100;
+        $('[data-change]').textContent=(change>=0?'+':'')+change.toFixed(2)+'%';$('[data-change]').classList.toggle('negative',change<0);
+        $('[data-change-wrap]').hidden=!isPrice;
+        const detail=$('[data-detail]');
+        const group=Array.isArray(state.group)?trades.filter(t=>state.group.includes(t.id)):[];
+        if(group.length>1&&isPrice) {
+          detail.innerHTML=`<div class="detail-top"><span>密集交易 · ${group.length} 笔</span><button type="button" class="detail-close cursor-interaction" aria-label="收起密集交易" data-clear>×</button></div><div class="group-trades">${group.map(t=>`<button type="button" data-group-trade="${t.id}" class="cursor-interaction"><span><span class="trade-badge${t.side==='sell'?' sell':''}">${t.side==='buy'?'买入':'卖出'}</span> ${t.date}</span><span>${number(t.price,item().precision)} · ${number(t.quantity,0)} ${item().unit}</span></button>`).join('')}</div>`;
+          $('[data-clear]').addEventListener('click',()=>{state.group=null;updateDetail();saveState();});
+          detail.querySelectorAll('[data-group-trade]').forEach(button=>button.addEventListener('click',()=>{state.trade=Number(button.dataset.groupTrade);state.group=null;updateDetail();saveState();}));
+        } else if(active) {
+          detail.innerHTML=`<div class="detail-top"><span class="detail-title"><span class="trade-badge${active.side==='sell'?' sell':''}">${active.side==='buy'?'买入':'卖出'}</span>${active.date}</span><button type="button" class="detail-close cursor-interaction" aria-label="收起成交详情" data-clear>×</button></div><div class="detail-values"><span>成交价 ${number(active.price,item().precision)}</span><span>${number(active.quantity,0)} ${item().unit} · ${money(active.quantity*active.price)}</span></div><p class="hint">${active.time===sourceTrades[0].time?'首次建仓 · ':''}标记对应此账户的实际成交流水</p>`;
+          $('[data-clear]').addEventListener('click',()=>{state.trade=null;updateDetail();saveState();});
+        } else if(selected) {
+          detail.innerHTML=`<div class="detail-top"><span>${formatDate(p.time)}</span><span class="sub">${isPrice?'历史行情':'历史持仓'}</span></div><p class="hint">${isPrice?'点按曲线选择日期，拖动继续查看每日价格。':item().kind==='基金'?'净投入按买入金额减去卖出回款计算。':'按每日持仓数量显示，包含买卖与数量调整。'}</p>`;
+        } else {
+          detail.innerHTML=`<div class="detail-top"><span>${formatDate(startDate())} — ${formatDate(end)}</span><span class="sub">${isPrice?trades.length+' 笔交易':item().kind==='基金'?'净投入 · CNY':'持仓 · '+item().unit}</span></div><p class="hint">${isPrice?'点按买卖标记查看成交，拖动曲线查看每日价格。':item().kind==='基金'?'净投入按买入金额减去卖出回款计算，不随报价变化。':'按每日持仓数量显示，包含买卖与数量调整。'}</p>`;
+        }
+        const selection=chart.querySelector('[data-selection]');
+        selection.innerHTML=selected?`<line class="selected-line" x1="${geometry.x(p.time)}" x2="${geometry.x(p.time)}" y1="14" y2="202"/>${active?'':`<circle class="selected-dot" cx="${geometry.x(p.time)}" cy="${geometry.y(p.value)}" r="4"/>`}`:'';
+        root.querySelectorAll('[data-trade]').forEach(button=>button.setAttribute('aria-pressed',String(Number(button.dataset.trade)===state.trade)));
+      }
+      function render() {
+        const i=item();$('[data-name]').textContent=i.name;$('[data-code]').textContent=i.code+' · '+i.kind+' · '+i.account;$('[data-logo]').textContent=i.logo;
+        $('[data-market-value]').textContent=money(6000*i.scale*i.last);$('[data-quantity]').textContent=number(6000*i.scale,2)+' '+i.unit;
+        $('[data-quantity-label]').textContent=i.kind==='股票'?'持有数量':'持有份额';
+        const holdingTab=$('[data-tab="holding"]');holdingTab.textContent=i.kind==='基金'?'净投入变化':'持仓数量';
+        root.querySelectorAll('[data-tab]').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.tab===state.tab)));
+        $('#hp-chart-c94e').setAttribute('aria-labelledby',state.tab==='price'?'hp-price-tab-c94e':'hp-holding-tab-c94e');
+        root.querySelectorAll('[data-range]').forEach(button=>button.setAttribute('aria-checked',String(button.dataset.range===state.range)));
+        $('[data-range-label]').textContent=$('[data-range="'+state.range+'"]').textContent;
+        $('[data-legend]').hidden=state.tab!=='price';
+        $('[data-interval]').textContent=formatDate(startDate())+' — '+formatDate(end).slice(5);
+        $('[data-footnote]').textContent=state.tab==='price'?(i.kind==='基金'?'基金按每日单位净值绘制，买卖点按实际成交净值标注。':'日线按收盘价绘制，买卖点按实际成交价标注。'):'持仓图沿用原有口径，与市场价格走势分开查看。';
+        rebuildData();paintChart();renderRecords();
+      }
+      root.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{state.tab=button.dataset.tab;state.trade=null;state.group=null;state.day=null;render();saveState();}));
+      const rangeMenu=$('#hp-range-menu-c94e'),rangeTrigger=$('[data-range-trigger]');
+      function closeRangeMenu(returnFocus=false){rangeMenu.hidden=true;rangeTrigger.setAttribute('aria-expanded','false');if(returnFocus)rangeTrigger.focus();}
+      rangeTrigger.addEventListener('click',()=>{const open=rangeMenu.hidden;rangeMenu.hidden=!open;rangeTrigger.setAttribute('aria-expanded',String(open));if(open)$('[data-range="'+state.range+'"]').focus();});
+      root.querySelectorAll('[data-range]').forEach(button=>button.addEventListener('click',()=>{state.range=button.dataset.range;state.trade=null;state.group=null;state.day=null;closeRangeMenu(true);render();saveState();}));
+      document.addEventListener('click',event=>{if(!root.querySelector('.range-picker').contains(event.target))closeRangeMenu();});
+      rangeMenu.addEventListener('keydown',event=>{
+        const buttons=Array.from(rangeMenu.querySelectorAll('button')),index=buttons.indexOf(document.activeElement);
+        if(event.key==='Escape'){event.preventDefault();closeRangeMenu(true);}
+        else if(['ArrowDown','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?buttons.length-1:(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length;buttons[next].focus();}
+        else if(event.key==='Tab')closeRangeMenu();
+      });
+      $('#hp-example-c94e').addEventListener('change',event=>{state.asset=event.target.value;state.trade=null;state.group=null;state.day=null;render();saveState();});
+      let dragging=false,moved=false;
+      function selectDay(event) {const bounds=chart.getBoundingClientRect(),x=Math.max(0,Math.min(bounds.width,event.clientX-bounds.left));state.trade=null;state.group=null;state.day=startDate()+Math.max(0,Math.min(1,(x-3)/(geometry.width-46)))*(end-startDate());updateDetail();}
+      chart.addEventListener('pointerdown',event=>{dragging=true;moved=false;chart.setPointerCapture(event.pointerId);selectDay(event);});
+      chart.addEventListener('pointermove',event=>{if(dragging){moved=true;selectDay(event);}});
+      chart.addEventListener('pointerup',()=>{dragging=false;saveState();});chart.addEventListener('pointercancel',()=>{dragging=false;});
+      root.querySelectorAll('[data-action]').forEach(button=>button.addEventListener('click',()=>{$('[data-footnote]').textContent=button.dataset.action==='back'?'当前为标的详情原型，可继续切换走势图与时间范围。':'当前为交互原型，未修改真实标的或交易。';}));
+      function restore(saved) {const s=saved?.privateContent;if(!s)return;if(instruments[s.asset])state.asset=s.asset;if(['price','holding'].includes(s.tab))state.tab=s.tab;if(['all','1m','3m','6m','1y','2y','5y'].includes(s.range))state.range=s.range;state.trade=Number.isInteger(s.trade)?s.trade:null;state.day=Number.isFinite(s.day)?s.day:null;$('#hp-example-c94e').value=state.asset;render();}
+      render();restore(window.openai?.widgetState);
+      window.addEventListener('openai:set_globals',event=>restore(event.detail?.globals?.widgetState));
+      const observer=new ResizeObserver(()=>paintChart());observer.observe(plot);
+      const design={theme:'dark'};
+      if(globalThis.Tweak){const tweak=new Tweak({container:phone,onChange:()=>{phone.style.colorScheme=design.theme;}});tweak.addSelect(design,'theme',{label:'外观',options:[{label:'深色',value:'dark'},{label:'浅色',value:'light'}]});}
+    })();
+  </script>
+</div>

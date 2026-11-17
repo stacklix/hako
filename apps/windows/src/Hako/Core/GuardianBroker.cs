@@ -17,13 +17,13 @@ internal sealed class GuardianBroker : IAsyncDisposable
     private readonly GuardianDispatcher dispatcher;
     private readonly AgentConnection connection;
     private readonly WorkshopConnection workshop;
-    private readonly LocalRpcServer rpc;
+    private LocalRpcServer? rpc;
     private readonly SemaphoreSlim operations = new(1, 1);
     private readonly CancellationTokenSource stopping = new();
-    private readonly Task watching;
+    private Task watching = Task.CompletedTask;
     private string? activeScope, error;
     private string PausedPath => AgentGuardianControl.FileFor(profile, "connection-paused");
-    internal GuardianBroker(string profile)
+    internal GuardianBroker(string profile, bool start = true)
     {
         this.profile = profile; store = new AgentSettingsStore(profile);
         dispatcher = new GuardianDispatcher(profile);
@@ -33,6 +33,21 @@ internal sealed class GuardianBroker : IAsyncDisposable
             try { Directory.CreateDirectory(profile); File.WriteAllText(Path.Combine(profile, "workshop-computer-id.txt"), id); }
             catch (IOException) { }
         });
+        if (start) Start();
+    }
+    internal void Prepare()
+    {
+        var settings = store.Load();
+        if (!File.Exists(PausedPath) && settings.Url.Length > 0 && settings.PrivateKey.Length > 0)
+        {
+            settings.Validate();
+            using var key = System.Security.Cryptography.RSA.Create();
+            key.ImportFromPem(settings.PrivateKey);
+        }
+    }
+    internal void Start()
+    {
+        if (rpc is not null) throw new InvalidOperationException("Guardian broker already started.");
         rpc = new LocalRpcServer(LocalRpc.GuardianPipe(profile), HandleAsync);
         watching = Task.Run(WatchAsync);
     }
@@ -103,7 +118,8 @@ internal sealed class GuardianBroker : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await stopping.CancelAsync(); await watching;
-        await rpc.DisposeAsync(); await workshop.DisposeAsync(); await connection.DisposeAsync();
+        if (rpc is not null) await rpc.DisposeAsync();
+        await workshop.DisposeAsync(); await connection.DisposeAsync();
         operations.Dispose(); stopping.Dispose();
     }
 }

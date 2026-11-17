@@ -41,7 +41,6 @@ struct SettingsView: View {
     @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
     @ObservedObject private var network = AppNetworkService.shared
     @ObservedObject private var buildPush = BuildPushSubscription.shared
-    @ObservedObject private var console = ConsoleClient.shared
     @State private var sheet: SheetRoute?
     @State private var alert: (title: String, message: String)?
     @State private var updates: [UpdateSource: UpdateState] = [:]
@@ -156,14 +155,7 @@ struct SettingsView: View {
                 Text("应用更新")
             }
             BuildStatusView(isSettingsVisible: isVisible && sheet == nil, choreRoute: choreRoute)
-            Section("版本信息") {
-                LabeledContent("Hako iOS", value: currentVersion)
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                LabeledContent("Hako 服务端", value: console.serverVersionLabel)
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-            }
+            ServerVersionSection(currentVersion: currentVersion, active: isVisible && inForeground && sheet == nil)
         }.navigationTitle("设置")
             .scrollContentBackground(.hidden)
             .background(HakoStyle.background)

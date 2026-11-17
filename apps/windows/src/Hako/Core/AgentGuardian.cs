@@ -31,21 +31,27 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
-    internal static async Task RunAsync(string configuration, CancellationToken token = default)
+    internal static async Task RunAsync(string configuration, CancellationToken token = default, GuardianBroker? prepared = null)
     {
         var options = AgentGuardianControl.Read<AgentGuardianOptions>(configuration) ?? throw new InvalidDataException("Guardian configuration missing.");
         options.Validate();
         Directory.CreateDirectory(AgentGuardianControl.DirectoryFor(options.ProfileDirectory));
         FileStream owner;
-        try { owner = new FileStream(AgentGuardianControl.FileFor(options.ProfileDirectory, "owner.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-        catch (IOException) { return; }
+        try
+        {
+            var path = AgentGuardianControl.FileFor(options.ProfileDirectory, "owner.lock");
+            owner = prepared is null ? new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)
+                : await AgentGuardianRefresh.LockAsync(path, token);
+        }
+        catch (IOException) { if (prepared is not null) await prepared.DisposeAsync(); return; }
         using (owner)
         using (var lifetime = CancellationTokenSource.CreateLinkedTokenSource(token))
         using (var commandsStopping = CancellationTokenSource.CreateLinkedTokenSource(token))
         using (var source = new GitHubAgentUpdates(options.Repository, AgentGuardianControl.FileFor(options.ProfileDirectory, "downloads")))
         {
             var guardian = new AgentGuardian(options, source);
-            await using var broker = new GuardianBroker(options.ProfileDirectory);
+            await using var broker = prepared ?? new GuardianBroker(options.ProfileDirectory, start: false);
+            broker.Start();
             guardian.saved = AgentGuardianControl.Read<Saved>(guardian.PathFor("state.json")) ?? new Saved();
             guardian.Status("starting", "守护进程已启动。");
             var commandsWork = Task.Run(() => CommandHost.RunRequestedAsync(options.ProfileDirectory, commandsStopping.Token));

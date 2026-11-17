@@ -18,7 +18,7 @@ internal static class AgentGuardianRefresh
         var directory = AgentGuardianControl.FileFor(options.ProfileDirectory, Path.Combine("refresh", hash));
         var executable = Path.Combine(directory, "Hako.GuardianUpdate.exe");
         var previous = AgentGuardianControl.Read<State>(StatePath(options.ProfileDirectory));
-        if (previous?.Sha256 == hash && previous.StateName is "waiting_server" or "waiting_update" or "draining" or "starting")
+        if (previous?.Sha256 == hash && previous.StateName is "waiting_server" or "waiting_update" or "warming" or "draining" or "starting")
         {
             try
             {
@@ -100,23 +100,48 @@ internal static class AgentGuardianRefresh
                     throw new IOException("Server compatibility changed before guardian refresh.");
                 var current = AgentGuardianControl.Running(options.ProfileDirectory, executable);
                 var stop = AgentGuardianControl.FileFor(options.ProfileDirectory, "stop");
-                if (current is int id)
-                {
-                    using var process = Process.GetProcessById(id);
-                    Status("draining"); File.WriteAllText(stop, "refresh");
-                    await process.WaitForExitAsync();
-                }
                 var backup = Path.Combine(Path.GetDirectoryName(source)!, "Hako.Guardian.previous.exe");
                 if (File.Exists(executable)) File.Copy(executable, backup, true);
                 var temporary = executable + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 Process? replacement = null;
+                var retired = false;
+                var activationRequested = false;
                 try
                 {
                     File.Copy(source, temporary);
                     if (AgentGuardian.Hash(temporary) != hash) throw new IOException("Guardian replacement hash mismatch.");
+                    var warm = GuardianHandoff.ExecutableFor(executable, hash);
+                    Directory.CreateDirectory(Path.GetDirectoryName(warm)!);
+                    if (!File.Exists(warm)) File.Copy(source, warm);
+                    if (AgentGuardian.Hash(warm) != hash) throw new IOException("Standby image hash mismatch.");
+                    var nonce = Guid.NewGuid().ToString("N");
+                    Status("warming");
+                    replacement = DetachedAgentProcess.Start(warm, ["--guardian-standby", "--config", configuration,
+                        "--handoff", nonce, "--parent", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+                    using (var warming = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                    {
+                        while (true)
+                        {
+                            if (replacement.HasExited) throw new IOException("Standby guardian exited before readiness.");
+                            var ready = AgentGuardianControl.Read<GuardianHandoff.Ready>(GuardianHandoff.ReadyPath(options.ProfileDirectory));
+                            if (ready?.ProcessId == replacement.Id && ready.Nonce == nonce) break;
+                            await Task.Delay(50, warming.Token);
+                        }
+                    }
+                    // No shutdown request is issued until the new process has
+                    // initialized successfully. It still owns no shared resources.
+                    if (current is int id)
+                    {
+                        using var process = Process.GetProcessById(id);
+                        Status("draining"); File.WriteAllText(stop, "refresh");
+                        await process.WaitForExitAsync();
+                    }
+                    retired = true;
                     File.Move(temporary, executable, true); File.Delete(stop); Status("starting");
-                    replacement = DetachedAgentProcess.Start(executable, ["--guardian", "--config", configuration]);
                     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                    activationRequested = true;
+                    var activation = await LocalRpc.CallAsync(GuardianHandoff.PipeFor(options.ProfileDirectory, nonce), LocalRpc.Request("activate"), deadline.Token);
+                    if (activation.GetProperty("processId").GetInt32() != replacement.Id) throw new IOException("Standby activation identity mismatch.");
                     while (AgentGuardianControl.Running(options.ProfileDirectory, executable) != replacement.Id)
                     {
                         if (replacement.HasExited) throw new IOException("Replacement guardian exited.");
@@ -129,12 +154,18 @@ internal static class AgentGuardianRefresh
                 {
                     if (replacement is not null && !replacement.HasExited)
                     {
-                        File.WriteAllText(stop, "rollback");
+                        // A standby has no jobs or server ownership. After
+                        // activation, request graceful draining instead.
+                        if (!activationRequested) replacement.Kill();
+                        else File.WriteAllText(stop, "rollback");
                         await replacement.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
                     }
-                    if (File.Exists(backup)) { File.Copy(backup, temporary, true); File.Move(temporary, executable, true); }
-                    File.Delete(stop);
-                    using var restored = DetachedAgentProcess.Start(executable, ["--guardian", "--config", configuration]);
+                    if (retired)
+                    {
+                        if (File.Exists(backup)) { File.Copy(backup, temporary, true); File.Move(temporary, executable, true); }
+                        File.Delete(stop);
+                        using var restored = DetachedAgentProcess.Start(executable, ["--guardian", "--config", configuration]);
+                    }
                     throw;
                 }
                 finally { replacement?.Dispose(); if (File.Exists(temporary)) File.Delete(temporary); }

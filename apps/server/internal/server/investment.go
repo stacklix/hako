@@ -164,6 +164,7 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 }
 
 func (s *Server) investmentRoutes() {
+	s.mux.HandleFunc("GET /api/v1/investment/version", s.investmentVersion)
 	s.mux.HandleFunc("GET /api/v1/investment/book", s.readInvestment)
 	s.mux.HandleFunc("PUT /api/v1/investment/book", s.writeInvestment)
 	s.mux.HandleFunc("GET /api/v1/investment/export", s.exportInvestment)

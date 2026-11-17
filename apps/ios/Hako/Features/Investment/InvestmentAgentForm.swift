@@ -75,6 +75,9 @@ extension InvestmentAgentAction {
                         return row
                     }] as [String: Any]
                 }]
+            if action.kind == .quote, let asset = try? action.asset(in: context), !asset.kind.supportsManualQuote {
+                result["validation_error"] = Self.manualQuoteUnavailableMessage
+            }
             if result["validation_error"] == nil && form.missing.isEmpty && action.kind != .refreshMarket && action.kind != .rebuildSnapshots {
                 do {
                     var trial = context
@@ -110,12 +113,13 @@ extension InvestmentAgentAction {
                     .init(id: $0.id.uuidString, title: $0.name + " · " + $0.currency.rawValue + ($0.isArchived ? " · 已归档" : ""))
                 }
             case "asset_id":
-                let candidates = book.assets.values.sorted { $0.code < $1.code }
+                let candidates = book.assets.values.filter { kind != .quote || $0.kind.supportsManualQuote }.sorted { $0.code < $1.code }
                 func label(_ asset: InvestmentAsset) -> String {
                     (asset.kind.usesBalance ? asset.name : asset.displayName + " · " + asset.displayCode) + " · " + asset.kindLabel
                 }
                 var result = candidates.map { Form.Choice(id: $0.id.uuidString, title: label($0)) }
-                if let value = text(key), let match = try? asset(in: book, key: key), value != match.id.uuidString {
+                if let value = text(key), let match = try? asset(in: book, key: key), value != match.id.uuidString,
+                   kind != .quote || match.kind.supportsManualQuote {
                     result.append(.init(id: value, title: label(match)))
                 }
                 return result
@@ -238,6 +242,9 @@ extension InvestmentAgentAction {
                     if original?.settledAmount != nil || (kind == .addEvent && account?.events.contains(where: { $0.assetID == selected.id }) != true) {
                         inputs.append(field("settled_amount", "录入时余额（\(currency)，可选）", value: decimal(original?.settledAmount)))
                     }
+                } else if selected.kind == .wealth {
+                    inputs += [field("price", eventKind == .sell ? "赎回到账金额（CNY）" : "申购金额（CNY）", required: true, value: decimal(original?.price)),
+                               field("settled_amount", "变动后余额（CNY）", required: true, value: decimal(original?.settledAmount))]
                 } else if selected.kind.isTermDeposit {
                     inputs += [field("price", eventKind == .sell ? "支取金额（CNY）" : "存入金额（CNY）", required: true, value: decimal(original?.price)),
                                field("settled_amount", "变动后余额（\(currency)）", required: true, value: decimal(original?.settledAmount))]
@@ -245,7 +252,7 @@ extension InvestmentAgentAction {
                     if selected.kind != .insurance {
                         inputs.append(field("quantity", "数量（\(selected.kind.unit)）", required: true, value: decimal(original?.quantity)))
                     }
-                    inputs.append(field("price", selected.kind == .insurance ? (eventKind == .sell ? "退保到账金额（HKD）" : "保费金额（HKD）") : "成交价（\(quote)）",
+                    inputs.append(field("price", selected.kind == .insurance ? (eventKind == .sell ? "退保到账金额（\(quote)）" : "保费金额（\(quote)）") : "成交价（\(quote)）",
                                         required: true, value: decimal(original?.price)))
                     if selected.isStockConnect { inputs.append(field("settled_amount", eventKind == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）", required: true, value: decimal(original?.settledAmount))) }
                     if selected.kind.supportsTradeFees && !selected.isStockConnect && eventKind != .opening {
@@ -258,7 +265,7 @@ extension InvestmentAgentAction {
                 if kind == .addEvent { inputs.append(field("auto_fund", "现金不足时自动补足")) }
             } else if let eventKind {
                 if selected?.kind.usesBalance == true {
-                    if eventKind == .income { inputs.append(field("amount", "利息到账金额（CNY）", required: true, value: decimal(original?.amount))) }
+                    if eventKind == .income { inputs.append(field("amount", selected?.kind == .wealth ? "实收收益（CNY）" : "利息到账金额（CNY）", required: true, value: decimal(original?.amount))) }
                     inputs.append(field("settled_amount", "变动后余额（\(currency)）", required: true, value: decimal(original?.settledAmount)))
                 } else if [.bonusShares, .stakingReward, .spotAdjustment].contains(eventKind) {
                     inputs.append(field("quantity", eventKind == .spotAdjustment ? "减少数量" : "增加数量", required: true, value: decimal(original.map { abs($0.quantity) })))
@@ -293,7 +300,7 @@ extension InvestmentAgentAction {
             title = "调整现货余额"
             inputs = [owner, instrument, date("调整日期"), field("amount", "调整后总余额（\(selected?.code ?? "币种")）", required: true)]
         case .assetBalance:
-            title = "调整标的余额"
+            title = selected?.kind == .wealth ? "更新理财余额" : "调整标的余额"
             inputs = [owner, instrument, date("调整日期"), field("amount", "变动后余额（\(currency)）", required: true)]
         case .plan:
             title = plan == nil ? "新建定投任务" : "编辑定投任务"
@@ -309,10 +316,14 @@ extension InvestmentAgentAction {
             title = text("enabled") == "false" ? "移出关注" : "添加关注"
             inputs = [instrument, field("enabled", "关注此标的", required: true)]
         case .quote:
-            let insurance = selected?.kind == .insurance
-            title = insurance ? "更新现金价值" : selected?.kind == .wealth ? "更新单位净值" : "手动报价"
-            inputs = [instrument, date(insurance ? "估值日期" : "报价日期"),
-                      field("price", insurance ? "现金价值（HKD）" : selected?.kind == .wealth ? "单位净值（CNY）" : "价格（\(selected.map { book.quoteUnit(for: $0) } ?? currency)）", required: true)]
+            if let selected, !selected.kind.supportsManualQuote {
+                title = "行情"
+                inputs = [instrument]
+                break
+            }
+            title = "更新现金价值"
+            inputs = [instrument, date("估值日期"),
+                      field("price", "现金价值（\(selected.map { book.quoteUnit(for: $0) } ?? currency)）", required: true)]
         case .balanceAccount:
             inputs = [field("category", "账户分类", required: true), field("name", "账户名称", required: true), field("amount", "初始余额（元）", required: true), date()]
         case .balanceRecord:

@@ -24,6 +24,13 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Length == 7 && e.Args[0] == "--guardian-standby" && e.Args[1] == "--config"
+            && e.Args[3] == "--handoff" && e.Args[5] == "--parent")
+        {
+            try { await GuardianHandoff.RunAsync(Path.GetFullPath(e.Args[2]), e.Args[4], int.Parse(e.Args[6])); Shutdown(); }
+            catch { Shutdown(1); }
+            return;
+        }
         if (e.Args.Length == 3 && e.Args[1] == "--config" && e.Args[0] is "--guardian" or "--start-guardian" or "--stop-guardian")
         {
             try

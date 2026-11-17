@@ -143,6 +143,13 @@ private struct InvestmentEditor<Content: View>: View {
                               saveAccessibilityLabel: editingDraft ? "完成修改并更新预览" : "保存") { form }
             } else {
                 form.navigationTitle(title)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(action: commit) { Image(systemName: "checkmark") }
+                                .accessibilityLabel("保存")
+                                .disabled(saving || !(saveEnabled ?? hasChanges))
+                        }
+                    }
             }
         }
         .environment(\.calendar, InvestmentBook.calendar)
@@ -156,12 +163,6 @@ private struct InvestmentEditor<Content: View>: View {
                 Section {
                     if editingDraft {
                         Text("完成修改后更新预览，确认预览才会写入账本。").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !inSheet && !editingDraft {
-                        HStack(spacing: 12) {
-                            Button("取消") { dismiss() }.buttonStyle(HakoActionButtonStyle(primary: false))
-                            Button("保存", action: commit).buttonStyle(HakoActionButtonStyle())
-                        }.disabled(saving).investmentListRow()
                     }
                     if let error { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
@@ -387,7 +388,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
         let ledger = store.book.account(account.id).flatMap { try? store.book.ledger($0, through: day) }
         return InvestmentEditor(title: supportsDividends ? "记分红" : "调整余额", inSheet: true,
                                 hasChanges: !cash.isEmpty || !shares.isEmpty || !balance.isEmpty) {
-            Section(asset.kind == .generic ? asset.displayName : asset.displayName + " · " + asset.displayCode) {
+            Section(asset.kind.usesBalance ? asset.displayName : asset.displayName + " · " + asset.displayCode) {
                 InvestmentDatePicker(supportsDividends ? "到账日期" : "调整日期", selection: $date, latest: InvestmentBook.day())
                 if supportsDividends {
                     let suffix = stock ? "，选填）" : "）"
@@ -396,7 +397,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
                         InvestmentField("送股股数（选填）", text: $shares, keyboard: .numberPad)
                         Text("可只填其中一项。").font(.footnote).foregroundStyle(.secondary)
                     }
-                } else if asset.kind == .generic {
+                } else if asset.kind.usesBalance {
                     if let current = ledger?.positions[asset.id]?.depositBalance {
                         LabeledContent("当前余额", value: InvestmentText.money(current, account.currency))
                     }
@@ -425,7 +426,7 @@ struct InvestmentHoldingAdjustmentEditor: View {
                     try book.recordDistribution(assetID: asset.id, accountID: account.id, cash: cash, shares: shares, on: day)
                 } else {
                     let balance = try investmentDecimal(balance, "调整后余额", allowZero: true)
-                    if asset.kind == .generic {
+                    if asset.kind.usesBalance {
                         try book.adjustAssetBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
                     } else {
                         try book.adjustSpotBalance(assetID: asset.id, accountID: account.id, balance: balance, on: day)
@@ -664,6 +665,7 @@ private struct InvestmentAssetFields: View {
     private struct SearchResponse {
         let request: SearchRequest
         let matches: [SearchChoice]?
+        let message: String?
     }
 
     @Binding var draft: InvestmentAssetDraft
@@ -804,7 +806,7 @@ private struct InvestmentAssetFields: View {
                             .investmentListRow()
                         }
                     } else {
-                        Text(watchOnly || draft.kind.requiresCatalog ? "搜索暂不可用，请稍后重试；必须选择目录中的标的。" : "搜索暂不可用，可以修改关键词重试或手动录入。")
+                        Text(result.message ?? (watchOnly || draft.kind.requiresCatalog ? "搜索暂不可用，请稍后重试；必须选择目录中的标的。" : "搜索暂不可用，可以修改关键词重试或手动录入。"))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 } else {
@@ -815,7 +817,7 @@ private struct InvestmentAssetFields: View {
     }
 
     private func searchEmptyMessage(searchesCrypto: Bool) -> String {
-        if searchesCrypto || (currency == .cny && draft.kind == .stock) || store.configured {
+        if searchesCrypto || [.stock, .etf, .fund, .future, .option].contains(draft.kind) || store.configured {
             return watchOnly || draft.kind.requiresCatalog ? "没有找到匹配标的，请核对类型、市场和代码后重新搜索。" : "没有找到匹配标的，可以换个关键词或手动录入。"
         }
         return watchOnly || draft.kind.requiresCatalog ? "请先在投资记账设置中配置行情接口，再从目录选择标的。" : "配置行情源后可在线搜索，也可以手动录入。"
@@ -862,10 +864,10 @@ private struct InvestmentAssetFields: View {
                 accountType != .crypto || $0.kind != .crypto || !InvestmentStablecoin.isCashCode($0.code)
             }.map(SearchChoice.instrument)
             try Task.checkCancellation()
-            searchResponse = SearchResponse(request: request, matches: results)
+            searchResponse = SearchResponse(request: request, matches: results, message: nil)
         } catch {
             guard !Task.isCancelled else { return }
-            searchResponse = SearchResponse(request: request, matches: nil)
+            searchResponse = SearchResponse(request: request, matches: nil, message: (error as? InvestmentError)?.localizedDescription)
         }
     }
 }
@@ -887,9 +889,18 @@ private struct InvestmentTradeFields: View {
     var body: some View {
         InvestmentDatePicker(event == .income ? "到账日期" : kind.usesBalance ? "记账日期" : "成交日期", selection: $date, latest: InvestmentBook.day())
         if kind == .insurance {
-            InvestmentField((event == .sell ? "退保到账金额" : "保费金额") + "（HKD）", text: $price, keyboard: .decimalPad)
+            InvestmentField((event == .sell ? "退保到账金额" : "保费金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else if kind == .generic {
             InvestmentField((event == .sell ? "取出金额" : "投入金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
+        } else if kind == .wealth {
+            switch event {
+            case .adjustment: EmptyView()
+            case .income: InvestmentField("实收收益（CNY）", text: $price, keyboard: .decimalPad)
+            case .sell: InvestmentField("赎回到账金额（CNY）", text: $price, keyboard: .decimalPad)
+            default: InvestmentField("申购金额（CNY）", text: $price, keyboard: .decimalPad)
+            }
+            InvestmentField("变动后余额（CNY）", text: $settlement, keyboard: .decimalPad)
+            Text("按实际金额和产品余额记账，余额差额计入盈亏。").font(.footnote).foregroundStyle(.secondary)
         } else if kind.isTermDeposit {
             switch event {
             case .adjustment: EmptyView()
@@ -924,7 +935,7 @@ private struct InvestmentTradeFields: View {
         let day = InvestmentBook.day(date)
         if event == .income {
             let amount = try investmentDecimal(price, "实收金额")
-            let balance = kind.isTermDeposit ? try investmentDecimal(settlement, "变动后余额", allowZero: true) : nil
+            let balance = kind.isTermDeposit || kind == .wealth ? try investmentDecimal(settlement, "变动后余额", allowZero: true) : nil
             return InvestmentEvent(day: day, kind: event, assetID: assetID, amount: amount, settledAmount: balance)
         }
         if kind.usesBalance {
@@ -1055,10 +1066,7 @@ struct InvestmentAssetEditor: View {
                         InvestmentDatePicker("到期日", selection: $maturity, earliest: date)
                     }
                     if draft.kind == .insurance {
-                        InvestmentField("当前现金价值（HKD，可选）", text: $manualValue, keyboard: .decimalPad)
-                    }
-                    if draft.kind == .wealth {
-                        InvestmentField("当前单位净值（CNY，可选）", text: $manualValue, keyboard: .decimalPad)
+                        InvestmentField("当前现金价值（" + currency.rawValue + "，可选）", text: $manualValue, keyboard: .decimalPad)
                     }
                     if draft.kind == .generic, !hasPriorPosition {
                         InvestmentField("当前余额（" + currency.rawValue + "，可选）", text: $settlement, keyboard: .decimalPad,
@@ -1093,7 +1101,7 @@ struct InvestmentAssetEditor: View {
                 let id = try trial.register(asset)
                 var values = try trade.entryValues(assetID: id, book: trial)
                 values["auto_fund"] = autoFundCash ? "true" : "false"
-                let quote = [.wealth, .insurance].contains(asset.kind) && !investmentTrim(manualValue).isEmpty
+                let quote = asset.kind == .insurance && !investmentTrim(manualValue).isEmpty
                     ? try investmentDecimal(manualValue, "估值", allowZero: asset.kind == .insurance) : nil
                 try await editorDraft.submit(values, asset: asset, quote: quote)
                 return
@@ -1117,7 +1125,7 @@ struct InvestmentAssetEditor: View {
                 }
                 let id = try book.register(asset)
                 try trade.post(assetID: id, accountID: account.id, to: &book, autoFundCash: autoFundCash)
-                if [.wealth, .insurance].contains(asset.kind), !investmentTrim(manualValue).isEmpty {
+                if asset.kind == .insurance, !investmentTrim(manualValue).isEmpty {
                     let value = try investmentDecimal(manualValue, "估值", allowZero: asset.kind == .insurance)
                     book.addQuotes([.init(day: InvestmentBook.day(), price: value, source: "手动录入")], assetID: id)
                 }
@@ -1247,7 +1255,7 @@ struct InvestmentQuoteEditor: View {
     var body: some View {
         Group {
             if asset.kind.supportsManualQuote {
-                InvestmentEditor(title: asset.kind == .insurance ? "保单现金价值" : "行情与手动报价", hasChanges: !price.isEmpty) {
+                InvestmentEditor(title: "保单现金价值", hasChanges: !price.isEmpty) {
                     quoteContent
                 } save: {
                     let price = try investmentDecimal(price, asset.kind == .insurance ? "现金价值" : "报价", allowZero: asset.kind == .insurance)
@@ -1276,12 +1284,12 @@ struct InvestmentQuoteEditor: View {
         let unit = store.book.quoteUnit(for: asset)
         Section(asset.displayName + " · " + asset.displayCode) {
             if let quote = store.book.quote(asset.id) {
-                LabeledContent(insurance ? "当前现金价值" : (asset.kind == .wealth ? "最新单位净值" : "最新报价"),
+                LabeledContent(insurance ? "当前现金价值" : "最新报价",
                                value: InvestmentText.number(quote.price) + " " + unit)
                 LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
             }
 
-            if editorDraft == nil && (hasPublicQuote || (store.configured && !asset.kind.isManual)) {
+            if editorDraft == nil && (hasPublicQuote || asset.usesEastmoneyMarketData || (store.configured && !asset.kind.isManual)) {
                 Button(store.refreshing ? "正在刷新…" : "刷新行情") {
                     Task { await store.refresh(publicQuotesOnly: hasPublicQuote) }
                 }
@@ -1294,7 +1302,7 @@ struct InvestmentQuoteEditor: View {
         if asset.kind.supportsManualQuote {
             Section(insurance ? "更新现金价值" : "手动报价") {
                 InvestmentDatePicker(insurance ? "估值日期" : "报价日期", selection: $date, latest: InvestmentBook.day())
-                let label = insurance ? "现金价值（HKD）" : (asset.kind == .wealth ? "单位净值（CNY）" : "价格（" + unit + "）")
+                let label = insurance ? "现金价值（" + unit + "）" : "价格（" + unit + "）"
                 InvestmentField(label, text: $price, keyboard: .decimalPad)
             }
         }

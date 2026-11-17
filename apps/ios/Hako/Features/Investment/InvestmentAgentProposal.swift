@@ -686,8 +686,9 @@ extension InvestmentAgentProposal {
                 values.append(form.field("quantity", "数量（\(unit)）", event.map { NSDecimalNumber(decimal: $0.quantity).stringValue }))
             }
             let quote = book.quoteUnit(for: asset)
-            let priceLabel = asset.kind == .generic ? (event?.kind == .sell ? "取出金额（USD）" : "投入金额（USD）") : asset.kind.usesBalance ? (event?.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）")
-                : asset.kind == .insurance ? (event?.kind == .sell ? "退保到账金额（HKD）" : "保费金额（HKD）") : "成交价（\(quote)）"
+            let priceLabel = asset.kind == .wealth ? (event?.kind == .sell ? "赎回到账金额（CNY）" : "申购金额（CNY）")
+                : asset.kind == .generic ? (event?.kind == .sell ? "取出金额（USD）" : "投入金额（USD）") : asset.kind.usesBalance ? (event?.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）")
+                : asset.kind == .insurance ? (event?.kind == .sell ? "退保到账金额（\(quote)）" : "保费金额（\(quote)）") : "成交价（\(quote)）"
             values.append(form.field("unit_price", priceLabel, event.map { NSDecimalNumber(decimal: $0.price).stringValue }))
             if asset.isStockConnect || asset.kind.usesBalance {
                 values.append(form.field("settled_amount", asset.kind.usesBalance ? "变动后余额（\(asset.currency.rawValue)）" :

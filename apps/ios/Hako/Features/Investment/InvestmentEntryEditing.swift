@@ -44,7 +44,7 @@ extension InvestmentAgentProposal {
         let next = index + 1
         guard actions.indices.contains(next), actions[index].kind == .addEvent,
               ["buy", "opening"].contains(actions[index].text("event_type")), assetSetupIndex(for: index) != nil,
-              let asset = try? actions[index].asset(in: book), [.wealth, .insurance].contains(asset.kind),
+              let asset = try? actions[index].asset(in: book), asset.kind == .insurance,
               actions[next].kind == .quote, (try? actions[next].asset(in: book).id) == asset.id,
               actions[next].text("date") == InvestmentEditorDraft.day.string(from: InvestmentBook.day()) else { return nil }
         return next

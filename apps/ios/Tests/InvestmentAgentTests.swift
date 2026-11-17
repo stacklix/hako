@@ -8,6 +8,7 @@ struct InvestmentAgentTests {
     @MainActor
     static func main() async throws {
         try genericDraftsUseBalanceFormsAndRejectContracts()
+        try insuranceFormsAndPreviewsFollowPolicyCurrency()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()
 
@@ -22,6 +23,7 @@ struct InvestmentAgentTests {
         try planActionsSupportEveryPeriod()
         try snapshotPreviewIncludesFetchedInputs()
         try cryptoSpotQuotesRequireMarketData()
+        try wealthActionsUseAmountsAndBalances()
 
         try lifecycleActionsUseOneBusinessPreview()
         try await nativeEditorOnlyRevisesThePendingDraft()
@@ -507,12 +509,12 @@ struct InvestmentAgentTests {
     }
 
     private static func nativeEditorKeepsOptionalValuationInTheSamePreview() throws {
-        let account = InvestmentAccount(name: "理财", currency: .cny, type: .fundWealth)
+        let account = InvestmentAccount(name: "保险", currency: .hkd, type: .insurance)
         var book = InvestmentBook(accounts: [account])
         let date = InvestmentEditorDraft.day.string(from: InvestmentBook.day())
         try book.post(.init(day: InvestmentBook.day(), kind: .deposit, amount: 100), accountID: account.id)
         let actions: [InvestmentAgentAction] = [
-            .init(kind: .addAsset, values: ["name": "理财产品", "symbol": "PRODUCT", "currency": "CNY", "asset_type": "wealth"]),
+            .init(kind: .addAsset, values: ["name": "保险产品", "symbol": "PRODUCT", "currency": "HKD", "asset_type": "insurance"]),
             .init(kind: .addEvent, values: ["account_id": account.id.uuidString, "asset_id": "PRODUCT", "date": date,
                 "event_type": "buy", "quantity": "10", "price": "1"])
         ]
@@ -525,7 +527,7 @@ struct InvestmentAgentTests {
         precondition(revised.preview.items[0].groups.contains { $0.title == "估值信息" })
         let editing = InvestmentEditorDraft(proposal: revised, index: 1, base: book) { _ in }
         let selected = try revised.actions[1].asset(in: revised.book)
-        let next = try editing.replacing(values: ["quantity": "12"], selectedAsset: selected, quote: 3)
+        let next = try editing.replacing(values: ["price": "12"], selectedAsset: selected, quote: 3)
         precondition(next.filter { $0.kind == .quote }.count == 1)
         let preview = try InvestmentAgentProposal(base: base, actions: next)
         let target = try next[1].asset(in: preview.book)
@@ -559,6 +561,28 @@ struct InvestmentAgentTests {
         for input in malformed {
             do { _ = try InvestmentAgentAction.parse(input); preconditionFailure("Invalid model operation was accepted") }
             catch is InvestmentError { continue }
+        }
+    }
+
+    private static func insuranceFormsAndPreviewsFollowPolicyCurrency() throws {
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            let owner = InvestmentAccount(name: "保险账户", currency: currency, type: .insurance)
+            var book = InvestmentBook(accounts: [owner])
+            let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: currency))
+            let date = InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day())
+            let opening = InvestmentAgentAction(kind: .addEvent, values: ["account_id": owner.id.uuidString, "asset_id": id.uuidString,
+                "date": date, "event_type": "opening", "quantity": "1", "price": "10000"])
+            precondition(opening.form(in: book).fields.first { $0.key == "price" }?.label == "保费金额（\(currency.rawValue)）")
+            let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [opening])
+            precondition(proposal.preview.items.flatMap(\.groups).flatMap(\.fields).contains { $0.label == "保费金额（\(currency.rawValue)）" })
+            book = proposal.book
+            let quote = InvestmentAgentAction(kind: .quote, values: ["asset_id": id.uuidString, "date": date, "price": "8000"])
+            precondition(quote.form(in: book).fields.first { $0.key == "price" }?.label == "现金价值（\(currency.rawValue)）")
+            try quote.apply(to: &book)
+            precondition(book.value(book.accounts[0])?.value == 8000)
+            let sale = InvestmentAgentAction(kind: .addEvent, values: ["account_id": owner.id.uuidString, "asset_id": id.uuidString,
+                "date": date, "event_type": "sell", "quantity": "1", "price": "8000"])
+            precondition(sale.form(in: book).fields.first { $0.key == "price" }?.label == "退保到账金额（\(currency.rawValue)）")
         }
     }
 
@@ -761,6 +785,41 @@ struct InvestmentAgentTests {
         precondition(reduce.form(in: book).fields.contains { $0.key == "quantity" && $0.label == "减少数量" && $0.value == "1" })
     }
 
+    private static func wealthActionsUseAmountsAndBalances() throws {
+        let account = InvestmentAccount(name: "理财余额", currency: .cny, type: .fundWealth)
+        var book = InvestmentBook(accounts: [account])
+        let day = InvestmentBook.day()
+        let date = InvestmentEditorDraft.day.string(from: day)
+        let id = try book.register(.init(name: "理财产品", code: "PRODUCT", market: "", kind: .wealth, currency: .cny))
+        try book.post(.init(day: day, kind: .deposit, amount: 1000), accountID: account.id)
+        let buy = InvestmentAgentAction(kind: .addEvent, values: ["account_id": account.id.uuidString,
+            "asset_id": id.uuidString, "event_type": "buy", "date": date, "price": "500", "settled_amount": "510"])
+        let form = buy.form(in: book)
+        precondition(!form.fields.contains { $0.key == "quantity" })
+        precondition(form.fields.first { $0.key == "price" }?.label == "申购金额（CNY）")
+        precondition(form.fields.first { $0.key == "settled_amount" }?.required == true)
+        try buy.apply(to: &book)
+        let ledger = try book.ledger(book.accounts[0])
+        precondition(ledger.positions[id]?.depositBalance == 510)
+        let balance = InvestmentAgentAction(kind: .assetBalance, values: ["account_id": account.id.uuidString,
+            "asset_id": id.uuidString, "date": date, "amount": "520"])
+        try balance.apply(to: &book)
+        precondition(book.value(book.accounts[0])?.gain == 20 && book.quotes[id]?.isEmpty != false)
+        let manual = InvestmentAgentAction(kind: .quote, values: ["asset_id": id.uuidString, "date": date, "price": "1.1"])
+        do {
+            try manual.apply(to: &book)
+            preconditionFailure("Wealth products no longer use unit NAV quotes")
+        } catch is InvestmentError { }
+        let encoded = try InvestmentServerRecords().encode(book, revision: 1)
+        precondition(encoded["investment_manual_prices"]?.isEmpty == true)
+        let missing = InvestmentAgentAction(kind: .addEvent, values: ["account_id": account.id.uuidString,
+            "asset_id": id.uuidString, "event_type": "income", "date": date, "amount": "10"])
+        do {
+            try missing.apply(to: &book)
+            preconditionFailure("An income payment requires the updated wealth balance")
+        } catch is InvestmentError { }
+    }
+
     private static func cryptoSpotQuotesRequireMarketData() throws {
         var book = InvestmentBook()
         let day = InvestmentBook.day()
@@ -781,8 +840,13 @@ struct InvestmentAgentTests {
 
         book.addQuotes([.init(day: day, price: 2, source: "Binance 现货")], assetID: spot)
         precondition(book.quote(spot)?.price == 2, "Market refresh must still update crypto spot quotes")
-        try InvestmentAgentAction(kind: .quote, values: ["asset_id": stock.uuidString, "date": date, "price": "20"]).apply(to: &book)
-        precondition(book.quote(stock)?.price == 20 && book.quote(stock)?.source == "手动录入")
+        let stockQuote = InvestmentAgentAction(kind: .quote, values: ["asset_id": stock.uuidString, "date": date, "price": "20"])
+        do {
+            try stockQuote.apply(to: &book)
+            preconditionFailure("Stocks must use market data")
+        } catch let error as InvestmentError { precondition(error.localizedDescription.contains("不支持手动报价")) }
+        precondition(stockQuote.form(in: book).fields.contains { $0.key == "price" } == false)
+        precondition(book.quote(stock) == nil)
     }
 
     private static func snapshotPreviewIncludesFetchedInputs() throws {

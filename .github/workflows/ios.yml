@@ -33,6 +33,8 @@ jobs:
           /tmp/hako-app-update-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Tests/HakoServerCompatibilityTests.swift -o /tmp/hako-server-compatibility-tests
           /tmp/hako-server-compatibility-tests
+          swiftc Hako/Shared/HakoServer/InvestmentDatabaseVersion.swift Tests/InvestmentDatabaseVersionTests.swift -o /tmp/hako-database-version-tests
+          /tmp/hako-database-version-tests
       - name: Test shared assistant reply formatting
         run: |
           swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Tests/AssistantRenderingTests.swift -o /tmp/hako-assistant-rendering-tests
@@ -45,9 +47,13 @@ jobs:
         run: |
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests
           /tmp/hako-investment-book-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentPriceHistory.swift Tests/InvestmentPriceHistoryTests.swift -o /tmp/hako-investment-price-tests
+          /tmp/hako-investment-price-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Tests/InvestmentHoldingDetailTests.swift -o /tmp/hako-investment-holding-detail-tests
+          /tmp/hako-investment-holding-detail-tests
           swiftc Hako/Shared/Infrastructure/AssistantToolCall.swift Hako/Shared/Infrastructure/AssistantStream.swift Hako/Shared/Infrastructure/AssistantComposerDraft.swift Hako/Shared/Infrastructure/AssistantConversationFiles.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/LanguageModel.swift Hako/Shared/Infrastructure/LanguageModelStreaming.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentAgentActions.swift Hako/Features/Investment/InvestmentAgentForm.swift Hako/Features/Investment/InvestmentEntryEditing.swift Hako/Features/Investment/InvestmentAgentProposal.swift Hako/Shared/UI/AssistantMarkdown.swift Hako/Shared/UI/AssistantHTML.swift Hako/Features/Investment/InvestmentAgentToolCall.swift Hako/Features/Investment/InvestmentAgentConversation.swift Tests/AssistantFileAssertions.swift Tests/InvestmentAgentTests.swift -o /tmp/hako-investment-agent-tests
           /tmp/hako-investment-agent-tests
-          swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentMarketData.swift Hako/Features/Investment/InvestmentCryptoMarketData.swift Tests/InvestmentMarketDataTests.swift -o /tmp/hako-investment-market-tests
+          swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentMarketData.swift Hako/Features/Investment/InvestmentEastmoneyMarketData.swift Hako/Features/Investment/InvestmentCryptoMarketData.swift Tests/InvestmentEastmoneyTests.swift Tests/InvestmentMarketDataTests.swift -o /tmp/hako-investment-market-tests
           /tmp/hako-investment-market-tests
       - name: Test code workshop request identity and message rendering
         run: |

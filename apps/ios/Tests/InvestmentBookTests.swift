@@ -21,6 +21,7 @@ struct InvestmentBookTests {
         try accountCurrencyRestrictsEntries()
         try stockConnectSettlesInRenminbi()
         try insuranceKeepsOnePolicyPosition()
+        try renminbiInsuranceCountsCashValueAndRoundTrips()
         try typedAccountsFilterAssets()
         try fundWealthAccountsKeepBothKindsAndRoundTrip()
         try transfersMoveCashAsOneOperation()
@@ -33,6 +34,8 @@ struct InvestmentBookTests {
         try balanceTrendCarriesSnapshotsFromNovemberFirst()
         try balanceTrendStopsCarryAtNovemberFirst()
         try fundAndWealthHistoryTracksNetInvestment()
+        try wealthUsesAmountsAndReportedBalances()
+        try manualQuotesAreLimitedToInsurance()
         try holdingHistoryTracksQuantitiesAndAmounts()
         try dailyGainsRequireCompleteMarketPrices()
         try portfolioHistoryMatchesIndividualValuations()
@@ -669,6 +672,38 @@ struct InvestmentBookTests {
         precondition(book.value(book.accounts[0], on: date(3))?.gain == -45)
     }
 
+    static func renminbiInsuranceCountsCashValueAndRoundTrips() throws {
+        let cny = InvestmentAccount(name: "人民币保险", currency: .cny, type: .insurance)
+        let hkd = InvestmentAccount(name: "港币保险", currency: .hkd, type: .insurance)
+        var book = InvestmentBook(accounts: [cny, hkd])
+        let policy = try book.register(.init(name: "人民币保单", code: "POLICY-CNY", market: "", kind: .insurance, currency: .cny))
+        let hkPolicy = try book.register(.init(name: "港币保单", code: "POLICY-HKD", market: "", kind: .insurance, currency: .hkd))
+        try book.post(.init(day: date(1), kind: .opening, assetID: policy, quantity: 1, price: 10_000), accountID: cny.id)
+        precondition(book.value(book.accounts[0], on: date(1)) == nil, "Missing cash value must not fall back to premiums")
+        book.addQuotes([.init(day: date(1), price: 8_000, source: "手动录入")], assetID: policy)
+        precondition(book.portfolio(on: date(1))?.value == 8_000 && book.portfolio(on: date(1))?.gain == -2_000)
+        try book.post(.init(day: date(1), kind: .opening, assetID: hkPolicy, quantity: 1, price: 10_000), accountID: hkd.id)
+        book.addQuotes([.init(day: date(1), price: 8_000, source: "手动录入")], assetID: hkPolicy)
+        book.addExchangeRates([.init(day: date(1), price: Decimal(string: "0.9")!, isDailyClose: true)], for: .hkd)
+        precondition(book.portfolio(on: date(1))?.value == 15_200)
+        try book.post(.init(day: date(2), kind: .deposit, amount: 2_000), accountID: cny.id)
+        try book.post(.init(day: date(2), kind: .buy, assetID: policy, quantity: 1, price: 2_000), accountID: cny.id)
+        book.addQuotes([.init(day: date(2), price: 9_000, source: "手动录入"),
+                        .init(day: date(3), price: 0, source: "手动录入")], assetID: policy)
+        let ledger = try book.ledger(book.accounts[0], through: date(2))
+        precondition(ledger.positions[policy]?.quantity == 1 && ledger.positions[policy]?.netCost == 12_000)
+        precondition(book.value(book.accounts[0], on: date(2))?.value == 9_000)
+        precondition(book.portfolio(on: date(2))?.value == 16_200, "Premiums are costs and cannot be added to assets again")
+        precondition(book.value(book.accounts[0], on: date(3))?.value == 0)
+        try book.post(.init(day: date(4), kind: .sell, assetID: policy, quantity: 1, price: 9_500), accountID: cny.id)
+        precondition(book.value(book.accounts[0], on: date(4))?.gain == -2_500)
+        precondition(book.profitHistory(accountID: cny.id, assetID: policy, on: (1...4).map(date), today: date(4)).map(\.value) == [-2_000, -3_000, -12_000, -2_500])
+        let records = InvestmentServerRecords()
+        let restored = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
+        precondition(restored.accounts[0].currency == .cny && restored.accounts[0].type == .insurance)
+        precondition(restored.value(restored.accounts[0], on: date(4))?.gain == -2_500)
+    }
+
     static func stockConnectSettlesInRenminbi() throws {
         let cny = InvestmentAccount(name: "人民币账户", currency: .cny, type: .securities)
         let hkd = InvestmentAccount(name: "港元账户", currency: .hkd, type: .insurance)
@@ -737,6 +772,10 @@ struct InvestmentBookTests {
         precondition(allows(.crypto, .usd, .crypto, "BTC"))
         precondition(!allows(.securities, .usd, .crypto, "BTC"))
         precondition(allows(.insurance, .hkd, .insurance, "POLICY"))
+        precondition(allows(.insurance, .cny, .insurance, "人民币保单"))
+        precondition(!allows(.insurance, .usd, .insurance, "POLICY"))
+        precondition(!allows(.securities, .cny, .insurance, "POLICY"))
+        precondition(!allows(.insurance, .cny, .insurance, "POLICY", market: "XSHG"))
     }
 
     static func fundWealthAccountsKeepBothKindsAndRoundTrip() throws {
@@ -746,16 +785,17 @@ struct InvestmentBookTests {
         let wealth = try book.register(.init(name: "银行理财", code: "理财", market: "", kind: .wealth, currency: .cny))
         try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
         try book.post(.init(day: date(1), kind: .buy, assetID: fund, quantity: 100, price: 2), accountID: account.id)
-        try book.post(.init(day: date(1), kind: .buy, assetID: wealth, quantity: 300, price: 1), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: wealth, quantity: 1, price: 300, settledAmount: 300), accountID: account.id)
         book.addQuotes([.init(day: date(2), price: 3)], assetID: fund)
-        book.addQuotes([.init(day: date(2), price: 1.1)], assetID: wealth)
+        try book.adjustAssetBalance(assetID: wealth, accountID: account.id, balance: 330, on: date(2))
         let records = InvestmentServerRecords()
         let tables = try records.encode(book, revision: 1)
         precondition(tables["investment_accounts"]?.first?["account_type"] == "fund_wealth")
         let saved = try records.decode(.init(generation: 1, revision: 1, tables: tables))
         precondition(saved.accounts.count == 1 && saved.accounts[0].type == .fundWealth)
         let ledger = try saved.ledger(saved.accounts[0], through: date(2))
-        precondition(ledger.cash == 500 && ledger.positions[fund]?.quantity == 100 && ledger.positions[wealth]?.quantity == 300)
+        precondition(ledger.cash == 500 && ledger.positions[fund]?.quantity == 100 && ledger.positions[wealth]?.depositBalance == 330)
+        precondition(tables["investment_manual_prices"]?.isEmpty == true)
         precondition(saved.value(saved.accounts[0], on: date(2))?.value == 1130)
         precondition(saved.value(saved.accounts[0], on: date(2))?.gain == 130)
     }
@@ -1301,6 +1341,16 @@ struct InvestmentBookTests {
             var book = InvestmentBook(accounts: [account])
             let id = try book.register(.init(name: "投入测试", code: "000001", market: "", kind: kind, currency: .cny))
             try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
+            if kind == .wealth {
+                try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 100, settledAmount: 100), accountID: account.id)
+                try book.post(.init(day: date(2), kind: .buy, assetID: id, quantity: 1, price: 100, settledAmount: 200), accountID: account.id)
+                try book.post(.init(day: date(3), kind: .sell, assetID: id, quantity: 1, price: 100, settledAmount: 100), accountID: account.id)
+                try book.adjustAssetBalance(assetID: id, accountID: account.id, balance: 110, on: date(4))
+                try book.post(.init(day: date(5), kind: .sell, assetID: id, quantity: 1, price: 110, settledAmount: 0), accountID: account.id)
+                let points = book.holdingHistory(accountID: account.id, assetID: id, on: (1...5).map(date), today: date(5))
+                precondition(points.map(\.value) == [100, 200, 100, 100, -10])
+                continue
+            }
             try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 10, price: 10, fee: 1), accountID: account.id)
             try book.post(.init(day: date(2), kind: .buy, assetID: id, quantity: 5, price: 20, fee: 2), accountID: account.id)
             try book.post(.init(day: date(3), kind: .sell, assetID: id, quantity: 4, price: 25, fee: 1), accountID: account.id)
@@ -1312,6 +1362,45 @@ struct InvestmentBookTests {
         }
         let etf = InvestmentAsset(name: "ETF", code: "TEST", market: "", kind: .etf, currency: .cny)
         precondition(!etf.historyUsesAmount, "ETF remains a quantity-based asset")
+    }
+
+    static func wealthUsesAmountsAndReportedBalances() throws {
+        let account = InvestmentAccount(name: "理财余额", currency: .cny, type: .fundWealth)
+        var book = InvestmentBook(accounts: [account])
+        let id = try book.register(.init(name: "银行理财", code: "PRODUCT", market: "", kind: .wealth, currency: .cny))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 500, settledAmount: 500), accountID: account.id)
+        try book.adjustAssetBalance(assetID: id, accountID: account.id, balance: 520, on: date(2))
+        precondition(book.value(book.accounts[0], on: date(2))?.gain == 20)
+        try book.post(.init(day: date(3), kind: .buy, assetID: id, quantity: 1, price: 100, settledAmount: 620), accountID: account.id)
+        try book.post(.init(day: date(4), kind: .income, assetID: id, amount: 20, settledAmount: 600), accountID: account.id)
+        precondition(book.value(book.accounts[0], on: date(4))?.gain == 20, "An income withdrawal must not count already valued gains twice")
+        try book.post(.init(day: date(5), kind: .sell, assetID: id, quantity: 1, price: 200, settledAmount: 405), accountID: account.id)
+        precondition(book.value(book.accounts[0], on: date(5))?.gain == 25)
+        try book.post(.init(day: date(6), kind: .sell, assetID: id, quantity: 1, price: 410, settledAmount: 0), accountID: account.id)
+        let ledger = try book.ledger(book.accounts[0], through: date(6))
+        precondition(ledger.cash == 1030 && ledger.positions[id]?.depositBalance == 0 && ledger.positions[id]?.quantity == 0)
+        precondition(book.value(book.accounts[0], on: date(6))?.gain == 30)
+        precondition(book.quotes[id]?.isEmpty != false, "Wealth balances must not require unit NAV quotes")
+        do {
+            try book.post(.init(day: date(7), kind: .buy, assetID: id, quantity: 1, price: 100), accountID: account.id)
+            preconditionFailure("A wealth cash movement requires the reported balance")
+        } catch is InvestmentError { }
+        do {
+            try book.post(.init(day: date(7), kind: .buy, assetID: id, quantity: 2, price: 100, settledAmount: 200), accountID: account.id)
+            preconditionFailure("Wealth amounts cannot be multiplied by a user-entered share count")
+        } catch is InvestmentError { }
+    }
+
+    static func manualQuotesAreLimitedToInsurance() throws {
+        for kind in InvestmentKind.allCases { precondition(kind.supportsManualQuote == (kind == .insurance)) }
+        for (kind, code) in [(InvestmentKind.stock, "600036"), (.etf, "510300"), (.fund, "110022.OF"), (.future, "RB2701.SHF"), (.option, "10012189.SH"), (.wealth, "PRODUCT")] {
+            var book = InvestmentBook()
+            let id = try book.register(.init(name: "自动行情", code: code, market: "", kind: kind, currency: .cny))
+            book.addQuotes([.init(day: date(1), price: 10, source: "东方财富", isDailyClose: true)], assetID: id)
+            book.addQuotes([.init(day: date(1), price: 99, source: "手动录入")], assetID: id)
+            precondition(book.quote(id, on: date(1))?.price == 10 && book.quote(id, on: date(1))?.source == "东方财富")
+        }
     }
 
     static func date(_ day: Int) -> Date {

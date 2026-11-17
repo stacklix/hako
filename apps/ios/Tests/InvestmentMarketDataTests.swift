@@ -12,20 +12,22 @@ struct InvestmentMarketDataTests {
         try catalogValidationIncludesNewUsesOfExistingAssets()
         try await credentialTestsUseAuthenticatedEndpoints()
         try await credentialTestsRejectInvalidResponses()
-        try await alternateAfterUnavailableQuote()
-        try await watchRequiresRecentQuotes()
-        try await usDailyBarWaitsForExchangeClose()
-        try await stockConnectUsesHKDQuotes()
-        try await instrumentSearchReturnsMatchingChoices()
-        try await tushareUSCatalogRequiresAnExchange()
-        try await mainlandStockSearchFindsChineseNames()
-        try await instrumentSearchReportsUnavailableSources()
+        try await eastmoneyCatalogFindsNamesCodesAndMarkets()
+        try await eastmoneyUSCatalogSeparatesStocksAndETFs()
+        try await eastmoneyStockConnectCatalogNormalizesCodes()
+        try await eastmoneyHistoryUsesUnadjustedClosesWithoutKeys()
+        try await eastmoneyDerivativeMarketsAndContractFormats()
+        try await eastmoneyExpiredContractsCanUseTushare()
+        try await eastmoneyFundNAVPaginatesAndRejectsMoneyYields()
+        try await eastmoneyCloseTimesAndWatchFreshness()
+        try await eastmoneyFailuresAndRetryAreExplicit()
         try await cryptocurrencyUsesUSDPair()
         try await binanceSpotCatalogFindsTRX()
         try await publicSpotPricesAreConvertedToDollars()
         try await cryptoDailyClosesUseTheLedgerDay()
+        try await cryptoChartHistoryUsesPublicDailyCloses()
+        try await cryptoChartHistoryUsesDirectDollarPricesWhenUnavailable()
 
-        try await domesticFundNAV()
         try await referenceRates()
         print("Investment market data checks passed")
     }
@@ -150,226 +152,6 @@ struct InvestmentMarketDataTests {
         precondition(InvestmentQuoteSymbol(asset("600519.SH", .stock, .cny, market: "XSHE")).tushareSymbol == nil)
     }
 
-    static func alternateAfterUnavailableQuote() async throws {
-        var requested: [String] = []
-        let provider = InvestmentQuoteProvider { request, _ in
-            let host = request.url!.host!
-            requested.append(host)
-            if host == "api.tushare.pro" {
-                return response(request, #"{"code":2002,"data":null}"#)
-            }
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
-            precondition(query.contains(.init(name: "symbol", value: "600519")))
-            precondition(query.contains(.init(name: "mic_code", value: "XSHG")))
-            return response(request, #"{"meta":{"currency":"CNY"},"values":[{"datetime":"2026-10-30","close":"1500.20"}]}"#)
-        }
-        let rows = try await provider.history(asset: asset("600519", .stock, .cny),
-            start: day(1), through: day(30), cached: nil, keys: [.tushare:"token", .twelveData:"key"])
-        precondition(requested == ["api.tushare.pro", "api.twelvedata.com"])
-        precondition(rows.first?.source == "Twelve Data" && rows.first?.price == Decimal(string: "1500.20"))
-    }
-
-    static func watchRequiresRecentQuotes() async throws {
-        precondition(InvestmentKind.watchKinds(in: .cny) == [.stock, .etf, .fund, .future])
-        precondition(InvestmentKind.watchKinds(in: .usd) == [.stock, .etf, .crypto])
-        precondition(InvestmentKind.watchKinds(in: .hkd) == [.stock, .etf])
-        let provider = InvestmentQuoteProvider { request, _ in
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
-            precondition(request.url?.path == "/time_series")
-            let ticker = query.first { $0.name == "symbol" }?.value
-            if ticker == "VOO" {
-                return response(request, #"{"meta":{"currency":"USD"},"values":[{"datetime":"2026-10-30","close":"500.20"}]}"#)
-            }
-            precondition(ticker == "OLD")
-            return response(request, #"{"meta":{"currency":"USD"},"values":[{"datetime":"2026-10-01","close":"10.25"}]}"#)
-        }
-        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
-        let quotes = try await provider.watchQuotes(for: asset("VOO", .etf, .usd), keys: keys, through: day(30))
-        precondition(quotes.last?.day == day(30) && quotes.last?.price == Decimal(string: "500.20"))
-        do {
-            _ = try await provider.watchQuotes(for: asset("OLD", .etf, .usd), keys: keys, through: day(30))
-            preconditionFailure("Old history is not enough to add an instrument to the watchlist")
-        } catch InvestmentError.invalid {}
-        do {
-            _ = try await provider.watchQuotes(for: asset("VOO", .etf, .usd), keys: [:], through: day(30))
-            preconditionFailure("A non-crypto watch requires a working quote source")
-        } catch InvestmentError.invalid {}
-    }
-
-    static func usDailyBarWaitsForExchangeClose() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
-            response(request, #"{"meta":{"currency":"USD"},"values":[{"datetime":"2026-10-30","close":"500.20"}]}"#)
-        }
-        let session = day(30)
-        let close = InvestmentBook.usEquityClose(on: session)
-        let symbol = asset("VOO", .etf, .usd)
-        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
-        let early = try await provider.history(asset: symbol, start: session, through: session, cached: nil,
-                                               keys: keys, now: close.addingTimeInterval(-60))
-        let complete = try await provider.history(asset: symbol, start: session, through: session, cached: nil,
-                                                  keys: keys, now: close)
-        precondition(early.last?.isDailyClose == false && complete.last?.isDailyClose == true)
-    }
-
-    static func domesticFundNAV() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
-            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-            precondition(body["api_name"] as? String == "fund_nav" && secrets == ["fixture"])
-            precondition((body["params"] as? [String: String])?["ts_code"] == "110022.OF")
-            return response(request, #"""
-                {"code":0,"data":{"fields":["unit_nav","ann_date","ts_code","nav_date"],"items":[
-                [1.42,"20261031","110022.OF","20261030"],[1.40,"20261030","110022.OF","20261030"],
-                [11.2,"20261031","000001.OF","20261030"]]}}
-                """#)
-        }
-        let rows = try await provider.history(asset: asset("110022", .fund, .cny),
-            start: day(1), through: day(30), cached: nil, keys: [.tushare:"fixture"])
-        precondition(rows.count == 1 && rows[0].price == Decimal(string: "1.42") && rows[0].source == "Tushare Pro")
-        let legacy = try JSONDecoder().decode(InvestmentQuote.self, from: Data(#"{"day":0,"price":1}"#.utf8))
-        precondition(legacy.source == nil)
-    }
-
-    static func stockConnectUsesHKDQuotes() async throws {
-        var requested: [String] = []
-        let provider = InvestmentQuoteProvider { request, _ in
-            let host = request.url!.host!
-            requested.append(host)
-            if host == "api.twelvedata.com" {
-                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
-                precondition(query.contains(.init(name: "symbol", value: "2800")))
-                precondition(query.contains(.init(name: "mic_code", value: "XHKG")))
-                precondition(query.contains(.init(name: "type", value: "ETF")))
-                return response(request, #"{"meta":{"currency":"USD"},"values":[{"datetime":"2026-10-30","close":"10"}]}"#)
-            }
-            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-            precondition(body["api_name"] as? String == "hk_daily")
-            precondition((body["params"] as? [String: String])?["ts_code"] == "02800.HK")
-            return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["02800.HK","20261030",24]]}}"#)
-        }
-        let rows = try await provider.history(asset: asset("02800.HK", .etf, .hkd, market: InvestmentAsset.stockConnectMarket),
-            start: day(1), through: day(30), cached: nil, keys: [.tushare:"token", .twelveData:"key"])
-        precondition(requested == ["api.twelvedata.com", "api.tushare.pro"])
-        precondition(rows.first?.source == "Tushare Pro" && rows.first?.price == 24)
-    }
-
-    static func referenceRates() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
-            precondition(request.url?.host == "data-api.ecb.europa.eu" && secrets.isEmpty)
-            return response(request, "CURRENCY,TIME_PERIOD,OBS_VALUE\nCNY,2026-10-30,8.4\nUSD,2026-10-30,1.2\nHKD,2026-10-30,9.6\n")
-        }
-        let rates = try await provider.ecbRates(for: [.usd, .hkd], start: day(1), end: day(30))
-        precondition(rates[.usd]?.first?.price == 7 && rates[.hkd]?.first?.price == Decimal(string: "0.875"))
-    }
-
-    static func instrumentSearchReturnsMatchingChoices() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
-            if request.url?.host == "api.tushare.pro" {
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-                precondition(body["api_name"] as? String == "fund_basic")
-                precondition(body["params"] as? [String: String] == ["market": "O", "ts_code": "110022.OF"])
-                return response(request, #"{"code":0,"data":{"fields":["name","ts_code"],"items":[["其他基金","000001.OF"],["易方达消费行业","110022.OF"]]}}"#)
-            }
-            precondition(request.url?.path == "/symbol_search")
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            if query?.contains(.init(name: "symbol", value: "0700")) == true {
-                return response(request, #"""
-                    {"data":[
-                    {"symbol":"0700","instrument_name":"Wrong currency","instrument_type":"Common Stock","mic_code":"XHKG","currency":"USD"},
-                    {"symbol":"00700","instrument_name":"Wrong type","instrument_type":"ETF","mic_code":"XHKG","currency":"HKD"},
-                    {"symbol":"00700","instrument_name":"Tencent","instrument_type":"Common Stock","mic_code":"XHKG","currency":"HKD"}]}
-                    """#)
-            }
-            return response(request, #"""
-                {"data":[
-                {"symbol":"XYZ","instrument_name":"US Listing","instrument_type":"Common Stock","mic_code":"XNAS","country":"United States","currency":"USD"},
-                {"symbol":"XYZ","instrument_name":"Another Listing","instrument_type":"Common Stock","mic_code":"XNYS","country":"United States","currency":"USD"},
-                {"symbol":"XYZ.A","instrument_name":"Other Class","instrument_type":"Common Stock","mic_code":"XNAS","country":"United States","currency":"USD"},
-                {"symbol":"XYZ","instrument_name":"Unknown Exchange","instrument_type":"Common Stock","country":"United States","currency":"USD"},
-                {"symbol":"XYZ","instrument_name":"Foreign Listing","instrument_type":"Common Stock","mic_code":"XLON","country":"United Kingdom","currency":"USD"}]}
-                """#)
-        }
-        let funds = try await provider.searchInstruments(.init(query: "110022", kind: .fund, currency: .cny), keys: [.tushare: "fixture"])
-        precondition(funds.map(\.name) == ["易方达消费行业"])
-        precondition(funds.map(\.code) == ["110022.OF"])
-        let connect = try await provider.searchInstruments(.init(query: "700", kind: .stock, currency: .hkd, stockConnect: true),
-                                                            keys: [.twelveData: "fixture"])
-        precondition(connect.map(\.name) == ["Tencent"] && connect.first?.code == "00700.HK")
-        let us = try await provider.searchInstruments(.init(query: "XY", kind: .stock, currency: .usd), keys: [.twelveData: "fixture"])
-        precondition(us.map(\.name) == ["US Listing", "Another Listing", "Other Class"])
-        precondition(us.map(\.market) == ["XNAS", "XNYS", "XNAS"])
-    }
-
-    static func tushareUSCatalogRequiresAnExchange() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
-            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-            let fields = (body["fields"] as! String).split(separator: ",")
-            precondition(fields.contains("exchange"))
-            if body["api_name"] as? String == "us_basic" {
-                precondition(fields.contains("list_status"))
-                return response(request, #"{"code":0,"data":{"fields":["ts_code","name","exchange","list_status"],"items":[["AAPL","苹果","NASDAQ","L"],["AAPL","已退市","NYSE","D"],["AAPL","没有交易所",null,"L"]]}}"#)
-            }
-            precondition(body["api_name"] as? String == "us_etf_basic")
-            return response(request, #"{"code":0,"data":{"fields":["ts_code","name","exchange"],"items":[["VOO","标普500ETF","NYSEARCA"]]}}"#)
-        }
-        let stock = try await provider.searchInstruments(.init(query: "AAPL", kind: .stock, currency: .usd), keys: [.tushare: "fixture"])
-        precondition(stock.map(\.name) == ["苹果"] && stock.map(\.market) == ["XNAS"])
-        let etf = try await provider.searchInstruments(.init(query: "VOO", kind: .etf, currency: .usd), keys: [.tushare: "fixture"])
-        precondition(etf.map(\.code) == ["VOO"] && etf.map(\.market) == ["ARCX"])
-    }
-
-    static func mainlandStockSearchFindsChineseNames() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
-            precondition(request.url?.host == "searchapi.eastmoney.com" && secrets.isEmpty)
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            precondition(query?.contains(.init(name: "type", value: "14")) == true)
-            precondition(query?.first(where: { $0.name == "input" })?.value?.isEmpty == false)
-            return response(request, #"""
-                {"QuotationCodeTable":{"Status":0,"Data":[
-                {"Code":"600036","Name":"招商银行","Classify":"AStock","MktNum":"1"},
-                {"Code":"600036","Name":"招商银行","Classify":"AStock","MktNum":"1"},
-                {"Code":"03968","Name":"招商银行","Classify":"HK","MktNum":"116"},
-                {"Code":"CIHKY","Name":"招商银行(ADR)","Classify":"OTCBB","MktNum":"153"},
-                {"Code":"600036","Name":"错误市场","Classify":"AStock","MktNum":"0"},
-                {"Code":"600000","Name":"浦发银行","Classify":"AStock","MktNum":"1"},
-                {"Code":"000001","Name":"平安银行","Classify":"AStock","MktNum":"0"},
-                {"Code":"920002","Name":"万达轴承","Classify":"AStock","MktNum":"0"},
-                {"Code":"510300","Name":"沪深300ETF","Classify":"Fund","MktNum":"1"}]}}
-                """#)
-        }
-        for text in ["招商银行", "600036", "600036.SH"] {
-            let rows = try await provider.searchInstruments(.init(query: text, kind: .stock, currency: .cny), keys: [:])
-            precondition(rows.map(\.code) == ["600036.SH"] && rows.map(\.name) == ["招商银行"])
-        }
-        let cases: [(String, Set<String>)] = [
-            ("银行", ["600036.SH", "600000.SH", "000001.SZ"]),
-            ("6000", ["600036.SH", "600000.SH"]),
-            ("平安", ["000001.SZ"]), ("000001.SZ", ["000001.SZ"]),
-            ("万达", ["920002.BJ"]), ("920002", ["920002.BJ"])
-        ]
-        for (text, expected) in cases {
-            let rows = try await provider.searchInstruments(.init(query: text, kind: .stock, currency: .cny), keys: [:])
-            precondition(Set(rows.map(\.code)) == expected)
-        }
-        let wrongVenue = try await provider.searchInstruments(.init(query: "600036.SZ", kind: .stock, currency: .cny), keys: [:])
-        precondition(wrongVenue.isEmpty)
-    }
-
-    static func instrumentSearchReportsUnavailableSources() async throws {
-        let unavailable = InvestmentQuoteProvider { _, _ in throw URLError(.timedOut) }
-        for search in [InvestmentInstrumentSearch(query: "招商银行", kind: .stock, currency: .cny),
-                       InvestmentInstrumentSearch(query: "AAPL", kind: .stock, currency: .usd)] {
-            do {
-                _ = try await unavailable.searchInstruments(search, keys: [.twelveData: "fixture"])
-                preconditionFailure("Unavailable search must not be reported as no matches")
-            } catch let error as URLError { precondition(error.code == .timedOut) }
-        }
-        let empty = InvestmentQuoteProvider { request, _ in
-            response(request, #"{"QuotationCodeTable":{"Status":0,"Data":null}}"#)
-        }
-        let rows = try await empty.searchInstruments(.init(query: "不存在的股票", kind: .stock, currency: .cny), keys: [:])
-        precondition(rows.isEmpty)
-    }
-
     static func cryptocurrencyUsesUSDPair() async throws {
         let provider = InvestmentQuoteProvider { request, _ in
             if request.url?.path == "/symbol_search" {
@@ -477,6 +259,48 @@ struct InvestmentMarketDataTests {
         precondition(rates.count == 1 && rates[0].day == first && rates[0].price == Decimal(string: "0.99"))
         let spot = try await provider.binanceSpotDailyQuotes(for: "TRX", from: first, through: first, usdtUSD: [first: rates[0].price])
         precondition(spot.count == 1 && spot[0].price == Decimal(string: "0.3168") && spot[0].isDailyClose == true)
+    }
+
+    static func cryptoChartHistoryUsesPublicDailyCloses() async throws {
+        let first = day(29), next = day(30)
+        let start = Int64(first.timeIntervalSince1970), end = Int64(next.timeIntervalSince1970)
+        let provider = InvestmentQuoteProvider { request, secrets in
+            precondition(secrets.isEmpty)
+            switch request.url!.path {
+            case "/api/v3/brokerage/market/products/USDT-USD/candles":
+                return response(request, #"{"candles":[{"start":"\#(end - 14_400)","close":"0.99"}]}"#)
+            case "/api/v3/klines":
+                return response(request, #"[[\#(start * 1000),"1","1","1","0.32","1",\#(end * 1000 - 1)]]"#)
+            default: preconditionFailure("Unexpected public price request")
+            }
+        }
+        let values = try await provider.cryptoPriceHistory(code: "TRX", from: first, through: first)
+        precondition(values.count == 1 && values[0].day == first && values[0].price == Decimal(string: "0.3168"))
+        precondition(values[0].isDailyClose == true)
+        let stable = try await provider.cryptoPriceHistory(code: "USDT", from: first, through: first)
+        precondition(stable.count == 1 && stable[0].price == Decimal(string: "0.99"))
+        let today = InvestmentBook.day()
+        let incomplete = try await provider.cryptoPriceHistory(code: "TRX", from: today, through: today)
+        precondition(incomplete.isEmpty)
+    }
+
+    static func cryptoChartHistoryUsesDirectDollarPricesWhenUnavailable() async throws {
+        let first = day(29), end = Int64(day(30).timeIntervalSince1970)
+        let provider = InvestmentQuoteProvider { request, secrets in
+            precondition(secrets.isEmpty)
+            guard request.url!.path == "/api/v3/brokerage/market/products/BTC-USD/candles" else {
+                throw URLError(.cannotConnectToHost)
+            }
+            return response(request, #"{"candles":[{"start":"\#(end - 14_400)","close":"98000"}]}"#)
+        }
+        let values = try await provider.cryptoPriceHistory(code: "BTC", from: first, through: first)
+        precondition(values.count == 1 && values[0].day == first && values[0].price == 98000)
+        precondition(values[0].isDailyClose == true)
+        let empty = InvestmentQuoteProvider { request, _ in response(request, #"{"candles":[]}"#) }
+        do {
+            _ = try await empty.cryptoPriceHistory(code: "BTC", from: first, through: first)
+            preconditionFailure("Missing prices must report a query failure")
+        } catch is InvestmentError { }
     }
 
     static func asset(_ code: String, _ kind: InvestmentKind, _ currency: InvestmentCurrency, market: String = "") -> InvestmentAsset {

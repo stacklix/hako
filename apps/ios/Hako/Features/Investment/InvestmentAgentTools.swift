@@ -68,11 +68,12 @@ enum InvestmentAgentTools {
                     var row = assetRow(holding)
                     row["account_id"] = item.id.uuidString
                     row["account"] = item.name
-                    row["quantity"] = decimal(position.quantity)
+                    if holding.kind == .wealth { row["balance"] = decimal(position.depositBalance) }
+                    else { row["quantity"] = decimal(position.quantity) }
                     row["net_cost"] = decimal(position.netCost)
                     row["realized_gain"] = decimal(position.realized)
                     row["margin"] = decimal(position.margin)
-                    row["latest_quote"] = decimal(base.book.quote(id, on: asOf)?.price)
+                    if holding.kind != .wealth { row["latest_quote"] = decimal(base.book.quote(id, on: asOf)?.price) }
                     values.append(row)
                 }
             }

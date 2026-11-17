@@ -27,11 +27,15 @@ struct InvestmentEventEditor: View {
         func text(_ value: Decimal?) -> String {
             value?.formatted(.number.grouping(.never).precision(.fractionLength(0...38))) ?? ""
         }
-        let inputs: [Field: String] = [
+        var inputs: [Field: String] = [
             .amount: text(abs(event.amount)), .counterpart: text(counterpart.map { abs($0.1.amount) }),
             .quantity: text(abs(event.quantity)), .price: text(event.price), .fee: text(event.fee),
             .margin: text(event.margin), .settlement: text(event.settledAmount)
         ]
+        if editing == nil, store.book.asset(event.assetID)?.kind == .crypto,
+           [.stakingReward, .spotAdjustment].contains(event.kind) {
+            inputs[.settlement] = text(store.book.positionBefore(event, accountID: accountID).map { $0.quantity + event.quantity })
+        }
         originalValues = inputs
         var populated = inputs
         let keys: [Field: String] = [.amount: "amount", .counterpart: "counterpart_amount", .quantity: "quantity", .price: "price",
@@ -49,18 +53,20 @@ struct InvestmentEventEditor: View {
 
     private var account: InvestmentAccount? { store.book.account(accountID) }
     private var asset: InvestmentAsset? { store.book.asset(event.assetID) }
+    private var editsSpotBalance: Bool { editorDraft == nil && asset?.kind == .crypto && [.stakingReward, .spotAdjustment].contains(event.kind) }
+    private var recordTitle: String { editsSpotBalance ? "余额调整" : event.title(for: asset) }
     private var hasChanges: Bool { date != event.day || values != originalValues || decreases != (event.amount < 0) }
 
     var body: some View {
-        SettingsSheet(title: editorDraft?.action.kind == .addEvent ? "记录流水" : "编辑流水", hasChanges: hasChanges,
+        SettingsSheet(title: editorDraft?.action.kind == .addEvent ? "记录交易" : "修改" + recordTitle, hasChanges: hasChanges,
                       isBusy: saving || store.saving, saveEnabled: hasChanges,
-                      onSave: { Task { await save() } }, saveAccessibilityLabel: editorDraft == nil ? "保存流水" : "完成修改并更新预览") {
+                      onSave: { Task { await save() } }, saveAccessibilityLabel: editorDraft == nil ? "保存交易记录" : "完成修改并更新预览") {
             Form {
                 Section {
-                    LabeledContent("流水类型", value: event.kind == .marginTransfer ? "保证金划转" : event.title(for: asset))
+                    LabeledContent("记录类型", value: event.kind == .marginTransfer ? "保证金划转" : recordTitle)
                     if let asset { LabeledContent("标的", value: asset.displayName) }
                     if let (other, _) = counterpart { LabeledContent("对方账户", value: other.name) }
-                    InvestmentDatePicker("记账日期", selection: $date, latest: InvestmentBook.day())
+                    InvestmentDatePicker(editsSpotBalance ? "调整日期" : [.dividend, .bonusShares].contains(event.kind) ? "到账日期" : "交易日期", selection: $date, latest: InvestmentBook.day())
                     fields
                 } header: {
                     Text(account?.name ?? "流水")
@@ -69,15 +75,15 @@ struct InvestmentEventEditor: View {
                     Section { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
                 if editorDraft == nil { Section {
-                    HakoDeleteButton(title: "删除流水") { confirmsDeletion = true }
-                        .disabled(store.saving).investmentListRow()
+                    HakoDeleteButton(title: "删除交易记录") { confirmsDeletion = true }
+                        .disabled(saving || store.saving).investmentListRow()
                         .listRowBackground(Color.clear)
                 } }
             }
-            .hakoDeleteConfirmation(Text("删除这笔流水？"), isPresented: $confirmsDeletion,
-                                    message: Text(counterpart == nil ? "删除后将重新计算受影响的日终快照。" :
+            .hakoDeleteConfirmation(Text("删除这笔交易记录？"), isPresented: $confirmsDeletion,
+                                    message: Text(counterpart == nil ? InvestmentText.date(event.day) + " · " + recordTitle + "。删除后将重新计算持仓、盈亏和相关历史快照，此操作无法撤销。" :
                                         "两个账户中的对应划转流水会同时删除，并重新计算受影响的日终快照。"),
-                                    disabled: store.saving) {
+                                    disabled: saving || store.saving) {
                 Task { await delete() }
             }
         }
@@ -93,11 +99,14 @@ struct InvestmentEventEditor: View {
             if asset?.kind == .generic {
                 field((event.kind == .sell ? "取出金额" : "投入金额") + "（\(currency)）", .price)
                 if event.settledAmount != nil { field("录入时余额（\(currency)）", .settlement) }
+            } else if asset?.kind == .wealth {
+                field(event.kind == .sell ? "赎回到账金额（CNY）" : "申购金额（CNY）", .price)
+                field("变动后余额（CNY）", .settlement)
             } else if asset?.kind.isTermDeposit == true {
                 field(event.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）", .price)
                 field("变动后余额（\(currency)）", .settlement)
             } else if let asset {
-                let unit = asset.kind.unit
+                let unit = asset.historyUnit
                 let priceTitle = asset.kind == .insurance ? (event.kind == .sell ? "退保到账金额" : "保费金额") : "成交价"
                 let settlement = store.book.settlementUnit(for: asset)
                 if asset.kind != .insurance { field("数量（\(unit)）", .quantity) }
@@ -110,11 +119,29 @@ struct InvestmentEventEditor: View {
             }
         case .adjustment where asset?.kind.usesBalance == true:
             field("变动后余额（\(currency)）", .settlement)
-        case .income where asset?.kind.isTermDeposit == true:
-            field("利息到账金额（CNY）", .amount)
+        case .income where asset?.kind.usesBalance == true:
+            field(asset?.kind == .wealth ? "实收收益（CNY）" : "利息到账金额（CNY）", .amount)
             field("变动后余额（\(currency)）", .settlement)
-        case .bonusShares, .stakingReward, .spotAdjustment:
-            field(event.kind == .spotAdjustment ? "减少数量" : "增加数量", .quantity)
+        case .bonusShares:
+            field("送股数量（股）", .quantity)
+        case .stakingReward, .spotAdjustment:
+            if editsSpotBalance, let asset {
+                field("调整后余额（\(asset.code)）", .settlement)
+                let before = store.book.positionBefore(event, accountID: accountID, on: date)
+                let target = try? number(.settlement, "调整后余额", allowZero: true)
+                let delta = before.flatMap { previous in target.map { $0 - previous.quantity } }
+                LabeledContent("调整前余额", value: before.map { InvestmentText.number($0.quantity) + " " + asset.code } ?? "—")
+                LabeledContent("数量变化", value: delta.map { ($0 > 0 ? "+" : "") + InvestmentText.number($0) + " " + asset.code } ?? "—")
+                let quote = store.book.positionQuote(for: asset, on: InvestmentBook.day(date), requiresDailyPrices: InvestmentBook.day(date) < InvestmentBook.day())
+                let value = delta.flatMap { change in quote.map { $0.price * change } }
+                LabeledContent("估值变动", value: InvestmentText.money(value, asset.currency, signed: true))
+                Text("按所选日期的账面余额计算数量增减，不产生现金收支。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                field(event.kind == .spotAdjustment ? "减少数量" : "增加数量", .quantity)
+            }
+        case .dividend:
+            field("实际到账金额（\(currency)）", .amount)
         case .marginTransfer, .adjustment, .derivativeSettlement:
             Picker("变动方向", selection: $decreases) {
                 Text("增加").tag(false)
@@ -157,7 +184,7 @@ struct InvestmentEventEditor: View {
                     if event.settledAmount != nil { edited.settledAmount = try number(.settlement, "录入时余额", allowZero: true) }
                     break
                 }
-                if asset.kind.isTermDeposit {
+                if asset.kind.isTermDeposit || asset.kind == .wealth {
                     edited.price = try number(.price, "变动金额")
                     edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
                     break
@@ -176,11 +203,16 @@ struct InvestmentEventEditor: View {
                 }
             case .adjustment where asset?.kind.usesBalance == true:
                 edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
-            case .income where asset?.kind.isTermDeposit == true:
-                edited.amount = try number(.amount, "利息到账金额")
+            case .income where asset?.kind.usesBalance == true:
+                edited.amount = try number(.amount, asset?.kind == .wealth ? "实收收益" : "利息到账金额")
                 edited.settledAmount = try number(.settlement, "变动后余额", allowZero: true)
             case .bonusShares, .stakingReward, .spotAdjustment:
-                edited.quantity = try number(.quantity, "变动数量") * (event.kind == .spotAdjustment ? -1 : 1)
+                if editsSpotBalance {
+                    edited = try store.book.spotBalanceReplacement(event, accountID: accountID,
+                        balance: number(.settlement, "调整后余额", allowZero: true), on: date)
+                } else {
+                    edited.quantity = try number(.quantity, "变动数量") * (event.kind == .spotAdjustment ? -1 : 1)
+                }
             default:
                 edited.amount = try number(.amount, "金额", allowZero: event.kind == .derivativeSettlement) * (decreases ? -1 : 1)
                 if event.kind == .derivativeSettlement { edited.price = try number(.price, "结算价") }
@@ -201,6 +233,9 @@ struct InvestmentEventEditor: View {
     }
 
     private func delete() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
         do {
             try await store.update { try $0.deleteEvent(event, accountID: accountID) }
             dismiss()

@@ -186,7 +186,6 @@ struct InvestmentHoldingView: View {
     @State private var showsAdjustment = false
     @State private var showsMarginTransfer = false
     @State private var showsFuturesSettlement = false
-    @State private var editing: InvestmentEvent?
     @State private var depositAction: DepositAction?
     @State private var showsDepositTerms = false
     @Environment(\.dismiss) private var dismiss
@@ -196,66 +195,16 @@ struct InvestmentHoldingView: View {
     var body: some View {
         InvestmentScroll {
             if let current = store.book.account(account.id),
-               let ledger = try? store.book.ledger(current, includeRows: true),
-               let position = ledger.positions[asset.id] {
+               let ledger = try? store.book.ledger(current, includeRows: true) {
+                let position = ledger.positions[asset.id] ?? InvestmentPosition()
                 positionCard(position)
                     .disabled(current.isArchived)
                 if current.isArchived {
                     Text("账户已归档；如需修改交易，请先在账户管理中撤销归档。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                InvestmentHoldingChart(book: store.book, bookVersion: store.bookVersion,
-                                       account: current, asset: asset)
-                Text(asset.kind.isManual || offersAdjustment ? "资产流水" : "买卖记录")
-                    .font(.headline).padding(.top, 4)
-                InvestmentCard {
-                    ForEach(store.book.orderedEvents(current, through: InvestmentBook.day()).filter {
-                        $0.assetID == asset.id
-                    }.reversed()) { event in
-                        Button { editing = event } label: {
-                        HStack {
-                            InvestmentTitle(event.title(for: asset), subtitle: InvestmentText.date(event.day))
-                            Spacer()
-                            VStack(alignment: .trailing) {
-                                switch event.kind {
-                                case .income, .dividend:
-                                    Text(InvestmentText.money(event.amount, account.currency, signed: true))
-                                case .marginTransfer, .derivativeSettlement:
-                                    let unit = account.currency.rawValue
-                                    Text((event.amount > 0 ? "+" : "") + InvestmentText.number(event.amount) + " " + unit)
-                                case .bonusShares, .stakingReward, .spotAdjustment:
-                                    let unit = asset.kind == .crypto ? asset.code : asset.kind.unit
-                                    Text((event.quantity > 0 ? "+" : "") + InvestmentText.number(event.quantity) + " " + unit)
-                                case .opening where asset.kind.usesBalance,
-                                     .buy where asset.kind.usesBalance,
-                                     .sell where asset.kind.usesBalance:
-                                    Text(InvestmentText.money(event.kind == .sell ? -event.price : event.price,
-                                                              account.currency, signed: true))
-                                case .adjustment where asset.kind.usesBalance:
-                                    EmptyView()
-                                default:
-                                    if asset.kind != .insurance {
-                                        Text(InvestmentText.number(event.quantity) + " " + asset.kind.unit)
-                                    }
-                                    Text(InvestmentText.number(event.price) + " " + store.book.quoteUnit(for: asset))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                                if let fee = event.fee, fee > 0 {
-                                    Text("交易费用 " + InvestmentText.number(fee) + " " + store.book.settlementUnit(for: asset))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-
-                                if let amount = event.settledAmount {
-                                    Text((asset.kind.usesBalance ? "余额 " : "") + InvestmentText.money(amount, account.currency))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                }
-                            }.monospacedDigit()
-                            InvestmentChevron()
-                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
-                        }.buttonStyle(.plain).disabled(current.isArchived)
-                        Divider()
-                    }
-                }
+                InvestmentHoldingChart(store: store, account: current, asset: asset)
+                InvestmentTransactionRecords(store: store, account: current, asset: asset)
             }
         }
         .navigationTitle(asset.displayName)
@@ -263,9 +212,6 @@ struct InvestmentHoldingView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 InvestmentLifecycleActions(store: store, accountID: account.id, assetID: asset.id) { dismiss() }
             }
-        }
-        .sheet(item: $editing) { event in
-            InvestmentEventEditor(store: store, accountID: account.id, event: event)
         }
         .sheet(item: $depositAction) { action in
             InvestmentTradeEditor(store: store, account: account, asset: asset, kind: action.kind)
@@ -293,9 +239,9 @@ struct InvestmentHoldingView: View {
         let rate = position.netCost > 0 ? value.map { ($0 - position.netCost) / position.netCost } : nil
         let sinceEntry = position.lastEntry.flatMap { entry in quote.map { ($0.price / entry - 1) * asset.priceDirection } }
         return InvestmentCard {
-            let description = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
+            let description = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.historyUnit)"
             InvestmentTitle("持仓概况", subtitle: asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + description)
-            InvestmentMetric(title: asset.kind == .generic ? "标的余额" : (termDeposit ? "存款余额" : (insurance ? "保单现金价值" : "持仓估值")),
+            InvestmentMetric(title: asset.kind == .wealth ? "理财余额" : asset.kind == .generic ? "标的余额" : (termDeposit ? "存款余额" : (insurance ? "保单现金价值" : "持仓估值")),
                              value: InvestmentText.money(value, account.currency), prominent: true)
             HStack(alignment: .top) {
                 InvestmentMetric(title: "累计盈亏", value: InvestmentText.money(gain, account.currency, signed: true), color: InvestmentText.tint(gain))
@@ -377,10 +323,15 @@ struct InvestmentHoldingView: View {
             adjustmentAction
             if asset.kind == .wealth {
                 Divider()
-                InvestmentPageLink(title: "记录实收收益", symbol: "plus.circle",
-                                   route: .trade(account.id, asset.id, .income))
+                Button { depositAction = .init(kind: .income) } label: {
+                    InvestmentPageRow(title: "记录实收收益", symbol: "plus.circle")
+                }.buttonStyle(.plain)
+                Divider()
+                Button { depositAction = .init(kind: .adjustment) } label: {
+                    InvestmentPageRow(title: "更新理财余额", symbol: "slider.horizontal.3")
+                }.buttonStyle(.plain)
             }
-            if asset.kind != .generic { Divider() }
+            if termDeposit || asset.kind == .insurance { Divider() }
             if termDeposit {
                 Button { depositAction = .init(kind: .income) } label: {
                     InvestmentPageRow(title: "支取利息", symbol: "banknote")
@@ -389,8 +340,8 @@ struct InvestmentHoldingView: View {
                 Button { depositAction = .init(kind: .adjustment) } label: {
                     InvestmentPageRow(title: "调整余额", symbol: "slider.horizontal.3")
                 }.buttonStyle(.plain)
-            } else if asset.kind != .generic {
-                InvestmentPageLink(title: insurance ? "更新现金价值" : (asset.kind == .wealth ? "更新单位净值" : asset.kind == .crypto ? "行情" : "行情与手动报价"),
+            } else if asset.kind == .insurance {
+                InvestmentPageLink(title: "更新现金价值",
                                    symbol: "chart.xyaxis.line", route: .quote(asset.id))
             }
         }
@@ -646,14 +597,18 @@ private struct InvestmentSettings: View {
                 .investmentListRow()
             }
             Section("行情与汇率") {
-                Text("A 股与中国基金、期货优先使用 Tushare Pro，港股通与美股优先使用 Twelve Data。加密现货使用 Binance 公开报价，通用标的通过调整余额记录盈亏。汇率可由欧洲央行补充。")
+                Text("股票、ETF、场外基金和国内期货期权使用东方财富，无需配置密钥；场外基金使用天天基金公布的单位净值。货币基金的每万份收益不作为净值。加密现货使用公开行情，汇率由欧洲央行补充。")
                     .font(.footnote).foregroundStyle(.secondary)
                 Button(store.refreshing ? "正在刷新…" : "刷新行情与汇率") { Task { await store.refresh() } }
                     .disabled(!store.canRefresh || store.refreshing)
                 if !store.quoteStatus.isEmpty { Text(store.quoteStatus).font(.footnote).foregroundStyle(.secondary) }
             }
-            Section("行情接口") {
+            Section {
                 ForEach(InvestmentQuoteSource.allCases) { source in credentialLink(source) }
+            } header: {
+                Text("补充行情接口（可选）")
+            } footer: {
+                Text("东方财富缺少期货期权历史时，可使用已配置的行情源补查；Twelve Data 也可补充汇率。到期合约仍可能缺少历史数据。")
             }
             Section {
                 Button(recalculatingSnapshots ? "正在查询并重算…" : "重新计算历史快照") {

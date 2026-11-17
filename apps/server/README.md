@@ -55,6 +55,8 @@ GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性
 
 ### 部署配置与启动
 
+iOS 设置「版本信息」可读取投资数据库的实际版本与目标版本。`GET /api/v1/investment/version` 使用 Console DPoP 登录认证，只返回 `version` 与 `expectedVersion`；不需要后台浏览器会话。服务端 0.7.1 新增此只读接口，配套 iOS 0.7.1 最低要求服务端 0.7.1。
+
 以下命令从 `apps/server/` 执行，面向 Linux Docker 主机。
 
 部署文件与示例：
@@ -119,6 +121,8 @@ docker compose up -d
 ```
 
 本目录提供 [.env.example](.env.example)，复制为 `.env` 后必须将 `HAKO_PUBLIC_URL` 改为外部客户端实际访问的 HTTPS 根地址，不带路径、查询或 fragment，三端地址需保持一致。Compose 仅将 HTTP 端口暴露到主机 `127.0.0.1:8080`。在主机配置 HTTPS 反向代理，Caddy 示例见 [deploy/Caddyfile.example](deploy/Caddyfile.example)，支持 WebSocket Upgrade。
+
+后台来源校验允许 `Host` 域名大小写差异及显式默认端口（HTTPS 的 `:443`、HTTP 的 `:80`），非默认端口仍必须一致。代理应保留公开域名，不使用 `X-Forwarded-Host` 替代校验。创建二维码等写入请求仍要求 `Origin` 与公开地址完全一致；缺失、`null`、其他来源及跨站请求均拒绝。
 
 编辑配置时保留 `init` 生成的 `masterKey`。容器使用非 root 用户、只读根文件系统、宿主机数据目录挂载、健康检查和自动重启。Windows Docker 或其他 UID 映射环境需要相应设置权限，确保容器 UID 10001 可读写 `data/`、可读 `config/` 中的配置与公钥。
 

@@ -37,9 +37,11 @@ internal static class DetachedAgentProcess
         var command = new StringBuilder(Quote(executable));
         foreach (var argument in arguments) command.Append(' ').Append(Quote(argument));
         var startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfo>(), Flags = 1 };
-        // Bootstrap has no command job. The restart helper explicitly leaves the
-        // command's job, whose BREAKAWAY_OK limit is controlled by this app.
-        if (!CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false, 0x08000000u | (breakAway ? 0x01000000u : 0),
+        // A command job has lifetime limits and allows explicit breakaway.
+        // Task Scheduler uses an unrestricted job that forbids that flag;
+        // inheriting an unrestricted job does not bind the child to its parent.
+        var leaveJob = breakAway && CommandProcessJob.HasCurrentJobLimits();
+        if (!CreateProcessW(executable, command, IntPtr.Zero, IntPtr.Zero, false, 0x08000000u | (leaveJob ? 0x01000000u : 0),
             IntPtr.Zero, Path.GetDirectoryName(executable)!, ref startup, out var process))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "无法启动独立进程。");
         try { return Process.GetProcessById(process.ProcessId); }
@@ -72,7 +74,18 @@ internal sealed class CommandProcessJob : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int kind, ref Limits limits, int size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(IntPtr job, int kind, out Limits limits, int size, out int length);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    internal static bool HasCurrentJobLimits()
+    {
+        using var process = Process.GetCurrentProcess();
+        if (!IsProcessInJob(process.Handle, IntPtr.Zero, out var inJob)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!inJob) return false;
+        if (!QueryInformationJobObject(IntPtr.Zero, 9, out var limits, Marshal.SizeOf<Limits>(), out _))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return limits.Basic.Flags != 0;
+    }
     private IntPtr handle;
     internal CommandProcessJob(bool allowBackgroundProcesses = false)
     {

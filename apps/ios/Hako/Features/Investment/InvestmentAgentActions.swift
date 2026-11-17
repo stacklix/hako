@@ -1,6 +1,7 @@
 import Foundation
 
 struct InvestmentAgentAction: Codable {
+    static let manualQuoteUnavailableMessage = "该标的不支持手动报价；市场标的请刷新行情，理财产品请更新余额。"
     enum Kind: String, CaseIterable, Codable {
         case addAccount = "add_account", editAccount = "edit_account", removeAccount = "remove_account"
         case archiveAccount = "archive_account", restoreAccount = "restore_account", removePosition = "remove_position"
@@ -33,7 +34,7 @@ struct InvestmentAgentAction: Codable {
             case .plan: "新建或修改定投"
             case .removePlan: "删除定投"
             case .watch: "调整关注"
-            case .quote: "录入手工报价"
+            case .quote: "更新保单现金价值"
             case .balanceAccount: "添加资产负债账户"
             case .balanceRecord: "记录资产负债余额"
             case .editBalanceRecord: "修改资产负债记录"
@@ -130,7 +131,7 @@ struct InvestmentAgentAction: Codable {
                             .init(key: "schedule_day", label: "执行日：每周或每两周为周一 1 至周日 7，每月为 1 至 31，每日为 0"), enabled]
         case .removePlan: return [.init(key: "plan_id", label: "定投任务 ID", required: true)]
         case .watch: return [asset, enabled]
-        case .quote: return [asset, day, .init(key: "price", label: "手工报价或估值", required: true)]
+        case .quote: return [asset, day, .init(key: "price", label: "保单现金价值", required: true)]
         case .balanceAccount:
             return [name, .init(key: "category", label: "资产负债分类", required: true, choices: balanceCategories.keys.sorted()), day, amount]
         case .balanceRecord: return [balanceAccount, day, amount]
@@ -197,6 +198,9 @@ struct InvestmentAgentAction: Codable {
         let resolved = resolvingPlan(in: book)
         if resolved.values != values { try resolved.apply(to: &book, today: today); return }
         try validate()
+        if kind == .quote, try !asset(in: book).kind.supportsManualQuote {
+            throw InvestmentError.invalid(Self.manualQuoteUnavailableMessage)
+        }
         let missingFields = form(in: book).missing
         guard missingFields.isEmpty else { throw InvestmentError.invalid("资料不完整，请一次询问：" + missingFields.joined(separator: "、") + "。") }
         switch kind {
@@ -270,9 +274,6 @@ struct InvestmentAgentAction: Codable {
             } else { book.watched.removeAll { $0 == item.id } }
         case .quote:
             let item = try asset(in: book)
-            guard item.kind.supportsManualQuote else {
-                throw InvestmentError.invalid(item.kind == .crypto ? "加密货币现货使用自动行情，不支持手动报价。" : "该标的类型不支持手动报价。")
-            }
             let price = try decimal("price", fallback: 0)
             guard price > 0 || (item.kind == .insurance && price == 0) else { throw missing("有效报价") }
             book.addQuotes([.init(day: try date("date", through: today), price: price, source: "手动录入")], assetID: item.id)

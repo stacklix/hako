@@ -4,6 +4,27 @@ import FoundationNetworking
 #endif
 
 extension InvestmentQuoteProvider {
+    // The chart uses the same USD and Beijing-day closes as crypto valuations.
+    func cryptoPriceHistory(code: String, from start: Date, through end: Date,
+                            now: Date = .now) async throws -> [InvestmentQuote] {
+        let last = min(InvestmentBook.day(end), InvestmentBook.addDays(-1, to: InvestmentBook.day(now)))
+        let first = InvestmentBook.day(start)
+        guard first <= last else { return [] }
+        do {
+            let rates = try await coinbaseUSDDailyQuotes(for: "USDT", from: first, through: last)
+            try Task.checkCancellation()
+            let values = try await binanceSpotDailyQuotes(for: code, from: first, through: last,
+                                                         usdtUSD: Dictionary(rates.map { ($0.day, $0.price) }, uniquingKeysWith: { _, new in new }))
+            if !values.isEmpty { return values }
+        } catch {
+            try Task.checkCancellation()
+        }
+        let values = try await coinbaseUSDDailyQuotes(for: code, from: first, through: last)
+        try Task.checkCancellation()
+        guard !values.isEmpty else { throw InvestmentError.invalid("没有可用的加密货币历史美元日价。") }
+        return values
+    }
+
     func binanceSpotDailyQuotes(for code: String, from start: Date, through end: Date,
                                 usdtUSD: [Date: Decimal]) async throws -> [InvestmentQuote] {
         if code == "USDT" {

@@ -113,13 +113,13 @@ struct InvestmentView: View {
 
     private var header: some View {
         let hasPublicQuotes = !store.publicQuoteIDs.isEmpty
-        let quoteHint = store.configured ? "日线与基金净值 · 自动切换行情源"
-            : hasPublicQuotes ? "加密货币现货 · 自动获取行情" : "行情未配置 · 支持手动报价"
+        let quoteHint = hasPublicQuotes && store.marketQuoteIDs.isEmpty ? "加密货币现货 · 自动获取行情"
+            : "东方财富 · 日线与基金净值"
         return VStack(alignment: .leading, spacing: 7) {
             Text("投资记账").font(.system(size: 28, weight: .bold)).tracking(-0.7)
                 .accessibilityAddTraits(.isHeader)
             HStack(alignment: .top, spacing: 6) {
-                Circle().fill(store.configured || hasPublicQuotes ? Color.teal : HakoStyle.muted).frame(width: 5, height: 5).padding(.top, 5)
+                Circle().fill(Color.teal).frame(width: 5, height: 5).padding(.top, 5)
                 Text(store.quoteStatus.isEmpty ? quoteHint : store.quoteStatus)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }

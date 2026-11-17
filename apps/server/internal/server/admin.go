@@ -87,7 +87,7 @@ func (s *Server) adminCookie(w http.ResponseWriter, value string, maxAge int) {
 func (s *Server) adminOrigin(w http.ResponseWriter, r *http.Request, mutation bool) bool {
 	adminHeaders(w)
 	u, _ := url.Parse(s.config.PublicURL)
-	if r.Host != u.Host || r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.config.PublicURL) || (mutation && r.Header.Get("Origin") != s.config.PublicURL) {
+	if !sameAdminHost(r.Host, u) || r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Header.Get("Origin") != "" && r.Header.Get("Origin") != s.config.PublicURL) || (mutation && r.Header.Get("Origin") != s.config.PublicURL) {
 		reject(w, 403, "invalid_origin")
 		return false
 	}
@@ -103,6 +103,25 @@ func (s *Server) adminOrigin(w http.ResponseWriter, r *http.Request, mutation bo
 		}
 	}
 	return true
+}
+
+// Proxies can preserve an explicit default port or domain capitalization in
+// Host. Compare the authority without trusting any forwarded host headers.
+func sameAdminHost(host string, public *url.URL) bool {
+	u, err := url.Parse("//" + host)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(host, "\\#") || strings.HasSuffix(host, ":") {
+		return false
+	}
+	port := func(value *url.URL) string {
+		if value.Port() != "" {
+			return value.Port()
+		}
+		if public.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	return strings.EqualFold(u.Hostname(), public.Hostname()) && port(u) == port(public)
 }
 func adminExpired(ss adminSession, now time.Time) bool {
 	return now.Sub(ss.Created) >= 12*time.Hour || now.Sub(ss.LastUsed) >= 30*time.Minute

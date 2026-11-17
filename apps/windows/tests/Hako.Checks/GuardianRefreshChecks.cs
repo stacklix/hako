@@ -64,12 +64,22 @@ internal static class GuardianRefreshChecks
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(85));
         var token = timeout.Token;
         FileStream? updateLock = new(Path.Combine(Path.GetDirectoryName(target)!, "update.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        Process? old = null, helper = null, replacement = null;
+        Process? old = null, helper = null, replacement = null, standby = null;
         try
         {
             old = Process.Start(new ProcessStartInfo(guardian) { UseShellExecute = false, CreateNoWindow = true,
                 ArgumentList = { "--guardian", "--config", config } })!;
             await WaitFor(() => AgentGuardianControl.Running(profile, guardian) == old.Id, token);
+            var warm = GuardianHandoff.ExecutableFor(guardian, hash);
+            Directory.CreateDirectory(Path.GetDirectoryName(warm)!); File.Copy(target, warm);
+            var nonce = Guid.NewGuid().ToString("N");
+            standby = Process.Start(new ProcessStartInfo(warm) { UseShellExecute = false, CreateNoWindow = true,
+                ArgumentList = { "--guardian-standby", "--config", config, "--handoff", nonce, "--parent", Environment.ProcessId.ToString() } })!;
+            await WaitFor(() => AgentGuardianControl.Read<GuardianHandoff.Ready>(GuardianHandoff.ReadyPath(profile))?.Nonce == nonce, token);
+            if (old.HasExited || AgentGuardianControl.Running(profile, guardian) != old.Id || File.Exists(AgentGuardianControl.FileFor(profile, "stop")))
+                throw new Exception("Standby stole ownership or stopped the current guardian");
+            await LocalRpc.CallAsync(LocalRpc.GuardianPipe(profile), LocalRpc.Request("status"), token);
+            standby.Kill(); await standby.WaitForExitAsync(token);
             var updaterId = await AgentGuardianRefresh.StartAsync(options, hash, token);
             helper = Process.GetProcessById(updaterId);
             await Task.Delay(500, token);
@@ -78,22 +88,35 @@ internal static class GuardianRefreshChecks
             server.Version = "0.7.0";
             await WaitFor(() => AgentGuardianControl.Read<AgentGuardianRefresh.State>(AgentGuardianRefresh.StatePath(profile))?.StateName == "waiting_update", token);
             if (old.HasExited || AgentGuardian.Hash(guardian) != oldHash) throw new Exception("Refresh bypassed the main update lock");
+            // A bad candidate must fail before the existing owner is asked to stop.
+            await File.AppendAllTextAsync(warm, "corrupt candidate", token);
             updateLock.Dispose(); updateLock = null;
+            await helper.WaitForExitAsync(token);
+            if (AgentGuardianControl.Read<AgentGuardianRefresh.State>(AgentGuardianRefresh.StatePath(profile))?.StateName != "failed"
+                || old.HasExited || File.Exists(AgentGuardianControl.FileFor(profile, "stop")))
+                throw new Exception("A failed warmup interrupted the existing guardian");
+            File.Copy(target, warm, true);
+            helper.Dispose();
+            helper = Process.GetProcessById(await AgentGuardianRefresh.StartAsync(options, hash, token));
             await helper.WaitForExitAsync(token);
             var result = AgentGuardianControl.Read<AgentGuardianRefresh.State>(AgentGuardianRefresh.StatePath(profile));
             if (result?.StateName != "complete" || !old.HasExited || AgentGuardian.Hash(guardian) != hash)
                 throw new Exception("Guardian replacement failed: " + result);
             var newId = AgentGuardianControl.Running(profile, guardian) ?? throw new Exception("Replacement guardian is not running");
             replacement = Process.GetProcessById(newId);
+            var ready = AgentGuardianControl.Read<GuardianHandoff.Ready>(GuardianHandoff.ReadyPath(profile));
+            if (ready?.ProcessId != newId || ready.Nonce == nonce || ready.ReadyAt.UtcDateTime >= old.ExitTime.ToUniversalTime()
+                || replacement.StartTime.ToUniversalTime() >= old.ExitTime.ToUniversalTime())
+                throw new Exception("The new guardian was not running and ready before the old guardian exited");
             await LocalRpc.CallAsync(LocalRpc.GuardianPipe(profile), LocalRpc.Request("status"), token);
             if (!File.Exists(AgentGuardianControl.FileFor(profile, Path.Combine("refresh", hash, "Hako.Guardian.previous.exe"))))
                 throw new Exception("Guardian backup missing");
-            Console.WriteLine("PASS: guardian refresh waits for server compatibility and main update lock, preserves old image, replaces/restarts independently and confirms broker readiness");
+            Console.WriteLine("PASS: standby warms without taking ownership; refresh checks compatibility and update locks, confirms readiness before retirement, preserves the old image and activates the same warm process");
         }
         finally
         {
             updateLock?.Dispose();
-            foreach (var process in new[] { replacement, helper, old })
+            foreach (var process in new[] { replacement, helper, standby, old })
                 if (process is not null)
                 {
                     try { if (!process.HasExited) process.Kill(true); await process.WaitForExitAsync(); } catch (InvalidOperationException) { }

@@ -43,15 +43,25 @@ final class InvestmentStore: ObservableObject {
     private var dailySnapshotTask: Task<Void, Never>?
     private var lastAutomaticRefresh: Date?
     private var lastAutomaticCurrencies: Set<InvestmentCurrency> = []
+    private var lastAutomaticMarketQuotes: Set<UUID> = []
     private var lastPublicQuoteRefresh: Date?
     private var lastPublicHistoryDay: Date?
     private var lastAutomaticPublicQuotes: Set<UUID> = []
     private var cryptoCatalog: (loadedAt: Date, entries: [InvestmentAsset])?
     private var cryptoCatalogRequest: Task<[InvestmentAsset], Error>?
     private var selectedInstruments: [String: InvestmentAsset] = [:]
+    private struct HoldingPriceCache {
+        let session: UUID
+        let asset: InvestmentAsset
+        let window: ClosedRange<Date>
+        let checkedDay: Date
+        let quotes: [InvestmentQuote]
+    }
+    private var holdingPriceCache: HoldingPriceCache?
     var hasLoaded: Bool { loaded }
     var configured: Bool { !configuredSources.isEmpty }
-    var canRefresh: Bool { configured || !rateCurrencies.isEmpty || !publicQuoteIDs.isEmpty }
+    var marketQuoteIDs: Set<UUID> { Set(book.assets.values.filter(\.usesEastmoneyMarketData).map(\.id)) }
+    var canRefresh: Bool { configured || !marketQuoteIDs.isEmpty || !rateCurrencies.isEmpty || !publicQuoteIDs.isEmpty }
     func entryEditorStore(book: InvestmentBook) -> InvestmentStore {
         let preview = InvestmentStore(authentication: authentication)
         preview.book = book
@@ -82,8 +92,10 @@ final class InvestmentStore: ObservableObject {
         serverState = nil
         loaded = false
         book = InvestmentBook()
+        holdingPriceCache = nil
         lastAutomaticRefresh = nil
         lastAutomaticCurrencies = []
+        lastAutomaticMarketQuotes = []
         lastPublicQuoteRefresh = nil
         lastPublicHistoryDay = nil
         lastAutomaticPublicQuotes = []
@@ -572,8 +584,10 @@ final class InvestmentStore: ObservableObject {
         let today = InvestmentBook.day()
         let currencies = rateCurrencies
         let publicIDs = publicQuoteIDs
-        let general = (configured || !currencies.isEmpty)
-            && (lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies))
+        let marketIDs = marketQuoteIDs
+        let general = (configured || !currencies.isEmpty || !marketIDs.isEmpty)
+            && (lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies)
+                || !marketIDs.isSubset(of: lastAutomaticMarketQuotes))
         let publicDue = !publicIDs.isEmpty && (!publicIDs.isSubset(of: lastAutomaticPublicQuotes)
             || lastPublicQuoteRefresh.map { Date.now.timeIntervalSince($0) >= 300 } ?? true)
         guard !refreshing else { return }
@@ -583,6 +597,7 @@ final class InvestmentStore: ObservableObject {
         if general {
             lastAutomaticRefresh = today
             lastAutomaticCurrencies = currencies
+            lastAutomaticMarketQuotes = marketIDs
         }
         await refresh(publicQuotesOnly: !general)
         if Task.isCancelled, general { lastAutomaticRefresh = nil }
@@ -599,6 +614,48 @@ final class InvestmentStore: ObservableObject {
         try await refreshQuotes(fullSnapshotHistory: fullHistory)
         try Task.checkCancellation()
         guard ledgerRevision == revision else { throw CancellationError() }
+    }
+
+    // Chart-only reads do not change the ledger, run plans, or invalidate valuation snapshots.
+    func holdingPriceHistory(assetID: UUID, from start: Date, through end: Date) async throws -> InvestmentPriceHistoryResult {
+        discardExpiredSession()
+        guard loaded else { throw InvestmentError.invalid("请先加载投资账本。") }
+        guard let asset = book.asset(assetID), asset.supportsPriceHistory else { return InvestmentPriceHistoryResult(quotes: [], warning: nil) }
+        let revision = ledgerRevision
+        let credentials = keys()
+        guard asset.kind == .crypto || asset.usesEastmoneyMarketData || !credentials.isEmpty else { throw InvestmentError.invalid("此标的没有可用的行情源。") }
+        let first = asset.usesUSEquityClose ? InvestmentBook.addDays(-1, to: start) : start
+        guard first <= end else { return InvestmentPriceHistoryResult(quotes: [], warning: nil) }
+        if let cache = holdingPriceCache, cache.session == revision, cache.asset == asset,
+           cache.checkedDay == InvestmentBook.day(), cache.window.contains(first), cache.window.contains(end) {
+            return InvestmentPriceHistoryResult(quotes: cache.quotes, warning: nil)
+        }
+        let provider = InvestmentQuoteProvider()
+        var result: [InvestmentQuote] = []
+        var firstFailure: String?
+        for window in InvestmentHistoryRange.quoteWindows(from: first, through: end).reversed() {
+            try Task.checkCancellation()
+            do {
+                let values: [InvestmentQuote]
+                if asset.kind == .crypto {
+                    values = try await provider.cryptoPriceHistory(code: asset.code, from: window.lowerBound, through: window.upperBound)
+                } else {
+                    values = try await provider.history(asset: asset, start: window.lowerBound, through: window.upperBound,
+                                                        cached: nil, keys: credentials)
+                }
+                result = InvestmentBook.merge(result, values)
+            } catch {
+                try Task.checkCancellation()
+                if firstFailure == nil { firstFailure = error.localizedDescription }
+            }
+            try Task.checkCancellation()
+            guard ledgerRevision == revision, book.asset(assetID) == asset, keys() == credentials else { throw CancellationError() }
+        }
+        if firstFailure == nil {
+            holdingPriceCache = HoldingPriceCache(session: revision, asset: asset, window: first...end,
+                                                  checkedDay: InvestmentBook.day(), quotes: result)
+        }
+        return InvestmentPriceHistoryResult(quotes: result, warning: firstFailure.map { "部分历史行情查询失败：" + $0 })
     }
 
     func refresh(publicQuotesOnly: Bool = false) async {
@@ -644,7 +701,7 @@ final class InvestmentStore: ObservableObject {
             let keys = publicQuotesOnly ? [:] : self.keys()
             let currencies = publicQuotesOnly ? [] : rateCurrencies
             let publicIDs = snapshotRefresh ? [] : publicQuoteIDs
-            guard !keys.isEmpty || !currencies.isEmpty || !publicIDs.isEmpty else {
+            guard !keys.isEmpty || !marketQuoteIDs.isEmpty || !currencies.isEmpty || !publicIDs.isEmpty else {
                 if publicQuotesOnly { return }
                 quoteStatus = "请在投资记账设置中配置行情，或在标的详情录入报价。"
                 return
@@ -659,7 +716,7 @@ final class InvestmentStore: ObservableObject {
             var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
             var failures: [String] = []
             for asset in ids.compactMap({ book.assets[$0] }).sorted(by: { $0.code < $1.code })
-                where !keys.isEmpty && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
+                where !publicQuotesOnly && (asset.usesEastmoneyMarketData || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
                     (!snapshotRefresh || asset.kind != .crypto) {
                 for request in snapshotRequests?.assets[asset.id] ?? [start...today] {
                     try checkRefresh()

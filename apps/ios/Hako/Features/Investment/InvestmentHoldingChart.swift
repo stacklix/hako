@@ -7,16 +7,29 @@ struct InvestmentHoldingChart: View {
         let accountID: UUID
         let assetID: UUID
         let today: Date
-        let range: InvestmentRange
+        let range: InvestmentHistoryRange
     }
-    let book: InvestmentBook
-    let bookVersion: UUID
+    @ObservedObject var store: InvestmentStore
     let account: InvestmentAccount
     let asset: InvestmentAsset
-    @State private var range = InvestmentRange.month
+    @State private var range: InvestmentHistoryRange
+    @State private var display = InvestmentHoldingChartDisplay.profit
+    @State private var showsRanges = false
     @State private var selectedDay: Date?
     @State private var loadedRequest: Request?
     @State private var points: [InvestmentHoldingHistoryPoint] = []
+    private var book: InvestmentBook { store.book }
+    private var bookVersion: UUID { store.bookVersion }
+    private var holdingTitle: String { asset.historyUsesInvestment ? "净投入变化" : (asset.historyUsesAmount ? "资产金额变化" : "持仓数量变化") }
+    private var showsPrice: Bool { asset.supportsPriceHistory && display == .price }
+    private var showsProfit: Bool { display == .profit }
+
+    init(store: InvestmentStore, account: InvestmentAccount, asset: InvestmentAsset) {
+        _store = ObservedObject(wrappedValue: store)
+        self.account = account
+        self.asset = asset
+        _range = State(initialValue: .quarter)
+    }
 
     var body: some View {
         let request = Request(version: bookVersion, accountID: account.id, assetID: asset.id,
@@ -26,28 +39,47 @@ struct InvestmentHoldingChart: View {
             visible.min { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) }
         } ?? visible.last
         InvestmentCard {
-            Text(asset.historyUsesInvestment ? "净投入变化" : (asset.historyUsesAmount ? "资产金额变化" : "持仓数量变化")).font(.headline)
-            HakoUnderlineTabs(title: "资产变化范围", options: InvestmentRange.chart, selection: $range) { $0.rawValue }
-                .background(alignment: .bottom) { Divider() }
-                .onChange(of: range) { selectedDay = nil }
-            if let selected {
-                chart(visible, selected: selected)
-                HStack {
-                    Text(InvestmentText.date(selected.day) + (selected.day == request.today ? " · 当前" : ""))
-                    Spacer(minLength: 8)
-                    Text(asset.historyUsesAmount ? InvestmentText.money(selected.value, account.currency) : InvestmentText.number(selected.value) + " " + asset.historyUnit).monospacedDigit()
-                }.font(.caption).foregroundStyle(.secondary)
-                Text(visible.count == 1 ? "目前仅有一天记录，积累记录后显示走势。" : (asset.historyUsesInvestment ? "按买入金额（含费用）减去卖出及分红回款计算，不随报价变化。" : (asset.historyUsesAmount ? "按历史余额或估值显示金额，缺少数据的日期不连线。" : "按每日持仓数量显示，包含买卖与数量调整。")))
-                    .font(.caption2).foregroundStyle(.secondary)
-            } else if loadedRequest != request {
-                ProgressView("正在计算持仓变化…")
-                    .font(.subheadline).frame(maxWidth: .infinity, minHeight: 175)
+            HStack {
+                Text("资产走势").font(.headline)
+                Spacer(minLength: 12)
+                InvestmentHistoryRangeSelector(selection: $range, isExpanded: $showsRanges)
+            }.zIndex(30)
+            HakoUnderlineTabs(title: "走势图类型", options: asset.holdingChartDisplays, selection: $display) {
+                switch $0 {
+                case .price: "价格走势"
+                case .holding: asset.historyUsesAmount ? holdingTitle : "持仓数量"
+                case .profit: "盈亏曲线"
+                }
+            }.background(alignment: .bottom) { Divider() }
+            if showsPrice {
+                InvestmentPriceChart(store: store, accountID: account.id, asset: asset, range: $range, showsRanges: $showsRanges)
+            } else if showsProfit {
+                InvestmentProfitChart(store: store, account: account, asset: asset, range: range, showsRanges: $showsRanges)
             } else {
-                Text("暂无可用记录，请先补充持仓数据。")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                if let selected {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(InvestmentText.date(selected.day) + " · " + holdingTitle)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(asset.historyUsesAmount ? InvestmentText.money(selected.value, account.currency) : InvestmentText.number(selected.value) + " " + asset.historyUnit)
+                            .font(.title2.weight(.semibold)).monospacedDigit()
+                    }.padding(.top, 4)
+                    chart(visible, selected: selected)
+                    Text(visible.count == 1 ? "目前仅有一天记录，积累记录后显示走势。" : (asset.historyUsesInvestment ? "按买入金额（含费用）减去卖出及分红回款计算，不随报价变化。" : (asset.historyUsesAmount ? "按历史余额或估值显示金额，缺少数据的日期不连线。" : "按每日持仓数量显示，包含买卖与数量调整。")))
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else if loadedRequest != request {
+                    ProgressView("正在计算持仓变化…")
+                        .font(.subheadline).frame(maxWidth: .infinity, minHeight: 175)
+                } else {
+                    Text("暂无可用记录，请先补充持仓数据。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
             }
         }
-        .task(id: request) { await load(request) }
+        .zIndex(showsRanges ? 10 : 0)
+        .onChange(of: range) { selectedDay = nil }
+        .onChange(of: display) { showsRanges = false; selectedDay = nil }
+        .onDisappear { showsRanges = false }
+        .task(id: showsPrice || showsProfit ? nil : request) { if !showsPrice && !showsProfit { await load(request) } }
     }
 
     private func chart(_ values: [InvestmentHoldingHistoryPoint], selected: InvestmentHoldingHistoryPoint) -> some View {
@@ -72,7 +104,7 @@ struct InvestmentHoldingChart: View {
         .chartYScale(domain: .automatic(includesZero: false))
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { axis in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                 if let value = axis.as(Double.self) {
                     AxisValueLabel {
@@ -87,6 +119,7 @@ struct InvestmentHoldingChart: View {
                 if let anchor = proxy.plotFrame {
                     let frame = geometry[anchor]
                     HakoChartInteraction { point, toggle in
+                        if showsRanges { showsRanges = false; return }
                         let x = min(max(point.x, 0), frame.width)
                         guard let day = proxy.value(atX: x, as: Date.self),
                               let nearest = values.min(by: { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) }) else { return }
@@ -99,7 +132,7 @@ struct InvestmentHoldingChart: View {
         }
         .environment(\.calendar, InvestmentBook.calendar)
         .environment(\.timeZone, InvestmentBook.calendar.timeZone)
-        .frame(height: 175)
+        .frame(height: 210)
         .accessibilityLabel(asset.historyUsesAmount ? "以" + account.currency.rawValue + "计价的资产金额变化" : "持仓数量变化，单位" + asset.historyUnit)
         .accessibilityHint("点击或左右拖动查看日期和数据，松手保留选择，再次点击收起。")
     }
@@ -112,7 +145,7 @@ struct InvestmentHoldingChart: View {
                   let earliest = account.events.filter({ $0.assetID == request.assetID }).map(\.day).min() else {
                 return [InvestmentHoldingHistoryPoint]()
             }
-            let start = max(earliest, request.range.start(from: request.today, earliest: earliest))
+            let start = max(earliest, request.range.start(through: request.today, firstEntry: earliest))
             var dates: [Date] = []
             var day = start
             while day <= request.today, !Task.isCancelled {

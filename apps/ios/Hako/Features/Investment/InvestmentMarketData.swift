@@ -259,19 +259,13 @@ struct InvestmentQuoteProvider {
 
     func searchInstruments(_ search: InvestmentInstrumentSearch, keys: [InvestmentQuoteSource: String]) async throws -> [InvestmentAsset] {
         guard !search.query.isEmpty, !search.kind.isManual else { return [] }
+        try Task.checkCancellation()
         let asset = search.exactAsset
         let symbol = InvestmentQuoteSymbol(asset)
-        var lastError: Error?
-        if search.currency == .cny, search.kind == .stock, !search.stockConnect {
-            do {
-                let results = try await mainlandStocks(search, symbol: symbol)
-                try Task.checkCancellation()
-                if !results.isEmpty { return results }
-            } catch {
-                try Task.checkCancellation()
-                lastError = error
-            }
+        if search.kind != .crypto {
+            return try await eastmoneyInstruments(search)
         }
+        var lastError: Error?
         for source in Self.order(for: asset.currency) {
             try Task.checkCancellation()
             guard let key = keys[source] else { continue }
@@ -279,7 +273,7 @@ struct InvestmentQuoteProvider {
                 let results: [InvestmentAsset]
                 switch source {
                 case .tushare:
-                    results = try await tushareInstruments(search, symbol: symbol, key: key)
+                    continue
                 case .twelveData:
                     results = try await twelveInstruments(search, symbol: symbol, key: key)
                 }
@@ -293,44 +287,6 @@ struct InvestmentQuoteProvider {
         }
         if let lastError { throw lastError }
         return []
-    }
-
-    private struct MainlandStockSearch: Decodable {
-        struct Table: Decodable {
-            struct Entry: Decodable {
-                let Code: String
-                let Name: String
-                let Classify: String
-                let MktNum: String
-            }
-            let Data: [Entry]?
-            let Status: Int
-        }
-        let QuotationCodeTable: Table
-    }
-
-    private func mainlandStocks(_ search: InvestmentInstrumentSearch, symbol: InvestmentQuoteSymbol) async throws -> [InvestmentAsset] {
-        var url = URLComponents(string: "https://searchapi.eastmoney.com/api/suggest/get")!
-        url.queryItems = [.init(name: "input", value: symbol.twelveSymbol ?? search.query),
-                          .init(name: "type", value: "14"), .init(name: "count", value: "100")]
-        guard let endpoint = url.url else { throw URLError(.badURL) }
-        let (data, response) = try await send(URLRequest(url: endpoint, timeoutInterval: 10), [])
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else { throw Self.failure(status) }
-        let table = try JSONDecoder().decode(MainlandStockSearch.self, from: data).QuotationCodeTable
-        guard table.Status == 0 else { throw InvestmentError.invalid("A 股搜索暂不可用") }
-        var seen = Set<String>()
-        return (table.Data ?? []).compactMap { entry in
-            guard entry.Classify == "AStock", !entry.Name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            let asset = InvestmentAsset(name: entry.Name, code: entry.Code, market: "", kind: .stock, currency: .cny)
-            guard let mainland = asset.mainlandSymbol,
-                  ["SH": "1", "SZ": "0", "BJ": "0"][mainland.venue] == entry.MktNum else { return nil }
-            let code = mainland.base + "." + mainland.venue
-            guard symbol.tushareSymbol == nil || symbol.tushareSymbol == code else { return nil }
-            let result = InvestmentAsset(name: entry.Name, code: code, market: "", kind: .stock, currency: .cny)
-            guard search.includes(result), seen.insert(code).inserted else { return nil }
-            return result
-        }
     }
 
     private struct TwelveInstrumentSearch: Decodable {
@@ -406,75 +362,6 @@ struct InvestmentQuoteProvider {
         }
     }
 
-    private func tushareInstruments(_ search: InvestmentInstrumentSearch, symbol: InvestmentQuoteSymbol, key: String) async throws -> [InvestmentAsset] {
-        let code = symbol.tushareSymbol
-        let api: String
-        let nameFields: [String]
-        var params = code.map { ["ts_code": $0] } ?? [:]
-        switch symbol.tushareAPI {
-        case "daily": (api, nameFields) = ("stock_basic", ["name"])
-        case "fund_nav":
-            (api, nameFields) = ("fund_basic", ["name"])
-            params["market"] = code?.hasSuffix(".OF") == true ? "O" : "E"
-        case "fund_daily": (api, nameFields) = ("etf_basic", ["extname", "csname", "cname"])
-        case "hk_daily": (api, nameFields) = ("hk_basic", ["name"])
-        case "us_daily", "us_etf_daily":
-            api = search.kind == .etf ? "us_etf_basic" : "us_basic"
-            nameFields = ["name", "enname"]
-        case "opt_daily": (api, nameFields) = ("opt_basic", ["name"])
-        case "fut_daily":
-            (api, nameFields) = ("fut_basic", ["name"])
-            guard let code else { return [] }
-            let parts = code.split(separator: ".")
-            let exchanges = ["SHF": "SHFE", "DCE": "DCE", "ZCE": "CZCE", "CFX": "CFFEX", "INE": "INE", "GFE": "GFEX"]
-            guard parts.count == 2, let exchange = exchanges[String(parts[1])] else { return [] }
-            params = ["exchange": exchange]
-            let product = parts[0].prefix { $0.isLetter }
-            if !product.isEmpty { params["fut_code"] = String(product) }
-        default:
-            guard search.currency == .cny, search.kind == .stock, search.query.unicodeScalars.contains(where: { $0.value > 127 }) else { return [] }
-            (api, nameFields) = ("stock_basic", ["name"])
-            params = ["name": search.query]
-        }
-        let currencyField = api == "hk_basic" ? ["curr_type"] : []
-        let exchangeFields = api == "us_basic" ? ["exchange", "list_status"] : api == "us_etf_basic" ? ["exchange"] : []
-        if api == "us_etf_basic" { params["list_status"] = "L" }
-        let table = try await tushareTable(api: api, params: params, fields: ["ts_code"] + nameFields + currencyField + exchangeFields, key: key)
-        guard let codeIndex = table.fields.firstIndex(of: "ts_code") else { return [] }
-        let nameIndices = nameFields.compactMap { table.fields.firstIndex(of: $0) }
-        let currencyIndex = table.fields.firstIndex(of: "curr_type")
-        let exchangeIndex = table.fields.firstIndex(of: "exchange")
-        let statusIndex = table.fields.firstIndex(of: "list_status")
-        return table.items.compactMap { row in
-            guard row.count > codeIndex, let ticker = row[codeIndex]?.string?.uppercased(),
-                  code == nil || ticker == code else { return nil }
-            if api == "hk_basic" {
-                guard let currencyIndex, row.count > currencyIndex,
-                      row[currencyIndex]?.string?.uppercased() == search.currency.rawValue else { return nil }
-            }
-            let name = nameIndices.lazy.compactMap { index -> String? in
-                guard index < row.count, let name = row[index]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !name.isEmpty else { return nil }
-                return name
-            }.first
-            guard let name, code != nil || name.localizedCaseInsensitiveContains(search.query) else { return nil }
-            var market = search.stockConnect ? InvestmentAsset.stockConnectMarket : ""
-            if !exchangeFields.isEmpty {
-                let venues = ["NASDAQ": "XNAS", "NYSE": "XNYS", "AMEX": "XASE", "NYSEARCA": "ARCX", "BZX": "BATS", "OTC": "XOTC"]
-                guard let exchangeIndex, row.count > exchangeIndex, let exchange = row[exchangeIndex]?.string?.uppercased(),
-                      let venue = venues[exchange] else { return nil }
-                if api == "us_basic" {
-                    guard let statusIndex, row.count > statusIndex, row[statusIndex]?.string == "L" else { return nil }
-                }
-                market = venue
-            }
-            let asset = InvestmentAsset(name: name, code: ticker, market: market,
-                                        kind: search.kind, currency: search.currency)
-            guard (try? asset.validateMarket(settlingIn: asset.settlementCurrency)) != nil else { return nil }
-            return asset
-        }
-    }
-
     func watchQuotes(for asset: InvestmentAsset, keys: [InvestmentQuoteSource: String],
                      through today: Date = InvestmentBook.day()) async throws -> [InvestmentQuote] {
         guard InvestmentKind.watchKinds(in: asset.currency).contains(asset.kind) else {
@@ -501,6 +388,22 @@ struct InvestmentQuoteProvider {
         let cutoff = max(cached ?? start, InvestmentBook.addDays(-7, to: today))
         var best: [InvestmentQuote] = []
         var failures: [String] = []
+        if asset.usesEastmoneyMarketData {
+            do {
+                let result = markDailyCloses(try await eastmoneyHistory(asset: asset, start: start, through: today), asset: asset, now: now)
+                // Published fund NAVs and closed historical windows can legitimately end before a weekend.
+                if !asset.kind.derivative || result.last!.day >= cutoff { return result }
+                best = result
+            } catch {
+                try Task.checkCancellation()
+                failures.append(Self.eastmoneyTitle + "：" + error.localizedDescription)
+            }
+            // Optional credentials supplement missing or expired derivative contracts.
+            if !asset.kind.derivative {
+                if !best.isEmpty { return best }
+                throw InvestmentError.invalid(failures.joined(separator: "；"))
+            }
+        }
         for source in Self.order(for: asset.currency) {
             guard let key = keys[source] else { continue }
             do {
@@ -514,16 +417,7 @@ struct InvestmentQuoteProvider {
                     result = try await twelve(symbol: code, market: symbol.twelveMIC, currency: asset.currency,
                                               kind: asset.kind, start: start, end: today, key: key)
                 }
-                if asset.kind != .crypto {
-                    let usEquity = asset.usesUSEquityClose
-                    let ledgerDay = InvestmentBook.day(now)
-                    for index in result.indices {
-                        let day = result[index].day
-                        result[index].isDailyClose = usEquity
-                            ? InvestmentBook.usEquityClose(on: day) <= now
-                            : day < ledgerDay || asset.kind == .fund
-                    }
-                }
+                result = markDailyCloses(result, asset: asset, now: now)
                 if let day = result.last?.day {
                     if day >= cutoff { return result }
                     if best.last.map({ $0.day < day }) ?? true { best = result }
@@ -535,6 +429,17 @@ struct InvestmentQuoteProvider {
         }
         if !best.isEmpty { return best }
         throw InvestmentError.invalid(failures.isEmpty ? "没有适用的已配置行情源" : failures.joined(separator: "；"))
+    }
+
+    private func markDailyCloses(_ quotes: [InvestmentQuote], asset: InvestmentAsset, now: Date) -> [InvestmentQuote] {
+        guard asset.kind != .crypto else { return quotes }
+        return quotes.map { quote in
+            var quote = quote
+            quote.isDailyClose = asset.usesUSEquityClose
+                ? InvestmentBook.usEquityClose(on: quote.day) <= now
+                : quote.day < InvestmentBook.day(now) || asset.kind == .fund
+            return quote
+        }
     }
 
     private struct TwelveResponse: Decodable {

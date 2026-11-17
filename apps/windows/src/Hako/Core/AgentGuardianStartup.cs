@@ -24,7 +24,13 @@ internal static partial class AgentGuardianControl
         try
         {
             using var process = Process.GetProcessById(state.ProcessId);
-            return !process.HasExited && string.Equals(process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase)
+            if (process.HasExited) return null;
+            var path = process.MainModule?.FileName;
+            if (string.Equals(path, executable, StringComparison.OrdinalIgnoreCase)) return process.Id;
+            // A prewarmed replacement keeps its immutable image while the canonical
+            // copy is updated for autostart and subsequent launches.
+            return File.Exists(executable) && string.Equals(path,
+                GuardianHandoff.ExecutableFor(executable, AgentGuardian.Hash(executable)), StringComparison.OrdinalIgnoreCase)
                 ? process.Id : null;
         }
         catch (ArgumentException) { return null; }
