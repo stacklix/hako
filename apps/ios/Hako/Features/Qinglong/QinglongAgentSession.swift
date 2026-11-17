@@ -180,7 +180,7 @@ final class QinglongAgentSession: ObservableObject {
                 let reply = try await complete(client, prompt: prompt, messages: prior + exchange, tools: QinglongAgentTools.all,
                                                ticket: ticket, continuing: round > 0 || retry && exchange.count > 1)
                 guard reply.calls.count <= 8 else { throw LanguageModelError.invalid("单轮工具调用过多，请缩小需求后重试。") }
-                exchange.append(reply.message)
+                exchange.append(contentsOf: reply.messages)
                 streamContent.finishResponse(reply.text)
                 if reply.calls.isEmpty {
                     guard AssistantHTML(reply.text) != nil else { throw LanguageModelError.unreadable }
@@ -268,7 +268,7 @@ final class QinglongAgentSession: ObservableObject {
         let reply = try await complete(client, prompt: prompt + "\n最新待确认卡片已显示。请依据最新工具结果解释操作并回答其他问题，不重复生成卡片，不声称操作已执行。",
                                        messages: prior + exchange, tools: [], ticket: ticket, continuing: true)
         guard reply.calls.isEmpty, AssistantHTML(reply.text) != nil else { throw LanguageModelError.unreadable }
-        exchange.append(reply.message); history[history.count - 1] = exchange
+        exchange.append(contentsOf: reply.messages); history[history.count - 1] = exchange
         streamContent.finishResponse(reply.text); finishReply()
         explanationPending = false; persist()
     }

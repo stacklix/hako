@@ -115,6 +115,8 @@ struct LanguageModelStreamAccumulator {
     private var stopReason: String?
     private var started = false
     private var calls: [Int: (id: String, name: String, arguments: String)] = [:]
+    private var callMetadata: [Int: [String: Any]] = [:]
+    private var responseOutput: [[String: Any]] = []
     private var blocks: [Int: [String: Any]] = [:]
     private var inputs: [Int: String] = [:]
     private var openBlocks: Set<Int> = []
@@ -138,6 +140,7 @@ struct LanguageModelStreamAccumulator {
         }
         switch format {
         case .openAI: try appendOpenAI(object)
+        case .responses: try appendResponses(object)
         case .anthropic: try appendAnthropic(object)
         }
     }
@@ -162,7 +165,30 @@ struct LanguageModelStreamAccumulator {
                 call.name += function["name"] as? String ?? ""
                 call.arguments += function["arguments"] as? String ?? ""
             }
+            if let metadata = part["extra_content"] { callMetadata[index] = ["extra_content": metadata] }
             calls[index] = call
+        }
+    }
+
+    private mutating func appendResponses(_ object: [String: Any]) throws {
+        switch object["type"] as? String {
+        case "response.output_text.delta", "response.refusal.delta":
+            content.text += object["delta"] as? String ?? ""
+        case "response.reasoning_summary_text.delta":
+            content.thinking += object["delta"] as? String ?? ""
+        case "response.completed":
+            guard let response = object["response"] as? [String: Any], response["status"] as? String == "completed",
+                  let output = response["output"] as? [[String: Any]] else { throw LanguageModelError.unreadable }
+            responseOutput = output
+            content.text = output.filter { $0["type"] as? String == "message" }
+                .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+                .compactMap { $0["text"] as? String ?? $0["refusal"] as? String }.joined(separator: "\n")
+            finished = true
+        case "response.failed":
+            throw LanguageModelError.invalid("模型服务未能完成回复，请稍后重试或检查模型权限。")
+        case "response.incomplete":
+            throw LanguageModelError.invalid("模型回复未完整生成，可能已达到输出上限。请降低推理强度、缩小请求范围后重试。")
+        default: break
         }
     }
 
@@ -225,10 +251,14 @@ struct LanguageModelStreamAccumulator {
                     let call = calls[index]!
                     guard !call.id.isEmpty, !call.name.isEmpty,
                           (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8))) is [String: Any] else { throw LanguageModelError.unreadable }
-                    return ["id": call.id, "type": "function", "function": ["name": call.name, "arguments": call.arguments]]
+                    var item = callMetadata[index] ?? [:]
+                    item["id"] = call.id; item["type"] = "function"
+                    item["function"] = ["name": call.name, "arguments": call.arguments]
+                    return item
                 }
             }
             body = ["choices": [["message": message]]]
+        case .responses: body = ["output": responseOutput]
         case .anthropic: body = ["content": blocks.keys.sorted().compactMap { blocks[$0] }]
         }
         return try JSONSerialization.data(withJSONObject: body)

@@ -210,7 +210,7 @@ final class InvestmentAgentSession: ObservableObject {
                     }
                 })
                 try ensureSession(base.session)
-                exchange.append(reply.message)
+                exchange.append(contentsOf: reply.messages)
                 streamContent.finishResponse(reply.text)
                 if reply.calls.isEmpty {
                     guard AssistantHTML(reply.text) != nil else { throw LanguageModelError.unreadable }

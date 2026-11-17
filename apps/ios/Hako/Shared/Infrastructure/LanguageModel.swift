@@ -4,22 +4,29 @@ import FoundationNetworking
 #endif
 
 enum LanguageModelFormat: String, Codable, CaseIterable, Identifiable {
-    case openAI, anthropic
+    case openAI, responses, anthropic
 
     var id: Self { self }
     var title: String {
         switch self {
         case .openAI: "OpenAI 兼容 · Chat Completions"
+        case .responses: "OpenAI · Responses"
         case .anthropic: "Anthropic 兼容 · Messages"
         }
     }
     var defaultURL: String {
         switch self {
-        case .openAI: "https://api.openai.com/v1"
+        case .openAI, .responses: "https://api.openai.com/v1"
         case .anthropic: "https://api.anthropic.com/v1"
         }
     }
-    var route: [String] { self == .openAI ? ["chat", "completions"] : ["messages"] }
+    var route: [String] {
+        switch self {
+        case .openAI: ["chat", "completions"]
+        case .responses: ["responses"]
+        case .anthropic: ["messages"]
+        }
+    }
 }
 
 struct LanguageModelConfiguration: Codable, Equatable {
@@ -27,8 +34,19 @@ struct LanguageModelConfiguration: Codable, Equatable {
     var baseURL = LanguageModelFormat.openAI.defaultURL
     var model = ""
     var token = ""
+    var presetID: String? = nil
+    var speed: LanguageModelSpeed? = nil
+    var reasoningEffort: String? = nil
 
     func endpoint() throws -> URL {
+        if let preset = LanguageModelPreset.matching(self) {
+            guard speed.map({ preset.speeds.contains($0) }) ?? true,
+                  reasoningEffort.map({ preset.efforts.contains($0) }) ?? true else {
+                throw LanguageModelError.invalid("所选模型不支持当前速度或推理强度，请重新选择。")
+            }
+        } else if presetID != nil || speed != nil || reasoningEffort != nil {
+            throw LanguageModelError.invalid("自定义接口请使用服务商默认参数，或重新选择内置模型。")
+        }
         guard let components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
               components.scheme?.lowercased() == "https", let host = components.host, !host.isEmpty,
               components.user == nil, components.password == nil, components.fragment == nil,
@@ -111,6 +129,7 @@ struct LanguageModelProfiles: Codable {
 enum LanguageModelError: LocalizedError {
     case invalid(String)
     case response(Int)
+    case rejected(Int, String)
     case unreadable
     case connection(URLError.Code, retries: Int)
     case incompleteResponse(retries: Int)
@@ -123,6 +142,7 @@ enum LanguageModelError: LocalizedError {
         case .response(413): "模型服务拒绝了这次请求，请减少图片大小或新开对话。"
         case .response(429): "模型服务请求受限，请稍后重试。"
         case .response(let code): "模型请求失败（HTTP \(code)）。"
+        case .rejected(let code, let detail): "模型服务拒绝了请求（HTTP \(code)）。\(detail)"
         case .unreadable: "模型返回的内容无法读取，请检查 API 兼容格式。"
         case .incompleteResponse(let retries): "模型响应提前结束，内容未收全，已自动重试 \(retries) 次。请重试或检查模型接口。"
         case .connection(let code, let retries):
@@ -148,6 +168,8 @@ struct LanguageModelTool {
         switch format {
         case .openAI:
             return ["type": "function", "function": ["name": name, "description": description, "parameters": schema]]
+        case .responses:
+            return ["type": "function", "name": name, "description": description, "parameters": schema, "strict": false]
         case .anthropic:
             return ["name": name, "description": description, "input_schema": schema]
         }
@@ -165,6 +187,8 @@ struct LanguageModelReply {
     let message: [String: Any]
     let text: String
     let calls: [LanguageModelCall]
+    var outputItems: [[String: Any]]? = nil
+    var messages: [[String: Any]] { outputItems ?? [message] }
 }
 
 enum LanguageModelRequestProgress: Equatable, Sendable {
@@ -199,11 +223,12 @@ struct LanguageModelClient {
     func userMessage(_ text: String, images: [Data] = []) -> [String: Any] {
         if configuration.format == .openAI, images.isEmpty { return ["role": "user", "content": text] }
         var parts: [[String: Any]] = []
-        if !text.isEmpty { parts.append(["type": "text", "text": text]) }
+        if !text.isEmpty { parts.append(["type": configuration.format == .responses ? "input_text" : "text", "text": text]) }
         for image in images {
             let data = image.base64EncodedString()
             switch configuration.format {
             case .openAI: parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + data]])
+            case .responses: parts.append(["type": "input_image", "image_url": "data:image/jpeg;base64," + data])
             case .anthropic: parts.append(["type": "image", "source": ["type": "base64", "media_type": "image/jpeg", "data": data]])
             }
         }
@@ -214,6 +239,8 @@ struct LanguageModelClient {
         switch configuration.format {
         case .openAI:
             return results.map { ["role": "tool", "tool_call_id": $0.0.id, "content": $0.1] }
+        case .responses:
+            return results.map { ["type": "function_call_output", "call_id": $0.0.id, "output": $0.1] }
         case .anthropic:
             let content = results.map { ["type": "tool_result", "tool_use_id": $0.0.id, "content": $0.1] }
             return [["role": "user", "content": content]]
@@ -221,6 +248,12 @@ struct LanguageModelClient {
     }
 
     func request(system: String, messages: [[String: Any]], tools: [LanguageModelTool]) throws -> URLRequest {
+        if LanguageModelPreset.matching(configuration)?.images == false,
+           messages.contains(where: { message in
+               (message["content"] as? [[String: Any]] ?? []).contains { $0["type"] as? String == "image_url" }
+           }) {
+            throw LanguageModelError.invalid("当前模型不支持图片，请切换到支持图片的内置模型。")
+        }
         var request = URLRequest(url: try configuration.endpoint())
         request.timeoutInterval = LanguageModelTimeout.idle
         request.httpMethod = "POST"
@@ -234,6 +267,12 @@ struct LanguageModelClient {
         case .openAI:
             request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
             body["messages"] = [["role": "system", "content": system]] + messages
+        case .responses:
+            request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+            body["instructions"] = system
+            body["input"] = messages
+            body["store"] = false
+            body["include"] = ["reasoning.encrypted_content"]
         case .anthropic:
             request.setValue(token, forHTTPHeaderField: "x-api-key")
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -241,6 +280,7 @@ struct LanguageModelClient {
             body["messages"] = messages
             body["max_tokens"] = 4096
         }
+        applyPreset(to: &body)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
@@ -258,6 +298,7 @@ struct LanguageModelClient {
             let started = ContinuousClock.now
             var status: Int?
             var receivedBytes = 0
+            var errorBody = Data()
             var lastDataAt: ContinuousClock.Instant?
             do {
                 let stream = try await transport(request)
@@ -275,7 +316,7 @@ struct LanguageModelClient {
                     case .response(let response):
                         guard let http = response as? HTTPURLResponse else { throw LanguageModelError.unreadable }
                         status = http.statusCode
-                        guard (200..<300).contains(http.statusCode) else { throw LanguageModelError.response(http.statusCode) }
+                        if !(200..<300).contains(http.statusCode) { continue }
                         if let type = http.mimeType, type != "text/event-stream" {
                             throw LanguageModelError.invalid("模型接口没有返回流式响应，请检查接口是否支持流式输出。")
                         }
@@ -283,6 +324,11 @@ struct LanguageModelClient {
                         receivedBytes += data.count
                         lastDataAt = .now
                         guard status != nil else { throw LanguageModelError.unreadable }
+                        if let status, !(200..<300).contains(status) {
+                            errorBody.append(data.prefix(max(0, 32_768 - errorBody.count)))
+                            if errorBody.count >= 32_768 { throw apiError(status: status, data: errorBody) }
+                            continue
+                        }
                         let events = try decoder.append(data)
                         if !events.isEmpty && !receiving {
                             receiving = true
@@ -299,6 +345,7 @@ struct LanguageModelClient {
                     if accumulator.finished { break }
                 }
                 try Task.checkCancellation()
+                if let status, !(200..<300).contains(status) { throw apiError(status: status, data: errorBody) }
                 let reply = try decode(accumulator.response())
                 await onContent?(accumulator.content)
                 await onProgress?(.receivedResponse)
@@ -306,6 +353,8 @@ struct LanguageModelClient {
                        receivedBytes: receivedBytes, lastDataAt: lastDataAt)
                 return reply
             } catch {
+                let error: Error = status.map { !(200..<300).contains($0) } == true
+                    ? apiError(status: status!, data: errorBody) : error
                 record(request, id: requestID, attempt: attempt, started: started, status: status,
                        receivedBytes: receivedBytes, lastDataAt: lastDataAt, error: error)
                 try Task.checkCancellation()
@@ -350,6 +399,20 @@ struct LanguageModelClient {
             throw LanguageModelError.unreadable
         }
         switch configuration.format {
+        case .responses:
+            guard let output = body["output"] as? [[String: Any]] else { throw LanguageModelError.unreadable }
+            let calls = try output.filter { $0["type"] as? String == "function_call" }.map { item in
+                guard let id = item["call_id"] as? String, !id.isEmpty, let name = item["name"] as? String, !name.isEmpty,
+                      let arguments = item["arguments"] as? String,
+                      let parsed = try? JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: Any] else {
+                    throw LanguageModelError.unreadable
+                }
+                return LanguageModelCall(id: id, name: name, arguments: parsed, rawArguments: arguments)
+            }
+            let text = output.filter { $0["type"] as? String == "message" }
+                .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+                .compactMap { $0["text"] as? String ?? $0["refusal"] as? String }.joined(separator: "\n")
+            return .init(message: ["role": "assistant", "content": text], text: text, calls: calls, outputItems: output)
         case .openAI:
             guard let choices = body["choices"] as? [[String: Any]], let choice = choices.first,
                   let message = choice["message"] as? [String: Any] else { throw LanguageModelError.unreadable }

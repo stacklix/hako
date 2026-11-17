@@ -42,6 +42,9 @@ struct InvestmentAgentTests {
         try await cancellingAStreamClosesItsTransport()
         try rejectsMalformedModelArguments()
         try modelWireFormatsRoundTripToolCallsAndImages()
+        try modelPresetsConfigureOnlySupportedParameters()
+        try await responsesPreserveToolsAndReasoningAcrossTurns()
+        try await modelAPIErrorsExplainAndRedactCredentials()
         try anthropicMessagesUsesVersionAfterGatewayPrefix()
         sanitizesModelHTML()
         try savesConversationAndPendingProposal()
@@ -997,7 +1000,7 @@ struct InvestmentAgentTests {
             let request = try client.request(system: "system", messages: [client.userMessage("images", images: images)], tools: [tool])
             guard let payload = request.httpBody,
                   let body = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
-                  let messages = body["messages"] as? [[String: Any]],
+                  let messages = body[format == .responses ? "input" : "messages"] as? [[String: Any]],
                   let parts = messages.last?["content"] as? [[String: Any]] else {
                 preconditionFailure("Missing image in request")
             }
@@ -1006,6 +1009,11 @@ struct InvestmentAgentTests {
             precondition(parts.count == images.count + 1 && parts.first?["text"] as? String == "images")
             let response: [String: Any]
             switch format {
+            case .responses:
+                precondition(request.url?.path == "/v1/responses" && request.value(forHTTPHeaderField: "Authorization") == "Bearer test")
+                let urls = parts.dropFirst().compactMap { $0["image_url"] as? String }
+                precondition(urls == images.map { "data:image/jpeg;base64," + $0.base64EncodedString() })
+                response = ["output": [["type": "function_call", "id": "fc_1", "call_id": "call", "name": "probe", "arguments": #"{"value":"ping"}"#]]]
             case .openAI:
                 precondition(request.url?.path == "/v1/chat/completions" && request.value(forHTTPHeaderField: "Authorization") == "Bearer test")
                 let urls = parts.dropFirst().compactMap { ($0["image_url"] as? [String: String])?["url"] }
@@ -1023,7 +1031,8 @@ struct InvestmentAgentTests {
             precondition(reply.calls.count == 1 && reply.calls[0].arguments?["value"] as? String == "ping")
             precondition(reply.message["annotations"] == nil)
             let result = client.toolMessages([(reply.calls[0], "ok")])
-            if format == .openAI { precondition(result[0]["tool_call_id"] as? String == "call") }
+            if format == .responses { precondition(result[0]["call_id"] as? String == "call") }
+            else if format == .openAI { precondition(result[0]["tool_call_id"] as? String == "call") }
             else { precondition((result[0]["content"] as? [[String: String]])?.first?["tool_use_id"] == "call") }
             let imageOnly = client.userMessage("", images: images)["content"] as? [[String: Any]]
             precondition(imageOnly?.count == images.count && imageOnly?.first?["type"] as? String != "text")

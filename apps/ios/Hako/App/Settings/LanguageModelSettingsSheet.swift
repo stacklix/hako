@@ -15,14 +15,14 @@ struct LanguageModelSettingsSheet: View {
                     Section {
                         if profiles.entries.count > 1 {
                             Picker("当前模型", selection: Binding(get: { active.id }, set: select)) {
-                                ForEach(profiles.entries) { profile in Text(profile.name).tag(profile.id) }
+                                ForEach(profiles.entries) { profile in Text(profile.name + " · " + profile.configuration.selectionSummary).tag(profile.id) }
                             }
                             .pickerStyle(.menu)
                         } else {
                             LabeledContent("当前模型", value: active.name)
                         }
                     } footer: {
-                        Text("记账助手使用这里选中的模型。切换后，下一条消息会开启新对话。")
+                        Text("记账助手与青龙助手使用这里选中的模型。切换模型、速度或推理强度后，下一条消息会开启新对话。")
                     }
                 }
                 Section("模型配置") {
@@ -31,7 +31,7 @@ struct LanguageModelSettingsSheet: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(profile.name).foregroundStyle(.primary)
-                                    Text(profile.configuration.format.title + " · " + profile.configuration.model)
+                                    Text(profile.configuration.selectionSummary)
                                         .font(.footnote).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -79,6 +79,7 @@ private struct LanguageModelProfileEditor: View {
     private struct ConnectionCheck: Identifiable {
         let id: String
         var failure: String? = nil
+        var skipped = false
     }
 
     @Environment(\.dismiss) private var dismiss
@@ -91,12 +92,28 @@ private struct LanguageModelProfileEditor: View {
     @State private var confirmsClear = false
 
     init(profile: LanguageModelProfile, existing: Bool) {
-        original = profile
         self.existing = existing
-        _draft = State(initialValue: profile)
+        var initial = profile
+        if !existing && initial.configuration.model.isEmpty, let preset = LanguageModelPreset.all.first {
+            preset.configure(&initial.configuration)
+            initial.name = preset.title
+        }
+        original = existing ? profile : initial
+        _draft = State(initialValue: initial)
     }
 
     private var validConfiguration: Bool { (try? draft.configuration.endpoint()) != nil }
+    private var preset: LanguageModelPreset? { LanguageModelPreset.matching(draft.configuration) }
+    private var providerSelection: Binding<String> {
+        Binding(get: { preset?.provider.rawValue ?? "custom" }, set: { id in
+            if let next = LanguageModelPreset.all.first(where: { $0.provider.rawValue == id }) { choose(next) }
+            else {
+                draft.configuration.presetID = nil
+                draft.configuration.speed = nil
+                draft.configuration.reasoningEffort = nil
+            }
+        })
+    }
 
     var body: some View {
         SettingsSheet(title: existing ? "编辑模型" : "添加模型", hasChanges: draft != original, isBusy: testing,
@@ -104,20 +121,70 @@ private struct LanguageModelProfileEditor: View {
                       onSave: save) {
             Form {
                 Section {
-                    field("配置名称") { TextField("例如工作模型", text: $draft.name) }
-                    Picker("API 格式", selection: $draft.configuration.format) {
-                        ForEach(LanguageModelFormat.allCases) { format in
-                            Text(format.title).tag(format)
+                    Picker("服务商", selection: providerSelection) {
+                        ForEach(LanguageModelProvider.allCases) { provider in Text(provider.title).tag(provider.rawValue) }
+                        Text("自定义接口").tag("custom")
+                    }.pickerStyle(.menu)
+                    if let preset {
+                        Picker("模型", selection: Binding(get: { preset.id }, set: { id in
+                            if let next = LanguageModelPreset.all.first(where: { $0.id == id }) { choose(next) }
+                        })) {
+                            ForEach(LanguageModelPreset.all.filter { $0.provider == preset.provider }) { model in
+                                Text(model.title).tag(model.id)
+                            }
+                        }.pickerStyle(.menu)
+                        if preset.provider.endpoints.count > 1 {
+                            Picker("服务区域", selection: Binding(get: { draft.configuration.baseURL }, set: { url in
+                                if draft.configuration.baseURL != url { draft.configuration.token = "" }
+                                draft.configuration.baseURL = url
+                            })) {
+                                ForEach(preset.provider.endpoints, id: \.url) { endpoint in Text(endpoint.title).tag(endpoint.url) }
+                            }.pickerStyle(.menu)
+                        }
+                        if preset.speeds.count > 1 {
+                            Picker("速度", selection: Binding(get: { draft.configuration.speed ?? .standard }, set: { draft.configuration.speed = $0 })) {
+                                ForEach(preset.speeds) { speed in Text(speed.title).tag(speed) }
+                            }.pickerStyle(.menu)
+                        } else { LabeledContent("速度", value: "标准（无独立加速档）") }
+                        if !preset.efforts.isEmpty {
+                            Picker("推理强度", selection: Binding(get: { draft.configuration.reasoningEffort ?? "" }, set: {
+                                draft.configuration.reasoningEffort = $0.isEmpty ? nil : $0
+                            })) {
+                                Text("服务商默认").tag("")
+                                ForEach(preset.efforts, id: \.self) { Text(LanguageModelPreset.effortTitle($0)).tag($0) }
+                            }.pickerStyle(.menu)
+                        } else { LabeledContent("推理强度", value: "由模型自动控制") }
+                    } else {
+                        field("配置名称") { TextField("例如工作模型", text: $draft.name) }
+                        Picker("API 格式", selection: $draft.configuration.format) {
+                            ForEach(LanguageModelFormat.allCases) { format in Text(format.title).tag(format) }
+                        }
+                        field("API Base URL") {
+                            TextField("https://example.com/v1", text: $draft.configuration.baseURL).keyboardType(.URL)
+                        }
+                        field("模型 ID") { TextField("服务商提供的模型 ID", text: $draft.configuration.model) }
+                    }
+                } header: {
+                    Text("选择模型")
+                } footer: {
+                    if let preset {
+                        Text("官方接口已配置，只需填写对应服务商的 Token。快速档可能额外收费；推理越高，等待和用量通常越大。" +
+                             (preset.images ? "" : "此模型不支持图片，可选择 DeepSeek Flash 处理图片。"))
+                    } else { Text("自定义接口使用服务商默认速度和推理参数。") }
+                }
+                Section {
+                    field("API Token") { SecureField("输入 API Token", text: $draft.configuration.token) }
+                } header: {
+                    Text("访问凭据")
+                } footer: {
+                    Text("Token 仅保存在本机钥匙串。使用记账助手时，消息、图片和必要的账本数据会发送给所选服务商。")
+                }
+                if preset != nil {
+                    Section {
+                        DisclosureGroup("配置名称") {
+                            field("名称") { TextField("模型配置名称", text: $draft.name) }
                         }
                     }
-                    field("API Base URL") {
-                        TextField("https://example.com/v1", text: $draft.configuration.baseURL)
-                            .keyboardType(.URL)
-                    }
-                    field("模型 ID") { TextField("服务商提供的模型 ID", text: $draft.configuration.model) }
-                    field("API Token") { SecureField("输入 API Token", text: $draft.configuration.token) }
-                } footer: {
-                    Text("配置保存在本机钥匙串。使用记账助手时，发送的消息、图片和查询所需的账本数据会传给所填的模型服务。")
                 }
                 Section {
                     connectionTest
@@ -129,12 +196,21 @@ private struct LanguageModelProfileEditor: View {
             .onChange(of: draft.configuration.format) { old, new in
                 if draft.configuration.baseURL == old.defaultURL { draft.configuration.baseURL = new.defaultURL }
             }
+            .onChange(of: draft.configuration.baseURL) { old, new in
+                if URL(string: old)?.host != URL(string: new)?.host { draft.configuration.token = "" }
+            }
             .onChange(of: draft.configuration) { checks = [] }
         }
         .hakoDeleteConfirmation(Text("删除这项模型配置？"), isPresented: $confirmsClear, disabled: testing, confirm: clear)
         .alert("大模型配置", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
+    }
+
+    private func choose(_ preset: LanguageModelPreset) {
+        let previousTitle = self.preset?.title
+        preset.configure(&draft.configuration)
+        if !existing || draft.name.isEmpty || draft.name == previousTitle { draft.name = preset.title }
     }
 
     private var connectionTest: some View {
@@ -163,10 +239,10 @@ private struct LanguageModelProfileEditor: View {
 
     private func checkRow(_ check: ConnectionCheck) -> some View {
         let passed = check.failure == nil
-        let statusColor = passed ? HakoStyle.adaptive(0x18743b, 0x5cdb83) : HakoStyle.adaptive(0xa52b38, 0xff9da8)
+        let statusColor = check.skipped ? HakoStyle.muted : passed ? HakoStyle.adaptive(0x18743b, 0x5cdb83) : HakoStyle.adaptive(0xa52b38, 0xff9da8)
         return VStack(alignment: .leading, spacing: 3) {
             LabeledContent {
-                Label(passed ? "通过" : "失败", systemImage: passed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                Label(check.skipped ? "不支持" : passed ? "通过" : "失败", systemImage: check.skipped ? "minus.circle" : passed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(statusColor)
             } label: {
@@ -229,7 +305,9 @@ private struct LanguageModelProfileEditor: View {
             let supported = reply.calls.contains { $0.name == probe.name && $0.arguments?["value"] as? String == "ping" }
             checks.append(.init(id: "工具调用", failure: supported ? nil : "未收到有效调用"))
         } catch { checks.append(.init(id: "工具调用", failure: error.localizedDescription)) }
-        if let image {
+        if preset?.images == false {
+            checks.append(.init(id: "图片", skipped: true))
+        } else if let image {
             do {
                 let message = client.userMessage("Name the color in the image. Answer with one English word.", images: [image])
                 let reply = try await client.complete(system: "You are performing a vision test.", messages: [message])
