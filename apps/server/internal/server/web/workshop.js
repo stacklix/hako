@@ -54,6 +54,7 @@
       const group = node('details', undefined, 'workshop-project');
       group.open = !collapsed.has(app.id);
       const summary = node('summary'); summary.append(node('strong', app.name));
+      summary.append(node('span', String(all.length)));
       if (!$('workshop-archived').checked) {
         const create = node('button', '＋', 'workshop-project-new'); create.type = 'button';
         create.title = '新建会话'; create.setAttribute('aria-label', '在 ' + app.name + ' 中新建会话');
@@ -66,7 +67,6 @@
         });
         summary.append(create);
       }
-      summary.append(node('span', String(all.length)));
       group.addEventListener('toggle', () => { if (group.open) collapsed.delete(app.id); else collapsed.add(app.id); });
       group.append(summary);
       for (const session of all) {
@@ -278,7 +278,7 @@
     drawModelOptions(); drawTranscript(view); drawAttachments(view); drawApprovals(view); drawArtifacts(view);
   }
   function applyPage(view, page) {
-    if (!Number.isSafeInteger(page.cursor) || page.cursor < view.cursor) return;
+    if (!Number.isSafeInteger(page.cursor) || page.cursor < view.cursor) return false;
     // Cursor advancement and event application happen together. A reconnect
     // starts at the last applied byte, never at an EventSource retry URL.
     if (page.cursor > view.cursor) for (const entry of page.events) {
@@ -299,6 +299,7 @@
       drawControls(view); drawTranscript(view); drawApprovals(view); drawArtifacts(view);
       if (page.operation.message) error(page.operation.message);
     }
+    return true;
   }
   function startStream(view) {
     if (!current(view) || !view.operation || document.hidden || stream) return;
@@ -315,7 +316,15 @@
       reconnect = setTimeout(async () => {
         reconnect = null;
         if (!current(view) || generation !== streamVersion || operation !== view.operation || document.hidden) return;
-        try { await refreshComputers(); } catch (e) { if (current(view)) error(e.message); }
+        try {
+          await refreshComputers();
+          if (!current(view) || generation !== streamVersion || operation !== view.operation || document.hidden) return;
+          if (online() && await readOperation(view) && current(view) && generation === streamVersion && operation === view.operation) connectionRecovered(view);
+        } catch (e) {
+          if (current(view) && generation === streamVersion && operation === view.operation) {
+            view.connectionIssue = e.message; error(e.message);
+          }
+        }
         if (current(view) && generation === streamVersion && online()) startStream(view);
       }, 3000);
     };
@@ -330,8 +339,7 @@
           throw new Error(frame.error?.message || '工坊事件读取失败。');
         }
         const wasRunning = running(view.state);
-        applyPage(view, frame.result);
-        connectionRecovered(view);
+        if (applyPage(view, frame.result)) connectionRecovered(view);
         if (wasRunning && !running(view.state)) { void loadHistory(view); void refreshCatalog(); }
       } catch (e) { error(e.message); source.close(); stream = null; }
     };
@@ -364,7 +372,7 @@
   async function readOperation(view) {
     const operation = view.operation;
     const page = await call(view.computer, 'operation.read', {operationId:operation, cursor:view.cursor});
-    if (view.operation === operation) applyPage(view, page);
+    return view.operation === operation && applyPage(view, page);
   }
   async function mutateFollowup(view, followup, command, text) {
     if (command === 'update') {

@@ -1,10 +1,12 @@
 'use strict';
 let dataDatabases = [], dataDatabase = null, dataTable = null;
+let dataExpandedDatabase = null;
 let dataEpoch = 0, dataCatalogEpoch = 0, dataBusy = false, dataPage = null;
 
 function resetDatabaseManager() {
   dataEpoch++; dataCatalogEpoch++;
   dataDatabases = []; dataDatabase = null; dataTable = null; dataBusy = false; dataPage = null;
+  dataExpandedDatabase = null;
   for (const id of ['system-databases', 'data-results', 'data-columns']) $(id).replaceChildren();
   $('system-status').textContent = ''; $('data-sql').value = ''; $('system-filter').value = '';
   $('data-ddl').textContent = '选择一张表以查看结构。';
@@ -42,8 +44,14 @@ function renderDataCatalog() {
     const match = (db.name + ' ' + db.file).toLowerCase().includes(filter);
     const tables = (db.schema?.tables ?? []).filter(t => match || t.name.toLowerCase().includes(filter));
     if (!match && !tables.length) continue;
-    const group = node('details', undefined, 'data-database-group'); group.open = true;
+    const group = node('details', undefined, 'data-database-group'); group.open = dataExpandedDatabase === db.id;
     const summary = node('summary');
+    summary.addEventListener('click', event => {
+      event.preventDefault();
+      const open = !group.open;
+      dataExpandedDatabase = open ? db.id : null;
+      for (const other of groups) other.open = other === group && open;
+    });
     summary.append(node('strong', db.name), node('span', db.schema ? `${db.schema.tables.length} 张表` : ({disabled:'未启用', not_created:'尚未创建', unreadable:'读取失败'}[db.status] || db.status), 'muted'));
     group.append(summary, node('p', db.file + (db.schema ? ` · 版本 ${db.schema.version}` : ''), 'data-file'));
     if (db.schema && db.schema.version !== db.expectedVersion) group.append(node('p', `期望版本 ${db.expectedVersion}，请检查迁移状态`, 'data-version-warning'));

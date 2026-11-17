@@ -190,9 +190,7 @@ struct InvestmentView: View {
                                     selection: Binding(get: { selected }, set: { selectedAccount = $0 })) { id in
             guard let item = store.book.account(id) else { return "" }
             var name = item.name + (item.isArchived ? " · 已归档" : "")
-            if item.currency == .hkd {
-                name += " " + item.currency.rawValue
-            } else if item.currency == .cny && accounts.contains(where: { $0.name == item.name && $0.currency == .usd }) {
+            if item.currency == .cny && accounts.contains(where: { $0.name == item.name && $0.currency == .usd }) {
                 name += " " + item.currency.title
             }
             if accounts.contains(where: { $0.id != id && $0.name == item.name && $0.currency == item.currency }) {

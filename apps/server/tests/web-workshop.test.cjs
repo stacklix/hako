@@ -41,6 +41,7 @@ async function workshop() {
         case 'applications.list': result = {applications:[app], sessions:[{id:thread,title:'修复菜单',applicationId:app.id,preview:'已有内容',state:'completed',lastSentAt:100}],nextCursor:null}; break;
         case 'models.list': result = {models:[]}; break;
         case 'history.read': result = {entries:[{id:'old',kind:'item',role:'assistant',text:'已有内容'}],artifacts:[],nextCursor:null}; break;
+        case 'operation.read': result = {cursor:frame.params.cursor,events:[],operation:{id:frame.params.operationId,threadId:thread,state:'running'},approvals:[],artifacts:[],followups:[]}; break;
         case 'commands.list': result = {tasks:[]}; break;
         case 'commands.start': result = {id:frame.params.requestId,name:frame.params.name,state:'running'}; break;
         case 'commands.read': result = {cursor:12,output:'tests passed',hasMore:false,task:{id:frame.params.taskId,name:'运行测试',command:'go test ./...',state:'completed',exitCode:0}}; break;
@@ -138,9 +139,10 @@ test('server disconnect frames reconnect from the applied cursor and clear the r
   const recovered = w.sources.at(-1);
   assert.notEqual(recovered, source);
   assert.match(recovered.url, /\/operation-1\/20$/);
-  // Successfully reading history is insufficient while the operation stream is still disconnected.
+  assert.equal(w.calls.at(-1).method, 'operation.read');
+  assert.equal(w.el('workshop-error').hidden, true, 'A verified operation snapshot recovers progress before stream events arrive');
   await w.el('workshop-refresh').events.click();
-  assert.equal(w.el('workshop-error').hidden, false);
+  assert.equal(w.el('workshop-error').hidden, true);
   recovered.emit(w.page(30, [{kind:'delta',id:'answer',role:'assistant',text:'继续'}]));
   assert.equal(w.el('workshop-error').hidden, true);
   assert.match(text(w.el('workshop-transcript')), /已收到继续/);
@@ -154,6 +156,40 @@ test('server disconnect frames reconnect from the applied cursor and clear the r
   await retry();
   assert.equal(w.calls.length, calls, 'A queued reconnect cannot read after logout');
   assert.equal(w.sources.length, sources);
+});
+
+test('reconnection reads missed progress before subscribing from the latest cursor', async () => {
+  const w = await workshop(); await w.send('开始');
+  const source = w.sources.at(-1);
+  source.emit(w.page(20, [{kind:'delta',id:'answer',role:'assistant',text:'已收到'}]));
+  const api = w.context.api;
+  w.context.api = async (...args) => args[2]?.method === 'operation.read'
+    ? {kind:'result',result:w.page(40, [{kind:'delta',id:'answer',role:'assistant',text:'恢复后的进度'}])}
+    : api(...args);
+  source.onerror();
+  await w.timers.at(-1)();
+  assert.equal(w.el('workshop-error').hidden, true);
+  assert.match(w.sources.at(-1).url, /\/operation-1\/40$/);
+  assert.match(text(w.el('workshop-transcript')), /已收到恢复后的进度/);
+  w.sources.at(-1).emit(w.page(40, [{kind:'delta',id:'answer',role:'assistant',text:'恢复后的进度'}]));
+  assert.equal((text(w.el('workshop-transcript')).match(/恢复后的进度/g) || []).length, 1);
+});
+
+test('failed progress reads retain the warning and still reconnect the operation stream', async () => {
+  const w = await workshop(); await w.send('开始');
+  const api = w.context.api;
+  w.context.api = async (...args) => args[2]?.method === 'operation.read'
+    ? {kind:'failure',error:{code:'workshop_disconnected',message:'任务进度尚未恢复。'}}
+    : api(...args);
+  const source = w.sources.at(-1);
+  source.onerror();
+  await w.timers.at(-1)();
+  const recovered = w.sources.at(-1);
+  assert.notEqual(recovered, source);
+  assert.equal(w.el('workshop-error').hidden, false);
+  assert.equal(w.el('workshop-error').textContent, '任务进度尚未恢复。');
+  recovered.emit(w.page(20, []));
+  assert.equal(w.el('workshop-error').hidden, true);
 });
 
 test('workshop commands submit explicit execution settings and read independent task logs', async () => {

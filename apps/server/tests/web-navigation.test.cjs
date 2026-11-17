@@ -282,6 +282,30 @@ test('data management shows database tables, queries rows and switches to struct
   assert.equal(document.getElementById('data-run').disabled, true);
 });
 
+test('database groups start collapsed and keep only one open across catalog renders', async () => {
+  const {document, context} = await openPage('/admin/system/data');
+  const groups = () => document.getElementById('system-databases').children;
+  const states = () => groups().map(group => group.open);
+  const toggle = index => groups()[index].children[0].events.click({preventDefault() {}});
+  assert.deepEqual(states(), [false, false, false]);
+  toggle(0);
+  assert.deepEqual(states(), [true, false, false]);
+  toggle(2);
+  assert.deepEqual(states(), [false, false, true]);
+  vm.runInContext("selectDataTable('investment', 'investment_accounts')", context);
+  await new Promise(setImmediate);
+  assert.deepEqual(states(), [false, false, true]);
+  await document.getElementById('system-refresh').events.click();
+  assert.deepEqual(states(), [false, false, true]);
+  toggle(2);
+  assert.deepEqual(states(), [false, false, false]);
+  toggle(1);
+  assert.deepEqual(states(), [false, true, false]);
+  vm.runInContext('resetDatabaseManager()', context);
+  await document.getElementById('system-refresh').events.click();
+  assert.deepEqual(states(), [false, false, false]);
+});
+
 test('late database query responses cannot replace a new table or restore logged-out data', async () => {
   const {document, context} = await openPage('/admin/system/data');
   let finish;
