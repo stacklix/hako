@@ -182,6 +182,8 @@ struct DeviceMonitorView: View {
                     Text("下次打开设备管理时直接进入默认设备。")
                 }
                 if let agent = selectedAgent {
+                    DeviceDataQueryPermissionSection(client: client, agent: agent)
+                        .id(scope + "\n" + agent.id)
                     let order = pageOrderStorage(for: agent)
                     DevicePageOrderSection(agent: agent, capabilities: agent.monitorPages, order: order)
                         .id(order.key)
@@ -773,6 +775,54 @@ struct DeviceMetricsView: View {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
         return date?.formatted(date: .numeric, time: .standard) ?? value
+    }
+}
+
+private struct DeviceDataQueryPermissionSection: View {
+    @ObservedObject var client: DeviceMonitorClient
+    let agent: ConsoleAgent
+    @State private var saving = false
+    @State private var confirmsEnabling = false
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            Toggle("允许查询投资账本", isOn: Binding(get: { agent.dataQueryEnabled == true }, set: { enabled in
+                if enabled { confirmsEnabling = true }
+                else { Task { await save(false) } }
+            }))
+            .disabled(saving || client.busy || !client.hasFetchedAgents || agent.dataQueryEnabled == nil)
+            .frame(maxWidth: .infinity)
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+            Text(agent.name + " · " + agent.id).font(.footnote).foregroundStyle(.secondary)
+            if saving { ProgressView("正在更新权限") }
+            if agent.dataQueryEnabled == nil {
+                Text("尚未获取权限状态，请刷新设备列表，并确认服务端已升级。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+        } header: {
+            Text("线上数据查询")
+        } footer: {
+            Text("允许此 Agent 通过 CLI 读取线上全部投资账本数据和表结构，仅支持只读查询。默认关闭；修改后下一次查询立即生效，离线设备也可配置。")
+        }
+        .confirmationDialog("允许「" + agent.name + "」查询线上投资数据？", isPresented: $confirmsEnabling, titleVisibility: .visible) {
+            Button("开启查询权限") { Task { await save(true) } }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("此设备将能够读取全部投资账户、交易、行情、汇率及快照。不会授予修改数据或访问其他数据库的权限。")
+        }
+    }
+
+    private func save(_ enabled: Bool) async {
+        guard !saving else { return }
+        saving = true
+        error = nil
+        defer { saving = false }
+        do { try await client.setDataQueryPermission(agentID: agent.id, enabled: enabled) }
+        catch is CancellationError { }
+        catch { self.error = error.localizedDescription + " 请刷新设备列表确认实际权限后再重试。" }
     }
 }
 

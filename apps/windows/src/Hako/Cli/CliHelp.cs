@@ -18,6 +18,8 @@ public static class CliHelp
         new("connect", "启动或复用后台实例并发起连接；使用 status 检查是否已通过身份验证。", "Hako.exe connect [--json]"),
         new("disconnect", "断开连接并停止重试，保留后台进程和配置。", "Hako.exe disconnect [--json]"),
         new("metrics", "按需采样本机 CPU、物理内存及网络上下行速度（约 1 秒），无需连接服务器。", "Hako.exe metrics [--json]"),
+        new("server schema", "读取线上投资账本表结构；需要管理员在后台为本 Agent 开启数据查询权限。", "Hako.exe server schema [--json]"),
+        new("server query", "只读查询线上投资数据库，支持单条 SELECT/WITH；默认每页 100 行，最多 200 行。权限默认关闭。", "Hako.exe server query (--sql <SQL> | --sql-file <UTF-8文件>) [--limit 100] [--offset 0] [--json]"),
         new("exit", "退出当前配置对应的 Hako 实例，保留已保存的配置和密钥。", "Hako.exe exit [--json]")
     ];
     public static Entry[] Get(string topic)

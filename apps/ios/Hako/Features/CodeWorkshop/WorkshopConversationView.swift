@@ -360,7 +360,9 @@ struct WorkshopConversationView: View {
     private var projectInfo: some View {
         HStack {
             WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
-                agentID: conversation.agent.id, scope: conversation.scope)
+                agentID: conversation.agent.id, scope: conversation.scope,
+                verified: conversation.connectionVerified,
+                needsRecovery: conversation.connectionIssue != nil || conversation.uncertain)
             Spacer()
             if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
@@ -465,31 +467,41 @@ private struct WorkshopProjectConnectionLabel: View {
     let name: String
     let agentID: String
     let scope: String
+    let verified: Bool
+    let needsRecovery: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var state: WorkshopConnectionState {
         guard store.authenticated, scope == store.scope else { return .disconnected }
-        return store.connections[agentID] ?? .disconnected
+        return (store.connections[agentID] ?? .disconnected)
+            .forConversation(verified: verified, needsRecovery: needsRecovery)
     }
 
     private var connectedColor: Color { HakoStyle.adaptive(0x16803c, 0x6edb91) }
+    private var statusColor: Color {
+        switch state {
+        case .connected: connectedColor
+        case .reconnecting: .orange
+        default: HakoStyle.muted
+        }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             Group {
                 if (state == .connecting || state == .reconnecting) && !reduceMotion {
-                    label.phaseAnimator([false, true]) { content, green in
-                        content.symbolVariant(green ? .fill : .none)
-                            .foregroundStyle(green ? connectedColor : HakoStyle.muted)
+                    label.phaseAnimator([false, true]) { content, filled in
+                        content.symbolVariant(filled ? .fill : .none)
+                            .foregroundStyle(statusColor)
                     } animation: { _ in .easeInOut(duration: 0.7) }
                 } else {
                     label.symbolVariant(state == .connected ? .fill : .none)
-                        .foregroundStyle(state == .connected ? connectedColor : HakoStyle.muted)
+                        .foregroundStyle(statusColor)
                 }
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(state.accessibilityDescription)
+        .accessibilityValue(state.conversationAccessibilityDescription)
     }
 
     private var label: some View { Label(name, systemImage: "folder") }

@@ -187,6 +187,10 @@ public partial class App : Application
     {
         var request = invocation.Request!;
         if (request.Command == "help") return CliHelp.Reply(request.Options.GetValueOrDefault("topic", ""));
+        // Query results can exceed the control pipe's 64 KiB frame limit. Read directly
+        // with this Windows user's protected Agent identity, without replacing live sockets.
+        if (request.Command.StartsWith("server ", StringComparison.Ordinal))
+            return await AgentDataQuery.ExecuteAsync(invocation.Profile.Store.Load(), request, CancellationToken.None);
         instance = new Mutex(false, invocation.Profile.MutexName);
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (true)

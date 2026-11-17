@@ -26,6 +26,7 @@ struct InvestmentBookTests {
         try renminbiInsuranceCountsCashValueAndRoundTrips()
         try insuranceWithdrawalsKeepPolicyAndMoveCash()
         try insuranceWithdrawalsAllowMissingValues()
+        try insuranceDefaultsToZeroAndAuditsAllProblems()
         try typedAccountsFilterAssets()
         try fundWealthAccountsKeepBothKindsAndRoundTrip()
         try transfersMoveCashAsOneOperation()
@@ -735,7 +736,7 @@ struct InvestmentBookTests {
         let policy = try book.register(.init(name: "人民币保单", code: "POLICY-CNY", market: "", kind: .insurance, currency: .cny))
         let hkPolicy = try book.register(.init(name: "港币保单", code: "POLICY-HKD", market: "", kind: .insurance, currency: .hkd))
         try book.post(.init(day: date(1), kind: .opening, assetID: policy, quantity: 1, price: 10_000), accountID: cny.id)
-        precondition(book.value(book.accounts[0], on: date(1)) == nil, "Missing cash value must not fall back to premiums")
+        precondition(book.value(book.accounts[0], on: date(1))?.value == 0, "Missing cash value defaults to zero, never premiums")
         book.addQuotes([.init(day: date(1), price: 8_000, source: "手动录入")], assetID: policy)
         precondition(book.portfolio(on: date(1))?.value == 8_000 && book.portfolio(on: date(1))?.gain == -2_000)
         try book.post(.init(day: date(1), kind: .opening, assetID: hkPolicy, quantity: 1, price: 10_000), accountID: hkd.id)
@@ -819,9 +820,9 @@ struct InvestmentBookTests {
         try book.post(withdrawal, accountID: owner.id)
         let ledger = try book.ledger(book.accounts[0], through: date(2))
         precondition(ledger.cash == 1_000 && ledger.positions[id]?.quantity == 1)
-        precondition(book.value(book.accounts[0], on: date(2)) == nil)
+        precondition(book.value(book.accounts[0], on: date(2))?.value == 1_000)
         book.addQuotes([.init(day: date(1), price: 500)], assetID: id)
-        precondition(book.value(book.accounts[0], on: date(2)) == nil, "A stale insufficient valuation cannot become negative or zero")
+        precondition(book.value(book.accounts[0], on: date(2))?.value == 1_000, "An unavailable remaining cash value defaults to zero")
         book.addQuotes([.init(day: date(3), price: 4_000)], assetID: id)
         precondition(book.value(book.accounts[0], on: date(3))?.value == 5_000)
         let savedWithdrawal = try require(book.accounts[0].events.first { $0.id == withdrawal.id })
@@ -837,6 +838,49 @@ struct InvestmentBookTests {
                 preconditionFailure("Invalid withdrawal accepted")
             } catch is InvestmentError { }
         }
+    }
+
+    static func insuranceDefaultsToZeroAndAuditsAllProblems() throws {
+        let owner = InvestmentAccount(name: "保险", currency: .cny, type: .insurance)
+        var book = InvestmentBook(accounts: [owner])
+        let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: .cny))
+        try book.post(.init(day: date(1), kind: .opening, assetID: id, quantity: 1, price: 10_000), accountID: owner.id)
+        precondition(book.portfolio(on: date(1), requiresDailyPrices: true)?.value == 0)
+        precondition(book.portfolio(on: date(1), requiresDailyPrices: true)?.gain == -10_000)
+        book.addQuotes([.init(day: date(3), price: 8_000)], assetID: id)
+        precondition(book.portfolio(on: date(2), requiresDailyPrices: true)?.value == 0, "Future cash values must not fill earlier days")
+        precondition(book.portfolio(on: date(3), requiresDailyPrices: true)?.value == 8_000)
+        book.addExchangeRates([.init(day: date(3), price: 7)], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(3), rebuild: true)
+        precondition(book.dailySnapshots?.values.count == 3, "Missing insurance cash value must not block historical snapshots")
+        var report = book.inspectData(through: date(3))
+        precondition(report.errors == 0 && report.notices == 1)
+        precondition(report.issues[0].dates == [date(1), date(2)])
+        precondition(report.issues[0].dateRanges.contains(" 至 "))
+
+        let cryptoOwner = InvestmentAccount(name: "加密", currency: .usd, type: .crypto)
+        book.accounts.append(cryptoOwner)
+        let crypto = try book.register(.init(name: "BTC", code: "BTC", market: "", kind: .crypto, currency: .usd))
+        try book.post(.init(day: date(1), kind: .opening, assetID: crypto, quantity: 1, price: 100), accountID: cryptoOwner.id)
+        var broken = InvestmentAccount(name: "错误流水", currency: .cny, type: .insurance)
+        broken.events = [.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: 100)]
+        book.accounts.append(broken)
+        let savedCount = book.dailySnapshots?.values.count
+        report = book.inspectData(through: date(3))
+        precondition(report.issues.contains { $0.title == "交易记录无法计算" && $0.location.contains("错误流水") })
+        precondition(report.issues.contains { $0.title == "缺少历史估值" && $0.location.contains("BTC") && $0.dates.count == 2 })
+        precondition(report.issues.contains { $0.title == "缺少当前估值" && $0.location.contains("BTC") })
+        precondition(report.issues.contains { $0.title == "缺少汇率" && $0.location.contains("加密") && $0.dates.contains(date(1)) },
+                     "Missing prices must not hide missing conversion rates")
+        precondition(book.dailySnapshots?.values.count == savedCount, "Inspection must not modify snapshots")
+
+        var healthy = InvestmentBook(accounts: [owner])
+        try healthy.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: owner.id)
+        healthy.addExchangeRates([.init(day: date(1), price: 7), .init(day: date(2), price: 7)], for: .usd)
+        healthy.dailySnapshots = healthy.makeDailySnapshots(through: date(2), rebuild: true)
+        precondition(healthy.inspectData(through: date(3)).issues.isEmpty)
+        try healthy.post(.init(day: date(2), kind: .deposit, amount: 50), accountID: owner.id)
+        precondition(healthy.inspectData(through: date(3)).issues.contains { $0.title == "快照与当前账本不一致" || $0.title == "缺少日终快照" })
     }
 
     static func stockConnectSettlesInRenminbi() throws {

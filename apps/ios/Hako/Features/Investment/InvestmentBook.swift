@@ -1228,15 +1228,19 @@ struct InvestmentBook: Codable {
             let manual = valuationQuote(quotes[asset.id], on: day, requiresDailyPrice: false, continuous: false)
             // A transaction's remaining value supersedes an earlier or same-day manual valuation.
             if let manual, manual.day > withdrawalDay { return manual }
-            return position?.insuranceValue
+            return position?.insuranceValue ?? InvestmentQuote(day: day, price: 0, source: "未录入现金价值，按零估值")
         }
         let continuous = asset.kind == .crypto
         let isMarketAsset = continuous || !asset.kind.isManual
         if requiresDailyPrices, asset.usesUSEquityClose {
             return usEquityQuote(quotes[asset.id], on: day)
         }
-        return valuationQuote(quotes[asset.id], on: day,
-                              requiresDailyPrice: requiresDailyPrices && isMarketAsset, continuous: continuous)
+        let quote = valuationQuote(quotes[asset.id], on: day,
+                                   requiresDailyPrice: requiresDailyPrices && isMarketAsset, continuous: continuous)
+        if asset.kind == .insurance, quote == nil {
+            return InvestmentQuote(day: day, price: 0, source: "未录入现金价值，按零估值")
+        }
+        return quote
     }
 
     func portfolio(on day: Date, currency: InvestmentCurrency = .cny, requiresDailyPrices: Bool = false) -> InvestmentValuation? {
@@ -1477,6 +1481,129 @@ struct InvestmentHoldingHistoryPoint: Identifiable, Sendable {
     let value: Decimal
     let segment: Int
     var id: Date { day }
+}
+
+extension InvestmentBook {
+    /// Read-only audit of source records and saved snapshots. No quotes or transactions are synthesized.
+    func inspectData(through today: Date = Self.day()) -> InvestmentDataReport {
+        var issues: [InvestmentDataIssue] = []
+        var groups: [String: Int] = [:]
+        func add(_ level: InvestmentDataIssue.Level, _ title: String, location: String,
+                 detail: String, day: Date, key: String = "") {
+            let group = [level.rawValue, title, location, detail, key].joined(separator: "\u{1f}")
+            if let index = groups[group] { issues[index].dates.append(day) }
+            else {
+                groups[group] = issues.count
+                issues.append(.init(id: issues.count, level: level, title: title, location: location, detail: detail, dates: [day]))
+            }
+        }
+        var eventIDs = Set<UUID>()
+        var accountIDs = Set<UUID>()
+        for account in accounts {
+            if !accountIDs.insert(account.id).inserted {
+                add(.error, "账户标识重复", location: account.name, detail: "存在相同标识的账户，请检查原始数据。", day: today)
+            }
+            for event in account.events {
+                let location = account.name + (asset(event.assetID).map { " · " + $0.displayName } ?? "")
+                if !eventIDs.insert(event.id).inserted {
+                    add(.error, "交易标识重复", location: location, detail: "存在相同标识的交易记录。", day: event.day, key: event.id.uuidString)
+                }
+                if event.day > today {
+                    add(.error, "交易日期在未来", location: location, detail: "请核对交易日期。", day: event.day, key: event.id.uuidString)
+                }
+                if let id = event.assetID, assets[id] == nil {
+                    add(.error, "交易引用的标的不存在", location: account.name, detail: "标的标识：" + id.uuidString, day: event.day, key: event.id.uuidString)
+                }
+                if [.transferIn, .transferOut].contains(event.kind), transferCounterpart(of: event, accountID: account.id) == nil {
+                    add(.error, "划转缺少对应流水", location: account.name, detail: "请核对另一账户的对应划转记录。", day: event.day, key: event.id.uuidString)
+                }
+            }
+        }
+        for (id, quotes) in quotes {
+            for quote in quotes where quote.price.isNaN || quote.price < 0 || (quote.price == 0 && asset(id)?.kind != .insurance) {
+                add(.error, "估值数据无效", location: asset(id)?.displayName ?? id.uuidString,
+                    detail: "价格必须有效；只有保险现金价值允许为零。", day: quote.day)
+            }
+        }
+        for (currency, rates) in fx {
+            for quote in rates where quote.price.isNaN || quote.price <= 0 {
+                add(.error, "汇率无效", location: currency.rawValue + "/CNY", detail: "汇率必须大于零。", day: quote.day)
+            }
+        }
+
+        if let first = earliest, first <= today {
+            let histories = accounts.map { orderedEvents($0, through: today) }
+            var cursors = Array(repeating: 0, count: accounts.count)
+            var ledgers = Array(repeating: InvestmentLedger(), count: accounts.count)
+            var blocked = Set<Int>()
+            var day = first
+            while day <= today, !Task.isCancelled {
+                var values: [InvestmentValuation?] = []
+                for index in accounts.indices {
+                    let account = accounts[index]
+                    while cursors[index] < histories[index].count, histories[index][cursors[index]].day <= day {
+                        let event = histories[index][cursors[index]]
+                        cursors[index] += 1
+                        var candidate = ledgers[index]
+                        do {
+                            try replay([event][...], currency: account.currency, into: &candidate)
+                            ledgers[index] = candidate
+                        } catch {
+                            blocked.insert(index)
+                            add(.error, "交易记录无法计算", location: account.name + (asset(event.assetID).map { " · " + $0.displayName } ?? ""),
+                                detail: event.kind.rawValue + "：" + error.localizedDescription + " 请修复此记录后重新检验。",
+                                day: event.day, key: event.id.uuidString)
+                        }
+                    }
+                    guard !blocked.contains(index) else { values.append(nil); continue }
+                    let ledger = ledgers[index]
+                    for (id, position) in ledger.positions where position.quantity > 0 {
+                        guard let asset = assets[id] else { continue }
+                        let location = account.name + " · " + asset.displayName
+                        if positionValue(position, asset: asset, on: day, requiresDailyPrices: true) == nil {
+                            let detail = asset.kind.usesBalance ? "请检查标的余额记录。" : "该日没有满足估值规则的报价，请补充行情后重新计算历史快照。"
+                            add(.error, day < today ? "缺少历史估值" : "缺少当前估值", location: location, detail: detail, day: day)
+                        } else if asset.kind == .insurance,
+                                  positionQuote(for: asset, on: day, requiresDailyPrices: true, position: position)?.source == "未录入现金价值，按零估值" {
+                            add(.notice, "保险现金价值按零估值", location: location,
+                                detail: "未录入可用的现金价值，已按零计入资产；保费仍计入成本，盈亏可能因此为负。", day: day)
+                        }
+                        if asset.isStockConnect, rateToCNY(.hkd, on: day, requiresDailyPrice: true) == nil {
+                            add(.error, "缺少汇率", location: location + " · HKD/CNY", detail: "缺少该日可用的人民币折算汇率。", day: day)
+                        }
+                    }
+                    let local = value(ledger, on: day, requiresDailyPrices: true)
+                    values.append(local)
+                    let needsConversion = local.map { $0.value != 0 || $0.gain != 0 }
+                        ?? (ledger.cash != 0 || ledger.flows != 0 || ledger.positions.values.contains { $0.quantity != 0 || $0.realized != 0 })
+                    if account.currency != .cny, needsConversion,
+                       rateToCNY(account.currency, on: day, requiresDailyPrice: true) == nil {
+                        add(.error, "缺少汇率", location: account.name + " · " + account.currency.rawValue + "/CNY",
+                            detail: "缺少该日可用的人民币折算汇率。", day: day)
+                    }
+                }
+                if day < today {
+                    let fresh = portfolio(on: day, currency: .cny, requiresDailyPrices: true) { values[$0] }
+                    let saved = dailySnapshots?.values[day]
+                    let usd = fresh.flatMap { value in value.value == 0 ? Decimal.zero : rateToCNY(.usd, on: day, requiresDailyPrice: true).map { value.value / $0 } }
+                    if let fresh, fresh.value != 0, usd == nil {
+                        add(.error, "缺少美元折算汇率", location: "整个账本 · USD/CNY", detail: "人民币总额可计算，但美元折算不完整。", day: day)
+                    }
+                    if saved == nil {
+                        add(.error, "缺少日终快照", location: "整个账本",
+                            detail: "该日没有已保存的总资产快照。请处理估值或交易问题后，重新计算历史快照。", day: day)
+                    } else if let saved, let fresh {
+                        if saved.value != fresh.value || saved.gain != fresh.gain || (usd != nil && saved.valueUSD != usd) {
+                            add(.error, "快照与当前账本不一致", location: "整个账本", detail: "请重新计算历史快照。", day: day)
+                        }
+                    }
+                }
+                day = Self.addDays(1, to: day)
+            }
+        }
+        return InvestmentDataReport(checkedAt: .now, firstDay: earliest, lastDay: today, accounts: accounts.count,
+                                    events: accounts.reduce(0) { $0 + $1.events.count }, issues: issues)
+    }
 }
 
 extension InvestmentBook {

@@ -68,11 +68,19 @@ import Combine
     private var savedTranscript: WorkshopTranscript?
     private var readingLatest = false
     private var latestCompletionID: String?
-    private var lastVerifiedAt: Date?
+    @Published private var hasVerifiedSync = false
+    private var lastVerifiedAt: Date? {
+        didSet {
+            if hasVerifiedSync != (lastVerifiedAt != nil) { hasVerifiedSync = lastVerifiedAt != nil }
+        }
+    }
     private var historyCursorVerified = false
     var networkVisible = false
     private var catalogHint: WorkshopSession?
     private var needsHistoryRefresh = false
+    var connectionVerified: Bool {
+        hasVerifiedSync || (threadId == nil && !models.isEmpty && modelError == nil)
+    }
     private var cacheLoad: Task<WorkshopTranscript?, Never>?
     private let renderer = WorkshopTranscriptRenderer()
     private var presentationTask: Task<Void, Never>?

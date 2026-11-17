@@ -2,7 +2,7 @@ import Foundation
 
 @main struct DeviceMonitorInventoryTests {
     static func main() throws {
-        let first = ConsoleAgent(id: "A1234", name: "工作电脑", online: true,
+        let first = ConsoleAgent(dataQueryEnabled: true, id: "A1234", name: "工作电脑", online: true,
                                  lastSeen: "2026-11-14T06:00:00Z",
                                  capabilities: [.init(name: "query.system.metrics", version: 1)])
         let second = ConsoleAgent(id: "B5678", name: "备用电脑", online: true, lastSeen: "", capabilities: nil)
@@ -22,6 +22,7 @@ import Foundation
         inventory.markOffline()
         let disconnected = inventory.selectedAgent(id: first.id)!
         precondition(!disconnected.online && disconnected.name == first.name
+                     && disconnected.dataQueryEnabled == true
                      && disconnected.lastSeen == first.lastSeen
                      && disconnected.capabilities?.first?.name == "query.system.metrics",
                      "Connection failure must retain the device's identity and capabilities")
@@ -38,6 +39,8 @@ import Foundation
         let reopened = storage.load()
         precondition(reopened.agents.count == 2 && !reopened.hasFetched)
         precondition(reopened.selectedAgent(id: first.id)?.name == first.name)
+        precondition(reopened.selectedAgent(id: first.id)?.dataQueryEnabled == true,
+                     "Offline/cache round trips must preserve the server permission state")
         precondition(reopened.agents.allSatisfy { !$0.online },
                      "Relaunching offline must not reuse a cached online badge")
         let anotherAccount = DeviceMonitorInventory.Storage(server: "https://one.example", account: "bob", defaults: defaults)

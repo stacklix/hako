@@ -24,13 +24,14 @@ import (
 )
 
 type AgentConfig struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	PublicKeyFile string          `json:"publicKeyFile"`
-	PublicKeyPEM  string          `json:"publicKeyPem,omitempty"`
-	Capabilities  json.RawMessage `json:"capabilities"`
-	key           *rsa.PublicKey
-	keyID         string
+	DataQueryEnabled bool            `json:"dataQueryEnabled"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	PublicKeyFile    string          `json:"publicKeyFile"`
+	PublicKeyPEM     string          `json:"publicKeyPem,omitempty"`
+	Capabilities     json.RawMessage `json:"capabilities"`
+	key              *rsa.PublicKey
+	keyID            string
 }
 
 type Config struct {

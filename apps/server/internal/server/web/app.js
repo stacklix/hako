@@ -149,6 +149,16 @@ function drawAgents() {
     const actions = node('div',undefined,'device-actions');
     const invoke = action('调用能力', () => showCommands(agent));
     invoke.disabled = !agent.online || !Array.isArray(agent.capabilities) || !agent.capabilities.length;
+    info.append(node('p', '线上投资数据查询：' + (agent.dataQueryEnabled ? '已开启（只读）' : '未开启'), 'device-meta'));
+    const dataPermission = action(agent.dataQueryEnabled ? '关闭数据查询' : '开启数据查询', async () => {
+      if (!agent.dataQueryEnabled && !confirm(`允许「${agent.name}」通过 CLI 读取线上全部投资账本数据和表结构？仅允许只读查询，不包含认证、通知等其他数据库。`)) return;
+      dataPermission.disabled = true;
+      try {
+        await api('agents/' + encodeURIComponent(agent.id) + '/data-query', 'PATCH', {enabled: !agent.dataQueryEnabled});
+        await refresh(); notice('数据查询权限已更新，下一次查询立即生效。', true);
+      } catch (e) { notice(e.message); } finally { dataPermission.disabled = false; }
+    });
+    actions.append(dataPermission);
     actions.append(invoke,action('公钥',() => showKey(agent.name,agent.publicKeyPem,agent.id + '.public.pem')),action('移除',async () => { if (!confirm(`移除「${agent.name}」？当前连接将立即断开。`)) return; await api('agents/' + encodeURIComponent(agent.id),'DELETE'); await refresh(); notice('Agent 已移除。',true); },'danger'));
     row.append(info,actions); $('agent-list').append(row);
   }

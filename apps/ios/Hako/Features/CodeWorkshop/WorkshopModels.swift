@@ -18,6 +18,21 @@ enum WorkshopConnectionState: Equatable {
     case disconnected, connecting, reconnecting, connected
 
     var beginningRequest: Self { self == .connected ? .connected : (self == .reconnecting ? .reconnecting : .connecting) }
+    func forConversation(verified: Bool, needsRecovery: Bool) -> Self {
+        guard self == .connected else { return self }
+        if needsRecovery { return .reconnecting }
+        return verified ? .connected : .connecting
+    }
+
+    var conversationAccessibilityDescription: String {
+        switch self {
+        case .disconnected: "电脑未连接"
+        case .connecting: "正在确认会话同步状态"
+        case .reconnecting: "会话同步尚未恢复"
+        case .connected: "会话同步正常"
+        }
+    }
+
     var accessibilityDescription: String {
         switch self {
         case .disconnected: "电脑未连接"

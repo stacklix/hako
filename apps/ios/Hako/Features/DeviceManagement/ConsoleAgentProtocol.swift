@@ -1,6 +1,7 @@
 import Foundation
 
 struct ConsoleAgent: Codable, Identifiable {
+    var dataQueryEnabled: Bool? = nil
     let id: String
     let name: String
     let online: Bool

@@ -1,5 +1,39 @@
 import Foundation
 
+struct InvestmentDataIssue: Identifiable, Sendable {
+    enum Level: String, Sendable { case error = "影响计算", notice = "请留意" }
+    let id: Int
+    let level: Level
+    let title: String
+    let location: String
+    let detail: String
+    var dates: [Date]
+
+    var dateRanges: String {
+        let formatter = InvestmentBook.snapshotDateFormatter()
+        var ranges: [(Date, Date)] = []
+        for date in Set(dates).sorted() {
+            if let last = ranges.last, InvestmentBook.addDays(1, to: last.1) == date {
+                ranges[ranges.count - 1].1 = date
+            } else { ranges.append((date, date)) }
+        }
+        return ranges.map { start, end in
+            formatter.string(from: start) + (start == end ? "" : " 至 " + formatter.string(from: end))
+        }.joined(separator: "；")
+    }
+}
+
+struct InvestmentDataReport: Sendable {
+    let checkedAt: Date
+    let firstDay: Date?
+    let lastDay: Date
+    let accounts: Int
+    let events: Int
+    var issues: [InvestmentDataIssue]
+    var errors: Int { issues.filter { $0.level == .error }.count }
+    var notices: Int { issues.filter { $0.level == .notice }.count }
+}
+
 struct InvestmentDailySnapshots: Codable {
     var through: Date
     var values: [Date: InvestmentValuation]

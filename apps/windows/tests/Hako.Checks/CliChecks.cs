@@ -18,6 +18,7 @@ internal static class CliChecks
     private static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
     public static async Task RunAsync()
     {
+        await AgentDataQueryChecks.RunAsync();
         foreach (var args in new[] { new[] { "help" }, new[] { "--help" }, new[] { "-h" }, new[] { "config", "set", "--help" }, new[] { "help", "key" } })
             Check(CliParser.Parse(args).Request?.Command == "help", "Help aliases or subcommand help failed");
         try { CliParser.Parse(["status", "--wrong", "value"]); throw new Exception("Unknown CLI option accepted"); }

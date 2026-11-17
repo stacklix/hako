@@ -88,6 +88,21 @@ import Foundation
             "An application failure is still a reply from the Agent")
         precondition(WorkshopConnectionState.connected.accessibilityDescription == "电脑已连接",
             "Transport status must identify the computer connection, not imply Codex readiness")
+        for verified in [false, true] {
+            precondition(WorkshopConnectionState.connected.forConversation(verified: verified, needsRecovery: true) == .reconnecting,
+                "Replies from other requests must not hide this conversation's synchronization failure")
+            for transport in [WorkshopConnectionState.disconnected, .connecting, .reconnecting] {
+                precondition(transport.forConversation(verified: verified, needsRecovery: false) == transport,
+                    "A previously verified conversation cannot override a lost computer connection")
+                precondition(transport.forConversation(verified: verified, needsRecovery: true) == transport)
+            }
+        }
+        precondition(WorkshopConnectionState.connected.forConversation(verified: false, needsRecovery: false) == .connecting,
+            "Opening an unverified conversation must not borrow another conversation's green status")
+        precondition(WorkshopConnectionState.connected.forConversation(verified: true, needsRecovery: false) == .connected,
+            "Only this conversation's successful recovery may restore green")
+        precondition(WorkshopConnectionState.connected.conversationAccessibilityDescription == "会话同步正常")
+        precondition(WorkshopConnectionState.reconnecting.conversationAccessibilityDescription == "会话同步尚未恢复")
         for state in ["failed", "unknown", "interrupted", "cancelled", "starting", "running", "waiting", "finishing", "completed"] {
             let operation = WorkshopOperation(id: "operation", applicationId: "app", threadId: "thread", turnId: nil,
                 state: state, message: nil, startedAt: 1)

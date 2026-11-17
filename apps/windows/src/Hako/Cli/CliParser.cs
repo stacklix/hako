@@ -15,7 +15,8 @@ public static class CliParser
         ["status"] = [], ["config show"] = [], ["config set"] = ["url", "account", "direct-port"],
         ["key generate"] = ["force"], ["key import"] = ["input", "force"],
         ["key export-public"] = ["output", "force"], ["connect"] = [], ["disconnect"] = [],
-        ["metrics"] = [], ["exit"] = [], ["show"] = []
+        ["metrics"] = [], ["exit"] = [], ["show"] = [],
+        ["server schema"] = [], ["server query"] = ["sql", "sql-file", "limit", "offset"]
     };
     public static CliInvocation Parse(string[] args)
     {
@@ -47,7 +48,7 @@ public static class CliParser
             CliHelp.Get(topic);
             return new CliInvocation(profile, new AgentCommand("help", new() { ["topic"] = topic }), json, false);
         }
-        int wordCount = tokens[0] is "key" or "config" ? 2 : 1;
+        int wordCount = tokens[0] is "key" or "config" or "server" ? 2 : 1;
         if (tokens.Count < wordCount) throw new CliUsageException("子命令不完整，请运行 Hako.exe help。");
         var command = string.Join(" ", tokens.Take(wordCount));
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -66,7 +67,7 @@ public static class CliParser
         }
         var request = new AgentCommand(command, options);
         Validate(request);
-        foreach (var path in new[] { "input", "output" }) if (options.TryGetValue(path, out var value)) options[path] = Path.GetFullPath(value);
+        foreach (var path in new[] { "input", "output", "sql-file" }) if (options.TryGetValue(path, out var value)) options[path] = Path.GetFullPath(value);
         return new CliInvocation(profile, request, json, false);
     }
     public static void Validate(AgentCommand request)
@@ -78,6 +79,15 @@ public static class CliParser
         if (request.Options.TryGetValue("direct-port", out var port) && (!int.TryParse(port, out var number) || number < 0 || number > 65535))
             throw new CliUsageException("--direct-port 必须为 0–65535 的整数，0 表示关闭。");
         if (request.Command == "key import" && !request.Options.ContainsKey("input")) throw new CliUsageException("key import 需要 --input 私钥文件。");
+        if (request.Command == "server query")
+        {
+            if (request.Options.ContainsKey("sql") == request.Options.ContainsKey("sql-file"))
+                throw new CliUsageException("server query 必须且只能指定 --sql 或 --sql-file。");
+            if (request.Options.TryGetValue("limit", out var limit) && (!int.TryParse(limit, out var rows) || rows < 1 || rows > 200))
+                throw new CliUsageException("--limit 必须为 1–200 的整数。");
+            if (request.Options.TryGetValue("offset", out var offset) && (!int.TryParse(offset, out var skip) || skip < 0 || skip > 1000000))
+                throw new CliUsageException("--offset 必须为 0–1000000 的整数。");
+        }
         if (request.Options.Any(p => string.IsNullOrWhiteSpace(p.Value))) throw new CliUsageException("选项值不能为空。");
         if (request.Options.TryGetValue("force", out var force) && force != "true") throw new CliUsageException("--force 不接受参数值。");
     }

@@ -118,6 +118,8 @@ public sealed class AgentRuntime : IAsyncDisposable
         {
             CliParser.Validate(request);
             if (request.Command == "help") return CliHelp.Reply(request.Options.GetValueOrDefault("topic", ""));
+            if (request.Command.StartsWith("server ", StringComparison.Ordinal))
+                return await AgentDataQuery.ExecuteAsync(Store.Load(), request, token);
             if (request.Command == "metrics")
             {
                 var result = await Metrics.SampleAsync(token); MetricsReceived?.Invoke(result);

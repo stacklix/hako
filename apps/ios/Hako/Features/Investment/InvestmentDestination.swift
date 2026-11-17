@@ -617,6 +617,18 @@ private struct InvestmentSettings: View {
                 Text("东方财富缺少期货期权历史时，可使用已配置的行情源补查；Twelve Data 也可补充汇率。到期合约仍可能缺少历史数据。")
             }
             Section {
+                NavigationLink {
+                    InvestmentDataInspection(store: store)
+                } label: {
+                    Label("数据检验", systemImage: "checkmark.shield")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.investmentListRow()
+            } header: {
+                Text("数据检查")
+            } footer: {
+                Text("检查交易记录、估值、汇率和历史快照，列出具体问题及受影响日期。")
+            }
+            Section {
                 Button(recalculatingSnapshots ? "正在查询并重算…" : "重新计算历史快照") {
                     Task { await rebuildSnapshots() }
                 }
@@ -716,6 +728,82 @@ private struct InvestmentSettings: View {
             return
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct InvestmentDataInspection: View {
+    @ObservedObject var store: InvestmentStore
+    @State private var checking = false
+    @State private var report: InvestmentDataReport?
+    @State private var error: String?
+    @State private var changedSinceCheck = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("读取服务端最新保存的完整账本，检查全部账户（包括归档账户）的交易、历史估值、汇率和日终快照。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button(checking ? "正在检验…" : report == nil ? "开始检验" : "重新检验") { checking = true }
+                    .buttonStyle(HakoActionButtonStyle())
+                    .disabled(checking || store.saving)
+                if checking { ProgressView("正在读取并检验数据") }
+                if let error { Text(error).foregroundStyle(.red) }
+            } footer: {
+                Text("仅检验，不修改交易、补查行情或重算快照。保险未录入现金价值时按零估值，并显示提醒。")
+            }
+            if let report {
+                Section("检验结果") {
+                    LabeledContent("影响计算", value: "\(report.errors) 项")
+                    LabeledContent("请留意", value: "\(report.notices) 项")
+                    LabeledContent("检查数据", value: "\(report.accounts) 个账户 · \(report.events) 笔交易")
+                    if let first = report.firstDay {
+                        Text("检查范围：" + InvestmentText.date(first) + " 至 " + InvestmentText.date(report.lastDay))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text("检验时间：" + report.checkedAt.formatted(date: .abbreviated, time: .standard))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if changedSinceCheck {
+                        Text("账本已更新，请重新检验以获取最新结果。").foregroundStyle(.orange)
+                    } else if report.issues.isEmpty {
+                        Label("未发现问题", systemImage: "checkmark.circle").foregroundStyle(.green)
+                    }
+                }
+                issueSection(report.issues.filter { $0.level == .error }, title: "影响计算的问题")
+                issueSection(report.issues.filter { $0.level == .notice }, title: "需要留意的情况")
+            }
+        }
+        .navigationTitle("数据检验")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: checking) {
+            guard checking else { return }
+            report = nil
+            error = nil
+            changedSinceCheck = false
+            defer { checking = false }
+            do { report = try await store.inspectData() }
+            catch is CancellationError { }
+            catch { self.error = error.localizedDescription }
+        }
+        .onChange(of: store.bookVersion) { _, _ in
+            if report != nil { changedSinceCheck = true }
+        }
+    }
+
+    @ViewBuilder private func issueSection(_ issues: [InvestmentDataIssue], title: String) -> some View {
+        if !issues.isEmpty {
+            Section(title) {
+                ForEach(issues) { issue in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(issue.title, systemImage: issue.level == .error ? "exclamationmark.circle" : "info.circle")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(issue.level == .error ? Color.red : Color.orange)
+                        Text(issue.location).font(.subheadline)
+                        Text(issue.dateRanges).font(.caption).foregroundStyle(.secondary)
+                        Text(issue.detail).font(.footnote).foregroundStyle(.secondary)
+                    }.textSelection(.enabled).investmentListRow()
+                }
+            }
         }
     }
 }

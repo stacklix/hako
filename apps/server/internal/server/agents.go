@@ -142,7 +142,7 @@ func (s *Server) agentItems(includeKey bool) []map[string]any {
 		if online {
 			capabilities = c.Capabilities()
 		}
-		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": lastSeen, "capabilities": capabilities}
+		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": lastSeen, "capabilities": capabilities, "dataQueryEnabled": a.DataQueryEnabled}
 		if includeKey {
 			item["keyId"] = a.keyID
 			item["publicKeyPem"] = a.PublicKeyPEM

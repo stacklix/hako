@@ -891,7 +891,7 @@ private struct InvestmentTradeFields: View {
         if event == .insuranceWithdrawal {
             InvestmentField("提取金额（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
             InvestmentField("提取后现金价值（" + currency.rawValue + "，选填）", text: $settlement, keyboard: .decimalPad)
-            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时显示待补充。")
+            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时按零估值。")
                 .font(.footnote).foregroundStyle(.secondary)
         } else if kind == .insurance {
             InvestmentField((event == .sell ? "退保到账金额" : "保费金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)

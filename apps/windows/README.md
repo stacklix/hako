@@ -69,6 +69,20 @@ Agent 在当前配置目录的 `logs/` 保存 `agent-lifecycle.jsonl` 和 `agent
 
 ## 命令行
 
+### 线上投资数据查询
+
+管理员可在 Web 后台「设备代理」为指定设备开启「线上投资数据查询」，也可在手机「设备管理 → 设置」选择设备后开启「允许查询投资账本」。权限默认关闭，持久保存，修改后下一次请求立即生效；设备离线时也可配置。Agent 不能自行开启权限。
+
+```powershell
+Hako.exe server schema --json
+Hako.exe server query --sql "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name" --json
+Hako.exe server query --sql-file query.sql --limit 100 --offset 0 --json
+```
+
+CLI 直接使用当前配置中已加密保存的 Agent 密钥签名 HTTP 请求，不替换或断开现有设备连接。签名绑定服务端、账号、密钥指纹及完整查询内容，包含短时有效时间戳和一次性随机数；服务端校验权限并持久防重放。拒绝重定向，不把密钥、签名或查询内容写入诊断日志。查询仅限 `investment` 数据库，不能读取认证、通知或访问日志库。
+
+仅支持单条 SELECT/WITH，写入、PRAGMA、ATTACH 和多语句由服务端拒绝；最多 5 秒、每页 1–200 行，默认 100 行，使用 `--offset` 分页。JSON 结果含 `columns`、`rows`、`hasMore`、`clipped` 等字段，长字段可能按服务端规则截断。`server schema` 返回表结构和数据库版本。SQL 文件须使用 UTF-8，查询最多 20000 字节。需要包含此接口的新版服务端，未升级或权限未开启会返回明确错误。
+
 同一个 `Hako.exe` 支持 GUI 和 CLI。不带命令时打开窗口；CLI 复用当前用户已运行的实例，配置和连接状态与界面同步。没有实例时，查询和配置命令直接执行，`connect` 自动启动独立后台进程。
 
 ```powershell

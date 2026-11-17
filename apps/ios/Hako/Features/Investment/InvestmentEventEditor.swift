@@ -98,7 +98,7 @@ struct InvestmentEventEditor: View {
         case .insuranceWithdrawal:
             field("提取金额（\(currency)）", .amount)
             field("提取后现金价值（\(currency)，选填）", .settlement)
-            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时显示待补充。")
+            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时按零估值。")
                 .font(.footnote).foregroundStyle(.secondary)
         case .opening, .buy, .sell:
             if asset?.kind == .generic {

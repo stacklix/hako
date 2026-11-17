@@ -145,6 +145,23 @@ import Combine
         }
     }
 
+    func setDataQueryPermission(agentID: String, enabled: Bool) async throws {
+        guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
+        let context = requestContext
+        working = true
+        defer { working = false }
+        struct Reply: Decodable { let dataQueryEnabled: Bool }
+        let data = try await authorized("data_query_permission", agentID: agentID, body: ["enabled": enabled])
+        let reply = try JSONDecoder().decode(Reply.self, from: data)
+        guard context == requestContext else { throw CancellationError() }
+        var updated = agents
+        if let index = updated.firstIndex(where: { $0.id == agentID }) {
+            updated[index].dataQueryEnabled = reply.dataQueryEnabled
+            agents = updated
+        }
+    }
+
     private func fetchAgentsInternal() async throws {
         struct List: Decodable { let agents: [ConsoleAgent] }
         let agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents

@@ -383,6 +383,20 @@ final class InvestmentStore: ObservableObject {
         }
     }
 
+    func inspectData() async throws -> InvestmentDataReport {
+        await authentication.restore()
+        guard authentication.authenticated else { throw InvestmentError.invalid("请先在 Hako 设置中登录服务端。") }
+        let context = authentication.requestContext
+        let data = try await authentication.send(Self.bookPath, method: "GET", body: nil, logSource: .hako)
+        guard context == authentication.requestContext else { throw CancellationError() }
+        let source = try records.decode(JSONDecoder().decode(InvestmentServerState.self, from: data))
+        let worker = Task.detached(priority: .utility) { source.inspectData() }
+        let report = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        try Task.checkCancellation()
+        guard context == authentication.requestContext else { throw CancellationError() }
+        return report
+    }
+
     func saveDailySnapshots(rebuild: Bool = false) async throws -> InvestmentDailySnapshotReport {
         await load()
         try checkWritable()
