@@ -55,6 +55,7 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
             guardian.saved = AgentGuardianControl.Read<Saved>(guardian.PathFor("state.json")) ?? new Saved();
             guardian.Status("starting", "守护进程已启动。");
             var commandsWork = Task.Run(() => CommandHost.RunRequestedAsync(options.ProfileDirectory, commandsStopping.Token));
+            var notificationsWork = Task.Run(() => AgentUpdateNotifications.WatchAsync(options.ProfileDirectory, lifetime.Token));
             try
             {
                 while (!token.IsCancellationRequested && !File.Exists(guardian.PathFor("stop")))
@@ -74,6 +75,8 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
                 await commandsWork;
                 if (!File.Exists(guardian.PathFor("transaction.json"))) await lifetime.CancelAsync();
                 if (guardian.updateWork is not null) await guardian.updateWork;
+                await lifetime.CancelAsync();
+                await notificationsWork;
                 guardian.Status("stopped", "守护进程已停止。");
             }
         }
@@ -205,6 +208,7 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         AgentGuardianControl.BeginMaintenance(options.ProfileDirectory, current?.Id ?? 0);
         try
         {
+            await NotifyAsync(journal, "started", false);
             if (current is not null) await StopAsync(current, token);
             Replace(candidate.Path, candidate.Sha256);
             if (restart) await LaunchAsync(token);
@@ -213,10 +217,12 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
             updateState = "updated"; lastMessage = restart ? "Agent 已更新并通过本机接口回查。" : "Agent 文件已更新，保留手动停止状态。";
             ClearPending(candidate.Sha256);
             FinishTransaction();
+            await NotifyAsync(journal, "completed", restart);
         }
         catch (Exception)
         {
-            await RollbackAsync(journal, CancellationToken.None);
+            try { await RollbackAsync(journal, CancellationToken.None); }
+            finally { await NotifyAsync(journal, "failed", false); }
             Save(saved with { RejectedHash = candidate.Sha256 });
             ClearPending(candidate.Sha256);
             updateState = "rolled_back"; lastMessage = "候选更新启动失败，已恢复原文件。";
@@ -229,7 +235,8 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         if (ownership is null) return;
         var journal = AgentGuardianControl.Read<Journal>(PathFor("transaction.json")) ?? throw new InvalidDataException("Update journal is invalid.");
         // Restore the known previous artifact after an interrupted transaction.
-        await RollbackAsync(journal, token);
+        try { await RollbackAsync(journal, token); }
+        finally { await NotifyAsync(journal, "failed", false); }
         Save(saved with { RejectedHash = journal.Candidate.Sha256 });
         ClearPending(journal.Candidate.Sha256);
         FinishTransaction();
@@ -253,6 +260,17 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         Replace(journal.Backup, journal.OldHash);
         var stoppedAfterTransaction = File.Exists(PathFor("paused.json")) && File.GetLastWriteTimeUtc(PathFor("paused.json")) > journal.StartedAt.UtcDateTime;
         if (journal.Restart && !stoppedAfterTransaction) await LaunchAsync(token);
+    }
+    private async Task NotifyAsync(Journal journal, string stage, bool running)
+    {
+        try
+        {
+            var oldVersion = File.Exists(journal.Backup) ? ReleaseVersion(FileVersionInfo.GetVersionInfo(journal.Backup).ProductVersion)?.ToString() ?? "" : "";
+            var version = ReleaseVersion(journal.Candidate.Version)?.ToString() ?? "";
+            await AgentUpdateNotifications.RecordAsync(options.ProfileDirectory, AgentUpdateNotifications.Create(
+                AgentUpdateNotifications.UpdateId(journal.Candidate.Sha256, journal.StartedAt), stage, oldVersion, version, running));
+        }
+        catch (Exception error) { Debug.WriteLine("Agent update notification unavailable: " + error.GetType().Name); }
     }
     private void Replace(string sourcePath, string hash)
     {

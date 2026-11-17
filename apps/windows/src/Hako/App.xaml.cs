@@ -24,6 +24,18 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Length == 6 && e.Args[0] == "--notify-agent-update" && e.Args[1] == "--data-dir" && e.Args[3] == "--event" && e.Args[5] == "--json")
+        {
+            CliConsole.Initialize();
+            try
+            {
+                var notice = AgentGuardianControl.Read<AgentUpdateNotifications.Notice>(Path.GetFullPath(e.Args[4])) ?? throw new IOException("Missing update event.");
+                var status = await AgentUpdateNotifications.RecordAsync(Path.GetFullPath(e.Args[2]), notice);
+                FinishCommand(CommandReply.Success(new { status }), true);
+            }
+            catch (Exception error) { FinishCommand(CommandReply.Failure(1, "update_notification_failed", error.GetType().Name), true); }
+            return;
+        }
         if (e.Args.Length == 7 && e.Args[0] == "--guardian-standby" && e.Args[1] == "--config"
             && e.Args[3] == "--handoff" && e.Args[5] == "--parent")
         {

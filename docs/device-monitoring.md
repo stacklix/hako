@@ -210,6 +210,16 @@ iOS 设备列表右上角的滑杆打开「服务器与登录」，设备详情�
 
 失败使用 `{"type":"response","id":"原请求 ID","error":{"code":"invalid_params","message":"参数无效。"}}`。缺失结果、同时包含结果与错误、错误结构无效会断开连接。服务端按连接及请求 ID 隔离超时或旧连接响应，HTTP 响应移除 `type,id`，只对聚合查询附加当前执行连接的能力清单。
 
+## Agent 升级推送
+
+服务端 0.7.4 和 Agent 1.4.4 起，后台更新和直接安装流程均上报 `started`、`completed`、`failed` 三种升级阶段，复用已登记手机的 APNs 通道。服务端未配置推送或接收设备无效时记录实际失败状态；工坊任务通知开关不影响升级通知。
+
+开始通知在候选程序通过兼容性和完整性检查、即将替换程序时发送。完成通知只在新 Agent 的本机接口回查通过后产生；保留手动停止状态时只说明程序文件已更新。失败通知要求查看更新记录确认恢复状态，不推断回滚或云端重连成功。
+
+`POST /api/v1/agents/update-notifications` 接收 `username`、`keyId`、`payload` 和 `signature`。`payload` 是 UTF-8 JSON 的标准 Base64，字段为 `updateId`（UUID）、`stage`、`fromVersion`、`toVersion`、`occurredAt`（Unix 毫秒）和 `running`。签名使用已登记 Agent 的 RSA-PSS/SHA-256，签名原文为 `hako-agent-update/v1\n<服务端 origin>\n<账号>\n<keyId>\n<payload>`，PSS salt 长度为摘要长度。电脑身份和名称由服务端登记信息确定，Agent 不得指定其他电脑或推送内容。该入口不会注册或替换现有设备长连接。
+
+守护进程将阶段事件独立持久化，在断网或进程替换后按原事件 ID 继续上报；更换服务器或账号时抑制旧事件。服务端按电脑、升级 ID 和阶段去重，超过 15 分钟的陈旧事件不提醒。接口返回持久队列的实际 `status`；`queued` 仅表示已排队，`provider_accepted` 仅表示 Apple 已接受，`unknown` 不自动重发，均不代表手机已收到或已读。推送管理页的来源显示为「Agent 升级」。
+
 ## 验证边界
 
 Go 测试覆盖认证、重放、持久登录、轮换恢复、撤销、任意动作与嵌套 JSON 转发、大整数与 null 保真、能力清单、业务错误、旧接口移除及迟到响应隔离。Windows 检查覆盖真实指标和 DPAPI；可与 Go 服务端进行真实 C# Agent 联调。iOS 的 Secure Enclave、公钥导出、Keychain 和实际 UI 需要在 iPhone 上验收；Windows 环境跳过 iOS 编译、签名和安装。

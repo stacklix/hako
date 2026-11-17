@@ -46,6 +46,7 @@ func (s *Server) startNotifications() error {
 }
 
 func (s *Server) notificationRoutes() {
+	s.mux.HandleFunc("POST /api/v1/agents/update-notifications", s.agentUpdateNotification)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		s.mux.HandleFunc(method+" /admin/api/notifications/{resource...}", s.admin(s.adminNotifications))
 	}
