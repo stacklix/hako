@@ -56,6 +56,10 @@ internal static class BinaryUploadChecks
                 Check(JsonSerializer.SerializeToElement(await restarted.BeginBinaryUploadAsync(begin,default)).GetProperty("complete").GetBoolean(),"Ready upload was not finalized after restart");
                 var repeated=await Chunk(restarted,id,65536,image.AsSpan(65536,32768).ToArray());
                 Check(repeated.GetProperty("complete").GetBoolean(),"Lost final acknowledgement is not retryable");
+                var orphanId=Guid.NewGuid().ToString("D");var orphan=new byte[]{255,216,0,1,255,217};
+                File.WriteAllBytes(Path.Combine(directory,"images",orphanId+".jpg.v2.part"),new byte[]{1});
+                await restarted.BeginBinaryUploadAsync(Params(new {uploadId=orphanId,total=orphan.Length,sha256=Convert.ToHexString(SHA256.HashData(orphan)).ToLowerInvariant()}),default);
+                Check((await Chunk(restarted,orphanId,0,orphan)).GetProperty("complete").GetBoolean(),"Crash before initialization acknowledgement left an unretryable upload");
                 var corruptId=Guid.NewGuid().ToString("D");var small=new byte[]{255,216,0,1,255,217};
                 var corruptBegin=Params(new {uploadId=corruptId,total=small.Length,sha256=Convert.ToHexString(SHA256.HashData(small)).ToLowerInvariant()});
                 await restarted.BeginBinaryUploadAsync(corruptBegin,default);small[2]=9;

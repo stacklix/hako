@@ -65,9 +65,10 @@ internal sealed partial class CodeWorkshop
             }
             else
             {
-                if (Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.v2.part").Count() >= 20)
+                if (!File.Exists(BinaryPart(id)) && Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.v2.part").Count() >= 20)
                     throw new WorkshopException("codex_upload_busy", "未完成的图片上传过多。");
-                using (var file = new FileStream(BinaryPart(id), FileMode.CreateNew, FileAccess.Write, FileShare.Read)) { file.Flush(true); }
+                // No identity or block acknowledgement was persisted yet; discard only this uninitialized transfer.
+                using (var file = new FileStream(BinaryPart(id), FileMode.Create, FileAccess.Write, FileShare.Read)) { file.Flush(true); }
                 state = new(total, digest, []);
                 SaveBinaryState(id, state);
             }

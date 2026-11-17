@@ -28,7 +28,12 @@ public sealed class GuardianConnection : IAsyncDisposable
     }
     public async Task StartAsync(AgentSettings settings)
     {
-        settings.Validate(); await CancelConnectAsync();
+        settings.Validate();
+        // A CLI connect immediately after background startup joins the same
+        // initialization. The guardian reads the latest settings from disk.
+        // Cancelling and awaiting that initialization can stall the CLI reply.
+        if (connecting is { IsCompleted: false }) return;
+        await CancelConnectAsync();
         attempt = CancellationTokenSource.CreateLinkedTokenSource(stopping.Token);
         var token = attempt.Token;
         Status = new("connecting", "正在连接守护进程…"); StatusChanged?.Invoke(Status.Message);
