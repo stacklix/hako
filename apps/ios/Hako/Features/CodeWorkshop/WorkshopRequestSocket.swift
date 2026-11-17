@@ -77,6 +77,9 @@ enum WorkshopJSON: Codable {
 @MainActor final class WorkshopRequestSocket {
     static let path = "/ws/workshop/client"
     var onDisconnect: (() -> Void)?
+    var onFailure: ((Error) -> Void)?
+    private var persistent = false
+    private var streams: [String: AsyncThrowingStream<Data, Error>.Continuation] = [:]
 
     private let requestContext: () -> String
     private let openSocket: () async throws -> (any WorkshopSocketConnection, Data)
@@ -112,6 +115,46 @@ enum WorkshopJSON: Codable {
 
     func close() { disconnect(CancellationError()); context = nil }
 
+    func setPersistent(_ value: Bool) {
+        persistent = value
+        if value { idle?.cancel(); idle = nil }
+        else { close() }
+    }
+
+    func watch(computerID: String, operationID: String, cursor: Int64,
+               receive: (Data) async throws -> Bool) async throws {
+        let id = UUID().uuidString
+        let socket = try await connection()
+        try Task.checkCancellation()
+        idle?.cancel()
+        let stream = AsyncThrowingStream<Data, Error>(bufferingPolicy: .bufferingOldest(32)) {
+            streams[id] = $0
+        }
+        defer {
+            streams.removeValue(forKey: id)?.finish()
+            if self.socket === socket {
+                Task { [weak self] in
+                    // A queued cancellation must never reach a replacement connection.
+                    guard let self, self.socket === socket else { return }
+                    try? await socket.sendWorkshop(.string("{\"kind\":\"unwatch\",\"id\":\"\(id)\"}"))
+                }
+            }
+            if pending.isEmpty && streams.isEmpty { scheduleIdle() }
+        }
+        let frame: [String: Any] = ["kind": "watch", "id": id, "computerId": computerID,
+                                    "operationId": operationID, "cursor": cursor]
+        do {
+            try await socket.sendWorkshop(.string(String(decoding: JSONSerialization.data(withJSONObject: frame), as: UTF8.self)))
+        } catch {
+            if self.socket === socket { disconnect(error) }
+            throw error
+        }
+        for try await data in stream {
+            try Task.checkCancellation()
+            if try await receive(data) == false { return }
+        }
+    }
+
     func send(_ method: String, computerID: String? = nil, params: [String: Any] = [:]) async throws -> Data {
         let id = UUID().uuidString
         var frame: [String: Any] = ["id": id, "kind": "call", "method": method, "params": params]
@@ -123,8 +166,7 @@ enum WorkshopJSON: Codable {
         let deadline = Task {
             try await Task.sleep(for: requestTimeout)
             guard pending[id] != nil else { return }
-            if self.socket === socket { disconnect(URLError(.timedOut)) }
-            else { finish(id, with: .failure(URLError(.timedOut))) }
+            finish(id, with: .failure(URLError(.timedOut)))
         }
         defer { deadline.cancel() }
         return try await withTaskCancellationHandler {
@@ -180,8 +222,20 @@ enum WorkshopJSON: Codable {
                             let data = try await opened.receiveWorkshopData()
                             guard let self, self.socket === opened else { return }
                             let frame = try JSONDecoder().decode(WorkshopSocketFrame.self, from: data)
-                            guard (frame.kind == "result" || frame.kind == "failure"), let id = frame.id else { throw CocoaError(.coderReadCorrupt) }
-                            if self.pending[id] != nil { self.finish(id, with: Result { try frame.resultData() }) }
+                            guard ["result", "failure", "event", "unwatched"].contains(frame.kind), let id = frame.id else { throw CocoaError(.coderReadCorrupt) }
+                            if let stream = self.streams[id] {
+                                if frame.kind == "failure" {
+                                    self.streams[id] = nil
+                                    stream.finish(throwing: frame.error.map { $0 as Error } ?? URLError(.badServerResponse))
+                                } else if frame.kind == "event" {
+                                    if case .dropped = stream.yield(try frame.resultData()) {
+                                        self.streams[id] = nil
+                                        stream.finish(throwing: URLError(.dataLengthExceedsMaximum))
+                                    }
+                                }
+                            } else if self.pending[id] != nil {
+                                self.finish(id, with: Result { try frame.resultData() })
+                            }
                         }
                     } catch {
                         if let self, self.socket === opened { self.disconnect(error) }
@@ -198,11 +252,12 @@ enum WorkshopJSON: Codable {
     private func finish(_ id: String, with result: Result<Data, Error>) {
         guard let continuation = pending.removeValue(forKey: id) else { return }
         continuation.resume(with: result)
-        if pending.isEmpty { scheduleIdle() }
+        if pending.isEmpty && streams.isEmpty { scheduleIdle() }
     }
 
     private func scheduleIdle() {
         idle?.cancel()
+        guard !persistent, streams.isEmpty, pending.isEmpty else { return }
         let timeout = idleTimeout
         idle = Task { [weak self] in
             do { try await Task.sleep(for: timeout) }
@@ -217,11 +272,13 @@ enum WorkshopJSON: Codable {
         opening?.cancel(); opening = nil
         reader?.cancel(); reader = nil
         socket?.closeWorkshop(); socket = nil
+        let subscriptions = streams; streams.removeAll()
+        for stream in subscriptions.values { stream.finish(throwing: error) }
         let cancelled = pending
         pending.removeAll()
         for continuation in cancelled.values { continuation.resume(throwing: error) }
         // Explicit close, route changes and idle retirement do not mean a
         // previously verified computer went offline.
-        if !(error is CancellationError) { onDisconnect?() }
+        if !(error is CancellationError) { onFailure?(error); onDisconnect?() }
     }
 }

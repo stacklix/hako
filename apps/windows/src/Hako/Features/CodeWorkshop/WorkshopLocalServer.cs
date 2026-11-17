@@ -122,6 +122,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 }
                 await Send(WorkshopProtocol.Welcome(computerId() ?? localId));
                 var workers = new List<Task>();
+                var subscriptions = new Dictionary<string, (CancellationTokenSource Lifetime, Task Worker)>();
                 var reading = ReadAsync(socket, lifetime.Token);
                 try
                 {
@@ -155,6 +156,38 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                         reading = ReadAsync(socket, lifetime.Token);
                         var id = command.GetProperty("id").GetString()!;
                         if (id.Length is 0 or > 80) throw new InvalidDataException("Invalid request ID.");
+                        var kind = CodexJson.Text(command, "kind");
+                        if (kind == "unwatch")
+                        {
+                            if (subscriptions.Remove(id, out var old))
+                            { old.Lifetime.Cancel(); try { await old.Worker; } catch { } finally { old.Lifetime.Dispose(); } }
+                            await Send(new { kind = "unwatched", id });
+                            continue;
+                        }
+                        if (kind == "watch")
+                        {
+                            foreach (var key in subscriptions.Keys.ToArray())
+                                if (subscriptions[key].Worker.IsCompleted)
+                                { subscriptions[key].Lifetime.Dispose(); subscriptions.Remove(key); }
+                            if (subscriptions.Count >= 16 || subscriptions.ContainsKey(id))
+                            { await Send(new { kind = "failure", id, error = new WorkshopError("workshop_busy", "代码工坊订阅已满。") }); continue; }
+                            var watching = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                            var worker = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    if (command.TryGetProperty("computerId", out var target) && target.GetString() != (computerId() ?? localId))
+                                        throw new WorkshopException("computer_changed", "局域网地址对应的电脑已改变，请返回列表重新选择电脑。");
+                                    var parameters = JsonSerializer.SerializeToElement(new {
+                                        operationId = command.GetProperty("operationId").GetString(), cursor = command.GetProperty("cursor").GetInt64() });
+                                    await dispatcher.WatchAsync(parameters, page => Send(new { kind = "event", id, result = page }), watching.Token);
+                                }
+                                catch (OperationCanceledException) when (watching.IsCancellationRequested) { }
+                                catch (Exception e) { await Send(new { kind = "failure", id, error = WorkshopProtocol.Failure(e) }); }
+                            });
+                            subscriptions[id] = (watching, worker);
+                            continue;
+                        }
                         workers.RemoveAll(value => value.IsCompleted);
                         if (workers.Count >= WorkshopProtocol.RequestLimit)
                         {
@@ -187,6 +220,9 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 finally
                 {
                     lifetime.Cancel(); socket.Abort();
+                    foreach (var subscription in subscriptions.Values) subscription.Lifetime.Cancel();
+                    foreach (var subscription in subscriptions.Values)
+                    { try { await subscription.Worker; } catch { } finally { subscription.Lifetime.Dispose(); } }
                     try { using var ignored = await reading; } catch { }
                     try { await Task.WhenAll(workers); } catch { }
                 }

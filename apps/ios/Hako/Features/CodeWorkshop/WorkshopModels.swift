@@ -15,13 +15,14 @@ struct WorkshopConversationVisibility {
 }
 
 enum WorkshopConnectionState: Equatable {
-    case disconnected, connecting, connected
+    case disconnected, connecting, reconnecting, connected
 
-    var beginningRequest: Self { self == .connected ? .connected : .connecting }
+    var beginningRequest: Self { self == .connected ? .connected : (self == .reconnecting ? .reconnecting : .connecting) }
     var accessibilityDescription: String {
         switch self {
         case .disconnected: "电脑未连接"
         case .connecting: "正在连接电脑"
+        case .reconnecting: "正在恢复连接"
         case .connected: "电脑已连接"
         }
     }
@@ -32,8 +33,10 @@ enum WorkshopConnectionState: Equatable {
         }
         if let failure = error as? WorkshopFailure {
             switch failure.code {
-            case "computer_offline", "workshop_disconnected", "workshop_timeout", "stream_overflow":
+            case "computer_offline":
                 return .disconnected
+            case "workshop_disconnected", "workshop_timeout", "stream_overflow":
+                return .reconnecting
             case "workshop_busy", "invalid_request", "unsupported_method":
                 return self == .connected ? .connected : .disconnected
             default:
@@ -41,7 +44,7 @@ enum WorkshopConnectionState: Equatable {
                 return .connected
             }
         }
-        return .disconnected
+        return .reconnecting
     }
 }
 

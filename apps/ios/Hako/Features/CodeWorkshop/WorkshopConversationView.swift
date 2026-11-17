@@ -473,7 +473,7 @@ private struct WorkshopProjectConnectionLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Group {
-                if state == .connecting && !reduceMotion {
+                if (state == .connecting || state == .reconnecting) && !reduceMotion {
                     label.phaseAnimator([false, true]) { content, green in
                         content.symbolVariant(green ? .fill : .none)
                             .foregroundStyle(green ? connectedColor : HakoStyle.muted)

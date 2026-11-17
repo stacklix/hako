@@ -63,10 +63,13 @@ import Foundation
         precondition(WorkshopConnectionState.disconnected.beginningRequest == .connecting)
         precondition(WorkshopConnectionState.connected.beginningRequest == .connected,
             "Routine reads must not flash the project name on a healthy connection")
-        for code in ["computer_offline", "workshop_disconnected", "workshop_timeout", "stream_overflow"] {
+        for code in ["computer_offline"] {
             precondition(WorkshopConnectionState.connected.afterFailure(WorkshopFailure(code: code, message: "Offline")) == .disconnected)
         }
-        precondition(WorkshopConnectionState.connecting.afterFailure(URLError(.cannotConnectToHost)) == .disconnected)
+        precondition(WorkshopConnectionState.connecting.afterFailure(URLError(.cannotConnectToHost)) == .reconnecting)
+        for code in ["workshop_disconnected", "workshop_timeout", "stream_overflow"] {
+            precondition(WorkshopConnectionState.connected.afterFailure(WorkshopFailure(code: code, message: "Retry")) == .reconnecting)
+        }
         precondition(WorkshopConnectionState.connecting.afterFailure(CancellationError()) == .disconnected)
         precondition(WorkshopConnectionState.connected.afterFailure(CancellationError()) == .connected)
         precondition(WorkshopConnectionState.connecting.afterFailure(WorkshopFailure(code: "codex_busy", message: "Busy")) == .connected,

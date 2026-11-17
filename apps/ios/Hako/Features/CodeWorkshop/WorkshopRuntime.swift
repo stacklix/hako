@@ -16,6 +16,7 @@ import UIKit
 
     private init() {
         store = WorkshopStore()
+        store.setConnectionForeground(UIApplication.shared.applicationState != .background)
         context = store.scope
         registerCatalog()
         synchronization.setForeground(UIApplication.shared.applicationState != .background)
@@ -35,6 +36,7 @@ import UIKit
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.synchronization.setForeground(false)
+                self.store.setConnectionForeground(false)
                 let background = UIApplication.shared.beginBackgroundTask(withName: "Save Workshop drafts")
                 await self.store.flushComposerDrafts()
                 if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
@@ -42,6 +44,7 @@ import UIKit
         }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification).sink { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.store.setConnectionForeground(true)
                 await self?.store.prepareNetwork()
                 self?.synchronization.setForeground(true)
             }

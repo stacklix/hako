@@ -10,6 +10,7 @@ import CryptoKit
     let routeChanges = PassthroughSubject<Void, Never>()
     private var networkCheck = UUID()
     private var transportRevision = UUID()
+    private var connectionPersistent = false
     private var subscription: AnyCancellable?
     private var context = ""
     private var preferences = WorkshopPreferences()
@@ -45,7 +46,8 @@ import CryptoKit
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
         socket = WorkshopRequestSocket(authentication: authentication, logSource: .codeWorkshop)
-        socket.onDisconnect = { [weak self] in self?.connections.removeAll() }
+        socket.onDisconnect = { [weak self] in self?.connectionInterrupted() }
+        socket.onFailure = { HakoLog.record(.codeWorkshop, "工坊共享连接中断", detail: $0.localizedDescription) }
         subscription = authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.prepareContext() }
         }
@@ -72,13 +74,24 @@ import CryptoKit
             directSocket = WorkshopRequestSocket(context: { "local:" + endpoint.address }, open: {
                 try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1")
             })
-            directSocket?.onDisconnect = { [weak self] in self?.connections.removeAll() }
+            directSocket?.onDisconnect = { [weak self] in self?.connectionInterrupted() }
+            directSocket?.onFailure = { HakoLog.record(.codeWorkshop, "工坊局域网共享连接中断", detail: $0.localizedDescription) }
+            directSocket?.setPersistent(connectionPersistent)
         }
         prepareContext()
         routeChanges.send()
     }
 
     private var requests: WorkshopRequestSocket { directSocket ?? socket }
+
+    func setConnectionForeground(_ foreground: Bool) {
+        connectionPersistent = foreground
+        socket.setPersistent(foreground); directSocket?.setPersistent(foreground)
+    }
+
+    private func connectionInterrupted() {
+        for (id, state) in connections where state != .disconnected { connections[id] = .reconnecting }
+    }
 
     private func verifyNetworkRoute() async throws {
         let expected = localEndpoint
@@ -767,18 +780,12 @@ import CryptoKit
               !agentID.contains("/") else { throw CocoaError(.coderReadCorrupt) }
         connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest
         do {
-            try await WorkshopEventStream.watch(open: {
+            try await requests.watch(computerID: agent.id, operationID: id, cursor: cursor) { data in
                 guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
-                if let endpoint = self.localEndpoint {
-                    return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1/events/\(id)/\(cursor)")
-                }
-                return try await self.authentication.openWebSocket(
-                    "/ws/workshop/events/\(agentID)/\(id)/\(cursor)", logSource: .codeWorkshop)
-            }, receive: { (page: WorkshopOperationPage) in
-                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                let page = try JSONDecoder().decode(WorkshopOperationPage.self, from: data)
                 if self.connections[agent.id] != .connected { self.connections[agent.id] = .connected }
                 return try await receive(page)
-            })
+            }
         } catch {
             if ticket == scope, route == transportRevision {
                 connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)

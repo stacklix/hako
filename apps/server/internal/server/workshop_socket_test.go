@@ -242,3 +242,51 @@ func TestWorkshopAuthenticationAndDeviceProtocolIsolation(t *testing.T) {
 		t.Fatal("device wire format accepted by workshop")
 	}
 }
+
+func TestWorkshopClientMultiplexesCallsAndIndependentSubscriptions(t *testing.T) {
+	f := newFixture(t, true)
+	worker := connectWorkshop(t, f)
+	client := openWorkshopClient(t, f, "/ws/workshop/client")
+	operation := "11111111-1111-4111-8111-111111111111"
+	writeAgentFrame(t, client, workshop.Frame{Kind: "watch", ID: "view-a", ComputerID: "PC", OperationID: operation, Cursor: 7})
+	first := readAgentFrame[workshop.Frame](t, worker)
+	if first.Kind != "watch" || first.OperationID != operation || first.Cursor != 7 {
+		t.Fatal("watch lost cursor", first)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "watch", ID: "view-b", ComputerID: "PC", OperationID: operation, Cursor: 9})
+	second := readAgentFrame[workshop.Frame](t, worker)
+	if second.ID == first.ID || second.Cursor != 9 {
+		t.Fatal("subscriptions not independent", second)
+	}
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "event", ID: second.ID, Result: json.RawMessage(`{"cursor":10}`)})
+	event := readAgentFrame[workshop.Frame](t, client)
+	if event.Kind != "event" || event.ID != "view-b" {
+		t.Fatal("event delivered to wrong conversation", event)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "call", ID: "history", ComputerID: "PC", Method: "history.read", Params: json.RawMessage(`{}`)})
+	call := readAgentFrame[workshop.Frame](t, worker)
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "result", ID: call.ID, Result: json.RawMessage(`{"entries":[]}`)})
+	if reply := readAgentFrame[workshop.Frame](t, client); reply.ID != "history" {
+		t.Fatal("call interfered with stream", reply)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "unwatch", ID: "view-a"})
+	stopped := readAgentFrame[workshop.Frame](t, worker)
+	if stopped.Kind != "unwatch" || stopped.ID != first.ID {
+		t.Fatal("wrong Agent subscription cancelled", stopped)
+	}
+	if ack := readAgentFrame[workshop.Frame](t, client); ack.Kind != "unwatched" || ack.ID != "view-a" {
+		t.Fatal("missing unsubscribe acknowledgement", ack)
+	}
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "event", ID: second.ID, Result: json.RawMessage(`{"cursor":11}`)})
+	if reply := readAgentFrame[workshop.Frame](t, client); reply.ID != "view-b" {
+		t.Fatal("other stream cancelled", reply)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "unwatch", ID: "view-b"})
+	_ = readAgentFrame[workshop.Frame](t, worker)
+	_ = readAgentFrame[workshop.Frame](t, client)
+	// A replacement subscription on the same socket resumes from its own cursor.
+	writeAgentFrame(t, client, workshop.Frame{Kind: "watch", ID: "view-c", ComputerID: "PC", OperationID: operation, Cursor: 11})
+	if resumed := readAgentFrame[workshop.Frame](t, worker); resumed.Kind != "watch" || resumed.Cursor != 11 {
+		t.Fatal("resume cursor lost", resumed)
+	}
+}

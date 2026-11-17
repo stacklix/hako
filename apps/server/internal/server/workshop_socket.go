@@ -258,6 +258,21 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	replies := make(chan workshop.Frame, 16)
+	type subscription struct {
+		cancel context.CancelFunc
+		done   chan struct{}
+	}
+	subscriptions := map[string]subscription{}
+	events := make(chan workshop.Frame, 32)
+	defer func() {
+		cancel()
+		for _, sub := range subscriptions {
+			sub.cancel()
+		}
+		for _, sub := range subscriptions {
+			<-sub.done
+		}
+	}()
 	inFlight := 0
 	for {
 		select {
@@ -270,6 +285,75 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		case command := <-commands:
 			if !valid() {
 				return
+			}
+			if command.Kind == "unwatch" {
+				if sub, ok := subscriptions[command.ID]; ok {
+					sub.cancel()
+					<-sub.done
+					delete(subscriptions, command.ID)
+				}
+				if !write(workshop.Frame{Kind: "unwatched", ID: command.ID}) {
+					return
+				}
+				continue
+			}
+			if command.Kind == "watch" {
+				if command.ID == "" || len(command.ID) > 80 || !workshopOperationID.MatchString(command.OperationID) || command.Cursor < 0 {
+					if !write(workshopFailure(command.ID, "invalid_request", "无效的代码工坊订阅。")) {
+						return
+					}
+					continue
+				}
+				if _, exists := subscriptions[command.ID]; exists || len(subscriptions) >= 16 || !s.allow("workshop-api", 600, time.Minute) {
+					if !write(workshopFailure(command.ID, "workshop_busy", "代码工坊订阅已满。")) {
+						return
+					}
+					continue
+				}
+				// Subscription IDs belong to this client; the hub assigns independent Agent IDs.
+				watching, stop := context.WithCancel(ctx)
+				done := make(chan struct{})
+				subscriptions[command.ID] = subscription{stop, done}
+				go func(command workshop.Frame) {
+					defer close(done)
+					emit := func(frame workshop.Frame) bool {
+						frame.ID = command.ID
+						select {
+						case events <- frame:
+							return true
+						case <-watching.Done():
+							return false
+						}
+					}
+					c, _ := s.workshopHub.Lookup(command.ComputerID)
+					if c == nil {
+						emit(workshopFailure(command.ID, "computer_offline", "执行电脑未连接代码工坊。"))
+						return
+					}
+					sub, err := c.Subscribe(command.OperationID, command.Cursor)
+					if err != nil {
+						emit(workshopFailure(command.ID, "workshop_busy", "代码工坊订阅已满。"))
+						return
+					}
+					defer c.Unsubscribe(sub)
+					for {
+						select {
+						case <-watching.Done():
+							return
+						case <-c.Done():
+							emit(workshopFailure(command.ID, "workshop_disconnected", "代码工坊连接已中断。"))
+							return
+						case <-sub.Overflow:
+							emit(workshopFailure(command.ID, "stream_overflow", "代码工坊事件积压，请重新连接。"))
+							return
+						case frame := <-sub.Updates:
+							if !emit(frame) || frame.Error != nil {
+								return
+							}
+						}
+					}
+				}(command)
+				continue
 			}
 			if inFlight >= 16 || !s.allow("workshop-api", 600, time.Minute) {
 				if !write(workshopFailure(command.ID, "workshop_busy", "代码工坊请求已满。")) {
@@ -285,6 +369,19 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 				case <-ctx.Done():
 				}
 			}()
+		case event := <-events:
+			if _, exists := subscriptions[event.ID]; !exists {
+				continue
+			}
+			if !valid() || !write(event) {
+				return
+			}
+			if event.Error != nil {
+				sub := subscriptions[event.ID]
+				sub.cancel()
+				<-sub.done
+				delete(subscriptions, event.ID)
+			}
 		case reply := <-replies:
 			inFlight--
 			if !valid() || !write(reply) {

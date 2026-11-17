@@ -99,6 +99,17 @@ internal static class AgentDirectChecks
             var page = reply.GetProperty("result");
             var cursor = page.GetProperty("cursor").GetInt64();
             Check(page.GetProperty("events")[0].GetProperty("text").GetString() == "Live text", "Direct query lost response data");
+            await Send(socket, new { id = "shared-watch", kind = "watch", computerId = "PC", operationId = id, cursor = 0 });
+            var multiplexed = await Receive(socket);
+            Check(multiplexed.GetProperty("kind").GetString() == "event" && multiplexed.GetProperty("id").GetString() == "shared-watch" &&
+                multiplexed.GetProperty("result").GetProperty("cursor").GetInt64() == cursor, "LAN shared subscription lost its identity or cursor");
+            await Send(socket, new { id = "shared-watch", kind = "unwatch" });
+            Check((await Receive(socket)).GetProperty("kind").GetString() == "unwatched", "LAN unsubscribe not acknowledged");
+            await Send(socket, new { id = "shared-resume", kind = "watch", computerId = "PC", operationId = id, cursor });
+            Check((await Receive(socket)).GetProperty("result").GetProperty("events").GetArrayLength() == 0,
+                "LAN subscription on reused socket duplicated consumed events");
+            await Send(socket, new { id = "shared-resume", kind = "unwatch" });
+            _ = await Receive(socket);
             using var pushed = await Open(server.Port, $"/workshop/v1/events/{id}/0");
             var update = await Receive(pushed);
             Check(update.GetProperty("kind").GetString() == "event" && update.GetProperty("result").GetProperty("cursor").GetInt64() == cursor,

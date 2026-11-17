@@ -74,6 +74,52 @@ enum HakoLogSource { case codeWorkshop }
         do { _ = try await request.value; preconditionFailure("Broken transport unexpectedly replied") }
         catch { }
         precondition(disconnects == 1, "A reader failure must immediately update connection presentation")
+        let multiplex = WorkshopTestSocket()
+        var sharedOpens = 0
+        let shared = WorkshopRequestSocket(context: { "account" }, open: { sharedOpens += 1; return (multiplex, welcome) },
+            requestTimeout: .milliseconds(30), idleTimeout: .milliseconds(10))
+        shared.setPersistent(true)
+        var eventsA = 0, eventsB = 0
+        let streamA = Task { try await shared.watch(computerID: "PC", operationID: "operation-a", cursor: 7) { _ in eventsA += 1; return true } }
+        while multiplex.sent.count < 1 { await Task.yield() }
+        let streamB = Task { try await shared.watch(computerID: "PC", operationID: "operation-b", cursor: 9) { _ in eventsB += 1; return true } }
+        while multiplex.sent.count < 2 { await Task.yield() }
+        let idA = multiplex.sent[0]["id"]!, idB = multiplex.sent[1]["id"]!
+        precondition(multiplex.sent[0]["cursor"] as? Int64 == 7 && multiplex.sent[1]["cursor"] as? Int64 == 9)
+        try multiplex.push(["kind":"event", "id": idB, "result":["cursor":10]])
+        while eventsB == 0 { await Task.yield() }
+        precondition(eventsA == 0 && sharedOpens == 1, "Streams must route by subscription ID on one socket")
+        let timedOut = Task { try await shared.send("history.read", computerID: "PC") }
+        do { _ = try await timedOut.value; preconditionFailure("Expected a single request timeout") } catch { }
+        precondition(multiplex.workshopUsable && sharedOpens == 1, "A slow request must not disconnect other conversations")
+        streamA.cancel(); _ = try? await streamA.value
+        while !multiplex.sent.contains(where: { $0["kind"] as? String == "unwatch" && $0["id"] as? String == idA as? String }) { await Task.yield() }
+        try multiplex.push(["kind":"event", "id": idA, "result":["cursor":8]])
+        try multiplex.push(["kind":"event", "id": idB, "result":["cursor":11]])
+        while eventsB < 2 { await Task.yield() }
+        precondition(eventsA == 0 && sharedOpens == 1, "Cancelling one view must preserve the other stream and shared connection")
+        streamB.cancel(); _ = try? await streamB.value
+        try await Task.sleep(for: .milliseconds(25))
+        precondition(multiplex.workshopUsable, "Foreground connection must survive its old idle deadline")
+        shared.setPersistent(false)
+        precondition(!multiplex.workshopUsable, "Background transition must release the foreground connection")
+        let resumed = WorkshopTestSocket()
+        var current = resumed
+        let reconnecting = WorkshopRequestSocket(context: { "account" }, open: { (current, welcome) })
+        let interrupted = Task { try await reconnecting.watch(computerID: "PC", operationID: "same-operation", cursor: 11) { _ in true } }
+        while resumed.receiver == nil || resumed.sent.isEmpty { await Task.yield() }
+        let waiting = resumed.receiver; resumed.receiver = nil
+        waiting?.resume(throwing: URLError(.networkConnectionLost))
+        do { try await interrupted.value; preconditionFailure("Lost connection did not end subscription") } catch { }
+        current = WorkshopTestSocket()
+        let replacement = current
+        let restarted = Task { try await reconnecting.watch(computerID: "PC", operationID: "same-operation", cursor: 12) { _ in false } }
+        while replacement.sent.isEmpty { await Task.yield() }
+        precondition(replacement.sent[0]["cursor"] as? Int64 == 12, "Reconnection must preserve the caller's updated resume cursor")
+        try replacement.push(["kind":"event", "id":replacement.sent[0]["id"]!, "result":["cursor":13]])
+        try await restarted.value
+        reconnecting.close()
+        print("PASS: shared calls/streams, per-view cancellation, timeout isolation, foreground lifetime and reconnect cursors")
         print("PASS: Workshop-only handshake, independent call schema, multiplexing and out-of-order reply identity")
     }
 }
