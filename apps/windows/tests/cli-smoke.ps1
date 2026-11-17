@@ -16,19 +16,48 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 public static class HakoSmokeProcessJob {
     private static IntPtr restrictedJob;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimits {
+        public long ProcessTime, JobTime;
+        public uint Flags;
+        public UIntPtr Minimum, Maximum;
+        public uint Active;
+        public UIntPtr Affinity;
+        public uint Priority, Scheduling;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters { public ulong Read, Write, Other, ReadBytes, WriteBytes, OtherBytes; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Limits {
+        public BasicLimits Basic;
+        public IoCounters Io;
+        public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+    }
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr job, int kind, ref Limits limits, int size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(IntPtr job, int kind, out Limits limits, int size, out int length);
     public static void RestrictCurrentProcess() {
-        // Default job limits prohibit breakaway. Keep this handle alive for the
-        // test process; children remain supervised and are explicitly stopped.
+        // Require a real lifetime restriction: an unrestricted scheduler job
+        // may safely be inherited when Windows prohibits breakaway.
         restrictedJob = CreateJobObjectW(IntPtr.Zero, null);
+        var limits = new Limits { Basic = new BasicLimits { Flags = 0x2000 } };
         using var process = Process.GetCurrentProcess();
-        if (restrictedJob == IntPtr.Zero || !AssignProcessToJobObject(restrictedJob, process.Handle))
+        if (restrictedJob == IntPtr.Zero || !SetInformationJobObject(restrictedJob, 9, ref limits, Marshal.SizeOf<Limits>())
+            || !AssignProcessToJobObject(restrictedJob, process.Handle))
             throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public static bool CurrentJobHasLimits() {
+        if (!Contains(Environment.ProcessId)) return false;
+        if (!QueryInformationJobObject(IntPtr.Zero, 9, out var limits, Marshal.SizeOf<Limits>(), out _))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return limits.Basic.Flags != 0;
     }
     public static bool Contains(int processId) {
         using var process = Process.GetProcessById(processId);
@@ -127,7 +156,7 @@ try {
     } elseif ($RestrictBackgroundLaunch) { throw 'Restricted job unexpectedly permitted independent startup.' }
     if (-not $connected.data.running -or $connected.data.processId -le 0) { throw 'Connect did not start an independent background process.' }
     $backgroundId = $connected.data.processId
-    if ($independentLaunch -and [HakoSmokeProcessJob]::Contains($backgroundId)) { throw 'Background Agent inherited a job and can be killed when its launching command exits.' }
+    if ($independentLaunch -and [HakoSmokeProcessJob]::CurrentJobHasLimits() -and [HakoSmokeProcessJob]::Contains($backgroundId)) { throw 'Background Agent inherited a limited job and can be killed when its launching command exits.' }
     $status = Invoke-HakoCheck -Arguments @('status')
     if ($status.data.processId -ne $backgroundId) { throw 'Status did not reuse the running background process.' }
     $null = Invoke-HakoCheck -Arguments @('config','set','--account','updatedowner')
