@@ -4,9 +4,11 @@ import Combine
 @MainActor final class HakoNotificationsStore: ObservableObject {
     private struct Snapshot { var context = ""; var items: [HakoNotification] = [] }
     private static let dismissalKey = "hako.notifications.dismissals.v1"
+    private static let readKey = "hako.notifications.read.v1"
     @Published private var snapshot = Snapshot()
     @Published private var now = Date.now
     @Published private var dismissals: NotificationDismissals
+    @Published private var readState: NotificationReadState
     @Published private(set) var message: String?
     private let authentication: any AuthenticatedServerAccess
     private let defaults: UserDefaults
@@ -19,6 +21,8 @@ import Combine
         self.defaults = defaults
         self.pushes = pushes ?? .shared
         dismissals = defaults.data(forKey: Self.dismissalKey).flatMap { try? JSONDecoder().decode(NotificationDismissals.self, from: $0) } ?? NotificationDismissals()
+        readState = defaults.data(forKey: Self.readKey).flatMap { try? JSONDecoder().decode(NotificationReadState.self, from: $0) } ?? NotificationReadState()
+        if readState.prune() { saveReadState() }
         if dismissals.prune(), let data = try? JSONEncoder().encode(dismissals) { defaults.set(data, forKey: Self.dismissalKey) }
         subscription = self.authentication.changes.sink { [weak self] _ in self?.objectWillChange.send() }
         pushSubscription = self.pushes.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -40,6 +44,28 @@ import Combine
     var activeIDs: [String] {
         guard authenticated, snapshot.context == context else { return [] }
         return snapshot.items.filter { $0.expiresAt > now }.map(\.id)
+    }
+    var unreadCount: Int { notifications.filter { isUnread($0) }.count }
+    func isUnread(_ notification: HakoNotification) -> Bool {
+        readState.isUnread(notification, scope: notification.category == .applePush ? NotificationReadState.pushScope : scope, now: now)
+    }
+    func markRead(_ notification: HakoNotification) {
+        now = .now
+        guard notifications.contains(where: { $0.id == notification.id }), isUnread(notification) else { return }
+        readState.markRead(notification, scope: notification.category == .applePush ? NotificationReadState.pushScope : scope, now: now)
+        saveReadState()
+    }
+    func markAllRead() {
+        now = .now
+        var next = readState
+        for notification in notifications where isUnread(notification) {
+            next.markRead(notification, scope: notification.category == .applePush ? NotificationReadState.pushScope : scope, now: now)
+        }
+        readState = next
+        saveReadState()
+    }
+    private func saveReadState() {
+        if let data = try? JSONEncoder().encode(readState) { defaults.set(data, forKey: Self.readKey) }
     }
     func clear(_ notification: HakoNotification) {
         now = .now

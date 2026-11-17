@@ -86,14 +86,14 @@ struct HomeView: View {
                 ToolbarItem(placement: .principal) { Text("").accessibilityHidden(true) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink(value: Destination.notifications) {
-                        if notifications.notifications.isEmpty {
+                        if notifications.unreadCount == 0 {
                             Image(systemName: "bell")
                         } else {
                             Image(systemName: "bell.badge")
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.red, .primary)
                         }
-                    }.accessibilityLabel("通知，\(notifications.notifications.count) 条通知")
+                    }.accessibilityLabel("通知，\(notifications.unreadCount) 条未读")
                     NavigationLink(value: Destination.settings) { Image(systemName: "gearshape") }.accessibilityLabel("设置")
                 }
             }

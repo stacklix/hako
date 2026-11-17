@@ -59,9 +59,7 @@ struct ConsoleLoginPromptSheet: View {
                     } description: {
                         Text(approved ? "请返回原浏览器，继续完成操作。" : "此次请求已拒绝。")
                     } actions: {
-                        Button("完成") { dismiss() }
-                            .buttonStyle(HakoActionButtonStyle())
-                            .padding(.horizontal, 24)
+                        ConsoleLoginCompletionButton { dismiss() }
                     }
                 } else {
                     Form {

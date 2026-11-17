@@ -76,12 +76,7 @@ struct ConsoleWebLoginView: View {
                     } description: {
                         Text(approved ? "网页将自动完成登录。" : "此次网页登录请求已拒绝。")
                     } actions: {
-                        Button { dismiss() } label: {
-                            Text("完成").font(.body.weight(.medium)).frame(minWidth: 104)
-                        }
-                            .buttonStyle(.bordered)
-                            .controlSize(.large)
-                            .tint(.secondary)
+                        ConsoleLoginCompletionButton { dismiss() }
                     }
                 } else {
                     VStack(spacing: 0) {

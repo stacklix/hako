@@ -74,6 +74,29 @@ import Foundation
         var bounded = HakoPushHistory()
         for index in 0..<220 { bounded.record(push("agent_update", id: "\(index)", at: now.addingTimeInterval(Double(index))), now: now.addingTimeInterval(220)) }
         precondition(bounded.items.count == 200 && bounded.items.first?.receivedAt == now.addingTimeInterval(219))
+        var readState = NotificationReadState()
+        precondition(readState.isUnread(login, scope: scope, now: now))
+        precondition(readState.isUnread(presented, scope: NotificationReadState.pushScope, now: now))
+        for item in [login, presented] {
+            readState.markRead(item, scope: item.category == .applePush ? NotificationReadState.pushScope : scope, now: now)
+        }
+        var readAgain = try JSONDecoder().decode(NotificationReadState.self, from: JSONEncoder().encode(readState))
+        let unread = [login, presented].filter {
+            readAgain.isUnread($0, scope: $0.category == .applePush ? NotificationReadState.pushScope : scope, now: now)
+        }
+        precondition(unread.isEmpty, "Marking all read must leave no badge while retaining both messages")
+        precondition(readAgain.isUnread(login, scope: otherAccount, now: now) && readAgain.isUnread(login, scope: otherServer, now: now),
+            "Login read state must not cross account or server boundaries")
+        let later = notification(id: String(repeating: "C", count: 43), expires: 60)
+        precondition(readAgain.isUnread(later, scope: scope, now: now), "New messages after mark-all must be unread")
+        precondition(!readAgain.isUnread(presented, scope: NotificationReadState.pushScope, now: now), "Read pushes must remain read after restart/import")
+        readAgain.markRead(login, scope: scope, now: now)
+        precondition(readAgain.entries.count == 2, "Repeated opening must not add duplicate read markers")
+        readAgain.prune(now: now.addingTimeInterval(60))
+        precondition(readAgain.entries.count == 1 && !readAgain.isUnread(login, scope: scope, now: now.addingTimeInterval(60)))
+        let readMetadata = String(decoding: try JSONEncoder().encode(readAgain), as: UTF8.self)
+        precondition(!readMetadata.contains(nonce))
+        print("PASS: unread identity, all-read badge clearing, persistent read markers, new message detection, account isolation and expiry")
         print("PASS: Apple push display, background import deduplication, restart persistence, clear tombstones, silent push exclusion, privacy, retention and bounded newest-first history")
         print("PASS: notification presentation, stable identity, clear persistence, refresh/restart, scope isolation, expiry cleanup and credential-free storage")
     }

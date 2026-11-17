@@ -133,3 +133,27 @@ struct NotificationDismissals: Codable {
         if entries.count > 2048 { entries = Array(entries.sorted { $0.expiresAt > $1.expiresAt }.prefix(2048)) }
     }
 }
+
+// Read state is separate from dismissals: reading a login request keeps it
+// actionable, and reading a push keeps its history available.
+struct NotificationReadState: Codable {
+    struct Entry: Codable { let scope: String; let id: String; let expiresAt: Date }
+    private(set) var entries: [Entry] = []
+    static let pushScope = "apple-push-on-this-device"
+
+    @discardableResult mutating func prune(now: Date = .now) -> Bool {
+        let count = entries.count
+        entries.removeAll { $0.expiresAt <= now }
+        return entries.count != count
+    }
+    func isUnread(_ notification: HakoNotification, scope: String, now: Date = .now) -> Bool {
+        notification.expiresAt > now && !entries.contains { $0.id == notification.id && $0.scope == scope && $0.expiresAt > now }
+    }
+    mutating func markRead(_ notification: HakoNotification, scope: String, now: Date = .now) {
+        prune(now: now)
+        guard notification.expiresAt > now else { return }
+        entries.removeAll { $0.id == notification.id && $0.scope == scope }
+        entries.append(Entry(scope: scope, id: notification.id, expiresAt: notification.expiresAt))
+        if entries.count > 2048 { entries = Array(entries.sorted { $0.expiresAt > $1.expiresAt }.prefix(2048)) }
+    }
+}

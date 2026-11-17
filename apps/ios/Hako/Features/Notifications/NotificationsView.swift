@@ -59,6 +59,14 @@ struct NotificationsView: View {
         .navigationTitle("通知").navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button("全部已读") {
+                    store.markAllRead()
+                    showNotice("已将全部通知标为已读。")
+                }
+                    .disabled(store.unreadCount == 0)
+                    .accessibilityLabel("全部标为已读")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button(role: .destructive) {
                         notice = nil
@@ -125,28 +133,40 @@ struct NotificationsView: View {
     }
 
     private func notificationRow(_ notification: HakoNotification) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: notification.symbol).frame(width: 26).padding(.top, 2)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: notification.symbol)
+                .font(.system(size: 18, weight: .medium)).foregroundStyle(.blue)
+                .frame(width: 34, height: 34)
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
                     Text(notification.title).font(.headline)
-                    Spacer(minLength: 4)
-                    if let created = notification.createdAt {
-                        Text(created, style: .relative).font(.caption2).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if store.isUnread(notification) {
+                        Circle().fill(.blue).frame(width: 8, height: 8).padding(.top, 6).accessibilityHidden(true)
                     }
                 }
                 Text(notification.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                HStack(spacing: 8) {
+                    Text(notification.category.title)
+                    if let created = notification.createdAt { Text("·"); Text(created, style: .relative) }
+                }
+                .font(.caption).foregroundStyle(.tertiary)
             }
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).padding(.top, 5)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(store.isUnread(notification) ? "未读" : "已读")
     }
 
     private func open(_ notification: HakoNotification) {
         noticeTask?.cancel(); notice = nil
+        store.markRead(notification)
         switch notification.content {
         case .loginRequest(let prompt): selection = NotificationSelection(notification: notification, session: ConsoleLoginPromptSession(prompt: prompt, context: store.context))
         case .push(let push): selectedPush = push
