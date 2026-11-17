@@ -17,6 +17,7 @@ internal sealed class GuardianWorkshopDispatcher(string profile) : IWorkshopDisp
     public async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
     {
         if (parameters.ValueKind != JsonValueKind.Object) throw CodexJson.Invalid();
+        if (method == "diagnostics.append") return WorkshopDiagnosticReports.ForProfile(profile).AppendIOS(parameters);
         if (method == "commands.open")
         {
             CodexJson.Keys(parameters);

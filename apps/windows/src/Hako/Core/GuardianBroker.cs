@@ -32,7 +32,7 @@ internal sealed class GuardianBroker : IAsyncDisposable
         {
             try { Directory.CreateDirectory(profile); File.WriteAllText(Path.Combine(profile, "workshop-computer-id.txt"), id); }
             catch (IOException) { }
-        });
+        }, profileDirectory: profile);
         if (start) Start();
     }
     internal void Prepare()

@@ -113,7 +113,7 @@ internal static class CommandHost
             var identityFile = Path.Combine(directory, "workshop-computer-id.txt");
             if (File.Exists(identityFile)) computerId = File.ReadAllText(identityFile).Trim();
             await using var local = new WorkshopLocalServer(dispatcher, 0, () => computerId, directory, token);
-            await using var cloud = new WorkshopConnection(dispatcher, id => computerId = id, commandHost: true);
+            await using var cloud = new WorkshopConnection(dispatcher, id => computerId = id, commandHost: true, profileDirectory: directory);
             var settings = profile.Store.Load();
             var connected = false;
             using var self = Process.GetCurrentProcess();

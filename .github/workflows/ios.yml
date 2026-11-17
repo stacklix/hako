@@ -77,9 +77,9 @@ jobs:
           /tmp/hako-workshop-sync-tests
           swiftc Hako/Shared/Network/LocalNetworkEndpoint.swift Hako/App/Network/AppNetworkConfigurationStore.swift Tests/LocalNetworkTests.swift -o /tmp/hako-local-network-tests
           /tmp/hako-local-network-tests
-          swiftc Hako/Features/CodeWorkshop/WorkshopRequestSocket.swift Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopEventStream.swift Tests/WorkshopEventStreamTests.swift -o /tmp/hako-workshop-push-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/CodeWorkshop/WorkshopRequestSocket.swift Hako/Features/CodeWorkshop/WorkshopModels.swift Hako/Features/CodeWorkshop/WorkshopEventStream.swift Tests/WorkshopEventStreamTests.swift -o /tmp/hako-workshop-push-tests
           /tmp/hako-workshop-push-tests
-          swiftc Hako/Features/CodeWorkshop/WorkshopRequestSocket.swift Hako/Features/CodeWorkshop/WorkshopModels.swift Tests/WorkshopRequestSocketTests.swift -o /tmp/hako-workshop-socket-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Features/CodeWorkshop/WorkshopDiagnosticOutbox.swift Hako/Features/CodeWorkshop/WorkshopRequestSocket.swift Hako/Features/CodeWorkshop/WorkshopModels.swift Tests/WorkshopRequestSocketTests.swift -o /tmp/hako-workshop-socket-tests
           /tmp/hako-workshop-socket-tests
           swiftc -D AGENT_SOCKET_TESTS Hako/Shared/HakoServer/ServerJSON.swift Hako/Shared/HakoServer/AgentRequestSocket.swift Tests/AgentRequestSocketTests.swift -o /tmp/hako-agent-socket-tests
           /tmp/hako-agent-socket-tests

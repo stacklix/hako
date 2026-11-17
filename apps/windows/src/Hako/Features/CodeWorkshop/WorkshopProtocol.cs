@@ -59,6 +59,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
     public async Task<object?> CallAsync(string method, JsonElement parameters, CancellationToken token)
     {
         if (parameters.ValueKind != JsonValueKind.Object) throw CodexJson.Invalid();
+        if (method == "diagnostics.append") return WorkshopDiagnosticReports.ForProfile(directory).AppendIOS(parameters);
         if (Commands is not null) return await Commands.CallAsync(method, parameters, token);
         if (method == "commands.open")
         {

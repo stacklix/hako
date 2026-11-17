@@ -5,12 +5,15 @@ import FoundationNetworking
 
 @MainActor protocol WorkshopSocketConnection: AnyObject, Sendable {
     var workshopUsable: Bool { get }
+    var workshopCloseCode: Int? { get }
     func sendWorkshop(_ message: URLSessionWebSocketTask.Message) async throws
     func receiveWorkshopData() async throws -> Data
     func closeWorkshop()
 }
+extension WorkshopSocketConnection { var workshopCloseCode: Int? { nil } }
 extension URLSessionWebSocketTask: WorkshopSocketConnection {
     var workshopUsable: Bool { state == .running && closeCode == .invalid }
+    var workshopCloseCode: Int? { closeCode == .invalid ? nil : closeCode.rawValue }
     func sendWorkshop(_ message: URLSessionWebSocketTask.Message) async throws { try await send(message) }
     func receiveWorkshopData() async throws -> Data {
         switch try await receive() {
@@ -20,6 +23,22 @@ extension URLSessionWebSocketTask: WorkshopSocketConnection {
         }
     }
     func closeWorkshop() { cancel(with: .goingAway, reason: nil) }
+}
+
+enum WorkshopSocketDiagnostics {
+    // Error descriptions/userInfo may include URLs, headers and server payloads.
+    static func error(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if let failure = error as? WorkshopFailure {
+            let known: Set<String> = ["query_timeout", "process_unavailable", "process_disconnected", "computer_offline",
+                "workshop_timeout", "workshop_busy", "workshop_disconnected", "codex_connection_closed", "stream_overflow",
+                "invalid_request", "unsupported_method"]
+            return "workshop/" + (known.contains(failure.code) ? failure.code : "other")
+        }
+        let value = error as NSError
+        let known = [NSURLErrorDomain, NSPOSIXErrorDomain, NSCocoaErrorDomain]
+        return "\(known.contains(value.domain) ? value.domain : "other")/\(value.code)"
+    }
 }
 struct WorkshopSocketFrame: Decodable {
     let kind: String
@@ -185,18 +204,33 @@ actor WorkshopSocketDecoder {
     private var reader: Task<Void, Never>?
     private var idle: Task<Void, Never>?
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
+    private var requestStarted: [String: Date] = [:]
+    private var silentRequests: Set<String> = []
+    private var connectedAt: Date?
+    private var recoveryStarted: Date?
+    var onDiagnostic: ((String, String) -> Void)?
+    private let diagnosticSink: (String, String) -> Void
+    private func diagnostic(_ event: String, _ detail: String) {
+        diagnosticSink(event, detail)
+        onDiagnostic?(event, detail)
+    }
 
     convenience init(authentication: any AuthenticatedServerAccess, logSource: HakoLogSource) {
         self.init(context: { authentication.requestContext }, open: {
             let (socket, hello) = try await authentication.openWebSocket(Self.path, logSource: logSource)
             return (socket, hello)
+        }, diagnostic: { event, detail in
+            HakoLog.record(logSource, event.contains("failed") || event == "disconnected" ? .warning : .info,
+                           "会话连接：\(event)", detail: detail)
         })
     }
 
     init(context: @escaping () -> String, open: @escaping () async throws -> (any WorkshopSocketConnection, Data),
-         requestTimeout: Duration = .seconds(15), idleTimeout: Duration = .seconds(45)) {
+         requestTimeout: Duration = .seconds(15), idleTimeout: Duration = .seconds(45),
+         diagnostic: @escaping (String, String) -> Void = { _, _ in }) {
         requestContext = context; openSocket = open
         self.requestTimeout = requestTimeout; self.idleTimeout = idleTimeout
+        self.diagnosticSink = diagnostic
     }
 
     func resetIfContextChanged() {
@@ -263,7 +297,7 @@ actor WorkshopSocketDecoder {
         var frame: [String: Any] = ["id": id, "kind": "call", "method": method, "params": params]
         frame["computerId"] = computerID
         let message = URLSessionWebSocketTask.Message.string(String(decoding: try JSONSerialization.data(withJSONObject: frame), as: UTF8.self))
-        return try await perform(message, id: id)
+        return try await perform(message, id: id, reportFailure: method != "diagnostics.append")
     }
 
     func sendBinary(_ payload: Data, computerID: String) async throws -> Data {
@@ -305,7 +339,7 @@ actor WorkshopSocketDecoder {
         else { binaryWaiters.removeFirst().continuation.resume() }
     }
 
-    private func perform(_ message: URLSessionWebSocketTask.Message, id: String) async throws -> Data {
+    private func perform(_ message: URLSessionWebSocketTask.Message, id: String, reportFailure: Bool = true) async throws -> Data {
         let socket = try await connection()
         try Task.checkCancellation()
         idle?.cancel()
@@ -318,6 +352,8 @@ actor WorkshopSocketDecoder {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 pending[id] = continuation
+                requestStarted[id] = .now
+                if !reportFailure { silentRequests.insert(id) }
                 Task {
                     guard pending[id] != nil else { return }
                     guard self.socket === socket else {
@@ -360,6 +396,9 @@ actor WorkshopSocketDecoder {
             }
             if socket == nil {
                 socket = opened
+                connectedAt = .now
+                diagnostic("connected", "connection=\(generation); downtimeMs=\(recoveryStarted.map { Int(Date.now.timeIntervalSince($0) * 1000) } ?? 0)")
+                recoveryStarted = nil
                 opening = nil
                 scheduleIdle()
                 reader = Task { [weak self] in
@@ -374,7 +413,9 @@ actor WorkshopSocketDecoder {
                                 if frame.kind == "failure" {
                                     self.streams[id] = nil
                                     switch frame.result {
-                                    case .failure(let error): stream.finish(error)
+                                    case .failure(let error):
+                                        self.diagnostic("subscription_failed", "connection=\(self.generation); subscription=\(id); error=\(WorkshopSocketDiagnostics.error(error))")
+                                        stream.finish(error)
                                     case .success: stream.finish(URLError(.badServerResponse))
                                     }
                                 } else if frame.kind == "event" {
@@ -391,13 +432,22 @@ actor WorkshopSocketDecoder {
             }
             return opened
         } catch {
-            if generation == self.generation { disconnect(error) }
+            if generation == self.generation {
+                diagnostic("connection_failed", "connection=\(generation); error=\(WorkshopSocketDiagnostics.error(error))")
+                if !(error is CancellationError) { recoveryStarted = recoveryStarted ?? .now }
+                disconnect(error)
+            }
             throw error
         }
     }
 
     private func finish(_ id: String, with result: Result<Data, Error>) {
         guard let continuation = pending.removeValue(forKey: id) else { return }
+        let started = requestStarted.removeValue(forKey: id)
+        let silent = silentRequests.remove(id) != nil
+        if case .failure(let error) = result, !(error is CancellationError), !silent {
+            diagnostic("request_failed", "connection=\(generation); request=\(id); elapsedMs=\(started.map { Int(Date.now.timeIntervalSince($0) * 1000) } ?? 0); error=\(WorkshopSocketDiagnostics.error(error))")
+        }
         continuation.resume(with: result)
         if pending.isEmpty && streams.isEmpty { scheduleIdle() }
     }
@@ -414,6 +464,14 @@ actor WorkshopSocketDecoder {
     }
 
     private func disconnect(_ error: Error) {
+        if socket != nil || opening != nil {
+            let expected = error is CancellationError || (error as NSError).code == NSURLErrorCancelled
+            diagnostic(expected ? "closed" : "disconnected", "connection=\(generation); error=\(WorkshopSocketDiagnostics.error(error)); closeCode=\(socket?.workshopCloseCode ?? 0); uptimeMs=\(connectedAt.map { Int(Date.now.timeIntervalSince($0) * 1000) } ?? 0); pending=\(pending.count); subscriptions=\(streams.count)")
+            if !expected { recoveryStarted = recoveryStarted ?? .now }
+        }
+        connectedAt = nil
+        requestStarted.removeAll()
+        silentRequests.removeAll()
         generation = UUID()
         idle?.cancel(); idle = nil
         opening?.cancel(); opening = nil

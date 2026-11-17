@@ -66,7 +66,8 @@ struct InvestmentAgentAction: Codable {
         "deposit": .deposit, "withdrawal": .withdrawal, "adjustment": .adjustment, "opening": .opening,
         "buy": .buy, "sell": .sell, "income": .income, "dividend": .dividend, "bonus_shares": .bonusShares,
         "staking_reward": .stakingReward, "spot_adjustment": .spotAdjustment,
-        "derivative_margin": .marginTransfer, "derivative_settlement": .derivativeSettlement
+        "derivative_margin": .marginTransfer, "derivative_settlement": .derivativeSettlement,
+        "insurance_withdrawal": .insuranceWithdrawal
     ]
     static let accountTypes: [String: InvestmentAccountType] = [
         "securities": .securities, "fund_wealth": .fundWealth, "futures": .futures,
@@ -92,7 +93,7 @@ struct InvestmentAgentAction: Codable {
         let name = Field(key: "name", label: "名称", required: true)
         let currency = Field(key: "currency", label: "币种", required: true, choices: ["CNY", "USD", "HKD"])
         let enabled = Field(key: "enabled", label: "启用", required: true, choices: ["true", "false"])
-        let settlement = Field(key: "settled_amount", label: "港股通实际交收金额、存款操作后余额或通用标的首次录入余额")
+        let settlement = Field(key: "settled_amount", label: "港股通实际交收金额、存款操作后余额、通用标的首次录入余额或保险提取后现金价值（保险选填）")
         let terms = [Field(key: "annual_rate", label: "年利率（百分数，例如 2.5 表示 2.5%）"),
                      Field(key: "maturity_date", label: "到期日（YYYY-MM-DD）")]
         let optional: (Field) -> Field = { var field = $0; field.required = false; return field }
@@ -393,7 +394,11 @@ struct InvestmentAgentAction: Codable {
         event.price = try decimal("price", fallback: event.price)
         event.margin = try decimal("margin", fallback: event.margin)
         if values["fee"] != nil { event.fee = try number("fee") }
-        event.settledAmount = try number("settled_amount") ?? event.settledAmount
+        if type == .insuranceWithdrawal, values["settled_amount"] != nil {
+            event.settledAmount = try number("settled_amount")
+        } else {
+            event.settledAmount = try number("settled_amount") ?? event.settledAmount
+        }
         if let maturity = book.asset(event.assetID)?.depositTerms?.maturity, type == .opening || type == .buy, day > maturity {
             throw InvestmentError.invalid("到期日不能早于存入日期。")
         }

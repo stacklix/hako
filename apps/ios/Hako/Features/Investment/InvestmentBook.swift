@@ -315,6 +315,7 @@ enum InvestmentEventKind: String, Codable {
     case stakingReward = "质押奖励", spotAdjustment = "现货余额调整"
     case marginTransfer = "保证金划转"
     case derivativeSettlement = "实际结算"
+    case insuranceWithdrawal = "部分提取"
 }
 
 struct InvestmentEvent: Codable, Equatable, Identifiable {
@@ -591,6 +592,8 @@ struct InvestmentPosition {
     var depositBalance: Decimal?
     var settledDay: Date?
     var settledPrice: Decimal?
+    var insuranceValue: InvestmentQuote?
+    var insuranceWithdrawalDay: Date?
 
     func value(at price: Decimal, asset: InvestmentAsset) -> Decimal {
         let face = price * quantity * asset.multiplier
@@ -754,6 +757,21 @@ struct InvestmentBook: Codable {
                     position.quantity = balance > 0 ? 1 : 0
                 }
                 ledger.positions[id] = position
+            case .insuranceWithdrawal:
+                guard let id = event.assetID, let asset = assets[id], asset.kind == .insurance,
+                      var position = ledger.positions[id], position.quantity > 0,
+                      event.amount > 0, event.settledAmount.map({ $0 >= 0 }) ?? true else {
+                    throw InvestmentError.invalid("该日期没有有效保单，或提取金额、提取后现金价值无效。")
+                }
+                let prior = positionQuote(for: asset, on: event.day, requiresDailyPrices: false, position: position)
+                let estimated = prior.map { $0.price - event.amount }.flatMap { $0 >= 0 ? $0 : nil }
+                let balance = event.settledAmount ?? estimated
+                ledger.cash += event.amount
+                position.realized += event.amount
+                position.insuranceValue = balance.map { InvestmentQuote(day: event.day, price: $0,
+                    source: event.settledAmount == nil ? "按提取金额扣减" : "部分提取后现金价值") }
+                position.insuranceWithdrawalDay = event.day
+                ledger.positions[id] = position
             case .bonusShares, .stakingReward, .spotAdjustment:
                 guard let id = event.assetID, var position = ledger.positions[id] else {
                     throw InvestmentError.invalid("找不到该标的的持仓记录。")
@@ -878,6 +896,12 @@ struct InvestmentBook: Codable {
         }
         var draft = accounts[index]
         switch event.kind {
+        case .insuranceWithdrawal:
+            guard let asset = asset(event.assetID), asset.kind == .insurance, event.amount > 0,
+                  event.settledAmount.map({ $0 >= 0 }) ?? true else {
+                throw InvestmentError.invalid("请填写有效的提取金额，现金价值可留空或填写非负数。")
+            }
+            try asset.validateEntry(in: accounts[index])
         case .transferOut, .transferIn:
             guard event.transferID != nil, event.transferAccountID != nil,
                   event.kind == .transferOut ? event.amount < 0 : event.amount > 0 else {
@@ -1173,13 +1197,19 @@ struct InvestmentBook: Codable {
         if asset.kind == .future, requiresDailyPrices, position.settledDay == day, let price = position.settledPrice {
             return position.value(at: price, asset: asset)
         }
-        guard let quote = positionQuote(for: asset, on: day, requiresDailyPrices: requiresDailyPrices) else { return nil }
+        guard let quote = positionQuote(for: asset, on: day, requiresDailyPrices: requiresDailyPrices, position: position) else { return nil }
         let value = position.value(at: quote.price, asset: asset)
         if !asset.isStockConnect { return value }
         return rateToCNY(.hkd, on: day, requiresDailyPrice: requiresDailyPrices).map { value * $0 }
     }
 
-    func positionQuote(for asset: InvestmentAsset, on day: Date, requiresDailyPrices: Bool) -> InvestmentQuote? {
+    func positionQuote(for asset: InvestmentAsset, on day: Date, requiresDailyPrices: Bool, position: InvestmentPosition? = nil) -> InvestmentQuote? {
+        if asset.kind == .insurance, let withdrawalDay = position?.insuranceWithdrawalDay, withdrawalDay <= day {
+            let manual = valuationQuote(quotes[asset.id], on: day, requiresDailyPrice: false, continuous: false)
+            // A transaction's remaining value supersedes an earlier or same-day manual valuation.
+            if let manual, manual.day > withdrawalDay { return manual }
+            return position?.insuranceValue
+        }
         let continuous = asset.kind == .crypto
         let isMarketAsset = continuous || !asset.kind.isManual
         if requiresDailyPrices, asset.usesUSEquityClose {

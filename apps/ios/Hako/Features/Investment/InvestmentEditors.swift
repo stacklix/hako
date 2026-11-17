@@ -887,8 +887,13 @@ private struct InvestmentTradeFields: View {
     private var showsFee: Bool { kind.supportsTradeFees && !stockConnect && (event == .buy || event == .sell) }
 
     var body: some View {
-        InvestmentDatePicker(event == .income ? "到账日期" : kind.usesBalance ? "记账日期" : "成交日期", selection: $date, latest: InvestmentBook.day())
-        if kind == .insurance {
+        InvestmentDatePicker(event == .income || event == .insuranceWithdrawal ? "到账日期" : kind.usesBalance ? "记账日期" : "成交日期", selection: $date, latest: InvestmentBook.day())
+        if event == .insuranceWithdrawal {
+            InvestmentField("提取金额（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
+            InvestmentField("提取后现金价值（" + currency.rawValue + "，选填）", text: $settlement, keyboard: .decimalPad)
+            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时显示待补充。")
+                .font(.footnote).foregroundStyle(.secondary)
+        } else if kind == .insurance {
             InvestmentField((event == .sell ? "退保到账金额" : "保费金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else if kind == .generic {
             InvestmentField((event == .sell ? "取出金额" : "投入金额") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
@@ -933,6 +938,11 @@ private struct InvestmentTradeFields: View {
 
     private func record(assetID: UUID, book: InvestmentBook) throws -> InvestmentEvent {
         let day = InvestmentBook.day(date)
+        if event == .insuranceWithdrawal {
+            return InvestmentEvent(day: day, kind: event, assetID: assetID,
+                amount: try investmentDecimal(price, "提取金额"),
+                settledAmount: investmentTrim(settlement).isEmpty ? nil : try investmentDecimal(settlement, "提取后现金价值", allowZero: true))
+        }
         if event == .income {
             let amount = try investmentDecimal(price, "实收金额")
             let balance = kind.isTermDeposit || kind == .wealth ? try investmentDecimal(settlement, "变动后余额", allowZero: true) : nil
@@ -1179,9 +1189,9 @@ struct InvestmentTradeEditor: View {
             stockConnect: asset.isStockConnect,
             date: $date, quantity: $quantity, price: $price, fee: $fee, margin: $margin,
             settlement: $settlement)
-        let title = asset.kind.usesBalance ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
+        let title = asset.kind.usesBalance || kind == .insuranceWithdrawal ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
         let hasChanges = !price.isEmpty || !settlement.isEmpty || date != InvestmentBook.day()
-        return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance, hasChanges: hasChanges) {
+        return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance || kind == .insuranceWithdrawal, hasChanges: hasChanges) {
             Section(asset.displayName + " · " + account.name) {
                 trade
             }
@@ -1284,7 +1294,7 @@ struct InvestmentQuoteEditor: View {
         let unit = store.book.quoteUnit(for: asset)
         Section(asset.displayName + " · " + asset.displayCode) {
             if let quote = store.book.quote(asset.id) {
-                LabeledContent(insurance ? "当前现金价值" : "最新报价",
+                LabeledContent(insurance ? "最近手动现金价值" : "最新报价",
                                value: InvestmentText.number(quote.price) + " " + unit)
                 LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
             }
@@ -1304,6 +1314,10 @@ struct InvestmentQuoteEditor: View {
                 InvestmentDatePicker(insurance ? "估值日期" : "报价日期", selection: $date, latest: InvestmentBook.day())
                 let label = insurance ? "现金价值（" + unit + "）" : "价格（" + unit + "）"
                 InvestmentField(label, text: $price, keyboard: .decimalPad)
+                if insurance {
+                    Text("部分提取当日的现金价值以交易记录为准，可在该笔交易中修改；后续日期可在这里更新。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
         if editorDraft == nil && store.book.watched.contains(asset.id) {
@@ -1638,7 +1652,7 @@ extension InvestmentTradeEditor {
     init(store: InvestmentStore, editing: InvestmentEditorDraft, account: InvestmentAccount, asset: InvestmentAsset, kind: InvestmentEventKind) {
         self.store = store; self.account = account; self.asset = asset; self.kind = kind; editorDraft = editing
         _date = State(initialValue: editing.date); _quantity = State(initialValue: editing.value("quantity"))
-        _price = State(initialValue: kind == .income ? editing.value("amount") : editing.value("price"))
+        _price = State(initialValue: kind == .income || kind == .insuranceWithdrawal ? editing.value("amount") : editing.value("price"))
         _fee = State(initialValue: editing.value("fee")); _margin = State(initialValue: editing.value("margin"))
         _settlement = State(initialValue: editing.value("settled_amount"))
     }

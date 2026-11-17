@@ -39,6 +39,7 @@ type Frame struct {
 	Account     string          `json:"account,omitempty"`
 	KeyID       string          `json:"keyId,omitempty"`
 	Signature   string          `json:"signature,omitempty"`
+	Diagnostics bool            `json:"diagnostics,omitempty"`
 }
 
 type Subscription struct {
@@ -58,14 +59,17 @@ type Connection struct {
 	done    chan struct{}
 	once    sync.Once
 	// Called only for unsolicited terminal receipts on an authenticated Agent socket.
-	Terminal func(Frame) bool
+	Terminal    func(Frame) bool
+	Diagnostics *SocketLog
 }
 
 func New(ws *websocket.Conn, newID func() string) *Connection {
 	return &Connection{ws: ws, newID: newID, pending: map[string]chan Frame{}, streams: map[string]*Subscription{}, done: make(chan struct{})}
 }
 func (c *Connection) Done() <-chan struct{} { return c.done }
-func (c *Connection) Close()                { c.once.Do(func() { close(c.done); _ = c.ws.Close() }) }
+func (c *Connection) Close() {
+	c.once.Do(func() { c.Diagnostics.Event("closed", nil); close(c.done); _ = c.ws.Close() })
+}
 func (c *Connection) Send(frame any) error {
 	c.write.Lock()
 	defer c.write.Unlock()
@@ -120,7 +124,8 @@ func (c *Connection) Run(seen func()) {
 			case <-c.done:
 				return
 			case <-tick.C:
-				if c.Send(Frame{Kind: "keepalive"}) != nil {
+				if err := c.Send(Frame{Kind: "keepalive"}); err != nil {
+					c.Diagnostics.Event("keepalive_write_failed", err)
 					c.Close()
 					return
 				}
@@ -130,7 +135,8 @@ func (c *Connection) Run(seen func()) {
 	for {
 		_ = c.ws.SetReadDeadline(time.Now().Add(60 * time.Second))
 		var frame Frame
-		if c.ws.ReadJSON(&frame) != nil {
+		if err := c.ws.ReadJSON(&frame); err != nil {
+			c.Diagnostics.Event("read_failed", err)
 			return
 		}
 		if frame.Kind == "alive" {
@@ -139,18 +145,22 @@ func (c *Connection) Run(seen func()) {
 		}
 		if frame.Kind == "terminal" {
 			if c.Terminal == nil || !c.Terminal(frame) || c.Send(Frame{Kind: "terminal_ack", OperationID: frame.OperationID, QuestionID: frame.QuestionID}) != nil {
+				c.Diagnostics.Event("terminal_receipt_rejected", nil)
 				return
 			}
 			continue
 		}
 		if frame.ID == "" || (frame.Kind != "result" && frame.Kind != "failure" && frame.Kind != "event") {
+			c.Diagnostics.Event("invalid_frame", nil)
 			return
 		}
 		if frame.Error == nil {
 			if len(frame.Result) == 0 || !json.Valid(frame.Result) {
+				c.Diagnostics.Event("invalid_result", nil)
 				return
 			}
 		} else if frame.Error.Code == "" || len(frame.Error.Message) > 1024 || len(frame.Result) > 0 {
+			c.Diagnostics.Event("invalid_error_frame", nil)
 			return
 		}
 		c.mu.Lock()
@@ -160,6 +170,7 @@ func (c *Connection) Run(seen func()) {
 				case sub.Updates <- frame:
 				default:
 					sub.failed = true
+					c.Diagnostics.Event("subscription_overflow", nil)
 					close(sub.Overflow)
 				}
 			}
@@ -189,6 +200,7 @@ func (c *Connection) Call(ctx context.Context, request Frame) (Frame, error) {
 	request.Kind = "call"
 	request.ID = id
 	if err := c.sendRequest(request); err != nil {
+		c.Diagnostics.Event("request_write_failed", err)
 		c.Close()
 		return Frame{}, err
 	}
@@ -198,6 +210,7 @@ func (c *Connection) Call(ctx context.Context, request Frame) (Frame, error) {
 	case <-c.done:
 		return Frame{}, ErrClosed
 	case <-ctx.Done():
+		c.Diagnostics.Event("request_cancelled_or_timed_out", ctx.Err())
 		return Frame{}, ctx.Err()
 	}
 }
@@ -210,7 +223,10 @@ func (c *Connection) Subscribe(operation string, cursor int64) (*Subscription, e
 	sub := &Subscription{ID: c.newID(), Updates: make(chan Frame, 8), Overflow: make(chan struct{})}
 	c.streams[sub.ID] = sub
 	c.mu.Unlock()
-	if err := c.Send(Frame{Kind: "watch", ID: sub.ID, OperationID: operation, Cursor: cursor}); err != nil {
+	// A new subscription starts at zero; the Agent requires the cursor field.
+	// Frame omits zero cursors, so use an explicit watch envelope here.
+	if err := c.Send(map[string]any{"kind": "watch", "id": sub.ID, "operationId": operation, "cursor": cursor}); err != nil {
+		c.Diagnostics.Event("subscription_write_failed", err)
 		c.Unsubscribe(sub)
 		c.Close()
 		return nil, err
@@ -226,7 +242,8 @@ func (c *Connection) Unsubscribe(sub *Subscription) {
 		return
 	default:
 	}
-	if c.Send(Frame{Kind: "unwatch", ID: sub.ID}) != nil {
+	if err := c.Send(Frame{Kind: "unwatch", ID: sub.ID}); err != nil {
+		c.Diagnostics.Event("unsubscribe_write_failed", err)
 		c.Close()
 	}
 }

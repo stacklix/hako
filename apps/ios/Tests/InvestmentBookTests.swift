@@ -22,6 +22,8 @@ struct InvestmentBookTests {
         try stockConnectSettlesInRenminbi()
         try insuranceKeepsOnePolicyPosition()
         try renminbiInsuranceCountsCashValueAndRoundTrips()
+        try insuranceWithdrawalsKeepPolicyAndMoveCash()
+        try insuranceWithdrawalsAllowMissingValues()
         try typedAccountsFilterAssets()
         try fundWealthAccountsKeepBothKindsAndRoundTrip()
         try transfersMoveCashAsOneOperation()
@@ -702,6 +704,85 @@ struct InvestmentBookTests {
         let restored = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
         precondition(restored.accounts[0].currency == .cny && restored.accounts[0].type == .insurance)
         precondition(restored.value(restored.accounts[0], on: date(4))?.gain == -2_500)
+    }
+
+    static func insuranceWithdrawalsKeepPolicyAndMoveCash() throws {
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            let owner = InvestmentAccount(name: "保险", currency: currency, type: .insurance)
+            var book = InvestmentBook(accounts: [owner])
+            let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: currency))
+            try book.post(.init(day: date(1), kind: .opening, assetID: id, quantity: 1, price: 10_000), accountID: owner.id)
+            book.addQuotes([.init(day: date(1), price: 8_000), .init(day: date(2), price: 8_100)], assetID: id)
+            let first = InvestmentEvent(day: date(2), kind: .insuranceWithdrawal, assetID: id, amount: 2_000, settledAmount: 6_000)
+            try book.post(first, accountID: owner.id)
+            let second = InvestmentEvent(day: date(2), kind: .insuranceWithdrawal, assetID: id, amount: 500)
+            try book.post(second, accountID: owner.id)
+            let ledger = try book.ledger(book.accounts[0], through: date(2), includeRows: true)
+            precondition(ledger.cash == 2_500 && ledger.flows == 10_000)
+            precondition(ledger.positions[id]?.quantity == 1 && ledger.positions[id]?.netCost == 10_000)
+            precondition(ledger.cashRows.map(\.change) == [2_000, 500])
+            precondition(book.value(book.accounts[0], on: date(2))?.value == 8_000)
+            precondition(book.value(book.accounts[0], on: date(2))?.gain == -2_000)
+            precondition(book.profitHistory(accountID: owner.id, assetID: id, on: [date(1), date(2)], today: date(2)).map(\.value) == [-2_000, -2_000])
+            precondition(book.holdingHistory(accountID: owner.id, assetID: id, on: [date(2)], today: date(2)).last?.value == 5_500)
+            book.addQuotes([.init(day: date(3), price: 5_800)], assetID: id)
+            precondition(book.value(book.accounts[0], on: date(3))?.gain == -1_700)
+            precondition(book.value(book.accounts[0], on: date(2))?.gain == -2_000)
+            let records = InvestmentServerRecords()
+            let restored = try records.decode(InvestmentServerState(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
+            precondition(restored.accounts[0].events.contains { $0.kind == .insuranceWithdrawal && $0.settledAmount == nil })
+            precondition(restored.value(restored.accounts[0], on: date(2))?.gain == -2_000)
+            let savedFirst = try require(book.accounts[0].events.first { $0.id == first.id })
+            let savedSecond = try require(book.accounts[0].events.first { $0.id == second.id })
+            var edited = savedFirst
+            edited.amount = 2_500
+            edited.settledAmount = 5_900
+            try book.replaceEvent(savedFirst, with: edited, accountID: owner.id)
+            precondition(book.value(book.accounts[0], on: date(2))?.value == 8_400)
+            try book.deleteEvent(savedSecond, accountID: owner.id)
+            precondition(book.value(book.accounts[0], on: date(2))?.value == 8_400)
+            try book.deleteEvent(try require(book.accounts[0].events.first { $0.id == first.id }), accountID: owner.id)
+            precondition(book.value(book.accounts[0], on: date(2))?.value == 8_100)
+            let afterDeletion = try book.ledger(book.accounts[0], through: date(2))
+            precondition(afterDeletion.cash == 0)
+            try book.post(first, accountID: owner.id)
+            try book.post(.init(day: date(4), kind: .sell, assetID: id, quantity: 1, price: 6_100), accountID: owner.id)
+            precondition(book.value(book.accounts[0], on: date(4))?.gain == -1_900)
+            precondition(book.profitHistory(accountID: owner.id, assetID: id, on: [date(4)], today: date(4)).last?.value == -1_900)
+            do {
+                try book.post(.init(day: date(5), kind: .insuranceWithdrawal, assetID: id, amount: 1), accountID: owner.id)
+                preconditionFailure("A closed policy cannot be withdrawn")
+            } catch is InvestmentError { }
+        }
+    }
+
+    static func insuranceWithdrawalsAllowMissingValues() throws {
+        let owner = InvestmentAccount(name: "保险", currency: .cny, type: .insurance)
+        var book = InvestmentBook(accounts: [owner])
+        let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: .cny))
+        try book.post(.init(day: date(1), kind: .opening, assetID: id, quantity: 1, price: 10_000), accountID: owner.id)
+        let withdrawal = InvestmentEvent(day: date(2), kind: .insuranceWithdrawal, assetID: id, amount: 1_000)
+        try book.post(withdrawal, accountID: owner.id)
+        let ledger = try book.ledger(book.accounts[0], through: date(2))
+        precondition(ledger.cash == 1_000 && ledger.positions[id]?.quantity == 1)
+        precondition(book.value(book.accounts[0], on: date(2)) == nil)
+        book.addQuotes([.init(day: date(1), price: 500)], assetID: id)
+        precondition(book.value(book.accounts[0], on: date(2)) == nil, "A stale insufficient valuation cannot become negative or zero")
+        book.addQuotes([.init(day: date(3), price: 4_000)], assetID: id)
+        precondition(book.value(book.accounts[0], on: date(3))?.value == 5_000)
+        let savedWithdrawal = try require(book.accounts[0].events.first { $0.id == withdrawal.id })
+        var explicitZero = savedWithdrawal
+        explicitZero.settledAmount = 0
+        try book.replaceEvent(savedWithdrawal, with: explicitZero, accountID: owner.id)
+        precondition(book.value(book.accounts[0], on: date(2))?.value == 1_000)
+        let zeroValueLedger = try book.ledger(book.accounts[0], through: date(2))
+        precondition(zeroValueLedger.positions[id]?.quantity == 1)
+        for (amount, balance) in [(Decimal(0), Optional<Decimal>.none), (-1, nil), (1, -1)] {
+            do {
+                try book.post(.init(day: date(3), kind: .insuranceWithdrawal, assetID: id, amount: amount, settledAmount: balance), accountID: owner.id)
+                preconditionFailure("Invalid withdrawal accepted")
+            } catch is InvestmentError { }
+        }
     }
 
     static func stockConnectSettlesInRenminbi() throws {

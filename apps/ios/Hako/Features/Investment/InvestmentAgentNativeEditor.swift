@@ -121,7 +121,7 @@ private struct InvestmentAgentNativeEditor: View {
             if let asset = draft.asset {
                 if [.buy, .opening].contains(kind), draft.setup != nil {
                     InvestmentAssetEditor(store: store, editing: draft, asset: asset)
-                } else if [.buy, .sell, .opening, .income].contains(kind) || (asset.kind.isTermDeposit && kind == .adjustment) {
+                } else if [.buy, .sell, .opening, .income, .insuranceWithdrawal].contains(kind) || (asset.kind.isTermDeposit && kind == .adjustment) {
                     InvestmentTradeEditor(store: store, editing: draft, account: account, asset: asset, kind: kind)
                 } else if kind == .marginTransfer {
                     InvestmentMarginTransferEditor(store: store, editing: draft, account: account, asset: asset)

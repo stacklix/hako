@@ -233,10 +233,10 @@ struct InvestmentHoldingView: View {
     private func positionCard(_ position: InvestmentPosition) -> some View {
         let insurance = asset.kind == .insurance
         let termDeposit = asset.kind.isTermDeposit
-        let quote = store.book.quote(asset.id)
+        let quote = store.book.positionQuote(for: asset, on: InvestmentBook.day(), requiresDailyPrices: false, position: position)
         let value = store.book.positionValue(position, asset: asset)
         let gain = value.map { $0 - position.netCost + position.realized }
-        let rate = position.netCost > 0 ? value.map { ($0 - position.netCost) / position.netCost } : nil
+        let rate = position.netCost > 0 ? value.map { ($0 - position.netCost + (insurance ? position.realized : 0)) / position.netCost } : nil
         let sinceEntry = position.lastEntry.flatMap { entry in quote.map { ($0.price / entry - 1) * asset.priceDirection } }
         return InvestmentCard {
             let description = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.historyUnit)"
@@ -341,6 +341,12 @@ struct InvestmentHoldingView: View {
                     InvestmentPageRow(title: "调整余额", symbol: "slider.horizontal.3")
                 }.buttonStyle(.plain)
             } else if asset.kind == .insurance {
+                if position.quantity > 0 {
+                    Button { depositAction = .init(kind: .insuranceWithdrawal) } label: {
+                        InvestmentPageRow(title: "部分提取", symbol: "banknote")
+                    }.buttonStyle(.plain)
+                    Divider()
+                }
                 InvestmentPageLink(title: "更新现金价值",
                                    symbol: "chart.xyaxis.line", route: .quote(asset.id))
             }

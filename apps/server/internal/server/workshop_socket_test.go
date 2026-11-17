@@ -40,7 +40,7 @@ func TestWorkshopPassesInitialSystemPromptUnchanged(t *testing.T) {
 	}
 }
 
-func connectWorkshopRole(t *testing.T, f *fixture, commands bool) *websocket.Conn {
+func connectWorkshopRole(t *testing.T, f *fixture, commands bool, diagnosticCursor ...int64) *websocket.Conn {
 	t.Helper()
 	path := "/ws/workshop/agent"
 	hub := &f.s.workshopHub
@@ -54,7 +54,12 @@ func connectWorkshopRole(t *testing.T, f *fixture, commands bool) *websocket.Con
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ws.Close() })
-	writeAgentFrame(t, ws, workshop.Frame{Kind: "hello", Protocol: workshop.Protocol, Account: "owner", KeyID: f.s.config.Agents[0].keyID})
+	hello := workshop.Frame{Kind: "hello", Protocol: workshop.Protocol, Account: "owner", KeyID: f.s.config.Agents[0].keyID}
+	if len(diagnosticCursor) > 0 {
+		hello.Diagnostics = true
+		hello.Cursor = diagnosticCursor[0]
+	}
+	writeAgentFrame(t, ws, hello)
 	challenge := readAgentFrame[struct{ Kind, Protocol, Payload string }](t, ws)
 	payload, err := base64.StdEncoding.DecodeString(challenge.Payload)
 	if err != nil || challenge.Kind != "challenge" || challenge.Protocol != workshop.Protocol || !strings.HasPrefix(string(payload), "hako-workshop-auth/v1\n") {
@@ -182,7 +187,15 @@ func TestWorkshopPushResumeAndUnsubscribe(t *testing.T) {
 	worker := connectWorkshop(t, f)
 	for _, cursor := range []string{"0", "12"} {
 		client := openWorkshopClient(t, f, "/ws/workshop/events/PC/11111111-1111-4111-8111-111111111111/"+cursor)
-		start := readAgentFrame[workshop.Frame](t, worker)
+		raw := readAgentFrame[json.RawMessage](t, worker)
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil || string(fields["cursor"]) != cursor {
+			t.Fatalf("watch must explicitly include cursor %s, got %s (%v)", cursor, raw, err)
+		}
+		var start workshop.Frame
+		if err := json.Unmarshal(raw, &start); err != nil {
+			t.Fatal(err)
+		}
 		if start.Kind != "watch" || start.OperationID != "11111111-1111-4111-8111-111111111111" || (cursor == "12" && start.Cursor != 12) {
 			t.Fatal(start)
 		}

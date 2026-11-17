@@ -82,7 +82,7 @@ internal static class Program
             if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
-            if (args.Length == 1 && args[0] == "workshop-cloud") { await WorkshopCloudChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-cloud") { WorkshopConnectionLogChecks.Run(); await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "processes") { await ProcessMetricsChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "guardian-broker") { await GuardianBrokerChecks.RunAsync(); return 0; }
@@ -201,6 +201,7 @@ internal static class Program
             await AgentUpdateNotificationChecks.RunAsync();
             await AgentRequestChecks.RunAsync();
             await GuardianBrokerChecks.RunAsync();
+            WorkshopConnectionLogChecks.Run();
             await WorkshopCloudChecks.RunAsync();
             await WorkshopNotificationChecks.RunAsync();
             StartupChecks.Run();

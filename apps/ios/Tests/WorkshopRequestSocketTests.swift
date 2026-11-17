@@ -3,7 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-enum HakoLogSource { case codeWorkshop }
 @MainActor protocol AuthenticatedServerAccess: AnyObject {
     var requestContext: String { get }
     func openWebSocket(_ path: String, logSource: HakoLogSource) async throws -> (URLSessionWebSocketTask, Data)
@@ -44,6 +43,20 @@ enum HakoLogSource { case codeWorkshop }
 
 @main @MainActor struct WorkshopRequestSocketTests {
     static func main() async throws {
+        let spoolDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: spoolDirectory) }
+        let spoolFile = spoolDirectory.appendingPathComponent("account-a.json")
+        let otherFile = spoolDirectory.appendingPathComponent("account-b.json")
+        let spool = WorkshopDiagnosticOutbox()
+        try await spool.append("disconnected", detail: "error=NSURLErrorDomain/-1005", file: spoolFile)
+        let restartedSpool = WorkshopDiagnosticOutbox()
+        let savedBatch = await restartedSpool.batch(file: spoolFile)
+        precondition(savedBatch.count == 1)
+        let otherBatch = await restartedSpool.batch(file: otherFile)
+        precondition(otherBatch.isEmpty, "Reports crossed account boundaries")
+        try await restartedSpool.acknowledge(Set(savedBatch.map(\.id)), file: spoolFile)
+        let acknowledgedBatch = await restartedSpool.batch(file: spoolFile)
+        precondition(acknowledgedBatch.isEmpty)
         let welcome = Data(#"{"kind":"welcome","protocol":"hako.workshop/1"}"#.utf8)
         do { try WorkshopSocketFrame.requireWelcome(Data(#"{"type":"ready"}"#.utf8)); preconditionFailure("Device handshake accepted by Workshop") }
         catch { }
@@ -72,7 +85,8 @@ enum HakoLogSource { case codeWorkshop }
         precondition(!transport.workshopUsable)
         precondition(disconnects == 0, "Leaving or retiring an idle socket must not claim the computer is offline")
         let broken = WorkshopTestSocket()
-        let brokenClient = WorkshopRequestSocket(context: { "workshop-account" }, open: { (broken, welcome) })
+        var diagnostics: [(String, String)] = []
+        let brokenClient = WorkshopRequestSocket(context: { "workshop-account" }, open: { (broken, welcome) }, diagnostic: { diagnostics.append(($0, $1)) })
         brokenClient.onDisconnect = { disconnects += 1 }
         let request = Task { try await brokenClient.send("history.read", computerID: "PC") }
         while broken.sent.isEmpty { await Task.yield() }
@@ -82,6 +96,10 @@ enum HakoLogSource { case codeWorkshop }
         do { _ = try await request.value; preconditionFailure("Broken transport unexpectedly replied") }
         catch { }
         precondition(disconnects == 1, "A reader failure must immediately update connection presentation")
+        precondition(diagnostics.contains { $0.0 == "connected" })
+        precondition(diagnostics.contains { $0.0 == "disconnected" && $0.1.contains("NSURLErrorDomain/-1005") && $0.1.contains("pending=1") })
+        let privateError = NSError(domain: NSURLErrorDomain, code: -1005, userInfo: [NSLocalizedDescriptionKey: "secret-token-and-message"])
+        precondition(!WorkshopSocketDiagnostics.error(privateError).contains("secret"))
         let multiplex = WorkshopTestSocket()
         var sharedOpens = 0
         let shared = WorkshopRequestSocket(context: { "account" }, open: { sharedOpens += 1; return (multiplex, welcome) },

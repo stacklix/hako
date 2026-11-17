@@ -264,7 +264,10 @@ extension InvestmentAgentAction {
                 }
                 if kind == .addEvent { inputs.append(field("auto_fund", "现金不足时自动补足")) }
             } else if let eventKind {
-                if selected?.kind.usesBalance == true {
+                if eventKind == .insuranceWithdrawal {
+                    inputs.append(field("amount", "提取金额（\(currency)）", required: true, value: decimal(original?.amount)))
+                    inputs.append(field("settled_amount", "提取后现金价值（\(currency)，选填）", value: decimal(original?.settledAmount)))
+                } else if selected?.kind.usesBalance == true {
                     if eventKind == .income { inputs.append(field("amount", selected?.kind == .wealth ? "实收收益（CNY）" : "利息到账金额（CNY）", required: true, value: decimal(original?.amount))) }
                     inputs.append(field("settled_amount", "变动后余额（\(currency)）", required: true, value: decimal(original?.settledAmount)))
                 } else if [.bonusShares, .stakingReward, .spotAdjustment].contains(eventKind) {

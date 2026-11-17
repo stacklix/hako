@@ -14,6 +14,7 @@ struct InvestmentAgentTests {
         precondition(LanguageModelError.unreadable.allowsManualRetry)
         precondition(!LanguageModelError.invalid("请先配置模型").allowsManualRetry)
         try insuranceFormsAndPreviewsFollowPolicyCurrency()
+        try insuranceWithdrawalsUseOptionalCashValue()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()
 
@@ -569,6 +570,40 @@ struct InvestmentAgentTests {
         for input in malformed {
             do { _ = try InvestmentAgentAction.parse(input); preconditionFailure("Invalid model operation was accepted") }
             catch is InvestmentError { continue }
+        }
+    }
+
+    private static func insuranceWithdrawalsUseOptionalCashValue() throws {
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            let owner = InvestmentAccount(name: "保险", currency: currency, type: .insurance)
+            var book = InvestmentBook(accounts: [owner])
+            let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: currency))
+            let day = InvestmentBook.day()
+            try book.post(.init(day: day, kind: .opening, assetID: id, quantity: 1, price: 10_000), accountID: owner.id)
+            book.addQuotes([.init(day: day, price: 8_000)], assetID: id)
+            let action = InvestmentAgentAction(kind: .addEvent, values: ["account_id": owner.id.uuidString,
+                "asset_id": id.uuidString, "date": InvestmentBook.snapshotDateFormatter().string(from: day),
+                "event_type": "insurance_withdrawal", "amount": "2000"])
+            let form = action.form(in: book)
+            precondition(form.fields.contains { $0.key == "settled_amount" && !$0.required && $0.label.contains("选填") })
+            precondition(form.fields.contains { $0.key == "amount" && $0.required && $0.label.contains(currency.rawValue) })
+            let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [action])
+            precondition(book.accounts[0].events.count == 1, "Preview must not change the live ledger")
+            precondition(proposal.preview.items.flatMap(\.groups).flatMap(\.fields).contains { $0.label == "提取后现金价值（\(currency.rawValue)，选填）" })
+            book = proposal.book
+            let ledger = try book.ledger(book.accounts[0])
+            precondition(ledger.cash == 2_000 && ledger.positions[id]?.quantity == 1)
+            precondition(book.value(book.accounts[0])?.gain == -2_000)
+            let entry = book.accounts[0].events.last!
+            let edit = InvestmentAgentAction(kind: .editEvent, values: ["account_id": owner.id.uuidString,
+                "event_id": entry.id.uuidString, "settled_amount": "5900"])
+            try edit.apply(to: &book)
+            precondition(book.value(book.accounts[0])?.gain == -2_100)
+            var clear = edit
+            clear.values["settled_amount"] = ""
+            try clear.apply(to: &book)
+            precondition(book.accounts[0].events.last?.settledAmount == nil)
+            precondition(book.value(book.accounts[0])?.gain == -2_000)
         }
     }
 

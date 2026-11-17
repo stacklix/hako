@@ -27,6 +27,10 @@ import Combine
     }
     @Published var error: String?
     @Published private(set) var connectionIssue: String?
+    private var syncFailureStarted: Date?
+    private var syncFailureCount = 0
+    private var lastSyncFailureCode: String?
+    private var lastSyncFailureLog: Date?
     @Published private(set) var photos: [WorkshopPhoto] = [] { didSet { composerChanged() } }
     @Published private(set) var outbox = WorkshopOutbox()
     private var imageUpload: Task<Void, Error>?
@@ -349,7 +353,7 @@ import Combine
             cachedAt = nil
             // A successful history read alone does not verify the operation
             // connection. Keep the failure visible until both reads succeed.
-            if !synchronizing, operationId == nil { connectionIssue = nil; error = nil }
+            if !synchronizing, operationId == nil { clearConnectionIssue(); error = nil }
             if !more, operation?.state == "unknown" { observedTerminal = nil }
             if !more {
                 latestCompletionID = newestCompletion; markLatestRead()
@@ -458,7 +462,7 @@ import Combine
             needsHistoryRefresh = false
             // External conversations have no operation stream to confirm recovery.
             // A successful history read is their complete connection check.
-            if loadedHistory { connectionIssue = nil }
+            if loadedHistory { clearConnectionIssue() }
         }
     }
 
@@ -484,7 +488,7 @@ import Combine
         guard scope == store.scope, operationId == id, result.operation.id == id, result.cursor >= eventCursor else { throw CancellationError() }
         if operation != result.operation { operation = result.operation }
         if result.operation.active, error != nil { error = nil }
-        if connectionIssue != nil { connectionIssue = nil }
+        if connectionIssue != nil { clearConnectionIssue() }
         if uncertain { uncertain = false }
         if cachedAt != nil { cachedAt = nil }
         let nextFollowups = WorkshopFollowupState.merging(result.followups, into: followups)
@@ -734,11 +738,34 @@ import Combine
         lastVerifiedAt = nil
         hasMoreEvents = false
         if failure is CancellationError { return }
+        syncFailureStarted = syncFailureStarted ?? .now
+        syncFailureCount += 1
+        let code = WorkshopSocketDiagnostics.error(failure)
+        if code != lastSyncFailureCode || (lastSyncFailureLog.map({ Date.now.timeIntervalSince($0) >= 30 }) ?? true) {
+            HakoLog.record(.codeWorkshop, .warning, "会话同步失败", detail:
+                "operation=\(operationId ?? "none"); cursor=\(eventCursor); error=\(code); failures=\(syncFailureCount)")
+            lastSyncFailureCode = code
+            lastSyncFailureLog = .now
+            store.recordDiagnostic("sync_failed", detail: "operation=\(operationId ?? "none"); cursor=\(eventCursor); error=\(code); failures=\(syncFailureCount)")
+        }
         if let message = WorkshopReadIssue.message(for: failure) {
             error = nil
             connectionIssue = message
             needsHistoryRefresh = true
         } else { error = failure.localizedDescription }
+    }
+
+    private func clearConnectionIssue() {
+        if let started = syncFailureStarted {
+            store.recordDiagnostic("sync_recovered", detail: "operation=\(operationId ?? "none"); downtimeMs=\(Int(Date.now.timeIntervalSince(started) * 1000)); failures=\(syncFailureCount)")
+            HakoLog.record(.codeWorkshop, "会话同步已恢复", detail:
+                "operation=\(operationId ?? "none"); downtimeMs=\(Int(Date.now.timeIntervalSince(started) * 1000)); failures=\(syncFailureCount)")
+        }
+        syncFailureStarted = nil
+        syncFailureCount = 0
+        lastSyncFailureCode = nil
+        lastSyncFailureLog = nil
+        connectionIssue = nil
     }
 
     func pendingSend(_ id: String) -> WorkshopQueuedSend? {

@@ -53,28 +53,29 @@ type bucket struct {
 }
 
 type Server struct {
-	oidc               *oidcProvider
-	config             Config
-	trustedProxies     proxyTrust
-	store              *store
-	investment         *sql.DB
-	mux                *http.ServeMux
-	mu                 sync.Mutex
-	agentHub           agent.Hub
-	workshopHub        workshop.Hub
-	commandHub         workshop.Hub
-	workshopRequests   chan struct{}
-	limits             map[string]bucket
-	requests           chan struct{}
-	registry           atomic.Pointer[Registry]
-	registryMu         sync.Mutex
-	loginPromptStreams map[string]chan struct{}
-	adminMu            sync.Mutex
-	adminSessions      map[string]adminSession
-	adminLogins        map[string]*adminLoginRequest
-	accessLogs         *accesslog.Service
-	notifications      *notify.Service
-	workshopPushMu     sync.Mutex
+	oidc                *oidcProvider
+	config              Config
+	trustedProxies      proxyTrust
+	store               *store
+	investment          *sql.DB
+	mux                 *http.ServeMux
+	mu                  sync.Mutex
+	agentHub            agent.Hub
+	workshopHub         workshop.Hub
+	commandHub          workshop.Hub
+	workshopRequests    chan struct{}
+	limits              map[string]bucket
+	requests            chan struct{}
+	registry            atomic.Pointer[Registry]
+	registryMu          sync.Mutex
+	loginPromptStreams  map[string]chan struct{}
+	adminMu             sync.Mutex
+	adminSessions       map[string]adminSession
+	adminLogins         map[string]*adminLoginRequest
+	accessLogs          *accesslog.Service
+	notifications       *notify.Service
+	workshopPushMu      sync.Mutex
+	workshopDiagnostics *workshop.DiagnosticJournal
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
@@ -105,6 +106,11 @@ func New(config Config) (*Server, error) {
 	}
 	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), workshopRequests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
+	diagnosticPath := ""
+	if config.Database != "" && config.Database != ":memory:" {
+		diagnosticPath = config.Database + ".workshop-diagnostics.jsonl"
+	}
+	s.workshopDiagnostics = workshop.NewDiagnosticJournal(diagnosticPath)
 	var registry *Registry
 	if err := st.update(func(value *state) error {
 		if value.Subject == "" {

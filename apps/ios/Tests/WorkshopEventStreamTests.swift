@@ -4,7 +4,6 @@ import FoundationNetworking
 #endif
 
 // Stub only the host authentication boundary; use the production stream reader.
-enum HakoLogSource { case codeWorkshop }
 struct ServerHTTPError: Error { let status: Int; let code: String }
 @MainActor protocol AuthenticatedServerAccess: AnyObject {
     var requestContext: String { get }

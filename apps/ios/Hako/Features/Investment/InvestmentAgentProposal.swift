@@ -711,6 +711,9 @@ extension InvestmentAgentProposal {
                 values.append(margin)
             }
 
+        } else if event?.kind == .insuranceWithdrawal {
+            values.append(form.field("amount", "提取金额（\(currency)）", event.map { NSDecimalNumber(decimal: $0.amount).stringValue }))
+            values.append(form.field("settled_amount", "提取后现金价值（\(currency)，选填）", event?.settledAmount.map { NSDecimalNumber(decimal: $0).stringValue } ?? "未填写"))
         } else {
             values += fields.filter { !Self.internalPreviewFields.contains($0.id) && !["account_id", "asset_id", "event_type", "effective_date", "cash_change"].contains($0.id) }.map { field in
                 let labels = ["amount": "金额（\(asset.map { book.settlementUnit(for: $0) } ?? currency)）", "unit_price": "成交价（\(currency)）"]

@@ -180,6 +180,12 @@ Agent 的 Codex 查询连接按请求 ID 并发处理不同读取；同时发生
 
 Agent 数据目录的 `code-workshop/queries.jsonl` 记录查询方法、初始化等待耗时 `waitMs`、RPC 耗时 `readMs` 和结果分类，达到 1 MB 后轮换至 `.previous`。日志不写参数、消息正文、响应内容或凭据。手机端区分查询超时、网络中断、电脑离线和本机会话服务暂不可用；同步历史失败时仍独立核对任务状态，避免将未同步误报为任务执行失败。
 
+连接诊断同时覆盖手机、服务端与 Agent。Agent 数据目录的 `logs/workshop-connection.jsonl` 和 `logs/command-workshop-connection.jsonl` 分别记录工坊与命令连接的建立、失败阶段、异常类型、关闭码、连接时长及恢复耗时。服务端标准日志使用 `workshop_socket` 前缀，记录各自的连接编号、读取/发送/心跳失败、协议帧拒绝、连接替换和订阅积压，不输出原始异常描述或数据帧内容。
+
+三端诊断最终汇总到 Agent 数据目录的 `logs/remote-workshop.jsonl`，每条保留来源与原始发生时间。手机按服务器账户独立保存最多 512 条未确认记录，在会话请求成功后分批调用 `diagnostics.append` 上报；每批最多 8 条，成功确认后才删除，失败保留待下次补传。该命令在守护进程直接落盘，主 Agent 暂时不可用时仍可接收；局域网直连时由主 Agent 接收。服务端不解释这个设备命令。
+
+从服务端 0.7.5、Agent 1.4.5 起，Agent 在已认证工坊握手中声明 `diagnostics: true` 和已落盘的 `cursor`，服务端沿同一连接发送 `kind: diagnostics` 批次，每批最多 16 条。服务端数据库旁的 `.workshop-diagnostics.jsonl` 保留诊断积压，内存最多保留最新 1,024 条，连接恢复后按游标补传。Agent 持久化服务端游标，手机记录按 UUID 去重。日志文件达到 1 MiB 后轮换至 `.previous`，积压与去重窗口均有上限，不保证无限期离线的完整历史。上报不包含消息、图片、命令正文、Token、请求头或完整 URL；接收端只保留允许的诊断字段。上报失败不会触发会话重发，也不会递归生成新的请求失败报告。
+
 Windows `Hako.Checks code-workshop` 使用真实 stdio 子进程夹具验证线程关联、重复请求、断连后继续执行、审批、停止、持久化、事件游标、写锁冲突和原型修订校验。`code-workshop-local <状态目录>` 只读验证已安装的 Codex；`code-workshop-local-turn <状态目录>` 提交固定短回复并归档测试会话，仅用于明确授权的本机联调。
 
 iOS `WorkshopModelTests.swift` 验证请求身份和恢复参数；`WorkshopRequestSocketTests.swift` 与 `WorkshopEventStreamTests.swift` 独立验证握手、帧格式、回复关联、推送和取消，不依赖设备监控传输。服务端验证工坊满载和任一连接关闭时，另一应用仍可请求。iOS 工程编译验证全部 SwiftUI 与 WebKit 页面。

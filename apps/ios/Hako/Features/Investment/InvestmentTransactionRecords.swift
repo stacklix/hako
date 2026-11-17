@@ -88,6 +88,9 @@ struct InvestmentTransactionRecords: View {
 
     @ViewBuilder private func summary(_ event: InvestmentEvent) -> some View {
         switch event.kind {
+        case .insuranceWithdrawal:
+            Text(InvestmentText.money(event.amount, account.currency))
+            secondary("转入账户现金")
         case .stakingReward, .spotAdjustment:
             let balance = book.positionBefore(event, accountID: account.id).map { $0.quantity + event.quantity }
             Text(balance.map { quantity($0) } ?? quantity(event.quantity, signed: true))
@@ -138,6 +141,15 @@ struct InvestmentTransactionRecords: View {
     @ViewBuilder private func detailFields(_ event: InvestmentEvent) -> some View {
         let cash = book.cashChange(for: event, accountID: account.id)
         switch event.kind {
+        case .insuranceWithdrawal:
+            detailRow("提取金额", InvestmentText.money(event.amount, account.currency))
+            detailRow("到账账户", account.name + " · 现金")
+            if let balance = event.settledAmount {
+                detailRow("提取后现金价值", InvestmentText.money(balance, account.currency))
+            } else {
+                secondary("未填写现金价值，按最近已知现金价值扣减；缺少可用估值时待补充。")
+            }
+            secondary("保单继续保留；提取回款与剩余现金价值共同计算累计盈亏。")
         case .stakingReward, .spotAdjustment:
             let before = book.positionBefore(event, accountID: account.id)
             detailRow("调整前余额", before.map { quantity($0.quantity) } ?? "—")

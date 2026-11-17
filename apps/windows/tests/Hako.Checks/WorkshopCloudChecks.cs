@@ -51,7 +51,7 @@ internal static class WorkshopCloudChecks
             await using var main=new AgentRuntime(new AgentSettingsStore(directory),true);
             var dispatcher=new GuardianWorkshopDispatcher(directory);
             string? identity=null;
-            await using var connection=new WorkshopConnection(dispatcher,id=>identity=id);
+            await using var connection=new WorkshopConnection(dispatcher,id=>identity=id,profileDirectory:directory);
             await connection.StartAsync(settings);
             var version=await listener.GetContextAsync().WaitAsync(lifetime.Token);
             if (version.Request.Url?.AbsolutePath!="/api/v1/version") throw new Exception("Workshop skipped the server compatibility check");
@@ -82,6 +82,8 @@ internal static class WorkshopCloudChecks
             var proof=await Read(socket,lifetime.Token);
             if (CodexJson.Text(proof,"kind")!="proof" || !key.VerifyData(payload,Convert.FromBase64String(CodexJson.Text(proof,"signature")),HashAlgorithmName.SHA256,RSASignaturePadding.Pss)) throw new Exception("Workshop proof failed");
             await Send(socket,new{kind="welcome",protocol=WorkshopProtocol.Name,computerId="PC"},lifetime.Token);
+            if (!hello.GetProperty("diagnostics").GetBoolean()) throw new Exception("Agent did not request server diagnostics");
+            await Send(socket,new {kind="diagnostics",records=new[] {new {sequence=123L,payload=new {time=DateTimeOffset.UtcNow,connectionId="server-fixture",role="agent",@event="read_failed",elapsedMs=25}}}},lifetime.Token);
             var question=await Read(socket,lifetime.Token);
             var questionContent=CodexJson.Field(question,"result");
             if (CodexJson.Text(question,"kind")!="terminal" || CodexJson.Text(question,"operationId")!=operation
@@ -99,6 +101,11 @@ internal static class WorkshopCloudChecks
             await Send(socket,new{kind="terminal_ack",operationId=operation},lifetime.Token);
             await Send(socket,new{kind="keepalive"},lifetime.Token);
             if (CodexJson.Text(await Read(socket,lifetime.Token),"kind")!="alive") throw new Exception("Workshop heartbeat failed");
+            var reportPath=Path.Combine(directory,"logs","remote-workshop.jsonl");
+            if (!File.Exists(reportPath) || !File.ReadAllText(reportPath).Contains("server-fixture")) throw new Exception("Server diagnostic was not collected over the authenticated socket");
+            await Send(socket,new {kind="call",id="ios-diagnostic",method="diagnostics.append",@params=new {records=new[] {new {id=Guid.NewGuid(),time=DateTimeOffset.UtcNow,@event="disconnected",detail="error=NSURLErrorDomain/-1005"}}}},lifetime.Token);
+            var reported=await Read(socket,lifetime.Token);
+            if(CodexJson.Text(reported,"kind")!="result" || !File.ReadAllText(reportPath).Contains("ios:")) throw new Exception("iOS diagnostic did not reach the guardian collector");
             await Send(socket,new{kind="call",id="fixture",method="operation.read",@params=new{operationId=operation,cursor=0}},lifetime.Token);
             var result=await Read(socket,lifetime.Token);
             if (CodexJson.Text(result,"kind")!="result" || CodexJson.Text(result,"id")!="fixture" || CodexJson.Text(CodexJson.Field(CodexJson.Field(result,"result"),"operation"),"id")!=operation) throw new Exception("Workshop request/result protocol failed");

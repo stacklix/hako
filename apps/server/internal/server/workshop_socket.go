@@ -39,13 +39,24 @@ func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hu
 		return
 	}
 	defer ws.Close()
+	role := "agent"
+	if !terminals {
+		role = "command_agent"
+	}
+	diagnostics := workshop.NewSocketLog(role, randomToken(), s.workshopDiagnostics.Append)
+	defer diagnostics.Event("closed", nil)
 	ws.SetReadLimit(64 * 1024)
 	_ = ws.SetReadDeadline(time.Now().Add(10 * time.Second))
 	fail := func() {
+		diagnostics.Event("authentication_failed", nil)
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "workshop authentication failed"), time.Now().Add(time.Second))
 	}
 	var hello workshop.Frame
-	if ws.ReadJSON(&hello) != nil || hello.Kind != "hello" || hello.Protocol != workshop.Protocol || !equal(hello.Account, s.config.Username) {
+	helloError := ws.ReadJSON(&hello)
+	if helloError != nil {
+		diagnostics.Event("authentication_hello_read_failed", helloError)
+	}
+	if helloError != nil || hello.Kind != "hello" || hello.Protocol != workshop.Protocol || !equal(hello.Account, s.config.Username) {
 		fail()
 		return
 	}
@@ -62,12 +73,18 @@ func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hu
 		return
 	}
 	c := workshop.New(ws, randomToken)
+	c.Diagnostics = diagnostics
 	payload := []byte("hako-workshop-auth/v1\n" + s.config.PublicURL + "\n" + hello.Account + "\n" + hello.KeyID + "\n" + randomToken())
-	if c.Send(map[string]any{"kind": "challenge", "protocol": workshop.Protocol, "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
+	if err := c.Send(map[string]any{"kind": "challenge", "protocol": workshop.Protocol, "payload": base64.StdEncoding.EncodeToString(payload)}); err != nil {
+		diagnostics.Event("authentication_challenge_write_failed", err)
 		return
 	}
 	var proof workshop.Frame
-	if ws.ReadJSON(&proof) != nil || proof.Kind != "proof" {
+	proofError := ws.ReadJSON(&proof)
+	if proofError != nil {
+		diagnostics.Event("authentication_proof_read_failed", proofError)
+	}
+	if proofError != nil || proof.Kind != "proof" {
 		fail()
 		return
 	}
@@ -90,13 +107,15 @@ func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hu
 		fail()
 		return
 	}
-	if c.Send(workshop.Frame{Kind: "welcome", Protocol: workshop.Protocol, ComputerID: configured.ID}) != nil {
+	if err := c.Send(workshop.Frame{Kind: "welcome", Protocol: workshop.Protocol, ComputerID: configured.ID}); err != nil {
+		diagnostics.Event("authentication_welcome_write_failed", err)
 		s.registryMu.Unlock()
 		return
 	}
 	old := hub.Register(configured.ID, c)
 	s.registryMu.Unlock()
 	if old != nil {
+		old.Diagnostics.Event("replaced_by_new_connection", nil)
 		old.Close()
 	}
 	c.Terminal = func(frame workshop.Frame) bool {
@@ -116,6 +135,29 @@ func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hu
 			}
 		}
 		return false
+	}
+	if hello.Diagnostics && terminals {
+		go func() {
+			cursor := hello.Cursor
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				rows := s.workshopDiagnostics.Since(cursor)
+				if len(rows) > 0 {
+					if err := c.Send(map[string]any{"kind": "diagnostics", "records": rows}); err != nil {
+						diagnostics.Event("diagnostic_delivery_failed", err)
+						c.Close()
+						return
+					}
+					cursor = rows[len(rows)-1].Sequence
+				}
+				select {
+				case <-c.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
 	}
 	hub.Run(configured.ID, c)
 }
@@ -202,6 +244,8 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.Close()
+	diagnostics := workshop.NewSocketLog("client", randomToken(), s.workshopDiagnostics.Append)
+	defer diagnostics.Event("closed", nil)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	tokenDigest := digest(strings.TrimPrefix(r.Header.Get("Authorization"), "DPoP "))
@@ -215,7 +259,11 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	write := func(value any) bool {
 		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		return ws.WriteJSON(value) == nil
+		if err := ws.WriteJSON(value); err != nil {
+			diagnostics.Event("write_failed", err)
+			return false
+		}
+		return true
 	}
 	if !valid() || !write(workshop.Frame{Kind: "welcome", Protocol: workshop.Protocol}) {
 		return
@@ -230,6 +278,9 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			kind, data, err := ws.ReadMessage()
 			if err != nil || stream {
+				if err != nil {
+					diagnostics.Event("read_failed", err)
+				}
 				return
 			}
 			var frame workshop.Frame
@@ -237,9 +288,11 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 				var decodeError error
 				frame, decodeError = workshop.DecodeBinary(data)
 				if decodeError != nil {
+					diagnostics.Event("invalid_binary_header", nil)
 					return
 				}
 			} else if kind != websocket.TextMessage || len(data) > 17*1024 || !decodeJSON(strings.NewReader(string(data)), &frame) {
+				diagnostics.Event("invalid_client_frame", nil)
 				return
 			}
 			select {
@@ -247,6 +300,7 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			default:
+				diagnostics.Event("client_queue_overflow", nil)
 				return
 			}
 		}
@@ -254,7 +308,15 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	ping := func() bool {
-		return valid() && ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) == nil
+		if !valid() {
+			diagnostics.Event("authentication_expired", nil)
+			return false
+		}
+		if err := ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+			diagnostics.Event("ping_failed", err)
+			return false
+		}
+		return true
 	}
 	if stream {
 		s.workshopEvents(ctx, r, heartbeat.C, ping, valid, write)
@@ -330,11 +392,13 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					c, _ := s.workshopHub.Lookup(command.ComputerID)
 					if c == nil {
+						diagnostics.Event("subscription_computer_offline", nil)
 						emit(workshopFailure(command.ID, "computer_offline", "执行电脑未连接代码工坊。"))
 						return
 					}
 					sub, err := c.Subscribe(command.OperationID, command.Cursor)
 					if err != nil {
+						diagnostics.Event("subscription_start_failed", err)
 						emit(workshopFailure(command.ID, "workshop_busy", "代码工坊订阅已满。"))
 						return
 					}
@@ -344,9 +408,11 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 						case <-watching.Done():
 							return
 						case <-c.Done():
+							diagnostics.Event("subscription_agent_disconnected", nil)
 							emit(workshopFailure(command.ID, "workshop_disconnected", "代码工坊连接已中断。"))
 							return
 						case <-sub.Overflow:
+							diagnostics.Event("subscription_overflow", nil)
 							emit(workshopFailure(command.ID, "stream_overflow", "代码工坊事件积压，请重新连接。"))
 							return
 						case frame := <-sub.Updates:

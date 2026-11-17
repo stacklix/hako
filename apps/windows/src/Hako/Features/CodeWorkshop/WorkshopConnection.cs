@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.WebSockets;
@@ -13,8 +14,10 @@ using Hako.Core;
 
 namespace Hako.Platform;
 
-internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<string> identified, bool commandHost = false) : IAsyncDisposable
+internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<string> identified, bool commandHost = false, string? profileDirectory = null) : IAsyncDisposable
 {
+    private readonly WorkshopConnectionLog diagnostics = new(profileDirectory, commandHost);
+    private readonly WorkshopDiagnosticReports? reports = profileDirectory is null || commandHost ? null : WorkshopDiagnosticReports.ForProfile(profileDirectory);
     private CancellationTokenSource? lifetime;
     private Task? running;
     internal string State { get; private set; } = "disconnected";
@@ -45,21 +48,30 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
     {
         var origin = settings.Origin();
         var uri = new UriBuilder(origin) { Scheme = origin.Scheme == "https" ? "wss" : "ws", Path = commandHost ? "/ws/workshop/command-agent" : "/ws/workshop/agent" }.Uri;
+        var attempt = 0;
+        Stopwatch? recovery = null;
         while (!token.IsCancellationRequested)
         {
+            var id = Guid.NewGuid().ToString("N");
+            var elapsed = Stopwatch.StartNew();
+            var stage = "compatibility";
+            using var socket = new ClientWebSocket();
+            attempt++;
+            diagnostics.Write(id, "connecting", stage, 0, attempt);
             try
             {
                 State = "connecting";
                 await ServerCompatibility.WaitAsync(origin,
                     warning => State = warning is null ? "connecting" : "version_mismatch", token);
-                using var socket = new ClientWebSocket();
+                stage = "connect";
                 using (var authentication = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
                     authentication.CancelAfter(TimeSpan.FromSeconds(10));
                     await socket.ConnectAsync(uri, authentication.Token);
+                    stage = "authenticate";
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await Send(socket, new { kind = "hello", protocol = WorkshopProtocol.Name, account = settings.Username, keyId }, authentication.Token);
+                    await Send(socket, new { kind = "hello", protocol = WorkshopProtocol.Name, account = settings.Username, keyId, diagnostics = reports is not null, cursor = reports?.ServerCursor ?? 0 }, authentication.Token);
                     using var challenge = await Read(socket, authentication.Token);
                     var frame = challenge.RootElement;
                     if (CodexJson.Text(frame, "kind") != "challenge" || CodexJson.Text(frame, "protocol") != WorkshopProtocol.Name)
@@ -76,12 +88,22 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
                     identified(ComputerId);
                 }
                 State = "connected";
-                await Serve(socket, NotificationScope(settings), token);
+                stage = "serve";
+                diagnostics.Write(id, "connected", stage, elapsed.ElapsedMilliseconds, attempt, recovery?.ElapsedMilliseconds);
+                recovery = null;
+                attempt = 0;
+                await Serve(socket, NotificationScope(settings), token, id);
             }
-            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
-            catch (AuthenticationException) { State = "authentication_failed"; return; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            { diagnostics.Write(id, "stopped", stage, elapsed.ElapsedMilliseconds, attempt, closeCode: socket.CloseStatus); break; }
+            catch (AuthenticationException error)
+            { diagnostics.Write(id, "authentication_failed", stage, elapsed.ElapsedMilliseconds, attempt, error: error, closeCode: socket.CloseStatus); State = "authentication_failed"; return; }
             catch (Exception error) when (error is HttpRequestException or WebSocketException or IOException or OperationCanceledException or JsonException or InvalidOperationException or FormatException or KeyNotFoundException)
-            { State = "retrying"; }
+            {
+                diagnostics.Write(id, "disconnected", stage, elapsed.ElapsedMilliseconds, attempt, error: error, closeCode: socket.CloseStatus);
+                recovery ??= Stopwatch.StartNew();
+                State = "retrying";
+            }
             try { await Task.Delay(TimeSpan.FromSeconds(3), token); } catch (OperationCanceledException) { break; }
         }
     }
@@ -92,12 +114,13 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + AgentSettings.KeyId(key))));
     }
 
-    private async Task Serve(ClientWebSocket socket, string scope, CancellationToken token)
+    private async Task Serve(ClientWebSocket socket, string scope, CancellationToken token, string connectionId)
     {
         using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
         using var writing = new SemaphoreSlim(1, 1);
         var requests = new List<Task>();
         var streams = new Dictionary<string, (CancellationTokenSource Lifetime, Task Worker)>();
+        var diagnosticStorageFailed = false;
         async Task Publish(object value)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
@@ -120,6 +143,16 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
                 using var message = await Read(socket, deadline.Token);
                 var frame = message.RootElement.Clone();
                 var kind = CodexJson.Text(frame, "kind");
+                if (kind == "diagnostics" && reports is not null)
+                {
+                    if (!diagnosticStorageFailed) try { reports.AppendServer(frame.GetProperty("records")); }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or KeyNotFoundException or WorkshopException)
+                    {
+                        diagnosticStorageFailed = true; // Preserve the cursor for replay on the next connection.
+                        diagnostics.Write(connectionId, "report_store_failed", "diagnostics", 0, 0, error: error);
+                    }
+                    continue;
+                }
                 if (kind == "keepalive") { await Publish(new { kind = "alive" }); continue; }
                 if (kind == "terminal_ack")
                 {

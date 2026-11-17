@@ -95,6 +95,11 @@ struct InvestmentEventEditor: View {
     @ViewBuilder private var fields: some View {
         let currency = account?.currency.rawValue ?? ""
         switch event.kind {
+        case .insuranceWithdrawal:
+            field("提取金额（\(currency)）", .amount)
+            field("提取后现金价值（\(currency)，选填）", .settlement)
+            Text("提取金额转入本账户现金，保单继续保留。现金价值留空时按最近已知现金价值扣减；缺少可用估值时显示待补充。")
+                .font(.footnote).foregroundStyle(.secondary)
         case .opening, .buy, .sell:
             if asset?.kind == .generic {
                 field((event.kind == .sell ? "取出金额" : "投入金额") + "（\(currency)）", .price)
@@ -177,6 +182,10 @@ struct InvestmentEventEditor: View {
             edited.day = InvestmentBook.day(date)
             var otherAmount: Decimal?
             switch event.kind {
+            case .insuranceWithdrawal:
+                edited.amount = try number(.amount, "提取金额")
+                edited.settledAmount = values[.settlement, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil : try number(.settlement, "提取后现金价值", allowZero: true)
             case .opening, .buy, .sell:
                 guard let asset else { throw InvestmentError.invalid("找不到流水对应的标的。") }
                 if asset.kind == .generic {

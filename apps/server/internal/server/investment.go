@@ -424,7 +424,7 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 		}
 		if kind, exists := row["event_type"]; exists && !slices.Contains([]string{
 			"deposit", "withdrawal", "adjustment", "opening", "buy", "sell", "transfer_out", "transfer_in", "income",
-			"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade",
+			"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade", "insurance_withdrawal",
 		}, kind) {
 			return errInvestmentInvalid
 		}

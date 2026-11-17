@@ -41,13 +41,15 @@ import CryptoKit
     private var queuedSends: [WorkshopQueuedSend] = []
     private let draftWriter = WorkshopDraftWriter()
     private var draftCache: [URL: WorkshopComposerDraft] = [:]
+    private var diagnosticUpload: Task<Void, Never>?
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
         socket = WorkshopRequestSocket(authentication: authentication, logSource: .codeWorkshop)
         socket.onDisconnect = { [weak self] in self?.connectionInterrupted() }
-        socket.onFailure = { HakoLog.record(.codeWorkshop, "工坊共享连接中断", detail: $0.localizedDescription) }
+        socket.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
+        socket.onFailure = { HakoLog.record(.codeWorkshop, "工坊共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
         subscription = authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.prepareContext() }
         }
@@ -75,7 +77,8 @@ import CryptoKit
                 try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1")
             })
             directSocket?.onDisconnect = { [weak self] in self?.connectionInterrupted() }
-            directSocket?.onFailure = { HakoLog.record(.codeWorkshop, "工坊局域网共享连接中断", detail: $0.localizedDescription) }
+            directSocket?.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
+            directSocket?.onFailure = { HakoLog.record(.codeWorkshop, "工坊局域网共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
             directSocket?.setPersistent(connectionPersistent)
         }
         prepareContext()
@@ -83,6 +86,36 @@ import CryptoKit
     }
 
     private var requests: WorkshopRequestSocket { directSocket ?? socket }
+
+    func recordDiagnostic(_ event: String, detail: String) {
+        let file = cacheFile.deletingPathExtension().appendingPathExtension("diagnostics.json")
+        Task { do { try await WorkshopDiagnosticOutbox.shared.append(event, detail: detail, file: file) }
+            catch { HakoLog.record(.codeWorkshop, .warning, "连接诊断无法保存", detail: WorkshopSocketDiagnostics.error(error)) } }
+    }
+
+    private func uploadDiagnostics(to agent: WorkshopAgent) {
+        guard diagnosticUpload == nil else { return }
+        let file = cacheFile.deletingPathExtension().appendingPathExtension("diagnostics.json")
+        let ticket = scope
+        diagnosticUpload = Task { [weak self] in
+            defer { self?.diagnosticUpload = nil }
+            // Bounded low-priority batches never delay conversation requests.
+            for _ in 0..<4 {
+                guard let self, !Task.isCancelled, self.scope == ticket else { return }
+                let batch = await WorkshopDiagnosticOutbox.shared.batch(file: file)
+                guard self.scope == ticket, !Task.isCancelled else { return }
+                guard !batch.isEmpty else { return }
+                let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+                do {
+                    let records = try JSONSerialization.jsonObject(with: encoder.encode(batch))
+                    _ = try await self.requests.send("diagnostics.append", computerID: agent.id, params: ["records": records])
+                    guard self.scope == ticket else { return }
+                    try await WorkshopDiagnosticOutbox.shared.acknowledge(Set(batch.map(\.id)), file: file)
+                } catch { return } // Retain the spool; retry after the next successful read.
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
 
     func setConnectionForeground(_ foreground: Bool) {
         connectionPersistent = foreground
@@ -785,6 +818,7 @@ import CryptoKit
                 try Task.checkCancellation()
                 guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
                 if self.connections[agent.id] != .connected { self.connections[agent.id] = .connected }
+                self.uploadDiagnostics(to: agent)
                 for page in pages {
                     try Task.checkCancellation()
                     guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
@@ -818,6 +852,7 @@ import CryptoKit
             guard ticket == scope, route == transportRevision else { throw CancellationError() }
             let result = try JSONDecoder().decode(Result.self, from: data)
             if tracksConversation { connections[agent.id] = .connected }
+            if tracksConversation { uploadDiagnostics(to: agent) }
             return result
         } catch {
             if tracksConversation, ticket == scope, route == transportRevision {

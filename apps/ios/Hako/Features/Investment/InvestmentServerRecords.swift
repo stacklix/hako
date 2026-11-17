@@ -41,6 +41,7 @@ struct InvestmentServerRecords {
         .deposit: "deposit", .withdrawal: "withdrawal", .adjustment: "adjustment", .opening: "opening",
         .buy: "buy", .sell: "sell", .transferOut: "transfer_out", .transferIn: "transfer_in", .income: "income",
         .dividend: "dividend", .bonusShares: "bonus_shares", .stakingReward: "staking_reward",
+        .insuranceWithdrawal: "insurance_withdrawal",
         .spotAdjustment: "spot_adjustment", .marginTransfer: "derivative_margin",
         .derivativeSettlement: "derivative_settlement"
     ]

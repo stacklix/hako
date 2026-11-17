@@ -8,6 +8,39 @@ import (
 	"testing"
 )
 
+func TestInsuranceWithdrawalsPreserveOptionalCashValue(t *testing.T) {
+	f := newFixture(t, true)
+	day := "2026-11-09"
+	events := []investmentRow{
+		{"id": "first", "account_id": "insurance", "asset_id": "policy", "event_type": "insurance_withdrawal", "effective_date": day, "sequence": "1", "amount": "1000.123456789012345678"},
+		{"id": "second", "account_id": "insurance", "asset_id": "policy", "event_type": "insurance_withdrawal", "effective_date": day, "sequence": "2", "amount": "200", "settled_amount": "0"},
+	}
+	input := investmentWrite{DirtyFrom: &day, Tables: investmentRows{
+		"investment_accounts": {{"id": "insurance", "name": "保险", "currency": "CNY", "account_type": "insurance", "sort_order": "0"}},
+		"investment_assets":   {{"id": "policy", "symbol": "POLICY", "name": "保单", "asset_type": "insurance", "quote_currency": "CNY", "settlement_unit": "CNY"}},
+		"investment_events":   events,
+	}}
+	if status, data := f.call(http.MethodPut, "/api/v1/investment/book", input, f.tokens.AccessToken); status != http.StatusOK {
+		t.Fatalf("insurance withdrawal write = %d %s", status, data)
+	}
+	status, data := f.call(http.MethodGet, "/api/v1/investment/book", nil, f.tokens.AccessToken)
+	var saved investmentState
+	if err := json.Unmarshal(data, &saved); err != nil || status != http.StatusOK {
+		t.Fatalf("read = %d %s (%v)", status, data, err)
+	}
+	if len(saved.Tables["investment_events"]) != 2 {
+		t.Fatalf("missing withdrawals: %+v", saved)
+	}
+	for _, event := range saved.Tables["investment_events"] {
+		if event["id"] == "first" && (event["amount"] != events[0]["amount"] || event["settled_amount"] != "") {
+			t.Fatalf("optional value or decimal precision changed: %+v", event)
+		}
+		if event["id"] == "second" && event["settled_amount"] != "0" {
+			t.Fatalf("explicit zero value lost: %+v", event)
+		}
+	}
+}
+
 func TestInvestmentGenericBalancesRoundTripAndRemovedContractsAreRejected(t *testing.T) {
 	f := newFixture(t, true)
 	const path = "/api/v1/investment/book"
