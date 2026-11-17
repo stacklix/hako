@@ -59,15 +59,14 @@ struct NotificationsView: View {
         .navigationTitle("通知").navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("全部已读") {
-                    store.markAllRead()
-                    showNotice("已将全部通知标为已读。")
-                }
-                    .disabled(store.unreadCount == 0)
-                    .accessibilityLabel("全部标为已读")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button {
+                        store.markAllRead()
+                        showNotice("已将全部通知标为已读。")
+                    } label: {
+                        Label("全部已读", systemImage: "checkmark.circle")
+                    }
+                    .disabled(store.unreadCount == 0)
                     Button(role: .destructive) {
                         notice = nil
                         clearAllContext = store.context
@@ -149,9 +148,11 @@ struct NotificationsView: View {
                     }
                 }
                 Text(notification.summary).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
-                HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(notification.category.title)
-                    if let created = notification.createdAt { Text("·"); Text(created, style: .relative) }
+                    if let created = notification.createdAt {
+                        Text(created, format: .dateTime.year().month(.twoDigits).day(.twoDigits).hour().minute().second())
+                    }
                 }
                 .font(.caption).foregroundStyle(.tertiary)
             }
