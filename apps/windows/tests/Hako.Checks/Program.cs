@@ -93,6 +93,7 @@ internal static class Program
             if (args.Length == 1 && args[0] == "workshop-notifications") { await WorkshopNotificationChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "binary-uploads") { await BinaryUploadChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "agent-direct") { await AgentDirectChecks.RunAsync(); return 0; }
             if (args.Length == 2 && args[0] == "code-workshop-local")
             {

@@ -2,8 +2,10 @@ package workshop
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,16 +14,6 @@ import (
 
 const Protocol = "hako.workshop/1"
 const RequestLimit = 16
-
-func ValidMethod(method string) bool {
-	switch method {
-	case "applications.list", "models.list", "history.read", "operation.read", "artifact.read", "image.read",
-		"turn.start", "turn.stop", "thread.archive", "image.upload", "message.queue", "message.update", "message.cancel", "message.steer", "approval.reply",
-		"commands.open", "commands.start", "commands.read", "commands.stop", "commands.list":
-		return true
-	}
-	return false
-}
 
 var ErrBusy = errors.New("workshop_busy")
 var ErrClosed = errors.New("workshop_disconnected")
@@ -32,6 +24,7 @@ type Error struct {
 }
 
 type Frame struct {
+	Binary      []byte          `json:"-"`
 	Kind        string          `json:"kind"`
 	Protocol    string          `json:"protocol,omitempty"`
 	ID          string          `json:"id,omitempty"`
@@ -78,6 +71,44 @@ func (c *Connection) Send(frame any) error {
 	defer c.write.Unlock()
 	_ = c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return c.ws.WriteJSON(frame)
+}
+
+// Binary frames contain only routing metadata here. Their body belongs to the Agent.
+const MaximumBinaryFrame = 36 * 1024
+
+func DecodeBinary(data []byte) (Frame, error) {
+	if len(data) < 5 || len(data) > MaximumBinaryFrame {
+		return Frame{}, fmt.Errorf("invalid binary frame size")
+	}
+	size := int(binary.BigEndian.Uint32(data[:4]))
+	if size < 1 || size > 1024 || 4+size >= len(data) {
+		return Frame{}, fmt.Errorf("invalid routing header")
+	}
+	var header struct {
+		ID         string `json:"id"`
+		ComputerID string `json:"computerId"`
+	}
+	if json.Unmarshal(data[4:4+size], &header) != nil || header.ID == "" || len(header.ID) > 80 {
+		return Frame{}, fmt.Errorf("invalid routing identity")
+	}
+	return Frame{Kind: "call", ID: header.ID, ComputerID: header.ComputerID, Binary: append([]byte(nil), data[4+size:]...)}, nil
+}
+func EncodeBinary(id, computerID string, payload []byte) []byte {
+	header, _ := json.Marshal(map[string]string{"id": id, "computerId": computerID})
+	data := make([]byte, 4+len(header)+len(payload))
+	binary.BigEndian.PutUint32(data[:4], uint32(len(header)))
+	copy(data[4:], header)
+	copy(data[4+len(header):], payload)
+	return data
+}
+func (c *Connection) sendRequest(frame Frame) error {
+	if frame.Binary == nil {
+		return c.Send(frame)
+	}
+	c.write.Lock()
+	defer c.write.Unlock()
+	_ = c.ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return c.ws.WriteMessage(websocket.BinaryMessage, EncodeBinary(frame.ID, "", frame.Binary))
 }
 func (c *Connection) Run(seen func()) {
 	defer c.Close()
@@ -157,7 +188,7 @@ func (c *Connection) Call(ctx context.Context, request Frame) (Frame, error) {
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
 	request.Kind = "call"
 	request.ID = id
-	if err := c.Send(request); err != nil {
+	if err := c.sendRequest(request); err != nil {
 		c.Close()
 		return Frame{}, err
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -288,5 +289,42 @@ func TestWorkshopClientMultiplexesCallsAndIndependentSubscriptions(t *testing.T)
 	writeAgentFrame(t, client, workshop.Frame{Kind: "watch", ID: "view-c", ComputerID: "PC", OperationID: operation, Cursor: 11})
 	if resumed := readAgentFrame[workshop.Frame](t, worker); resumed.Kind != "watch" || resumed.Cursor != 11 {
 		t.Fatal("resume cursor lost", resumed)
+	}
+}
+
+func TestWorkshopBinaryPayloadIsOpaqueAndSharesClientSocket(t *testing.T) {
+	f := newFixture(t, true)
+	worker := connectWorkshop(t, f)
+	client := openWorkshopClient(t, f, "/ws/workshop/client")
+	// Future image metadata is routed without a service-side method allowlist.
+	writeAgentFrame(t, client, workshop.Frame{Kind: "call", ID: "begin", ComputerID: "PC", Method: "image.upload.begin", Params: json.RawMessage(`{"uploadId":"opaque"}`)})
+	begin := readAgentFrame[workshop.Frame](t, worker)
+	if begin.Method != "image.upload.begin" {
+		t.Fatal("Agent command was interpreted by relay", begin)
+	}
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "result", ID: begin.ID, Result: json.RawMessage(`{"nextOffset":32768}`)})
+	_ = readAgentFrame[workshop.Frame](t, client)
+	payload := bytes.Repeat([]byte{0, 255, 2, 3}, 8000)
+	if err := client.WriteMessage(websocket.BinaryMessage, workshop.EncodeBinary("binary-request", "PC", payload)); err != nil {
+		t.Fatal(err)
+	}
+	kind, data, err := worker.ReadMessage()
+	if err != nil || kind != websocket.BinaryMessage {
+		t.Fatal("binary frame was not forwarded", kind, err)
+	}
+	routed, err := workshop.DecodeBinary(data)
+	if err != nil || !bytes.Equal(routed.Binary, payload) || routed.ID == "binary-request" {
+		t.Fatal("opaque binary content or request correlation changed", err)
+	}
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "result", ID: routed.ID, Result: json.RawMessage(`{"nextOffset":64000}`)})
+	reply := readAgentFrame[workshop.Frame](t, client)
+	if reply.ID != "binary-request" {
+		t.Fatal("binary acknowledgement lost client identity", reply)
+	}
+	writeAgentFrame(t, client, workshop.Frame{Kind: "call", ID: "ordinary", ComputerID: "PC", Method: "models.list", Params: json.RawMessage(`{}`)})
+	ordinary := readAgentFrame[workshop.Frame](t, worker)
+	writeAgentFrame(t, worker, workshop.Frame{Kind: "result", ID: ordinary.ID, Result: json.RawMessage(`{"models":[]}`)})
+	if readAgentFrame[workshop.Frame](t, client).ID != "ordinary" {
+		t.Fatal("binary transfer disrupted ordinary requests")
 	}
 }

@@ -110,6 +110,21 @@ internal static class AgentDirectChecks
                 "LAN subscription on reused socket duplicated consumed events");
             await Send(socket, new { id = "shared-resume", kind = "unwatch" });
             _ = await Receive(socket);
+            var imageId = Guid.NewGuid().ToString("D");
+            var image = new byte[40_000]; image[0]=0xff; image[1]=0xd8; image[^2]=0xff; image[^1]=0xd9;
+            var imageHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(image)).ToLowerInvariant();
+            await Send(socket, new { id="image-begin",kind="call",computerId="PC",method="image.upload.begin",@params=new { uploadId=imageId,total=image.Length,sha256=imageHash } });
+            Check((await Receive(socket)).GetProperty("result").GetProperty("nextOffset").GetInt32()==0,"Binary upload did not initialize");
+            var binaryPacket = BinaryUploadChecks.Frame("image-body", "PC", imageId, 0, image.AsSpan(0,32*1024).ToArray());
+            await socket.SendAsync(binaryPacket, WebSocketMessageType.Binary,true,CancellationToken.None);
+            var binaryAck = await Receive(socket);
+            Check(binaryAck.GetProperty("id").GetString()=="image-body" && binaryAck.GetProperty("result").GetProperty("nextOffset").GetInt32()==32*1024,"Binary upload ACK lost routing identity");
+            using (var imageResume=await Open(server.Port,"/workshop/v1")) {
+                await Send(imageResume,new {id="image-resume",kind="call",computerId="PC",method="image.upload.begin",@params=new {uploadId=imageId,total=image.Length,sha256=imageHash}});
+                Check((await Receive(imageResume)).GetProperty("result").GetProperty("nextOffset").GetInt32()==32*1024,"Reconnected image transfer lost persisted offset");
+                await imageResume.SendAsync(BinaryUploadChecks.Frame("image-end","PC",imageId,32*1024,image.AsSpan(32*1024).ToArray()),WebSocketMessageType.Binary,true,CancellationToken.None);
+                Check((await Receive(imageResume)).GetProperty("result").GetProperty("complete").GetBoolean(),"Binary image was not verified and finalized");
+            }
             using var pushed = await Open(server.Port, $"/workshop/v1/events/{id}/0");
             var update = await Receive(pushed);
             Check(update.GetProperty("kind").GetString() == "event" && update.GetProperty("result").GetProperty("cursor").GetInt64() == cursor,

@@ -143,15 +143,12 @@ func (s *Server) workshopComputers() any {
 
 func (s *Server) workshopCall(ctx context.Context, request workshop.Frame) workshop.Frame {
 	id := request.ID
-	if request.Kind != "call" || !identifier.MatchString(id) || len(request.Params) > 16*1024 || !json.Valid(request.Params) || len(request.Params) == 0 || request.Params[0] != '{' {
+	if request.Kind != "call" || !identifier.MatchString(id) || (request.Binary == nil && (len(request.Params) > 16*1024 || !json.Valid(request.Params) || len(request.Params) == 0 || request.Params[0] != '{')) {
 		return workshopFailure(id, "invalid_request", "无效的代码工坊请求。")
 	}
 	if request.Method == "computers.list" {
 		data, _ := json.Marshal(s.workshopComputers())
 		return workshop.Frame{Kind: "result", ID: id, Result: data}
-	}
-	if !workshop.ValidMethod(request.Method) {
-		return workshopFailure(id, "unsupported_method", "代码工坊不支持此操作。")
 	}
 	if !identifier.MatchString(request.ComputerID) {
 		return workshopFailure(id, "invalid_request", "无效的执行电脑。")
@@ -224,7 +221,7 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	commands := make(chan workshop.Frame, 16)
-	ws.SetReadLimit(17 * 1024)
+	ws.SetReadLimit(workshop.MaximumBinaryFrame)
 	_ = ws.SetReadDeadline(time.Now().Add(45 * time.Second))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(45 * time.Second)) })
 	stream := r.PathValue("computerID") != ""
@@ -232,11 +229,17 @@ func (s *Server) workshopClientSocket(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		for {
 			kind, data, err := ws.ReadMessage()
-			if err != nil || stream || kind != websocket.TextMessage {
+			if err != nil || stream {
 				return
 			}
 			var frame workshop.Frame
-			if !decodeJSON(strings.NewReader(string(data)), &frame) {
+			if kind == websocket.BinaryMessage {
+				var decodeError error
+				frame, decodeError = workshop.DecodeBinary(data)
+				if decodeError != nil {
+					return
+				}
+			} else if kind != websocket.TextMessage || len(data) > 17*1024 || !decodeJSON(strings.NewReader(string(data)), &frame) {
 				return
 			}
 			select {

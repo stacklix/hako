@@ -15,8 +15,16 @@ enum HakoLogSource { case codeWorkshop }
     var queued: [Data] = []
     var receiver: CheckedContinuation<Data, Error>?
     func sendWorkshop(_ message: URLSessionWebSocketTask.Message) async throws {
-        guard case .string(let text) = message,
-              let frame = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { preconditionFailure() }
+        let data: Data
+        switch message {
+        case .string(let text): data = Data(text.utf8)
+        case .data(let packet):
+            let size = packet.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
+            precondition(packet.count > 4 + size)
+            data = packet.subdata(in: 4..<(4 + size))
+        @unknown default: preconditionFailure()
+        }
+        guard let frame = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { preconditionFailure() }
         sent.append(frame)
     }
     func receiveWorkshopData() async throws -> Data {
@@ -119,6 +127,76 @@ enum HakoLogSource { case codeWorkshop }
         try replacement.push(["kind":"event", "id":replacement.sent[0]["id"]!, "result":["cursor":13]])
         try await restarted.value
         reconnecting.close()
+        let imageID = "11111111-1111-4111-8111-111111111111"
+        let image = Data(repeating: 123, count: 200_000)
+        var initializations = 0, activeChunks = 0, maximumInFlight = 0
+        var received: Set<Int> = [0]
+        var positions: [Int] = [], progressValues: [Double] = []
+        func prefix() -> Int {
+            var position = 0
+            while position < image.count && received.contains(position) { position += min(32 * 1024, image.count - position) }
+            return position
+        }
+        try await WorkshopImageTransfer.upload(id: imageID, data: image, initialize: {
+            initializations += 1
+            return WorkshopUpload(id: imageID, nextOffset: prefix(), complete: prefix() == image.count)
+        }, send: { packet in
+            precondition(String(data: packet.prefix(36), encoding: .utf8) == imageID && packet.count <= 32 * 1024 + 40)
+            let position = packet[36..<40].reduce(0) { ($0 << 8) | Int($1) }
+            positions.append(position); activeChunks += 1; maximumInFlight = max(maximumInFlight, activeChunks)
+            defer { activeChunks -= 1 }
+            try await Task.sleep(for: .milliseconds(5))
+            precondition(packet.dropFirst(40) == image.subdata(in: position..<min(position + 32 * 1024, image.count)))
+            received.insert(position)
+            return try JSONSerialization.data(withJSONObject: ["id": imageID, "nextOffset": prefix(), "complete": prefix() == image.count])
+        }, progress: { progressValues.append($0) })
+        precondition(initializations == 2 && maximumInFlight == 4 && activeChunks == 0,
+            "The real upload loop must send a bounded window before waiting for every acknowledgement")
+        precondition(!positions.contains(0) && prefix() == image.count, "Resume must skip acknowledged image bytes")
+        precondition(progressValues.last == 1 && zip(progressValues, progressValues.dropFirst()).allSatisfy { $0 <= $1 }, "Progress must follow acknowledged contiguous bytes and never go backwards")
+        var cancellationActive = 0
+        let cancelledUpload = Task {
+            try await WorkshopImageTransfer.upload(id: imageID, data: image, initialize: {
+                WorkshopUpload(id: imageID, nextOffset: 0, complete: false)
+            }, send: { _ in
+                cancellationActive += 1; defer { cancellationActive -= 1 }
+                try await Task.sleep(for: .seconds(10))
+                throw URLError(.timedOut)
+            }, progress: { _ in })
+        }
+        while cancellationActive < 4 { await Task.yield() }
+        cancelledUpload.cancel()
+        do { try await cancelledUpload.value; preconditionFailure("Upload cancellation did not propagate") } catch { }
+        precondition(cancellationActive == 0, "Cancellation must drain every in-flight binary chunk")
+        let binaryTransport = WorkshopTestSocket()
+        let binaryClient = WorkshopRequestSocket(context: { "account" }, open: { (binaryTransport, welcome) })
+        let binaryCall = Task { try await binaryClient.sendBinary(Data([0, 255, 2]), computerID: "PC") }
+        while binaryTransport.sent.isEmpty { await Task.yield() }
+        precondition(binaryTransport.sent[0]["computerId"] as? String == "PC")
+        try binaryTransport.push(["kind":"result", "id":binaryTransport.sent[0]["id"]!, "result":["nextOffset":3]])
+        _ = try await binaryCall.value
+        binaryClient.close()
+        let fairTransport = WorkshopTestSocket()
+        let fair = WorkshopRequestSocket(context: { "account" }, open: { (fairTransport, welcome) })
+        let images = (0..<4).map { _ in Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") } }
+        while fairTransport.sent.count < 4 { await Task.yield() }
+        let fifth = Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") }
+        let sixth = Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") }
+        let ordinary = Task { try await fair.send("models.list", computerID: "PC") }
+        while fairTransport.sent.count < 5 { await Task.yield() }
+        precondition(fairTransport.sent.filter { $0["method"] == nil }.count == 4,
+            "All conversations together must share the four-chunk budget, leaving room for ordinary requests")
+        sixth.cancel(); _ = try? await sixth.value
+        for frame in fairTransport.sent {
+            try fairTransport.push(["kind":"result", "id":frame["id"]!, "result":["ok":true]])
+        }
+        while fairTransport.sent.count < 6 { await Task.yield() }
+        try fairTransport.push(["kind":"result", "id":fairTransport.sent[5]["id"]!, "result":["ok":true]])
+        for image in images { _ = try await image.value }
+        _ = try await fifth.value
+        _ = try await ordinary.value
+        fair.close()
+        print("PASS: binary upload window, resume offsets, raw JPEG bytes, monotonic progress and draining cancellation")
         print("PASS: shared calls/streams, per-view cancellation, timeout isolation, foreground lifetime and reconnect cursors")
         print("PASS: Workshop-only handshake, independent call schema, multiplexing and out-of-order reply identity")
     }

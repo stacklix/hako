@@ -178,13 +178,6 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
     }
     private static async Task<JsonDocument> Read(WebSocket socket, CancellationToken token)
     {
-        using var bytes = new MemoryStream(); var buffer = new byte[4096];
-        while (true)
-        {
-            var frame = await socket.ReceiveAsync(buffer, token);
-            if (frame.MessageType != WebSocketMessageType.Text || bytes.Length + frame.Count > 17 * 1024) throw new IOException("Invalid workshop frame.");
-            bytes.Write(buffer, 0, frame.Count);
-            if (frame.EndOfMessage) return JsonDocument.Parse(bytes.ToArray());
-        }
+        return await WorkshopBinaryFrame.ReadAsync(socket, token);
     }
 }

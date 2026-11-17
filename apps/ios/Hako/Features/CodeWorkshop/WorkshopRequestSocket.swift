@@ -79,6 +79,8 @@ enum WorkshopJSON: Codable {
     var onDisconnect: (() -> Void)?
     var onFailure: ((Error) -> Void)?
     private var persistent = false
+    private var binaryActive = 0
+    private var binaryWaiters: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
     private var streams: [String: AsyncThrowingStream<Data, Error>.Continuation] = [:]
 
     private let requestContext: () -> String
@@ -160,6 +162,49 @@ enum WorkshopJSON: Codable {
         var frame: [String: Any] = ["id": id, "kind": "call", "method": method, "params": params]
         frame["computerId"] = computerID
         let message = URLSessionWebSocketTask.Message.string(String(decoding: try JSONSerialization.data(withJSONObject: frame), as: UTF8.self))
+        return try await perform(message, id: id)
+    }
+
+    func sendBinary(_ payload: Data, computerID: String) async throws -> Data {
+        guard payload.count <= 32 * 1024 + 40 else { throw URLError(.dataLengthExceedsMaximum) }
+        resetIfContextChanged()
+        let generation = self.generation
+        try await acquireBinarySlot()
+        defer { releaseBinarySlot() }
+        try Task.checkCancellation()
+        guard generation == self.generation else { throw CancellationError() }
+        let id = UUID().uuidString
+        let header = try JSONSerialization.data(withJSONObject: ["id": id, "computerId": computerID])
+        var length = UInt32(header.count).bigEndian
+        var frame = withUnsafeBytes(of: &length) { Data($0) }
+        frame.append(header); frame.append(payload)
+        return try await perform(.data(frame), id: id)
+    }
+
+    private func acquireBinarySlot() async throws {
+        try Task.checkCancellation()
+        if binaryActive < 4 { binaryActive += 1; return }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { continuation.resume(throwing: CancellationError()); return }
+                binaryWaiters.append((id, continuation))
+            }
+        } onCancel: {
+            Task { @MainActor in
+                if let index = self.binaryWaiters.firstIndex(where: { $0.id == id }) {
+                    self.binaryWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+                }
+            }
+        }
+    }
+
+    private func releaseBinarySlot() {
+        if binaryWaiters.isEmpty { binaryActive -= 1 }
+        else { binaryWaiters.removeFirst().continuation.resume() }
+    }
+
+    private func perform(_ message: URLSessionWebSocketTask.Message, id: String) async throws -> Data {
         let socket = try await connection()
         try Task.checkCancellation()
         idle?.cancel()
@@ -272,6 +317,8 @@ enum WorkshopJSON: Codable {
         opening?.cancel(); opening = nil
         reader?.cancel(); reader = nil
         socket?.closeWorkshop(); socket = nil
+        let waiting = binaryWaiters; binaryWaiters.removeAll()
+        for entry in waiting { entry.continuation.resume(throwing: error) }
         let subscriptions = streams; streams.removeAll()
         for stream in subscriptions.values { stream.finish(throwing: error) }
         let cancelled = pending
@@ -280,5 +327,58 @@ enum WorkshopJSON: Codable {
         // Explicit close, route changes and idle retirement do not mean a
         // previously verified computer went offline.
         if !(error is CancellationError) { onFailure?(error); onDisconnect?() }
+    }
+}
+
+@MainActor enum WorkshopImageTransfer {
+    static let chunkSize = 32 * 1024
+    static let window = 4
+    static func upload(id: String, data: Data, initialize: () async throws -> WorkshopUpload,
+                       send: @escaping (Data) async throws -> Data, progress: (Double) -> Void) async throws {
+        guard data.count > 0, data.count <= 2_000_000, id.utf8.count == 36 else { throw CocoaError(.coderReadCorrupt) }
+        let begin = try await initialize()
+        guard begin.id == id, (0...data.count).contains(begin.nextOffset),
+              begin.nextOffset == data.count || begin.nextOffset % chunkSize == 0,
+              !begin.complete || begin.nextOffset == data.count else { throw CocoaError(.coderReadCorrupt) }
+        var offset = begin.nextOffset
+        var confirmed = offset
+        progress(Double(confirmed) / Double(data.count))
+        while offset < data.count {
+            try Task.checkCancellation()
+            var transfers: [Task<WorkshopUpload, Error>] = []
+            let batchEnd = min(data.count, offset + window * chunkSize)
+            for start in stride(from: offset, to: batchEnd, by: chunkSize) {
+                var packet = Data(id.utf8)
+                var position = UInt32(start).bigEndian
+                packet.append(withUnsafeBytes(of: &position) { Data($0) })
+                packet.append(data.subdata(in: start..<min(start + chunkSize, data.count)))
+                let payload = packet
+                transfers.append(Task {
+                    let reply = try await send(payload)
+                    return try JSONDecoder().decode(WorkshopUpload.self, from: reply)
+                })
+            }
+            let batch = transfers
+            do {
+                try await withTaskCancellationHandler {
+                    for transfer in batch {
+                        let reply = try await transfer.value
+                        try Task.checkCancellation()
+                        guard reply.id == id, (0...data.count).contains(reply.nextOffset),
+                              reply.nextOffset == data.count || reply.nextOffset % chunkSize == 0 else { throw CocoaError(.coderReadCorrupt) }
+                        confirmed = max(confirmed, reply.nextOffset)
+                        progress(Double(confirmed) / Double(data.count))
+                    }
+                } onCancel: { for transfer in batch { transfer.cancel() } }
+            } catch {
+                for transfer in batch { transfer.cancel() }
+                for transfer in batch { _ = try? await transfer.value }
+                throw error
+            }
+            offset = batchEnd
+        }
+        let verified = try await initialize()
+        guard verified.id == id, verified.complete, verified.nextOffset == data.count else { throw CocoaError(.coderReadCorrupt) }
+        progress(1)
     }
 }

@@ -106,6 +106,16 @@ internal static class WorkshopCloudChecks
             if (!JsonDocument.Parse(File.ReadAllBytes(Path.Combine(directory,"code-workshop",operation+".json"))).RootElement.GetProperty("notificationAcknowledged").GetBoolean()) throw new Exception("Server ACK was not persisted");
             var saved=JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(directory,"code-workshop",operation+".json")),WorkshopProtocol.Json)!;
             if (!saved.QuestionNotifications["fixture-question"].Acknowledged) throw new Exception("Question ACK was not persisted across main/guardian IPC");
+            var imageId=Guid.NewGuid().ToString("D");
+            var image=new byte[32*1024];image[0]=255;image[1]=216;image[^2]=255;image[^1]=217;
+            var hash=Convert.ToHexString(SHA256.HashData(image)).ToLowerInvariant();
+            await Send(socket,new {kind="call",id="binary-init",method="image.upload.begin",@params=new {uploadId=imageId,total=image.Length,sha256=hash}},lifetime.Token);
+            var initialized=await Read(socket,lifetime.Token);
+            if(CodexJson.Text(initialized,"kind")!="result") throw new Exception("Binary upload initialization failed across guardian/main IPC");
+            await socket.SendAsync(BinaryUploadChecks.Frame("binary-body","",imageId,0,image),WebSocketMessageType.Binary,true,lifetime.Token);
+            var uploaded=await Read(socket,lifetime.Token);
+            if(CodexJson.Text(uploaded,"id")!="binary-body" || !CodexJson.Field(uploaded,"result").GetProperty("complete").GetBoolean())
+                throw new Exception("Binary upload failed across cloud WebSocket and guardian/main JSON IPC");
             await connection.StopAsync();
             if (connection.State!="disconnected") throw new Exception("Workshop did not stop independently");
         }

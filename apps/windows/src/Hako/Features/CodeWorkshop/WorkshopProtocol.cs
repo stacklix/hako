@@ -74,6 +74,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
             "artifact.read" => workshop.ArtifactAsync, "image.read" => workshop.ImageAsync,
             "turn.start" => workshop.StartAsync, "turn.stop" => workshop.StopAsync,
             "thread.archive" => workshop.ArchiveAsync, "image.upload" => workshop.UploadImageAsync,
+            "image.upload.begin" => workshop.BeginBinaryUploadAsync, "image.upload.binary" => workshop.UploadBinaryAsync,
             "message.queue" => workshop.QueueAsync, "message.update" => workshop.UpdateMessageAsync,
             "message.cancel" => workshop.CancelMessageAsync, "message.steer" => workshop.SteerMessageAsync,
             "approval.reply" => workshop.AnswerAsync,

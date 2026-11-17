@@ -749,23 +749,22 @@ import CryptoKit
 
     func uploadImages(_ ids: [String], agent: WorkshopAgent, progress: (Double) -> Void) async throws {
         let ticket = scope
+        try await verifyNetworkRoute()
+        let route = transportRevision
+        let transport = requests
         for (index, id) in ids.enumerated() {
             let data = try Data(contentsOf: imageFile(id))
-            guard data.count <= 2_000_000, !data.isEmpty else { throw HakoError(message: "图片文件无效，请重新选择。") }
+            guard !data.isEmpty, data.count <= 2_000_000 else { throw HakoError(message: "图片文件无效，请重新选择。") }
             let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-            var offset = 0
-            while offset < data.count {
-                try Task.checkCancellation()
-                guard ticket == scope else { throw CancellationError() }
-                let end = min(offset + 9 * 1024, data.count)
-                let reply: WorkshopUpload = try await call(agent, "image.upload", [
-                    "uploadId": id, "offset": offset, "total": data.count, "sha256": hash,
-                    "content": data.subdata(in: offset..<end).base64EncodedString()
-                ])
-                guard reply.id == id, reply.nextOffset == end, end < data.count || reply.complete else { throw CocoaError(.coderReadCorrupt) }
-                offset = end
-                progress((Double(index) + Double(offset) / Double(data.count)) / Double(ids.count))
-            }
+            try await WorkshopImageTransfer.upload(id: id, data: data, initialize: {
+                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                return try await self.call(agent, "image.upload.begin", ["uploadId": id, "total": data.count, "sha256": hash])
+            }, send: { packet in
+                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                let reply = try await transport.sendBinary(packet, computerID: agent.id)
+                guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
+                return reply
+            }, progress: { progress((Double(index) + $0) / Double(ids.count)) })
         }
     }
 

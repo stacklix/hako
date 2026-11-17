@@ -233,16 +233,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
 
     private static async Task<JsonDocument> ReadAsync(WebSocket socket, CancellationToken token)
     {
-        var buffer = new byte[17 * 1024];
-        var size = 0;
-        while (true)
-        {
-            var frame = await socket.ReceiveAsync(buffer.AsMemory(size), token);
-            if (frame.MessageType != WebSocketMessageType.Text) throw new InvalidDataException("Text frames required.");
-            size += frame.Count;
-            if (size > 16 * 1024) throw new InvalidDataException("Request too large.");
-            if (frame.EndOfMessage) return JsonDocument.Parse(buffer.AsMemory(0, size));
-        }
+        return await WorkshopBinaryFrame.ReadAsync(socket, token);
     }
 
     private static async Task<string?> AcceptRequestAsync(NetworkStream stream, CancellationToken token, string? accessToken)
