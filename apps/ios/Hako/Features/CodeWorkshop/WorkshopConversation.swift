@@ -69,6 +69,8 @@ import Combine
     private var readingLatest = false
     private var latestCompletionID: String?
     private var lastVerifiedAt: Date?
+    private var historyCursorVerified = false
+    var networkVisible = false
     private var catalogHint: WorkshopSession?
     private var needsHistoryRefresh = false
     private var cacheLoad: Task<WorkshopTranscript?, Never>?
@@ -328,18 +330,19 @@ import Combine
             if !more { historyGeneration = result.generation }
             let newestOperation = result.operationId
             let newestCompletion = result.completionId
-            let newestArtifacts = result.artifacts
+            var newestArtifacts = result.artifacts
             let newestCursor = result.nextCursor
             var page = result.entries
             var pages = 1
             // Fill a gap since the cached tail, or skip older pages already in the cache.
             while let cursor = result.nextCursor, pages < 32,
                   more ? result.entries.allSatisfy({ existingIDs.contains($0.id) }) :
-                    (!existingIDs.isEmpty && !page.contains(where: { existingIDs.contains($0.id) })) {
+                    (page.isEmpty || (!existingIDs.isEmpty && !page.contains(where: { existingIDs.contains($0.id) }))) {
                 try Task.checkCancellation()
                 let next: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": threadId, "cursor": cursor])
                 guard scope == store.scope, next.threadId == threadId, next.nextCursor != cursor else { break }
                 result = next; page = next.entries + page; pages += 1
+                newestArtifacts += next.artifacts.filter { artifact in !newestArtifacts.contains(where: { $0.id == artifact.id }) }
             }
             guard scope == store.scope else { return false }
             entries = WorkshopTranscriptMerge.history(entries, page: page)
@@ -347,7 +350,8 @@ import Combine
                 historyCursor = result.nextCursor
             } else {
                 let overlaps = page.contains { existingIDs.contains($0.id) }
-                historyCursor = overlaps && previousCursor != nil ? previousCursor : newestCursor
+                historyCursor = historyCursorVerified && overlaps && previousCursor != nil ? previousCursor : newestCursor
+                historyCursorVerified = true
             }
             for artifact in newestArtifacts where !artifacts.contains(where: { $0.id == artifact.id }) { artifacts.append(artifact) }
             cachedAt = nil
@@ -428,7 +432,7 @@ import Combine
             case .idle:
                 if !busy && !synchronizing && !outbox.holdsOperation(operationId) {
                     idleChecks += 1
-                    if idleChecks >= 10 {
+                    if idleChecks >= (networkVisible ? 10 : 60) {
                         idleChecks = 0
                         if threadId != nil { await loadHistory() }
                         else { await loadModels() }
@@ -451,12 +455,24 @@ import Combine
             eventStream = nil
         }
         if operationId != nil { uncertain = true }
-        let loadedHistory = await loadHistory()
+        // Reconcile the known operation while history is in flight. A slow
+        // transcript must not delay a terminal state or an approval response.
+        let previousOperation = operationId
+        let history = Task { await self.loadHistory() }
+        defer { history.cancel() }
+        if let previousOperation {
+            do { try await poll(previousOperation) }
+            catch { readFailed(error) }
+        }
+        let loadedHistory = await withTaskCancellationHandler { await history.value } onCancel: { history.cancel() }
         guard !Task.isCancelled, scope == store.scope else { return }
         // A slow history read must not prevent the independent task-state
         // check from discovering that the computer has already finished.
         if let operationId {
-            do { try await poll(operationId); needsHistoryRefresh = !loadedHistory }
+            do {
+                if operationId != previousOperation { try await poll(operationId) }
+                needsHistoryRefresh = !loadedHistory
+            }
             catch { readFailed(error) }
         } else {
             needsHistoryRefresh = false

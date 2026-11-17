@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +42,22 @@ internal static class WorkshopReadChecks
         catch (IOException) { }
         if ((await reads.RunAsync("failure", () => Task.FromResult(result), default)).GetProperty("value").GetInt32() != 1)
             throw new Exception("A failed read remained cached");
+        var downloads = new WorkshopDownloadCache();
+        var loads = 0;
+        byte[] content = [1, 2, 3];
+        Task<byte[]> Load() { Interlocked.Increment(ref loads); return Task.FromResult(content); }
+        var snapshot = await downloads.ReadAsync("image", "", Load, default);
+        content = [4, 5, 6];
+        var chunks = await Task.WhenAll(System.Linq.Enumerable.Range(0, 16).Select(_ =>
+            downloads.ReadAsync("image", snapshot.Revision, Load, default)));
+        if (loads != 1 || System.Linq.Enumerable.Any(chunks, chunk => !chunk.Data.AsSpan().SequenceEqual(new byte[] { 1, 2, 3 })))
+            throw new Exception("Parallel chunks reread or mixed a modified file into an immutable download");
+        var updated = await downloads.ReadAsync("image", "", Load, default);
+        if (loads != 2 || updated.Revision == snapshot.Revision) throw new Exception("Reopening a download hid a new revision");
+        for (var index = 0; index < 5; index++) await downloads.ReadAsync("other-" + index, "", Load, default);
+        var beforeReload = loads;
+        await downloads.ReadAsync("image", updated.Revision, Load, default);
+        if (loads != beforeReload + 1) throw new Exception("Download cache did not evict old snapshots");
         Console.WriteLine("PASS: joined reads, independent cancellation, concurrent keys and failure eviction");
     }
 }

@@ -63,6 +63,7 @@ import UIKit
             }
         }
         synchronization.enter(owner, conversation: conversation != nil)
+        updateNetworkVisibility()
         visibilityChanges.send()
     }
 
@@ -85,6 +86,7 @@ import UIKit
             conversations[conversation.id]?.usedAt = .now
         }
         synchronization.leave(owner)
+        updateNetworkVisibility()
         visibilityChanges.send()
         guard !synchronization.hasVisibleOwners else { return }
         cleanup?.cancel()
@@ -176,6 +178,11 @@ import UIKit
         }
     }
 
+    private func updateNetworkVisibility() {
+        let foreground = visibility.foreground
+        for item in conversations.values { item.conversation.networkVisible = foreground.contains(item.conversation.id) }
+    }
+
     private func resetContext() {
         guard context != store.scope else { return }
         context = store.scope
@@ -192,7 +199,7 @@ import UIKit
             if store.authenticated { await store.refresh() } else { await store.restore() }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
-                await store.refresh()
+                await store.refresh(reconcile: false)
             }
         }
     }

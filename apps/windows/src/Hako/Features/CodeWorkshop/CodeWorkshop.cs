@@ -29,12 +29,14 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly SemaphoreSlim metadataGate = new(1, 1);
     private readonly WorkshopReads reads = new();
     private readonly WorkshopQueryLog queryLog;
-    private readonly Dictionary<string, (JsonElement Thread, long Saved)> historyPages = new();
+    private readonly Dictionary<string, (JsonElement Thread, JsonElement Turn, JsonElement Page, string Cursor, long Saved)> historyPages = new();
     private readonly CancellationTokenSource stopping = new();
     private CodexAppServer? metadata;
     private readonly Func<CancellationToken, Task<CodexAppServer>> startServer;
     private readonly Dictionary<string, WorkshopJob> jobs = new();
     private readonly Dictionary<string, WorkshopArtifact> artifacts = new();
+    private readonly Dictionary<string, string> artifactRoots = new();
+    private readonly WorkshopDownloadCache downloads = new();
     private readonly HashSet<string> changingArchive = new();
     private bool recovered;
 
@@ -231,50 +233,117 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         lock (gate) RecoverJobs();
         var id = ThreadId(parameters);
         var cursor = CodexJson.Text(parameters, "cursor");
-        var before = cursor.Length == 0 ? int.MaxValue : int.TryParse(cursor, out var parsed) && parsed >= 0 ? parsed : throw CodexJson.Invalid();
+        var position = cursor.Length == 0 ? new HistoryPosition(id, "", 0, "", [], "") : HistoryPosition.Parse(cursor, id);
         JsonElement thread = default;
-        // A page cursor refers to the snapshot already read for this thread.
-        // A fresh head read always goes back to Codex, even inside this window.
+        JsonElement turn = default;
+        JsonElement upstream = default;
         lock (gate)
             if (cursor.Length > 0 && historyPages.TryGetValue(id, out var cached) &&
-                Environment.TickCount64 - cached.Saved < 30_000) thread = cached.Thread;
+                Environment.TickCount64 - cached.Saved < 30_000)
+            {
+                thread = cached.Thread; turn = cached.Turn;
+                if (cached.Cursor == position.Cursor) upstream = cached.Page;
+            }
+        var itemsPage = upstream.ValueKind == JsonValueKind.Undefined
+            ? ReadAsync("thread/items/list", new { threadId = id, limit = 64, sortDirection = "desc",
+                cursor = position.Cursor.Length == 0 ? null : position.Cursor }, token) : Task.FromResult(upstream);
         if (thread.ValueKind == JsonValueKind.Undefined)
         {
-            thread = await ThreadAsync(id, true, token);
-            lock (gate)
-            {
-                if (!historyPages.ContainsKey(id) && historyPages.Count >= 4)
-                    historyPages.Remove(historyPages.MinBy(value => value.Value.Saved).Key);
-                historyPages[id] = (thread, Environment.TickCount64);
-            }
+            var metadata = ThreadAsync(id, false, token);
+            var latest = ReadAsync("thread/turns/list", new { threadId = id, limit = 1,
+                sortDirection = "desc", itemsView = "summary" }, token);
+            await Task.WhenAll(metadata, latest, itemsPage);
+            thread = await metadata;
+            turn = CodexJson.Items(CodexJson.Field(await latest, "data")).FirstOrDefault();
         }
+        upstream = await itemsPage;
         var cwd = CodexJson.Text(thread, "cwd");
-        var turns = CodexJson.Items(CodexJson.Field(thread, "turns")).ToArray();
+        var items = CodexJson.Items(CodexJson.Field(upstream, "data")).ToArray();
+        bool recover;
+        var latestTurnId = CodexJson.Text(turn, "id");
+        lock (gate) recover = jobs.Values.Any(job => job.ThreadId == id && job.State == "unknown" && job.TurnId == latestTurnId);
+        if (recover)
+        {
+            // Display summaries can omit the actual final reply. Recovery must
+            // use real items for the completion notification, just as it did
+            // before history became paginated. This extra search is recovery-only.
+            var actual = items.Where(entry => CodexJson.Text(entry, "turnId") == latestTurnId)
+                .Select(entry => CodexJson.Field(entry, "item")).ToArray();
+            string? replyCursor = null;
+            var seenReplies = new HashSet<string>();
+            while (!actual.Any(item => CodexJson.Text(item, "type") == "agentMessage"))
+            {
+                var replies = await ReadAsync("thread/items/list", new { threadId = id, turnId = latestTurnId, limit = 64,
+                    sortDirection = "desc", cursor = replyCursor }, token);
+                actual = CodexJson.Items(CodexJson.Field(replies, "data")).Select(entry => CodexJson.Field(entry, "item")).ToArray();
+                replyCursor = CodexJson.Text(replies, "nextCursor");
+                if (actual.Any(item => CodexJson.Text(item, "type") == "agentMessage") || replyCursor.Length == 0 || !seenReplies.Add(replyCursor)) break;
+            }
+            var recovered = new Dictionary<string, object?> { ["id"] = latestTurnId, ["status"] = CodexJson.Text(turn, "status"), ["items"] = actual.Reverse().ToArray() };
+            if (turn.TryGetProperty("error", out var error)) recovered["error"] = error;
+            turn = JsonSerializer.SerializeToElement(recovered, WorkshopProtocol.Json);
+        }
         lock (gate)
         {
             foreach (var job in jobs.Values.Where(job => job.ThreadId == id && job.State == "unknown"))
-                if (ReconcileTurn(job, turns)) { Persist(job); if (job.RootId is not null) AppendFollowup(job); }
+                if (ReconcileTurn(job, [turn])) { Persist(job); if (job.RootId is not null) AppendFollowup(job); }
         }
-        var items = turns
-            .SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items"))).ToArray();
-        foreach (var item in items) DiscoverItemArtifacts(id, cwd, item);
+        var nativeCursor = position.Cursor;
+        var offset = position.Offset;
+        var visited = new HashSet<string>();
+        async Task OlderPage()
+        {
+            var olderCursor = CodexJson.Text(upstream, "nextCursor");
+            if (olderCursor.Length == 0 || !visited.Add(olderCursor))
+                throw new WorkshopException("codex_history_cursor", "会话历史已变化，请重新刷新。");
+            nativeCursor = olderCursor;
+            upstream = await ReadAsync("thread/items/list", new { threadId = id, limit = 64, sortDirection = "desc", cursor = nativeCursor }, token);
+            items = CodexJson.Items(CodexJson.Field(upstream, "data")).ToArray();
+        }
+        if (position.Anchor.Length > 0)
+        {
+            // A fresh head read (or restart) can replace the cached source page.
+            // Locate its original first item before applying the local offset;
+            // newly appended items must not shift an existing history cursor.
+            int anchor;
+            while ((anchor = Array.FindIndex(items, item => HistoryAnchor(item) == position.Anchor)) < 0) await OlderPage();
+            offset += anchor;
+        }
+        while (offset >= items.Length && CodexJson.Text(upstream, "nextCursor").Length > 0)
+        {
+            offset -= items.Length;
+            await OlderPage();
+        }
+        if (offset > items.Length) throw CodexJson.Invalid();
+        lock (gate)
+        {
+            if (!historyPages.ContainsKey(id) && historyPages.Count >= 4)
+                historyPages.Remove(historyPages.MinBy(value => value.Value.Saved).Key);
+            historyPages[id] = (thread, turn, upstream, nativeCursor, Environment.TickCount64);
+        }
+        foreach (var item in items)
+        {
+            DiscoverItemArtifacts(id, cwd, CodexJson.Field(item, "item"));
+            RememberImageSources(id, CodexJson.Field(item, "item"));
+        }
         WorkshopJob[] sent;
         // Steer submits input to the existing turn without starting a new one.
         lock (gate) sent = jobs.Values.Where(job => job.ThreadId == id && (job.Submitted || job.State == "steered"))
-            .OrderBy(job => job.QueueOrder).ToArray();
-        var used = new HashSet<string>();
-        var events = turns.SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items"))
-            .Select(item => HistoryItem(item, CodexJson.Text(turn, "id"), sent, used))).OfType<WorkshopEvent>().ToArray();
-        var end = Math.Min(before, events.Length);
+            .OrderByDescending(job => job.QueueOrder).ToArray();
+        var used = position.Used.ToHashSet();
+        var currentTurn = position.Turn;
         var page = new List<WorkshopEvent>();
         var bytes = 0;
-        var start = end;
-        while (start > 0 && page.Count < 12)
+        while (offset < items.Length && page.Count < 12)
         {
-            var entry = events[start - 1];
+            var item = items[offset];
+            var itemTurn = CodexJson.Text(item, "turnId");
+            var nextUsed = itemTurn == currentTurn ? new HashSet<string>(used) : new HashSet<string>();
+            var entry = HistoryItem(CodexJson.Field(item, "item"), itemTurn, sent, nextUsed);
+            if (entry is null) { offset++; used = nextUsed; currentTurn = itemTurn; continue; }
             var size = JsonSerializer.SerializeToUtf8Bytes(entry, WorkshopProtocol.Json).Length;
             if (bytes + size > 38 * 1024 && page.Count > 0) break;
-            page.Insert(0, entry); bytes += size; start--;
+            page.Insert(0, entry); bytes += size; offset++; used = nextUsed; currentTurn = itemTurn;
         }
         WorkshopArtifact[] files;
         string? operationId;
@@ -284,12 +353,36 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             var latest = jobs.Values.Where(job => job.ThreadId == id).OrderByDescending(job => job.StartedAt).ThenByDescending(job => job.QueueOrder).FirstOrDefault();
             operationId = latest?.RootId ?? latest?.Id;
         }
-        var completionId = turns.Length == 0 ? null : SummarizeTurn(turns[^1]).CompletionId;
-        object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor = start > 0 ? start.ToString() : null, operationId, completionId,
+        var completionId = SummarizeTurn(turn).CompletionId;
+        var older = CodexJson.Text(upstream, "nextCursor");
+        var nextCursor = offset < items.Length ? new HistoryPosition(id, nativeCursor, offset, currentTurn, used.ToArray(), HistoryAnchor(items[0])).Encode() :
+            older.Length > 0 ? new HistoryPosition(id, older, 0, currentTurn, used.ToArray(), "").Encode() : null;
+        if (nextCursor == cursor) throw new WorkshopException("codex_history_cursor", "会话历史游标未前进，请重新刷新。");
+        object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor, operationId, completionId,
             model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort") };
         while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];
         return Page();
+    }
+
+    // Keep receipt matching across item-page boundaries, including identical
+    // Steers in the same turn. No cursor requires hydrating an entire transcript.
+    private static string HistoryAnchor(JsonElement item) => CodexJson.Text(item, "turnId") + "\n" + CodexJson.Text(CodexJson.Field(item, "item"), "id");
+    private sealed record HistoryPosition(string ThreadId, string Cursor, int Offset, string Turn, string[] Used, string Anchor)
+    {
+        public string Encode() => Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(this, WorkshopProtocol.Json));
+        public static HistoryPosition Parse(string value, string thread)
+        {
+            try
+            {
+                if (value.Length > 8192) throw new FormatException();
+                var position = JsonSerializer.Deserialize<HistoryPosition>(Convert.FromBase64String(value), WorkshopProtocol.Json);
+                if (position is null || position.ThreadId != thread || position.Cursor is null || position.Offset < 0 ||
+                    position.Turn is null || position.Anchor is null || position.Used is null || position.Used.Length > 128 || position.Used.Any(value => value is null)) throw new FormatException();
+                return position;
+            }
+            catch (Exception error) when (error is FormatException or JsonException) { throw CodexJson.Invalid(); }
+        }
     }
 
     internal static bool ReconcileTurn(WorkshopJob job, JsonElement[] turns)
@@ -396,7 +489,11 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             if (!SafePath(path, cwd) && !SafePath(path, visualizations)) return;
             if (!File.Exists(path)) return;
             var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(threadId + "\n" + path.ToUpperInvariant())))[..24].ToLowerInvariant();
-            lock (gate) artifacts[id] = new(id, Path.GetFileNameWithoutExtension(path), path, threadId);
+            lock (gate)
+            {
+                artifacts[id] = new(id, Path.GetFileNameWithoutExtension(path), path, threadId);
+                artifactRoots[id] = cwd;
+            }
         }
         catch (Exception e) when (e is IOException or ArgumentException or UnauthorizedAccessException) { }
     }
@@ -410,16 +507,25 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         lock (gate) artifacts.TryGetValue(id, out artifact);
         if (artifact is null)
         {
-            await HistoryAsync(JsonSerializer.SerializeToElement(new { threadId = thread }), token);
-            lock (gate) artifacts.TryGetValue(id, out artifact);
+            string? cursor = null;
+            var seen = new HashSet<string>();
+            do
+            {
+                var page = JsonSerializer.SerializeToElement(await HistoryAsync(JsonSerializer.SerializeToElement(new { threadId = thread, cursor }), token), WorkshopProtocol.Json);
+                lock (gate) artifacts.TryGetValue(id, out artifact);
+                cursor = CodexJson.Text(page, "nextCursor");
+            } while (artifact is null && cursor.Length > 0 && seen.Add(cursor));
         }
         if (artifact is null || artifact.ThreadId != thread) throw new WorkshopException("codex_artifact_missing", "原型文件已变化，请刷新会话。");
-        var cwd = CodexJson.Text(await ThreadAsync(thread, false, token), "cwd");
+        string cwd;
+        lock (gate) cwd = artifactRoots[id];
         if (!SafePath(artifact.Path, cwd) && !SafePath(artifact.Path, Path.Combine(home, "visualizations"))) throw CodexJson.Invalid();
         if (new FileInfo(artifact.Path).Length > 2 * 1024 * 1024) throw new WorkshopException("codex_artifact_large", "原型超过 2 MB，无法在手机中预览。");
-        var data = await File.ReadAllBytesAsync(artifact.Path, token);
-        var revision = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var expected = CodexJson.Text(parameters, "revision");
+        var snapshot = await downloads.ReadAsync("artifact:" + id, expected, () => File.ReadAllBytesAsync(artifact.Path, token), token);
+        var data = snapshot.Data;
+        if (data.Length > 2 * 1024 * 1024) throw new WorkshopException("codex_artifact_large", "原型超过 2 MB，无法在手机中预览。");
+        var revision = snapshot.Revision;
         if (expected.Length > 0 && expected != revision) throw new WorkshopException("codex_artifact_changed", "原型在加载期间已更新，请重新打开。");
         var offsetValue = CodexJson.Field(parameters, "offset");
         var offset = offsetValue.ValueKind == JsonValueKind.Undefined ? 0 : offsetValue.TryGetInt32(out var number) ? number : -1;

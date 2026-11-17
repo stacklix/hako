@@ -293,6 +293,11 @@ actor WorkshopSocketDecoder {
     }
 
     func send(_ method: String, computerID: String? = nil, params: [String: Any] = [:]) async throws -> Data {
+        // Uploads and downloads share a small transfer budget, leaving request
+        // slots available for messages, approvals and state reconciliation.
+        let transfer = method == "image.read" || method == "artifact.read"
+        if transfer { try await acquireBinarySlot() }
+        defer { if transfer { releaseBinarySlot() } }
         let id = UUID().uuidString
         var frame: [String: Any] = ["id": id, "kind": "call", "method": method, "params": params]
         frame["computerId"] = computerID
@@ -487,6 +492,48 @@ actor WorkshopSocketDecoder {
         // Explicit close, route changes and idle retirement do not mean a
         // previously verified computer went offline.
         if !(error is CancellationError) { onFailure?(error); onDisconnect?() }
+    }
+}
+
+@MainActor enum WorkshopDownloadTransfer {
+    static let chunkSize = 24 * 1024
+    static let window = 4
+
+    static func read(id: String, maximum: Int, cached: (Data, String)? = nil,
+                     fetch: @escaping (Int, String?) async throws -> WorkshopArtifactChunk) async throws -> (Data, String) {
+        let first = try await fetch(0, nil)
+        guard first.id == id, first.offset == 0, first.total >= 0, first.total <= maximum,
+              first.revision.count == 64 else { throw CocoaError(.coderReadCorrupt) }
+        let revision = first.revision
+        func bytes(_ chunk: WorkshopArtifactChunk, at offset: Int) throws -> Data {
+            guard chunk.id == id, chunk.offset == offset, chunk.total == first.total, chunk.revision == revision,
+                  let data = Data(base64Encoded: chunk.content), data.count == min(chunkSize, first.total - offset),
+                  chunk.nextOffset == offset + data.count else { throw CocoaError(.coderReadCorrupt) }
+            return data
+        }
+        var data = try bytes(first, at: 0)
+        if let cached, cached.1 == revision, cached.0.count == first.total { return cached }
+        data.reserveCapacity(first.total)
+        while data.count < first.total {
+            try Task.checkCancellation()
+            let start = data.count
+            let offsets = Array(stride(from: start, to: min(first.total, start + window * chunkSize), by: chunkSize))
+            let tasks = offsets.map { offset in Task { try await fetch(offset, revision) } }
+            do {
+                try await withTaskCancellationHandler {
+                    for (offset, task) in zip(offsets, tasks) {
+                        let chunk = try await task.value
+                        try Task.checkCancellation()
+                        data.append(try bytes(chunk, at: offset))
+                    }
+                } onCancel: { for task in tasks { task.cancel() } }
+            } catch {
+                for task in tasks { task.cancel() }
+                for task in tasks { _ = try? await task.value }
+                throw error
+            }
+        }
+        return (data, revision)
     }
 }
 

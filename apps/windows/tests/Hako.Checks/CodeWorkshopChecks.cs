@@ -136,10 +136,43 @@ internal static class CodeWorkshopChecks
                     parallel.HistoryAsync(Json(new { threadId = FixtureThread }), default)).WaitAsync(TimeSpan.FromSeconds(7));
                 var marker = Path.Combine(project, ".history-reads");
                 var before = File.ReadAllLines(marker).Length;
-                await parallel.HistoryAsync(Json(new { threadId = FixtureThread, cursor = "0" }), default);
+                try { await parallel.HistoryAsync(Json(new { threadId = FixtureThread, cursor = "invalid" }), default); throw new Exception("Malformed history cursor accepted"); }
+                catch (WorkshopException error) when (error.Code == "invalid_params") { }
                 Check(File.ReadAllLines(marker).Length == before, "History pagination reread the entire Codex thread");
                 await parallel.HistoryAsync(Json(new { threadId = FixtureThread }), default);
                 Check(File.ReadAllLines(marker).Length == before + 1, "A fresh history head reused stale page data");
+            }
+            await using (var paged = new CodeWorkshop(Path.Combine(directory, "paged-state"), code, directory,
+                token => Start(token, scenario: "paged-history")))
+            {
+                var previousReads = File.ReadAllLines(Path.Combine(project, ".history-item-reads")).Length;
+                string? cursor = null;
+                var entries = new List<string>();
+                string? restartCursor = null;
+                do
+                {
+                    var page = Result(await paged.HistoryAsync(Json(new { threadId = FixtureThread, cursor }), default));
+                    entries.InsertRange(0, page.GetProperty("entries").EnumerateArray().Select(entry => CodexJson.Text(entry, "id")));
+                    cursor = CodexJson.Text(page, "nextCursor");
+                    restartCursor ??= cursor;
+                } while (cursor.Length > 0);
+                Check(entries.SequenceEqual(Enumerable.Range(0, 75).Select(index => "history-" + index)),
+                    "Upstream turn/item pagination lost, duplicated or reordered history");
+                Check(File.ReadAllLines(Path.Combine(project, ".history-item-reads")).Length == previousReads + 2,
+                    "History pages reread upstream items or hydrated complete turns");
+                File.WriteAllText(Path.Combine(project, ".history-new-item"), "append");
+                await paged.HistoryAsync(Json(new { threadId = FixtureThread }), default);
+                var afterAppend = Result(await paged.HistoryAsync(Json(new { threadId = FixtureThread, cursor = restartCursor }), default));
+                Check(afterAppend.GetProperty("entries").EnumerateArray().Select(entry => CodexJson.Text(entry, "id"))
+                    .SequenceEqual(Enumerable.Range(51, 12).Select(index => "history-" + index)),
+                    "Refreshing the head shifted an existing item-page cursor");
+                await using var restarted = new CodeWorkshop(Path.Combine(directory, "paged-restart"), code, directory,
+                    token => Start(token, scenario: "paged-history"));
+                Check(Result(await restarted.HistoryAsync(Json(new { threadId = FixtureThread, cursor = restartCursor }), default))
+                    .GetProperty("entries").GetArrayLength() == 12, "An opaque history cursor did not survive restart");
+                try { await restarted.HistoryAsync(Json(new { threadId = "22222222-2222-4222-8222-222222222222", cursor = restartCursor }), default); throw new Exception("Cross-thread history cursor accepted"); }
+                catch (WorkshopException error) when (error.Code == "invalid_params") { }
+                File.Delete(Path.Combine(project, ".history-new-item"));
             }
             var catalogStorage = Path.Combine(directory, "catalog-state");
             Directory.CreateDirectory(catalogStorage);
@@ -154,6 +187,9 @@ internal static class CodeWorkshopChecks
             {
                 await using var listing = new CodeWorkshop(catalogStorage, code, Path.Combine(directory, ".codex"), token => Start(token));
                 var firstPage = Result(await listing.CatalogAsync(Json(new { }), default));
+                File.WriteAllText(Path.Combine(project, ".catalog-hidden"), "hide");
+                await listing.CatalogAsync(Json(new { }), default);
+                var scans = File.ReadAllLines(Path.Combine(project, ".catalog-scans")).Length;
                 Check(CodexJson.Text(firstPage.GetProperty("sessions")[0], "id") == FixtureThread &&
                     firstPage.GetProperty("sessions")[0].GetProperty("lastSentAt").GetInt64() == 2000,
                     "An accepted send from the fourth upstream page did not reach the first client page");
@@ -167,6 +203,13 @@ internal static class CodeWorkshopChecks
                     currentPage = Result(await listing.CatalogAsync(Json(new { cursor }), default));
                 } while (true);
                 Check(all.Count == 65 && all.Distinct().Count() == 65, "Global send-order pagination lost or duplicated a thread");
+                File.Delete(Path.Combine(project, ".catalog-hidden"));
+                Check(File.ReadAllLines(Path.Combine(project, ".catalog-scans")).Length == scans,
+                    "Client pagination rescanned the complete upstream catalog");
+                var summaryReads = File.ReadAllLines(Path.Combine(project, ".catalog-summary-count")).Length;
+                await listing.CatalogAsync(Json(new { }), default);
+                Check(File.ReadAllLines(Path.Combine(project, ".catalog-summary-count")).Length == summaryReads,
+                    "Unchanged settled threads repeated their summary queries on the next head refresh");
                 await listing.HistoryAsync(Json(new { threadId = FixtureThread }), default);
                 File.WriteAllText(Path.Combine(project, ".catalog-delayed"), "enabled");
                 var afterOpen = Result(await listing.CatalogAsync(Json(new { }), default));
@@ -182,7 +225,7 @@ internal static class CodeWorkshopChecks
             }
             finally
             {
-                foreach (var marker in new[] { ".catalog-pages", ".catalog-owner", ".catalog-delayed", ".catalog-outside" })
+                foreach (var marker in new[] { ".catalog-pages", ".catalog-owner", ".catalog-delayed", ".catalog-outside", ".catalog-hidden" })
                     File.Delete(Path.Combine(project, marker));
             }
             string applicationId;
@@ -618,6 +661,7 @@ internal static class CodeWorkshopChecks
                     "History refresh did not persist a verified outcome for the operation API");
                 var saved = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(recoveryStorage, recoveredJob.Id + ".json")), WorkshopProtocol.Json)!;
                 Check(saved.State == "completed" && saved.Message is null, "Reconciled outcome did not survive a restart");
+                Check(saved.ReplySummary.Length == 0, "Recovery used an earlier display summary instead of the actual final reply containing only a prototype reference");
             }
             Console.WriteLine("PASS: Codex stdio, durable queue/edit/cancel/Steer, stale revisions, automatic turn handoff, stop/resume, approval retries, images, models and artifacts");
         }
@@ -645,6 +689,7 @@ internal static class CodeWorkshopChecks
 
     public static async Task RunFixtureAsync()
     {
+        var scenario = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_SCENARIO");
         Check(Environment.GetEnvironmentVariable("CODEX_WINDOWS_REGISTERED_CORE") is null,
             "Codex CLI inherited the desktop app's registered Core identity");
         var project = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_PROJECT")!;
@@ -680,9 +725,11 @@ internal static class CodeWorkshopChecks
                     "The client did not opt into the structured input protocol");
             if (method == "thread/turns/list")
             {
+                if (File.Exists(Path.Combine(project, ".catalog-pages"))) File.AppendAllText(Path.Combine(project, ".catalog-summary-count"), "read\n");
                 var options = CodexJson.Field(input, "params");
-                Check(CodexJson.Text(options, "sortDirection") == "desc" && CodexJson.Text(options, "itemsView") == "summary" &&
-                    CodexJson.Field(options, "limit").GetInt32() == 1, "Catalog hydrated the full transcript instead of one latest-turn summary");
+                Check(CodexJson.Text(options, "sortDirection") == "desc" && CodexJson.Field(options, "limit").GetInt32() == 1,
+                    "Catalog/history must request only one upstream turn");
+                Check(CodexJson.Text(options, "itemsView") == "summary", "History hydrated a complete upstream turn");
             }
             if (method == "thread/list")
                 Check(CodexJson.Field(CodexJson.Field(input, "params"), "useStateDbOnly").ValueKind == JsonValueKind.True &&
@@ -691,9 +738,11 @@ internal static class CodeWorkshopChecks
                     "Catalog must read lightweight metadata in user-send order, independently of execution updates");
             if (method == "thread/list" && File.Exists(Path.Combine(project, ".catalog-pages")))
             {
+                File.AppendAllText(Path.Combine(project, ".catalog-scans"), "scan\n");
                 var cursor = CodexJson.Text(CodexJson.Field(input, "params"), "cursor");
                 var offset = cursor.Length == 0 ? 0 : int.Parse(cursor.Replace("native-", ""));
-                var data = Enumerable.Range(offset, Math.Min(20, 65 - offset)).Select(index => new {
+                var data = Enumerable.Range(offset, Math.Min(20, 65 - offset))
+                    .Where(index => index != 35 || !File.Exists(Path.Combine(project, ".catalog-hidden"))).Select(index => new {
                     id = index == 64 ? FixtureThread : new Guid(index + 1, 0, 0, new byte[8]).ToString("D"),
                     cwd = project, name = "Catalog fixture", preview = "Preview", updatedAt = 999999 - index,
                     recencyAt = index == 64 && File.Exists(Path.Combine(project, ".catalog-outside")) ? 10000 :
@@ -702,7 +751,7 @@ internal static class CodeWorkshopChecks
                 Write(new { id, result = new { data, nextCursor = offset + 20 < 65 ? "native-" + (offset + 20) : null } });
                 continue;
             }
-            if (method == "thread/items/list")
+            if (method == "thread/items/list" && CodexJson.Field(CodexJson.Field(input, "params"), "limit").GetInt32() != 64)
             {
                 Check(CodexJson.Text(CodexJson.Field(input, "params"), "sortDirection") == "desc", "Latest user reads must scan backwards");
                 var cursor = CodexJson.Text(CodexJson.Field(input, "params"), "cursor");
@@ -775,7 +824,6 @@ internal static class CodeWorkshopChecks
             }
             if (method == "thread/resume" && Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_OCCUPIED") == "1")
             { Write(new { id, error = new { code = -32600, message = "thread-store conflict: already has an active writer" } }); continue; }
-            var scenario = Environment.GetEnvironmentVariable("HAKO_CODEX_TEST_SCENARIO");
             if (scenario == "concurrent-reads" && method == "model/list" && waitingModel is null)
             { waitingModel = id.Clone(); File.WriteAllText(Path.Combine(project, ".model-waiting"), "waiting"); continue; }
             if (scenario == "concurrent-reads" && method == "thread/read")
@@ -801,11 +849,24 @@ internal static class CodeWorkshopChecks
                 }
             historyItems.Add(new { id = "generated-fixture", type = "imageGeneration", status = "completed", savedPath = Path.Combine(project, "generated-fixture.png") });
             historyItems.Add(new { id = "history", type = "agentMessage", text = "visualize" + JsonSerializer.Serialize(new { path = Path.Combine(project, "prototype.html") }) + "" });
+            if (scenario == "paged-history")
+            {
+                historyItems = Enumerable.Range(0, File.Exists(Path.Combine(project, ".history-new-item")) ? 76 : 75)
+                    .Select(index => (object)new { id = "history-" + index, type = "agentMessage", text = "History " + index }).ToList();
+            }
+            var itemOptions = CodexJson.Field(input, "params");
+            var itemCursor = CodexJson.Text(itemOptions, "cursor");
+            var itemOffset = method == "thread/items/list" && itemCursor.Length > 0 ? int.Parse(itemCursor) : 0;
+            if (method == "thread/items/list") File.AppendAllText(Path.Combine(project, ".history-item-reads"), "read\n");
+            if (method == "thread/read") Check(CodexJson.Field(itemOptions, "includeTurns").ValueKind == JsonValueKind.False,
+                "A history/image request hydrated the full thread");
             var thread = new
             {
                 id = FixtureThread, cwd = CodexJson.Text(CodexJson.Field(input, "params"), "threadId") == "22222222-2222-4222-8222-222222222222" ? Path.GetDirectoryName(project)! : project,
                 name = "Fixture", preview = "Fixture history", updatedAt = 1000, recencyAt = 1,
                 model = "fixture-session", reasoningEffort = "max",
+                fixtureRevision = string.Join("|", new[] { ".catalog-preview", ".summary-status" }.Select(name =>
+                    File.Exists(Path.Combine(project, name)) ? File.ReadAllText(Path.Combine(project, name)) : "")),
                 status = new { type = method == "thread/list" ? "active" : "idle", activeFlags = Array.Empty<string>() },
                 turns = new[] { new { id = turnId, status = "completed", items = historyItems.ToArray() } }
             };
@@ -813,8 +874,10 @@ internal static class CodeWorkshopChecks
             {
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
-                "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = new[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } } }, nextCursor = (string?)null },
+                "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = CodexJson.Text(CodexJson.Field(input, "params"), "itemsView") == "full" ? historyItems.ToArray() : new object[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } } }, nextCursor = (string?)null },
                 "thread/read" => new { thread },
+                "thread/items/list" => new { data = historyItems.AsEnumerable().Reverse().Skip(itemOffset).Take(64)
+                    .Select(item => new { turnId, item }).ToArray(), nextCursor = itemOffset + 64 < historyItems.Count ? (itemOffset + 64).ToString() : null },
                 "thread/resume" or "thread/start" => new { thread, model = "fixture-resolved", reasoningEffort = "medium" },
                 "turn/start" => new { turn = new { id = turnId, status = "inProgress" } },
                 "turn/steer" => new { turnId },

@@ -34,6 +34,8 @@ import CryptoKit
     @Published private(set) var connections: [String: WorkshopConnectionState] = [:]
     private var cursor: String?
     private var catalogRevision = UUID()
+    private var catalogChecks: [String: Date] = [:]
+    private var computersCheckedAt: Date?
     private var sessionUpdates = WorkshopSessionUpdates()
     private var activityChecks: [String: ContinuousClock.Instant] = [:]
     private let transcriptDisk = WorkshopTranscriptDisk()
@@ -42,6 +44,7 @@ import CryptoKit
     private let draftWriter = WorkshopDraftWriter()
     private var draftCache: [URL: WorkshopComposerDraft] = [:]
     private var diagnosticUpload: Task<Void, Never>?
+    private var artifactCache: [String: (Data, String)] = [:]
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
@@ -330,6 +333,8 @@ import CryptoKit
         context = scope
         sessionUpdates = WorkshopSessionUpdates()
         activityChecks.removeAll()
+        catalogChecks.removeAll(); computersCheckedAt = nil
+        artifactCache.removeAll()
         connections.removeAll()
         socket.resetIfContextChanged()
         preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
@@ -502,7 +507,7 @@ import CryptoKit
         }
     }
 
-    func refresh(more: Bool = false) async {
+    func refresh(more: Bool = false, reconcile: Bool = true) async {
         await prepareNetwork()
         guard authenticated, !loading, !loadingMore || more, archivingSessionID == nil,
               !more || hasMore else { return }
@@ -514,8 +519,13 @@ import CryptoKit
         defer { if scope == ticket, revision == catalogRevision { loading = false } }
         do {
             struct List: Decodable { let computers: [WorkshopAgent] }
-            let agentData = try await requests.send("computers.list")
-            let values = try JSONDecoder().decode(List.self, from: agentData).computers
+            let checkComputers = !more && (reconcile || (computersCheckedAt.map { Date.now.timeIntervalSince($0) >= 10 } ?? true))
+            let values: [WorkshopAgent]
+            if checkComputers || agents.isEmpty {
+                let agentData = try await requests.send("computers.list")
+                values = try JSONDecoder().decode(List.self, from: agentData).computers
+                computersCheckedAt = .now
+            } else { values = agents }
             guard ticket == scope, revision == catalogRevision else { return }
             let previousAgent = selectedAgentID
             agents = values
@@ -528,6 +538,9 @@ import CryptoKit
             var params: [String: Any] = more ? cursor.map { ["cursor": $0] } ?? [:] : [:]
             if archived { params["archived"] = true }
             let previousSessions = sessions
+            let refreshKey = catalogKey(agent.id, archived: archived)
+            let reconcilePages = !more && (reconcile || (catalogChecks[refreshKey].map { Date.now.timeIntervalSince($0) >= 30 } ?? true))
+            let previousCursor = cursor
             let page: WorkshopCatalog = try await call(agent, "applications.list", params)
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             // Publish the newest page before slower reconciliation of older pages.
@@ -542,7 +555,7 @@ import CryptoKit
             var visited = Set<String>()
             // Refresh all previously loaded pages so externally archived/restored
             // threads cannot survive in a stale merged catalog.
-            while !more, freshSessions.count < loadedCount, let next = nextCursor, visited.insert(next).inserted {
+            while reconcilePages, freshSessions.count < loadedCount, let next = nextCursor, visited.insert(next).inserted {
                 var nextParams: [String: Any] = ["cursor": next]
                 if archived { nextParams["archived"] = true }
                 let older: WorkshopCatalog = try await call(agent, "applications.list", nextParams)
@@ -553,10 +566,11 @@ import CryptoKit
             }
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             applications = page.applications
-            sessions = WorkshopCatalog.merge(sessionUpdates.merging(freshSessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: more)
+            sessions = WorkshopCatalog.merge(sessionUpdates.merging(freshSessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: more || !reconcilePages)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
             if !archived { confirmSessions(freshSessions, agentId: agent.id) }
-            cursor = nextCursor
+            cursor = !more && !reconcilePages && loadedCount > page.sessions.count ? previousCursor : nextCursor
+            if reconcilePages { catalogChecks[refreshKey] = .now }
             cachedAt = nil
             let newSessions = page.sessions.filter { !preferences.seenSessions.contains($0.id) }
             if !more && !archived {
@@ -725,22 +739,13 @@ import CryptoKit
         var directory = cacheFile.deletingPathExtension().appendingPathExtension("images")
         let cached = directory.appendingPathComponent(key + ".image")
         if let data = try? Data(contentsOf: cached), !data.isEmpty, data.count <= 8 * 1024 * 1024 { return data }
-        var bytes = Data()
-        var revision: String?
-        var total: Int?
-        repeat {
-            try Task.checkCancellation()
-            var params: [String: Any] = ["threadId": threadId, "messageId": messageId, "index": index, "offset": bytes.count]
+        let (bytes, revision) = try await WorkshopDownloadTransfer.read(id: messageId, maximum: 8 * 1024 * 1024) { offset, revision in
+            var params: [String: Any] = ["threadId": threadId, "messageId": messageId, "index": index, "offset": offset]
             params["revision"] = revision
-            let chunk: WorkshopArtifactChunk = try await call(agent, "image.read", params)
-            guard chunk.id == messageId, chunk.offset == bytes.count, chunk.total > 0, chunk.total <= 8 * 1024 * 1024,
-                  total == nil || total == chunk.total, revision == nil || revision == chunk.revision,
-                  let decoded = Data(base64Encoded: chunk.content), !decoded.isEmpty,
-                  chunk.nextOffset == bytes.count + decoded.count, chunk.nextOffset <= chunk.total else { throw CocoaError(.coderReadCorrupt) }
-            revision = chunk.revision; total = chunk.total; bytes.append(decoded)
-        } while bytes.count < (total ?? 0)
+            return try await self.call(agent, "image.read", params)
+        }
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
-        guard hash == revision else { throw CocoaError(.coderReadCorrupt) }
+        guard !bytes.isEmpty, hash == revision else { throw CocoaError(.coderReadCorrupt) }
         guard ticket == scope else { throw CancellationError() }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         #if os(iOS)
@@ -863,21 +868,18 @@ import CryptoKit
     }
 
     func artifact(_ artifact: WorkshopArtifact, agent: WorkshopAgent) async throws -> String {
-        var bytes = Data()
-        var revision: String?
-        var total: Int?
-        repeat {
-            var params: [String: Any] = ["threadId": artifact.threadId, "artifactId": artifact.id, "offset": bytes.count]
+        let ticket = scope
+        let key = agent.id + ":" + artifact.threadId + ":" + artifact.id
+        let (bytes, revision) = try await WorkshopDownloadTransfer.read(id: artifact.id, maximum: 2 * 1024 * 1024, cached: artifactCache[key]) { offset, revision in
+            var params: [String: Any] = ["threadId": artifact.threadId, "artifactId": artifact.id, "offset": offset]
             params["revision"] = revision
-            let chunk: WorkshopArtifactChunk = try await call(agent, "artifact.read", params)
-            guard chunk.id == artifact.id, chunk.offset == bytes.count, chunk.total <= 2 * 1024 * 1024,
-                  chunk.total >= 0, total == nil || total == chunk.total, revision == nil || revision == chunk.revision,
-                  let decoded = Data(base64Encoded: chunk.content), chunk.nextOffset == bytes.count + decoded.count,
-                  chunk.nextOffset <= chunk.total, !decoded.isEmpty || chunk.total == 0 else { throw CocoaError(.coderReadCorrupt) }
-            revision = chunk.revision; total = chunk.total; bytes.append(decoded)
-        } while bytes.count < (total ?? 0)
+            return try await self.call(agent, "artifact.read", params)
+        }
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         guard hash == revision, let html = String(data: bytes, encoding: .utf8) else { throw CocoaError(.coderReadCorrupt) }
+        guard scope == ticket else { throw CancellationError() }
+        if artifactCache.count >= 4, artifactCache[key] == nil, let oldest = artifactCache.keys.first { artifactCache[oldest] = nil }
+        artifactCache[key] = (bytes, revision)
         return html
     }
 }

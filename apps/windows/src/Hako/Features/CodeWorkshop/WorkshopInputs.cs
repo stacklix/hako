@@ -19,6 +19,22 @@ internal sealed partial class CodeWorkshop
 {
     internal const int MaximumReadImageBytes = 8 * 1024 * 1024;
     private readonly Dictionary<string, string> messageImageSources = new();
+    private void RememberImageSources(string thread, JsonElement item)
+    {
+        var id = CodexJson.Text(item, "id");
+        var sources = CodexJson.Text(item, "type") == "imageGeneration"
+            ? CodexJson.Text(item, "status") == "completed" ? new[] { CodexJson.Text(item, "savedPath") } : []
+            : CodexJson.Text(item, "type") == "userMessage" ? CodexJson.Items(CodexJson.Field(item, "content"))
+                .Where(value => CodexJson.Text(value, "type") is "localImage" or "image")
+                .Select(value => CodexJson.Text(value, "type") == "localImage" ? CodexJson.Text(value, "path") : CodexJson.Text(value, "url")).Take(3).ToArray() : [];
+        lock (gate)
+            for (var index = 0; index < sources.Length; index++)
+            {
+                if (sources[index].Length == 0) continue;
+                if (messageImageSources.Count >= 32) messageImageSources.Remove(messageImageSources.Keys.First());
+                messageImageSources[thread + "\n" + id + "\n" + index] = sources[index];
+            }
+    }
     public async Task<object?> ImageAsync(JsonElement parameters, CancellationToken token)
     {
         CodexJson.Keys(parameters, "threadId", "messageId", "index", "offset", "revision");
@@ -39,10 +55,17 @@ internal sealed partial class CodeWorkshop
         }
         if (source is null)
         {
-            var thread = await ThreadAsync(threadId, true, token);
-            var item = CodexJson.Items(CodexJson.Field(thread, "turns"))
-                .SelectMany(turn => CodexJson.Items(CodexJson.Field(turn, "items")))
-                .FirstOrDefault(item => CodexJson.Text(item, "type") is "userMessage" or "imageGeneration" && CodexJson.Text(item, "id") == messageId);
+            await ThreadAsync(threadId, false, token);
+            JsonElement item = default;
+            string? cursor = null;
+            var visited = new HashSet<string>();
+            do
+            {
+                var page = await ReadAsync("thread/items/list", new { threadId, limit = 32, sortDirection = "desc", cursor }, token);
+                item = CodexJson.Items(CodexJson.Field(page, "data")).Select(entry => CodexJson.Field(entry, "item"))
+                    .FirstOrDefault(value => CodexJson.Text(value, "type") is "userMessage" or "imageGeneration" && CodexJson.Text(value, "id") == messageId);
+                cursor = CodexJson.Text(page, "nextCursor");
+            } while (item.ValueKind == JsonValueKind.Undefined && cursor.Length > 0 && visited.Add(cursor));
             if (CodexJson.Text(item, "type") == "imageGeneration")
             {
                 if (imageIndex != 0 || CodexJson.Text(item, "status") != "completed")
@@ -63,25 +86,31 @@ internal sealed partial class CodeWorkshop
             if (messageImageSources.Count >= 32) messageImageSources.Remove(messageImageSources.Keys.First());
             messageImageSources[cacheKey] = source;
         }
-        byte[] data;
-        if (source.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
-        {
-            var comma = source.IndexOf(',');
-            if (comma < 0 || !source[..comma].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || source.Length > (MaximumReadImageBytes + 2) / 3 * 4 + 256)
-                throw CodexJson.Invalid();
-            try { data = Convert.FromBase64String(source[(comma + 1)..]); }
-            catch (FormatException) { throw CodexJson.Invalid(); }
-        }
-        else
-        {
-            // Only paths taken from the authorized thread or its saved upload are read.
-            if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || new FileInfo(source).Length > MaximumReadImageBytes)
-                throw new WorkshopException("codex_image_missing", "图片不在电脑上，或超过 8 MB。");
-            data = await File.ReadAllBytesAsync(source, token);
-        }
-        if (data.Length == 0 || data.Length > MaximumReadImageBytes || offset > data.Length) throw CodexJson.Invalid();
-        var revision = Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
         var expected = CodexJson.Text(parameters, "revision");
+        var snapshot = await downloads.ReadAsync("image:" + cacheKey, expected, async () =>
+        {
+            byte[] data;
+            if (source.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+            {
+                var comma = source.IndexOf(',');
+                if (comma < 0 || !source[..comma].EndsWith(";base64", StringComparison.OrdinalIgnoreCase) || source.Length > (MaximumReadImageBytes + 2) / 3 * 4 + 256)
+                    throw CodexJson.Invalid();
+                try { data = Convert.FromBase64String(source[(comma + 1)..]); }
+                catch (FormatException) { throw CodexJson.Invalid(); }
+            }
+            else
+            {
+                // Only paths taken from the authorized thread or its saved upload are read.
+                if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || new FileInfo(source).Length > MaximumReadImageBytes)
+                    throw new WorkshopException("codex_image_missing", "图片不在电脑上，或超过 8 MB。");
+                data = await File.ReadAllBytesAsync(source, token);
+            }
+            if (data.Length == 0 || data.Length > MaximumReadImageBytes) throw CodexJson.Invalid();
+            return data;
+        }, token);
+        var data = snapshot.Data;
+        if (offset > data.Length) throw CodexJson.Invalid();
+        var revision = snapshot.Revision;
         if (expected.Length > 0 && expected != revision)
             throw new WorkshopException("codex_image_changed", "图片已更新，请重新打开。");
         var count = Math.Min(24 * 1024, data.Length - offset);

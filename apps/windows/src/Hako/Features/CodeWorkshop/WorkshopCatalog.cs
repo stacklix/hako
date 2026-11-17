@@ -13,8 +13,27 @@ internal sealed partial class CodeWorkshop
     {
         public string Id => CodexJson.Text(Thread, "id");
     }
-    private sealed record CatalogPosition(long LastSentAt, string Id, bool Archived);
+    private sealed record CatalogPosition(long LastSentAt, string Id, bool Archived, string Snapshot);
     private readonly Dictionary<string, (long Recency, long SendOrder, ThreadSummary Summary)> catalogUsers = new();
+    private sealed record CatalogSnapshot(string Id, bool Archived, List<WorkshopApplication> Applications, CatalogRow[] Rows, long Saved);
+    private readonly Dictionary<string, CatalogSnapshot> catalogPages = new();
+    private readonly Dictionary<string, (string Revision, long Saved, ThreadSummary Summary)> catalogSummaries = new();
+
+    private async Task<ThreadSummary> CatalogSummaryAsync(CatalogRow row, CancellationToken token)
+    {
+        var revision = row.Thread.GetRawText();
+        lock (gate)
+            if (catalogSummaries.TryGetValue(row.Id, out var cached) && cached.Revision == revision &&
+                Environment.TickCount64 - cached.Saved < 30_000) return cached.Summary;
+        var summary = await LatestSummaryAsync(row.Id, token);
+        // Recent metadata uses second-resolution timestamps. Wait for them to
+        // settle, and never cache an active turn that can change between reads.
+        var updated = CodexJson.Field(row.Thread, "updatedAt").GetInt64();
+        if (summary.State is not ("running" or "waiting" or "starting") &&
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds() - updated > 2)
+            lock (gate) catalogSummaries[row.Id] = (revision, Environment.TickCount64, summary);
+        return summary;
+    }
 
     // QueueOrder is assigned when the computer accepts a send and remains
     // unchanged when that queued send starts, completes, or is read again.
@@ -66,7 +85,7 @@ internal sealed partial class CodeWorkshop
         return result;
     }
 
-    internal static (CatalogRow[] Rows, string? NextCursor) CatalogPage(IEnumerable<CatalogRow> rows, string cursor, bool archived)
+    private static CatalogPosition? CatalogCursor(string cursor, bool archived)
     {
         CatalogPosition? position = null;
         if (cursor.Length > 0)
@@ -75,17 +94,23 @@ internal sealed partial class CodeWorkshop
             {
                 if (cursor.Length > 512) throw new FormatException();
                 position = JsonSerializer.Deserialize<CatalogPosition>(Convert.FromBase64String(cursor), WorkshopProtocol.Json);
-                if (position is null || position.Archived != archived || position.LastSentAt < 0 || !Guid.TryParse(position.Id, out _))
+                if (position is null || position.Archived != archived || position.Snapshot is null || position.LastSentAt < 0 || !Guid.TryParse(position.Id, out _))
                     throw new FormatException();
             }
             catch (Exception error) when (error is FormatException or JsonException) { throw CodexJson.Invalid(); }
         }
+        return position;
+    }
+
+    internal static (CatalogRow[] Rows, string? NextCursor) CatalogPage(IEnumerable<CatalogRow> rows, string cursor, bool archived, string snapshot = "")
+    {
+        var position = CatalogCursor(cursor, archived);
         var page = rows.Where(row => position is null || row.LastSentAt < position.LastSentAt ||
                 row.LastSentAt == position.LastSentAt && StringComparer.Ordinal.Compare(row.Id, position.Id) > 0)
             .OrderByDescending(row => row.LastSentAt).ThenBy(row => row.Id, StringComparer.Ordinal).Take(31).ToArray();
         var selected = page.Take(30).ToArray();
         var next = page.Length > 30 ? Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(
-            new CatalogPosition(selected[^1].LastSentAt, selected[^1].Id, archived), WorkshopProtocol.Json)) : null;
+            new CatalogPosition(selected[^1].LastSentAt, selected[^1].Id, archived, snapshot), WorkshopProtocol.Json)) : null;
         return (selected, next);
     }
 
@@ -95,6 +120,13 @@ internal sealed partial class CodeWorkshop
         var filter = CodexJson.Field(parameters, "archived");
         if (filter.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.True or JsonValueKind.False)) throw CodexJson.Invalid();
         var archived = filter.ValueKind == JsonValueKind.True;
+        var cursor = CodexJson.Text(parameters, "cursor");
+        var position = CatalogCursor(cursor, archived);
+        CatalogSnapshot? snapshot = null;
+        lock (gate)
+            if (position is not null && catalogPages.TryGetValue(position.Snapshot, out var saved) && saved.Archived == archived &&
+                Environment.TickCount64 - saved.Saved < 30_000) snapshot = saved;
+        if (snapshot is not null) return await CatalogResultAsync(snapshot, cursor, archived, token);
         var applications = DiscoverApplications();
         var candidates = new Dictionary<string, (JsonElement Thread, WorkshopApplication Application)>();
         string? next = null;
@@ -124,25 +156,40 @@ internal sealed partial class CodeWorkshop
             sent = jobs.Values.Where(job => job.ThreadId is not null).GroupBy(job => job.ThreadId!)
                 .ToDictionary(group => group.Key, group => group.ToArray());
         }
-        var rows = new List<CatalogRow>();
-        foreach (var (id, candidate) in candidates)
+        var rows = new System.Collections.Concurrent.ConcurrentBag<CatalogRow>();
+        await Parallel.ForEachAsync(candidates, new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token }, async (entry, cancellation) =>
         {
+            var (id, candidate) = entry;
             ThreadSummary? summary = null;
             var accepted = sent.GetValueOrDefault(id) ?? [];
             var recencyField = CodexJson.Field(candidate.Thread, "recencyAt");
             var recency = recencyField.ValueKind == JsonValueKind.Number ? recencyField.GetInt64() : 0;
             if (accepted.Length > 0 && recency > accepted.Select(AcceptedAt).Max())
-                summary = await CatalogUserAsync(id, recency, accepted.Max(job => job.QueueOrder), token);
+                summary = await CatalogUserAsync(id, recency, accepted.Max(job => job.QueueOrder), cancellation);
             rows.Add(new(candidate.Thread, candidate.Application, CatalogSendTime(candidate.Thread, summary, accepted)));
-        }
+        });
         lock (gate)
-            foreach (var id in catalogUsers.Keys.Where(id => !candidates.ContainsKey(id)).ToArray()) catalogUsers.Remove(id);
-        var selected = CatalogPage(rows, CodexJson.Text(parameters, "cursor"), archived);
-        var sessions = new List<WorkshopSession>();
-        foreach (var row in selected.Rows)
         {
-            if (applications.All(value => value.Id != row.Application.Id)) applications.Add(row.Application);
-            var summary = await LatestSummaryAsync(row.Id, token);
+            foreach (var id in catalogUsers.Keys.Where(id => !candidates.ContainsKey(id)).ToArray()) catalogUsers.Remove(id);
+            if (catalogSummaries.Count > 600) catalogSummaries.Clear();
+            foreach (var expired in catalogPages.Where(entry => Environment.TickCount64 - entry.Value.Saved >= 30_000).Select(entry => entry.Key).ToArray())
+                catalogPages.Remove(expired);
+            if (catalogPages.Count >= 16) catalogPages.Remove(catalogPages.MinBy(entry => entry.Value.Saved).Key);
+            snapshot = new(Guid.NewGuid().ToString("N"), archived, applications, rows.ToArray(), Environment.TickCount64);
+            catalogPages[snapshot.Id] = snapshot;
+        }
+        return await CatalogResultAsync(snapshot, cursor, archived, token);
+    }
+
+    private async Task<object> CatalogResultAsync(CatalogSnapshot snapshot, string cursor, bool archived, CancellationToken token)
+    {
+        var selected = CatalogPage(snapshot.Rows, cursor, archived, snapshot.Id);
+        var sessions = new WorkshopSession[selected.Rows.Length];
+        await Parallel.ForEachAsync(Enumerable.Range(0, selected.Rows.Length),
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token }, async (index, cancellation) =>
+        {
+            var row = selected.Rows[index];
+            var summary = await CatalogSummaryAsync(row, cancellation);
             WorkshopJob? operation;
             lock (gate)
             {
@@ -151,11 +198,12 @@ internal sealed partial class CodeWorkshop
             }
             var name = CodexJson.Text(row.Thread, "name");
             var preview = CodexJson.Text(row.Thread, "preview");
-            sessions.Add(new(row.Id, CodexJson.Clip(name.Length > 0 ? name : preview.Length > 0 ? preview : "未命名会话", 120),
+            sessions[index] = new(row.Id, CodexJson.Clip(name.Length > 0 ? name : preview.Length > 0 ? preview : "未命名会话", 120),
                 row.Application.Id, CodexJson.Text(row.Thread, "cwd"), summary.Preview,
                 CodexJson.Field(row.Thread, "updatedAt").GetInt64(), summary.State, operation?.RootId ?? operation?.Id,
-                summary.CompletionId, row.LastSentAt));
-        }
+                summary.CompletionId, row.LastSentAt);
+        });
+        var applications = snapshot.Applications.Concat(selected.Rows.Select(row => row.Application)).DistinctBy(value => value.Id).ToArray();
         return new { applications, sessions, nextCursor = selected.NextCursor };
     }
 }

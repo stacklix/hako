@@ -146,6 +146,7 @@ import FoundationNetworking
         try await restarted.value
         reconnecting.close()
         try await checkEventBatches(welcome: welcome)
+        try await checkDownloads()
         let imageID = "11111111-1111-4111-8111-111111111111"
         let image = Data(repeating: 123, count: 200_000)
         var initializations = 0, activeChunks = 0, maximumInFlight = 0
@@ -199,7 +200,7 @@ import FoundationNetworking
         let fair = WorkshopRequestSocket(context: { "account" }, open: { (fairTransport, welcome) })
         let images = (0..<4).map { _ in Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") } }
         while fairTransport.sent.count < 4 { await Task.yield() }
-        let fifth = Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") }
+        let fifth = Task { try await fair.send("image.read", computerID: "PC") }
         let sixth = Task { try await fair.sendBinary(Data([0, 1, 2]), computerID: "PC") }
         let ordinary = Task { try await fair.send("models.list", computerID: "PC") }
         while fairTransport.sent.count < 5 { await Task.yield() }
@@ -218,6 +219,53 @@ import FoundationNetworking
         print("PASS: binary upload window, resume offsets, raw JPEG bytes, monotonic progress and draining cancellation")
         print("PASS: shared calls/streams, per-view cancellation, timeout isolation, foreground lifetime and reconnect cursors")
         print("PASS: Workshop-only handshake, independent call schema, multiplexing and out-of-order reply identity")
+    }
+
+    static func checkDownloads() async throws {
+        let data = Data((0..<200_003).map { UInt8($0 % 251) })
+        let revision = String(repeating: "a", count: 64)
+        var active = 0, peak = 0, reads = 0
+        func chunk(_ offset: Int, revision: String, content: Data = data) -> WorkshopArtifactChunk {
+            let end = min(content.count, offset + WorkshopDownloadTransfer.chunkSize)
+            return WorkshopArtifactChunk(id: "file", name: "File", revision: revision, offset: offset, total: content.count,
+                content: content.subdata(in: offset..<end).base64EncodedString(), nextOffset: end)
+        }
+        let downloaded = try await WorkshopDownloadTransfer.read(id: "file", maximum: data.count) { offset, expected in
+            reads += 1; active += 1; peak = max(peak, active)
+            defer { active -= 1 }
+            precondition(offset == 0 ? expected == nil : expected == revision)
+            try await Task.sleep(for: .milliseconds(offset % 3 + 1))
+            return chunk(offset, revision: revision)
+        }
+        precondition(downloaded.0 == data && peak == 4 && active == 0 && reads == 9,
+            "Downloads must preserve bytes and offsets while keeping four chunks in flight")
+        reads = 0
+        let cached = try await WorkshopDownloadTransfer.read(id: "file", maximum: data.count, cached: downloaded) { offset, _ in
+            reads += 1; return chunk(offset, revision: revision)
+        }
+        precondition(cached.0 == data && reads == 1, "Reopening a cached revision must only validate its first chunk")
+        let empty = try await WorkshopDownloadTransfer.read(id: "file", maximum: 10) { _, _ in chunk(0, revision: revision, content: Data()) }
+        precondition(empty.0.isEmpty)
+        do {
+            _ = try await WorkshopDownloadTransfer.read(id: "file", maximum: data.count) { offset, _ in
+                chunk(offset, revision: offset == 0 ? revision : String(repeating: "b", count: 64))
+            }
+            preconditionFailure("A changed download revision was accepted")
+        } catch { }
+        let cancelled = Task {
+            try await WorkshopDownloadTransfer.read(id: "file", maximum: data.count) { offset, _ in
+                if offset > 0 {
+                    active += 1; defer { active -= 1 }
+                    try await Task.sleep(for: .seconds(10))
+                }
+                return chunk(offset, revision: revision)
+            }
+        }
+        while active < 4 { await Task.yield() }
+        cancelled.cancel()
+        do { _ = try await cancelled.value; preconditionFailure("Download cancellation was ignored") } catch { }
+        precondition(active == 0, "Download cancellation must drain all in-flight chunks")
+        print("PASS: four-chunk downloads, revision validation/cache, empty files and draining cancellation")
     }
 
     static func checkEventBatches(welcome: Data) async throws {
