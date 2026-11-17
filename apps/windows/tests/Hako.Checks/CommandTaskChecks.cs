@@ -40,7 +40,7 @@ internal static class CommandTaskChecks
         var id = Guid.NewGuid().ToString();
         var prefix = Path.Combine(project, id);
         var ready = prefix + ".ready"; var release = prefix + ".release"; var done = prefix + ".done";
-        var childFile = prefix + ".ps1"; var pidFile = prefix + ".pid";
+        var childFile = prefix + ".ps1"; var pidFile = prefix + ".pid"; var parentRelease = prefix + ".parent-release";
         static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
         File.WriteAllText(childFile, $"Set-Content -LiteralPath {Quote(ready)} -Value ready\nwhile (!(Test-Path -LiteralPath {Quote(release)})) {{ Start-Sleep -Milliseconds 50 }}\nSet-Content -LiteralPath {Quote(done)} -Value done\n");
         var childArguments = "-NoProfile -NonInteractive -File \"" + childFile + "\"";
@@ -48,6 +48,7 @@ internal static class CommandTaskChecks
             $"-ArgumentList {Quote(childArguments)} -RedirectStandardOutput {Quote(prefix + ".out")} -RedirectStandardError {Quote(prefix + ".err")}\n" +
             $"Set-Content -LiteralPath {Quote(pidFile)} -Value $child.Id\n" +
             $"while (!(Test-Path -LiteralPath {Quote(ready)})) {{ Start-Sleep -Milliseconds 50 }}\n" +
+            $"while (!(Test-Path -LiteralPath {Quote(parentRelease)})) {{ Start-Sleep -Milliseconds 50 }}\n" +
             (ending == "complete" ? "exit 0" : "Start-Sleep -Seconds 30");
         Process? child = null;
         try
@@ -57,6 +58,8 @@ internal static class CommandTaskChecks
                 command, timeoutSeconds = ending == "timeout" ? 5 : 20, allowBackgroundProcesses });
             await WaitForFile(ready);
             child = Process.GetProcessById(int.Parse(File.ReadAllText(pidFile).Trim()));
+            Check(!child.HasExited, "Child exited before the lifetime check began");
+            File.WriteAllText(parentRelease, "continue");
             if (ending == "cancel") await Call(tasks, "commands.stop", new { taskId = id });
             var page = await Finish(tasks, id);
             var state = CodexJson.Field(page, "task");
