@@ -96,7 +96,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 	if status != 200 || json.Unmarshal(data, &agents) != nil || len(agents.Agents) != 1 {
 		t.Fatal("Windows capabilities missing", status, string(data))
 	}
-	for _, name := range []string{"query.system.metrics", "query.codex.usage", "query.network.listeners",
+	for _, name := range []string{"query.system.metrics", "query.system.processes", "query.codex.usage", "query.network.listeners",
 		"admin.services.status", "admin.services.start", "action.network.http.check", "query.git.repositories"} {
 		if !slices.Contains(agents.Agents[0].Capabilities, agent.Capability{Name: name, Version: 1}) {
 			t.Fatalf("Windows capability %q version 1 missing: %s", name, data)
@@ -117,13 +117,19 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		t.Fatal("Windows metrics invalid")
 	}
 	t.Logf("Real Windows metrics received: CPU %.1f%%, memory %.1f%%", reply.Result.CPUUsagePercent, reply.Result.MemoryUsagePercent)
+	status, data = f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "query.system.processes", Version: 1, Params: json.RawMessage(`{}`)}, f.tokens.AccessToken)
+	var processes struct{ Result testProcessResources }
+	if status != 200 || json.Unmarshal(data, &processes) != nil || !processes.Result.valid() {
+		t.Fatal("Windows process resource query invalid", status, string(data))
+	}
 	live := openConsoleAgentSocket(t, f, "/ws/console/agents/live/PC")
 	if subscribed := readAgentFrame[consoleAgentReply](t, live); subscribed.Type != "subscribed" {
 		t.Fatalf("real Windows telemetry subscription: %+v", subscribed)
 	}
 	firstMetric := ""
 	seen := map[string]bool{}
-	for range 8 {
+	telemetryDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(telemetryDeadline) && len(seen) < 5 {
 		update := readAgentFrame[agent.TelemetryUpdate](t, live)
 		if update.Type != "update" || update.Version != 1 || (update.Error != nil &&
 			(update.Method != "admin.services.status" || update.Error.Code != "registry_missing")) {
@@ -142,14 +148,17 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 			}
 		case "query.codex.usage", "query.network.listeners", "admin.services.status":
 			seen[update.Method] = true
+		case "query.system.processes":
+			var processes testProcessResources
+			if json.Unmarshal(update.Result, &processes) != nil || !processes.valid() {
+				t.Fatal("real Windows live process resources invalid")
+			}
+			seen[update.Method] = true
 		default:
-			t.Fatalf("unexpected telemetry method %q", update.Method)
-		}
-		if len(seen) == 4 {
-			break
+			t.Logf("Additional Windows telemetry forwarded: %q", update.Method)
 		}
 	}
-	if len(seen) != 4 {
+	if len(seen) != 5 {
 		t.Fatalf("missing Windows telemetry: %v", seen)
 	}
 	live.Close()
@@ -264,14 +273,19 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		Result struct {
 			Data map[string]struct {
 				Version int
-				Result  testMetrics
+				Result  json.RawMessage
 				Error   *agent.Error
 			}
 		}
 		Capabilities []agent.Capability
 	}
-	if status != 200 || json.Unmarshal(data, &aggregate) != nil || !aggregate.Result.Data["query.system.metrics"].Result.valid() ||
-		len(aggregate.Result.Data) != 3 || aggregate.Result.Data["query.network.listeners"].Version != 1 || len(aggregate.Capabilities) != 0 {
+	var aggregateMetrics testMetrics
+	var aggregateProcesses testProcessResources
+	if status != 200 || json.Unmarshal(data, &aggregate) != nil ||
+		json.Unmarshal(aggregate.Result.Data["query.system.metrics"].Result, &aggregateMetrics) != nil || !aggregateMetrics.valid() ||
+		json.Unmarshal(aggregate.Result.Data["query.system.processes"].Result, &aggregateProcesses) != nil || !aggregateProcesses.valid() ||
+		len(aggregate.Result.Data) != 4 || aggregate.Result.Data["query.network.listeners"].Version != 1 ||
+		aggregate.Result.Data["query.system.processes"].Version != 1 || len(aggregate.Capabilities) != 0 {
 		t.Fatalf("real aggregate query failed: status=%d, result count=%d, capability count=%d",
 			status, len(aggregate.Result.Data), len(aggregate.Capabilities))
 	}
@@ -359,4 +373,45 @@ type testMetrics struct {
 func (m testMetrics) valid() bool {
 	_, err := time.Parse(time.RFC3339Nano, m.SampledAt)
 	return err == nil && m.CPUUsagePercent >= 0 && m.CPUUsagePercent <= 100 && m.MemoryUsagePercent >= 0 && m.MemoryUsagePercent <= 100 && m.MemoryTotalBytes > 0 && m.MemoryUsedBytes <= m.MemoryTotalBytes && m.SampleWindowMS >= 500 && m.SampleWindowMS <= 5000
+}
+
+type testProcessResource struct {
+	ProcessID       int      `json:"processId"`
+	ProcessName     string   `json:"processName"`
+	CPUUsagePercent *float64 `json:"cpuUsagePercent"`
+	MemoryBytes     uint64   `json:"memoryBytes"`
+}
+
+type testProcessResources struct {
+	CollectedAt    string                `json:"collectedAt"`
+	SampleWindowMS int                   `json:"sampleWindowMs"`
+	ProcessCount   int                   `json:"processCount"`
+	CPUTop         []testProcessResource `json:"cpuTop"`
+	MemoryTop      []testProcessResource `json:"memoryTop"`
+}
+
+func (p testProcessResources) valid() bool {
+	if _, err := time.Parse(time.RFC3339Nano, p.CollectedAt); err != nil || p.SampleWindowMS <= 0 ||
+		len(p.CPUTop) == 0 || len(p.CPUTop) > min(10, p.ProcessCount) ||
+		len(p.MemoryTop) == 0 || len(p.MemoryTop) > min(10, p.ProcessCount) {
+		return false
+	}
+	for ranking, rows := range [][]testProcessResource{p.CPUTop, p.MemoryTop} {
+		seen := map[int]bool{}
+		for index, row := range rows {
+			if row.ProcessID <= 0 || row.ProcessName == "" || seen[row.ProcessID] ||
+				(row.CPUUsagePercent != nil && (*row.CPUUsagePercent < 0 || *row.CPUUsagePercent > 100)) {
+				return false
+			}
+			seen[row.ProcessID] = true
+			if ranking == 0 {
+				if row.CPUUsagePercent == nil || index > 0 && *row.CPUUsagePercent > *rows[index-1].CPUUsagePercent {
+					return false
+				}
+			} else if index > 0 && row.MemoryBytes > rows[index-1].MemoryBytes {
+				return false
+			}
+		}
+	}
+	return true
 }
