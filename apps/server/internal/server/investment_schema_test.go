@@ -15,7 +15,7 @@ import (
 )
 
 func TestInvestmentDatabaseRejectsUnsupportedSchemaWithoutChangingRecords(t *testing.T) {
-	for _, version := range []int{2, 3, 4, 7} {
+	for _, version := range []int{2, 3, 4, 5, 7} {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
 			testInvestmentDatabaseRejectsSchema(t, version)
 		})
