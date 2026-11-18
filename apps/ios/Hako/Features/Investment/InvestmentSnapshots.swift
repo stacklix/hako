@@ -111,8 +111,9 @@ extension InvestmentBook {
     }
 
     func needsDailySnapshots(through day: Date) -> Bool {
+        if let snapshots = dailySnapshots, snapshots.through >= day, snapshots.hasUSD == true { return false }
         guard let earliest, earliest <= day else { return false }
-        return dailySnapshots.map { $0.through < day || $0.hasUSD != true } ?? true
+        return true
     }
 
     func snapshotStart(rebuild: Bool) -> Date? {
@@ -295,32 +296,5 @@ extension InvestmentBook {
             include((accounts + previous.accounts).flatMap(\.events).filter { $0.assetID == id }.map(\.day).min())
         }
         return first
-    }
-}
-
-
-extension InvestmentBook {
-    func inconsistentDailySnapshotStart(through end: Date) -> Date? {
-        guard let snapshots = dailySnapshots else { return nil }
-        let accountStarts = Dictionary(uniqueKeysWithValues: accounts.compactMap { account in
-            account.earliest.map { (account.id, $0) }
-        })
-        // Per-account history begins with that account's first ledger event.
-        // The same invariant check repairs out-of-range derived rows on refresh.
-        if let invalid = snapshots.accountValues?.flatMap({ id, history in
-            history.keys.filter { day in day <= end && (accountStarts[id].map { day < $0 } ?? true) }
-        }).min() { return invalid }
-        let dates = snapshots.values.keys.filter { $0 <= end && $0 <= snapshots.through }.sorted()
-        let current = portfolioHistory(on: dates, requiresDailyPrices: true)
-        for day in dates {
-            guard !Task.isCancelled else { return nil }
-            guard let saved = snapshots.values[day] else { continue }
-            guard let fresh = current[day] else { return day }
-            if InvestmentPrecision.rounded(saved.value) != InvestmentPrecision.rounded(fresh.value)
-                || InvestmentPrecision.rounded(saved.gain) != InvestmentPrecision.rounded(fresh.gain) { return day }
-            let usd = fresh.value == 0 ? Decimal.zero : rateToCNY(.usd, on: day, requiresDailyPrice: true).map { fresh.value / $0 }
-            if let usd, saved.valueUSD.map({ InvestmentPrecision.rounded($0) }) != InvestmentPrecision.rounded(usd) { return day }
-        }
-        return nil
     }
 }

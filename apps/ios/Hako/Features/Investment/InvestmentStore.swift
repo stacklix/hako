@@ -458,19 +458,15 @@ final class InvestmentStore: ObservableObject {
     private func scheduleDailySnapshots() {
         let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
         dailySnapshotTask?.cancel()
+        guard book.needsDailySnapshots(through: end) || serverState?.dirtyFrom != nil else {
+            dailySnapshotTask = nil
+            return
+        }
         dailySnapshotTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(300))
                 guard let self else { return }
-                if !self.book.needsDailySnapshots(through: end), self.serverState?.dirtyFrom == nil {
-                    let version = self.bookVersion
-                    let source = self.book
-                    let worker = Task.detached(priority: .utility) { source.inconsistentDailySnapshotStart(through: end) }
-                    let stale = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-                    try Task.checkCancellation()
-                    guard version == self.bookVersion, let stale else { return }
-                    try await self.write(self.book, dirtyFrom: self.records.day.string(from: stale), includeInputs: false, includeSnapshots: false)
-                }
+                guard self.book.needsDailySnapshots(through: end) || self.serverState?.dirtyFrom != nil else { return }
                 try await self.refreshSnapshotHistory(fullHistory: false)
                 _ = try await self.saveDailySnapshots()
             } catch is CancellationError {

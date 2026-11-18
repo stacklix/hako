@@ -79,6 +79,11 @@ struct InvestmentBookTests {
             let output = InvestmentPrecision.rounded(input, exchangeRate: fx)
             precondition(InvestmentPrecision.rounded(output, exchangeRate: fx) == output, "Rounding must be idempotent")
         }
+        precondition(InvestmentPrecision.display(330000) == "330000.00")
+        precondition(InvestmentPrecision.display(0) == "0.00")
+        precondition(InvestmentPrecision.display(Decimal(string: "0.00123456")!) == "0.0012")
+        precondition(InvestmentPrecision.display(Decimal(string: "1.005")!) == "1.0050")
+        precondition(InvestmentPrecision.display(7, exchangeRate: true) == "7.0000")
         let account = InvestmentAccount(name: "精度测试", currency: .cny, type: .securities)
         var book = InvestmentBook(accounts: [account])
         try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
@@ -87,8 +92,6 @@ struct InvestmentBookTests {
         let records = InvestmentServerRecords()
         let tables = try records.encode(book, revision: 1)
         let restored = try records.decode(.init(generation: 1, revision: 1, through: records.day.string(from: date(2)), tables: tables))
-        precondition(restored.inconsistentDailySnapshotStart(through: date(2)) == nil,
-                     "Stored rounded USD totals must not trigger perpetual snapshot rebuilding")
         precondition(!restored.inspectData(through: date(3)).issues.contains { $0.title == "快照与当前账本不一致" })
         var draft = book
         try draft.post(.init(day: date(2), kind: .adjustment, amount: Decimal(string: "12.3456")!), accountID: account.id)
@@ -1266,7 +1269,7 @@ struct InvestmentBookTests {
         let restored = try records.decode(.init(generation: 1, revision: 1,
             through: records.day.string(from: date(4)), tables: records.encode(book, revision: 1)))
         precondition(restored.dailySnapshots?.accountValues?[late.id]?.keys.min() == date(3))
-        precondition(restored.inconsistentDailySnapshotStart(through: date(4)) == nil)
+        precondition(!restored.inspectData(through: date(4)).issues.contains { $0.title == "账户快照超出记账范围" })
 
         // Out-of-range derived rows are detected, excluded from writes and repaired.
         var polluted = book
@@ -1275,9 +1278,10 @@ struct InvestmentBookTests {
         polluted.dailySnapshots?.accountValues?[empty.id] = [date(1): zero]
         let pollutedRows = try encodedAccounts(polluted)
         precondition(pollutedRows == originalRows)
-        precondition(polluted.inconsistentDailySnapshotStart(through: date(4)) == date(1))
-        polluted.invalidateDailySnapshots(from: date(1))
-        polluted.dailySnapshots = polluted.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(polluted.inspectData(through: date(4)).issues.contains {
+            $0.title == "账户快照超出记账范围" && $0.dates.contains(date(1))
+        })
+        polluted.dailySnapshots = polluted.makeDailySnapshots(through: date(4), rebuild: true)
         let repairedRows = try encodedAccounts(polluted)
         precondition(repairedRows == originalRows)
 
@@ -1295,6 +1299,11 @@ struct InvestmentBookTests {
         precondition(book.dailySnapshots?.accountValues?[late.id] == nil)
         let remainingRows = try encodedAccounts(book)
         precondition(remainingRows == earlyRows)
+        try book.post(.init(day: date(4), kind: .withdrawal, amount: -100), accountID: early.id)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(book.dailySnapshots?.accountValues?[early.id]?[date(4)]?.cash == 0,
+                     "A genuine zero balance after the account starts must keep its snapshot")
+        precondition(!book.inspectData(through: date(4)).issues.contains { $0.title == "账户快照超出记账范围" })
     }
 
     static func changingHistoricalEntriesInvalidatesOnlyTheAffectedDays() throws {
@@ -1652,10 +1661,15 @@ struct InvestmentBookTests {
         recreated.addQuotes((2...4).map { .init(day: date($0), price: 2, isDailyClose: true) }, assetID: nextID)
         recreated.dailySnapshots = recreated.makeDailySnapshots(through: date(4), rebuild: false)
         precondition(recreated.dailySnapshots?.values[date(2)]?.value == 280)
-        precondition(recreated.inconsistentDailySnapshotStart(through: date(4)) == nil)
+        precondition(!recreated.inspectData(through: date(4)).issues.contains { $0.title == "快照与当前账本不一致" })
         var stale = recreated
         stale.dailySnapshots?.values[date(2)] = .init(value: 70, gain: 0, valueUSD: 10)
-        precondition(stale.inconsistentDailySnapshotStart(through: date(4)) == date(2), "Loading stale persisted snapshots must trigger automatic repair")
+        precondition(stale.inspectData(through: date(4)).issues.contains {
+            $0.title == "快照与当前账本不一致" && $0.dates.contains(date(2))
+        }, "Manual data inspection must report stale history without rewriting it")
+        precondition(stale.dailySnapshots?.values[date(2)]?.value == 70)
+        stale.dailySnapshots = stale.makeDailySnapshots(through: date(4), rebuild: true)
+        precondition(stale.dailySnapshots?.values[date(2)]?.value == 280)
         let records = InvestmentServerRecords()
         let tables = try records.encode(recreated, revision: 3)
         let loaded = try records.decode(.init(generation: 3, revision: 3, through: records.day.string(from: date(4)), tables: tables))

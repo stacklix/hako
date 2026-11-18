@@ -6,7 +6,7 @@ enum InvestmentPrecision {
         var input = value < 0 ? -value : value, twoPlaces = Decimal(), integer = Decimal()
         NSDecimalRound(&twoPlaces, &input, 2, .down)
         NSDecimalRound(&integer, &input, 0, .down)
-        return twoPlaces == integer ? 4 : 2
+        return twoPlaces == integer && input != integer ? 4 : 2
     }
 
     static func rounded(_ value: Decimal, exchangeRate: Bool = false) -> Decimal {
@@ -1526,6 +1526,12 @@ extension InvestmentBook {
         for account in accounts {
             if !accountIDs.insert(account.id).inserted {
                 add(.error, "账户标识重复", location: account.name, detail: "存在相同标识的账户，请检查原始数据。", day: today)
+            }
+            let first = account.earliest
+            let snapshotDays = dailySnapshots?.accountValues?[account.id].map { Array($0.keys) } ?? []
+            for day in snapshotDays where first.map({ day < $0 }) ?? true {
+                add(.notice, "账户快照超出记账范围", location: account.name,
+                    detail: "存在早于账户开始日期或未记账账户的快照，请重新计算历史快照清理。", day: day)
             }
             for event in account.events {
                 let location = account.name + (asset(event.assetID).map { " · " + $0.displayName } ?? "")

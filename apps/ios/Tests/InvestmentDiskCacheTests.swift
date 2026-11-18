@@ -18,6 +18,8 @@ import Foundation
         precondition(rows[0].value == "7.1235")
         let snapshot = InvestmentCachedRow(table: "investment_daily_snapshots", fields: ["total_cny": "461884.88406188735462735462735462735462"], group: "全部投资账户")
         precondition(snapshot.value == "461884.88")
+        let whole = InvestmentCachedRow(table: "investment_account_daily_snapshots", fields: ["holdings_native": "330000"], group: "账户")
+        precondition(whole.value == "330000.00")
         precondition(snapshot.fields["total_cny"] == "461884.88406188735462735462735462735462", "Viewing cached data must not rewrite it")
         let small = InvestmentCachedRow(table: "investment_events", fields: ["quantity": "0.00123456", "name": "保留名称"], group: "账本")
         precondition(small.displayValue(for: "quantity") == "0.0012")
