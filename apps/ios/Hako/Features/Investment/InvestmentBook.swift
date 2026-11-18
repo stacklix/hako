@@ -1,5 +1,36 @@
 import Foundation
 
+enum InvestmentPrecision {
+    static func scale(for value: Decimal, exchangeRate: Bool = false) -> Int {
+        guard !exchangeRate else { return 4 }
+        var input = value < 0 ? -value : value, twoPlaces = Decimal(), integer = Decimal()
+        NSDecimalRound(&twoPlaces, &input, 2, .down)
+        NSDecimalRound(&integer, &input, 0, .down)
+        return twoPlaces == integer ? 4 : 2
+    }
+
+    static func rounded(_ value: Decimal, exchangeRate: Bool = false) -> Decimal {
+        var input = value, result = Decimal()
+        NSDecimalRound(&result, &input, scale(for: value, exchangeRate: exchangeRate), .plain)
+        return result
+    }
+
+    static func string(_ value: Decimal, exchangeRate: Bool = false) -> String {
+        NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate)).stringValue
+    }
+
+    static func display(_ value: Decimal, exchangeRate: Bool = false) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = false
+        let scale = scale(for: rounded(value, exchangeRate: exchangeRate), exchangeRate: exchangeRate)
+        formatter.minimumFractionDigits = scale
+        formatter.maximumFractionDigits = scale
+        return formatter.string(from: NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate))) ?? string(value, exchangeRate: exchangeRate)
+    }
+}
+
 enum InvestmentCurrency: String, Codable, CaseIterable, Identifiable {
     case cny = "CNY", hkd = "HKD", usd = "USD"
 
@@ -1583,7 +1614,9 @@ extension InvestmentBook {
                         add(.error, "缺少日终快照", location: "整个账本",
                             detail: "该日没有已保存的总资产快照。请处理估值或交易问题后，重新计算历史快照。", day: day)
                     } else if let saved, let fresh {
-                        if saved.value != fresh.value || saved.gain != fresh.gain || (usd != nil && saved.valueUSD != usd) {
+                        if InvestmentPrecision.rounded(saved.value) != InvestmentPrecision.rounded(fresh.value)
+                            || InvestmentPrecision.rounded(saved.gain) != InvestmentPrecision.rounded(fresh.gain)
+                            || (usd != nil && saved.valueUSD.map { InvestmentPrecision.rounded($0) } != usd.map { InvestmentPrecision.rounded($0) }) {
                             add(.error, "快照与当前账本不一致", location: "整个账本", detail: "请重新计算历史快照。", day: day)
                         }
                     }

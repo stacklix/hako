@@ -3,6 +3,7 @@ import Foundation
 @main
 struct InvestmentBookTests {
     static func main() throws {
+        try numericStoragePrecision()
         try ledgerAndDilutedCost()
         try firstPurchaseRequiresCash()
         try purchasesCanAutomaticallyFundCashShortfalls()
@@ -58,6 +59,42 @@ struct InvestmentBookTests {
         try deletesUnreferencedRegistrationsAndTheirQuotes()
         try deletionPreservesPlanReferences()
         print("Investment ledger checks passed")
+    }
+
+    static func numericStoragePrecision() throws {
+        let cases: [(String, String, Bool)] = [
+            ("461884.88406188735462735462735462735462", "461884.88", false),
+            ("460997.5774186740512075540221536266206", "460997.58", false),
+            ("7.123456789012345678", "7.1235", true),
+            ("0.00123456", "0.0012", false), ("1.00123456", "1.0012", false),
+            ("-1.00123456", "-1.0012", false), ("1.00496", "1.005", false),
+            ("1.00999", "1.01", false), ("9.99999", "10", false),
+            ("-12.345", "-12.35", false), ("0.00005", "0.0001", false),
+            ("-0.000049", "0", false), ("9007199254740993.0001", "9007199254740993.0001", false)
+        ]
+        for (raw, expected, fx) in cases {
+            let input = Decimal(string: raw)!
+            precondition(InvestmentPrecision.string(input, exchangeRate: fx) == expected, raw)
+            let output = InvestmentPrecision.rounded(input, exchangeRate: fx)
+            precondition(InvestmentPrecision.rounded(output, exchangeRate: fx) == output, "Rounding must be idempotent")
+        }
+        let account = InvestmentAccount(name: "精度测试", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: date(1), kind: .deposit, amount: 1000), accountID: account.id)
+        book.addExchangeRates([.init(day: date(1), price: Decimal(string: "7.1235")!, isDailyClose: true)], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(2), rebuild: true)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let restored = try records.decode(.init(generation: 1, revision: 1, through: records.day.string(from: date(2)), tables: tables))
+        precondition(restored.inconsistentDailySnapshotStart(through: date(2)) == nil,
+                     "Stored rounded USD totals must not trigger perpetual snapshot rebuilding")
+        precondition(!restored.inspectData(through: date(3)).issues.contains { $0.title == "快照与当前账本不一致" })
+        var draft = book
+        try draft.post(.init(day: date(2), kind: .adjustment, amount: Decimal(string: "12.3456")!), accountID: account.id)
+        draft.addExchangeRates([.init(day: date(2), price: Decimal(string: "7.123456")!, isDailyClose: true)], for: .usd)
+        let encoded = try records.encode(draft, revision: 1)
+        precondition(encoded["investment_events"]?.first(where: { $0["effective_date"] == records.day.string(from: date(2)) })?["amount"] == "12.35")
+        precondition(encoded["market_daily_fx"]?.last?["rate"] == "7.1235")
     }
 
     static func ledgerAndDilutedCost() throws {

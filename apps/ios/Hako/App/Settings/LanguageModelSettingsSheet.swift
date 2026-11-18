@@ -83,6 +83,7 @@ private struct LanguageModelProfileEditor: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     let original: LanguageModelProfile
     let existing: Bool
     @State private var draft: LanguageModelProfile
@@ -90,6 +91,7 @@ private struct LanguageModelProfileEditor: View {
     @State private var checks: [ConnectionCheck] = []
     @State private var error: String?
     @State private var confirmsClear = false
+    @State private var showsToken = false
 
     init(profile: LanguageModelProfile, existing: Bool) {
         self.existing = existing
@@ -173,7 +175,32 @@ private struct LanguageModelProfileEditor: View {
                     } else { Text("自定义接口使用服务商默认速度和推理参数。") }
                 }
                 Section {
-                    field("API Token") { SecureField("输入 API Token", text: $draft.configuration.token) }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("API Token").font(.subheadline).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { showsToken.toggle() } label: {
+                                Image(systemName: showsToken ? "eye" : "eye.slash")
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel(showsToken ? "隐藏 API Token" : "显示 API Token")
+                            .accessibilityValue(showsToken ? "已显示" : "已隐藏")
+                        }
+                        HakoSecureTextEditor(text: $draft.configuration.token, isSecure: !showsToken, label: "API Token")
+                            .frame(minHeight: 88, alignment: .topLeading)
+                            .privacySensitive()
+                            .overlay(alignment: .topLeading) {
+                                if draft.configuration.token.isEmpty {
+                                    Text("输入 API Token").font(.body.monospaced())
+                                        .foregroundStyle(.tertiary).padding(.top, 8)
+                                        .allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                            }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 } header: {
                     Text("访问凭据")
                 } footer: {
@@ -202,6 +229,7 @@ private struct LanguageModelProfileEditor: View {
             .onChange(of: draft.configuration) { checks = [] }
         }
         .hakoDeleteConfirmation(Text("删除这项模型配置？"), isPresented: $confirmsClear, disabled: testing, confirm: clear)
+        .onChange(of: scenePhase) { _, phase in if phase != .active { showsToken = false } }
         .alert("大模型配置", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }

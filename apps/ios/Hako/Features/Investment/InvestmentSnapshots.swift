@@ -301,9 +301,10 @@ extension InvestmentBook {
             guard !Task.isCancelled else { return nil }
             guard let saved = snapshots.values[day] else { continue }
             guard let fresh = current[day] else { return day }
-            if saved.value != fresh.value || saved.gain != fresh.gain { return day }
+            if InvestmentPrecision.rounded(saved.value) != InvestmentPrecision.rounded(fresh.value)
+                || InvestmentPrecision.rounded(saved.gain) != InvestmentPrecision.rounded(fresh.gain) { return day }
             let usd = fresh.value == 0 ? Decimal.zero : rateToCNY(.usd, on: day, requiresDailyPrice: true).map { fresh.value / $0 }
-            if let usd, saved.valueUSD != usd { return day }
+            if let usd, saved.valueUSD.map({ InvestmentPrecision.rounded($0) }) != InvestmentPrecision.rounded(usd) { return day }
         }
         return nil
     }

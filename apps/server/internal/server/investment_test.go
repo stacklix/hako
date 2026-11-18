@@ -32,7 +32,7 @@ func TestInsuranceWithdrawalsPreserveOptionalCashValue(t *testing.T) {
 		t.Fatalf("missing withdrawals: %+v", saved)
 	}
 	for _, event := range saved.Tables["investment_events"] {
-		if event["id"] == "first" && (event["amount"] != events[0]["amount"] || event["settled_amount"] != "") {
+		if event["id"] == "first" && (event["amount"] != "1000.12" || event["settled_amount"] != "") {
 			t.Fatalf("optional value or decimal precision changed: %+v", event)
 		}
 		if event["id"] == "second" && event["settled_amount"] != "0" {
@@ -91,7 +91,7 @@ func TestInvestmentGenericBalancesRoundTripAndRemovedContractsAreRejected(t *tes
 		t.Fatalf("rejected writes changed the saved book: %+v", saved)
 	}
 	for _, event := range saved.Tables["investment_events"] {
-		if event["id"] == "adjustment" && event["settled_amount"] != adjustment["settled_amount"] {
+		if event["id"] == "adjustment" && event["settled_amount"] != "10800.12" {
 			t.Fatalf("balance precision changed: %+v", event)
 		}
 	}
@@ -157,7 +157,7 @@ func TestInvestmentBookRequiresAuthAndCommitsAtomically(t *testing.T) {
 	}
 	got = read()
 	if got.Tables["investment_daily_snapshots"][0]["total_usd"] != "100" ||
-		got.Tables["market_daily_fx"][0]["rate"] != "7.123456789012345678" {
+		got.Tables["market_daily_fx"][0]["rate"] != "7.1235" {
 		t.Fatalf("round-trip = %+v", got)
 	}
 	event["amount"] = "1080"

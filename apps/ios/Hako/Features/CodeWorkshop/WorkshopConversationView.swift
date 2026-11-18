@@ -85,12 +85,8 @@ struct WorkshopConversationView: View {
                 if let operation = conversation.operation {
                     WorkshopOperationStatus(operation: operation)
                 }
-                if let error = conversation.error ?? conversation.connectionIssue {
+                if let error = conversation.error {
                     VStack(alignment: .leading, spacing: 10) {
-                        if conversation.error == nil {
-                            Label("会话数据尚未同步", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.footnote.weight(.medium))
-                        }
                         Text(error).font(.footnote).textSelection(.enabled)
                         Button(conversation.synchronizing ? "正在重新同步…" : "重新同步会话与任务状态") { Task { await conversation.checkResult() } }
                             .font(.footnote).disabled(conversation.busy || conversation.synchronizing)
@@ -183,12 +179,15 @@ struct WorkshopConversationView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if conversation.isArchived {
-                HStack {
-                    Label("此会话已归档", systemImage: "archivebox").font(.footnote).foregroundStyle(HakoStyle.muted)
-                    Spacer()
-                    Button("取消归档") { Task { await conversation.unarchive() } }.font(.subheadline)
-                        .disabled(conversation.busy)
-                }.padding(.horizontal, 20).frame(minHeight: 44).background(HakoStyle.background)
+                VStack(alignment: .leading, spacing: 8) {
+                    WorkshopSynchronizationHint(conversation: conversation)
+                    HStack {
+                        Label("此会话已归档", systemImage: "archivebox").font(.footnote).foregroundStyle(HakoStyle.muted)
+                        Spacer()
+                        Button("取消归档") { Task { await conversation.unarchive() } }.font(.subheadline)
+                            .disabled(conversation.busy)
+                    }.frame(minHeight: 44)
+                }.padding(.horizontal, 20).background(HakoStyle.background)
             } else {
                 WorkshopComposerView(conversation: conversation, input: conversation.composerInput,
                     selectedPhotos: $selectedPhotos, previewPhoto: $previewPhoto, loadingPhoto: loadingPhoto,
@@ -507,6 +506,37 @@ private struct WorkshopProjectConnectionLabel: View {
     private var label: some View { Label(name, systemImage: "folder") }
 }
 
+// Transient connection issues share the composer's lightweight status area.
+private struct WorkshopSynchronizationHint: View {
+    @ObservedObject var conversation: WorkshopConversation
+
+    var body: some View {
+        if let issue = conversation.connectionIssue, conversation.error == nil {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Label("会话暂未同步，自动重试中", systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(HakoStyle.muted)
+                        .accessibilityHint(issue)
+                    Spacer(minLength: 0)
+                    Button(conversation.synchronizing ? "同步中…" : "重试") {
+                        Task { await conversation.checkResult() }
+                    }
+                    .foregroundStyle(HakoStyle.link)
+                    .disabled(conversation.busy || conversation.synchronizing)
+                    .accessibilityLabel("重新同步会话与任务状态")
+                }
+                if conversation.canRetry {
+                    Button("重试原消息") { Task { await conversation.retryOriginal() } }
+                        .foregroundStyle(HakoStyle.link)
+                        .disabled(conversation.busy)
+                }
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+        }
+    }
+}
+
 // Observe only the editor's text here; keystrokes must not invalidate the transcript.
 private struct WorkshopComposerView: View {
     @ObservedObject var conversation: WorkshopConversation
@@ -530,9 +560,9 @@ private struct WorkshopComposerView: View {
             }
             if !conversation.photos.isEmpty { WorkshopComposerAttachments(conversation: conversation, previewPhoto: $previewPhoto) }
             if loadingPhoto { Text("正在处理图片…").font(.caption).foregroundStyle(HakoStyle.muted) }
-            if conversation.canCompose && conversation.awaitingSubmissionCheck {
-                Text(conversation.connectionIssue != nil ? "会话数据尚未同步，可先输入；恢复后可发送" :
-                    (conversation.restoringCache || conversation.synchronizing ? "正在获取最新消息与任务状态，可先输入" : "任务状态待确认，可先输入，确认后可发送"))
+            WorkshopSynchronizationHint(conversation: conversation)
+            if conversation.canCompose && conversation.awaitingSubmissionCheck && conversation.connectionIssue == nil {
+                Text(conversation.restoringCache || conversation.synchronizing ? "正在获取最新消息与任务状态，可先输入" : "任务状态待确认，可先输入，确认后可发送")
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }
             HStack(alignment: .bottom, spacing: 2) {

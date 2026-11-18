@@ -65,7 +65,9 @@ struct InvestmentServerRecords {
     private func decimal(_ value: String?) -> Decimal? {
         value.flatMap { Decimal(string: $0, locale: Locale(identifier: "en_US_POSIX")) }
     }
-    private func string(_ value: Decimal?) -> String? { value.map { NSDecimalNumber(decimal: $0).stringValue } }
+    private func string(_ value: Decimal?, exchangeRate: Bool = false) -> String? {
+        value.map { InvestmentPrecision.string($0, exchangeRate: exchangeRate) }
+    }
     private func currency(_ row: InvestmentServerRow, _ key: String) throws -> InvestmentCurrency {
         guard let value = InvestmentCurrency(rawValue: try required(row, key)) else { throw invalid(key) }
         return value
@@ -182,7 +184,7 @@ struct InvestmentServerRecords {
         for (currency, quotes) in book.fx.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
             for quote in quotes {
                 var row = ["rate_date": day.string(from: quote.day), "base_currency": currency.rawValue,
-                           "quote_currency": "CNY", "rate": string(quote.price)!, "source": quote.source ?? ""]
+                           "quote_currency": "CNY", "rate": string(quote.price, exchangeRate: true)!, "source": quote.source ?? ""]
                 row["is_final"] = quote.isDailyClose.map { $0 ? "1" : "0" }
                 result["market_daily_fx", default: []].append(row)
             }

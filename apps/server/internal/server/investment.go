@@ -113,6 +113,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000")
 	if err == nil {
+		err = upgradeInvestmentPrecision(db)
+	}
+	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
@@ -411,6 +414,7 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 				return errInvestmentInvalid
 			}
 		}
+		normalizeInvestmentNumbers(row)
 		if kind, exists := row["asset_type"]; exists && !slices.Contains([]string{
 			"stock", "etf", "fund", "future", "crypto", "generic", "insurance", "wealth", "deposit", "certificate",
 		}, kind) {

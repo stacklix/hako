@@ -65,7 +65,20 @@ struct InvestmentCachedRow: Identifiable, Hashable {
         bytes = (try? JSONEncoder().encode(fields).count) ?? 0
     }
     var day: String { fields["valuation_date"] ?? fields["snapshot_date"] ?? fields["rate_date"] ?? fields["session_date"] ?? fields["effective_date"] ?? "" }
-    var value: String { fields["rate"] ?? fields["price"] ?? fields["total_cny"] ?? fields["holdings_native"] ?? fields["amount"] ?? fields["name"] ?? "—" }
+    var value: String {
+        for field in ["rate", "price", "total_cny", "holdings_native", "amount", "name"] {
+            if fields[field] != nil { return displayValue(for: field) }
+        }
+        return "—"
+    }
+    func displayValue(for field: String) -> String {
+        guard let raw = fields[field] else { return "—" }
+        guard ["amount", "quantity", "unit_price", "fee", "settled_amount", "annual_rate", "margin_delta",
+               "price", "rate", "value", "contract_multiplier", "total_cny", "total_usd",
+               "cumulative_gain_cny", "daily_gain_cny", "cash_native", "holdings_native", "gain_native"].contains(field),
+              let value = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")) else { return raw }
+        return InvestmentPrecision.display(value, exchangeRate: field == "rate")
+    }
 }
 
 // All files contain confirmed server data only; no credentials or pending edits.

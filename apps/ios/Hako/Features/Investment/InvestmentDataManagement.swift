@@ -217,7 +217,7 @@ private struct InvestmentDataRecordPage: View {
             Section {
                 LabeledContent("数据位置", value: model.server ? "服务端" : "本机磁盘")
                 ForEach(row.fields.keys.sorted(), id: \.self) { key in
-                    LabeledContent(InvestmentAgentProposal.labels[key] ?? key, value: row.fields[key] ?? "—")
+                    LabeledContent(InvestmentAgentProposal.labels[key] ?? key, value: row.displayValue(for: key))
                         .textSelection(.enabled).investmentListRow()
                 }
             }
