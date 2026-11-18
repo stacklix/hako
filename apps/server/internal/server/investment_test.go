@@ -144,7 +144,7 @@ func TestInvestmentBookRequiresAuthAndCommitsAtomically(t *testing.T) {
 	}
 	write(first, 409)
 	write(investmentWrite{Generation: 1, Tables: investmentRows{"investment_accounts": {}}}, 400)
-	if got := read(); got.Generation != 1 || got.Tables["investment_events"][0]["amount"] != event["amount"] {
+	if got := read(); got.Generation != 1 || got.Tables["investment_events"][0]["amount"] != "9007199254740993" {
 		t.Fatalf("rollback or decimal precision lost: %+v", got)
 	}
 	snapshot := investmentRow{"snapshot_date": day, "status": "complete", "computed_revision": "0", "total_cny": "720", "total_usd": "100"}

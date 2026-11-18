@@ -6,7 +6,7 @@ enum InvestmentPrecision {
         var input = value < 0 ? -value : value, twoPlaces = Decimal(), integer = Decimal()
         NSDecimalRound(&twoPlaces, &input, 2, .down)
         NSDecimalRound(&integer, &input, 0, .down)
-        return twoPlaces == integer && input != integer ? 4 : 2
+        return integer == 0 && twoPlaces == 0 ? 4 : 2
     }
 
     static func rounded(_ value: Decimal, exchangeRate: Bool = false) -> Decimal {

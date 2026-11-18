@@ -6,7 +6,7 @@ import (
 )
 
 // Round decimal text directly: ledger values must never pass through float64.
-// A value whose first two fractional digits are zero keeps four places.
+// Values below 0.01 in absolute magnitude keep four places; others keep two.
 func investmentRoundedDecimal(value string, exchangeRate bool) string {
 	number, ok := new(big.Rat).SetString(value)
 	if !ok {
@@ -25,7 +25,7 @@ func investmentRoundedDecimal(value string, exchangeRate bool) string {
 	}
 	digits := 2
 	hundredths := new(big.Int).Quo(new(big.Int).Mul(number.Num(), big.NewInt(100)), number.Denom())
-	if exchangeRate || new(big.Int).Mod(hundredths, big.NewInt(100)).Sign() == 0 {
+	if exchangeRate || hundredths.Sign() == 0 {
 		digits = 4
 	}
 	units := round(100)

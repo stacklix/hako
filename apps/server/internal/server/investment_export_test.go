@@ -74,7 +74,7 @@ func TestInvestmentExportIncludesCSVAndExecutableSchema(t *testing.T) {
 	}
 	books, accounts, events := readCSV("investment_books"), readCSV("investment_accounts"), readCSV("investment_events")
 	if len(books) != 1 || len(accounts) != 1 || len(events) != 1 || accounts[0]["name"] != "测试,\"账户\"" ||
-		events[0]["amount"] != "9007199254740993.0001" || events[0]["book_id"] != books[0]["id"] {
+		events[0]["amount"] != "9007199254740993" || events[0]["book_id"] != books[0]["id"] {
 		t.Fatalf("unexpected exported rows: %v %v %v", books, accounts, events)
 	}
 	for _, table := range investmentTables {

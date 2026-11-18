@@ -67,11 +67,11 @@ struct InvestmentBookTests {
             ("461884.88406188735462735462735462735462", "461884.88", false),
             ("460997.5774186740512075540221536266206", "460997.58", false),
             ("7.123456789012345678", "7.1235", true),
-            ("0.00123456", "0.0012", false), ("1.00123456", "1.0012", false),
-            ("-1.00123456", "-1.0012", false), ("1.00496", "1.005", false),
+            ("0.00123456", "0.0012", false), ("1.00123456", "1", false),
+            ("-1.00123456", "-1", false), ("1.00496", "1", false),
             ("1.00999", "1.01", false), ("9.99999", "10", false),
             ("-12.345", "-12.35", false), ("0.00005", "0.0001", false),
-            ("-0.000049", "0", false), ("9007199254740993.0001", "9007199254740993.0001", false)
+            ("-0.000049", "0", false), ("9007199254740993.0001", "9007199254740993", false)
         ]
         for (raw, expected, fx) in cases {
             let input = Decimal(string: raw)!
@@ -80,9 +80,10 @@ struct InvestmentBookTests {
             precondition(InvestmentPrecision.rounded(output, exchangeRate: fx) == output, "Rounding must be idempotent")
         }
         precondition(InvestmentPrecision.display(330000) == "330000.00")
-        precondition(InvestmentPrecision.display(0) == "0.00")
+        precondition(InvestmentPrecision.display(0) == "0.0000")
         precondition(InvestmentPrecision.display(Decimal(string: "0.00123456")!) == "0.0012")
-        precondition(InvestmentPrecision.display(Decimal(string: "1.005")!) == "1.0050")
+        precondition(InvestmentPrecision.display(Decimal(string: "1.005")!) == "1.01")
+        precondition(InvestmentPrecision.display(Decimal(string: "123.0012")!) == "123.00")
         precondition(InvestmentPrecision.display(7, exchangeRate: true) == "7.0000")
         let account = InvestmentAccount(name: "精度测试", currency: .cny, type: .securities)
         var book = InvestmentBook(accounts: [account])
