@@ -41,21 +41,11 @@ struct InvestmentBalanceAccount: Codable, Identifiable {
 
 struct InvestmentBalanceLedger: Codable {
     private(set) var accounts: [InvestmentBalanceAccount] = []
-    fileprivate var investmentMonthEnds: [Date: Decimal]? = nil
-
-    init(accounts: [InvestmentBalanceAccount] = [], investmentMonthEnds: [Date: Decimal]? = nil) {
+    init(accounts: [InvestmentBalanceAccount] = []) {
         self.accounts = accounts
-        self.investmentMonthEnds = investmentMonthEnds
     }
 
     var earliest: Date? { accounts.compactMap { $0.records.first?.recordedAt }.min().map(InvestmentBook.day) }
-    var investmentSnapshots: [Date: Decimal] { investmentMonthEnds ?? [:] }
-
-    mutating func replaceInvestmentSnapshots(_ snapshots: [Date: Decimal]) { investmentMonthEnds = snapshots }
-
-    mutating func discardInvestmentSnapshots(from day: Date) {
-        investmentMonthEnds = investmentMonthEnds?.filter { $0.key < day }
-    }
 
     mutating func add(_ name: String, category: InvestmentBalanceCategory, amount: Decimal, at date: Date = .now) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -178,10 +168,15 @@ struct InvestmentBalanceChange: Identifiable {
 }
 
 extension InvestmentBook {
-    private var investmentSnapshots: [Date: Decimal] { balanceSheet?.investmentSnapshots ?? [:] }
+    // Month-end balances are views of the canonical daily series, never another cache.
+    var investmentMonthEndValues: [Date: Decimal] {
+        (dailySnapshots?.values ?? [:]).filter { day, _ in
+            Self.calendar.dateInterval(of: .month, for: day).map { Self.addDays(-1, to: $0.end) == day } ?? false
+        }.mapValues(\.value)
+    }
 
     var balanceEarliest: Date? {
-        [earliest, balanceSheet?.earliest, investmentSnapshots.keys.min()].compactMap { $0 }.min()
+        [earliest, balanceSheet?.earliest, dailySnapshots?.values.keys.min()].compactMap { $0 }.min()
     }
 
     static func previousMonthEnd(before day: Date) -> Date {
@@ -198,21 +193,6 @@ extension InvestmentBook {
             date = month.end
         }
         return ends
-    }
-
-    @discardableResult
-    mutating func recordCompletedInvestmentMonths(before today: Date = Self.day()) -> Bool {
-        guard let earliest else { return false }
-        var ledger = balanceSheet ?? InvestmentBalanceLedger()
-        var snapshots = ledger.investmentSnapshots
-        let priorCount = snapshots.count
-        for close in Self.monthEnds(from: earliest, through: Self.previousMonthEnd(before: today)) where snapshots[close] == nil {
-            if let valuation = portfolio(on: close) { snapshots[close] = valuation.value }
-        }
-        guard snapshots.count != priorCount else { return false }
-        ledger.investmentMonthEnds = snapshots
-        balanceSheet = ledger
-        return true
     }
 
     func investmentBalance(_ account: InvestmentAccount, on day: Date) -> Decimal? {
@@ -232,7 +212,7 @@ extension InvestmentBook {
         let dates = (0...days).map { Self.addDays($0, to: start) }
         var investments = dailyPortfolio(on: dates.filter { $0 < today }).mapValues(\.value)
         investments[today] = portfolio(on: today)?.value
-        let firstInvestment = [earliest, investmentSnapshots.keys.min(), dailySnapshots?.values.keys.min()]
+        let firstInvestment = [earliest, dailySnapshots?.values.keys.min()]
             .compactMap { $0 }.min()
         let carryFrom = Self.calendar.date(from: DateComponents(year: 2026, month: 11, day: 1))!
         // Seed from outside the visible range, but never carry a snapshot from before November 1.
@@ -270,8 +250,8 @@ extension InvestmentBook {
     private func historicalInvestment(on day: Date) -> Decimal? {
         let monthEnd = Self.calendar.dateInterval(of: .month, for: day).map { Self.addDays(-1, to: $0.end) }
         let close = monthEnd == day ? day : Self.previousMonthEnd(before: day)
-        if let amount = investmentSnapshots[close] { return amount }
-        let first = [earliest, investmentSnapshots.keys.min()].compactMap { $0 }.min()
+        if let amount = dailySnapshots?.values[close]?.value { return amount }
+        let first = [earliest, dailySnapshots?.values.keys.min()].compactMap { $0 }.min()
         return first.map { $0 <= day } == true ? nil : 0
     }
 
@@ -284,7 +264,7 @@ extension InvestmentBook {
         if day == today, let earliest, earliest <= today, portfolio(on: today) != nil {
             updates[.investments] = today
         } else {
-            updates[.investments] = investmentSnapshots.keys.filter { $0 <= day }.max()
+            updates[.investments] = investmentMonthEndValues.keys.filter { $0 <= day }.max()
         }
         return updates
     }
@@ -302,7 +282,7 @@ extension InvestmentBook {
                 previous = record.amount
             }
         }
-        let snapshots = investmentSnapshots
+        let snapshots = investmentMonthEndValues
         for (date, amount) in snapshots where (filter == .all || filter == .investment) && date <= day {
             let prior = snapshots[Self.previousMonthEnd(before: date)]
             let endOfDay = Self.addDays(1, to: date).addingTimeInterval(-1)

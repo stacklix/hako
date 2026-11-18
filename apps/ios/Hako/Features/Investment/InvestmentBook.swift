@@ -438,7 +438,6 @@ extension InvestmentBook {
         }
         if let firstRemovedDay {
             draft.invalidateDailySnapshots(from: firstRemovedDay)
-            draft.balanceSheet?.discardInvestmentSnapshots(from: firstRemovedDay)
         }
         if assetID == nil {
             draft.accounts.removeAll { $0.id == accountID }
@@ -1347,40 +1346,31 @@ struct InvestmentBook: Codable {
 
     private func valuationQuote(_ quotes: [InvestmentQuote]?, on day: Date, requiresDailyPrice: Bool,
                                 continuous: Bool = false) -> InvestmentQuote? {
-        guard let quote = quotes?.last(where: { $0.day <= day }) else { return nil }
-        guard requiresDailyPrice else { return quote }
-        if continuous {
-            guard quote.day == day, day == Self.day() || quote.isDailyClose == true else { return nil }
-            return quote
+        // Carry the last valid observation through any missing days, without inventing
+        // dated quotes or allowing future/provisional prices to fill historical closes.
+        quotes?.last {
+            $0.day <= day && (!requiresDailyPrice || day == Self.day() ||
+                (continuous ? $0.isDailyClose == true : $0.isDailyClose != false))
         }
-        guard day == Self.day() || quote.isDailyClose != false else { return nil }
-        return isCurrentMarketQuote(quote, on: day) ? quote : nil
     }
 
     private func usEquityQuote(_ quotes: [InvestmentQuote]?, on day: Date) -> InvestmentQuote? {
         // A US trading session closes on the following Beijing day in both standard time and daylight time.
         let sessionDay = Self.addDays(-1, to: day)
         let market = quotes?.last { $0.day <= sessionDay && $0.source != "手动录入" && $0.isDailyClose == true }
-            .flatMap { isCurrentMarketQuote($0, on: sessionDay) ? $0 : nil }
         let manual = quotes?.last { $0.day <= day && $0.source == "手动录入" }
-            .flatMap { isCurrentMarketQuote($0, on: day) ? $0 : nil }
         if let manual, market.map({ manual.day >= Self.addDays(1, to: $0.day) }) ?? true { return manual }
         return market
     }
 
-    private func isCurrentMarketQuote(_ quote: InvestmentQuote, on day: Date) -> Bool {
-        let weekday = Self.calendar.component(.weekday, from: day)
-        let daysSinceFriday = weekday == 1 ? 2 : (weekday == 7 ? 1 : 0)
-        return quote.day >= Self.addDays(-daysSinceFriday, to: day)
-    }
-
     func rateToCNY(_ currency: InvestmentCurrency, on day: Date, requiresDailyPrice: Bool = false) -> Decimal? {
         if currency == .cny { return 1 }
-        guard let quote = fx[currency]?.last(where: { $0.day <= day && $0.price > 0 }) else { return nil }
-        if requiresDailyPrice, day < Self.day(), quote.isDailyClose == false || !isCurrentMarketQuote(quote, on: day) {
-            return nil
-        }
-        return quote.price
+        // Missing daily FX observations carry forward the latest available rate, including
+        // consecutive gaps. Historical snapshots still exclude provisional observations.
+        return fx[currency]?.last(where: {
+            $0.day <= day && $0.price > 0 &&
+                (!requiresDailyPrice || day >= Self.day() || $0.isDailyClose != false)
+        })?.price
     }
 
     @discardableResult
@@ -1569,7 +1559,7 @@ extension InvestmentBook {
                                 detail: "未录入可用的现金价值，已按零计入资产；保费仍计入成本，盈亏可能因此为负。", day: day)
                         }
                         if asset.isStockConnect, rateToCNY(.hkd, on: day, requiresDailyPrice: true) == nil {
-                            add(.error, "缺少汇率", location: location + " · HKD/CNY", detail: "缺少该日可用的人民币折算汇率。", day: day)
+                            add(.error, "缺少汇率", location: location + " · HKD/CNY", detail: "该日及此前均无可用的人民币折算汇率。", day: day)
                         }
                     }
                     let local = value(ledger, on: day, requiresDailyPrices: true)
@@ -1579,7 +1569,7 @@ extension InvestmentBook {
                     if account.currency != .cny, needsConversion,
                        rateToCNY(account.currency, on: day, requiresDailyPrice: true) == nil {
                         add(.error, "缺少汇率", location: account.name + " · " + account.currency.rawValue + "/CNY",
-                            detail: "缺少该日可用的人民币折算汇率。", day: day)
+                            detail: "该日及此前均无可用的人民币折算汇率。", day: day)
                     }
                 }
                 if day < today {

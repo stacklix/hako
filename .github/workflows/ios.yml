@@ -49,6 +49,8 @@ jobs:
         run: |
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests
           /tmp/hako-investment-book-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentDiskCache.swift Tests/InvestmentDiskCacheTests.swift -o /tmp/hako-investment-cache-tests
+          /tmp/hako-investment-cache-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentPriceHistory.swift Tests/InvestmentPriceHistoryTests.swift -o /tmp/hako-investment-price-tests
           /tmp/hako-investment-price-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Tests/InvestmentHoldingDetailTests.swift -o /tmp/hako-investment-holding-detail-tests

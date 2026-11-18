@@ -230,7 +230,7 @@ struct WorkshopConversationView: View {
         }
         .sheet(item: $artifact) { file in WorkshopPreviewView(store: conversation.store, agent: conversation.agent, artifact: file) }
         .sheet(item: $browserLink) { link in WorkshopBrowserView(link: link) }
-        .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo) }
+        .sheet(item: $previewPhoto) { photo in WorkshopPhotoPreview(photo: photo, photos: conversation.photos) }
         .sheet(isPresented: $showingCamera, onDismiss: finishCamera) {
             WorkshopCameraPicker { image in
                 capturedPhoto = image?.jpegData(compressionQuality: 0.9)

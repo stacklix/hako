@@ -146,7 +146,6 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         .init(name: "market_daily_fx", title: "汇率", keys: ["rate_date", "base_currency", "quote_currency", "source"]),
         .init(name: "investment_daily_snapshots", title: "投资日终快照", keys: ["snapshot_date"]),
         .init(name: "investment_account_daily_snapshots", title: "账户日终快照", keys: ["account_id", "snapshot_date"]),
-        .init(name: "investment_month_snapshots", title: "投资月末快照", keys: ["snapshot_date"])
     ]
 
     static let labels: [String: String] = [

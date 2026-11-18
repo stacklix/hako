@@ -370,53 +370,124 @@ struct InvestmentAccountManagement: View {
     @ObservedObject var store: InvestmentStore
     let accountID: UUID
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         SettingsSheet(title: "管理账户") {
-            Form {
-                if let account = store.book.account(accountID) {
-                    Section {
-                        HStack(spacing: 12) {
-                            Image(systemName: "building.columns")
-                                .font(.title2).frame(width: 48, height: 48)
-                                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("账户名称").font(.caption).foregroundStyle(.secondary)
-                                Text(account.name).font(.title2.weight(.semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    if let account = store.book.account(accountID) {
+                        InvestmentAccountManagementCard {
+                            Group {
+                                if dynamicTypeSize.isAccessibilitySize {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        accountName(account)
+                                        accountStatus(account)
+                                    }
+                                } else {
+                                    HStack(spacing: 12) {
+                                        accountName(account)
+                                        Spacer(minLength: 8)
+                                        accountStatus(account)
+                                    }
+                                }
                             }
-                            Spacer(minLength: 8)
-                            Text(account.isArchived ? "已归档" : "使用中")
-                                .font(.caption)
-                                .foregroundStyle(account.isArchived ? Color.secondary : Color.green)
-                                .padding(.horizontal, 9).padding(.vertical, 5)
-                                .background((account.isArchived ? Color.secondary : Color.green).opacity(0.12), in: Capsule())
-                        }
-                        .investmentListRow()
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowBackground(Color.clear)
-                    }
-                    Section {
-                        LabeledContent("账户类型", value: account.type.rawValue).investmentListRow()
-                        LabeledContent("账户币种", value: account.currency.title + " · " + account.currency.rawValue).investmentListRow()
-                    }
-                    Section {
-                        Button { editingAccount = true } label: {
-                            Label("编辑账户", systemImage: "pencil")
-                        }
-                            .buttonStyle(HakoActionButtonStyle())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 18)
+                            .padding(.top, 20)
+                            .padding(.bottom, 15)
+
+                            accountDetail("账户类型", value: account.type.rawValue)
+                            accountDivider
+                            accountDetail("账户币种", value: account.currency.title + " · " + account.currency.rawValue)
+                            accountDivider
+                            Button { editingAccount = true } label: {
+                                InvestmentAccountManagementRow(title: "编辑账户")
+                            }
+                            .buttonStyle(.plain)
                             .disabled(store.saving)
-                            .investmentListRow()
-                            .listRowInsets(EdgeInsets())
-                            .listRowBackground(Color.clear)
+                        }
+                        InvestmentLifecycleActions(store: store, accountID: accountID) { dismiss() }
                     }
-                    InvestmentLifecycleActions(store: store, accountID: accountID) { dismiss() }
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 10)
+                .padding(.bottom, 32)
             }
+            .background(InvestmentAccountManagementStyle.background)
+            .toolbarBackground(InvestmentAccountManagementStyle.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
         }
         .sheet(isPresented: $editingAccount) {
             if let account = store.book.account(accountID) { InvestmentAccountEditor(store: store, account: account) }
         }
+    }
+
+    private func accountName(_ account: InvestmentAccount) -> some View {
+        Text(account.name).font(.title2.weight(.semibold))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel("账户名称，" + account.name)
+    }
+
+    private func accountStatus(_ account: InvestmentAccount) -> some View {
+        HStack(spacing: 5) {
+            Circle().frame(width: 5, height: 5).accessibilityHidden(true)
+            Text(account.isArchived ? "已归档" : "使用中")
+        }
+        .font(.caption)
+        .foregroundStyle(account.isArchived ? Color.secondary : Color.green)
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .background((account.isArchived ? Color.secondary : Color.green).opacity(0.12), in: Capsule())
+        .fixedSize()
+    }
+
+    private func accountDetail(_ title: String, value: String) -> some View {
+        LabeledContent {
+            Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+        } label: {
+            Text(title)
+        }
+        .font(.subheadline)
+        .padding(.vertical, 12)
+        .frame(minHeight: 51)
+        .padding(.horizontal, 18)
+    }
+
+    private var accountDivider: some View {
+        Divider().padding(.horizontal, 18)
+    }
+}
+
+private enum InvestmentAccountManagementStyle {
+    static let background = HakoStyle.adaptive(0xf2f2f7, 0x1c1c1e)
+    static let card = HakoStyle.adaptive(0xffffff, 0x2b2b2e)
+}
+
+private struct InvestmentAccountManagementCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(InvestmentAccountManagementStyle.card, in: RoundedRectangle(cornerRadius: 19))
+    }
+}
+
+private struct InvestmentAccountManagementRow: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title).font(.subheadline)
+            Spacer(minLength: 8)
+            if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 14)
+        .frame(maxWidth: .infinity, minHeight: 55, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -497,41 +568,38 @@ private struct InvestmentLifecycleActions: View {
     }
 
     private var accountActions: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 24) {
             if let account = store.book.account(accountID) {
                 let blocker = store.book.archiveBlocker(accountID: accountID)
-                Section {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(account.isArchived ? "账户已隐藏，历史数据完整保留。恢复后重新显示，定投需手动启用。"
-                             : blocker ?? "保留全部数据，暂停定投并默认隐藏账户。可在设置中显示已归档账户，随时恢复。")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button(account.isArchived ? "恢复账户" : "归档账户") {
+                VStack(alignment: .leading, spacing: 9) {
+                    InvestmentAccountManagementCard {
+                        Button {
                             archivesAccount = !account.isArchived
                             confirmsArchival = true
+                        } label: {
+                            InvestmentAccountManagementRow(title: account.isArchived ? "恢复账户" : "归档账户",
+                                                           detail: account.isArchived ? nil : "可恢复")
                         }
-                        .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
+                        .buttonStyle(.plain)
                         .disabled(working || store.saving || (!account.isArchived && blocker != nil))
                     }
-                    .investmentListRow()
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                } header: {
-                    Label("账户归档", systemImage: "archivebox")
+                    Text(account.isArchived ? "账户已隐藏，交易记录和历史盈亏完整保留。恢复后可重新使用，定投需手动启用。"
+                         : blocker ?? "保留全部数据，暂停定投并隐藏账户。可在设置中显示归档账户，随时恢复。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("永久删除账户及对应交易记录。删除后无法撤销。")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    HakoDeleteButton(title: "删除账户", action: requestDeletion)
-                        .disabled(working || store.saving)
-                }
-                .investmentListRow()
-                .listRowInsets(EdgeInsets())
-                .listRowBackground(Color.clear)
-            } header: {
-                Label("删除账户", systemImage: "trash")
+            VStack(alignment: .leading, spacing: 9) {
+                HakoDeleteButton(title: "删除账户", action: requestDeletion)
+                    .font(.subheadline.weight(.medium))
+                    .disabled(working || store.saving)
+                Text("同时删除该账户的全部交易记录，无法撤销。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(.top, 11)
         }
     }
 
@@ -584,7 +652,7 @@ private struct InvestmentSettings: View {
                             Spacer()
                             InvestmentChevron()
                         }.frame(maxWidth: .infinity).contentShape(Rectangle())
-                    }.buttonStyle(.plain).investmentListRow()
+                    }.buttonStyle(.plain).investmentListRow().hakoReorderRow()
                 }
                 .onMove { offsets, destination in
                     var reordered = store.visibleAccounts.map(\.id)
@@ -617,6 +685,12 @@ private struct InvestmentSettings: View {
                 Text("东方财富缺少期货期权历史时，可使用已配置的行情源补查；Twelve Data 也可补充汇率。到期合约仍可能缺少历史数据。")
             }
             Section {
+                NavigationLink {
+                    InvestmentDataManagement(store: store)
+                } label: {
+                    Label("数据管理", systemImage: "internaldrive")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.investmentListRow()
                 NavigationLink {
                     InvestmentDataInspection(store: store)
                 } label: {

@@ -19,14 +19,14 @@ struct InvestmentServerRecords {
         return format
     }()
     static let snapshotTables: Set<String> = [
-        "investment_daily_snapshots", "investment_account_daily_snapshots", "investment_month_snapshots"
+        "investment_daily_snapshots", "investment_account_daily_snapshots"
     ]
     static let names = [
         "market_instruments", "market_derivative_specs", "investment_accounts", "investment_assets",
         "investment_events", "investment_derivative_event_details", "investment_plans", "investment_plan_runs",
         "investment_watchlist", "market_daily_prices", "market_daily_fx", "investment_manual_prices",
         "investment_daily_snapshots", "investment_account_daily_snapshots", "investment_balance_accounts",
-        "investment_balance_records", "investment_month_snapshots"
+        "investment_balance_records"
     ]
     private static let accountTypes: [InvestmentAccountType: String] = [
         .securities: "securities", .fundWealth: "fund_wealth", .futures: "futures",
@@ -200,9 +200,6 @@ struct InvestmentServerRecords {
                 ])
             }
         }
-        for (date, value) in (book.balanceSheet?.investmentSnapshots ?? [:]).sorted(by: { $0.key < $1.key }) {
-            result["investment_month_snapshots", default: []].append(["snapshot_date": day.string(from: date), "total_cny": string(value)!])
-        }
         return result.mapValues(Self.ordered)
     }
 
@@ -358,10 +355,8 @@ struct InvestmentServerRecords {
             }
             return try InvestmentBalanceAccount(id: id, name: required(row, "name"), category: mapped(Self.categories, row, "category"), records: entries)
         }
-        var months: [Date: Decimal] = [:]
-        for row in records("investment_month_snapshots") { months[try date(row, "snapshot_date")] = decimal(row["total_cny"]) }
-        if !balanceAccounts.isEmpty || !months.isEmpty {
-            book.balanceSheet = InvestmentBalanceLedger(accounts: balanceAccounts, investmentMonthEnds: months)
+        if !balanceAccounts.isEmpty {
+            book.balanceSheet = InvestmentBalanceLedger(accounts: balanceAccounts)
         }
         if let dirty = state.dirtyFrom.flatMap(day.date(from:)) { book.invalidateDailySnapshots(from: dirty) }
         return book

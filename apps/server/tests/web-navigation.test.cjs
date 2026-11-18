@@ -194,6 +194,7 @@ const investmentData = {tables: {
   investment_events: [{id: '1', account_id: 'bank', asset_id: 'deposit', event_type: 'income',
     effective_date: '2026-11-09', sequence: '0', amount: '20', settled_amount: '400'}],
   investment_daily_snapshots: [
+    {snapshot_date: '2026-10-31', total_cny: '950', cumulative_gain_cny: '50', status: 'complete'},
     {snapshot_date: '2026-11-08', total_cny: '990', total_usd: '139', cumulative_gain_cny: '90', status: 'complete'},
     {snapshot_date: '2026-11-09', total_cny: '1000', total_usd: '140', cumulative_gain_cny: '100', daily_gain_cny: '10', status: 'complete'}
   ],
@@ -205,7 +206,7 @@ const investmentData = {tables: {
   ],
   investment_balance_accounts: [{id: 'cash', category: 'cash', name: '现金钱包', currency: 'CNY', sort_order: '0'}],
   investment_balance_records: [{balance_account_id: 'cash', amount: '50', recorded_at: '2026-11-09T01:00:00Z'}],
-  investment_month_snapshots: [{snapshot_date: '2026-10-31', total_cny: '950'}]
+
 }};
 
 for (const [view, title, contents] of [

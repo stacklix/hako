@@ -87,12 +87,16 @@ import Foundation
         book.addExchangeRates([.init(day: day(1), price: Decimal(string: "0.9")!, isDailyClose: true),
                                .init(day: day(3), price: Decimal(string: "0.8")!, isDailyClose: true)], for: .hkd)
         let history = book.profitHistory(accountID: owner.id, assetID: id, on: [day(1), day(2), day(3)], today: day(4))
-        precondition(history.map(\.day) == [day(1), day(3)] && history.map(\.value) == [0, 6])
-        precondition(history[0].segment != history[1].segment, "Missing FX must break the line")
+        precondition(history.map(\.day) == [day(1), day(2), day(3)] && history.map(\.value) == [0, 0, 6])
+        precondition(Set(history.map(\.segment)).count == 1, "A missing daily FX observation must carry forward")
         book.fx[.hkd] = (1...3).map { .init(day: day($0), price: 1, isDailyClose: true) }
         book.quotes[id] = [.init(day: day(1), price: 10, isDailyClose: true), .init(day: day(3), price: 12, isDailyClose: true)]
         let missingPrice = book.profitHistory(accountID: owner.id, assetID: id, on: [day(1), day(2), day(3)], today: day(4))
-        precondition(missingPrice.map(\.day) == [day(1), day(3)] && missingPrice[1].segment == 1)
+        precondition(missingPrice.map(\.day) == [day(1), day(2), day(3)] && missingPrice.map(\.value) == [10, 10, 30])
+        precondition(Set(missingPrice.map(\.segment)).count == 1)
+        book.quotes[id] = [.init(day: day(3), price: 12, isDailyClose: true)]
+        let noEarlierPrice = book.profitHistory(accountID: owner.id, assetID: id, on: [day(1), day(2), day(3)], today: day(4))
+        precondition(noEarlierPrice.map(\.day) == [day(3)], "Future prices must not fill earlier gaps")
     }
 
     static func spotBalanceEditsPreserveSameDayOrderAndPrecision() throws {

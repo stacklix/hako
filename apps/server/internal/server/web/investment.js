@@ -548,7 +548,7 @@ function investmentBalanceSheet(tables) {
   const latestByAccount = new Map(records.map(record => [record.balance_account_id, record]));
   const manual = accounts.filter(account => latestByAccount.has(account.id));
   const days = investmentByDate(tables.investment_daily_snapshots);
-  const months = investmentByDate(tables.investment_month_snapshots);
+  const months = days.filter(row => row.snapshot_date === investmentMonthEnd(Number(row.snapshot_date.slice(0, 4)), Number(row.snapshot_date.slice(5, 7))));
   const investment = [days.findLast(row => row.total_cny != null), months.at(-1)].filter(Boolean)
     .sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date)).at(-1);
   const hasInvestment = days.length > 0 || months.length > 0 || (tables.investment_accounts ?? []).some(account => !account.archived_at);
@@ -572,6 +572,6 @@ function investmentBalanceSheet(tables) {
     const account = accountsByID.get(record.balance_account_id);
     return account ? [[date(record.recorded_at), account.name, investmentCategories[account.category], investmentMoney(record.amount, account.currency)]] : [];
   }))),
-  investmentCard('投资理财月末快照', investmentTable(['日期', '投资理财 · CNY'], [...months].reverse().map(row =>
+  investmentCard('投资理财月末余额', investmentTable(['日期', '投资理财 · CNY'], [...months].reverse().map(row =>
     [row.snapshot_date, investmentMoney(row.total_cny)])))];
 }

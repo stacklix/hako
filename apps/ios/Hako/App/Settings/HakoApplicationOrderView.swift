@@ -7,11 +7,13 @@ struct HakoApplicationOrderView: View {
         List {
             ForEach(HakoApplications.Category.allCases, id: \.self) { category in
                 Section {
-                    ForEach(applications(in: category)) { app in
+                    let apps = applications(in: category)
+                    ForEach(apps) { app in
                         Label(app.rawValue, systemImage: app.symbol)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                            .hakoReorderRow(showsSeparator: app.id != apps.last?.id)
                     }
                     .onMove { offsets, destination in
                         var ids = applications(in: category).map(\.rawValue)

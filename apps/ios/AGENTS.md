@@ -35,3 +35,4 @@
 - Form / List 分组内的行分隔线必须完整对齐整行内容区两端，不能从右侧状态文字、标签或图标处开始。
 - 自定义行（尤其是包含 HStack、Spacer、Label、配置状态的 NavigationLink）须在整行视图上显式设置 `.alignmentGuide(.listRowSeparatorLeading) { _ in 0 }` 和 `.alignmentGuide(.listRowSeparatorTrailing) { $0.width }`，并占满可用宽度；不要只给内部文字设置。
 - 同一分组统一行内边距。已采用零行内边距、内容自行 padding 的通栏分隔线行继续保持通栏。
+- 带原生排序把手的行使用共享 `hakoReorderRow(showsSeparator:)`，在整行背景上绘制分隔线；内容 alignment guide 不包含系统把手。组内最后一行不画底线，后面还有普通行时保留底线。

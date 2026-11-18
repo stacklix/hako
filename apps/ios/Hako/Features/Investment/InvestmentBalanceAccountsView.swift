@@ -434,8 +434,8 @@ struct InvestmentBalanceHistory: View {
                         Text(account.name + " · " + account.category.rawValue)
                             .tag(InvestmentBalanceHistoryFilter.account(account.id))
                     }
-                    if book.balanceSheet?.investmentSnapshots.isEmpty == false {
-                        Text("投资理财 · 月末快照").tag(InvestmentBalanceHistoryFilter.investment)
+                    if !book.investmentMonthEndValues.isEmpty {
+                        Text("投资理财 · 月末余额").tag(InvestmentBalanceHistoryFilter.investment)
                     }
                 }
                 .pickerStyle(.menu)

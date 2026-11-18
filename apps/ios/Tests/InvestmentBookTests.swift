@@ -42,9 +42,11 @@ struct InvestmentBookTests {
         try wealthUsesAmountsAndReportedBalances()
         try manualQuotesAreLimitedToInsurance()
         try holdingHistoryTracksQuantitiesAndAmounts()
-        try dailyGainsRequireCompleteMarketPrices()
+        try dailyGainsCarryForwardMarketPrices()
+        try allAssetPricesCarryAcrossConsecutiveGaps()
         try portfolioHistoryMatchesIndividualValuations()
         try dailySnapshotsUseBeijingCloseAndDatedRates()
+        try dailyExchangeRatesCarryForwardAcrossMissingDays()
         try deletedAndRecreatedHoldingsInvalidateSnapshotsWithoutCache()
         try changingHistoricalEntriesInvalidatesOnlyTheAffectedDays()
         try changingTransfersIsAtomic()
@@ -393,7 +395,7 @@ struct InvestmentBookTests {
 
     static func balanceHistoryFiltersAndReplaysEditedRecords() throws {
         let first = date(1), second = date(2), third = date(3), end = date(31)
-        var ledger = InvestmentBalanceLedger(investmentMonthEnds: [end: 800])
+        var ledger = InvestmentBalanceLedger()
         try ledger.add("储蓄卡", category: .cash, amount: 100, at: first)
         try ledger.add("储蓄卡", category: .receivables, amount: 700, at: third)
         let accountID = ledger.accounts[0].id
@@ -401,6 +403,7 @@ struct InvestmentBookTests {
         try ledger.update(accountID, amount: 180, at: third.addingTimeInterval(3600))
         var book = InvestmentBook()
         book.balanceSheet = ledger
+        book.dailySnapshots = .init(through: end, values: [end: .init(value: 800, gain: 0)])
 
         let recent = book.balanceChanges(through: end, limit: 1, filter: .account(accountID))
         precondition(recent.count == 1 && recent[0].after == 180)
@@ -431,37 +434,20 @@ struct InvestmentBookTests {
     }
 
     static func investmentHistoryRecordsOneFrozenSnapshotPerClosedMonth() throws {
-        let local = InvestmentAccount(name: "人民币账户", currency: .cny, type: .securities)
-        let foreign = InvestmentAccount(name: "美元账户", currency: .usd, type: .securities)
-        var book = InvestmentBook(accounts: [local, foreign])
-        let first = date(1), octoberEnd = date(31)
-        let novemberStart = InvestmentBook.addDays(1, to: octoberEnd)
-        let novemberEnd = InvestmentBook.addDays(29, to: novemberStart)
-        let decemberStart = InvestmentBook.addDays(1, to: novemberEnd)
-        try book.post(.init(day: first, kind: .deposit, amount: 300), accountID: local.id)
-        try book.post(.init(day: first, kind: .deposit, amount: 100), accountID: foreign.id)
-        try book.post(.init(day: date(15), kind: .deposit, amount: 20), accountID: foreign.id)
-        precondition(!book.recordCompletedInvestmentMonths(before: octoberEnd))
-        precondition(!book.recordCompletedInvestmentMonths(before: novemberStart))
-        precondition(book.balanceSnapshot(on: octoberEnd, today: novemberStart).investment == nil)
-
-        book.fx[.usd] = [.init(day: octoberEnd, price: 7)]
-        precondition(book.recordCompletedInvestmentMonths(before: novemberStart))
-        let saved = try JSONEncoder().encode(book)
-        book = try JSONDecoder().decode(InvestmentBook.self, from: saved)
-        book.fx[.usd] = [.init(day: octoberEnd, price: 8)]
-        precondition(!book.recordCompletedInvestmentMonths(before: novemberEnd))
-        precondition(book.balanceSnapshot(on: octoberEnd, today: novemberStart).investment == 1140)
-        precondition(book.balanceSnapshot(on: novemberStart, today: novemberStart).investment == 1260)
-        precondition(book.balanceSnapshot(on: novemberStart, today: novemberEnd).investment == 1140)
-
-        precondition(book.recordCompletedInvestmentMonths(before: decemberStart))
-        precondition(!book.recordCompletedInvestmentMonths(before: decemberStart))
-        let snapshots = book.balanceChanges(through: decemberStart, limit: 5)
-        precondition(snapshots.map(\.day) == [novemberEnd, octoberEnd])
-        precondition(snapshots.map(\.after) == [1260, 1140] && snapshots.first?.before == 1140)
-        precondition(snapshots.allSatisfy { $0.name == "投资理财" && $0.category == .investments })
-        precondition(book.balanceDates(from: first, through: decemberStart) == [first, octoberEnd, novemberEnd, decemberStart])
+        let first = date(1), close = date(31), next = InvestmentBook.addDays(1, to: close)
+        let account = InvestmentAccount(name: "投资", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: first, kind: .deposit, amount: 100), accountID: account.id)
+        book.dailySnapshots = .init(through: close, values: [close: .init(value: 120, gain: 20)])
+        precondition(book.balanceSnapshot(on: close, today: next).investment == 120)
+        precondition(book.investmentMonthEndValues == [close: 120])
+        book.dailySnapshots?.values[close] = .init(value: 150, gain: 50)
+        precondition(book.balanceSnapshot(on: close, today: next).investment == 150,
+                     "Monthly views must read the canonical daily snapshot instead of frozen duplicates")
+        precondition(book.balanceChanges(through: next, limit: 10, filter: .investment).map(\.after) == [150])
+        book.dailySnapshots?.values.removeValue(forKey: close)
+        precondition(book.balanceSnapshot(on: close, today: next).investment == nil,
+                     "A missing daily snapshot must remain missing instead of reviving a retired monthly total")
     }
 
     static func balanceTrendUsesEveryDailySnapshotBeforeFirstMonthClose() throws {
@@ -479,7 +465,7 @@ struct InvestmentBookTests {
         ])
         book.usesServerSnapshots = true
 
-        precondition(book.balanceSheet?.investmentSnapshots.isEmpty == true)
+        precondition(book.investmentMonthEndValues.isEmpty)
         precondition(book.balanceSnapshot(on: first, today: today).net == nil)
         let points = book.balanceTrend(from: first, through: today)
         precondition(points.map(\.id) == [first, second, today])
@@ -1044,7 +1030,7 @@ struct InvestmentBookTests {
         precondition(reloaded.portfolio(on: maturity)?.gain == 6)
     }
 
-    static func dailyGainsRequireCompleteMarketPrices() throws {
+    static func dailyGainsCarryForwardMarketPrices() throws {
         let friday = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 10, day: 30))!
         let saturday = InvestmentBook.addDays(1, to: friday)
         let sunday = InvestmentBook.addDays(2, to: friday)
@@ -1057,7 +1043,7 @@ struct InvestmentBookTests {
         stocks.addQuotes([.init(day: friday, price: 3)], assetID: stock)
         let stockGains = stocks.dailyGains(from: friday, through: monday)
         precondition(stockGains[friday] == 10 && stockGains[saturday] == 0 && stockGains[sunday] == 0)
-        precondition(stockGains[monday] == nil)
+        precondition(stockGains[monday] == 0)
 
         let cryptoAccount = InvestmentAccount(name: "现货", currency: .usd, type: .crypto)
         var crypto = InvestmentBook(accounts: [cryptoAccount])
@@ -1069,11 +1055,45 @@ struct InvestmentBookTests {
                           .init(day: saturday, price: 4, source: "盘中报价"),
                           .init(day: sunday, price: 5, isDailyClose: true)], assetID: token)
         let incomplete = crypto.dailyGains(from: friday, through: sunday)
-        precondition(incomplete[friday] == 70 && incomplete[saturday] == nil && incomplete[sunday] == nil)
+        precondition(incomplete[friday] == 70 && incomplete[saturday] == 0 && incomplete[sunday] == 140)
         crypto.addQuotes([.init(day: saturday, price: 4, isDailyClose: true)], assetID: token)
         crypto.addQuotes([.init(day: saturday, price: 99, source: "盘中报价")], assetID: token)
         let completed = crypto.dailyGains(from: friday, through: sunday)
         precondition(completed[friday] == 70 && completed[saturday] == 70 && completed[sunday] == 70)
+    }
+
+    static func allAssetPricesCarryAcrossConsecutiveGaps() throws {
+        let first = InvestmentBook.calendar.date(from: DateComponents(year: 2024, month: 12, day: 24))!
+        let next = InvestmentBook.calendar.date(from: DateComponents(year: 2025, month: 1, day: 15))!
+        let gap = InvestmentBook.addDays(-1, to: next)
+        for kind in [InvestmentKind.stock, .fund, .etf, .option, .future, .crypto, .insurance] {
+            let asset = InvestmentAsset(name: kind.title, code: "TEST", market: "", kind: kind, currency: .cny)
+            var book = InvestmentBook(assets: [asset.id: asset])
+            book.addQuotes([.init(day: first, price: 10, isDailyClose: true),
+                            .init(day: next, price: 20, isDailyClose: true)], assetID: asset.id)
+            precondition(book.positionQuote(for: asset, on: gap, requiresDailyPrices: true)?.price == 10,
+                         "Every quoted asset must carry across consecutive missing days, including weekdays")
+            precondition(book.positionQuote(for: asset, on: next, requiresDailyPrices: true)?.price == 20)
+            precondition(book.positionQuote(for: asset, on: InvestmentBook.addDays(5, to: next), requiresDailyPrices: true)?.price == 20)
+            let before = book.positionQuote(for: asset, on: InvestmentBook.addDays(-1, to: first), requiresDailyPrices: true)
+            precondition(kind == .insurance ? before?.price == 0 : before == nil,
+                         "A future price must never fill earlier dates")
+            if kind != .insurance {
+                book.addQuotes([.init(day: gap, price: 99, isDailyClose: false)], assetID: asset.id)
+                precondition(book.positionQuote(for: asset, on: gap, requiresDailyPrices: true)?.price == 10,
+                             "Carry the last final price past a provisional quote")
+            }
+            precondition(book.quotes[asset.id]?.filter { $0.day == gap }.allSatisfy { $0.isDailyClose == false } == true,
+                         "Carrying a price must not synthesize a final observation")
+        }
+        let us = InvestmentAsset(name: "US", code: "AAPL", market: "", kind: .stock, currency: .usd)
+        let book = InvestmentBook(assets: [us.id: us], quotes: [us.id: [
+            .init(day: first, price: 10, isDailyClose: true), .init(day: next, price: 20, isDailyClose: true)
+        ]])
+        precondition(book.positionQuote(for: us, on: first, requiresDailyPrices: true) == nil)
+        precondition(book.positionQuote(for: us, on: next, requiresDailyPrices: true)?.price == 10,
+                     "A US session close becomes effective on the following Beijing date")
+        precondition(book.positionQuote(for: us, on: InvestmentBook.addDays(1, to: next), requiresDailyPrices: true)?.price == 20)
     }
 
     static func portfolioHistoryMatchesIndividualValuations() throws {
@@ -1124,7 +1144,7 @@ struct InvestmentBookTests {
         book.dailySnapshots = book.makeDailySnapshots(through: monday, rebuild: true)
         precondition(book.dailySnapshots?.values[friday]?.value == 770)
         precondition(book.dailySnapshots?.values[friday]?.gain == 70)
-        precondition(book.dailySnapshots?.values[saturday] == nil && book.dailySnapshots?.values[monday] == nil)
+        precondition(book.dailySnapshots?.values[saturday]?.value == 770 && book.dailySnapshots?.values[monday]?.value == 880)
 
         book.addQuotes([.init(day: friday, price: 7, isDailyClose: true)], assetID: stock)
         precondition(book.dailySnapshots?.values[friday] == nil)
@@ -1141,6 +1161,42 @@ struct InvestmentBookTests {
         precondition(restored.dailySnapshotReport(through: monday).latest?.valueUSD == 140)
         precondition(restored.dailySnapshotReport(through: monday).includesDay)
         precondition(restored.makeDailySnapshots(through: monday, rebuild: false) == nil)
+    }
+
+    static func dailyExchangeRatesCarryForwardAcrossMissingDays() throws {
+        let first = InvestmentBook.calendar.date(from: DateComponents(year: 2024, month: 12, day: 24))!
+        let next = InvestmentBook.calendar.date(from: DateComponents(year: 2025, month: 1, day: 2))!
+        let end = InvestmentBook.addDays(1, to: next)
+        let account = InvestmentAccount(name: "港币", currency: .hkd, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: first, kind: .deposit, amount: 100), accountID: account.id)
+        book.addExchangeRates([.init(day: first, price: 1), .init(day: next, price: 2)], for: .hkd)
+        book.addExchangeRates([.init(day: first, price: 5)], for: .usd)
+        precondition(book.rateToCNY(.hkd, on: InvestmentBook.addDays(-1, to: first), requiresDailyPrice: true) == nil,
+                     "Future FX observations must never fill earlier days")
+        for offset in 0..<9 {
+            let day = InvestmentBook.addDays(offset, to: first)
+            precondition(book.rateToCNY(.hkd, on: day, requiresDailyPrice: true) == 1,
+                         "Weekdays, holidays and consecutive gaps must carry the previous available rate")
+        }
+        precondition(book.rateToCNY(.hkd, on: next, requiresDailyPrice: true) == 2)
+        precondition(book.rateToCNY(.hkd, on: end, requiresDailyPrice: true) == 2)
+        book.dailySnapshots = book.makeDailySnapshots(through: end, rebuild: true)
+        precondition(book.dailySnapshotReport(through: end).missing == 0)
+        precondition(book.dailySnapshots?.values[InvestmentBook.addDays(1, to: first)]?.value == 100)
+        precondition(book.dailySnapshots?.values[next]?.value == 200)
+        precondition(book.dailySnapshots?.values[end]?.valueUSD == 40)
+        precondition(book.inspectData(through: end).errors == 0)
+        precondition(book.missingDailyMarketData(in: first...end).rates.isEmpty)
+
+        book.addExchangeRates([.init(day: end, price: 99, isDailyClose: false)], for: .hkd)
+        precondition(book.rateToCNY(.hkd, on: end) == 99)
+        precondition(book.rateToCNY(.hkd, on: end, requiresDailyPrice: true) == 2,
+                     "Historical snapshots must carry the latest final rate past a provisional observation")
+        book.fx[.hkd] = [.init(day: next, price: 2)]
+        precondition(book.inspectData(through: end).issues.contains {
+            $0.title == "缺少汇率" && $0.dates.contains(first)
+        }, "A genuinely missing earlier rate must still be reported")
     }
 
     static func changingHistoricalEntriesInvalidatesOnlyTheAffectedDays() throws {
@@ -1219,7 +1275,8 @@ struct InvestmentBookTests {
         precondition(missing.rates[.usd] == [friday...tuesday])
         book.addQuotes([.init(day: friday, price: 100, isDailyClose: true),
                         .init(day: monday, price: 110, isDailyClose: false)], assetID: id)
-        precondition(book.missingDailyMarketData(in: monday...tuesday).assets[id] == [monday...monday])
+        precondition(book.missingDailyMarketData(in: monday...tuesday).assets.isEmpty,
+                     "An earlier close must remain usable past a provisional quote and a missing session")
         book.addQuotes([.init(day: monday, price: 110, isDailyClose: true)], assetID: id)
         book.addExchangeRates([.init(day: friday, price: 7), .init(day: monday, price: 7), .init(day: tuesday, price: 7)], for: .usd)
         let complete = book.missingDailyMarketData(in: historyStart...tuesday)
@@ -1310,7 +1367,6 @@ struct InvestmentBookTests {
         book.watched = [id]
         book.addQuotes([.init(day: date(2), price: 10)], assetID: id)
         book.dailySnapshots = book.makeDailySnapshots(through: date(2), rebuild: true)
-        book.balanceSheet = InvestmentBalanceLedger(investmentMonthEnds: [date(0): 100, date(31): 200])
         let rightEvents = try require(book.account(right.id)).events
         try book.deleteInvestment(accountID: left.id, assetID: id)
         let ledger = try book.ledger(try require(book.account(left.id)))
@@ -1318,7 +1374,7 @@ struct InvestmentBookTests {
         precondition(book.account(right.id)?.events == rightEvents && book.asset(id) != nil && book.watched == [id])
         precondition(book.plans.count == 1 && book.plans[0].accountID == right.id && book.planRuns.count == 1)
         precondition(book.dailySnapshots?.through == date(0))
-        precondition(book.balanceSheet?.investmentSnapshots == [date(0): 100])
+        precondition(book.investmentMonthEndValues.isEmpty)
         let records = InvestmentServerRecords()
         let rows = try records.encode(book, revision: 2)
         precondition(rows["investment_events"]?.filter { $0["account_id"] == left.id.uuidString }.count == 1)

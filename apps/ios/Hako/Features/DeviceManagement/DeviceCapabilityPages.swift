@@ -222,6 +222,7 @@ struct DevicePageOrderSection: View {
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 .moveDisabled(pages.count < 2)
+                .hakoReorderRow(showsSeparator: index < pages.count - 1)
             }
             .onMove { source, destination in
                 var names = pages.map(\.name)

@@ -21,6 +21,15 @@ enum InvestmentHistoryRange: String, CaseIterable, Identifiable, Sendable {
     }
 
     // Bound requests so a provider's per-response row limit cannot truncate long histories.
+    static func uncoveredWindows(from start: Date, through end: Date, cached: [InvestmentQuote]) -> [ClosedRange<Date>] {
+        let valid = cached.filter { $0.isDailyClose == true && $0.day <= end }.sorted { $0.day < $1.day }
+        guard let first = valid.first, let last = valid.last else { return [start...end] }
+        var result: [ClosedRange<Date>] = []
+        if first.day > start { result.append(start...InvestmentBook.addDays(-1, to: first.day)) }
+        if last.day < end { result.append(max(start, InvestmentBook.addDays(1, to: last.day))...end) }
+        return result
+    }
+
     static func quoteWindows(from start: Date, through end: Date) -> [ClosedRange<Date>] {
         var first = InvestmentBook.day(start)
         let end = InvestmentBook.day(end)

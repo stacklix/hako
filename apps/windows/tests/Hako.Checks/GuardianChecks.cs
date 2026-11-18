@@ -24,7 +24,7 @@ internal static class GuardianChecks
         private readonly TcpListener listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource stopping = new();
         private readonly Task worker;
-        internal volatile string Version = "0.7.4";
+        internal volatile string Version = "0.8.0";
         internal string Origin { get; }
         internal Server()
         {
@@ -160,7 +160,7 @@ internal static class GuardianChecks
             var configHash = AgentGuardian.Hash(Path.Combine(fixture.Profile, "agent.dat"));
             await guardian.TickAsync(default);
             Check(!old.HasExited && AgentGuardian.Hash(fixture.Target) == oldHash, "Incompatible update stopped or replaced the original Agent.");
-            server.Version = "0.7.4";
+            server.Version = "0.8.0";
             await Task.Delay(5100); await guardian.TickAsync(default);
             Check(old.HasExited && AgentGuardian.Hash(fixture.Target) == source.Candidate.Sha256, "Guardian did not update when the server became compatible.");
             Check(AgentGuardian.Hash(Path.Combine(fixture.Profile, "agent.dat")) == configHash, "Update changed the Agent configuration.");

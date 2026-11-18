@@ -435,33 +435,52 @@ private struct WorkshopQuestionReplyView: View {
 }
 
 struct WorkshopPhotoPreview: View {
-    let photo: WorkshopPhoto
+    let photos: [WorkshopPhoto]
+    @State private var selection: String
+    private var photo: WorkshopPhoto { photos.first { $0.id == selection } ?? photos[0] }
+    private var saved: Bool { savedIDs.contains(photo.id) }
+
+    init(photo: WorkshopPhoto, photos: [WorkshopPhoto] = []) {
+        self.photos = photos.contains(where: { $0.id == photo.id }) ? photos : [photo]
+        _selection = State(initialValue: photo.id)
+    }
     @Environment(\.openURL) private var openURL
     @State private var saving = false
-    @State private var saved = false
+    @State private var savedIDs = Set<String>()
     @State private var showsSaveError = false
     @State private var saveError = ""
     @State private var canOpenSettings = false
 
     var body: some View {
-        SettingsSheet(title: "图片", isBusy: saving) {
-            if let image = UIImage(data: photo.data) {
-                WorkshopImageZoom(image: image)
-                    .safeAreaInset(edge: .bottom) {
-                        Button {
-                            Task { await saveToPhotos() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                if saving { ProgressView() }
-                                Label(saving ? "正在保存…" : saved ? "已保存到相册" : "保存到相册",
-                                      systemImage: saved ? "checkmark" : "square.and.arrow.down")
-                            }
+        SettingsSheet(title: photos.count > 1 ? "图片 \((photos.firstIndex { $0.id == selection } ?? 0) + 1)/\(photos.count)" : "图片", isBusy: saving) {
+            TabView(selection: $selection) {
+                ForEach(photos) { item in
+                    Group {
+                        if let image = UIImage(data: item.data) {
+                            WorkshopImageZoom(image: image)
+                                .accessibilityLabel("图片，可左右滑动切换、双指缩放")
+                        } else {
+                            ContentUnavailableView("无法预览图片", systemImage: "photo")
                         }
-                        .buttonStyle(HakoActionButtonStyle())
-                        .disabled(saving || saved)
-                        .padding()
-                        .background(.bar)
+                    }.tag(item.id)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: photos.count > 1 ? .automatic : .never))
+            .indexViewStyle(.page(backgroundDisplayMode: .always))
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    Task { await saveToPhotos() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if saving { ProgressView() }
+                        Label(saving ? "正在保存…" : saved ? "已保存到相册" : "保存到相册",
+                              systemImage: saved ? "checkmark" : "square.and.arrow.down")
                     }
+                }
+                .buttonStyle(HakoActionButtonStyle())
+                .disabled(saving || saved)
+                .padding()
+                .background(.bar)
             }
         }
         .alert("无法保存图片", isPresented: $showsSaveError) {
@@ -476,6 +495,7 @@ struct WorkshopPhotoPreview: View {
 
     @MainActor private func saveToPhotos() async {
         guard !saving, !saved else { return }
+        let selectedPhoto = photo
         saving = true
         canOpenSettings = false
         defer { saving = false }
@@ -489,11 +509,11 @@ struct WorkshopPhotoPreview: View {
             return
         }
         do {
-            let data = photo.data
+            let data = selectedPhoto.data
             try await PHPhotoLibrary.shared().performChanges {
                 PHAssetCreationRequest.forAsset().addResource(with: .photo, data: data, options: nil)
             }
-            saved = true
+            savedIDs.insert(selectedPhoto.id)
             UIAccessibility.post(notification: .announcement, argument: "已保存到相册")
         } catch {
             saveError = "保存未完成：\(error.localizedDescription) 请先检查相册再重试。"

@@ -43,7 +43,6 @@ var investmentTables = []investmentTable{
 	{"investment_account_daily_snapshots", "account_id snapshot_date", "cash_native holdings_native gain_native status", true},
 	{"investment_balance_accounts", "id", "name category currency sort_order", false},
 	{"investment_balance_records", "id", "balance_account_id recorded_at amount", false},
-	{"investment_month_snapshots", "snapshot_date", "total_cny", true},
 }
 
 var (
@@ -71,7 +70,6 @@ var investmentRequired = map[string]string{
 	"investment_account_daily_snapshots": "status",
 	"investment_balance_accounts":        "name category currency",
 	"investment_balance_records":         "balance_account_id recorded_at amount",
-	"investment_month_snapshots":         "total_cny",
 }
 
 type investmentState struct {
@@ -114,6 +112,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err == nil {
+		err = migrateInvestmentMonthSnapshots(db)
+	}
+	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',

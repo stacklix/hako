@@ -85,7 +85,7 @@ internal static class GuardianRefreshChecks
             await Task.Delay(500, token);
             if (old.HasExited || AgentGuardian.Hash(guardian) != oldHash || File.Exists(AgentGuardianControl.FileFor(profile, "stop")))
                 throw new Exception("Incompatible refresh touched the running guardian");
-            server.Version = "0.7.4";
+            server.Version = "0.8.0";
             await WaitFor(() => AgentGuardianControl.Read<AgentGuardianRefresh.State>(AgentGuardianRefresh.StatePath(profile))?.StateName == "waiting_update", token);
             if (old.HasExited || AgentGuardian.Hash(guardian) != oldHash) throw new Exception("Refresh bypassed the main update lock");
             // A bad candidate must fail before the existing owner is asked to stop.
