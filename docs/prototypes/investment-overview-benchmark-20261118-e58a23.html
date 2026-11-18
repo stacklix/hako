@@ -1,0 +1,306 @@
+<div id="hako-overview-a9d37f" class="viz-dotted-background">
+  <style>
+    #hako-overview-a9d37f {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;padding:18px 0;color-scheme:light dark}
+    #hako-overview-a9d37f * {box-sizing:border-box}
+    #hako-overview-a9d37f .app {--ho-bg:light-dark(#f5f5f7,#151517);--ho-panel:light-dark(#fff,#242427);--ho-text:light-dark(#202124,#f2f2f4);--ho-muted:light-dark(#76777d,#aaaab0);--ho-line:light-dark(#e9e9ee,#38383c);--ho-teal:light-dark(#078a8e,#5ac9cc);--ho-gain:light-dark(#c4414b,#ff8e96);--ho-loss:light-dark(#258259,#72c69e);--ho-selected:light-dark(#f1f1f4,#333337);width:100%;max-width:424px;margin:0 auto;background:var(--ho-bg);color:var(--ho-text);border:1px solid var(--ho-line);border-radius:28px;overflow:hidden;font-size:14px;line-height:1.45}
+    #hako-overview-a9d37f .app p,#hako-overview-a9d37f .app h1,#hako-overview-a9d37f .app h2 {margin:0}
+    #hako-overview-a9d37f .app button {font:inherit;color:inherit;background:none;border:0;padding:0;touch-action:manipulation}
+    #hako-overview-a9d37f .app button:focus-visible {outline:2px solid var(--ho-teal);outline-offset:-2px;border-radius:5px}
+    #hako-overview-a9d37f .app button:active {opacity:.65}
+    #hako-overview-a9d37f .nav {display:flex;align-items:center;justify-content:space-between;padding:13px 18px 0;min-height:44px}
+    #hako-overview-a9d37f .nav-label {font-size:12px;color:var(--ho-muted)}
+    #hako-overview-a9d37f .nav i,#hako-overview-a9d37f .nav svg {width:19px;height:19px}
+    #hako-overview-a9d37f .nav-tools {display:flex;align-items:center;gap:18px}
+    #hako-overview-a9d37f .heading {padding:15px 20px 13px}
+    #hako-overview-a9d37f h1 {font-size:28px;font-weight:650;letter-spacing:-.7px}
+    #hako-overview-a9d37f .source {font-size:12px;color:var(--ho-muted);margin-top:6px!important;display:flex;align-items:center;gap:6px}
+    #hako-overview-a9d37f .source::before {content:"";width:5px;height:5px;flex:none;border-radius:50%;background:var(--ho-teal)}
+    #hako-overview-a9d37f .content {padding:0 18px 18px;display:grid;gap:14px}
+    #hako-overview-a9d37f .panel {padding:15px;border-radius:14px;background:var(--ho-panel);min-width:0}
+    #hako-overview-a9d37f .muted {color:var(--ho-muted)}
+    #hako-overview-a9d37f .small {font-size:12px}
+    #hako-overview-a9d37f .nums {font-variant-numeric:tabular-nums;letter-spacing:-.15px}
+    #hako-overview-a9d37f .total {font-size:32px;font-weight:600;line-height:1.2;margin:4px 0}
+    #hako-overview-a9d37f .metrics {display:flex;justify-content:space-between;gap:12px;margin-top:17px}
+    #hako-overview-a9d37f .metric-value {font-size:18px;font-weight:500;margin-top:3px}
+    #hako-overview-a9d37f .gain {color:light-dark(#147557,#76cbae)}
+    #hako-overview-a9d37f .loss {color:light-dark(#aa3846,#f78891)}
+    #hako-overview-a9d37f .app {--ho-gain:light-dark(#147557,#76cbae);--ho-loss:light-dark(#aa3846,#f78891)}
+    #hako-overview-a9d37f .chart-panel {position:relative;--ho-accent:light-dark(#514298,#c5b7ff);--ho-summary:light-dark(#f0eef8,#2b2936);--ho-curve:light-dark(#4765ae,#9eafff)}
+    #hako-overview-a9d37f .trend-heading {display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:38px}
+    #hako-overview-a9d37f .range-control {position:relative}
+    #hako-overview-a9d37f .range-trigger {display:flex;gap:6px;align-items:center;min-height:38px;font-size:12px!important;color:var(--ho-accent)!important}
+    #hako-overview-a9d37f .range-trigger svg,#hako-overview-a9d37f .range-trigger i {width:13px;height:13px}
+    #hako-overview-a9d37f .range-menu {position:absolute;top:43px;right:0;width:168px;padding:5px;background:light-dark(#fff,#323237);border:1px solid var(--ho-line);border-radius:12px;box-shadow:0 6px 18px #00000026;z-index:20}
+    #hako-overview-a9d37f [hidden] {display:none!important}
+    #hako-overview-a9d37f .range-menu button {display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;width:100%;padding:0 12px;border-radius:7px;text-align:left}
+    #hako-overview-a9d37f .range-menu button[aria-checked="true"] {color:var(--ho-accent);background:var(--ho-summary)}
+    #hako-overview-a9d37f .range-menu .check {visibility:hidden;width:15px;height:15px}
+    #hako-overview-a9d37f .range-menu button[aria-checked="true"] .check {visibility:visible}
+    #hako-overview-a9d37f .benchmark-row {display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:4px}
+    #hako-overview-a9d37f .benchmark-caption {color:var(--ho-muted);font-size:12px}
+    #hako-overview-a9d37f .benchmark-control {position:relative}
+    #hako-overview-a9d37f .benchmark-trigger {display:flex;align-items:center;gap:5px;min-height:38px;font-size:12px!important;color:var(--ho-accent)!important}
+    #hako-overview-a9d37f .benchmark-trigger svg,#hako-overview-a9d37f .benchmark-trigger i {width:13px;height:13px}
+    #hako-overview-a9d37f .benchmark-menu {position:absolute;top:40px;right:0;width:174px;padding:5px;background:light-dark(#fff,#323237);border:1px solid var(--ho-line);border-radius:12px;box-shadow:0 6px 18px #00000026;z-index:20}
+    #hako-overview-a9d37f .benchmark-menu button {display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;width:100%;padding:0 12px;border-radius:7px;text-align:left}
+    #hako-overview-a9d37f .benchmark-menu button[aria-checked="true"] {color:var(--ho-accent);background:var(--ho-summary)}
+    #hako-overview-a9d37f .benchmark-menu .check {visibility:hidden;width:15px;height:15px}
+    #hako-overview-a9d37f .benchmark-menu button[aria-checked="true"] .check {visibility:visible}
+    #hako-overview-a9d37f .comparison-legend {display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--ho-muted);margin-top:2px}
+    #hako-overview-a9d37f .comparison-legend span {display:flex;gap:5px;align-items:center}
+    #hako-overview-a9d37f .legend-line {display:inline-block;width:17px;border-top:2px solid var(--ho-curve)}
+    #hako-overview-a9d37f .legend-benchmark {border-top:2px dashed light-dark(#ad7725,#e6b968)}
+    #hako-overview-a9d37f .benchmark-reading {display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;margin:2px 0 7px}
+    #hako-overview-a9d37f .plot .benchmark-curve {fill:none;stroke:light-dark(#ad7725,#e6b968);stroke-width:1.8;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    #hako-overview-a9d37f .plot .benchmark-point {fill:light-dark(#ad7725,#e6b968);stroke:var(--ho-panel);stroke-width:2}
+    #hako-overview-a9d37f .tabs {display:flex;gap:14px;margin-top:4px}
+    #hako-overview-a9d37f .tabs button {min-width:0;min-height:44px;font-size:12px;color:var(--ho-muted);white-space:nowrap}
+    #hako-overview-a9d37f .tabs button span {display:block;padding:5px 7px;border-radius:7px}
+    #hako-overview-a9d37f .tabs button[aria-selected="true"] span {color:var(--ho-accent);background:var(--ho-summary);font-weight:600}
+    #hako-overview-a9d37f .ranges {display:flex;border-bottom:1px solid var(--ho-line);margin-top:4px}
+    #hako-overview-a9d37f .ranges button {position:relative;flex:1;min-width:0;font-size:12px;white-space:nowrap;min-height:44px;color:var(--ho-muted)}
+    #hako-overview-a9d37f .ranges button[aria-pressed="true"] {color:var(--ho-text);font-weight:600}
+    #hako-overview-a9d37f .ranges button[aria-pressed="true"]::after {content:"";position:absolute;bottom:0;left:calc(50% - 10px);width:20px;height:2px;border-radius:3px;background:var(--ho-text)}
+    #hako-overview-a9d37f .plot {height:171px;margin-top:7px;position:relative;touch-action:pan-y}
+    #hako-overview-a9d37f .plot svg {display:block;width:100%;height:100%;overflow:visible}
+    #hako-overview-a9d37f .plot text {font-size:11px;font-family:inherit;fill:var(--ho-muted)}
+    #hako-overview-a9d37f .plot .grid {stroke:var(--ho-line);stroke-width:.7}
+    #hako-overview-a9d37f .plot .zero {stroke:var(--ho-muted);stroke-width:.8;stroke-dasharray:3 4}
+    #hako-overview-a9d37f .plot .curve {fill:none;stroke:var(--ho-curve);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    #hako-overview-a9d37f .plot .area {fill:var(--ho-curve);opacity:.2;pointer-events:none}
+    #hako-overview-a9d37f .plot .guide {stroke:var(--ho-muted);stroke-width:1;stroke-dasharray:3 4}
+    #hako-overview-a9d37f .plot .point {fill:var(--ho-curve);stroke:var(--ho-panel);stroke-width:2}
+    #hako-overview-a9d37f .reading {display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;min-height:30px}
+    #hako-overview-a9d37f .reading strong {font-weight:500;font-size:14px;white-space:nowrap}
+    #hako-overview-a9d37f .scrub {position:absolute;width:100%;height:44px;bottom:25px;left:0;margin:0;opacity:0}
+    #hako-overview-a9d37f .scrub:focus-visible {opacity:.9}
+    #hako-overview-a9d37f .explanation {color:var(--ho-muted);font-size:11px;min-height:32px;line-height:1.55;margin-top:5px!important}
+    #hako-overview-a9d37f h2 {font-size:16px;font-weight:600}
+    #hako-overview-a9d37f .calendar-heading {display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+    #hako-overview-a9d37f .calendar-heading span {font-size:12px;color:var(--ho-muted)}
+    #hako-overview-a9d37f .week,#hako-overview-a9d37f .days {display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;text-align:center}
+    #hako-overview-a9d37f .week {font-size:11px;color:var(--ho-muted);margin-bottom:7px}
+    #hako-overview-a9d37f .day {min-height:42px;border-radius:6px;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;background:color-mix(in srgb,var(--ho-gain) 9%,transparent)}
+    #hako-overview-a9d37f .day.negative {color:var(--ho-loss);background:color-mix(in srgb,var(--ho-loss) 9%,transparent)}
+    #hako-overview-a9d37f .day.positive {color:var(--ho-gain)}
+    #hako-overview-a9d37f .day.future,#hako-overview-a9d37f .day.empty {background:transparent;color:var(--ho-muted)}
+    #hako-overview-a9d37f .day.today {outline:1px solid var(--ho-text);outline-offset:-1px}
+    #hako-overview-a9d37f .day small {font-size:10px;letter-spacing:-.3px}
+    #hako-overview-a9d37f .calendar-note {font-size:11px;color:var(--ho-muted);margin-top:10px!important}
+    #hako-overview-a9d37f .account {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 0;border-bottom:1px solid var(--ho-line)}
+    #hako-overview-a9d37f .account:last-child {padding-bottom:0;border:0}
+    #hako-overview-a9d37f .account-name {font-size:14px;font-weight:500}
+    #hako-overview-a9d37f .account .small {margin-top:4px}
+    #hako-overview-a9d37f .account-right {text-align:right}
+    #hako-overview-a9d37f .account-details {border-top:1px solid var(--ho-line);margin-top:10px;padding-top:12px}
+    #hako-overview-a9d37f .account-details-title {font-size:12px;color:var(--ho-muted);font-weight:400}
+    #hako-overview-a9d37f .account-details .account {padding:10px 0}
+    #hako-overview-a9d37f .account-details .account:last-child {padding-bottom:0}
+    #hako-overview-a9d37f .account-details .account-name {font-size:13px;font-weight:400}
+    #hako-overview-a9d37f .account-details .account-right {font-size:14px;font-weight:500}
+    #hako-overview-a9d37f .bottom {background:var(--ho-panel);border-top:1px solid var(--ho-line);display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:11px 8px 13px}
+    #hako-overview-a9d37f .bottom-item {display:flex;align-items:center;flex-direction:column;gap:5px;font-size:11px;color:var(--ho-muted)}
+    #hako-overview-a9d37f .bottom-item:first-child {color:var(--ho-text)}
+    #hako-overview-a9d37f .bottom i,#hako-overview-a9d37f .bottom svg {width:21px;height:21px}
+    @media(max-width:360px) {#hako-overview-a9d37f .content {padding-left:12px;padding-right:12px} #hako-overview-a9d37f .panel {padding-left:12px;padding-right:12px} #hako-overview-a9d37f .tabs button {font-size:12px} #hako-overview-a9d37f .ranges button {font-size:11px}}
+  </style>
+  <section class="app" aria-label="投资记账总览原型，使用示例数据">
+    <div class="nav"><span class="nav-label">Hako</span><div class="nav-tools" aria-hidden="true"><i data-lucide="message-circle"></i><i data-lucide="sliders-horizontal"></i></div></div>
+    <header class="heading"><h1>投资记账</h1><p class="source">示例账本 · 指数走势为模拟数据</p></header>
+    <div class="content">
+      <section class="panel" aria-label="投资总览摘要">
+        <p class="small muted">总资产 · CNY</p><div class="total nums">484,520.00</div><p class="small muted nums">折合美元 · $67,312.22</p>
+        <div class="metrics"><div><p class="small muted">当日盈亏（暂估）</p><p class="metric-value gain nums">+1,860.35</p></div><div><p class="small muted">历史总盈亏</p><p class="metric-value gain nums">+84,520.00</p></div></div>
+      </section>
+      <section class="panel chart-panel" aria-label="投资走势">
+        <div class="trend-heading"><h2>投资趋势</h2><div class="range-control"><button type="button" class="range-trigger cursor-interaction" aria-haspopup="menu" aria-expanded="false" aria-controls="ho-a9d37f-range-menu"><span class="range-label">近一月</span><i data-lucide="chevron-down" aria-hidden="true"></i></button><div class="range-menu" id="ho-a9d37f-range-menu" role="menu" aria-label="时间范围" hidden>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="0" aria-checked="false"><span>今年</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="1" aria-checked="true"><span>近一月</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="3" aria-checked="false"><span>近三月</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="12" aria-checked="false"><span>近一年</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="24" aria-checked="false"><span>近两年</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button class="cursor-interaction" type="button" role="menuitemradio" data-months="60" aria-checked="false"><span>近五年</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+        </div></div></div>
+        <div class="tabs" role="tablist" aria-label="总览曲线类型">
+          <button class="cursor-interaction" id="ho-a9d37f-value" type="button" role="tab" aria-selected="true" aria-controls="ho-a9d37f-chart" data-metric="value"><span>投资总额</span></button>
+          <button class="cursor-interaction" id="ho-a9d37f-gain" type="button" role="tab" aria-selected="false" aria-controls="ho-a9d37f-chart" data-metric="gain"><span>盈亏曲线</span></button>
+          <button class="cursor-interaction" id="ho-a9d37f-rate" type="button" role="tab" aria-selected="false" aria-controls="ho-a9d37f-chart" data-metric="rate"><span>盈亏率曲线</span></button>
+        </div>
+        <div class="benchmark-row"><span class="benchmark-caption">比较基准</span><div class="benchmark-control"><button type="button" class="benchmark-trigger cursor-interaction" aria-haspopup="menu" aria-expanded="false" aria-controls="ho-a9d37f-benchmark-menu"><span class="benchmark-label">标普500</span><i data-lucide="chevron-down" aria-hidden="true"></i></button><div class="benchmark-menu" id="ho-a9d37f-benchmark-menu" role="menu" aria-label="选择比较基准" hidden>
+          <button type="button" class="cursor-interaction" role="menuitemradio" data-benchmark="sp500" aria-checked="true"><span>标普500</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+          <button type="button" class="cursor-interaction" role="menuitemradio" data-benchmark="hs300" aria-checked="false"><span>沪深300</span><i data-lucide="check" class="check" aria-hidden="true"></i></button>
+        </div></div></div>
+        <div class="comparison-legend"><span><b class="legend-line" aria-hidden="true"></b>投资组合</span><span><b class="legend-line legend-benchmark" aria-hidden="true"></b><span class="legend-benchmark-label">标普500</span></span></div>
+        <div id="ho-a9d37f-chart" role="tabpanel" aria-labelledby="ho-a9d37f-value">
+          <div class="plot"><svg class="history-chart" role="img" aria-label="投资总额变化，单位人民币"></svg><input class="scrub" type="range" aria-label="选择曲线日期" min="0" max="30" value="30" step="1"></div>
+          <div class="reading"><span class="date muted nums">2026-11-18 · 暂估</span><strong class="read-value nums" aria-live="polite">484,520.00</strong></div>
+          <div class="benchmark-reading nums" aria-live="polite"><span class="benchmark-amount muted"></span><span class="comparison-gap"></span></div>
+          <p class="explanation">按人民币汇总投资总额，历史使用日终估值。</p>
+          <section class="account-details" aria-label="所选日期账户明细"><h3 class="account-details-title">各账户总额 · CNY</h3><div class="account-values" aria-live="polite"></div></section>
+        </div>
+      </section>
+      <section class="panel" aria-label="盈亏日历"><div class="calendar-heading"><h2>盈亏日历</h2><span>2026年11月</span></div><div class="week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="days"></div><p class="calendar-note nums">2026-11-18 · 暂估盈亏 +1,860.35</p></section>
+    </div>
+    <footer class="bottom" aria-label="子应用导航"><div class="bottom-item"><i data-lucide="chart-no-axes-combined" aria-hidden="true"></i><span>总览</span></div><div class="bottom-item"><i data-lucide="wallet" aria-hidden="true"></i><span>账户</span></div><div class="bottom-item"><i data-lucide="star" aria-hidden="true"></i><span>关注</span></div><div class="bottom-item"><i data-lucide="scale" aria-hidden="true"></i><span>资产负债</span></div></footer>
+  </section>
+  <script>
+  (() => {
+    const root = document.getElementById('hako-overview-a9d37f');
+    const app = root.querySelector('.app');
+    const svg = root.querySelector('.history-chart');
+    const plot = root.querySelector('.plot');
+    const slider = root.querySelector('.scrub');
+    const end = Date.UTC(2026,10,18), day = 86400000;
+    const first = Date.UTC(2021,10,18), count = Math.round((end-first)/day);
+    const money = value => Math.abs(value).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const dates = new Intl.DateTimeFormat('sv-SE',{timeZone:'UTC',year:'numeric',month:'2-digit',day:'2-digit'});
+    const accounts=[{name:'证券账户',share:.55,gainShare:64520/84520},{name:'基金理财',share:.3,gainShare:24000/84520},{name:'加密货币',share:.15,gainShare:-4000/84520}];
+    const points = Array.from({length:count+1},(_,i) => {
+      const t=i/count, date=first+i*day;
+      let gain = -6500+86500*t+7000*Math.sin(i*.025)+2700*Math.sin(i*.11);
+      gain += (84520-(-6500+86500+7000*Math.sin(count*.025)+2700*Math.sin(count*.11)))*t;
+      if(i===count-1) gain=82659.65;
+      if(i===count) gain=84520;
+      const net = date>=Date.UTC(2026,10,8)?400000:date>=Date.UTC(2025,10,18)?350000:date>=Date.UTC(2024,10,18)?280000:date>=Date.UTC(2023,10,18)?220000:date>=Date.UTC(2022,10,18)?160000:100000;
+      return {date,net,gain,rate:gain/net,value:net+gain,accounts:accounts.map(account=>{const investment=net*account.share,profit=gain*account.gainShare;return {name:account.name,value:investment+profit,gain:profit,rate:profit/investment}})};
+    });
+    points.forEach((p,i)=>{
+      const prior=points[i-1];
+      p.unit=prior?prior.unit*(p.value-(p.net-prior.net))/prior.value:1;
+      const weekend=[0,6].includes(new Date(p.date).getUTCDay());
+      p.hs300=prior&&weekend?prior.hs300:1000*Math.exp(.00014*i+.08*Math.sin(i*.012)+.025*Math.sin(i*.07));
+      p.sp500=prior&&weekend?prior.sp500:2500*Math.exp(.00028*i+.035*Math.sin(i*.009)+.02*Math.sin(i*.1));
+    });
+    const benchmarkNames={sp500:'标普500',hs300:'沪深300'};
+    let metric='rate', benchmark='sp500', months=1, selected=end, visible=[], geometry=null, previous=null, previousBenchmark=null, frame=0;
+    const saved=window.openai?.widgetState?.privateContent;
+    function restore(state) {
+      if(!state) return;
+      if(['value','gain','rate'].includes(state.metric)) metric=state.metric;
+      if(['sp500','hs300'].includes(state.benchmark)) benchmark=state.benchmark;
+      if([0,1,3,12,24,60].includes(state.months)) months=state.months;
+      if(Number.isFinite(state.selected)) selected=Math.min(end,Math.max(first,state.selected));
+    }
+    restore(saved);
+    function save() {
+      window.openai?.setWidgetState?.({modelContent:{curve:metric,months,benchmark},privateContent:{metric,months,selected,benchmark}})?.catch(()=>{});
+    }
+    function reading() {
+      const p=visible.reduce((best,p)=>Math.abs(p.date-selected)<Math.abs(best.date-selected)?p:best,visible[0]);
+      selected=p.date;
+      root.querySelector('.date').textContent=dates.format(new Date(p.date))+(p.date===end?' · 暂估':'');
+      const label=root.querySelector('.read-value');
+      const signed=value=>(value>0?'+':value<0?'−':'')+money(value);
+      const percent=value=>(value>0?'+':'')+(value*100).toFixed(2)+'%';
+      label.textContent='组合 '+(metric==='rate'?percent(p.plotValue):metric==='gain'?signed(p.plotValue):money(p.plotValue));
+      label.className='read-value nums'+(metric==='value'?'':p.plotValue<0?' loss':p.plotValue>0?' gain':' muted');
+      root.querySelector('.benchmark-amount').textContent=benchmarkNames[benchmark]+' '+(metric==='rate'?percent(p.referenceValue):metric==='gain'?signed(p.referenceValue):money(p.referenceValue));
+      const difference=p.plotValue-p.referenceValue,gap=root.querySelector('.comparison-gap');
+      gap.textContent=(difference>=0?'领先 ':'落后 ')+(metric==='rate'?(Math.abs(difference)*100).toFixed(2)+'个百分点':money(difference)+'元');
+      gap.className='comparison-gap'+(difference>0?' gain':difference<0?' loss':' muted');
+      slider.value=String(visible.indexOf(p));
+      root.querySelector('.account-details-title').textContent={value:'各账户总额 · CNY',gain:'各账户盈亏 · CNY',rate:'各账户累计盈亏率'}[metric];
+      root.querySelector('.account-values').innerHTML=p.accounts.map(account=>{
+        const value=account[metric];
+        const color=metric==='value'?'':value>0?' gain':value<0?' loss':' muted';
+        const formatted=metric==='rate'?(value>0?'+':'')+(value*100).toFixed(2)+'%':(metric==='gain'?(value>0?'+':value<0?'−':''):'')+money(value);
+        return `<div class="account"><span class="account-name">${account.name}</span><span class="account-right nums${color}">${formatted}</span></div>`;
+      }).join('');
+      if(geometry) {
+        const {left,right,top,bottom,width,x,y}=geometry;
+        const sx=x(p.date), sy=y(p.plotValue),by=y(p.referenceValue);
+        svg.querySelector('.selection').innerHTML=`<line class="guide" x1="${sx}" y1="${top}" x2="${sx}" y2="${bottom}"/><circle class="point" cx="${sx}" cy="${sy}" r="4.5"/><circle class="benchmark-point" cx="${sx}" cy="${by}" r="3.8"/>`;
+      }
+    }
+    function render(animate=false) {
+      const start=new Date(end);
+      if(months===0) start.setUTCMonth(0,1);
+      else start.setUTCMonth(start.getUTCMonth()-months);
+      visible=points.filter(p=>p.date>=+start).map(p=>({...p}));
+      const base=visible[0];
+      let units=base.value/base[benchmark];
+      visible.forEach((p,i)=>{
+        if(i>0) units+=(p.net-visible[i-1].net)/p[benchmark];
+        const equivalentValue=units*p[benchmark];
+        p.plotValue=metric==='rate'?p.unit/base.unit-1:p[metric];
+        p.referenceValue=metric==='value'?equivalentValue:metric==='gain'?equivalentValue-p.net:p[benchmark]/base[benchmark]-1;
+      });
+      selected=Math.max(visible[0].date,Math.min(end,selected));
+      slider.max=String(visible.length-1);
+      root.querySelectorAll('[data-metric]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.metric===metric)));
+      root.querySelectorAll('[data-months]').forEach(b=>b.setAttribute('aria-checked',String(Number(b.dataset.months)===months)));
+      root.querySelector('.range-label').textContent={0:'今年',1:'近一月',3:'近三月',12:'近一年',24:'近两年',60:'近五年'}[months];
+      root.querySelectorAll('[data-benchmark]').forEach(b=>b.setAttribute('aria-checked',String(b.dataset.benchmark===benchmark)));
+      root.querySelector('.benchmark-label').textContent=benchmarkNames[benchmark];
+      root.querySelector('.legend-benchmark-label').textContent=benchmarkNames[benchmark];
+      root.querySelector('[role="tabpanel"]').setAttribute('aria-labelledby','ho-a9d37f-'+metric);
+      root.querySelector('.explanation').textContent=(metric==='rate'?'区间起点归零，组合收益率剔除资金进出影响，非年化。账户明细保留累计盈亏率。':'基准按相同区间起始金额、相同资金进出模拟；'+(metric==='gain'?'盈亏保留区间开始前的累计值。':'显示模拟持有金额，并非指数点位。'))+'基准为本币价格口径，不含分红及汇率。';
+      const width=Math.max(240,plot.clientWidth), height=171, left=49,right=width-5,top=10,bottom=142;
+      const values=visible.flatMap(p=>[p.plotValue,p.referenceValue]);
+      let low=Math.min(...values),high=Math.max(...values);
+      low=Math.min(low,0);high=Math.max(high,0);
+      const pad=Math.max((high-low)*.1,metric==='rate'?.005:100);low-=pad;high+=pad;
+      const x=date=>left+(date-visible[0].date)/(end-visible[0].date)*(right-left);
+      const y=value=>bottom-(value-low)/(high-low)*(bottom-top);
+      geometry={left,right,top,bottom,width,x,y};
+      const tick = v => metric==='rate'?(v*100).toFixed(1)+'%':Math.abs(v)>=10000?(v/10000).toFixed(1)+'万':Math.round(v).toLocaleString('en-US');
+      const grid=Array.from({length:4},(_,i)=>{const value=low+(high-low)*i/3,yy=y(value);return `<line class="grid" x1="${left}" y1="${yy}" x2="${right}" y2="${yy}"/><text x="${left-7}" y="${yy+4}" text-anchor="end">${tick(value)}</text>`}).join('');
+      const axis=[0,.5,1].map((t,i)=>{const date=new Date(visible[0].date+(end-visible[0].date)*t);const label=months>12?date.getUTCFullYear()+'/'+String(date.getUTCMonth()+1).padStart(2,'0'):String(date.getUTCMonth()+1).padStart(2,'0')+'/'+String(date.getUTCDate()).padStart(2,'0');return `<text x="${left+(right-left)*t}" y="${height-8}" text-anchor="${i===0?'start':i===2?'end':'middle'}">${label}</text>`}).join('');
+      const sampled=Array.from({length:100},(_,i)=>visible[Math.round(i/99*(visible.length-1))]);
+      const coords=sampled.map(p=>[x(p.date),y(p.plotValue)]);
+      const benchmarkCoords=sampled.map(p=>[x(p.date),y(p.referenceValue)]);
+      const path=values=>values.map((p,i)=>(i?'L':'M')+p[0].toFixed(2)+','+p[1].toFixed(2)).join(' ');
+      const area=values=>path(values)+` L${right},${y(0)} L${left},${y(0)} Z`;
+      cancelAnimationFrame(frame);
+      svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
+      const name={value:'投资总额，单位人民币',gain:'累计盈亏，单位人民币',rate:'区间收益率，单位百分比'}[metric]+'，投资组合与'+benchmarkNames[benchmark]+'比较';
+      svg.setAttribute('aria-label',name+'，'+dates.format(new Date(visible[0].date))+'至2026-11-18，示例数据');
+      svg.innerHTML=`<title>${name}</title>${grid}<path class="area" d="${area(coords)}"/><line class="zero" x1="${left}" y1="${y(0)}" x2="${right}" y2="${y(0)}"/><path class="curve" d="${path(coords)}"/><path class="benchmark-curve" d="${path(benchmarkCoords)}"/>${axis}<g class="selection"></g>`;
+      if(animate&&previous&&!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const old=previous,oldBenchmark=previousBenchmark||benchmarkCoords,line=svg.querySelector('.curve'),fill=svg.querySelector('.area'),reference=svg.querySelector('.benchmark-curve'),time=performance.now();
+        const step=now=>{const progress=Math.min(1,(now-time)/240),t=1-Math.pow(1-progress,3),values=coords.map((p,i)=>[old[i][0]+(p[0]-old[i][0])*t,old[i][1]+(p[1]-old[i][1])*t]),referenceValues=benchmarkCoords.map((p,i)=>[oldBenchmark[i][0]+(p[0]-oldBenchmark[i][0])*t,oldBenchmark[i][1]+(p[1]-oldBenchmark[i][1])*t]);line.setAttribute('d',path(values));fill.setAttribute('d',area(values));reference.setAttribute('d',path(referenceValues));if(progress<1)frame=requestAnimationFrame(step)};
+        frame=requestAnimationFrame(step);
+      }
+      previous=coords;previousBenchmark=benchmarkCoords;reading();
+    }
+    root.querySelectorAll('[data-metric]').forEach(button=>button.addEventListener('click',()=>{metric=button.dataset.metric;render(true);save()}));
+    root.querySelectorAll('[data-months]').forEach(button=>button.addEventListener('click',()=>{months=Number(button.dataset.months);selected=end;setMenu(false);render(true);save();root.querySelector('.range-trigger').focus()}));
+    function setMenu(open) {if(open)setBenchmarkMenu(false);root.querySelector('.range-menu').hidden=!open;root.querySelector('.range-trigger').setAttribute('aria-expanded',String(open))}
+    function setBenchmarkMenu(open) {if(open)setMenu(false);root.querySelector('.benchmark-menu').hidden=!open;root.querySelector('.benchmark-trigger').setAttribute('aria-expanded',String(open))}
+    root.querySelector('.benchmark-trigger').addEventListener('click',()=>setBenchmarkMenu(root.querySelector('.benchmark-menu').hidden));
+    root.querySelectorAll('[data-benchmark]').forEach(button=>button.addEventListener('click',()=>{benchmark=button.dataset.benchmark;setBenchmarkMenu(false);render(true);save();root.querySelector('.benchmark-trigger').focus()}));
+    document.addEventListener('pointerdown',event=>{if(!root.querySelector('.benchmark-control').contains(event.target))setBenchmarkMenu(false)});
+    root.querySelector('.benchmark-control').addEventListener('keydown',event=>{
+      if(event.key==='Escape'){setBenchmarkMenu(false);root.querySelector('.benchmark-trigger').focus();return}
+      if(!['ArrowDown','ArrowUp'].includes(event.key))return;
+      event.preventDefault();setBenchmarkMenu(true);const options=[...root.querySelectorAll('[data-benchmark]')],index=options.indexOf(document.activeElement);
+      options[index<0?0:(index+(event.key==='ArrowDown'?1:options.length-1))%options.length].focus();
+    });
+    root.querySelector('.range-trigger').addEventListener('click',()=>setMenu(root.querySelector('.range-menu').hidden));
+    document.addEventListener('pointerdown',event=>{if(!root.querySelector('.range-control').contains(event.target))setMenu(false)});
+    root.addEventListener('keydown',event=>{if(event.key==='Escape'){setMenu(false);root.querySelector('.range-trigger').focus()}});
+    root.querySelector('.range-control').addEventListener('keydown',event=>{
+      if(!['ArrowDown','ArrowUp'].includes(event.key))return;
+      event.preventDefault();setMenu(true);const options=[...root.querySelectorAll('[data-months]')],index=options.indexOf(document.activeElement);
+      options[index<0?0:(index+(event.key==='ArrowDown'?1:options.length-1))%options.length].focus();
+    });
+    root.querySelector('.tabs').addEventListener('keydown',event=>{
+      if(!['ArrowLeft','ArrowRight'].includes(event.key))return;
+      event.preventDefault();const tabs=[...root.querySelectorAll('[data-metric]')],index=tabs.findIndex(b=>b.dataset.metric===metric);
+      const next=tabs[(index+(event.key==='ArrowRight'?1:2))%3];next.click();next.focus();
+    });
+    slider.addEventListener('input',()=>{selected=visible[Number(slider.value)].date;reading()});
+    slider.addEventListener('change',save);
+    svg.addEventListener('pointerdown',event=>{svg.setPointerCapture(event.pointerId);pick(event)});
+    svg.addEventListener('pointermove',event=>{if(event.buttons)pick(event)});
+    svg.addEventListener('pointerup',save);
+    function pick(event) {const rect=svg.getBoundingClientRect(),{left,right}=geometry;const t=Math.max(0,Math.min(1,(event.clientX-rect.left-left)/(right-left)));selected=visible[Math.round(t*(visible.length-1))].date;reading()}
+    const gains=[420,-180,360,780,540,280,-330,620,850,-120,460,1100,380,760,-240,640,920,1860.35];
+    root.querySelector('.days').innerHTML=Array.from({length:6},()=>'<span class="day empty"></span>').join('')+Array.from({length:30},(_,i)=>{const d=i+1,g=gains[i];return `<div class="day ${d>18?'future':g<0?'negative':'positive'} ${d===18?'today':''}" aria-label="11月${d}日${d<=18?'，盈亏'+g.toFixed(2):''}"><span>${d}</span>${d<=18?`<small class="nums">${g>0?'+':''}${g===1860.35?'1.86k':g}</small>`:''}</div>`}).join('');
+    window.addEventListener('openai:set_globals',event=>{if(event.detail?.globals?.widgetState){restore(event.detail.globals.widgetState.privateContent);render()}});
+    new ResizeObserver(()=>render()).observe(plot);
+    render();
+  })();
+  </script>
+</div>

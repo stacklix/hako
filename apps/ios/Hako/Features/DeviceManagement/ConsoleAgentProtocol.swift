@@ -279,6 +279,11 @@ struct ConsoleDeviceData {
     var error: String?
     var entries: [String: ConsoleCapabilityData] = [:]
     var liveUpdates: [String: UUID] = [:]
+    mutating func mergeQuery(_ item: ConsoleCapabilityData, method: String, since revisions: [String: UUID]) {
+        guard liveUpdates[method] == revisions[method] else { return }
+        entries[method] = item
+        loaded = true
+    }
     mutating func mergeQueries(_ data: [String: ConsoleCapabilityData], since revisions: [String: UUID]) {
         entries = data.merging(entries.filter {
             $0.key.hasPrefix("admin.") || liveUpdates[$0.key] != revisions[$0.key]

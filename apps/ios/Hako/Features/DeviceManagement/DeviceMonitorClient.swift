@@ -179,13 +179,48 @@ import Combine
         let liveUpdates = deviceData[agent.id]?.liveUpdates ?? [:]
         deviceData[agent.id]?.error = nil
         defer { if context == requestContext { deviceData[agent.id]?.loading = false } }
-        // The guardian can answer service administration while the main process
-        // is offline. Keep its result independent of the main query aggregate.
-        if agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.status }) != false {
-            await refreshServices(agent)
+        await withTaskGroup(of: Void.self) { group in
+            if agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.status }) != false {
+                group.addTask { _ = await self.refreshServices(agent) }
+            }
+            if let capabilities = agent.capabilities {
+                // Initial cards use independent, parameter-free queries. Git and
+                // other on-demand pages own their requests and are not scanned here.
+                let initial = Set(["query.system.metrics", DeviceProcessCommand.status,
+                                   "query.network.listeners", "query.codex.usage"])
+                for capability in capabilities where initial.contains(capability.name) {
+                    group.addTask {
+                        await self.refreshQuery(agent, capability: capability, context: context, revisions: liveUpdates)
+                    }
+                }
+            } else {
+                // Keep the existing aggregate read when inventory metadata has
+                // not arrived yet; it runs alongside guardian administration.
+                group.addTask { await self.refreshAggregate(agent, context: context, liveUpdates: liveUpdates) }
+            }
+        }
+    }
+
+    private func refreshQuery(_ agent: ConsoleAgent, capability: ConsoleAgentCapability,
+                              context: String, revisions: [String: UUID]) async {
+        guard context == requestContext, !Task.isCancelled else { return }
+        let item: ConsoleCapabilityData
+        do {
+            let result = try await invokeAgent(agent, method: capability.name, version: capability.version, as: ConsoleJSON.self)
+            item = ConsoleCapabilityData(version: capability.version, result: result)
+        } catch is CancellationError { return }
+        catch {
+            item = ConsoleCapabilityData(version: capability.version,
+                error: ConsoleAgentError(code: "query_failed", message: DeviceMonitorFailure.message(for: error)))
         }
         guard context == requestContext, !Task.isCancelled else { return }
-        if agent.capabilities?.contains(where: { $0.name.hasPrefix("query.") }) == false { return }
+        var value = deviceData[agent.id] ?? ConsoleDeviceData()
+        value.mergeQuery(item, method: capability.name, since: revisions)
+        deviceData[agent.id] = value
+    }
+
+    private func refreshAggregate(_ agent: ConsoleAgent, context: String, liveUpdates: [String: UUID]) async {
+        guard context == requestContext, !Task.isCancelled else { return }
         do {
             let data = try await authorized("request", agentID: agent.id,
                                             body: ["method": "query.all", "version": 1, "params": [String: Any]()])

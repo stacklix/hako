@@ -16,6 +16,7 @@ struct InvestmentMarketDataTests {
         try await eastmoneyUSCatalogSeparatesStocksAndETFs()
         try await eastmoneyStockConnectCatalogNormalizesCodes()
         try await eastmoneyHistoryUsesUnadjustedClosesWithoutKeys()
+        try await eastmoneyBenchmarkIdentitiesAndClosingDates()
         try await eastmoneyDerivativeMarketsAndContractFormats()
         try await eastmoneyExpiredContractsCanUseTushare()
         try await eastmoneyFundNAVPaginatesAndRejectsMoneyYields()

@@ -64,6 +64,10 @@ enum WorkshopConnectionState: Equatable {
 }
 
 enum WorkshopReadIssue {
+    static func suppressesErrorCard(for error: Error) -> Bool {
+        (error as? WorkshopFailure)?.code == "codex_operation_missing"
+    }
+
     static func message(for error: Error) -> String? {
         if let failure = error as? WorkshopFailure {
             switch failure.code {

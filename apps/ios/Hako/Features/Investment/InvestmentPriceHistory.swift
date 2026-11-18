@@ -1,14 +1,16 @@
 import Foundation
 
 enum InvestmentHistoryRange: String, CaseIterable, Identifiable, Sendable {
-    case all = "建仓后", month = "近1个月", quarter = "近3个月", half = "近半年"
-    case year = "近1年", twoYears = "近2年", fiveYears = "近5年"
+    case yearToDate = "今年", all = "建仓后", month = "近一月", quarter = "近三月", half = "近半年"
+    case year = "近一年", twoYears = "近两年", fiveYears = "近五年"
     var id: Self { self }
+    static let trend: [Self] = [.yearToDate, .month, .quarter, .half, .year, .twoYears, .fiveYears]
 
     func start(through today: Date, firstEntry: Date) -> Date {
         let today = InvestmentBook.day(today)
         let months: Int
         switch self {
+        case .yearToDate: return InvestmentBook.calendar.dateInterval(of: .year, for: today)?.start ?? today
         case .all: return InvestmentBook.day(firstEntry)
         case .month: months = 1
         case .quarter: months = 3

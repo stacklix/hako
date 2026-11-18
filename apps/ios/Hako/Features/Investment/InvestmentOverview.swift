@@ -28,15 +28,15 @@ struct InvestmentOverview: View {
     let openAccount: (UUID) -> Void
     @State private var month = InvestmentBook.day()
     @State private var selectedDay = InvestmentBook.day()
+    @State private var accountsExpanded = false
 
     private var today: Date { InvestmentBook.day() }
 
     var body: some View {
         InvestmentScroll {
             summary
-            InvestmentAssetHistory(book: book, bookVersion: bookVersion, today: today)
+            InvestmentPerformanceChart(book: book, bookVersion: bookVersion)
             calendar
-            accounts
         }
     }
 
@@ -52,10 +52,20 @@ struct InvestmentOverview: View {
             }
             HStack {
                 InvestmentMetric(title: "当日盈亏（暂估）", value: InvestmentText.money(dayGain, .cny, signed: true),
-                                 color: InvestmentText.tint(dayGain))
+                                 color: InvestmentTrendStyle.tint(dayGain))
                 Spacer(minLength: 10)
                 InvestmentMetric(title: "历史总盈亏", value: InvestmentText.money(current?.gain, .cny, signed: true),
-                                 color: InvestmentText.tint(current?.gain))
+                                 color: InvestmentTrendStyle.tint(current?.gain))
+            }
+            if !book.accounts.isEmpty {
+                Divider()
+                DisclosureGroup(isExpanded: $accountsExpanded) { accounts } label: {
+                    HStack {
+                        Text("账户盈亏").font(.subheadline.weight(.medium))
+                        Spacer(minLength: 8)
+                        Text("\(book.visibleAccounts(showArchived: showsArchived).count)个账户").font(.caption).foregroundStyle(.secondary)
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.tint(.primary)
             }
             if book.accounts.isEmpty {
                 Text("在投资记账设置中添加账户，开始记录资产。").font(.caption).foregroundStyle(.secondary)
@@ -131,8 +141,7 @@ struct InvestmentOverview: View {
     }
 
     private var accounts: some View {
-        InvestmentCard {
-            Text("账户盈亏").font(.headline)
+        VStack(alignment: .leading, spacing: 9) {
             ForEach(book.visibleAccounts(showArchived: showsArchived)) { account in
                 let current = book.value(account)
                 let previous = book.value(account, on: InvestmentBook.addDays(-1, to: today), requiresDailyPrices: true)
@@ -145,9 +154,9 @@ struct InvestmentOverview: View {
                         Spacer(minLength: 6)
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(InvestmentText.money(current?.gain, account.currency, signed: true))
-                                .foregroundStyle(InvestmentText.tint(current?.gain))
+                                .foregroundStyle(InvestmentTrendStyle.tint(current?.gain))
                             Text("当日 " + InvestmentText.money(change, account.currency, signed: true))
-                                .font(.caption).foregroundStyle(InvestmentText.tint(change))
+                                .font(.caption).foregroundStyle(InvestmentTrendStyle.tint(change))
                         }.font(.subheadline).monospacedDigit()
                         InvestmentChevron()
                     }.frame(minHeight: 44).contentShape(Rectangle())
@@ -155,129 +164,6 @@ struct InvestmentOverview: View {
                 if account.id != book.visibleAccounts(showArchived: showsArchived).last?.id { Divider() }
             }
             if book.visibleAccounts(showArchived: showsArchived).isEmpty { Text("暂无账户").foregroundStyle(.secondary).font(.subheadline) }
-        }
-    }
-}
-
-private struct InvestmentAssetHistory: View {
-    private struct Request: Equatable, Sendable {
-        let bookVersion: UUID
-        let today: Date
-        let range: InvestmentRange
-    }
-
-    private struct Point: Identifiable, Sendable {
-        let day: Date
-        let value: Decimal
-        let segment: Int
-        var id: Date { day }
-    }
-
-    private struct LoadedHistory {
-        let request: Request
-        let points: [Point]
-    }
-
-    let book: InvestmentBook
-    let bookVersion: UUID
-    let today: Date
-    @State private var range = InvestmentRange.month
-    @State private var chartDay: Date?
-    @State private var loaded: LoadedHistory?
-
-    var body: some View {
-        let request = Request(bookVersion: bookVersion, today: today, range: range)
-        let points = loaded?.request == request ? loaded?.points ?? [] : []
-        let selected = chartDay.flatMap { day in
-            points.min(by: { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) })
-        } ?? points.last
-        return InvestmentCard {
-            Text("资产变化").font(.headline)
-            HakoUnderlineTabs(title: "资产变化范围", options: InvestmentRange.chart, selection: $range) { $0.rawValue }
-                .background(alignment: .bottom) { Divider() }
-                .onChange(of: range) { chartDay = nil }
-            if let selected {
-                Chart {
-                    ForEach(points) { point in
-                        LineMark(x: .value("日期", point.day),
-                                 y: .value("总资产", NSDecimalNumber(decimal: point.value).doubleValue),
-                                 series: .value("连续区间", point.segment))
-                        .foregroundStyle(Color.teal)
-                    }
-                    RuleMark(x: .value("日期", selected.day))
-                        .foregroundStyle(HakoStyle.muted.opacity(0.65))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    PointMark(x: .value("日期", selected.day),
-                              y: .value("总资产", NSDecimalNumber(decimal: selected.value).doubleValue))
-                    .foregroundStyle(Color.teal)
-                }
-                .chartYScale(domain: .automatic(includesZero: false))
-                .chartOverlay { proxy in
-                    GeometryReader { geometry in
-                        if let anchor = proxy.plotFrame {
-                            let frame = geometry[anchor]
-                            HakoChartInteraction { point, toggle in
-                                let x = min(max(point.x, 0), frame.width)
-                                guard let day = proxy.value(atX: x, as: Date.self),
-                                      let nearest = points.min(by: { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) }) else { return }
-                                chartDay = toggle && chartDay == nearest.day ? nil : nearest.day
-                            }
-                            .frame(width: max(0, frame.width), height: max(0, frame.height))
-                            .position(x: frame.midX, y: frame.midY)
-                        }
-                    }
-                }
-                .environment(\.calendar, InvestmentBook.calendar)
-                .environment(\.timeZone, InvestmentBook.calendar.timeZone)
-                .accessibilityHint("点击或左右拖动查看日期和金额，松手保留选择，再次点击收起。")
-                .frame(height: 175)
-                HStack {
-                    Text(InvestmentText.date(selected.day) + (selected.day == today ? " · 暂估" : ""))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(InvestmentText.money(selected.value, .cny)).monospacedDigit()
-                }.font(.caption)
-            } else if loaded?.request != request {
-                ProgressView("正在计算资产变化…")
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity, minHeight: 175)
-            } else {
-                Text("暂无可用估值记录。").font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-        .task(id: request) { await load(request) }
-    }
-
-    private func load(_ request: Request) async {
-        guard loaded?.request != request, !Task.isCancelled else { return }
-        let book = self.book
-        let worker = Task.detached(priority: .userInitiated) { Self.historyPoints(book: book, request: request) }
-        let points = await withTaskCancellationHandler {
-            await worker.value
-        } onCancel: {
-            worker.cancel()
-        }
-        guard !Task.isCancelled else { return }
-        loaded = LoadedHistory(request: request, points: points)
-    }
-
-    nonisolated private static func historyPoints(book: InvestmentBook, request: Request) -> [Point] {
-        guard let earliest = book.earliest else { return [] }
-        let today = request.today
-        let start = max(earliest, request.range.start(from: today, earliest: earliest))
-        let days = InvestmentBook.calendar.dateComponents([.day], from: start, to: today).day ?? 0
-        guard days >= 0 else { return [] }
-        let step = max(1, days / 180)
-        var dates = Set(stride(from: 0, through: days, by: step).map { InvestmentBook.addDays($0, to: start) })
-        dates.insert(today)
-        dates.formUnion(book.accounts.lazy.flatMap(\.events).map(\.day).filter { $0 >= start && $0 <= today })
-        let orderedDates = dates.sorted()
-        var history = book.dailyPortfolio(on: orderedDates.filter { $0 < today })
-        history[today] = book.portfolio(on: today)
-        var segment = 0
-        return orderedDates.compactMap { day in
-            guard let value = history[day] else { segment += 1; return nil }
-            return Point(day: day, value: value.value, segment: segment)
         }
     }
 }

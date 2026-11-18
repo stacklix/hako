@@ -4,6 +4,7 @@ import Foundation
 struct InvestmentBookTests {
     static func main() throws {
         try numericStoragePrecision()
+        cumulativePortfolioGainRate()
         try ledgerAndDilutedCost()
         try firstPurchaseRequiresCash()
         try purchasesCanAutomaticallyFundCashShortfalls()
@@ -60,6 +61,16 @@ struct InvestmentBookTests {
         try deletesUnreferencedRegistrationsAndTheirQuotes()
         try deletionPreservesPlanReferences()
         print("Investment ledger checks passed")
+    }
+
+    static func cumulativePortfolioGainRate() {
+        precondition(InvestmentValuation(value: 1200, gain: 200).gainRate == Decimal(string: "0.2"))
+        precondition(InvestmentValuation(value: 800, gain: -200).gainRate == Decimal(string: "-0.2"))
+        precondition(InvestmentValuation(value: 1000, gain: 0).gainRate == 0)
+        precondition(InvestmentValuation(value: 0, gain: -1000).gainRate == -1)
+        precondition(InvestmentValuation(value: 0, gain: 0).gainRate == nil)
+        precondition(InvestmentValuation(value: 200, gain: 200).gainRate == nil)
+        precondition(InvestmentValuation(value: 100, gain: 200).gainRate == nil)
     }
 
     static func numericStoragePrecision() throws {

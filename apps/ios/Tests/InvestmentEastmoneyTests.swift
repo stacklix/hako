@@ -4,6 +4,34 @@ import FoundationNetworking
 #endif
 
 extension InvestmentMarketDataTests {
+    static func eastmoneyBenchmarkIdentitiesAndClosingDates() async throws {
+        let calendar = InvestmentBook.calendar
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 18))!
+        for benchmark in InvestmentBenchmark.allCases {
+            let provider = InvestmentQuoteProvider { request, secrets in
+                let query = eastmoneyQuery(request)
+                precondition(secrets.isEmpty && query["secid"] == benchmark.quoteID && query["fqt"] == "0")
+                precondition(request.url?.host == "push2his.eastmoney.com")
+                return try eastmoneyBars(request, code: benchmark == .sp500 ? "SPX" : "000300", market: benchmark == .sp500 ? 100 : 1,
+                    bars: ["2026-11-16,100,101", "2026-11-17,101,102", "2026-11-18,102,103"])
+            }
+            let values = try await provider.benchmarkHistory(benchmark, from: InvestmentBook.addDays(-10, to: day), through: day,
+                now: day.addingTimeInterval(4 * 3600))
+            precondition(values.allSatisfy { $0.isDailyClose == true && $0.day <= day })
+            if benchmark == .sp500 {
+                precondition(values.count == 1 && values[0].day == InvestmentBook.addDays(-1, to: day) && values[0].price == 101,
+                             "A US session must be closed before it becomes visible on its Beijing date")
+            } else { precondition(values.count == 2 && values.last?.day == InvestmentBook.addDays(-1, to: day)) }
+        }
+        let wrong = InvestmentQuoteProvider { request, _ in
+            try eastmoneyBars(request, code: "510300", market: 1, bars: ["2026-11-17,10,10"])
+        }
+        do {
+            _ = try await wrong.benchmarkHistory(.hs300, from: InvestmentBook.addDays(-10, to: day), through: day)
+            preconditionFailure("An ETF must never be accepted as the index benchmark")
+        } catch is InvestmentError { }
+    }
+
     static func eastmoneySearch(_ request: URLRequest, _ entries: [[String: String]]) throws -> (Data, URLResponse) {
         (try JSONSerialization.data(withJSONObject: ["QuotationCodeTable": ["Status": 0, "Data": entries]]),
          HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)

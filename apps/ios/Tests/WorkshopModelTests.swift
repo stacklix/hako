@@ -2,6 +2,9 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))
+        precondition(!WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_workspace_invalid", message: "invalid")))
+        precondition(!WorkshopReadIssue.suppressesErrorCard(for: URLError(.timedOut)))
         for code in ["query_timeout", "process_unavailable", "process_disconnected", "computer_offline", "workshop_timeout", "workshop_busy", "workshop_disconnected", "codex_connection_closed", "stream_overflow"] {
             let failure = WorkshopFailure(code: code, message: "Raw internal message")
             let message = WorkshopReadIssue.message(for: failure)

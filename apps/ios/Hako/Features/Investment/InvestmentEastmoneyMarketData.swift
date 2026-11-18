@@ -282,6 +282,34 @@ extension InvestmentQuoteProvider {
         return try Self.eastmoneyValid(quotes)
     }
 
+    func benchmarkHistory(_ benchmark: InvestmentBenchmark, from start: Date, through end: Date,
+                          now: Date = .now) async throws -> [InvestmentQuote] {
+        let format = Self.eastmoneyDateFormat("yyyyMMdd")
+        var url = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
+        url.queryItems = [.init(name: "secid", value: benchmark.quoteID), .init(name: "klt", value: "101"),
+                          .init(name: "fqt", value: "0"), .init(name: "lmt", value: "10000"),
+                          .init(name: "beg", value: format.string(from: start)), .init(name: "end", value: format.string(from: end)),
+                          .init(name: "fields1", value: "f1,f2,f3,f4,f5,f6"),
+                          .init(name: "fields2", value: "f51,f52,f53,f54,f55,f56")]
+        let result = try JSONDecoder().decode(EastmoneyKlines.self, from: await eastmoneyData(url.url!))
+        let parts = benchmark.quoteID.split(separator: ".", maxSplits: 1).map(String.init)
+        guard result.rc == 0, let table = result.data, table.market == Int(parts[0]),
+              table.code.uppercased() == parts[1].uppercased() else {
+            throw InvestmentError.invalid(benchmark.rawValue + "指数日线标识不匹配或暂不可用。")
+        }
+        let dateFormat = Self.eastmoneyDateFormat("yyyy-MM-dd")
+        let quotes = (table.klines ?? []).compactMap { row -> InvestmentQuote? in
+            let fields = row.split(separator: ",", omittingEmptySubsequences: false)
+            guard fields.count >= 3, let session = dateFormat.date(from: String(fields[0])),
+                  let day = benchmark.effectiveDay(session: session, now: now), day >= start, day <= end,
+                  let price = Decimal(string: String(fields[2]), locale: Locale(identifier: "en_US_POSIX")),
+                  !price.isNaN, price > 0 else { return nil }
+            return .init(day: day, price: price, source: Self.eastmoneyTitle + " · " + benchmark.rawValue, isDailyClose: true)
+        }
+        guard !quotes.isEmpty else { throw InvestmentError.invalid(benchmark.rawValue + "在此区间暂无已收盘指数行情。") }
+        return InvestmentBook.merge([], quotes)
+    }
+
     private struct EastmoneyFundHistory: Decodable {
         struct Table: Decodable {
             struct Row: Decodable {

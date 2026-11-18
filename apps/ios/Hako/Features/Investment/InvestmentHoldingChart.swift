@@ -13,7 +13,7 @@ struct InvestmentHoldingChart: View {
     let account: InvestmentAccount
     let asset: InvestmentAsset
     @State private var range: InvestmentHistoryRange
-    @State private var display = InvestmentHoldingChartDisplay.profit
+    @State private var display: InvestmentHoldingChartDisplay
     @State private var showsRanges = false
     @State private var selectedDay: Date?
     @State private var loadedRequest: Request?
@@ -28,6 +28,7 @@ struct InvestmentHoldingChart: View {
         _store = ObservedObject(wrappedValue: store)
         self.account = account
         self.asset = asset
+        _display = State(initialValue: asset.holdingChartDisplays[0])
         _range = State(initialValue: .quarter)
     }
 
@@ -44,26 +45,26 @@ struct InvestmentHoldingChart: View {
                 Spacer(minLength: 12)
                 InvestmentHistoryRangeSelector(selection: $range, isExpanded: $showsRanges)
             }.zIndex(30)
-            HakoUnderlineTabs(title: "走势图类型", options: asset.holdingChartDisplays, selection: $display) {
+            InvestmentChartTabs(title: "走势图类型", options: asset.holdingChartDisplays, selection: $display) {
                 switch $0 {
                 case .price: "价格走势"
                 case .holding: asset.historyUsesAmount ? holdingTitle : "持仓数量"
                 case .profit: "盈亏曲线"
                 }
-            }.background(alignment: .bottom) { Divider() }
+            }
             if showsPrice {
                 InvestmentPriceChart(store: store, accountID: account.id, asset: asset, range: $range, showsRanges: $showsRanges)
             } else if showsProfit {
                 InvestmentProfitChart(store: store, account: account, asset: asset, range: range, showsRanges: $showsRanges)
             } else {
                 if let selected {
+                    chart(visible, selected: selected)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(InvestmentText.date(selected.day) + " · " + holdingTitle)
                             .font(.caption).foregroundStyle(.secondary)
                         Text(asset.historyUsesAmount ? InvestmentText.money(selected.value, account.currency) : InvestmentText.number(selected.value) + " " + asset.historyUnit)
-                            .font(.title2.weight(.semibold)).monospacedDigit()
+                            .font(.subheadline.weight(.medium)).monospacedDigit()
                     }.padding(.top, 4)
-                    chart(visible, selected: selected)
                     Text(visible.count == 1 ? "目前仅有一天记录，积累记录后显示走势。" : (asset.historyUsesInvestment ? "按买入金额（含费用）减去卖出及分红回款计算，不随报价变化。" : (asset.historyUsesAmount ? "按历史余额或估值显示金额，缺少数据的日期不连线。" : "按每日持仓数量显示，包含买卖与数量调整。")))
                         .font(.caption2).foregroundStyle(.secondary)
                 } else if loadedRequest != request {
@@ -83,28 +84,36 @@ struct InvestmentHoldingChart: View {
     }
 
     private func chart(_ values: [InvestmentHoldingHistoryPoint], selected: InvestmentHoldingHistoryPoint) -> some View {
-        Chart {
+        let minimum = values.map { NSDecimalNumber(decimal: $0.value).doubleValue }.min() ?? 0
+        let maximum = values.map { NSDecimalNumber(decimal: $0.value).doubleValue }.max() ?? 0
+        let floor = minimum - max(maximum - minimum, abs(maximum) * 0.025, 0.00001) * 0.2
+        return Chart {
             ForEach(values) { point in
+                AreaMark(x: .value("日期", point.day), yStart: .value("下界", floor),
+                         yEnd: .value("金额", NSDecimalNumber(decimal: point.value).doubleValue),
+                         series: .value("连续区间", point.segment))
+                    .interpolationMethod(asset.historyUsesAmount && !asset.historyUsesInvestment ? .linear : .stepEnd)
+                    .foregroundStyle(InvestmentTrendStyle.curve.opacity(0.2))
                 LineMark(x: .value("日期", point.day),
                          y: .value(asset.historyUsesAmount ? "金额" : "数量", NSDecimalNumber(decimal: point.value).doubleValue),
                          series: .value("连续区间", point.segment))
                     .interpolationMethod(asset.historyUsesAmount && !asset.historyUsesInvestment ? .linear : .stepEnd)
-                    .foregroundStyle(Color.teal)
+                    .foregroundStyle(InvestmentTrendStyle.curve)
                 PointMark(x: .value("日期", point.day),
                           y: .value(asset.historyUsesAmount ? "金额" : "数量", NSDecimalNumber(decimal: point.value).doubleValue))
-                    .foregroundStyle(Color.teal).symbolSize(12)
+                    .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(12)
             }
             RuleMark(x: .value("日期", selected.day))
                 .foregroundStyle(HakoStyle.muted.opacity(0.65))
                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
             PointMark(x: .value("日期", selected.day),
                       y: .value(asset.historyUsesAmount ? "金额" : "数量", NSDecimalNumber(decimal: selected.value).doubleValue))
-                .foregroundStyle(Color.teal).symbolSize(45)
+                .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(45)
         }
         .chartYScale(domain: .automatic(includesZero: false))
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { axis in
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                 if let value = axis.as(Double.self) {
                     AxisValueLabel {
@@ -132,7 +141,7 @@ struct InvestmentHoldingChart: View {
         }
         .environment(\.calendar, InvestmentBook.calendar)
         .environment(\.timeZone, InvestmentBook.calendar.timeZone)
-        .frame(height: 210)
+        .frame(height: 171)
         .accessibilityLabel(asset.historyUsesAmount ? "以" + account.currency.rawValue + "计价的资产金额变化" : "持仓数量变化，单位" + asset.historyUnit)
         .accessibilityHint("点击或左右拖动查看日期和数据，松手保留选择，再次点击收起。")
     }

@@ -15,7 +15,8 @@ import Foundation
     }
 
     static func everyHoldingHasProfitAndSharedRanges() {
-        precondition(InvestmentHistoryRange.allCases.count == 7)
+        precondition(InvestmentHistoryRange.allCases.count == 8)
+        precondition(InvestmentHistoryRange.trend.count == 7)
         for kind in InvestmentKind.allCases {
             let asset = InvestmentAsset(name: "测试", code: "TEST", market: "", kind: kind, currency: .cny)
             let expected: [InvestmentHoldingChartDisplay] = [.stock, .fund, .etf, .crypto].contains(kind)
@@ -27,6 +28,7 @@ import Foundation
     static func rangesKeepMarketHistoryBeforeThePosition() {
         let today = day("2026-11-17"), first = day("2026-09-04")
         precondition(InvestmentHistoryRange.all.start(through: today, firstEntry: first) == first)
+        precondition(InvestmentHistoryRange.yearToDate.start(through: today, firstEntry: first) == day("2026-01-01"))
         for (range, expected) in [(InvestmentHistoryRange.month, "2026-10-17"), (.quarter, "2026-08-17"),
                                   (.half, "2026-05-17"), (.year, "2025-11-17"), (.twoYears, "2024-11-17"), (.fiveYears, "2021-11-17")] {
             precondition(range.start(through: today, firstEntry: first) == day(expected))

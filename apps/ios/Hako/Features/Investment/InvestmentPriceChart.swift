@@ -36,9 +36,9 @@ struct InvestmentPriceChart: View {
         let selectedTrades = trades.filter { selectedTradeIDs.contains($0.id) }
         let selected = selectedDay.flatMap { day in prices.min { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) } } ?? prices.last
         VStack(alignment: .leading, spacing: 9) {
-            readout(prices: prices, selected: selected, trade: selectedTrades.first)
             if !prices.isEmpty || !trades.isEmpty {
                 chart(prices: prices, trades: trades, selected: selected, window: window)
+                readout(prices: prices, selected: selected, trade: selectedTrades.first)
                 HStack(spacing: 14) {
                     legend("买入", color: .green)
                     legend("卖出", color: .red)
@@ -101,7 +101,7 @@ struct InvestmentPriceChart: View {
                 Text(day.map { InvestmentText.date($0) + " · " } ?? "")
                     + Text(trade != nil ? "成交价" : asset.kind == .fund ? "单位净值" : "收盘价")
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(price.map(InvestmentText.number) ?? "—").font(.title2.weight(.semibold)).foregroundStyle(.primary).monospacedDigit()
+                    Text(price.map(InvestmentText.number) ?? "—").font(.subheadline.weight(.medium)).foregroundStyle(.primary).monospacedDigit()
                     Text(asset.currency.rawValue + " / " + asset.historyUnit)
                 }
             }
@@ -115,13 +115,19 @@ struct InvestmentPriceChart: View {
 
     private func chart(prices: [InvestmentPricePoint], trades: [InvestmentPriceTrade], selected: InvestmentPricePoint?,
                        window: ClosedRange<Date>) -> some View {
-        Chart {
+        let minimum = prices.map { NSDecimalNumber(decimal: $0.price).doubleValue }.min() ?? 0
+        let maximum = prices.map { NSDecimalNumber(decimal: $0.price).doubleValue }.max() ?? 0
+        let floor = max(0, minimum - max(maximum - minimum, abs(maximum) * 0.025, 0.00001) * 0.2)
+        return Chart {
             ForEach(prices) { point in
+                AreaMark(x: .value("日期", point.day), yStart: .value("下界", floor),
+                         yEnd: .value("价格", NSDecimalNumber(decimal: point.price).doubleValue))
+                    .foregroundStyle(InvestmentTrendStyle.curve.opacity(0.2))
                 LineMark(x: .value("日期", point.day), y: .value("价格", NSDecimalNumber(decimal: point.price).doubleValue))
-                    .foregroundStyle(Color.teal).interpolationMethod(.linear)
+                    .foregroundStyle(InvestmentTrendStyle.curve).interpolationMethod(.linear)
                 if prices.count == 1 {
                     PointMark(x: .value("日期", point.day), y: .value("价格", NSDecimalNumber(decimal: point.price).doubleValue))
-                        .foregroundStyle(Color.teal).symbolSize(18)
+                        .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(18)
                 }
             }
             ForEach(trades) { trade in
@@ -135,13 +141,20 @@ struct InvestmentPriceChart: View {
                 RuleMark(x: .value("日期", selected.day)).foregroundStyle(HakoStyle.muted.opacity(0.65))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 PointMark(x: .value("日期", selected.day), y: .value("价格", NSDecimalNumber(decimal: selected.price).doubleValue))
-                    .foregroundStyle(Color.teal).symbolSize(35)
+                    .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(35)
             }
         }
         .chartXScale(domain: window.lowerBound...max(window.upperBound, InvestmentBook.addDays(1, to: window.lowerBound)))
         .chartYScale(domain: .automatic(includesZero: false))
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
-        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.secondary.opacity(0.25))
+                if let value = axis.as(Double.self) {
+                    AxisValueLabel { Text(value.formatted(.number.precision(.fractionLength(0...4)))).font(.caption2) }
+                }
+            }
+        }
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 if let anchor = proxy.plotFrame {
@@ -170,7 +183,7 @@ struct InvestmentPriceChart: View {
         }
         .environment(\.calendar, InvestmentBook.calendar)
         .environment(\.timeZone, InvestmentBook.calendar.timeZone)
-        .frame(height: 210)
+        .frame(height: 171)
         .accessibilityLabel(asset.name + "价格走势，单位 " + asset.currency.rawValue)
         .accessibilityHint("绿色圆点为买入，红色圆点为卖出。点击圆点查看成交，左右拖动查看价格。")
     }

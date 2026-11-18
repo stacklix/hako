@@ -772,7 +772,11 @@ import Combine
             lastSyncFailureLog = .now
             store.recordDiagnostic("sync_failed", detail: "operation=\(operationId ?? "none"); cursor=\(eventCursor); error=\(code); failures=\(syncFailureCount)")
         }
-        if let message = WorkshopReadIssue.message(for: failure) {
+        if WorkshopReadIssue.suppressesErrorCard(for: failure) {
+            // The uncertain message already owns its check/retry controls.
+            // A missing receipt is not proof that the original send failed.
+            error = nil
+        } else if let message = WorkshopReadIssue.message(for: failure) {
             error = nil
             connectionIssue = message
             needsHistoryRefresh = true

@@ -35,11 +35,12 @@ struct InvestmentProfitChart: View {
         let selected = selectedDay.flatMap { day in visible.min { abs($0.day.timeIntervalSince(day)) < abs($1.day.timeIntervalSince(day)) } } ?? visible.last
         VStack(alignment: .leading, spacing: 9) {
             if let selected {
+                chart(visible, selected: selected, start: start, today: today)
                 HStack(alignment: .bottom, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(InvestmentText.date(selected.day) + " · 累计盈亏").font(.caption).foregroundStyle(.secondary)
                         Text(InvestmentText.money(selected.value, account.currency, signed: true))
-                            .font(.title2.weight(.semibold)).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
+                            .font(.subheadline.weight(.medium)).monospacedDigit().minimumScaleFactor(0.7).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 3) {
@@ -48,7 +49,6 @@ struct InvestmentProfitChart: View {
                         Text("区间盈亏变化").foregroundStyle(.secondary)
                     }.font(.caption)
                 }.padding(.top, 4)
-                chart(visible, selected: selected, start: start, today: today)
                 Text("估值记录 " + InvestmentText.date(visible.first!.day) + " — " + InvestmentText.date(visible.last!.day))
                     .font(.caption2).foregroundStyle(.secondary)
             } else if loaded != request {
@@ -86,26 +86,29 @@ struct InvestmentProfitChart: View {
                 .foregroundStyle(HakoStyle.muted.opacity(0.6))
                 .annotation(position: .top, alignment: .leading) { Text("盈亏平衡").font(.caption2).foregroundStyle(.secondary) }
             ForEach(values) { point in
+                AreaMark(x: .value("日期", point.day), y: .value("累计盈亏", NSDecimalNumber(decimal: point.value).doubleValue),
+                         series: .value("连续区间", point.segment), stacking: .unstacked)
+                    .foregroundStyle(InvestmentTrendStyle.curve.opacity(0.2))
                 LineMark(x: .value("日期", point.day), y: .value("累计盈亏", NSDecimalNumber(decimal: point.value).doubleValue),
                          series: .value("连续区间", point.segment))
-                    .foregroundStyle(Color.teal).interpolationMethod(.linear)
+                    .foregroundStyle(InvestmentTrendStyle.curve).interpolationMethod(.linear)
                 if values.count == 1 {
                     PointMark(x: .value("日期", point.day), y: .value("累计盈亏", NSDecimalNumber(decimal: point.value).doubleValue))
-                        .foregroundStyle(Color.teal).symbolSize(30)
+                        .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(30)
                 }
             }
             if selectedDay != nil {
                 RuleMark(x: .value("日期", selected.day))
                     .foregroundStyle(HakoStyle.muted.opacity(0.65)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 PointMark(x: .value("日期", selected.day), y: .value("累计盈亏", NSDecimalNumber(decimal: selected.value).doubleValue))
-                    .foregroundStyle(Color.teal).symbolSize(45)
+                    .foregroundStyle(InvestmentTrendStyle.curve).symbolSize(45)
             }
         }
         .chartXScale(domain: start...max(today, InvestmentBook.addDays(1, to: start)))
         .chartYScale(domain: .automatic(includesZero: true))
         .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { axis in
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { axis in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                 if let value = axis.as(Double.self) {
                     AxisValueLabel { Text(value.formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))).font(.caption2) }
@@ -127,7 +130,7 @@ struct InvestmentProfitChart: View {
             }
         }
         .environment(\.calendar, InvestmentBook.calendar).environment(\.timeZone, InvestmentBook.calendar.timeZone)
-        .frame(height: 210)
+        .frame(height: 171)
         .accessibilityLabel(asset.displayName + "累计盈亏曲线，单位" + account.currency.rawValue)
         .accessibilityHint("点击或左右拖动查看日期及累计盈亏。")
     }

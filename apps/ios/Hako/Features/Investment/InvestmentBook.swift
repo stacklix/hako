@@ -31,7 +31,7 @@ enum InvestmentPrecision {
     }
 }
 
-enum InvestmentCurrency: String, Codable, CaseIterable, Identifiable {
+enum InvestmentCurrency: String, Codable, CaseIterable, Identifiable, Sendable {
     case cny = "CNY", hkd = "HKD", usd = "USD"
 
     var id: Self { self }
@@ -666,6 +666,12 @@ struct InvestmentValuation: Codable {
     var value: Decimal
     var gain: Decimal
     var valueUSD: Decimal? = nil
+
+    /// Cumulative gain relative to net contributions, in the valuation currency.
+    var gainRate: Decimal? {
+        let netInvestment = value - gain
+        return netInvestment > 0 ? gain / netInvestment : nil
+    }
 }
 
 enum InvestmentError: LocalizedError {
@@ -1231,7 +1237,7 @@ struct InvestmentBook: Codable {
         return value(ledger, on: day, requiresDailyPrices: requiresDailyPrices)
     }
 
-    private func value(_ ledger: InvestmentLedger, on day: Date, requiresDailyPrices: Bool) -> InvestmentValuation? {
+    func value(_ ledger: InvestmentLedger, on day: Date, requiresDailyPrices: Bool) -> InvestmentValuation? {
         var equity = ledger.cash
         for (id, position) in ledger.positions where position.quantity > 0 {
             guard let asset = assets[id],

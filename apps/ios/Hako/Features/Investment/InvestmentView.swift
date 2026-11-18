@@ -267,6 +267,7 @@ struct InvestmentView: View {
 
 struct InvestmentAccountView: View {
     private static let sectionTitleFont: Font = .headline
+    private enum AccountTab: String, CaseIterable { case details = "账户明细", charts = "图表分析" }
 
     private enum AccountSheet: Hashable, Identifiable {
         case cash(InvestmentEventKind), transfer, history, plans, addAsset
@@ -277,18 +278,26 @@ struct InvestmentAccountView: View {
     let account: InvestmentAccount
     @State private var sheet: AccountSheet?
     @State private var cashExpanded = false
+    @State private var accountTab = AccountTab.details
     private var book: InvestmentBook { store.book }
 
     var body: some View {
         InvestmentScroll {
             if let ledger = try? book.ledger(account) {
                 summary(ledger)
-                cash(ledger)
-                holdings(ledger)
+                HakoUnderlineTabs(title: "账户数据视图", options: AccountTab.allCases, selection: $accountTab) { $0.rawValue }
+                    .background(alignment: .bottom) { Divider() }
+                if accountTab == .details {
+                    cash(ledger)
+                    holdings(ledger)
+                } else {
+                    InvestmentPerformanceChart(book: book, bookVersion: store.bookVersion, accountID: account.id)
+                }
             } else {
                 Text("无法读取该账户的流水。").foregroundStyle(.secondary)
             }
         }
+        .onChange(of: account.id) { accountTab = .details }
         .sheet(item: $sheet) { item in
             switch item {
             case .cash(let kind): InvestmentCashEditor(store: store, account: account, kind: kind)
@@ -336,7 +345,7 @@ struct InvestmentAccountView: View {
             }.accessibilityElement(children: .combine)
             HStack {
                 InvestmentMetric(title: "历史总盈亏", value: InvestmentText.money(valuation?.gain, account.currency, signed: true),
-                                 color: InvestmentText.tint(valuation?.gain))
+                                 color: InvestmentTrendStyle.tint(valuation?.gain))
                 Spacer(minLength: 10)
                 InvestmentMetric(title: "持仓估值", value: InvestmentText.money(valuation.map { $0.value - ledger.cash }, account.currency))
             }
