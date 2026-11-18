@@ -125,9 +125,16 @@ extension InvestmentBook {
     func makeDailySnapshots(through end: Date, rebuild: Bool) -> InvestmentDailySnapshots? {
         guard let start = snapshotStart(rebuild: rebuild), start <= end else { return nil }
         let keepExisting = !rebuild && dailySnapshots?.hasUSD == true
-        var accounts = keepExisting ? dailySnapshots?.accountValues ?? [:] : [:]
+        var accountValues: [UUID: [Date: InvestmentAccountDay]] = [:]
+        if keepExisting {
+            for account in accounts {
+                guard let first = account.earliest,
+                      let history = dailySnapshots?.accountValues?[account.id] else { continue }
+                accountValues[account.id] = history.filter { $0.key >= first && $0.key <= end }
+            }
+        }
         let history = portfolioHistory(on: Self.days(in: start...end), requiresDailyPrices: true) { date, id, value in
-            accounts[id, default: [:]][date] = value
+            accountValues[id, default: [:]][date] = value
         }
         guard !Task.isCancelled else { return nil }
         var values = rebuild || dailySnapshots?.hasUSD != true ? [:] : dailySnapshots?.values ?? [:]
@@ -136,7 +143,7 @@ extension InvestmentBook {
                 rateToCNY(.usd, on: day, requiresDailyPrice: true).map { valuation.value / $0 }
             values[day] = valuation
         }
-        return InvestmentDailySnapshots(through: end, values: values, hasUSD: true, accountValues: accounts)
+        return InvestmentDailySnapshots(through: end, values: values, hasUSD: true, accountValues: accountValues)
     }
 
     func dailySnapshotReport(through day: Date) -> InvestmentDailySnapshotReport {
@@ -295,6 +302,14 @@ extension InvestmentBook {
 extension InvestmentBook {
     func inconsistentDailySnapshotStart(through end: Date) -> Date? {
         guard let snapshots = dailySnapshots else { return nil }
+        let accountStarts = Dictionary(uniqueKeysWithValues: accounts.compactMap { account in
+            account.earliest.map { (account.id, $0) }
+        })
+        // Per-account history begins with that account's first ledger event.
+        // The same invariant check repairs out-of-range derived rows on refresh.
+        if let invalid = snapshots.accountValues?.flatMap({ id, history in
+            history.keys.filter { day in day <= end && (accountStarts[id].map { day < $0 } ?? true) }
+        }).min() { return invalid }
         let dates = snapshots.values.keys.filter { $0 <= end && $0 <= snapshots.through }.sorted()
         let current = portfolioHistory(on: dates, requiresDailyPrices: true)
         for day in dates {

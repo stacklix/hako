@@ -382,6 +382,7 @@ struct InvestmentAccount: Codable, Identifiable {
     var archivedAt: Date?
 
     var isArchived: Bool { archivedAt != nil }
+    var earliest: Date? { events.map(\.day).min() }
     var kinds: [InvestmentKind] { type.kinds(in: currency) }
     var allowsStockConnect: Bool { currency == .cny && type == .securities }
 }
@@ -705,7 +706,7 @@ struct InvestmentBook: Codable {
         calendar.date(byAdding: .day, value: count, to: date) ?? date
     }
 
-    var earliest: Date? { accounts.flatMap(\.events).map(\.day).min() }
+    var earliest: Date? { accounts.compactMap(\.earliest).min() }
     func account(_ id: UUID) -> InvestmentAccount? { accounts.first { $0.id == id } }
     func asset(_ id: UUID?) -> InvestmentAsset? { id.flatMap { assets[$0] } }
 
@@ -1305,11 +1306,13 @@ struct InvestmentBook: Codable {
     func portfolioHistory(on dates: [Date], currency: InvestmentCurrency = .cny, requiresDailyPrices: Bool = false,
                           accountValues: ((Date, UUID, InvestmentAccountDay) -> Void)? = nil) -> [Date: InvestmentValuation] {
         var history: [Date: InvestmentValuation] = [:]
+        let accountStarts = accounts.map(\.earliest)
         history.reserveCapacity(dates.count)
         visitDailyLedgers(on: dates) { day, ledgers in
             let values = ledgers.map { value($0, on: day, requiresDailyPrices: requiresDailyPrices) }
             if let accountValues {
                 for index in accounts.indices {
+                    guard let first = accountStarts[index], day >= first else { continue }
                     let cash = ledgers[index].cash
                     accountValues(day, accounts[index].id, InvestmentAccountDay(
                         cash: cash, holdings: values[index].map { $0.value - cash }, gain: values[index]?.gain))

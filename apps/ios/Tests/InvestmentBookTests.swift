@@ -47,6 +47,7 @@ struct InvestmentBookTests {
         try allAssetPricesCarryAcrossConsecutiveGaps()
         try portfolioHistoryMatchesIndividualValuations()
         try dailySnapshotsUseBeijingCloseAndDatedRates()
+        try accountSnapshotsStartWithEachAccountsFirstEvent()
         try dailyExchangeRatesCarryForwardAcrossMissingDays()
         try deletedAndRecreatedHoldingsInvalidateSnapshotsWithoutCache()
         try changingHistoricalEntriesInvalidatesOnlyTheAffectedDays()
@@ -1234,6 +1235,66 @@ struct InvestmentBookTests {
         precondition(book.inspectData(through: end).issues.contains {
             $0.title == "缺少汇率" && $0.dates.contains(first)
         }, "A genuinely missing earlier rate must still be reported")
+    }
+
+    static func accountSnapshotsStartWithEachAccountsFirstEvent() throws {
+        let early = InvestmentAccount(name: "早开始", currency: .cny, type: .securities)
+        let late = InvestmentAccount(name: "晚开始", currency: .cny, type: .securities)
+        let empty = InvestmentAccount(name: "尚未记账", currency: .cny, type: .securities)
+        let future = InvestmentAccount(name: "未来开始", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [early, late, empty, future])
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: early.id)
+        try book.post(.init(day: date(3), kind: .deposit, amount: 200), accountID: late.id)
+        try book.post(.init(day: date(8), kind: .deposit, amount: 300), accountID: future.id)
+        book.addExchangeRates([.init(day: date(1), price: 5, isDailyClose: true)], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: true)
+        precondition(book.dailySnapshots?.values.count == 4)
+        precondition(book.dailySnapshots?.values[date(2)]?.value == 100)
+        precondition(book.dailySnapshots?.values[date(3)]?.value == 300)
+        precondition(book.dailySnapshots?.accountValues?[early.id]?.keys.min() == date(1))
+        precondition(book.dailySnapshots?.accountValues?[late.id]?.keys.min() == date(3))
+        precondition(book.dailySnapshots?.accountValues?[late.id]?.count == 2)
+        precondition(book.dailySnapshots?.accountValues?[empty.id] == nil)
+        precondition(book.dailySnapshots?.accountValues?[future.id] == nil)
+        let records = InvestmentServerRecords()
+        func encodedAccounts(_ source: InvestmentBook) throws -> [InvestmentServerRow] {
+            try records.encode(source, revision: 1)["investment_account_daily_snapshots"] ?? []
+        }
+        let originalRows = try encodedAccounts(book)
+        precondition(originalRows.count == 6)
+        let earlyRows = originalRows.filter { $0["account_id"] == early.id.uuidString }
+        let restored = try records.decode(.init(generation: 1, revision: 1,
+            through: records.day.string(from: date(4)), tables: records.encode(book, revision: 1)))
+        precondition(restored.dailySnapshots?.accountValues?[late.id]?.keys.min() == date(3))
+        precondition(restored.inconsistentDailySnapshotStart(through: date(4)) == nil)
+
+        // Out-of-range derived rows are detected, excluded from writes and repaired.
+        var polluted = book
+        let zero = InvestmentAccountDay(cash: 0, holdings: 0, gain: 0)
+        polluted.dailySnapshots?.accountValues?[late.id]?[date(1)] = zero
+        polluted.dailySnapshots?.accountValues?[empty.id] = [date(1): zero]
+        let pollutedRows = try encodedAccounts(polluted)
+        precondition(pollutedRows == originalRows)
+        precondition(polluted.inconsistentDailySnapshotStart(through: date(4)) == date(1))
+        polluted.invalidateDailySnapshots(from: date(1))
+        polluted.dailySnapshots = polluted.makeDailySnapshots(through: date(4), rebuild: false)
+        let repairedRows = try encodedAccounts(polluted)
+        precondition(repairedRows == originalRows)
+
+        let original = try require(book.account(late.id)?.events.first)
+        var moved = original
+        moved.day = date(2)
+        try book.replaceEvent(original, with: moved, accountID: late.id)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(book.dailySnapshots?.accountValues?[late.id]?.keys.min() == date(2))
+        let movedRows = try encodedAccounts(book)
+        precondition(movedRows.filter { $0["account_id"] == early.id.uuidString } == earlyRows,
+                     "Changing one account's start must not change another account's snapshot values")
+        try book.deleteEvent(try require(book.account(late.id)?.events.first), accountID: late.id)
+        book.dailySnapshots = book.makeDailySnapshots(through: date(4), rebuild: false)
+        precondition(book.dailySnapshots?.accountValues?[late.id] == nil)
+        let remainingRows = try encodedAccounts(book)
+        precondition(remainingRows == earlyRows)
     }
 
     static func changingHistoricalEntriesInvalidatesOnlyTheAffectedDays() throws {

@@ -259,8 +259,9 @@ struct InvestmentServerRecords {
             result["investment_daily_snapshots", default: []].append(row)
             date = InvestmentBook.addDays(1, to: date)
         }
-        for (id, history) in (snapshots.accountValues ?? [:]).sorted(by: { $0.key.uuidString < $1.key.uuidString }) where book.account(id) != nil {
-            for (date, value) in history.sorted(by: { $0.key < $1.key }) {
+        for (id, history) in (snapshots.accountValues ?? [:]).sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            guard let first = book.account(id)?.earliest else { continue }
+            for (date, value) in history.sorted(by: { $0.key < $1.key }) where date >= first && date <= snapshots.through {
                 var row = ["account_id": id.uuidString, "snapshot_date": day.string(from: date),
                            "cash_native": string(value.cash)!, "status": value.holdings == nil ? "partial" : "complete"]
                 row["holdings_native"] = string(value.holdings)
