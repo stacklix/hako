@@ -46,14 +46,10 @@ func investmentRoundedDecimal(value string, exchangeRate bool) string {
 	return text
 }
 
-func normalizeInvestmentNumbers(row investmentRow) bool {
-	changed := false
+func normalizeInvestmentNumbers(row investmentRow) {
 	for column, value := range row {
 		if strings.Contains(investmentNumberFields, " "+column+" ") {
-			rounded := investmentRoundedDecimal(value, column == "rate")
-			changed = changed || rounded != value
-			row[column] = rounded
+			row[column] = investmentRoundedDecimal(value, column == "rate")
 		}
 	}
-	return changed
 }

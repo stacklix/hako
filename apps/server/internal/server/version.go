@@ -3,7 +3,7 @@ package server
 import "net/http"
 
 const (
-	releaseVersion      = "0.8.2"
+	releaseVersion      = "0.8.3"
 	minimumIOSVersion   = "0.8.0"
 	minimumAgentVersion = "1.4.7"
 )
