@@ -60,11 +60,17 @@ import Foundation
         var excluded = folder; var flags = URLResourceValues(); flags.isExcludedFromBackup = true
         try excluded.setResourceValues(flags)
         try HakoBackupPolicy.prepareExistingFiles(at: base, history: false, scopes: scopes)
-        let folderFlags = try folder.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        let draftFlags = try draft.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        let cacheFlags = try cache.resourceValues(forKeys: [.isExcludedFromBackupKey])
-        precondition(folderFlags.isExcludedFromBackup == false && draftFlags.isExcludedFromBackup == false)
-        precondition(cacheFlags.isExcludedFromBackup == true)
+        // The policy writes through different URL instances. Darwin caches resource
+        // values on each URL, so discard the fixture's old exclusion before reading.
+        func isExcluded(_ file: URL) throws -> Bool? {
+            var file = file
+            file.removeAllCachedResourceValues()
+            return try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup
+        }
+        let folderExcluded = try isExcluded(folder), draftExcluded = try isExcluded(draft), cacheExcluded = try isExcluded(cache)
+        precondition(folderExcluded == false, "Draft folder remains excluded: \(String(describing: folderExcluded))")
+        precondition(draftExcluded == false, "Draft remains excluded: \(String(describing: draftExcluded))")
+        precondition(cacheExcluded == true, "Downloadable cache was included: \(String(describing: cacheExcluded))")
         #endif
         print("PASS: preference reconciliation, initial download, offline changes, deletion, type validation and backup boundaries")
     }
