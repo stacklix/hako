@@ -10,11 +10,28 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: apps/windows
     steps:
       - uses: actions/checkout@v7
+      - name: Reserve immutable source tag
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "windows-agent-$env:GITHUB_RUN_ID"
+          $existing = git ls-remote --tags origin "refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the release source tag.' }
+          if ($existing) {
+            if (($existing -split '\s+')[0] -cne $env:GITHUB_SHA) { throw 'Release source tag points to another commit.' }
+          } else {
+            gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$env:GITHUB_SHA"
+            if ($LASTEXITCODE -ne 0) { throw 'Could not reserve the release source tag.' }
+          }
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
@@ -36,6 +53,8 @@ jobs:
           $env:HAKO_WINDOWS_CHECKS = Join-Path $env:GITHUB_WORKSPACE 'apps/windows/tests/Hako.Checks/bin/Release/net10.0-windows/Hako.Checks.exe'
           go test ./internal/server -run TestWindowsAgentEndToEnd -v
       - run: ./scripts/publish.ps1
+      - name: Verify release source binding
+        run: ./tests/release-script.ps1 -Executable ../../dist/windows/Kage.exe
       - name: Verify published CLI and help
         run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Kage.exe
       - name: Verify startup under a restrictive Windows job
