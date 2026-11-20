@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.os.BatteryManager
 import android.os.Build
 import android.os.SystemClock
 import android.provider.CallLog
@@ -52,7 +51,6 @@ internal class AgentDispatcher(private val context: Context) : AgentCommands {
     private fun status(): JSONObject {
         val memory = ActivityManager.MemoryInfo()
         requireNotNull(context.getSystemService(ActivityManager::class.java)).getMemoryInfo(memory)
-        val battery = requireNotNull(context.getSystemService(BatteryManager::class.java))
         val connectivity = requireNotNull(context.getSystemService(ConnectivityManager::class.java))
         val network = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
         val transport = when {
@@ -67,8 +65,7 @@ internal class AgentDispatcher(private val context: Context) : AgentCommands {
             .put("model", Build.MODEL).put("androidVersion", Build.VERSION.RELEASE)
             .put("sdk", Build.VERSION.SDK_INT).put("appVersion", BuildConfig.VERSION_NAME)
             .put("minimumServerVersion", AgentProtocol.MINIMUM_SERVER)
-            .put("uptimeMs", SystemClock.elapsedRealtime()).put("batteryPercent", battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
-            .put("charging", battery.isCharging).put("network", transport)
+            .put("uptimeMs", SystemClock.elapsedRealtime()).put("network", transport)
             .put("memoryTotalBytes", memory.totalMem).put("memoryAvailableBytes", memory.availMem)
             .put("permissions", JSONObject()
                 .put("readSms", granted(Manifest.permission.READ_SMS)).put("sendSms", granted(Manifest.permission.SEND_SMS))

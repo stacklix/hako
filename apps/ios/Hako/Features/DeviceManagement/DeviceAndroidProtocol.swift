@@ -122,8 +122,6 @@ struct AndroidDeviceStatus: Decodable {
     let appVersion: String
     let minimumServerVersion: String
     let uptimeMs: Int64
-    let batteryPercent: Int
-    let charging: Bool
     let network: String
     let memoryTotalBytes: UInt64
     let memoryAvailableBytes: UInt64
@@ -136,7 +134,7 @@ struct AndroidDeviceStatus: Decodable {
         ("callPhone", "拨打电话"), ("readPhoneState", "读取电话状态")
     ]
     var isValid: Bool {
-        platform == "android" && sdk > 0 && uptimeMs >= 0 && (-1...100).contains(batteryPercent)
+        platform == "android" && sdk > 0 && uptimeMs >= 0
             && memoryTotalBytes > 0 && memoryAvailableBytes <= memoryTotalBytes
     }
     var networkLabel: String {

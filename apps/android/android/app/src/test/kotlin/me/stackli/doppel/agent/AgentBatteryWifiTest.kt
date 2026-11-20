@@ -25,6 +25,20 @@ import org.robolectric.shadows.ShadowWifiInfo
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [28])
 class AgentBatteryWifiTest {
+    @Test fun batteryReadingsAreOnlyReturnedByTheBatteryQuery() {
+        val app = RuntimeEnvironment.getApplication()
+        app.sendStickyBroadcast(Intent(Intent.ACTION_BATTERY_CHANGED)
+            .putExtra(BatteryManager.EXTRA_LEVEL, 7).putExtra(BatteryManager.EXTRA_SCALE, 10)
+            .putExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_CHARGING))
+        val dispatcher = AgentDispatcher(app)
+        val status = dispatcher.invoke("query.device.status", 1, JSONObject())
+        assertFalse(status.has("batteryPercent"))
+        assertFalse(status.has("charging"))
+        val battery = dispatcher.invoke(AgentBattery.COMMAND, 1, JSONObject())
+        assertEquals(70, battery.getInt("levelPercent"))
+        assertEquals("charging", battery.getString("state"))
+    }
+
     @Test fun batteryUnitsAndChargingStateAreExplicit() {
         val intent = Intent(Intent.ACTION_BATTERY_CHANGED)
             .putExtra(BatteryManager.EXTRA_LEVEL, 7).putExtra(BatteryManager.EXTRA_SCALE, 10)

@@ -3,15 +3,12 @@ import Foundation
 @main struct DeviceAndroidTests {
     static func main() throws {
         let decoder = JSONDecoder()
-        let payload = #"{"platform":"android","manufacturer":"Xiaomi","model":"2109119DG","androidVersion":"14","sdk":34,"appVersion":"1.0.10","minimumServerVersion":"0.8.0","uptimeMs":29157274,"batteryPercent":89,"charging":false,"network":"wifi","memoryTotalBytes":7563886592,"memoryAvailableBytes":2520469504,"permissions":{"readSms":true,"sendSms":true,"readCalls":true,"callPhone":true,"readPhoneState":true},"allowSms":true,"allowCalls":true,"sampledAt":"2026-11-19T14:51:05.575192Z"}"#
+        let payload = #"{"platform":"android","manufacturer":"Xiaomi","model":"2109119DG","androidVersion":"14","sdk":34,"appVersion":"1.1.0","minimumServerVersion":"0.8.0","uptimeMs":29157274,"network":"wifi","memoryTotalBytes":7563886592,"memoryAvailableBytes":2520469504,"permissions":{"readSms":true,"sendSms":true,"readCalls":true,"callPhone":true,"readPhoneState":true},"allowSms":true,"allowCalls":true,"sampledAt":"2026-11-19T14:51:05.575192Z"}"#
         let status = try decoder.decode(AndroidDeviceStatus.self, from: Data(payload.utf8))
         precondition(status.isValid && status.networkLabel == "Wi-Fi" && status.uptimeLabel == "8 小时 5 分钟")
         let invalid = payload.replacingOccurrences(of: "2520469504", with: "9999999999")
         let invalidStatus = try decoder.decode(AndroidDeviceStatus.self, from: Data(invalid.utf8))
         precondition(!invalidStatus.isValid)
-        let unknownBattery = payload.replacingOccurrences(of: "\"batteryPercent\":89", with: "\"batteryPercent\":-1")
-        let unknownBatteryStatus = try decoder.decode(AndroidDeviceStatus.self, from: Data(unknownBattery.utf8))
-        precondition(unknownBatteryStatus.isValid)
         let batteryJSON = #"{"levelPercent":70,"temperatureCelsius":32.5,"voltageVolts":4.123,"currentMilliamps":-550,"state":"discharging","powerSource":"battery","health":"good","sampledAt":"2026-11-19T14:51:05Z"}"#
         let battery = try decoder.decode(AndroidBatterySnapshot.self, from: Data(batteryJSON.utf8))
         precondition(battery.isValid && battery.temperatureCelsius == 32.5 && battery.healthLabel == "正常")

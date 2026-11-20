@@ -50,6 +50,8 @@ iOS 首次加载及手动刷新 Android 设备时，使用一次 `query.all` 获
 
 `query.device.storage` 返回 `storageTotalBytes`、`storageAvailableBytes` 和 `sampledAt`。容量取 App 私有数据所在的内部数据分区，可用空间为普通应用可用的字节数，不包含系统保留块；不把共享/模拟存储重复相加，不等同于厂商标称的整机存储容量。iOS 将此能力合并展示在设备状态页，与运行内存分别标注。
 
+Nami 1.1.0 起，`query.device.status` 不再采集或返回 `batteryPercent`、`charging`，对应状态页使用 Hako iOS 0.8.46 或更新版本。电池数据仅由 `query.device.battery` 提供，并集中显示在状态页底部的电池信息中。
+
 `query.device.battery` 返回电量、充放电状态、供电方式、温度（°C）、电压（V）、瞬时电流（mA）、系统健康状态及采样时间。系统未提供的读数为 null；电流正值表示流入电池，负值表示放电；健康状态不是电池剩余寿命百分比。
 
 `query.device.screen` 返回主屏幕的 `displayState`、设备是否可交互 `interactive` 和 `sampledAt`。显示状态为 `on`、`off`、`doze`、`doze_suspend`、`on_suspend`、`vr` 或 `unknown`；iOS 分别展示亮屏、熄屏、息屏显示等状态。无主屏幕或未知状态不当作熄屏；通话贴耳关屏时可交互状态也不代替屏幕状态。本能力只读，不唤醒设备、不控制屏幕，不需要新增运行时权限。

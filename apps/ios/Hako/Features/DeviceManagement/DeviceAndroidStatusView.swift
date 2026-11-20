@@ -26,23 +26,14 @@ struct DeviceAndroidStatusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let status = entry?.androidStatus {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), alignment: .top)], spacing: 12) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("电池电量").font(.subheadline).foregroundStyle(.secondary)
-                        Text(status.batteryPercent < 0 ? "—" : "\(status.batteryPercent)%")
-                            .font(.largeTitle.weight(.semibold)).monospacedDigit()
-                        ProgressView(value: Double(max(0, status.batteryPercent)), total: 100).tint(.green)
-                        Text(status.charging ? "正在充电" : "未充电").font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).devicePagePanel()
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("可用内存").font(.subheadline).foregroundStyle(.secondary)
-                        Text(bytes(status.memoryAvailableBytes)).font(.title.weight(.semibold)).monospacedDigit()
-                            .minimumScaleFactor(0.75).lineLimit(1)
-                        ProgressView(value: Double(status.memoryAvailableBytes), total: Double(status.memoryTotalBytes))
-                            .tint(.secondary)
-                        Text("共 \(bytes(status.memoryTotalBytes))").font(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading).devicePagePanel()
-                }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("可用内存").font(.subheadline).foregroundStyle(.secondary)
+                    Text(bytes(status.memoryAvailableBytes)).font(.title.weight(.semibold)).monospacedDigit()
+                        .minimumScaleFactor(0.75).lineLimit(1)
+                    ProgressView(value: Double(status.memoryAvailableBytes), total: Double(status.memoryTotalBytes))
+                        .tint(.secondary)
+                    Text("共 \(bytes(status.memoryTotalBytes))").font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading).devicePagePanel()
                 if showsStorage { DeviceAndroidStorageView(entry: storageEntry) }
                 VStack(alignment: .leading, spacing: 12) {
                     Text("设备信息").font(.subheadline.weight(.semibold))

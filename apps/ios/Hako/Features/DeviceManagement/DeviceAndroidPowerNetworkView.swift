@@ -11,6 +11,8 @@ struct DeviceAndroidBatteryView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("电池信息").font(.subheadline.weight(.semibold))
             if let value = snapshot {
+                LabeledContent("电量", value: value.levelPercent.map { "\($0)%" } ?? "未提供")
+                Divider()
                 LabeledContent("状态", value: value.stateLabel)
                 Divider()
                 LabeledContent("供电方式", value: value.sourceLabel)
