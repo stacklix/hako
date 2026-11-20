@@ -50,7 +50,11 @@ import Foundation
             precondition(HakoBackupPolicy.included(root + "/events.json", directory: false, history: true, scopes: scopes))
         }
         #if canImport(Darwin)
-        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        // Match the app's real storage location: macOS applies its own backup
+        // exclusions to temporary directories, regardless of per-file markers.
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                   appropriateFor: nil, create: true)
+        let base = support.appendingPathComponent("HakoBackupPolicyTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }
         let folder = base.appendingPathComponent("CodeWorkshop/messages-example")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
