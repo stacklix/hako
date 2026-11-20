@@ -6,7 +6,7 @@ iOS 首页「云服务器」直接调用阿里云 ECS API，当前保存一组�
 
 打开「云服务器 → 右上角滑杆」填写连接名称、地域 ID（如 `cn-hangzhou`）、实例 ID（`i-...`）、Linux 用户名、RAM AccessKey ID / Secret。STS 凭据同时填写临时 AccessKey ID、Secret 和 Token；过期后更新整组凭据。点击「测试连接」只查询实例信息，点击右上角勾号才保存。
 
-凭据保存在独立 Keychain 项 `me.stackli.hako.ecs`，仅本机解锁时可访问，不同步到其他设备、不上传 Hako 后端。ECS RPC 使用 HTTPS POST 和 HMAC-SHA1 签名，凭据不进入请求 URL；禁止自动重定向，不输出阿里云原始错误正文或签名材料。
+凭据保存在独立 Keychain 项 `me.stackli.hako.ecs`，解锁时可访问，并可通过 iCloud 钥匙串同步到同一 Apple 账户的设备，不上传 Hako 后端。ECS RPC 使用 HTTPS POST 和 HMAC-SHA1 签名，凭据不进入请求 URL；禁止自动重定向，不输出阿里云原始错误正文或签名材料。
 
 ## 实例前提
 

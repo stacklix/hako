@@ -6,6 +6,8 @@ import SwiftUI
     @AppStorage(HakoAppearance.storageKey) private var appearance = HakoAppearance.system
 
     init() {
+        HakoApplications.registerBackupScopes(in: HakoCloudSettings.shared)
+        HakoCloudSettings.shared.start()
         LocalNetworkService.shared = AppNetworkService.shared
         RemoteNotificationRegistration.prepare = { try await BuildPushSubscription.shared.prepareHakoRegistration() }
     }
@@ -16,6 +18,7 @@ import SwiftUI
                 .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     if phase == .active {
+                        Task { await HakoCloudSettings.shared.prepareForRecovery() }
                         Task { await HakoPushNotifications.shared.syncDelivered() }
                         Task { await AppNetworkService.shared.refresh() }
                         Task { await BuildPushSubscription.shared.refresh() }

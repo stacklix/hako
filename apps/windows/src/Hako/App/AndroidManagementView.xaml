@@ -1,0 +1,51 @@
+<UserControl x:Class="Hako.Shell.AndroidManagementView"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <DockPanel>
+  <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+   <TextBlock Text="Android 设备" FontSize="26" FontWeight="SemiBold"/>
+   <TextBlock Text="通过这台电脑连接、控制和维护手机。" Foreground="#66748A" Margin="0,6,0,12"/>
+   <WrapPanel>
+    <Button Content="刷新设备" Click="RefreshClick" Margin="0,0,8,0" Padding="12,7"/>
+    <Button Content="无线配对 / 连接" Click="PairClick" Margin="0,0,8,0" Padding="12,7"/>
+    <Button Content="下载官方 ADB 工具" Click="ToolsClick" Padding="12,7"/>
+   </WrapPanel>
+   <TextBlock x:Name="Message" TextWrapping="Wrap" Foreground="#93610D" Margin="0,10,0,0"/>
+  </StackPanel>
+  <Grid>
+   <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <ListBox x:Name="Devices" SelectionChanged="DeviceChanged" Background="White" BorderBrush="#DFE5EC" DisplayMemberPath="Name"/>
+   <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Margin="18,0,0,0">
+    <StackPanel>
+     <TextBlock x:Name="DeviceName" Text="选择一台 Android 设备" FontSize="21" FontWeight="SemiBold"/>
+     <TextBlock x:Name="DeviceState" Foreground="#66748A" Margin="0,5,0,12" TextWrapping="Wrap"/>
+     <ComboBox x:Name="Connections" SelectionChanged="ConnectionChanged" DisplayMemberPath="Serial" Margin="0,0,0,14"/>
+     <TabControl>
+      <TabItem Header="概览"><TextBlock x:Name="Overview" Text="等待设备数据" Margin="14" TextWrapping="Wrap" LineHeight="26"/></TabItem>
+      <TabItem Header="屏幕控制"><StackPanel Margin="14">
+       <TextBlock x:Name="ScreenState" Text="屏幕状态：未知" Margin="0,0,0,12"/>
+       <WrapPanel>
+        <Button Content="亮屏" Tag="wake" Click="ActionClick" Padding="14,8" Margin="0,0,8,8"/>
+        <Button Content="熄屏" Tag="sleep" Click="ActionClick" Padding="14,8" Margin="0,0,8,8"/>
+        <Button Content="截图" Tag="screenshot" Click="ActionClick" Padding="14,8" Margin="0,0,8,8"/>
+       </WrapPanel>
+       <TextBlock Text="亮屏不会解除锁屏。" Foreground="#66748A" Margin="0,5,0,10"/>
+       <Image x:Name="Screenshot" MaxHeight="320" Stretch="Uniform"/>
+      </StackPanel></TabItem>
+      <TabItem Header="Nami 维护"><StackPanel Margin="14">
+       <Button Content="启动 Nami" Tag="start" Click="ActionClick" Padding="14,9" Margin="0,0,0,9"/>
+       <Button Content="重新启动 Nami" Tag="restart" Click="ActionClick" Padding="14,9" Margin="0,0,0,9"/>
+       <Button Content="选择 APK 覆盖安装" Click="InstallClick" Padding="14,9" Margin="0,0,0,9"/>
+       <Button Content="读取 Nami 日志" Click="LogsClick" Padding="14,9" Margin="0,0,0,9"/>
+       <TextBlock Text="覆盖安装保留应用数据；不自动卸载或降级。" TextWrapping="Wrap" Foreground="#66748A"/>
+      </StackPanel></TabItem>
+      <TabItem Header="操作记录"><StackPanel Margin="14">
+       <TextBlock x:Name="Records" Text="暂无操作" TextWrapping="Wrap" LineHeight="23"/>
+       <TextBox x:Name="Logs" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="260" VerticalScrollBarVisibility="Auto" Margin="0,10,0,0"/>
+      </StackPanel></TabItem>
+     </TabControl>
+    </StackPanel>
+   </ScrollViewer>
+  </Grid>
+ </DockPanel>
+</UserControl>

@@ -224,7 +224,7 @@ import CryptoKit
         #else
         try Data(text.utf8).write(to: file, options: .atomic)
         #endif
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = false
         try file.setResourceValues(flags)
         systemPrompt = text
         systemPromptLoadError = nil

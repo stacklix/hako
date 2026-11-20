@@ -169,7 +169,9 @@ enum WorkshopDraftDisk {
         try data.write(to: file, options: .atomic)
         #endif
         var url = file
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = false
         try url.setResourceValues(flags)
+        var directory = file.deletingLastPathComponent()
+        try directory.setResourceValues(flags)
     }
 }

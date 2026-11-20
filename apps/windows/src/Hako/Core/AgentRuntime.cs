@@ -24,6 +24,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     private string? configurationError;
     private readonly CodexUsage codexUsage;
     private readonly AgentDispatcher dispatcher;
+    internal AndroidManager Android => dispatcher.Android;
     private readonly LocalRpcServer? rpc;
 
     public AgentRuntime(AgentSettingsStore store, bool running)

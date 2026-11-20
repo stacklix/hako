@@ -104,6 +104,7 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
         var parent: HakoCodeEditorTextView
         var work: Task<Void, Never>?
         var highlightedText: String?
+        var highlightedLanguage: HakoCodeSyntax.Language?
         var applying = false
         weak var editor: HakoCodeEditorView?
         init(_ parent: HakoCodeEditorTextView) { self.parent = parent }
@@ -148,6 +149,7 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
             guard view.markedTextRange == nil else { return }
             let text = view.text ?? ""
             let language = HakoCodeSyntax.language(filename: parent.filename)
+            guard highlightedText != text || highlightedLanguage != language else { return }
             work = Task { @MainActor [weak self, weak view] in
                 if delayed {
                     do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
@@ -156,40 +158,17 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
                 let tokens = await Task.detached(priority: .userInitiated) { HakoCodeSyntax.tokens(text, language: language) }.value
                 guard !Task.isCancelled, let self, let view, view.text == text,
                       view.markedTextRange == nil, view.selectedRange.length == 0 else { return }
-                self.apply(tokens, text: text, to: view)
+                self.apply(tokens, text: text, language: language, to: view)
             }
         }
 
-        private func apply(_ tokens: [HakoCodeSyntax.Token], text: String, to view: UITextView) {
+        private func apply(_ tokens: [HakoCodeSyntax.Token], text: String, language: HakoCodeSyntax.Language, to view: UITextView) {
             applying = true
             defer { applying = false }
             highlightedText = text
-            let selection = view.selectedRange
-            let offset = view.contentOffset
-            let storage = view.textStorage
-            let range = NSRange(location: 0, length: storage.length)
-            // Attribute-only edits preserve the text, selection and UIKit undo history.
-            storage.beginEditing()
-            storage.addAttributes([.font: HakoCodeEditorTextView.font, .foregroundColor: UIColor.label], range: range)
-            for token in tokens {
-                storage.addAttribute(.foregroundColor, value: color(token.kind), range: token.range)
-            }
-            storage.endEditing()
-            if view.selectedRange != selection { view.selectedRange = selection }
-            if view.contentOffset != offset { view.setContentOffset(offset, animated: false) }
+            highlightedLanguage = language
+            editor?.applySyntaxColors(tokens)
             view.typingAttributes = [.font: HakoCodeEditorTextView.font, .foregroundColor: UIColor.label]
-            editor?.redrawLineNumbers()
-        }
-
-        private func color(_ kind: HakoCodeSyntax.Kind) -> UIColor {
-            switch kind {
-            case .comment: return .secondaryLabel
-            case .key: return .systemBlue
-            case .string: return .systemGreen
-            case .literal: return .systemPurple
-            case .number: return .systemOrange
-            case .variable: return .systemTeal
-            }
         }
     }
 }
@@ -248,11 +227,21 @@ private struct HakoEditorKeyboardKeys: View {
 
 final class HakoCodeEditorView: UIView {
     // Explicitly use TextKit 1 so syntax highlighting and gutter share the same layout.
-    let textView = UITextView(usingTextLayoutManager: false)
+    let textView: UITextView
+    private let syntaxLayout: HakoCodeLayoutManager
     private let gutter = HakoLineNumberGutter()
     private var gutterWidth: NSLayoutConstraint!
+    private var gutterDigits = 4
 
     init() {
+        let layout = HakoCodeLayoutManager()
+        syntaxLayout = layout
+        let storage = NSTextStorage()
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        textView = UITextView(frame: .zero, textContainer: container)
         super.init(frame: .zero)
         backgroundColor = .systemBackground
         gutter.textView = textView
@@ -291,13 +280,59 @@ final class HakoCodeEditorView: UIView {
     func updateGutterFont() {
         let font = HakoCodeEditorTextView.font
         gutter.font = font
-        let digits = String(gutter.lines.starts.count).count
-        let width = ceil((String(repeating: "8", count: digits) as NSString).size(withAttributes: [.font: font]).width) + 16
+        // Reserve space so 9/10, 99/100 and 999/1000 line edits do not rewrap the file.
+        // Beyond this reserve, only grow during this editor session to avoid oscillation.
+        gutterDigits = max(gutterDigits, String(gutter.lines.starts.count).count)
+        let width = ceil((String(repeating: "8", count: gutterDigits) as NSString).size(withAttributes: [.font: font]).width) + 16
         if gutterWidth.constant != width { gutterWidth.constant = width }
         redrawLineNumbers()
     }
 
+    func applySyntaxColors(_ tokens: [HakoCodeSyntax.Token]) {
+        let storage = textView.textStorage
+        syntaxLayout.updateSyntaxColors {
+            storage.beginEditing()
+            // Fonts belong to normal text layout. Highlighting changes only display colors.
+            storage.addAttribute(.foregroundColor, value: UIColor.label, range: NSRange(location: 0, length: storage.length))
+            for token in tokens {
+                let color: UIColor
+                switch token.kind {
+                case .comment: color = .secondaryLabel
+                case .key: color = .systemBlue
+                case .string: color = .systemGreen
+                case .literal: color = .systemPurple
+                case .number: color = .systemOrange
+                case .variable: color = .systemTeal
+                }
+                storage.addAttribute(.foregroundColor, value: color, range: token.range)
+            }
+            storage.endEditing()
+        }
+    }
+
     func redrawLineNumbers() { gutter.setNeedsDisplay() }
+}
+
+private final class HakoCodeLayoutManager: NSLayoutManager {
+    private var updatingSyntaxColors = false
+
+    func updateSyntaxColors(_ update: () -> Void) {
+        updatingSyntaxColors = true
+        defer { updatingSyntaxColors = false }
+        update()
+    }
+
+    override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorage.EditActions,
+                                 range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
+        // Color-only highlighting must not invalidate glyph layout or trigger UITextView's
+        // caret scrolling. Real edits and font changes still follow TextKit's normal path.
+        if updatingSyntaxColors, editMask == .editedAttributes {
+            invalidateDisplay(forCharacterRange: invalidatedCharRange)
+            return
+        }
+        super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
+                             changeInLength: delta, invalidatedRange: invalidatedCharRange)
+    }
 }
 
 private final class HakoLineNumberGutter: UIView {

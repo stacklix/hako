@@ -166,12 +166,16 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
     var requestContext: String { serverURL + "\n" + username + "\n" + (saved?.tokens.sessionId ?? "") + "|\(authenticated)|\(logoutPending)" }
 
     private var sessionAccount: String { "session." + (serverURL + "\n" + username).consoleDigest }
-    private func identity() throws -> ConsoleIdentity { try ConsoleIdentity.load(origin: serverURL.isEmpty ? nil : serverURL) }
+    private func identity() throws -> ConsoleIdentity {
+        try HakoExecutionDiagnostics.measure("读取设备身份记录") {
+            try ConsoleIdentity.load(origin: serverURL.isEmpty ? nil : serverURL)
+        }
+    }
     // This is a local operation: no configuration validation, session check or HTTP request.
     func publicKeyForExport() throws -> String {
         guard !resettingKey else { throw HakoError(message: "正在重置密钥对，请稍后导出。") }
         let device = try identity()
-        let pem = try device.publicKeyPEM()
+        let pem = try HakoExecutionDiagnostics.measure("读取 Secure Enclave 公钥") { try device.publicKeyPEM() }
         deviceId = device.deviceId; publicKeyPEM = pem
         return pem
     }
@@ -198,7 +202,11 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         }
     }
     private func persist(_ value: ConsoleSession?) throws {
-        if let value { try ConsoleKeychain.save(sessionAccount, data: JSONEncoder().encode(value)) }
+        if let value {
+            try HakoExecutionDiagnostics.measure("保存服务端登录会话") {
+                try ConsoleKeychain.save(sessionAccount, data: JSONEncoder().encode(value))
+            }
+        }
         else { try ConsoleKeychain.delete(sessionAccount) }
         saved = value
         sessionValidation = ConsoleSessionValidation()
@@ -246,7 +254,9 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
 
     func restore() async {
         await restoration.run {
-            await self.execute { try await self.restoreInternal() }
+            await self.execute {
+                try await HakoExecutionDiagnostics.measure("恢复服务端登录会话") { try await self.restoreInternal() }
+            }
         }
     }
     private func restoreInternal() async throws {
@@ -254,7 +264,7 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
            sessionValidation.canReuse(context: requestContext, expiresAt: session.tokens.expiresAt) { return }
         _ = try publicKeyForExport()
         guard !serverURL.isEmpty else { return }
-        if let data = try ConsoleKeychain.read(sessionAccount) {
+        if let data = try HakoExecutionDiagnostics.measure("读取服务端登录会话", operation: { try ConsoleKeychain.read(sessionAccount) }) {
             let restored = try JSONDecoder().decode(ConsoleSession.self, from: data)
             guard restored.tokens.deviceId == deviceId else {
                 try persist(nil); authenticated = false; remoteSessions = []
@@ -307,16 +317,21 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if signed {
             let device = try identity()
-            request.setValue(try device.proof(method: method, url: url, accessToken: token, nonce: nonce), forHTTPHeaderField: "DPoP")
+            let proof = try HakoExecutionDiagnostics.measure("生成设备请求签名（Secure Enclave）") {
+                try device.proof(method: method, url: url, accessToken: token, nonce: nonce)
+            }
+            request.setValue(proof, forHTTPHeaderField: "DPoP")
             request.setValue(device.deviceId, forHTTPHeaderField: "X-Hako-Device")
         }
         if let token { request.setValue("DPoP " + token, forHTTPHeaderField: "Authorization") }
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await HTTPTransport.data(for: request, using: transport, source: logSource,
-                                                        secrets: [token ?? "", nonce ?? ""],
-                                                        logBody: !path.hasPrefix("/api/v1/investment/"))
+            (data, response) = try await HakoExecutionDiagnostics.measure("发送请求 \(method) \(url.path)") {
+                try await HTTPTransport.data(for: request, using: transport, source: logSource,
+                                             secrets: [token ?? "", nonce ?? ""],
+                                             logBody: !path.hasPrefix("/api/v1/investment/"))
+            }
         } catch {
             // URLSession uses URLError.cancelled for task cancellation; callers
             // already handle CancellationError silently and retain credentials.
@@ -329,6 +344,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw HakoError(message: "服务器响应无效。") }
         outcome = "HTTP \(http.statusCode)"
+        HakoExecutionDiagnostics.record("服务端响应", state: (200..<300).contains(http.statusCode) ? .info : .failed,
+                                        detail: "\(method) \(url.path)；HTTP \(http.statusCode)")
         guard (200..<300).contains(http.statusCode) else {
             struct Failure: Decodable { let error: String }
             throw ServerHTTPError(status: http.statusCode, code: (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "invalid_response")
@@ -357,19 +374,21 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         let taskID = UUID()
         let context = requestContext
         let task = Task { @MainActor in
-            guard var session = self.saved else { throw HakoError(message: "请重新登录。") }
-            if session.rotationId == nil { session.rotationId = UUID().uuidString.lowercased(); try self.persist(session) }
-            do {
-                let data = try await self.request("/api/v1/auth/refresh", method: "POST", body: ["sessionId": session.tokens.sessionId,
-                    "deviceId": session.tokens.deviceId, "refreshToken": session.tokens.refreshToken, "rotationId": session.rotationId!], token: nil)
-                let tokens = try JSONDecoder().decode(ConsoleTokens.self, from: data)
-                guard context == self.requestContext else { throw CancellationError() }
-                guard tokens.deviceId == session.tokens.deviceId else { throw HakoError(message: "设备绑定不匹配。") }
-                try self.persist(ConsoleSession(tokens: tokens, logoutPending: session.logoutPending))
-            } catch let error as ServerHTTPError where error.code == "session_revoked" {
-                guard context == self.requestContext else { throw CancellationError() }
-                try self.persist(nil); self.authenticated = false
-                throw error
+            try await HakoExecutionDiagnostics.measure("刷新服务端登录会话") {
+                guard var session = self.saved else { throw HakoError(message: "请重新登录。") }
+                if session.rotationId == nil { session.rotationId = UUID().uuidString.lowercased(); try self.persist(session) }
+                do {
+                    let data = try await self.request("/api/v1/auth/refresh", method: "POST", body: ["sessionId": session.tokens.sessionId,
+                        "deviceId": session.tokens.deviceId, "refreshToken": session.tokens.refreshToken, "rotationId": session.rotationId!], token: nil)
+                    let tokens = try JSONDecoder().decode(ConsoleTokens.self, from: data)
+                    guard context == self.requestContext else { throw CancellationError() }
+                    guard tokens.deviceId == session.tokens.deviceId else { throw HakoError(message: "设备绑定不匹配。") }
+                    try self.persist(ConsoleSession(tokens: tokens, logoutPending: session.logoutPending))
+                } catch let error as ServerHTTPError where error.code == "session_revoked" {
+                    guard context == self.requestContext else { throw CancellationError() }
+                    try self.persist(nil); self.authenticated = false
+                    throw error
+                }
             }
         }
         refreshTask = task

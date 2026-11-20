@@ -75,7 +75,7 @@ final class HakoLogStore: @unchecked Sendable {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(values)
             try data.write(to: fileURL, options: .atomic)
-            var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+            var flags = URLResourceValues(); flags.isExcludedFromBackup = !UserDefaults.standard.bool(forKey: "hako.icloud.includeHistory")
             try fileURL.setResourceValues(flags)
             #if os(iOS)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: fileURL.path)

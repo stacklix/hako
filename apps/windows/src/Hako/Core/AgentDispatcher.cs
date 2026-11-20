@@ -34,13 +34,17 @@ public sealed class AgentDispatcher : IAgentDispatcher
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
+    private readonly Lazy<AndroidManager> android;
+    internal AndroidManager Android => android.Value;
     internal Func<object> LanSnapshot { get; set; } = () => new { enabled = false, addresses = AgentLanEndpoint.Addresses(), port = 0 };
-    public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = new AgentCapability[] {
+    public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = [
         new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
-        new(ProcessMetrics.Command, 1),
+        new(ProcessMetrics.Command, 1), new(AndroidManager.ListCommand, 1),
         new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
-        new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1)
-    };
+        .. AndroidManager.ActionCommands.Select(name => new AgentCapability(name, 1)),
+        new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1),
+        .. AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand).Select(name => new AgentCapability(name, 1))
+    ];
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
@@ -48,6 +52,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
+        android = new(() => new AndroidManager(dataDirectory ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kage-android-dispatcher-" + Guid.NewGuid().ToString("N"))));
         var processes = new ProcessMetrics();
         queries = new()
         {
@@ -104,9 +109,14 @@ public sealed class AgentDispatcher : IAgentDispatcher
             ["query.git.operation"] = new(1, git.OperationAsync),
             ["query.git.remote"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Fetch, token)),
         };
+        queries[AndroidManager.ListCommand] = new(1, (p, t) => Android.QueryAsync(AndroidManager.ListCommand, p, t), Aggregate: false);
+        foreach (var name in AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand))
+            onDemandQueries[name] = new(1, (p, t) => Android.QueryAsync(name, p, t));
+        foreach (var name in AndroidManager.ActionCommands)
+            actions[name] = new(1, (p, t) => Android.ActionAsync(name, p, t));
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync() => android.IsValueCreated ? android.Value.DisposeAsync() : ValueTask.CompletedTask;
 
     public async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {
@@ -117,6 +127,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
             PublishPeriodicallyAsync("query.network.listeners", TimeSpan.FromSeconds(10), publish, streams.Token),
             PublishPeriodicallyAsync(AgentLanEndpoint.Command, TimeSpan.FromSeconds(10), publish, streams.Token),
             PublishPeriodicallyAsync(ProcessMetrics.Command, TimeSpan.FromSeconds(1), publish, streams.Token),
+            PublishPeriodicallyAsync(AndroidManager.ListCommand, TimeSpan.FromSeconds(10), publish, streams.Token),
             codex.WatchAsync(value => publish("query.codex.usage", value is null
                 ? new CapabilityData(1, Error: new("query_failed", "Codex 数据采集失败。"))
                 : new CapabilityData(1, JsonSerializer.SerializeToElement(value, AgentConnection.Json))), streams.Token)

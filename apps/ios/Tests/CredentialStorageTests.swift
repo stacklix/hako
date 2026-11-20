@@ -16,6 +16,9 @@ private final class MemorySecrets: SecretStorage {
 
 @main struct CredentialStorageTests {
     static func main() throws {
+        let failure = SecretStorageError(status: -25308, context: "读取本机设备身份记录") as NSError
+        precondition(failure.domain == NSOSStatusErrorDomain && failure.code == -25308)
+        precondition(failure.localizedDescription.contains("读取本机设备身份记录"))
         let arcane = MemorySecrets(), ecs = MemorySecrets()
         let empty = try ArcaneKeychain.load(storage: arcane)
         precondition(empty == nil)

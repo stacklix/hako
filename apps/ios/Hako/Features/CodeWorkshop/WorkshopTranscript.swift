@@ -345,8 +345,11 @@ final class WorkshopTranscriptDisk: @unchecked Sendable {
         #endif
         #if os(iOS) || os(macOS)
         var directoryURL = directory
-        var flags = URLResourceValues(); flags.isExcludedFromBackup = true
+        var flags = URLResourceValues(); flags.isExcludedFromBackup = false
         try directoryURL.setResourceValues(flags)
+        var file = url
+        flags.isExcludedFromBackup = true
+        try file.setResourceValues(flags)
         #endif
     }
 

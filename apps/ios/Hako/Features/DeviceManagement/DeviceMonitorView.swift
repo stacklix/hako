@@ -326,6 +326,9 @@ struct DeviceMetricsView: View {
             } else if capability.name == DeviceServiceCommand.status, capability.version == 1 {
                 DeviceServicesView(agent: currentAgent, entry: state.entries[capability.name], loaded: state.loaded)
                     .id(client.requestContext)
+            } else if capability.name == KageAndroidCommand.list, capability.version == 1 {
+                DeviceKageAndroidView(agent: currentAgent, entry: state.entries[capability.name])
+                    .id(client.requestContext + currentAgent.id)
             } else if capability.version == 1, AndroidDeviceCommand.names.contains(capability.name) {
                 androidContent(capability)
                     .id(client.requestContext + currentAgent.id + capability.name)
@@ -476,6 +479,7 @@ struct DeviceMetricsView: View {
         case (DeviceServiceCommand.status, 1): return "服务"
         case ("action.network.http.check", 1): return "检测"
         case (DeviceGitCommand.list, 1): return "Git"
+        case (KageAndroidCommand.list, 1): return "Android"
         default: return capability.name.split(separator: ".").last.map(String.init) ?? capability.name
         }
     }
@@ -902,6 +906,7 @@ private extension ConsoleAgent {
                 && $0.name != DeviceServiceCommand.start
                 && $0.name != DeviceAgentVersions.command
                 && $0.name != AgentLanDescriptor.command
+                && !KageAndroidCommand.supporting.contains($0.name)
         }
     }
 }

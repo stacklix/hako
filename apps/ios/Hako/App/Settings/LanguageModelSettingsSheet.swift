@@ -204,7 +204,7 @@ private struct LanguageModelProfileEditor: View {
                 } header: {
                     Text("访问凭据")
                 } footer: {
-                    Text("Token 仅保存在本机钥匙串。使用记账助手时，消息、图片和必要的账本数据会发送给所选服务商。")
+                    Text("Token 保存在系统钥匙串，并可通过 iCloud 钥匙串同步。使用记账助手时，消息、图片和必要的账本数据会发送给所选服务商。")
                 }
                 if preset != nil {
                     Section {

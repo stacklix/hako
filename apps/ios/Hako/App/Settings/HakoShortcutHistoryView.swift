@@ -32,7 +32,7 @@ struct HakoShortcutHistoryView: View {
                     .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
             } footer: {
-                Text("保存在本机，最多保留最近 \(HakoShortcutHistory.capacity) 次执行。")
+                Text("本机最多保留最近 \(HakoShortcutHistory.capacity) 次执行。可在“iCloud 与换机恢复”中选择是否纳入系统备份。")
             }
         }
         .navigationTitle("快捷指令执行历史")
@@ -66,7 +66,11 @@ private struct HakoShortcutRunView: View {
                 if !run.steps.isEmpty {
                     Section("子任务") {
                         ForEach(run.steps) { step in
-                            LabeledContent(step.name, value: step.status.rawValue)
+                            NavigationLink {
+                                HakoShortcutStepView(history: history, runID: runID, name: step.name)
+                            } label: {
+                                LabeledContent(step.name, value: step.status.rawValue)
+                            }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
@@ -79,6 +83,81 @@ private struct HakoShortcutRunView: View {
         }
         .navigationTitle("执行详情")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct HakoShortcutStepView: View {
+    @ObservedObject var history: HakoShortcutHistory
+    let runID: UUID
+    let name: String
+
+    private var step: HakoShortcutRun.Step? {
+        history.runs.first(where: { $0.id == runID })?.steps.first(where: { $0.name == name })
+    }
+
+    var body: some View {
+        List {
+            if let step {
+                Section("子任务概况") {
+                    LabeledContent("状态", value: step.status.rawValue)
+                    if let count = step.attempts { LabeledContent("执行次数", value: "\(count)") }
+                    if let start = step.startedAt {
+                        LabeledContent("本次开始", value: start.formatted(date: .abbreviated, time: .standard))
+                        if let end = step.finishedAt {
+                            LabeledContent("本次耗时", value: "\(max(0, Int(end.timeIntervalSince(start)))) 秒")
+                        }
+                    }
+                }
+                if let message = step.message, !message.isEmpty {
+                    Section("执行结果") { Text(message).textSelection(.enabled) }
+                }
+                Section {
+                    if let events = step.events, !events.isEmpty {
+                        ForEach(events) { event in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text(event.time, format: .dateTime.hour().minute().second())
+                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text(event.state.rawValue).font(.caption)
+                                        .foregroundStyle(event.state == .failed ? Color.red : Color.secondary)
+                                }
+                                Text(event.stage).font(.subheadline.weight(.medium))
+                                if !event.detail.isEmpty { Text(event.detail).font(.footnote).foregroundStyle(.secondary) }
+                            }
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                        }
+                    } else {
+                        Text("此记录没有详细日志。更新后重新执行可生成日志。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                } header: { Text("详细日志") } footer: {
+                    Text("最多保留最近 \(HakoShortcutHistory.eventCapacity) 条日志，包含重试前的记录。时间为本机时间。")
+                }
+            } else {
+                ContentUnavailableView("记录已移出历史", systemImage: "clock")
+            }
+        }
+        .privacySensitive()
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let step {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: logText(step)) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel("分享子任务执行日志")
+                }
+            }
+        }
+    }
+
+    private func logText(_ step: HakoShortcutRun.Step) -> String {
+        (["\(name)：\(step.status.rawValue)", step.message ?? ""] + (step.events ?? []).map {
+            "[\($0.time.formatted(date: .numeric, time: .standard))] [\($0.state.rawValue)] \($0.stage)\n\($0.detail)"
+        }).joined(separator: "\n")
     }
 }
 

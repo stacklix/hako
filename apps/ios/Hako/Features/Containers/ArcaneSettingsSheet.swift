@@ -49,7 +49,7 @@ struct ArcaneSettingsSheet: View {
                     if let message { Text(message).font(.footnote).foregroundStyle(.red) }
                     if !loaded { Button("重试读取配置", action: load) }
                 } footer: {
-                    Text("API Key 仅保存在本机系统钥匙串，不上传 Hako 服务端。测试连接只验证可访问的环境；只有点击右上角勾号才会保存。")
+                    Text("API Key 保存在系统钥匙串，并可通过 iCloud 钥匙串同步，不上传 Hako 服务端。测试连接只验证可访问的环境；只有点击右上角勾号才会保存。")
                 }
                 if store.pending != nil {
                     Section { Text("当前有尚未确认的容器操作，请先回到容器管理核对结果，再修改连接。") }

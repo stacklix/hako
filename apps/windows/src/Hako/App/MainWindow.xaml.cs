@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly AgentRuntime runtime;
     private readonly MonitorView monitor;
     private readonly ServerSettingsView settings;
+    private AndroidManagementView? android;
     private readonly Forms.NotifyIcon tray;
     private readonly System.Drawing.Icon trayIcon;
     private bool exiting;
@@ -82,6 +83,11 @@ public partial class MainWindow : Window
     }
     private void HomeClick(object sender, RoutedEventArgs e) => Home();
     private void MonitorClick(object sender, RoutedEventArgs e) => Page.Content = monitor;
+    private void AndroidClick(object sender, RoutedEventArgs e)
+    {
+        try { Page.Content = android ??= new AndroidManagementView(runtime.Android); }
+        catch (Exception) { ConnectionStatus.Text = "Android 管理数据读取失败，请检查当前用户的 Kage 数据目录。"; }
+    }
     private void SettingsClick(object sender, RoutedEventArgs e) => Page.Content = settings;
     private void Home()
     {

@@ -54,18 +54,30 @@ import Foundation
         var failed = false
         for (name, run) in callbacks.filter({ names?.contains($0.key) ?? true }).sorted(by: { $0.key < $1.key }) {
             try Task.checkCancellation()
-            history.recordStep(name, status: .running, runID: runID)
+            guard let attemptID = history.recordStep(name, status: .running, runID: runID) else { continue }
+            let record: HakoExecutionDiagnostics.Sink = { [history] event in
+                history.appendEvent(event, step: name, runID: runID, attemptID: attemptID)
+            }
             do {
-                results.append("\(name)：\(try await run())")
-                history.recordStep(name, status: .succeeded, runID: runID)
+                let result = try await HakoExecutionDiagnostics.context.withValue(record) {
+                    HakoExecutionDiagnostics.record(retryRunID == nil ? "开始执行子任务" : "重试子任务", state: .started)
+                    HakoExecutionDiagnostics.environment()
+                    return try await run()
+                }
+                results.append("\(name)：\(result)")
+                record(HakoExecutionEvent(stage: "子任务结束", state: .succeeded, detail: "执行成功。"))
+                history.recordStep(name, status: .succeeded, runID: runID, message: result)
             } catch is CancellationError {
                 status = .cancelled
-                history.recordStep(name, status: .cancelled, runID: runID)
+                record(HakoExecutionEvent(stage: "子任务结束", state: .cancelled, detail: "执行已取消。"))
+                history.recordStep(name, status: .cancelled, runID: runID, message: "执行已取消。")
                 throw CancellationError()
             } catch {
                 failed = true
                 results.append("\(name)失败：\(error.localizedDescription)")
-                history.recordStep(name, status: .failed, runID: runID)
+                let detail = HakoExecutionDiagnostics.failure(error)
+                record(HakoExecutionEvent(stage: "子任务结束", state: .failed, detail: detail))
+                history.recordStep(name, status: .failed, runID: runID, message: detail)
             }
         }
         try Task.checkCancellation()

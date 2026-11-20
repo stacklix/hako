@@ -9,7 +9,7 @@ iOS 首页的「容器管理」直接连接用户已有的 Arcane Manager，独�
 3. 点击「测试连接」，确认可访问的环境；点击右上角勾号保存。测试不保存输入；关闭有修改的 sheet 会询问是否放弃。
 4. 选择 Docker 环境，查看列表。手机必须能直接访问 Arcane；外网使用需自行提供 HTTPS 或 VPN。
 
-名称、地址、HTTP 选项与 API Key 作为一个配置保存在独立的系统 Keychain 项目 `me.stackli.hako.arcane`，仅限本机解锁时读取。API Key 不进入 UserDefaults、Hako 后端、URL 查询或应用日志。配置及网络会话不与 Hako、GitHub 共用。
+名称、地址、HTTP 选项与 API Key 作为一个配置保存在独立的系统 Keychain 项目 `me.stackli.hako.arcane`，解锁时读取，并可通过 iCloud 钥匙串同步。API Key 不进入 UserDefaults、Hako 后端、URL 查询或应用日志。配置及网络会话不与 Hako、GitHub 共用。
 
 默认要求 HTTPS，使用系统证书校验，不忽略证书错误。HTTP 必须明确开启「允许不加密的 HTTP 连接」，仅用于可信网络；API Key 将明文传输。由于地址由用户动态配置，Info.plist 提供 ATS HTTP 例外，实际是否发送 HTTP 仍由客户端配置校验。所有重定向均拒绝，不把 Key 转发到其他地址。局域网连接首次可能触发 iOS 本地网络授权。
 
@@ -164,6 +164,8 @@ swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-maco
 
 项目文件回归测试覆盖同名项目匹配、相对路径隔离、二进制／只读元数据、包含 Unicode 与特殊字符的文件名、multipart 上传与精确原文基线、专用配置接口只提交修改字段、保存冲突及不确定结果不重试。
 
-编辑器行号测试覆盖空文件、末尾空行、连续空行、混合换行、Unicode／Emoji 的 UTF-16 偏移和行号查找，已接入 macOS CI。iPhone 验收需检查长行折行与滚动时行号对齐、中文输入、覆盖粘贴后保存／放弃、无文本剪贴板、只读文件，以及短文件和长文件编辑时点击「收起键盘」。
+编辑器语法高亮只更新前景色并使对应范围重绘，不重设全文字体、不因高亮失效文字布局，也不回设光标或滚动位置；实际输入、字体和窗口尺寸变化仍由 TextKit 正常布局。行号栏预留四位数字宽度，超过后只增加，不因删行反复缩放。
+
+编辑器行号测试覆盖空文件、末尾空行、连续空行、混合换行、Unicode／Emoji 的 UTF-16 偏移和行号查找，已接入 macOS CI。iPhone 验收需检查长行折行与滚动时行号对齐、中文输入、覆盖粘贴后保存／放弃、无文本剪贴板、只读文件，以及短文件和长文件编辑时点击「收起键盘」。滚动回归需在长 YAML 文件中部和底部输入、停顿等待高亮、选词和拖动滚动，确认没有上下回跳；另检查中文候选确认、撤销／重做和 9／10、99／100、999／1000 行之间增删时的光标、颜色与折行。
 
 官方参考：[API](https://getarcane.app/docs/reference/api)、[容器](https://getarcane.app/docs/docker/containers)、[权限](https://getarcane.app/docs/access/roles)、[v2.17.1 容器实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/container/service.go)。

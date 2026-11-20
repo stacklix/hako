@@ -8,7 +8,13 @@ struct HakoShortcutRun: Codable, Identifiable {
 
     struct Step: Codable, Identifiable {
         let name: String
-        let status: Status
+        var status: Status
+        var startedAt: Date? = nil
+        var finishedAt: Date? = nil
+        var message: String? = nil
+        var events: [HakoExecutionEvent]? = nil
+        var attemptID: UUID? = nil
+        var attempts: Int? = nil
         var id: String { name }
     }
 
@@ -22,6 +28,7 @@ struct HakoShortcutRun: Codable, Identifiable {
 
 @MainActor final class HakoShortcutHistory: ObservableObject {
     static let capacity = 100
+    static let eventCapacity = 200
     static let shared = HakoShortcutHistory(fileURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
         .appendingPathComponent("ShortcutHistory", isDirectory: true).appendingPathComponent("runs.json"))
 
@@ -36,7 +43,12 @@ struct HakoShortcutRun: Codable, Identifiable {
             runs = Array(try JSONDecoder().decode([HakoShortcutRun].self, from: Data(contentsOf: fileURL)).prefix(Self.capacity))
             let interrupted = runs.indices.filter { runs[$0].status == .running }
             if !interrupted.isEmpty {
-                for index in interrupted { runs[index].status = .interrupted }
+                for index in interrupted {
+                    runs[index].status = .interrupted
+                    for step in runs[index].steps.indices where runs[index].steps[step].status == .running {
+                        runs[index].steps[step].status = .interrupted
+                    }
+                }
                 save()
             }
         } catch {
@@ -52,14 +64,38 @@ struct HakoShortcutRun: Codable, Identifiable {
         return run.id
     }
 
-    func recordStep(_ name: String, status: HakoShortcutRun.Status, runID: UUID) {
-        guard let index = runs.firstIndex(where: { $0.id == runID }) else { return }
-        let step = HakoShortcutRun.Step(name: name, status: status)
+    @discardableResult
+    func recordStep(_ name: String, status: HakoShortcutRun.Status, runID: UUID, message: String? = nil) -> UUID? {
+        guard let index = runs.firstIndex(where: { $0.id == runID }) else { return nil }
+        var step = runs[index].steps.first(where: { $0.name == name }) ?? HakoShortcutRun.Step(name: name, status: status)
+        step.status = status
+        step.message = message.map { HakoLog.sanitize($0) }
+        if status == .running {
+            step.startedAt = .now
+            step.finishedAt = nil
+            step.attemptID = UUID()
+            step.attempts = (step.attempts ?? 0) + 1
+        } else {
+            step.finishedAt = .now
+        }
         if let stepIndex = runs[index].steps.firstIndex(where: { $0.name == name }) {
             runs[index].steps[stepIndex] = step
         } else {
             runs[index].steps.append(step)
         }
+        save()
+        return step.attemptID
+    }
+
+    func appendEvent(_ event: HakoExecutionEvent, step name: String, runID: UUID, attemptID: UUID) {
+        guard let index = runs.firstIndex(where: { $0.id == runID }), runs[index].status == .running,
+              let step = runs[index].steps.firstIndex(where: { $0.name == name }),
+              runs[index].steps[step].status == .running, runs[index].steps[step].attemptID == attemptID else { return }
+        let safe = HakoExecutionEvent(id: event.id, time: event.time, stage: HakoLog.sanitize(event.stage, limit: 256),
+                                      state: event.state, detail: HakoLog.sanitize(event.detail))
+        var events = runs[index].steps[step].events ?? []
+        events.append(safe)
+        runs[index].steps[step].events = Array(events.suffix(Self.eventCapacity))
         save()
     }
 
@@ -88,9 +124,15 @@ struct HakoShortcutRun: Codable, Identifiable {
             var directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var flags = URLResourceValues()
-            flags.isExcludedFromBackup = true
+            flags.isExcludedFromBackup = !UserDefaults.standard.bool(forKey: "hako.icloud.includeHistory")
             try? directory.setResourceValues(flags)
+            #if os(iOS)
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: directory.path)
+            #endif
             try JSONEncoder().encode(runs).write(to: fileURL, options: .atomic)
+            #if os(iOS)
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: fileURL.path)
+            #endif
             storageIssue = nil
         } catch {
             storageIssue = "快捷指令记录暂时无法保存到本机。"

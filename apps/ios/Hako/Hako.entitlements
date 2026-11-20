@@ -5,4 +5,5 @@
 <key>com.apple.developer.family-controls</key><true/>
 <key>com.apple.developer.family-controls.app-and-website-usage</key><true/>
 <key>com.apple.developer.networking.wifi-info</key><true/>
+<key>com.apple.developer.ubiquity-kvstore-identifier</key><string>A23G28RL2L.me.stackli.hako</string>
 </dict></plist>

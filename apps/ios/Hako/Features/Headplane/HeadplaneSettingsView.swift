@@ -26,7 +26,7 @@ struct HeadplaneSettingsView: View {
                 .font(.footnote).foregroundStyle(HeadplaneStyle.muted)
             Toggle("允许 HTTP 不加密连接", isOn: $draft.allowHTTP).font(.subheadline)
             if draft.allowHTTP { Text("HTTP 会以未加密方式传输密钥和会话。").font(.footnote).foregroundStyle(HeadplaneStyle.orange) }
-            Text("填写 Headplane 的管理页面地址。凭据仅保存在本机 Keychain，连接验证成功后才会保存。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
+            Text("填写 Headplane 的管理页面地址。连接验证成功后保存到系统钥匙串，并可通过 iCloud 钥匙串同步。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
             HeadplaneErrorText(message: error ?? store.configurationError)
             Button(store.busy ? "正在验证连接…" : "验证并保存") {
                 Task {

@@ -4,9 +4,19 @@ import Security
 
 enum ConsoleKeychain {
     private static let storage = SecureStorage.namespace("me.stackli.hako.console")
-    static func read(_ account: String) throws -> Data? { try storage.read(account: account) }
+    static func read(_ account: String) throws -> Data? {
+        do { return try storage.read(account: account) }
+        catch let error as SecretStorageError { throw SecretStorageError(status: error.status, context: "读取" + itemName(account)) }
+    }
     static func save(_ account: String, data: Data) throws {
-        try storage.save(data, account: account, accessibility: .whenUnlocked)
+        do { try storage.save(data, account: account, accessibility: .whenUnlocked) }
+        catch let error as SecretStorageError { throw SecretStorageError(status: error.status, context: "保存" + itemName(account)) }
+    }
+    private static func itemName(_ account: String) -> String {
+        if account == ConsoleIdentity.deviceAccount { return "本机设备身份记录" }
+        if account.hasPrefix("identity.") { return "服务器绑定身份记录" }
+        if account.hasPrefix("session.") { return "服务端登录会话" }
+        return "登录安全数据"
     }
     static func delete(_ account: String) throws { try storage.delete(account: account) }
     static func clearRetiredIdentityEntries() throws {

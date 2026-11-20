@@ -94,4 +94,15 @@ enum HakoApplications {
         }
     }
 
+    @MainActor static func registerBackupScopes(in cloud: HakoCloudSettings) {
+        for application in Category.allCases.flatMap(\.applications) {
+            switch application {
+            case .codeWorkshop: cloud.registerBackupScopes(WorkshopBackup.scopes)
+            case .investment: cloud.registerBackupScopes(InvestmentBackup.scopes)
+            case .qinglong: cloud.registerBackupScopes(QinglongBackup.scopes)
+            default: break
+            }
+        }
+    }
+
 }

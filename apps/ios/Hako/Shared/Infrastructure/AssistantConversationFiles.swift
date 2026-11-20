@@ -44,7 +44,7 @@ struct AssistantConversationFiles<Conversation: Codable, Tool: Codable> {
         }
         #if os(iOS)
         var values = URLResourceValues()
-        values.isExcludedFromBackup = true
+        values.isExcludedFromBackup = false
         try directory.setResourceValues(values)
         let options: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
         #else
@@ -53,6 +53,11 @@ struct AssistantConversationFiles<Conversation: Codable, Tool: Codable> {
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         try encoder.encode(value).write(to: url, options: options)
+        #if os(iOS)
+        var file = url
+        var fileValues = URLResourceValues(); fileValues.isExcludedFromBackup = false
+        try file.setResourceValues(fileValues)
+        #endif
     }
 
     func remove() throws {

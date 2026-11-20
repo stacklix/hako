@@ -8,7 +8,7 @@ Hako 首页的「组网管理」通过 Headplane 管理 Headscale。界面沿用
 
 管理操作要求服务器启用 Headplane 的 API Key 登录。客户端将 Key 提交到 Headplane 的登录表单，取得会话 Cookie，随后访问同一 Headplane 的 loader/action。它不会直接请求 Headscale。SSH 终端单独使用官方 Web SSH 页面与 OIDC 登录，不复用管理操作的 API Key 会话。
 
-连接验证成功后才替换本机配置。凭据使用独立 Keychain 命名空间 `me.stackli.hako.headplane`，仅解锁时可读、仅限本机；会话 Cookie 只保存在内存中。默认要求 HTTPS，HTTP 需主动开启。不会自动跟随重定向或将凭据写入日志。
+连接验证成功后才替换本机配置。凭据使用独立 Keychain 命名空间 `me.stackli.hako.headplane`，解锁时可读，并可通过 iCloud 钥匙串同步；会话 Cookie 只保存在内存中。默认要求 HTTPS，HTTP 需主动开启。不会自动跟随重定向或将凭据写入日志。
 
 可选填写「版本查询密钥」，值对应 Headplane 服务端的 `server.info_secret`，与 API Key 分开使用；它随连接加密保存在同一 Keychain 命名空间。旧版本保存的连接无需迁移。仅 `/api/info` 使用此密钥作为 Bearer Token，不会发送给登录、健康检查或管理页面接口；未填写时不会用 API Key 代替。
 

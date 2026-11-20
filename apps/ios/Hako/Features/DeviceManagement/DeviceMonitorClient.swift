@@ -233,24 +233,25 @@ import Combine
         let liveUpdates = deviceData[agent.id]?.liveUpdates ?? [:]
         deviceData[agent.id]?.error = nil
         defer { if context == requestContext { deviceData[agent.id]?.loading = false } }
+        let androidState: Set<String> = ["query.device.status", "query.device.storage", "query.device.battery",
+                                         "query.network.wifi", "query.device.screen", "query.telephony.sims"]
         await withTaskGroup(of: Void.self) { group in
             if agent.capabilities?.contains(where: { $0.name == DeviceServiceCommand.status }) != false {
                 group.addTask { _ = await self.refreshServices(agent) }
             }
-            if let capabilities = agent.capabilities {
-                // Initial cards use independent, parameter-free queries. Git and
-                // other on-demand pages own their requests and are not scanned here.
+            if let capabilities = agent.capabilities,
+               !capabilities.contains(where: { androidState.contains($0.name) }) {
+                // Windows cards include on-demand providers such as Codex usage.
                 let initial = Set(["query.system.metrics", DeviceProcessCommand.status,
-                                   "query.network.listeners", "query.codex.usage", "query.device.status", "query.device.storage",
-                                   "query.device.battery", "query.network.wifi", "query.device.screen", "query.telephony.sims"])
+                                   "query.network.listeners", "query.codex.usage", KageAndroidCommand.list])
                 for capability in capabilities where initial.contains(capability.name) {
                     group.addTask {
                         await self.refreshQuery(agent, capability: capability, context: context, revisions: liveUpdates)
                     }
                 }
             } else {
-                // Keep the existing aggregate read when inventory metadata has
-                // not arrived yet; it runs alongside guardian administration.
+                // Android state providers share one request, with individual results
+                // and errors. History remains on demand and outside query.all.
                 group.addTask { await self.refreshAggregate(agent, context: context, liveUpdates: liveUpdates) }
             }
         }
@@ -286,11 +287,13 @@ import Combine
             guard context == requestContext else { return }
             if let index = agents.firstIndex(where: { $0.id == agent.id }) {
                 let old = agents[index]
-                agents[index] = ConsoleAgent(id: old.id, name: old.name, online: true,
+                agents[index] = ConsoleAgent(dataQueryEnabled: old.dataQueryEnabled, id: old.id, name: old.name, online: true,
                                             lastSeen: old.lastSeen, capabilities: old.capabilities)
             }
             if var state = deviceData[agent.id] {
-                state.mergeQueries(result.data, since: liveUpdates)
+                for (method, item) in result.data {
+                    state.mergeQuery(item, method: method, since: liveUpdates)
+                }
                 deviceData[agent.id] = state
             }
             deviceData[agent.id]?.loaded = true

@@ -33,7 +33,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, applications, github, languageModel
+        case server, scanner, applications, github, languageModel, cloud
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -97,6 +97,11 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
             Section("服务配置") {
+                Button { sheet = .cloud } label: {
+                    settingsEntry("iCloud 与换机恢复", systemImage: "icloud")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 Button { sheet = .github } label: {
                     settingsEntry("GitHub 配置", systemImage: "externaldrive.connected.to.line.below")
                 }
@@ -174,6 +179,7 @@ struct SettingsView: View {
                 case .applications: ConsoleApplicationsView()
                 case .github: GitHubSettingsSheet()
                 case .languageModel: LanguageModelSettingsSheet()
+                case .cloud: HakoCloudSettingsView()
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in
