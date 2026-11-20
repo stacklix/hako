@@ -169,7 +169,7 @@ internal static class CommandTaskChecks
             var critical = Guid.NewGuid().ToString();
             // The deadline includes PowerShell startup. Give it time to enter
             // the transaction, then keep the transaction running past that deadline.
-            await Call(tasks, "commands.start", new { requestId = critical, applicationId = application, name = "installation transaction", command = "Set-Content -LiteralPath (Join-Path $env:HAKO_COMMAND_TASK_DIRECTORY 'installing') -Value active; Start-Sleep -Seconds 6; Write-Output 'installation finished'", timeoutSeconds = 5, allowBackgroundProcesses = false });
+            await Call(tasks, "commands.start", new { requestId = critical, applicationId = application, name = "installation transaction", command = "Set-Content -LiteralPath (Join-Path $env:KAGE_COMMAND_TASK_DIRECTORY 'installing') -Value active; Start-Sleep -Seconds 6; Write-Output 'installation finished'", timeoutSeconds = 5, allowBackgroundProcesses = false });
             var installation = await Finish(tasks, critical);
             Check(CodexJson.Text(installation, "output").Contains("installation finished"), "Timeout killed an installation transaction");
             Check(CodexJson.Text(CodexJson.Field(installation, "task"), "state") == "timed_out", "Installation protection must still exercise an expired deadline");

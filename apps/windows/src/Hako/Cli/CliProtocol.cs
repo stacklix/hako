@@ -31,9 +31,9 @@ public sealed class AgentProfile
         Store = new AgentSettingsStore(directory);
         var sid = WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException("无法确认当前 Windows 用户。");
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sid + "\n" + Store.DirectoryPath.ToUpperInvariant())))[..32];
-        PipeName = "Hako.Agent." + hash;
-        // Preserve the existing GUI lock for the default profile, including older running versions.
-        MutexName = "Local\\Hako.Agent." + sid;
+        PipeName = "Kage.Agent." + hash;
+        // One GUI owner per Windows user and profile.
+        MutexName = "Local\\Kage.Agent." + sid;
         if (!string.Equals(Store.DirectoryPath, AgentSettingsStore.DefaultDirectory, StringComparison.OrdinalIgnoreCase)) MutexName += "." + hash;
     }
 }

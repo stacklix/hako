@@ -154,7 +154,7 @@ for (const [path, page, title] of [
     assert.equal(get('applications-page').hidden, page !== 'applications');
     assert.equal(get(`nav-${page}`).attributes['aria-current'], 'page');
     assert.equal(get('page-title').textContent, title);
-    assert.equal(document.title, `${title} · Hako 管理控制台`);
+    assert.equal(document.title, `${title} · Sora 管理控制台`);
     const endpoint = page === 'agents' ? '/admin/api/agents' : page === 'applications' ? '/admin/api/applications' : '/admin/api/access-logs?rangeHours=24';
     assert.deepEqual(calls, ['/admin/api/session', endpoint]);
     timers.forEach(callback => callback());

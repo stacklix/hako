@@ -42,8 +42,16 @@ import Foundation
         precondition(WorkshopWatchStep.delayMilliseconds(hasMoreEvents: true, failures: 20) == 15000)
         let staleNotice = WorkshopEntry(kind: "notice", id: "error-recovered", text: "Unknown old result", role: "", state: "", truncated: false)
         let otherNotice = WorkshopEntry(kind: "notice", id: "error-other", text: "Still unknown", role: "", state: "", truncated: false)
+        let compacting = WorkshopEntry(kind: "notice", id: "recovered", text: "正在压缩上下文…", role: "", state: "", truncated: false)
+        let compacted = WorkshopEntry(kind: "notice", id: "recovered-completed", text: "上下文压缩已完成。", role: "", state: "", truncated: false)
         for state in ["completed", "interrupted", "failed"] {
             precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([staleNotice, otherNotice], operationId: "recovered", state: state, followups: []) == [otherNotice])
+            precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([compacting, compacted, otherNotice], operationId: "recovered", state: state, followups: []) == [compacted, otherNotice],
+                "Finishing an operation must clear its progress notice while preserving the completion and unrelated notices")
+        }
+        for state in ["running", "queued", "unknown"] {
+            precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([compacting], operationId: "recovered", state: state, followups: []) == [compacting],
+                "Progress must remain visible until the operation outcome is confirmed")
         }
         precondition(WorkshopTranscriptMerge.withoutRecoveredNotices([staleNotice], operationId: "recovered", state: "unknown", followups: []) == [staleNotice],
             "A history refresh alone cannot remove a genuinely unknown outcome")

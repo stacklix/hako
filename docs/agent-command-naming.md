@@ -7,6 +7,7 @@
 | 查询：提供数据 | `query.` | `query.system.metrics` |
 | Codex 本机统计 | `query.` | `query.codex.usage` |
 | 本机监听端口 | `query.` | `query.network.listeners` |
+| 局域网地址与数据入口 | `query.` | `query.network.lan` |
 | 操作：按需执行 | `action.` | `action.network.http.check` |
 | 守护管理：在守护进程执行 | `admin.` | `admin.services.status`、`admin.services.start`、`admin.agent.versions` |
 | 内置聚合查询 | `query.all` | 获取支持聚合的查询数据 |
@@ -14,7 +15,7 @@
 - 普通能力按 `前缀.领域.功能` 命名，可以增加子领域；操作末段使用动词。
 - 各段以小写英文字母开头，仅使用小写英文字母、数字和下划线，段之间用点连接；完整名称最多 100 个 ASCII 字符。
 - 版本放在独立的正整数 `version` 字段。清单中名称唯一，调用时名称和版本必须完全匹配。
-- `query.all` v1 由主进程实现，不能注册为普通能力。只聚合常规 `query.` 提供器，不包含 `action.` 或 `admin.`。服务端对它没有特殊处理。
+- `query.all` v1 由设备业务进程实现，不能注册为普通能力。只聚合支持聚合的当前状态 `query.` 提供器，不包含 `action.` 或 `admin.`。短信、通话记录等历史数据通过独立的分页或时间范围查询读取，不加入状态聚合或实时状态订阅。服务端对它没有特殊处理。
 - 守护进程维护到服务端的连接，直接处理 `admin.`，通过当前用户专用本机管道转发 `query.` 和 `action.` 给主进程。主进程退出时，连接和管理能力仍可用；普通命令返回主进程不可用，恢复后重新转发，不自动重放操作。
 - `query.system.metrics` v1 等常规查询支持单项和聚合两种方式。`query.all` v1 按能力名组织聚合结果。Git 仓库扫描、详情和操作状态仅按需查询，仍在能力清单中声明。
 - CPU 和内存同属系统指标，统一注册为 `query.system.metrics`，一次采样同时返回，不能因展示为两个区域而拆成两个命令。

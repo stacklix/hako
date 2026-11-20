@@ -7,14 +7,25 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.os.Build
+import android.content.ActivityNotFoundException
 import android.provider.Telephony
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONArray
 import org.json.JSONObject
+import me.stackli.doppel.agent.AgentError
+import me.stackli.doppel.agent.AgentKeys
+import me.stackli.doppel.agent.AgentService
+import me.stackli.doppel.agent.AgentSettingsStore
+import me.stackli.doppel.agent.AgentWifi
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private val agentExecutor = Executors.newSingleThreadExecutor()
     private var pendingPermissionsResult: MethodChannel.Result? = null
     private var platformChannel: MethodChannel? = null
     private var snapshotReceiverRegistered = false
@@ -45,7 +56,78 @@ class MainActivity : FlutterActivity() {
         )
         platformChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
+                "getAgentSettings", "saveAgentSettings", "generateAgentKey" -> {
+                    agentExecutor.execute {
+                        try {
+                            val store = AgentSettingsStore(applicationContext)
+                            if (call.method == "saveAgentSettings") store.save(toJsonObject(call.arguments))
+                            if (call.method == "generateAgentKey") AgentKeys.generate()
+                            val snapshot = store.snapshot().toMapValue()
+                            runOnUiThread {
+                                if (call.method == "saveAgentSettings") AgentService.sync(this, restart = true)
+                                result.success(snapshot)
+                            }
+                        } catch (error: AgentError) {
+                            runOnUiThread { result.error(error.code, error.message, null) }
+                        } catch (_: Exception) {
+                            runOnUiThread { result.error("agent_settings_failed", "Agent 设置操作失败，请重试", null) }
+                        }
+                    }
+                }
+                "getSystemSettings" -> {
+                    try { result.success(SystemSettingsNavigator(this).status()) }
+                    catch (_: Exception) { result.error("settings_unavailable", "无法读取系统设置状态，请重试", null) }
+                }
+                "openBatterySettings", "openSystemSettings" -> {
+                    try {
+                        val target = if (call.method == "openBatterySettings") "battery"
+                            else call.argument<String>("target").orEmpty()
+                        SystemSettingsNavigator(this).open(target)
+                        result.success(null)
+                    } catch (_: ActivityNotFoundException) {
+                        result.error("settings_unavailable", "此设置页不可用，请在应用详情中查看自启动、后台运行或权限设置", null)
+                    } catch (_: SecurityException) {
+                        result.error("settings_unavailable", "系统不允许直接打开此页面，请从手机系统设置进入", null)
+                    } catch (_: IllegalArgumentException) {
+                        result.error("settings_unavailable", "未知的系统设置入口", null)
+                    }
+                }
                 "getSnapshot" -> result.success(buildSnapshot())
+                "getWifiPermissions" -> result.success(AgentWifi.permissions(this).toMapValue())
+                "openWifiLocationSettings" -> {
+                    try {
+                        startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                        result.success(true)
+                    } catch (_: ActivityNotFoundException) {
+                        result.error("settings_unavailable", "请从手机系统设置开启定位服务", null)
+                    }
+                }
+                "requestWifiPermissions" -> {
+                    if (pendingPermissionsResult != null) {
+                        result.error("permission_request_pending", "正在等待其他权限请求完成", null)
+                        return@setMethodCallHandler
+                    }
+                    val fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    val background = Build.VERSION.SDK_INT < 29 || checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    when {
+                        !fine -> {
+                            pendingPermissionsResult = result
+                            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQUEST_PERMISSIONS_CODE)
+                        }
+                        !background && Build.VERSION.SDK_INT == 29 -> {
+                            pendingPermissionsResult = result
+                            requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQUEST_PERMISSIONS_CODE)
+                        }
+                        else -> {
+                            try {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                                result.success(true)
+                            } catch (_: ActivityNotFoundException) {
+                                result.error("settings_unavailable", "请从手机系统设置进入 Nami 的定位权限页面", null)
+                            }
+                        }
+                    }
+                }
                 "saveConfig" -> {
                     mergeConfig(call.arguments)
                     RemoteControlService.sync(this)
@@ -72,9 +154,11 @@ class MainActivity : FlutterActivity() {
         RemoteControlStore.syncDirectBootConfig(this)
         SmsPipeline.seedInboxBackfillCursor(this)
         RemoteControlService.sync(this)
+        AgentService.sync(this)
     }
 
     override fun onDestroy() {
+        agentExecutor.shutdown()
         prefs().unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
         if (snapshotReceiverRegistered) {
             unregisterReceiver(snapshotReceiver)
@@ -161,11 +245,12 @@ class MainActivity : FlutterActivity() {
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.READ_SMS,
+            Manifest.permission.READ_CALL_LOG,
             Manifest.permission.SEND_SMS,
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.READ_PHONE_NUMBERS,
-        )
+        ) + if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.POST_NOTIFICATIONS) else emptyArray()
     }
 }
 

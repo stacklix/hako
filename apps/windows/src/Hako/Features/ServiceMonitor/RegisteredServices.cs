@@ -39,7 +39,7 @@ public sealed partial class RegisteredServices : IDisposable
         this.readListeners = readListeners;
         this.timeout = timeout ?? TimeSpan.FromSeconds(3);
         this.startupDirectory = startupDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Hako", "service-starts");
+            "Kage", "service-starts");
         client = new HttpClient(handler ?? new SocketsHttpHandler
         {
             UseProxy = false, AllowAutoRedirect = false, UseCookies = false,

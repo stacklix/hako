@@ -11,11 +11,11 @@ internal static partial class AgentGuardianControl
 {
     private sealed record StatusIdentity(int ProcessId);
 
-    // Standalone installations use their own image so replacing Hako.exe never
+    // Standalone installations use their own image so replacing Kage.exe never
     // locks or terminates the guardian. Development apphosts share their build output.
     internal static string ExecutableFor(AgentGuardianOptions options) =>
-        File.Exists(Path.Combine(Path.GetDirectoryName(options.TargetPath)!, "Hako.dll"))
-            ? options.TargetPath : Path.Combine(Path.GetDirectoryName(options.TargetPath)!, "guardian", "Hako.Guardian.exe");
+        File.Exists(Path.Combine(Path.GetDirectoryName(options.TargetPath)!, "Kage.dll"))
+            ? options.TargetPath : Path.Combine(Path.GetDirectoryName(options.TargetPath)!, "guardian", "Kage.Guardian.exe");
 
     internal static int? Running(string profile, string executable)
     {
@@ -49,7 +49,7 @@ internal static partial class AgentGuardianControl
         {
             var target = Environment.ProcessPath ?? throw new IOException("找不到 Agent 程序。");
             if (Path.GetFileNameWithoutExtension(target).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
-                target = Path.Combine(AppContext.BaseDirectory, "Hako.exe");
+                target = Path.Combine(AppContext.BaseDirectory, "Kage.exe");
             options = new AgentGuardianOptions(target, profile, "stacklix/hako");
         }
         options.Validate();

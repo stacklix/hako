@@ -5,5 +5,5 @@ import 'app.dart';
 export 'app.dart';
 
 void main() {
-  runApp(const DoppelApp());
+  runApp(const NamiApp());
 }

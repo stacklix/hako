@@ -1,19 +1,19 @@
-import 'package:doppel/main.dart';
-import 'package:doppel/pages/forwarding_page.dart';
+import 'package:nami/main.dart';
+import 'package:nami/pages/forwarding_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  Future<void> pumpDoppelApp(WidgetTester tester) async {
+  Future<void> pumpNamiApp(WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      const DoppelApp(autoRequestPermissionsOnStart: false),
+      const NamiApp(autoRequestPermissionsOnStart: false),
     );
   }
 
-  Future<void> pumpDoppelAppWithPlatformSnapshot(
+  Future<void> pumpNamiAppWithPlatformSnapshot(
     WidgetTester tester,
     Map<String, Object?> snapshot,
   ) async {
@@ -39,7 +39,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      const DoppelApp(autoRequestPermissionsOnStart: false),
+      const NamiApp(autoRequestPermissionsOnStart: false),
     );
     await tester.pumpAndSettle();
   }
@@ -58,12 +58,12 @@ void main() {
     await tester.tap(finder);
   }
 
-  testWidgets('home dashboard shows compact Doppel status overview', (
+  testWidgets('home dashboard shows compact Nami status overview', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
-    expect(find.text('Doppel'), findsOneWidget);
+    expect(find.text('Nami'), findsOneWidget);
     expect(find.text('短信转发与远程拨号助手'), findsOneWidget);
     expect(find.text('运行状态'), findsOneWidget);
     expect(find.text('等待授权'), findsOneWidget);
@@ -89,7 +89,7 @@ void main() {
   testWidgets('home metrics and sim list use platform snapshot data', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'permissions': {'sms': true, 'phone': true},
       'simCards': [
         {
@@ -133,7 +133,7 @@ void main() {
   testWidgets('home recent events show newest platform event first', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -159,7 +159,7 @@ void main() {
   testWidgets('home recent events only show events from the last day', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -183,7 +183,7 @@ void main() {
   testWidgets(
     'home recent events show business events without imported duplicates',
     (WidgetTester tester) async {
-      await pumpDoppelAppWithPlatformSnapshot(tester, {
+      await pumpNamiAppWithPlatformSnapshot(tester, {
         'events': [
           {
             'type': 'sms_received',
@@ -248,7 +248,7 @@ void main() {
   testWidgets('command events show sender recipient type and command content', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_command',
@@ -278,7 +278,7 @@ void main() {
     final timestamp = DateTime.now();
     final expectedHour = timestamp.hour.toString().padLeft(2, '0');
     final expectedMinute = timestamp.minute.toString().padLeft(2, '0');
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'call_received',
@@ -301,7 +301,7 @@ void main() {
     final expectedHour = timestamp.hour.toString().padLeft(2, '0');
     final expectedMinute = timestamp.minute.toString().padLeft(2, '0');
     final expectedSecond = timestamp.second.toString().padLeft(2, '0');
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -329,7 +329,7 @@ void main() {
     WidgetTester tester,
   ) async {
     final timestamp = DateTime.now();
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -351,7 +351,7 @@ void main() {
     WidgetTester tester,
   ) async {
     final longContent = List.filled(8, '这是一段很长的短信内容').join('，');
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -373,7 +373,7 @@ void main() {
   testWidgets('home ignores imported sms history older than 30 days', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -419,7 +419,7 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(390, 844));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
-        const DoppelApp(autoRequestPermissionsOnStart: false),
+        const NamiApp(autoRequestPermissionsOnStart: false),
       );
       await tester.pumpAndSettle();
 
@@ -444,7 +444,7 @@ void main() {
   testWidgets('home refreshes when native pushes a snapshot change', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'permissions': {'sms': true, 'phone': true},
       'events': const [],
     });
@@ -476,38 +476,46 @@ void main() {
     expect(find.text('暂无事件'), findsNothing);
   });
 
-  testWidgets('log page renders business events without pipeline diagnostics', (
-    WidgetTester tester,
-  ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
-      'events': [
-        {
-          'type': 'operation_log',
-          'detail': '邮件转发失败：scliqiao@qq.com',
-          'timestamp': DateTime.now().toIso8601String(),
-        },
-        {
-          'type': 'sms_pipeline_debug',
-          'detail': '收到短信广播，已加入后台任务队列',
-          'timestamp': DateTime.now().toIso8601String(),
-        },
-      ],
-    });
+  testWidgets(
+    'log page renders connection and business events without pipeline diagnostics',
+    (WidgetTester tester) async {
+      await pumpNamiAppWithPlatformSnapshot(tester, {
+        'events': [
+          {
+            'type': 'agent_connection',
+            'detail': 'WebSocket 握手超时，等待重连',
+            'timestamp': DateTime.now().toIso8601String(),
+          },
+          {
+            'type': 'operation_log',
+            'detail': '邮件转发失败：scliqiao@qq.com',
+            'timestamp': DateTime.now().toIso8601String(),
+          },
+          {
+            'type': 'sms_pipeline_debug',
+            'detail': '收到短信广播，已加入后台任务队列',
+            'timestamp': DateTime.now().toIso8601String(),
+          },
+        ],
+      });
 
-    await tester.tap(find.text('日志').last);
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('日志').last);
+      await tester.pumpAndSettle();
 
-    expect(find.text('业务日志'), findsOneWidget);
-    expect(find.text('邮件转发失败：scliqiao@qq.com'), findsOneWidget);
-    expect(find.text('短信后台链路'), findsNothing);
-    expect(find.text('收到短信广播，已加入后台任务队列'), findsNothing);
-  });
+      expect(find.text('业务日志'), findsOneWidget);
+      expect(find.text('Sora 连接'), findsOneWidget);
+      expect(find.text('WebSocket 握手超时，等待重连'), findsOneWidget);
+      expect(find.text('邮件转发失败：scliqiao@qq.com'), findsOneWidget);
+      expect(find.text('短信后台链路'), findsNothing);
+      expect(find.text('收到短信广播，已加入后台任务队列'), findsNothing);
+    },
+  );
 
   testWidgets('log page long sms event can open full detail', (
     WidgetTester tester,
   ) async {
     final longContent = List.filled(8, '日志里的长短信内容').join('，');
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'events': [
         {
           'type': 'sms_received',
@@ -531,7 +539,7 @@ void main() {
   testWidgets('forwarding and command pages restore platform config', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'permissions': {'sms': true, 'phone': true},
       'config': {
         'forwarding': {
@@ -629,7 +637,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      const DoppelApp(autoRequestPermissionsOnStart: false),
+      const NamiApp(autoRequestPermissionsOnStart: false),
     );
     await tester.pumpAndSettle();
 
@@ -650,7 +658,7 @@ void main() {
   testWidgets(
     'forwarding page is not recreated when forwarding config changes',
     (WidgetTester tester) async {
-      await pumpDoppelAppWithPlatformSnapshot(tester, {
+      await pumpNamiAppWithPlatformSnapshot(tester, {
         'config': {
           'forwarding': {
             'emailTargets': [
@@ -671,7 +679,7 @@ void main() {
   testWidgets('empty event state is centered in its card', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     final emptyStateCenter = tester.getCenter(find.text('暂无事件'));
 
@@ -681,7 +689,7 @@ void main() {
   testWidgets('bottom navigation exposes forwarding command and log pages', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -709,7 +717,7 @@ void main() {
   testWidgets('settings button opens permission and runtime settings', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.byIcon(Icons.settings_outlined));
     await tester.pumpAndSettle();
@@ -717,6 +725,11 @@ void main() {
     expect(find.text('系统设置'), findsOneWidget);
     expect(find.text('权限状态'), findsOneWidget);
     expect(find.text('远程 HTTP 控制'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('自动接听'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
     expect(find.text('自动接听'), findsOneWidget);
     expect(find.text('日志保留天数'), findsOneWidget);
   });
@@ -763,7 +776,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
-      const DoppelApp(autoRequestPermissionsOnStart: false),
+      const NamiApp(autoRequestPermissionsOnStart: false),
     );
     await tester.pumpAndSettle();
 
@@ -810,7 +823,7 @@ void main() {
   testWidgets('remote control password visibility can be toggled', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('指令').last);
     await tester.pumpAndSettle();
@@ -868,7 +881,7 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(390, 844));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
-        const DoppelApp(autoRequestPermissionsOnStart: false),
+        const NamiApp(autoRequestPermissionsOnStart: false),
       );
       await tester.pumpAndSettle();
 
@@ -886,7 +899,7 @@ void main() {
   testWidgets('command page can add a trusted phone number', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('指令').last);
     await tester.pumpAndSettle();
@@ -905,7 +918,7 @@ void main() {
   testWidgets('forwarding page can configure phone email and http targets', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -937,7 +950,7 @@ void main() {
   testWidgets('command page can edit and delete trusted phone numbers', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('指令').last);
     await tester.pumpAndSettle();
@@ -970,7 +983,7 @@ void main() {
   testWidgets('email forwarding tab configures SMTP sender settings', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -1015,7 +1028,7 @@ void main() {
   testWidgets('email forwarding tab defaults blank smtp port to ssl 465', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -1047,7 +1060,7 @@ void main() {
   testWidgets('smtp settings dialog can reveal password text', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -1079,7 +1092,7 @@ void main() {
   testWidgets('phone forwarding tab can choose sms sending sim', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelAppWithPlatformSnapshot(tester, {
+    await pumpNamiAppWithPlatformSnapshot(tester, {
       'simCards': [
         {
           'subscriptionId': 7,
@@ -1115,7 +1128,7 @@ void main() {
   testWidgets('phone forwarding tab shows real empty sim state', (
     WidgetTester tester,
   ) async {
-    await pumpDoppelApp(tester);
+    await pumpNamiApp(tester);
 
     await tester.tap(find.text('转发').last);
     await tester.pumpAndSettle();
@@ -1172,13 +1185,13 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(390, 844));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
-        const DoppelApp(autoRequestPermissionsOnStart: false),
+        const NamiApp(autoRequestPermissionsOnStart: false),
       );
       await tester.pumpAndSettle();
 
       await tester.tap(find.byTooltip('系统设置'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('申请授权'));
+      await tapVisibleText(tester, '申请授权');
       await tester.pumpAndSettle();
       await tester.pageBack();
       await tester.pumpAndSettle();

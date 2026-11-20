@@ -11,8 +11,8 @@ try {
     $env:GOOS = 'linux'
     $env:GOARCH = 'amd64'
     $env:CGO_ENABLED = '0'
-    $output = Join-Path $destination 'hako-server-linux-amd64'
-    & go build -trimpath -ldflags '-s -w' -o $output ./cmd/hako-server
+    $output = Join-Path $destination 'sora-server-linux-amd64'
+    & go build -trimpath -ldflags '-s -w' -o $output ./cmd/sora-server
     if ($LASTEXITCODE -ne 0) { throw "Publish failed: $LASTEXITCODE" }
     Write-Host "Published: $output"
 }

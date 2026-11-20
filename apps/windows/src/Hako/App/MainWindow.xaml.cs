@@ -31,12 +31,12 @@ public partial class MainWindow : Window
         runtime.MetricsReceived += MetricsReceived;
         runtime.SettingsChanged += SettingsChanged;
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("打开 Hako", null, (_, _) => Dispatcher.Invoke(ShowWindow));
+        menu.Items.Add("打开 Kage", null, (_, _) => Dispatcher.Invoke(ShowWindow));
         menu.Items.Add("退出", null, async (_, _) => await Dispatcher.InvokeAsync(exit).Task.Unwrap());
-        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Hako.ico")).Stream)
+        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Kage.ico")).Stream)
         using (var icon = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize))
             trayIcon = (System.Drawing.Icon)icon.Clone();
-        tray = new Forms.NotifyIcon { Icon = trayIcon, Text = "Hako · 设备代理", ContextMenuStrip = menu, Visible = true };
+        tray = new Forms.NotifyIcon { Icon = trayIcon, Text = "Kage · 设备代理", ContextMenuStrip = menu, Visible = true };
         tray.DoubleClick += (_, _) => Dispatcher.Invoke(ShowWindow);
         Closing += OnClosing;
         Loaded += (_, _) =>

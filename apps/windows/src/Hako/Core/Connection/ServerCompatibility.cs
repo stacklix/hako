@@ -63,10 +63,10 @@ internal static class ServerCompatibility
             Parse(versions.MinimumAgentVersion) is not Version minimumAgent)
             return InvalidMetadata;
         if (Parse(agentVersion) is not Version agent)
-            return "无法读取 Hako Agent 版本，请重新安装 Hako。";
+            return "无法读取 Kage 版本，请重新安装 Kage。";
 
-        var agentWarning = Mismatch(agent, minimumAgent, "Hako Agent", "服务端");
-        var serverWarning = Mismatch(server, Version.Parse(MinimumServerVersion), "服务端", "Hako Agent");
+        var agentWarning = Mismatch(agent, minimumAgent, "Kage", "服务端");
+        var serverWarning = Mismatch(server, Version.Parse(MinimumServerVersion), "服务端", "Kage");
         return agentWarning is not null && serverWarning is not null
             ? agentWarning + "\n\n" + serverWarning
             : agentWarning ?? serverWarning;

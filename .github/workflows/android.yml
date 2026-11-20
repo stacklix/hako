@@ -1,0 +1,53 @@
+name: Nami Android
+on:
+  push:
+    paths:
+      - 'apps/android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.10'
+          channel: stable
+          cache: true
+      - name: Resolve Flutter dependencies
+        run: flutter pub get
+      - name: Analyze and test Flutter UI
+        run: |
+          flutter analyze
+          flutter test
+      - name: Build debug APK
+        run: flutter build apk --debug
+      - name: Test native Agent protocol and connection
+        run: ./gradlew testDebugUnitTest
+        working-directory: apps/android/android
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Nami-Android-debug-${{ github.run_number }}
+          path: apps/android/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14
+      - name: Upload native test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Nami-Android-tests-${{ github.run_number }}
+          path: apps/android/build/app/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore

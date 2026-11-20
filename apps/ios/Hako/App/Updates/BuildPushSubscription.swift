@@ -32,6 +32,7 @@ final class BuildPushSubscription: ObservableObject {
         guard !HakoApplications.notifications.isViewing(notice, for: .codeWorkshop) else { return }
         bannerDismissal?.cancel()
         workshopBanner = notice
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         bannerDismissal = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(8)) } catch { return }
             if self?.workshopBanner?.id == notice.id { self?.workshopBanner = nil }

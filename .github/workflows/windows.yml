@@ -1,4 +1,4 @@
-name: Windows
+name: Kage Windows
 on:
   push:
     paths: ['apps/windows/**', 'apps/server/internal/server/windows_test.go', '.github/workflows/windows.yml']
@@ -22,6 +22,7 @@ jobs:
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- code-workshop
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- agent-direct
+      - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- agent-lan
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- binary-uploads
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-tasks
       - uses: actions/setup-go@v6
@@ -36,20 +37,20 @@ jobs:
           go test ./internal/server -run TestWindowsAgentEndToEnd -v
       - run: ./scripts/publish.ps1
       - name: Verify published CLI and help
-        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe
+        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Kage.exe
       - name: Verify startup under a restrictive Windows job
-        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe -RestrictBackgroundLaunch
+        run: ./tests/cli-smoke.ps1 -Executable ../../dist/windows/Kage.exe -RestrictBackgroundLaunch
       - name: Verify guardian update and recovery
-        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian ../../dist/windows/Hako.exe
+        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian ../../dist/windows/Kage.exe
       - name: Verify guardian image refresh
-        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian-refresh ../../dist/windows/Hako.exe
+        run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- guardian-refresh ../../dist/windows/Kage.exe
       - name: Verify commands survive main and guardian replacement
         shell: pwsh
         run: |
           $project = Join-Path $env:USERPROFILE ('Code/hako-command-fixture-' + [guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Path (Join-Path $project '.git') -Force | Out-Null
           try {
-            dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-host ../../dist/windows/Hako.exe $project
+            dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-host ../../dist/windows/Kage.exe $project
             if ($LASTEXITCODE -ne 0) { throw 'Command guardian checks failed.' }
           } finally {
             $resolved = [IO.Path]::GetFullPath($project)
@@ -59,8 +60,8 @@ jobs:
           }
       - uses: actions/upload-artifact@v7
         with:
-          name: Hako-Windows
-          path: dist/windows/Hako.exe
+          name: Kage-Windows
+          path: dist/windows/Kage.exe
   release:
     needs: build
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event_name != 'pull_request'
@@ -73,8 +74,8 @@ jobs:
       - name: Download verified Agent artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh run download ${{ github.run_id }} --repo ${{ github.repository }} --name Hako-Windows --dir dist/windows
+        run: gh run download ${{ github.run_id }} --repo ${{ github.repository }} --name Kage-Windows --dir dist/windows
       - name: Publish immutable Agent release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./apps/windows/scripts/publish-github-release.ps1 -Executable dist/windows/Hako.exe -Repository ${{ github.repository }} -Commit ${{ github.sha }} -BuildId ${{ github.run_id }} -Attempt ${{ github.run_attempt }}
+        run: ./apps/windows/scripts/publish-github-release.ps1 -Executable dist/windows/Kage.exe -Repository ${{ github.repository }} -Commit ${{ github.sha }} -BuildId ${{ github.run_id }} -Attempt ${{ github.run_attempt }}

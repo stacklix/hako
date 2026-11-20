@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="18 18 72 72">
+  <title>Nami</title>
+  <desc>Two flowing waves represent messages and device communication.</desc>
+  <rect width="108" height="108" fill="#073F3C"/>
+  <g transform="translate(54 54) scale(.9) translate(-54 -54)" fill-rule="evenodd">
+    <path fill="#5EEAD4" d="M28 59C37 59 38 68 47 68C56 68 57 51 66 51C74 51 76 59 80 59L80 69C72 69 71 61 66 61C61 61 59 78 47 78C35 78 35 69 28 69Z"/>
+    <path fill="#F0FDFA" d="M28 37C37 37 38 46 47 46C56 46 57 29 66 29C74 29 76 37 80 37L80 47C72 47 71 39 66 39C61 39 59 56 47 56C35 56 35 47 28 47Z"/>
+  </g>
+</svg>

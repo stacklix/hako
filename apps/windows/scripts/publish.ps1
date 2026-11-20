@@ -19,13 +19,13 @@ try {
     & dotnet @publishArguments
     if ($LASTEXITCODE -ne 0) { throw "Publish failed: $LASTEXITCODE" }
     $items = @(Get-ChildItem -LiteralPath $staging -Force)
-    if ($items.Count -ne 1 -or $items[0].Name -ne 'Hako.exe' -or $items[0].PSIsContainer) {
-        throw 'Standalone publication must produce exactly one Hako.exe.'
+    if ($items.Count -ne 1 -or $items[0].Name -ne 'Kage.exe' -or $items[0].PSIsContainer) {
+        throw 'Standalone publication must produce exactly one Kage.exe.'
     }
     $destination = Join-Path $repoRoot 'dist/windows'
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    Copy-Item -LiteralPath $items[0].FullName -Destination (Join-Path $destination 'Hako.exe') -Force
-    Write-Host "Published: $(Join-Path $destination 'Hako.exe')"
+    Copy-Item -LiteralPath $items[0].FullName -Destination (Join-Path $destination 'Kage.exe') -Force
+    Write-Host "Published: $(Join-Path $destination 'Kage.exe')"
 }
 finally {
     $resolvedStaging = (Resolve-Path -LiteralPath $staging).Path

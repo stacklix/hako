@@ -45,9 +45,9 @@ internal static class CapabilityChecks
             // Missing local Codex data is a valid seven-day unavailable result.
             await using var missing = new CodexUsage(Path.Combine(directory, "missing"));
             using var empty = JsonDocument.Parse("{}");
-            var data = (QueryData)(await new AgentDispatcher(new SystemMetrics(), codexUsage: missing)
-                .InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
-            var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
+            var missingDispatcher = new AgentDispatcher(new SystemMetrics(), codexUsage: missing);
+            var data = (QueryData)(await missingDispatcher.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
+            var usage = (CodexUsageSnapshot?)await missingDispatcher.InvokeAsync("query.codex.usage", 1, empty.RootElement, CancellationToken.None);
             if (data.Data["query.system.metrics"].Error is not null || usage is not { Available: false, Days.Count: 7 }
                 || usage.Days.Any(day => day.RequestCount != 0 || day.TotalTokens != 0))
                 throw new Exception("Missing Codex logs must not break query.all or fabricate usage");
@@ -68,16 +68,16 @@ internal static class CapabilityChecks
         var data = (QueryData)(await real.InvokeAsync("query.all", 1, empty.RootElement, CancellationToken.None))!;
         if (samples != 1)
             throw new Exception($"query.all must sample system metrics once; observed {samples}, error={data.Data["query.system.metrics"].Error?.Code}");
-        if (data.Data.Count != 4 || data.Data.ContainsKey(RegisteredServices.Command)
+        if (data.Data.Count != 4 || data.Data.ContainsKey("query.codex.usage") || !data.Data.ContainsKey(AgentLanEndpoint.Command) || data.Data.ContainsKey(RegisteredServices.Command)
             || data.Data["query.system.metrics"].Result?.Deserialize<Metrics>(AgentConnection.Json) is not Metrics
             || data.Data["query.network.listeners"].Result?.Deserialize<ListenerSnapshot>(AgentConnection.Json) is not ListenerSnapshot
             || data.Data[ProcessMetrics.Command].Result?.Deserialize<ProcessResourceMetrics>(AgentConnection.Json) is not ProcessResourceMetrics)
-            throw new Exception("query.all must contain the four main-process queries and exclude guardian administration");
-        var usage = data.Data["query.codex.usage"].Result?.Deserialize<CodexUsageSnapshot>(AgentConnection.Json);
+            throw new Exception("query.all must contain current-state queries including LAN and exclude guardian administration");
+        var usage = (CodexUsageSnapshot?)await real.InvokeAsync("query.codex.usage", 1, empty.RootElement, CancellationToken.None);
         if (usage is not { Available: true, Days.Count: 7 })
-            throw new Exception($"query.all did not return seven Codex usage days; error={data.Data["query.codex.usage"].Error?.Code}");
+            throw new Exception("On-demand Codex query did not return seven usage days");
         if (usage.Days.Sum(day => day.RequestCount) != 1 || usage.Days.Sum(day => day.TotalTokens) != 110)
-            throw new Exception("query.all did not return the known fixture's user count and token usage");
+            throw new Exception("On-demand Codex query did not return the known fixture's user count and token usage");
         var json = JsonSerializer.SerializeToElement(data, AgentConnection.Json).GetProperty("data");
         if (json.GetProperty("query.system.metrics").TryGetProperty("error", out _) ||
             json.TryGetProperty("action.network.http.check", out _) || json.TryGetProperty(RegisteredServices.StartCommand, out _)

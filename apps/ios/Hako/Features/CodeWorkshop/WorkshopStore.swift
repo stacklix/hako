@@ -5,8 +5,11 @@ import CryptoKit
 @MainActor final class WorkshopStore: ObservableObject {
     let authentication: any AuthenticatedServerAccess
     private let socket: WorkshopRequestSocket
-    private var directSocket: WorkshopRequestSocket?
-    @Published private(set) var localEndpoint: LocalNetworkEndpoint?
+    private var directSockets: [String: WorkshopRequestSocket] = [:]
+    @Published private var localEndpoints: [String: LocalNetworkEndpoint] = [:]
+    var localEndpoint: LocalNetworkEndpoint? { localEndpoint(for: selectedAgentID) }
+    func localEndpoint(for agentID: String) -> LocalNetworkEndpoint? { localEndpoints[agentID] }
+    var networkNamespace: String { authentication.serverURL + "\n" + authentication.username }
     let routeChanges = PassthroughSubject<Void, Never>()
     private var networkCheck = UUID()
     private var transportRevision = UUID()
@@ -44,6 +47,7 @@ import CryptoKit
     private let draftWriter = WorkshopDraftWriter()
     private var draftCache: [URL: WorkshopComposerDraft] = [:]
     private var diagnosticUpload: Task<Void, Never>?
+    private var inventoryRefresh: Task<Void, Never>?
     private var artifactCache: [String: (Data, String)] = [:]
 
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
@@ -61,34 +65,68 @@ import CryptoKit
 
     // Authorization fences in-flight work; neither it nor the route identifies disk data.
     var scope: String { authentication.requestContext }
-    var authenticated: Bool { localEndpoint != nil || authentication.authenticated && !authentication.logoutPending }
+    var authenticated: Bool { !localEndpoints.isEmpty || authentication.authenticated && !authentication.logoutPending }
     var transportLabel: String { localEndpoint.map { "局域网直连 · " + $0.address } ?? "服务器转发" }
+    func commandContext(for agentID: String) -> String {
+        scope + "\n" + (localEndpoint(for: agentID)?.address ?? "server")
+    }
+
+    private func refreshCloudComputers() {
+        guard inventoryRefresh == nil, authentication.authenticated, !authentication.logoutPending else { return }
+        let ticket = scope
+        inventoryRefresh = Task { [weak self] in
+            guard let self else { return }
+            defer { self.inventoryRefresh = nil }
+            do {
+                struct List: Decodable { let computers: [WorkshopAgent] }
+                let data = try await self.socket.send("computers.list")
+                let cloud = try JSONDecoder().decode(List.self, from: data).computers
+                guard ticket == self.scope else { return }
+                let local = self.agents.filter { self.localEndpoint(for: $0.id) != nil && $0.online }
+                self.agents = cloud.map { agent in local.first { $0.id == agent.id } ?? agent }
+                    + local.filter { agent in !cloud.contains { $0.id == agent.id } }
+            } catch { /* A LAN connection remains usable while the server is unreachable. */ }
+        }
+    }
+
+    private func configuredLocalEndpoints() async -> [String: LocalNetworkEndpoint] {
+        let network = LocalNetworkService.shared
+        await network.refresh()
+        guard !Task.isCancelled, network.isLocal else { return [:] }
+        return WorkshopNetworkConfiguration.endpoints(namespace: networkNamespace)
+    }
 
     func prepareNetwork() async {
         let check = UUID(); networkCheck = check
-        let endpoint = await LocalNetworkService.shared.endpoint(for: .codeWorkshop)
-        guard !Task.isCancelled, check == networkCheck, endpoint != localEndpoint else { return }
+        let ticket = scope
+        let endpoints = await configuredLocalEndpoints()
+        guard !Task.isCancelled, ticket == scope, check == networkCheck, endpoints != localEndpoints else { return }
         socket.close()
-        directSocket?.close(); directSocket = nil
+        directSockets.values.forEach { $0.close() }; directSockets.removeAll()
         transportRevision = UUID()
         connections.removeAll()
         catalogRevision = UUID()
         loading = false
-        localEndpoint = endpoint
-        if let endpoint {
-            directSocket = WorkshopRequestSocket(context: { "local:" + endpoint.address }, open: {
-                try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1")
+        computersCheckedAt = nil
+        localEndpoints = endpoints
+        for (agentID, endpoint) in endpoints {
+            let direct = WorkshopRequestSocket(context: { "local:" + agentID + ":" + endpoint.address }, open: {
+                let (connection, hello) = try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1")
+                do { try WorkshopNetworkConfiguration.requireComputer(hello, agentID: agentID) }
+                catch { connection.closeWorkshop(); throw error }
+                return (connection, hello)
             })
-            directSocket?.onDisconnect = { [weak self] in self?.connectionInterrupted() }
-            directSocket?.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
-            directSocket?.onFailure = { HakoLog.record(.codeWorkshop, "工坊局域网共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
-            directSocket?.setPersistent(connectionPersistent)
+            direct.onDisconnect = { [weak self] in self?.connections[agentID] = .reconnecting }
+            direct.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
+            direct.onFailure = { HakoLog.record(.codeWorkshop, "工坊局域网共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
+            direct.setPersistent(connectionPersistent)
+            directSockets[agentID] = direct
         }
         prepareContext()
         routeChanges.send()
     }
 
-    private var requests: WorkshopRequestSocket { directSocket ?? socket }
+    private func requests(for agentID: String) -> WorkshopRequestSocket { directSockets[agentID] ?? socket }
 
     func recordDiagnostic(_ event: String, detail: String) {
         let file = cacheFile.deletingPathExtension().appendingPathExtension("diagnostics.json")
@@ -111,7 +149,7 @@ import CryptoKit
                 let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
                 do {
                     let records = try JSONSerialization.jsonObject(with: encoder.encode(batch))
-                    _ = try await self.requests.send("diagnostics.append", computerID: agent.id, params: ["records": records])
+                    _ = try await self.requests(for: agent.id).send("diagnostics.append", computerID: agent.id, params: ["records": records])
                     guard self.scope == ticket else { return }
                     try await WorkshopDiagnosticOutbox.shared.acknowledge(Set(batch.map(\.id)), file: file)
                 } catch { return } // Retain the spool; retry after the next successful read.
@@ -122,7 +160,7 @@ import CryptoKit
 
     func setConnectionForeground(_ foreground: Bool) {
         connectionPersistent = foreground
-        socket.setPersistent(foreground); directSocket?.setPersistent(foreground)
+        socket.setPersistent(foreground); directSockets.values.forEach { $0.setPersistent(foreground) }
     }
 
     private func connectionInterrupted() {
@@ -130,8 +168,8 @@ import CryptoKit
     }
 
     private func verifyNetworkRoute() async throws {
-        let expected = localEndpoint
-        let current = await LocalNetworkService.shared.endpoint(for: .codeWorkshop)
+        let expected = localEndpoints
+        let current = await configuredLocalEndpoints()
         try Task.checkCancellation()
         guard current == expected else {
             await prepareNetwork()
@@ -406,6 +444,21 @@ import CryptoKit
         }
     }
 
+    func renameSession(_ threadID: String, agentID: String, title: String) {
+        func renamed(_ value: WorkshopSession) -> WorkshopSession {
+            guard value.id == threadID else { return value }
+            return WorkshopSession(id: value.id, title: title, applicationId: value.applicationId, cwd: value.cwd,
+                preview: value.preview, updatedAt: value.updatedAt, state: value.state,
+                operationId: value.operationId, completionId: value.completionId, lastSentAt: value.lastSentAt)
+        }
+        if selectedAgentID == agentID { sessions = sessions.map(renamed) }
+        for (key, value) in cachedCatalogs where key == agentID || key == agentID + ":archived" {
+            cachedCatalogs[key] = WorkshopCachedCatalog(catalog: WorkshopCatalog(applications: value.catalog.applications,
+                sessions: value.catalog.sessions.map(renamed), nextCursor: value.catalog.nextCursor), savedAt: value.savedAt)
+        }
+        try? saveLists(background: true)
+    }
+
     func selectApplication(_ id: String) {
         selectedApplicationID = id
         do { try persist() } catch { self.error = "无法保存应用选择。" }
@@ -522,8 +575,14 @@ import CryptoKit
             let checkComputers = !more && (reconcile || (computersCheckedAt.map { Date.now.timeIntervalSince($0) >= 10 } ?? true))
             let values: [WorkshopAgent]
             if checkComputers || agents.isEmpty {
-                let agentData = try await requests.send("computers.list")
-                values = try JSONDecoder().decode(List.self, from: agentData).computers
+                let computerID = selectedAgentID
+                let agentData = try await requests(for: computerID).send("computers.list")
+                let listed = try JSONDecoder().decode(List.self, from: agentData).computers
+                if localEndpoint(for: computerID) != nil {
+                    guard listed.count == 1, listed.first?.id == computerID else { throw WorkshopNetworkConfiguration.ConnectionError.wrongComputer }
+                    values = agents.filter { $0.id != computerID } + listed
+                    refreshCloudComputers()
+                } else { values = listed }
                 computersCheckedAt = .now
             } else { values = agents }
             guard ticket == scope, revision == catalogRevision else { return }
@@ -789,7 +848,7 @@ import CryptoKit
         let ticket = scope
         try await verifyNetworkRoute()
         let route = transportRevision
-        let transport = requests
+        let transport = requests(for: agent.id)
         for (index, id) in ids.enumerated() {
             let data = try Data(contentsOf: imageFile(id))
             guard !data.isEmpty, data.count <= 2_000_000 else { throw HakoError(message: "图片文件无效，请重新选择。") }
@@ -818,7 +877,7 @@ import CryptoKit
         connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest
         do {
             var appliedCursor = cursor
-            try await requests.watchBatches(computerID: agent.id, operationID: id, cursor: cursor) { batch in
+            try await requests(for: agent.id).watchBatches(computerID: agent.id, operationID: id, cursor: cursor) { batch in
                 let pages = try await WorkshopSocketDecoder.shared.operationPages(batch, operationID: id, after: appliedCursor)
                 try Task.checkCancellation()
                 guard ticket == self.scope, route == self.transportRevision else { throw CancellationError() }
@@ -853,7 +912,7 @@ import CryptoKit
         let tracksConversation = !method.hasPrefix("commands.")
         if tracksConversation { connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest }
         do {
-            let data = try await requests.send(method, computerID: agent.id, params: params)
+            let data = try await requests(for: agent.id).send(method, computerID: agent.id, params: params)
             guard ticket == scope, route == transportRevision else { throw CancellationError() }
             let result = try JSONDecoder().decode(Result.self, from: data)
             if tracksConversation { connections[agent.id] = .connected }

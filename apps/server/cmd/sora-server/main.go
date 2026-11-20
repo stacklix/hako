@@ -132,7 +132,7 @@ func run() error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
 	}()
-	log.Printf("Hako listening on %s", httpServer.Addr)
+	log.Printf("Sora listening on %s", httpServer.Addr)
 	err = httpServer.ListenAndServe()
 	if err == http.ErrServerClosed {
 		return nil

@@ -29,6 +29,7 @@ internal sealed class WorkshopJob
     public bool Submitted { get; set; }
     public string? RootId { get; set; }
     public string InputMessage { get; set; } = "";
+    public bool IsCompaction { get; set; }
     public string SessionName { get; set; } = "未命名会话";
     public string ReplySummary { get; set; } = "";
     public string[] ImageIds { get; set; } = [];
@@ -54,6 +55,7 @@ internal sealed class WorkshopJob
     [JsonIgnore] public HashSet<string> Answered { get; } = new();
     [JsonIgnore] public SemaphoreSlim Control { get; } = new(1, 1);
     [JsonIgnore] public bool StopRequested { get; set; }
+    [JsonIgnore] public List<JsonElement> PendingEvents { get; } = new();
     [JsonIgnore] public string Outcome { get; set; } = "completed";
     [JsonIgnore] public bool Active => State is "starting" or "running" or "waiting" or "stopping" or "finishing";
 }
@@ -74,8 +76,9 @@ internal sealed partial class CodeWorkshop
         if (job.Id != id) throw new InvalidDataException("代码工坊任务 ID 无效。");
         if (job.Active)
         {
-            job.State = "unknown";
-            job.Message = "Agent 已重新启动，请查看会话历史核对这一轮的执行结果。";
+            job.State = job.Submitted ? "unknown" : "failed";
+            job.Message = job.Submitted ? "Agent 已重新启动，请查看会话历史核对这一轮的执行结果。" :
+                "Agent 已在发送前重新启动，本条消息尚未发送。";
             Persist(job);
         }
         else if (job.State is "queued" or "paused")
@@ -238,20 +241,38 @@ internal sealed partial class CodeWorkshop
                     job.State = "running";
                     Persist(job);
                 }
-                var input = new List<object>();
-                if (!string.IsNullOrWhiteSpace(message)) input.Add(new { type = "text", text = message });
-                input.AddRange(images.Select(image => (object)new { type = "localImage", path = UploadPath(image) }));
-                var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
-                if (model.Length > 0) turnOptions["model"] = model;
-                if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
-                if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;
-                var turn = await server.RequestAsync("turn/start", turnOptions, stopping.Token);
-                lock (gate)
+                if (job.IsCompaction)
                 {
-                    job.TurnId = CodexJson.Text(CodexJson.Field(turn, "turn"), "id");
-                    job.EffectiveModel = CodexJson.Text(settings, "model");
-                    job.EffectiveReasoningEffort = job.ReasoningEffort.Length > 0 ? job.ReasoningEffort : CodexJson.Text(settings, "reasoningEffort");
-                    Persist(job);
+                    startupStage = "压缩上下文";
+                    await server.RequestAsync("thread/compact/start", new { threadId = job.ThreadId }, stopping.Token);
+                }
+                else
+                {
+                    var input = new List<object>();
+                    if (!string.IsNullOrWhiteSpace(message)) input.Add(new { type = "text", text = message });
+                    input.AddRange(images.Select(image => (object)new { type = "localImage", path = UploadPath(image) }));
+                    var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
+                    if (model.Length > 0) turnOptions["model"] = model;
+                    if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
+                    if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;
+                    startupStage = "启动轮次";
+                    JsonElement turn = default;
+                    try { turn = await server.RequestAsync("turn/start", turnOptions, stopping.Token); }
+                    catch (TimeoutException) when (job.TurnId is not null && !stopping.IsCancellationRequested)
+                    {
+                        // A matching clientId already proved acceptance. Keep the
+                        // worker alive for its events instead of aborting the turn
+                        // just because the RPC acknowledgement was delayed.
+                        queryLog.Write("turn/start", 0, 0, "ack_timeout_accepted");
+                    }
+                    lock (gate)
+                    {
+                        if (turn.ValueKind != JsonValueKind.Undefined)
+                            BindTurn(job, CodexJson.Text(CodexJson.Field(turn, "turn"), "id"));
+                        job.EffectiveModel = CodexJson.Text(settings, "model");
+                        job.EffectiveReasoningEffort = job.ReasoningEffort.Length > 0 ? job.ReasoningEffort : CodexJson.Text(settings, "reasoningEffort");
+                        Persist(job);
+                    }
                 }
                 if (job.StopRequested) await InterruptAsync(job, stopping.Token);
                 await job.Completed.Task.WaitAsync(stopping.Token);
@@ -271,15 +292,19 @@ internal sealed partial class CodeWorkshop
         }
         catch (Exception e)
         {
+            queryLog.Write(startupStage, 0, 0, e.GetType().Name);
             lock (gate)
             {
                 job.Server = null;
                 job.Approvals.Clear();
+                job.PendingEvents.Clear();
                 var writerConflict = e.Message.Contains("active writer", StringComparison.OrdinalIgnoreCase) || e.Message.Contains("thread-store conflict", StringComparison.OrdinalIgnoreCase);
-                job.State = writerConflict || !job.Submitted ? "failed" : "unknown";
+                var rejected = job.Submitted && e is CodexRpcException && job.TurnId is null;
+                job.State = writerConflict || !job.Submitted || rejected ? "failed" : "unknown";
                 job.Outcome = job.State;
                 job.Message = writerConflict ? "桌面版仍占用此会话。释放会话后，再发送新消息。" :
                     e is WorkshopException action ? action.Message :
+                    rejected ? $"Codex 拒绝了{startupStage}请求，本条消息未被接收。请在电脑端检查此会话。" :
                     job.Submitted ? "任务结果尚未确认，请先刷新会话历史。此消息不会自动重发。" :
                     StartupFailureMessage(e, startupStage);
                 try
@@ -291,7 +316,25 @@ internal sealed partial class CodeWorkshop
                 catch (Exception storageError) when (storageError is IOException or UnauthorizedAccessException)
                 { job.Message += " 本机任务记录无法更新，请核对 Codex 原会话。"; }
             }
+            if (job.State == "unknown" && job.ThreadId is not null && !stopping.IsCancellationRequested)
+            {
+                try { await RecoverUnknownAsync(job.ThreadId, stopping.Token); }
+                catch (Exception recoveryError) when (recoveryError is not OutOfMemoryException)
+                { queryLog.Write("operation/reconcile", 0, 0, recoveryError.GetType().Name); }
+            }
         }
+    }
+
+    private void BindTurn(WorkshopJob job, string turnId)
+    {
+        if (string.IsNullOrEmpty(turnId)) throw new InvalidDataException("Codex 未返回轮次 ID。");
+        if (job.TurnId is not null && job.TurnId != turnId)
+            throw new InvalidDataException("Codex 轮次与本次消息不一致。");
+        job.TurnId = turnId;
+        Persist(job);
+        var pending = job.PendingEvents.ToArray();
+        job.PendingEvents.Clear();
+        foreach (var entry in pending) Receive(job, entry);
     }
 
     internal static string StartupFailureMessage(Exception error, string stage) => error switch
@@ -310,8 +353,29 @@ internal sealed partial class CodeWorkshop
             if (!job.Active || job.State == "finishing") return;
             var method = CodexJson.Text(message, "method");
             var parameters = CodexJson.Field(message, "params");
-            if (job.TurnId is null && CodexJson.Text(parameters, "turnId") is { Length: > 0 } notifiedTurn)
-                job.TurnId = notifiedTurn;
+            if (method == "hako/connectionClosed")
+            { job.Completed.TrySetException(new IOException("Codex 连接中断。")); return; }
+            // thread/resume can replay events from the previous turn. They do
+            // not belong to this request, including old approvals/completions.
+            if (!job.Submitted) return;
+            var threadId = CodexJson.Text(parameters, "threadId");
+            if (threadId != job.ThreadId) return;
+            var notifiedTurn = CodexJson.Text(parameters, "turnId");
+            if (notifiedTurn.Length == 0) notifiedTurn = CodexJson.Text(CodexJson.Field(parameters, "turn"), "id");
+            if (job.TurnId is null)
+            {
+                var item = CodexJson.Field(parameters, "item");
+                var acceptedInput = CodexJson.Text(item, "type") == "userMessage" && CodexJson.Text(item, "clientId") == job.Id;
+                var compaction = job.IsCompaction && CodexJson.Text(item, "type") == "contextCompaction";
+                if (notifiedTurn.Length > 0 && (acceptedInput || compaction)) BindTurn(job, notifiedTurn);
+                else
+                {
+                    if (job.PendingEvents.Count >= 512) throw new IOException("Codex 轮次确认前事件过多。");
+                    job.PendingEvents.Add(message.Clone());
+                    return;
+                }
+            }
+            if (notifiedTurn != job.TurnId) return;
             if (message.TryGetProperty("id", out var rpcId))
             {
                 var kind = method switch
@@ -368,25 +432,38 @@ internal sealed partial class CodeWorkshop
                 case "turn/completed":
                     var turn = CodexJson.Field(parameters, "turn");
                     var status = CodexJson.Text(turn, "status");
+                    if (job.TurnId is null) job.TurnId = CodexJson.Text(turn, "id");
+                    if (job.IsCompaction && status == "completed")
+                        Append(job, new("notice", job.Id + "-completed", "上下文压缩已完成。"));
                     job.Outcome = status == "completed" ? "completed" : status == "interrupted" ? "interrupted" : "failed";
                     job.State = "finishing";
                     if (status == "failed") job.Message = CodexJson.Clip(CodexJson.Text(CodexJson.Field(turn, "error"), "message"), 1000);
                     job.Completed.TrySetResult(true);
                     break;
-                case "hako/connectionClosed":
-                    job.Completed.TrySetException(new IOException("Codex 连接中断。"));
-                    break;
             }
         }
     }
 
-    public Task<object?> OperationAsync(JsonElement parameters, CancellationToken token)
+    public async Task<object?> OperationAsync(JsonElement parameters, CancellationToken token)
     {
         CodexJson.Keys(parameters, "operationId", "cursor");
         var id = OperationId(parameters);
         var field = CodexJson.Field(parameters, "cursor");
         var cursor = field.ValueKind == JsonValueKind.Undefined ? 0 : field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out var number) ? number : -1;
         token.ThrowIfCancellationRequested();
+        string? recoveryThread;
+        lock (gate)
+        {
+            RecoverJobs();
+            var current = CurrentJob(RootJob(GetJob(id)));
+            recoveryThread = current.State == "unknown" ? current.ThreadId : null;
+        }
+        if (recoveryThread is not null)
+        {
+            try { await RecoverUnknownAsync(recoveryThread, token); }
+            catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
+            { queryLog.Write("operation/reconcile", 0, 0, error.GetType().Name); }
+        }
         lock (gate)
         {
             RecoverJobs();
@@ -422,7 +499,7 @@ internal sealed partial class CodeWorkshop
                 lineSizes.RemoveAt(lineSizes.Count - 1);
                 events.RemoveAt(events.Count - 1);
             }
-            return Task.FromResult<object?>(Page());
+            return Page();
         }
     }
 

@@ -52,7 +52,7 @@ function showPage() {
     investmentPage ? '投资记账 · ' + investmentPages[investmentPage] : adminPage.title;
   $('page-description').textContent = notificationPage ? '统一管理通知渠道、消息和 Webhooks。' :
     investmentPage ? '查看 iOS 已同步的投资账本。' : adminPage.description;
-  document.title = $('page-title').textContent + ' · Hako 管理控制台';
+  document.title = $('page-title').textContent + ' · Sora 管理控制台';
 }
 let csrf = '', agentListing = null, selectedKey = null, refreshing = false;
 let qrRequest = null, qrTimer = null, qrCountdown = null, qrGeneration = 0, qrStarting = false;
@@ -90,7 +90,7 @@ function loggedIn(yes) {
     if (investmentPage) refreshInvestment();
     if (currentPage === 'workshop') void window.hakoWorkshop?.start();
   } else {
-    document.title = 'Hako · 你的日常，收进一个盒子';
+    document.title = 'Sora · 让设备与应用彼此连接';
     csrf = '';
     resetAccessLogs();
     resetApplications();

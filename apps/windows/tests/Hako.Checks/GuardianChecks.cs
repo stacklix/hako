@@ -57,7 +57,7 @@ internal static class GuardianChecks
     private sealed class Fixture : IAsyncDisposable
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "hako-guardian-" + Guid.NewGuid().ToString("N"));
-        internal string Target => Path.Combine(Root, "install", "Hako.exe");
+        internal string Target => Path.Combine(Root, "install", "Kage.exe");
         internal string Profile => Path.Combine(Root, "profile");
         internal AgentGuardianOptions Options => new(Target, Profile, "stacklix/hako", PollSeconds: 1, UpdatePollSeconds: 5, RestartDelaySeconds: 1);
         internal Fixture(string executable, string origin)
@@ -69,7 +69,7 @@ internal static class GuardianChecks
             Directory.CreateDirectory(AgentGuardianControl.DirectoryFor(Profile));
             File.WriteAllText(AgentGuardianControl.FileFor(Profile, "config.json"), "invalid guardian configuration");
             Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(Target)!, "guardian"));
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(Target)!, "guardian", "Hako.Guardian.exe"), "startup target fixture");
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(Target)!, "guardian", "Kage.Guardian.exe"), "startup target fixture");
         }
         internal AgentUpdateCandidate Candidate()
         {

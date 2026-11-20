@@ -9,6 +9,8 @@ struct SettingsSheet<Content: View>: View {
     var onSave: (() -> Void)? = nil
     private let detents: Set<PresentationDetent>
     private let saveAccessibilityLabel: String
+    private let cancelTitle: String?
+    private let saveTitle: String?
     private let content: Content
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDiscard = false
@@ -16,6 +18,7 @@ struct SettingsSheet<Content: View>: View {
     init(title: String, hasChanges: Bool = false, isBusy: Bool = false,
          saveEnabled: Bool = true, onSave: (() -> Void)? = nil,
          detents: Set<PresentationDetent> = [.large], saveAccessibilityLabel: String = "保存配置",
+         cancelTitle: String? = nil, saveTitle: String? = nil,
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.hasChanges = hasChanges
@@ -24,6 +27,8 @@ struct SettingsSheet<Content: View>: View {
         self.onSave = onSave
         self.detents = detents
         self.saveAccessibilityLabel = saveAccessibilityLabel
+        self.cancelTitle = cancelTitle
+        self.saveTitle = saveTitle
         self.content = content()
     }
 
@@ -34,13 +39,19 @@ struct SettingsSheet<Content: View>: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button(action: requestDismiss) { Image(systemName: "xmark") }
-                            .accessibilityLabel("关闭")
+                        Button(action: requestDismiss) {
+                            if let cancelTitle { Text(cancelTitle) }
+                            else { Image(systemName: "xmark") }
+                        }
+                            .accessibilityLabel(Text(cancelTitle ?? "关闭"))
                             .disabled(isBusy)
                     }
                     if let onSave {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button(action: onSave) { Image(systemName: "checkmark") }
+                            Button(action: onSave) {
+                                if let saveTitle { Text(saveTitle) }
+                                else { Image(systemName: "checkmark") }
+                            }
                                 .accessibilityLabel(Text(saveAccessibilityLabel))
                                 .disabled(!saveEnabled || isBusy)
                         }

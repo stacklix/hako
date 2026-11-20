@@ -44,7 +44,7 @@ async function loadLogDomain(item) {
     const params = new URLSearchParams({...logWindow, domain:item.domain});
     const data = await api('access-logs/rankings?' + params);
     if (generation !== logDetailGeneration || !csrf) return;
-    if (!Number.isFinite(data.success) || !Number.isFinite(data.nonSuccess)) throw new Error('服务端尚不支持正常响应／异常响应统计，请先更新 Hako 服务端。');
+    if (!Number.isFinite(data.success) || !Number.isFinite(data.nonSuccess)) throw new Error('服务端尚不支持正常响应／异常响应统计，请先更新 Sora 服务端。');
     $('logs-domain-count').textContent = `访问量 ${data.visits.toLocaleString('zh-CN')} 次 · 正常响应 ${data.success.toLocaleString('zh-CN')} 次 · 异常响应 ${data.nonSuccess.toLocaleString('zh-CN')} 次`;
     $('logs-domain-count').title = '正常响应：101、200–299、304；其余状态码为异常响应。';
     const missingColumns = node('div', undefined, 'log-columns');

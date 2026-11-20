@@ -34,7 +34,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.net.ssl.SSLSocketFactory
 
-private const val PIPELINE_TAG = "DoppelSms"
+private const val PIPELINE_TAG = "NamiSms"
 private const val PREFS_NAME = "doppel"
 private const val DIRECT_BOOT_PREFS_NAME = "doppel_direct_boot"
 private const val KEY_CONFIG = "config_json"
@@ -116,7 +116,7 @@ internal object SmsPipeline {
         appendDebugEvent(
             context,
             if (command == null) {
-                "短信不是 Doppel 指令，进入普通短信转发流程"
+                "短信不是 Nami 指令，进入普通短信转发流程"
             } else if (isTrusted) {
                 "识别到白名单短信指令，进入指令流程"
             } else {
@@ -244,7 +244,7 @@ internal object SmsPipeline {
             from = normalizedCaller,
             to = localRecipient,
             content = "",
-            subject = "Doppel 来电通知 from $normalizedCaller",
+            subject = "Nami 来电通知 from $normalizedCaller",
             eventDetail = "来电通知",
         )
     }
@@ -583,7 +583,7 @@ internal object SmsPipeline {
             from = sender,
             to = localRecipient,
             content = body,
-            subject = "Doppel 短信通知 from $sender",
+            subject = "Nami 短信通知 from $sender",
             eventDetail = "邮件转发",
         )
     }
@@ -693,7 +693,7 @@ internal object SmsPipeline {
               <body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#0f172a;">
                 <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
                   <div style="padding:16px 18px;background:#0f766e;color:#ffffff;">
-                    <div style="font-size:18px;font-weight:800;">Doppel ${htmlEscape(type)}</div>
+                    <div style="font-size:18px;font-weight:800;">Nami ${htmlEscape(type)}</div>
                   </div>
                   <table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;font-size:14px;">
                     $rows

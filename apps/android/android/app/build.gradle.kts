@@ -7,6 +7,12 @@ plugins {
 
 dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
 
 android {
@@ -28,11 +34,13 @@ android {
         applicationId = "me.stackli.doppel"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(26, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
+
+    buildFeatures { buildConfig = true }
 
     buildTypes {
         release {
@@ -43,9 +51,6 @@ android {
     }
 }
 
-dependencies {
-    implementation("androidx.work:work-runtime-ktx:2.10.1")
-}
 flutter {
     source = "../.."
 }

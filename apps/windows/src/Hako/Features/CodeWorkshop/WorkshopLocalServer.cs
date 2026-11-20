@@ -11,6 +11,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Hako.Core;
 
 namespace Hako.Platform;
 
@@ -23,6 +24,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
     private readonly Func<string?> computerId;
     private readonly string localId;
     private readonly string? accessToken;
+    private readonly AgentLanEndpoint? lan;
     private readonly TcpListener listener;
     private readonly CancellationTokenSource stopping = new();
     private readonly HashSet<Task> clients = new();
@@ -31,8 +33,9 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
     private readonly Task accepting;
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity, string? accessToken = null)
+    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity, string? accessToken = null, AgentLanEndpoint? lan = null)
     {
+        this.lan = lan;
         this.dispatcher = dispatcher; this.computerId = computerId;
         this.accessToken = accessToken;
         localId = "lan-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16].ToLowerInvariant();
@@ -105,7 +108,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 client.NoDelay = true;
                 var stream = client.GetStream();
                 using var handshake = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                handshake.CancelAfter(TimeSpan.FromSeconds(5));
+                handshake.CancelAfter(TimeSpan.FromSeconds(15));
                 var path = await AcceptRequestAsync(stream, handshake.Token, accessToken);
                 if (path is null) return;
                 using var socket = WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(15));
@@ -236,7 +239,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
         return await WorkshopBinaryFrame.ReadAsync(socket, token);
     }
 
-    private static async Task<string?> AcceptRequestAsync(NetworkStream stream, CancellationToken token, string? accessToken)
+    private async Task<string?> AcceptRequestAsync(NetworkStream stream, CancellationToken token, string? accessToken)
     {
         var bytes = new List<byte>();
         var one = new byte[1];
@@ -256,8 +259,25 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
             var colon = line.IndexOf(':');
             if (colon < 1 || !headers.TryAdd(line[..colon].Trim(), line[(colon + 1)..].Trim())) throw new InvalidDataException("Invalid headers.");
         }
-        if (request.Length != 3 || request[0] != "GET" || request[2] != "HTTP/1.1" || headers.ContainsKey("Origin") || !headers.ContainsKey("Host"))
+        if (request.Length != 3 || request[2] != "HTTP/1.1" || headers.ContainsKey("Origin") || !headers.ContainsKey("Host"))
             throw new InvalidDataException("Invalid HTTP request.");
+        if (request[0] == "POST" && request[1] == "/agent/v1/query" && lan is not null && accessToken is null)
+        {
+            if (headers.ContainsKey("Transfer-Encoding") || !headers.TryGetValue("Content-Length", out var lengthText)
+                || !int.TryParse(lengthText, out var length) || length is < 1 or > 96 * 1024)
+                throw new InvalidDataException("Invalid LAN body size.");
+            var body = new byte[length];
+            await stream.ReadExactlyAsync(body, token);
+            byte[] result;
+            try { result = await lan.HandleAsync(body, token); }
+            catch (Exception error) when (error is CryptographicException or JsonException or InvalidDataException or FormatException or KeyNotFoundException or InvalidOperationException)
+            { throw new InvalidDataException("Invalid LAN request."); }
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + result.Length
+                + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"), token);
+            await stream.WriteAsync(result, token);
+            return null;
+        }
+        if (request[0] != "GET") throw new InvalidDataException("Invalid HTTP method.");
         if (accessToken is not null && (!headers.TryGetValue("X-Hako-Command", out var supplied)
             || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(accessToken), Encoding.UTF8.GetBytes(supplied))))
             throw new InvalidDataException("Command connection requires its task credential.");

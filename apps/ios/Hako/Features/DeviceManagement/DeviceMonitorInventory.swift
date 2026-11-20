@@ -1,5 +1,16 @@
 import Foundation
 
+enum DeviceAgentHistory {
+    static func agentID(in data: Data, scope: String) -> String? {
+        (try? JSONDecoder().decode([String: String].self, from: data))?[scope]
+    }
+    static func remember(_ id: String?, scope: String, in data: Data) -> Data {
+        var values = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+        values[scope] = id
+        return (try? JSONEncoder().encode(values)) ?? data
+    }
+}
+
 struct DeviceMonitorInventory {
     var agents: [ConsoleAgent]
     private(set) var hasFetched = false

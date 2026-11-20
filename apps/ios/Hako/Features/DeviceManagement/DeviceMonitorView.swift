@@ -2,7 +2,7 @@ import SwiftUI
 
 struct DeviceMonitorView: View {
     private enum Selection {
-        case automatic, list, device(String)
+        case automatic, device(String)
     }
     private enum Sheet: String, Identifiable {
         case addAgent, settings
@@ -11,20 +11,19 @@ struct DeviceMonitorView: View {
 
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("hako.deviceMonitor.defaultAgents") private var savedDefaults = Data()
+    @AppStorage("hako.deviceMonitor.lastAgents") private var savedLastAgents = Data()
     @State private var selection = Selection.automatic
     @State private var resolvedEntryScope: String?
     @State private var sheet: Sheet?
+    @State private var addingAgentFromSettings = false
+    @State private var editingAgents = false
+    @State private var agentToEdit: ConsoleAgent?
 
     private var scope: String { client.serverURL + "\n" + client.username }
-    private var defaults: [String: String] {
-        (try? JSONDecoder().decode([String: String].self, from: savedDefaults)) ?? [:]
-    }
-    private var defaultAgentID: String? { defaults[scope] }
+    private var lastAgentID: String? { DeviceAgentHistory.agentID(in: savedLastAgents, scope: scope) }
     private var requestedAgentID: String? {
         switch selection {
-        case .automatic: defaultAgentID
-        case .list: nil
+        case .automatic: lastAgentID
         case .device(let id): id
         }
     }
@@ -77,6 +76,12 @@ struct DeviceMonitorView: View {
             selection = .automatic
             resolvedEntryScope = nil
             sheet = nil
+            editingAgents = false
+            agentToEdit = nil
+            addingAgentFromSettings = false
+        }
+        .onChange(of: sheet) { _, value in
+            if value != .settings { editingAgents = false }
         }
         .task(id: "\(scenePhase)-\(sheet == .addAgent)-\(scope)") {
             guard scenePhase == .active, sheet != .addAgent, !Task.isCancelled else { return }
@@ -115,7 +120,7 @@ struct DeviceMonitorView: View {
                         }
                     }
                     ForEach(client.agents) { agent in
-                        Button { selection = .device(agent.id) } label: {
+                        Button { openAgent(agent.id) } label: {
                             deviceRow(agent, current: false)
                         }
                         .buttonStyle(.plain)
@@ -153,33 +158,47 @@ struct DeviceMonitorView: View {
     private var settings: some View {
         SettingsSheet(title: "设备管理设置") {
             List {
-                Section("切换 Agent") {
+                Section {
                     if client.agents.isEmpty {
                         Text(client.hasFetchedAgents ? "暂无登记的设备" : "暂时无法获取设备列表").foregroundStyle(.secondary)
                     }
                     ForEach(client.agents) { agent in
                         Button {
-                            selection = .device(agent.id)
+                            if editingAgents { agentToEdit = agent }
+                            else { openAgent(agent.id); sheet = nil }
                         } label: {
-                            deviceRow(agent, current: agent.id == selectedAgent?.id)
+                            HStack(spacing: 8) {
+                                deviceRow(agent, current: !editingAgents && agent.id == selectedAgent?.id)
+                                if editingAgents {
+                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityAddTraits(agent.id == selectedAgent?.id ? .isSelected : [])
+                        .accessibilityLabel((editingAgents ? "编辑 " : "切换到 ") + agent.name)
+                        .accessibilityAddTraits(!editingAgents && agent.id == selectedAgent?.id ? .isSelected : [])
                     }
-                }
-                Section {
-                    Picker("默认 Agent", selection: Binding(get: { defaultAgentID }, set: saveDefaultAgent)) {
-                        Text("不自动进入").tag(nil as String?)
-                        ForEach(client.agents) { agent in
-                            Text("\(agent.name) · \(agent.id)").tag(Optional(agent.id))
-                        }
-                        if let defaultAgentID, !client.agents.contains(where: { $0.id == defaultAgentID }) {
-                            Text("设备不可用 · \(defaultAgentID)").tag(Optional(defaultAgentID))
-                        }
+                    Button { addingAgentFromSettings = true } label: {
+                        Label("添加 Agent", systemImage: "plus")
                     }
-                    .pickerStyle(.navigationLink)
+                    .disabled(client.busy || !client.authenticated || client.logoutPending)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                } header: {
+                    HStack {
+                        Text("切换 Agent")
+                        Spacer()
+                        Button(editingAgents ? "完成" : "编辑") { editingAgents.toggle() }
+                            .textCase(nil)
+                            .disabled(client.agents.isEmpty || client.busy)
+                            .accessibilityLabel(editingAgents ? "完成编辑 Agent 列表" : "编辑 Agent 列表")
+                    }
                 } footer: {
-                    Text("下次打开设备管理时直接进入默认设备。")
+                    if editingAgents { Text("点击 Agent 编辑设备信息。") }
                 }
                 if let agent = selectedAgent {
                     DeviceDataQueryPermissionSection(client: client, agent: agent)
@@ -198,6 +217,13 @@ struct DeviceMonitorView: View {
                     .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
             }
+        }
+        .sheet(isPresented: $addingAgentFromSettings) {
+            AddAgentSheet()
+        }
+        .sheet(item: $agentToEdit) { agent in
+            EditAgentSheet(agent: agent)
+                .id(client.requestContext + "\n" + agent.id)
         }
     }
 
@@ -224,7 +250,6 @@ struct DeviceMonitorView: View {
                 Text("设备 ID · " + agent.id).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             Spacer()
-            if agent.id == defaultAgentID { Text("默认").font(.caption).foregroundStyle(.secondary) }
             Text(agent.online ? "在线" : "离线").font(.caption)
                 .foregroundStyle(agent.online ? Color.green : Color.secondary)
             if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityHidden(true) }
@@ -236,15 +261,9 @@ struct DeviceMonitorView: View {
         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }
 
-    private func saveDefaultAgent(_ id: String?) {
-        guard id != defaultAgentID else { return }
-        var values = defaults
-        values[scope] = id
-        guard let data = try? JSONEncoder().encode(values) else { return }
-        if case .automatic = selection {
-            selection = selectedAgent.map { .device($0.id) } ?? .list
-        }
-        savedDefaults = data
+    private func openAgent(_ id: String) {
+        savedLastAgents = DeviceAgentHistory.remember(id, scope: scope, in: savedLastAgents)
+        selection = .device(id)
     }
 
     @MainActor private func refreshDevices() async {
@@ -254,9 +273,10 @@ struct DeviceMonitorView: View {
         guard client.authenticated, await client.fetchAgents(),
               !Task.isCancelled, context == client.requestContext else { return }
         // Only a successful list can establish that a device was removed.
-        // Offline registered devices keep their default selection.
-        if let defaultAgentID, !client.agents.contains(where: { $0.id == defaultAgentID }) {
-            saveDefaultAgent(nil)
+        // Offline registered devices keep their last selection.
+        if let lastAgentID, !client.agents.contains(where: { $0.id == lastAgentID }) {
+            savedLastAgents = DeviceAgentHistory.remember(nil, scope: scope, in: savedLastAgents)
+            selection = .automatic
         }
     }
 }
@@ -306,6 +326,9 @@ struct DeviceMetricsView: View {
             } else if capability.name == DeviceServiceCommand.status, capability.version == 1 {
                 DeviceServicesView(agent: currentAgent, entry: state.entries[capability.name], loaded: state.loaded)
                     .id(client.requestContext)
+            } else if capability.version == 1, AndroidDeviceCommand.names.contains(capability.name) {
+                androidContent(capability)
+                    .id(client.requestContext + currentAgent.id + capability.name)
             } else {
                 VStack(alignment: .leading, spacing: 14) { capabilityContent(capability) }
                     .devicePagePanel()
@@ -333,6 +356,7 @@ struct DeviceMetricsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Text("设备 ID · \(currentAgent.id)").font(.caption.monospaced())
                         .foregroundStyle(.secondary).textSelection(.enabled)
+                    Text(client.transportLabel(currentAgent)).font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 0) {
@@ -436,6 +460,14 @@ struct DeviceMetricsView: View {
     }
     private func capabilityTabTitle(_ capability: ConsoleAgentCapability) -> String {
         switch (capability.name, capability.version) {
+        case (AndroidDeviceCommand.status, 1): return "状态"
+        case (AndroidDeviceCommand.storage, 1): return "存储"
+        case (AndroidDeviceCommand.battery, 1): return "电池"
+        case (AndroidDeviceCommand.wifi, 1): return "Wi-Fi"
+        case (AndroidDeviceCommand.sims, 1): return "SIM 卡"
+        case (AndroidDeviceCommand.messages, 1), (AndroidDeviceCommand.send, 1): return "短信"
+        case (AndroidDeviceCommand.calls, 1), (AndroidDeviceCommand.call, 1): return "通话"
+        case (AndroidDeviceCommand.operation, 1): return "操作结果"
         case ("query.system.metrics", 1): return "系统"
         case (DeviceProcessCommand.status, 1): return "进程"
         case ("query.codex.usage", 1): return "Codex"
@@ -446,6 +478,34 @@ struct DeviceMetricsView: View {
         default: return capability.name.split(separator: ".").last.map(String.init) ?? capability.name
         }
     }
+    @ViewBuilder private func androidContent(_ capability: ConsoleAgentCapability) -> some View {
+        switch capability.name {
+        case AndroidDeviceCommand.status:
+            DeviceAndroidStatusView(entry: state.entries[capability.name],
+                storageEntry: state.entries[AndroidDeviceCommand.storage],
+                showsStorage: supportsAndroidCommand(AndroidDeviceCommand.storage),
+                batteryEntry: state.entries[AndroidDeviceCommand.battery], wifiEntry: state.entries[AndroidDeviceCommand.wifi],
+                showsBattery: supportsAndroidCommand(AndroidDeviceCommand.battery), showsWifi: supportsAndroidCommand(AndroidDeviceCommand.wifi))
+        case AndroidDeviceCommand.storage:
+            DeviceAndroidStorageView(entry: state.entries[capability.name])
+        case AndroidDeviceCommand.battery:
+            DeviceAndroidBatteryView(entry: state.entries[capability.name])
+        case AndroidDeviceCommand.wifi:
+            DeviceAndroidWifiView(entry: state.entries[capability.name])
+        case AndroidDeviceCommand.sims:
+            DeviceAndroidSimsView(entry: state.entries[capability.name])
+        case AndroidDeviceCommand.messages, AndroidDeviceCommand.send:
+            DeviceAndroidTelephonyView(agent: currentAgent, sms: true)
+        case AndroidDeviceCommand.calls, AndroidDeviceCommand.call:
+            DeviceAndroidTelephonyView(agent: currentAgent, sms: false)
+        case AndroidDeviceCommand.operation:
+            DeviceAndroidOperationLookupView(agent: currentAgent)
+        default: EmptyView()
+        }
+    }
+    private func supportsAndroidCommand(_ name: String) -> Bool {
+        currentAgent.capabilities?.contains { $0.name == name && $0.version == 1 } == true
+    }
     @ViewBuilder private func capabilityContent(_ capability: ConsoleAgentCapability) -> some View {
         switch (capability.name, capability.version) {
         case ("query.codex.usage", 1): codexContent(capability)
@@ -453,6 +513,8 @@ struct DeviceMetricsView: View {
         case ("action.network.http.check", 1): httpContent
         default:
             if capability.name.hasPrefix("query.") {
+                Button("查询数据") { Task { await client.refreshCapability(currentAgent, capability: capability) } }
+                    .buttonStyle(HakoActionButtonStyle(primary: false))
                 queryStatus(capability)
                 if let entry = state.entries[capability.name], entry.version == capability.version, let value = entry.result {
                     ScrollView(.horizontal) {
@@ -828,10 +890,14 @@ private struct DeviceDataQueryPermissionSection: View {
 
 private extension ConsoleAgent {
     var monitorPages: [ConsoleAgentCapability] {
-        (capabilities ?? []).filter {
+        let supported = Set((capabilities ?? []).filter { $0.version == 1 }.map(\.name))
+        let grouped = AndroidDeviceCommand.pageNames(supported)
+        return (capabilities ?? []).filter {
+            ($0.version != 1 || grouped.contains($0.name)) &&
             $0.name != "action.xkode.tasks.manage" && !DeviceGitCommand.supporting.contains($0.name)
                 && $0.name != DeviceServiceCommand.start
                 && $0.name != DeviceAgentVersions.command
+                && $0.name != AgentLanDescriptor.command
         }
     }
 }

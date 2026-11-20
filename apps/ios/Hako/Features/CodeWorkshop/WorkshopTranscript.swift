@@ -170,8 +170,11 @@ enum WorkshopTranscriptMerge {
     static func withoutRecoveredNotices(_ entries: [WorkshopEntry], operationId: String,
                                         state: String, followups: [WorkshopFollowupState]) -> [WorkshopEntry] {
         let known: Set<String> = ["completed", "interrupted", "failed"]
-        let resolved = Set(followups.filter { known.contains($0.state) }.map { "error-" + $0.id })
-            .union(known.contains(state) ? ["error-" + operationId] : [])
+        // Notices keyed by the operation ID describe work in progress (for
+        // example context compaction), rather than a permanent transcript item.
+        let finished = followups.filter { known.contains($0.state) }.map(\.id)
+            + (known.contains(state) ? [operationId] : [])
+        let resolved = Set(finished.flatMap { [$0, "error-" + $0] })
         return entries.filter { $0.kind != "notice" || !resolved.contains($0.id) }
     }
 

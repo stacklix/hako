@@ -2,6 +2,18 @@ import Foundation
 
 @main struct DeviceMonitorInventoryTests {
     static func main() throws {
+        var history = Data()
+        let alice = "https://one.example\nalice", bob = "https://one.example\nbob"
+        precondition(DeviceAgentHistory.agentID(in: history, scope: alice) == nil)
+        history = DeviceAgentHistory.remember("A1234", scope: alice, in: history)
+        history = DeviceAgentHistory.remember("B5678", scope: bob, in: history)
+        history = DeviceAgentHistory.remember("A9999", scope: alice, in: history)
+        precondition(DeviceAgentHistory.agentID(in: history, scope: alice) == "A9999")
+        precondition(DeviceAgentHistory.agentID(in: history, scope: bob) == "B5678")
+        history = DeviceAgentHistory.remember(nil, scope: alice, in: history)
+        precondition(DeviceAgentHistory.agentID(in: history, scope: alice) == nil)
+        precondition(DeviceAgentHistory.agentID(in: history, scope: bob) == "B5678")
+        precondition(DeviceAgentHistory.agentID(in: history, scope: "https://two.example\nbob") == nil)
         let first = ConsoleAgent(dataQueryEnabled: true, id: "A1234", name: "工作电脑", online: true,
                                  lastSeen: "2026-11-14T06:00:00Z",
                                  capabilities: [.init(name: "query.system.metrics", version: 1)])
@@ -10,7 +22,7 @@ import Foundation
         precondition(inventory.selectedAgent(id: nil) == nil)
         let unavailable = inventory.selectedAgent(id: first.id)
         precondition(unavailable?.id == first.id && unavailable?.online == false,
-                     "A saved default must remain reachable when the first list request fails")
+                     "The last opened device must remain reachable when the first list request fails")
         precondition(!inventory.hasFetched && inventory.agents.isEmpty,
                      "An unknown list must not be presented as a confirmed empty list")
 

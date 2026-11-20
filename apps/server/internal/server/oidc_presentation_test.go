@@ -17,7 +17,7 @@ func TestOIDCConsentPresentation(t *testing.T) {
 	if err := oidcPageTemplate.Execute(&page, data); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(page.String(), "<script>alert(1)</script>") || strings.Contains(page.String(), "用于显示你的个人资料") || !strings.Contains(page.String(), "用于识别你的 Hako 账号") {
+	if strings.Contains(page.String(), "<script>alert(1)</script>") || strings.Contains(page.String(), "用于显示你的个人资料") || !strings.Contains(page.String(), "用于识别你的 Sora 账号") {
 		t.Fatal("consent must escape application names and describe only requested identity")
 	}
 	// Optional preview artifacts use synthetic data, never a live login or Cookie.

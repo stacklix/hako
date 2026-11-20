@@ -162,6 +162,13 @@ func (s *Server) consoleAgentCall(ctx context.Context, command consoleAgentComma
 		if decodeJSON(bytes.NewReader(command.Body), &request) {
 			return s.saveAgentRegistration(request)
 		}
+	case "detail":
+		return s.agentDetail(command.AgentID)
+	case "update":
+		var request agentUpdate
+		if decodeJSON(bytes.NewReader(command.Body), &request) {
+			return s.saveAgentUpdate(command.AgentID, request)
+		}
 	case "data_query_permission":
 		var request struct {
 			Enabled *bool `json:"enabled"`

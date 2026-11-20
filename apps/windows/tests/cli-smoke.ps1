@@ -107,7 +107,7 @@ function Invoke-HakoCheck {
 try {
     foreach ($helpArgs in @(@('help'), @('--help'), @('-h'), @('help','key'), @('config','set','--help'))) {
         $helpText = Invoke-HakoCheck -Arguments $helpArgs -Text
-        if ($helpText -notmatch 'Hako Windows Agent') { throw 'Help did not reach stdout.' }
+        if ($helpText -notmatch 'Kage Windows Agent') { throw 'Help did not reach stdout.' }
     }
     $helpJson = Invoke-HakoCheck -Arguments @('help')
     if ($helpJson.data.commands.Count -lt 10) { throw 'Structured help is incomplete.' }

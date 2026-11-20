@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/app_models.dart';
-import '../platform/doppel_platform.dart';
+import '../platform/nami_platform.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/dialogs.dart';
 
@@ -297,7 +297,7 @@ class _CommandsPageState extends State<CommandsPage> {
   }
 
   Future<void> _persistCommandConfig() {
-    return DoppelPlatform.saveConfig({
+    return NamiPlatform.saveConfig({
       'commands': {
         'callEnabled': _callEnabled,
         'smsEnabled': _smsEnabled,
@@ -332,7 +332,7 @@ class _CommandsPageState extends State<CommandsPage> {
     final port = _remotePortController.text.trim().isEmpty
         ? '18080'
         : _remotePortController.text.trim();
-    await DoppelPlatform.saveConfig({
+    await NamiPlatform.saveConfig({
       'remoteControl': {
         'port': port,
         'password': _remotePasswordController.text,
@@ -347,7 +347,7 @@ class _CommandsPageState extends State<CommandsPage> {
 
   Future<void> _persistRemoteControlEnabled(bool value) async {
     setState(() => _remoteEnabled = value);
-    await DoppelPlatform.saveConfig({
+    await NamiPlatform.saveConfig({
       'remoteControl': {'enabled': value},
     });
   }

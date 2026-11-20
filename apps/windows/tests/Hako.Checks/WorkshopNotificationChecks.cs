@@ -23,7 +23,7 @@ internal static class WorkshopNotificationChecks
         {
             var id = Guid.NewGuid().ToString("D");
             File.WriteAllBytes(Path.Combine(directory,id+".json"),JsonSerializer.SerializeToUtf8Bytes(new WorkshopJob {
-                Id=id,State=state,NotificationScope=scope,NotificationAcknowledged=acknowledged,
+                Id=id,State=state,Submitted=state=="running",NotificationScope=scope,NotificationAcknowledged=acknowledged,
                 Cwd=Path.Combine(directory,"Project"),SessionName="我的会话",ReplySummary="本轮最后回复",InputMessage="secret-prompt",
                 FinishedAt=CodeWorkshop.TerminalState(state)?DateTimeOffset.UtcNow.ToUnixTimeMilliseconds():0
             },WorkshopProtocol.Json));

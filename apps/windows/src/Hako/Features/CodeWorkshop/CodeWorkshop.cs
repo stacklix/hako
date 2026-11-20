@@ -259,35 +259,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         upstream = await itemsPage;
         var cwd = CodexJson.Text(thread, "cwd");
         var items = CodexJson.Items(CodexJson.Field(upstream, "data")).ToArray();
-        bool recover;
-        var latestTurnId = CodexJson.Text(turn, "id");
-        lock (gate) recover = jobs.Values.Any(job => job.ThreadId == id && job.State == "unknown" && job.TurnId == latestTurnId);
-        if (recover)
-        {
-            // Display summaries can omit the actual final reply. Recovery must
-            // use real items for the completion notification, just as it did
-            // before history became paginated. This extra search is recovery-only.
-            var actual = items.Where(entry => CodexJson.Text(entry, "turnId") == latestTurnId)
-                .Select(entry => CodexJson.Field(entry, "item")).ToArray();
-            string? replyCursor = null;
-            var seenReplies = new HashSet<string>();
-            while (!actual.Any(item => CodexJson.Text(item, "type") == "agentMessage"))
-            {
-                var replies = await ReadAsync("thread/items/list", new { threadId = id, turnId = latestTurnId, limit = 64,
-                    sortDirection = "desc", cursor = replyCursor }, token);
-                actual = CodexJson.Items(CodexJson.Field(replies, "data")).Select(entry => CodexJson.Field(entry, "item")).ToArray();
-                replyCursor = CodexJson.Text(replies, "nextCursor");
-                if (actual.Any(item => CodexJson.Text(item, "type") == "agentMessage") || replyCursor.Length == 0 || !seenReplies.Add(replyCursor)) break;
-            }
-            var recovered = new Dictionary<string, object?> { ["id"] = latestTurnId, ["status"] = CodexJson.Text(turn, "status"), ["items"] = actual.Reverse().ToArray() };
-            if (turn.TryGetProperty("error", out var error)) recovered["error"] = error;
-            turn = JsonSerializer.SerializeToElement(recovered, WorkshopProtocol.Json);
-        }
-        lock (gate)
-        {
-            foreach (var job in jobs.Values.Where(job => job.ThreadId == id && job.State == "unknown"))
-                if (ReconcileTurn(job, [turn])) { Persist(job); if (job.RootId is not null) AppendFollowup(job); }
-        }
+        try { await RecoverUnknownAsync(id, token); }
+        catch (Exception error) when (!token.IsCancellationRequested && error is not OutOfMemoryException)
+        { queryLog.Write("history/reconcile", 0, 0, error.GetType().Name); }
         var nativeCursor = position.Cursor;
         var offset = position.Offset;
         var visited = new HashSet<string>();
@@ -392,6 +366,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var state = CodexJson.Text(turn, "status");
         if (state is not ("completed" or "interrupted" or "failed")) return false;
         job.State = state; job.Outcome = state;
+        var finished = CodexJson.Field(turn, "completedAt");
+        if (finished.ValueKind == JsonValueKind.Number && finished.TryGetInt64(out var completedAt) && completedAt > 0 && completedAt <= long.MaxValue / 1000)
+            job.FinishedAt = completedAt * 1000;
         job.Message = state == "failed" ? CodexJson.Clip(CodexJson.Text(CodexJson.Field(turn, "error"), "message"), 1000) : null;
         var reply = CodexJson.Items(CodexJson.Field(turn, "items")).LastOrDefault(value => CodexJson.Text(value, "type") == "agentMessage");
         job.ReplySummary = NotificationText(CodexJson.Text(reply, "text"), 240);

@@ -385,19 +385,8 @@ private struct WorkshopSettingsView: View {
             Form {
                 Section("执行电脑") {
                     ForEach(store.agents) { agent in
-                        Button { Task { await store.selectAgent(agent.id) } } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(agent.name).foregroundStyle(.primary)
-                                    Text(agent.online ? agent.supported ? "在线" : "需要更新 Agent" : "离线").font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if agent.id == store.selectedAgentID { Image(systemName: "checkmark") }
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                        }.disabled(store.loading)
+                        WorkshopComputerSettingsRow(store: store, agent: agent, namespace: store.networkNamespace)
+                            .id(store.networkNamespace + "\n" + agent.id)
                     }
                     if store.agents.isEmpty { Text("请先在设备管理中登记 Windows Agent。").foregroundStyle(.secondary) }
                 }

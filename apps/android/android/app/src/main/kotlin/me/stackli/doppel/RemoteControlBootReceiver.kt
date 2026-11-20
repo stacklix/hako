@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import me.stackli.doppel.agent.AgentService
 
 class RemoteControlBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -15,6 +16,7 @@ class RemoteControlBootReceiver : BroadcastReceiver() {
         runCatching {
             if (SmsPipeline.isUserUnlocked(context)) {
                 RemoteControlStore.syncDirectBootConfig(context)
+                AgentService.sync(context)
             }
             if (action == Intent.ACTION_USER_UNLOCKED) {
                 SmsPipeline.backfillMissedIncomingSmsAfterUnlock(context)
@@ -27,7 +29,7 @@ class RemoteControlBootReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val RECEIVER_TAG = "DoppelRemoteBoot"
+        private const val RECEIVER_TAG = "NamiRemoteBoot"
         private val SUPPORTED_ACTIONS = setOf(
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED,

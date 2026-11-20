@@ -182,6 +182,8 @@ List<LogEvent> _recentImportedSmsEventsOnly(List<LogEvent> events) {
 
 class PlatformPermissions {
   const PlatformPermissions({
+    this.readSms = false,
+    this.readCallLog = false,
     this.receiveSms = false,
     this.sendSms = false,
     this.callPhone = false,
@@ -191,6 +193,8 @@ class PlatformPermissions {
 
   factory PlatformPermissions.fromMap(Map<String, Object?> map) {
     return PlatformPermissions(
+      readSms: map['readSms'] == true,
+      readCallLog: map['readCallLog'] == true,
       receiveSms: map['receiveSms'] == true || map['sms'] == true,
       sendSms: map['sendSms'] == true || map['sms'] == true,
       callPhone: map['callPhone'] == true || map['phone'] == true,
@@ -200,6 +204,8 @@ class PlatformPermissions {
     );
   }
 
+  final bool readSms;
+  final bool readCallLog;
   final bool receiveSms;
   final bool sendSms;
   final bool callPhone;
@@ -542,6 +548,7 @@ String _eventTitle(String type) {
     'sms_command' => '收到指令',
     'sms_sent_command' => '发送短信',
     'operation_log' => '业务日志',
+    'agent_connection' => 'Sora 连接',
     'sms_pipeline_debug' => '短信后台链路',
     _ => '系统事件',
   };

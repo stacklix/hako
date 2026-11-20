@@ -16,7 +16,7 @@ internal static class AgentGuardianRefresh
     internal static async Task<int> StartAsync(AgentGuardianOptions options, string hash, CancellationToken token)
     {
         var directory = AgentGuardianControl.FileFor(options.ProfileDirectory, Path.Combine("refresh", hash));
-        var executable = Path.Combine(directory, "Hako.GuardianUpdate.exe");
+        var executable = Path.Combine(directory, "Kage.GuardianUpdate.exe");
         var previous = AgentGuardianControl.Read<State>(StatePath(options.ProfileDirectory));
         if (previous?.Sha256 == hash && previous.StateName is "waiting_server" or "waiting_update" or "warming" or "draining" or "starting")
         {
@@ -100,7 +100,7 @@ internal static class AgentGuardianRefresh
                     throw new IOException("Server compatibility changed before guardian refresh.");
                 var current = AgentGuardianControl.Running(options.ProfileDirectory, executable);
                 var stop = AgentGuardianControl.FileFor(options.ProfileDirectory, "stop");
-                var backup = Path.Combine(Path.GetDirectoryName(source)!, "Hako.Guardian.previous.exe");
+                var backup = Path.Combine(Path.GetDirectoryName(source)!, "Kage.Guardian.previous.exe");
                 if (File.Exists(executable)) File.Copy(executable, backup, true);
                 var temporary = executable + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 Process? replacement = null;

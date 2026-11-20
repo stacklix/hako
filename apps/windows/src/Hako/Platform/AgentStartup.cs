@@ -31,7 +31,7 @@ public sealed class AgentStartup
         var suffix = isDefault ? "" : "-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.ToUpperInvariant())))[..12];
         startupDirectory ??= Environment.GetFolderPath(Environment.SpecialFolder.Startup, Environment.SpecialFolderOption.DoNotVerify);
         if (string.IsNullOrWhiteSpace(startupDirectory)) throw new IOException("无法找到当前用户的启动文件夹。");
-        ShortcutPath = Path.Combine(Path.GetFullPath(startupDirectory), "Hako Agent" + suffix + ".lnk");
+        ShortcutPath = Path.Combine(Path.GetFullPath(startupDirectory), "Kage Agent" + suffix + ".lnk");
         arguments = assemblyPath is null ? "" : QuotePath(Path.GetFullPath(assemblyPath)) + " ";
         arguments += "--background";
         if (!isDefault) arguments += " --data-dir " + QuotePath(profile);
@@ -40,23 +40,23 @@ public sealed class AgentStartup
 
     public static AgentStartup ForCurrentProcess(string profileDirectory)
     {
-        var executable = Environment.ProcessPath ?? throw new IOException("无法找到 Hako 可执行文件。");
+        var executable = Environment.ProcessPath ?? throw new IOException("无法找到 Kage 可执行文件。");
         var configuration = AgentGuardianControl.FileFor(profileDirectory, "config.json");
-        var managedExecutable = Path.Combine(Path.GetDirectoryName(executable)!, "guardian", "Hako.Guardian.exe");
+        var managedExecutable = Path.Combine(Path.GetDirectoryName(executable)!, "guardian", "Kage.Guardian.exe");
         if (File.Exists(configuration) && File.Exists(managedExecutable))
             return new AgentStartup(managedExecutable, profileDirectory, managedArguments: "--guardian --config " + QuotePath(configuration));
         var assembly = string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase)
-            ? Path.Combine(AppContext.BaseDirectory, "Hako.dll") : null;
+            ? Path.Combine(AppContext.BaseDirectory, "Kage.dll") : null;
         return new AgentStartup(executable, profileDirectory, assemblyPath: assembly);
     }
 
     public void SetEnabled(bool enabled)
     {
         if (!enabled) { File.Delete(ShortcutPath); return; }
-        if (!File.Exists(executable)) throw new FileNotFoundException("Hako 可执行文件已移动，请从新位置打开后重试。", executable);
+        if (!File.Exists(executable)) throw new FileNotFoundException("Kage 可执行文件已移动，请从新位置打开后重试。", executable);
         var directory = Path.GetDirectoryName(ShortcutPath)!;
         Directory.CreateDirectory(directory);
-        var temporary = Path.Combine(directory, "Hako-" + Guid.NewGuid().ToString("N") + ".lnk");
+        var temporary = Path.Combine(directory, "Kage-" + Guid.NewGuid().ToString("N") + ".lnk");
         try
         {
             WindowsShortcut.Save(temporary, executable, arguments);
@@ -88,7 +88,7 @@ internal static class WindowsShortcut
             link.SetPath(executable);
             link.SetArguments(arguments);
             link.SetWorkingDirectory(Path.GetDirectoryName(executable)!);
-            link.SetDescription("登录 Windows 后在托盘运行 Hako Agent");
+            link.SetDescription("登录 Windows 后在托盘运行 Kage");
             link.SetIconLocation(executable, 0);
             ((IPersistFile)instance).Save(path, true);
         }

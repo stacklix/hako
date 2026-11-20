@@ -445,7 +445,7 @@ func (s *Service) enqueueWebhook(tx *sql.Tx, hook object, message notification, 
 		if err != nil {
 			return "", err
 		}
-		target, name := "hako", "Hako"
+		target, name := "hako", "Sora"
 		if device != nil {
 			target, name = str(device, "id"), str(device, "name")
 		}

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Sora</title>
+  <rect width="64" height="64" rx="14" fill="#eff6ff"/>
+  <path d="M20 44a11 11 0 0 1-1-22 15 15 0 0 1 28-2 12 12 0 0 1-1 24Z" fill="none" stroke="#1e40af" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M24 33h16M28 39h8" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+</svg>

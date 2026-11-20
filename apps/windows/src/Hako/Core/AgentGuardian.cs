@@ -200,7 +200,7 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         var restart = current is not null || !Paused(session) || pending?.RestartAfterUpdate == true && !laterManualStop;
         var record = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(options.TargetPath)!, "updates", "guardian-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(record);
-        var backup = System.IO.Path.Combine(record, "Hako-previous.exe");
+        var backup = System.IO.Path.Combine(record, "Kage-previous.exe");
         var oldHash = File.Exists(options.TargetPath) ? Hash(options.TargetPath) : "";
         if (oldHash.Length != 0) File.Copy(options.TargetPath, backup);
         var journal = new Journal(backup, oldHash, candidate, restart, DateTimeOffset.UtcNow);

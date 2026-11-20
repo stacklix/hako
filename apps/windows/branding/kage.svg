@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
+  <title>Kage</title>
+  <desc>An angular K with a violet shadow and an ice-blue upper arm.</desc>
+  <rect width="256" height="256" rx="56" fill="#171B32"/>
+  <path fill="#5654B8" d="M72 62 L104 62 L104 121 L160 62 L201 62 L134 133 L206 210 L163 210 L104 147 L104 210 L72 210 Z"/>
+  <path fill="#F1F5FF" d="M62 54 L94 54 L94 113 L150 54 L191 54 L124 125 L196 202 L153 202 L94 139 L94 202 L62 202 Z"/>
+  <path fill="#81E6EF" d="M94 113 L150 54 L191 54 L124 125 L94 156 Z"/>
+</svg>

@@ -2,6 +2,12 @@ import Foundation
 
 @main struct WorkshopCommandTests {
     static func main() throws {
+        let prompt = WorkshopQuickPrompt(name: "Review", text: "Review this project without changing files.")
+        precondition(prompt.valid)
+        let restoredPrompt = try JSONDecoder().decode(WorkshopQuickPrompt.self, from: JSONEncoder().encode(prompt))
+        precondition(restoredPrompt == prompt)
+        precondition(!WorkshopQuickPrompt(name: "", text: "Review").valid)
+        precondition(!WorkshopQuickPrompt(name: "Review", text: String(repeating: "x", count: 4001)).valid)
         var command = WorkshopSavedCommand()
         precondition(!command.allowBackgroundProcesses)
         command.name = "Build"

@@ -15,7 +15,7 @@ func TestInitConfigNeverOverwrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config", "server.json")
 	t.Setenv("HAKO_CONFIG_FILE", path)
 	previous := os.Args
-	os.Args = []string{"hako-server", "init"}
+	os.Args = []string{"sora-server", "init"}
 	defer func() { os.Args = previous }()
 	if err := run(); err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestRevokeConsolesUsesConfigKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := os.Args
-	os.Args = []string{"hako-server", "revoke-consoles"}
+	os.Args = []string{"sora-server", "revoke-consoles"}
 	defer func() { os.Args = previous }()
 	if err := run(); err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestRevokeConsolesUsesConfigKey(t *testing.T) {
 
 func TestRemovedAdminKeyCommandIsRejected(t *testing.T) {
 	previous := os.Args
-	os.Args = []string{"hako-server", "init-admin"}
+	os.Args = []string{"sora-server", "init-admin"}
 	defer func() { os.Args = previous }()
 	if err := run(); err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatal("removed management-key command is still active")

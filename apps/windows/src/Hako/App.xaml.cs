@@ -141,7 +141,7 @@ public partial class App : Application
                 if (forwarded is not null) { Shutdown(); return; }
                 if (DateTime.UtcNow >= ownerDeadline)
                 {
-                    if (!invocation.Background) MessageBox.Show("Hako 已在运行，但本机控制接口不可用。若运行的是旧版，请先退出旧版再重试。", "Hako");
+                    if (!invocation.Background) MessageBox.Show("Kage 已在运行，但本机控制接口不可用。若运行的是旧版，请先退出旧版再重试。", "Kage");
                     Shutdown(3); return;
                 }
                 await Task.Delay(100);
@@ -166,7 +166,7 @@ public partial class App : Application
         catch (Exception error)
         {
             lifecycle?.Exception("startup", error, terminating: true);
-            if (!invocation.Background) MessageBox.Show("Hako 启动失败：" + error.Message, "Hako");
+            if (!invocation.Background) MessageBox.Show("Kage 启动失败：" + error.Message, "Kage");
             await ExitHostedAsync(1, "startup_failed");
         }
     }
@@ -207,7 +207,7 @@ public partial class App : Application
                     catch (System.ComponentModel.Win32Exception error) when (error.NativeErrorCode == 5)
                     {
                         return CommandReply.Failure(3, "background_launch_denied",
-                            "Windows 禁止当前命令独立启动后台 Agent（错误 5）。请从桌面或托盘启动 Hako，再使用 CLI 连接。");
+                            "Windows 禁止当前命令独立启动后台 Agent（错误 5）。请从桌面或托盘启动 Kage，再使用 CLI 连接。");
                     }
                     return await SendUntilReadyAsync(invocation.Profile, request, TimeSpan.FromSeconds(20))
                         ?? CommandReply.Failure(3, "instance_unavailable", "后台实例未能就绪，请检查配置或先退出旧版本。");
@@ -233,10 +233,10 @@ public partial class App : Application
     }
     private static void StartBackground(AgentProfile profile)
     {
-        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法找到 Hako 可执行文件。");
+        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("无法找到 Kage 可执行文件。");
         var arguments = new List<string>();
         if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
-            arguments.Add(Path.Combine(AppContext.BaseDirectory, "Hako.dll"));
+            arguments.Add(Path.Combine(AppContext.BaseDirectory, "Kage.dll"));
         arguments.AddRange(["--background", "--data-dir", profile.Store.DirectoryPath]);
         // A CLI launched by a task runner belongs to its temporary Windows job.
         // The Agent must outlive that job as well as the CLI's standard handles.

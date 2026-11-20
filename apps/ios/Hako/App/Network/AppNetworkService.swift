@@ -6,7 +6,7 @@ import NetworkExtension
 @MainActor final class AppNetworkService: ObservableObject, LocalNetworkProviding {
     static let shared = AppNetworkService()
     static let storageKey = AppNetworkConfigurationStore.storageKey
-    @Published private(set) var configuration: LocalNetworkConfiguration
+    @Published private(set) var ssids: [String]
     @Published private(set) var currentSSID: String?
     @Published private(set) var usesWiFi = false
     private let defaults: UserDefaults
@@ -14,11 +14,11 @@ import NetworkExtension
     private let changed = PassthroughSubject<Void, Never>()
     private var pathGeneration = UUID()
     var changes: AnyPublisher<Void, Never> { changed.eraseToAnyPublisher() }
-    var isLocal: Bool { configuration.isLocal(ssid: currentSSID, usesWiFi: usesWiFi) }
+    var isLocal: Bool { LocalNetworkConfiguration(ssids: ssids).isLocal(ssid: currentSSID, usesWiFi: usesWiFi) }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        configuration = AppNetworkConfigurationStore.load(defaults: defaults)
+        ssids = AppNetworkConfigurationStore.load(defaults: defaults).ssids
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -32,11 +32,12 @@ import NetworkExtension
         monitor.start(queue: DispatchQueue(label: "me.stackli.hako.network"))
     }
 
-    func save(_ value: LocalNetworkConfiguration) throws {
-        guard value.endpoints.values.allSatisfy(\.isValid) else { throw HakoError(message: "请输入有效的局域网 IP 和端口。") }
+    func save(ssids: [String]) throws {
+        var value = AppNetworkConfigurationStore.load(defaults: defaults)
+        value.ssids = ssids
         let data = try JSONEncoder().encode(value)
         defaults.set(data, forKey: Self.storageKey)
-        configuration = value
+        self.ssids = ssids
         changed.send()
     }
 
@@ -48,9 +49,4 @@ import NetworkExtension
         if !unchanged { currentSSID = ssid; changed.send() }
     }
 
-    func endpoint(for application: LocalNetworkApplication) async -> LocalNetworkEndpoint? {
-        await refresh()
-        guard !Task.isCancelled else { return nil }
-        return configuration.endpoint(for: application, ssid: currentSSID, usesWiFi: usesWiFi)
-    }
 }

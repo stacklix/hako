@@ -23,7 +23,7 @@ internal static class AgentVersionChecks
             if (path.EndsWith("/releases", StringComparison.Ordinal))
                 content = Json(new[] { new { tag_name = "windows-agent-123-1", draft = false, prerelease = false,
                     assets = new[] { new { name = "agent-update.json", browser_download_url = prefix + "agent-update.json" },
-                        new { name = "Hako.exe", browser_download_url = prefix + "Hako.exe" } } } });
+                        new { name = "Kage.exe", browser_download_url = prefix + "Kage.exe" } } } });
             else if (path.EndsWith("/agent-update.json", StringComparison.Ordinal))
                 content = Json(new { schema = 1, tag = "windows-agent-123-1", sha256 = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant(),
                     buildId = 123, version = "1.3.9", size = artifact.Length, publishedAt = DateTimeOffset.UtcNow });

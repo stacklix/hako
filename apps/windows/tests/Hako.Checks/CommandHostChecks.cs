@@ -62,7 +62,7 @@ internal static class CommandHostChecks
     {
         var root = Path.Combine(Path.GetTempPath(), "hako-command-host-" + Guid.NewGuid().ToString("N"));
         var profile = new AgentProfile(Path.Combine(root, "profile"));
-        var target = Path.Combine(root, "installation", "Hako.exe");
+        var target = Path.Combine(root, "installation", "Kage.exe");
         Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(executable, target);
         // Keep this isolated fixture off GitHub and disable automatic main-process
         // recovery while explicitly exercising replacement from a command.
@@ -80,7 +80,7 @@ internal static class CommandHostChecks
             using var bootstrap = await Open(port); var computer = CodexJson.Text(await Receive(bootstrap), "computerId");
             var endpoint = await Call(bootstrap, computer, "commands.open", new { });
             host = Process.GetProcessById(endpoint.GetProperty("processId").GetInt32());
-            var guardianExecutable = Path.Combine(Path.GetDirectoryName(target)!, "guardian", "Hako.Guardian.exe");
+            var guardianExecutable = Path.Combine(Path.GetDirectoryName(target)!, "guardian", "Kage.Guardian.exe");
             Check(string.Equals(host.MainModule!.FileName, guardianExecutable, StringComparison.OrdinalIgnoreCase), "Commands did not run inside the guardian");
             var guardianStatus = AgentGuardianControl.Read<JsonElementBox>(AgentGuardianControl.FileFor(profile.Store.DirectoryPath, "status.json"));
             Check(guardianStatus?.ProcessId == host.Id, "Command endpoint PID differs from guardian PID");
@@ -97,7 +97,7 @@ internal static class CommandHostChecks
             string PS(string value) => "'" + value.Replace("'", "''") + "'";
             // Pipe the GUI executable's output so PowerShell waits for the
             // restart helper, as the real installer does, before closing its job.
-            var command = "Write-Output 'before replacement'; $ready=Join-Path $env:HAKO_COMMAND_TASK_DIRECTORY 'replacement-ready'; while (!(Test-Path -LiteralPath $ready)) { Start-Sleep -Milliseconds 100 }; $launch=(& $env:HAKO_COMMAND_EXECUTABLE --launch-agent --target " + PS(target) + " --data-dir " + PS(profile.Store.DirectoryPath) + " --json | Out-String) | ConvertFrom-Json; if (!$launch.ok) { throw $launch.error.message }; Write-Output 'after replacement'";
+            var command = "Write-Output 'before replacement'; $ready=Join-Path $env:KAGE_COMMAND_TASK_DIRECTORY 'replacement-ready'; while (!(Test-Path -LiteralPath $ready)) { Start-Sleep -Milliseconds 100 }; $launch=(& $env:KAGE_COMMAND_EXECUTABLE --launch-agent --target " + PS(target) + " --data-dir " + PS(profile.Store.DirectoryPath) + " --json | Out-String) | ConvertFrom-Json; if (!$launch.ok) { throw $launch.error.message }; Write-Output 'after replacement'";
             await Call(socket, computer, "commands.start", new { requestId = id, applicationId = application, name = "isolated Agent replacement", command, timeoutSeconds = 30, allowBackgroundProcesses = false });
             await AgentPipeClient.TrySendAsync(profile, new AgentCommand("exit", new()));
             await main.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
@@ -132,7 +132,7 @@ internal static class CommandHostChecks
             var drainId = Guid.NewGuid().ToString();
             var taskDirectory = Path.Combine(profile.Store.DirectoryPath, "command-tasks", CommandHost.Scope(profile.Store), drainId);
             await Call(socket, computer, "commands.start", new { requestId = drainId, applicationId = application, name = "guardian update drain",
-                command = "Set-Content -LiteralPath (Join-Path $env:HAKO_COMMAND_TASK_DIRECTORY 'ready') -Value ready; while (!(Test-Path -LiteralPath (Join-Path $env:HAKO_COMMAND_TASK_DIRECTORY 'release'))) { Start-Sleep -Milliseconds 100 }; Write-Output 'drained successfully'",
+                command = "Set-Content -LiteralPath (Join-Path $env:KAGE_COMMAND_TASK_DIRECTORY 'ready') -Value ready; while (!(Test-Path -LiteralPath (Join-Path $env:KAGE_COMMAND_TASK_DIRECTORY 'release'))) { Start-Sleep -Milliseconds 100 }; Write-Output 'drained successfully'",
                 timeoutSeconds = 40, allowBackgroundProcesses = false });
             await WaitFor(() => File.Exists(Path.Combine(taskDirectory, "ready")), "Command did not reach the drain gate");
             var previousTick = File.GetLastWriteTimeUtc(AgentGuardianControl.FileFor(profile.Store.DirectoryPath, "status.json"));

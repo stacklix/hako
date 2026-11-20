@@ -12,7 +12,7 @@
 
 ## Agent 投资数据库只读查询
 
-- 排查投资账本、行情、汇率或数据库迁移状态时，优先使用已配置 Agent 的签名只读查询接口：`Hako.exe server schema --json` 查看实际数据库版本与表结构，`Hako.exe server query --sql "SELECT ..." --json` 查询必要数据；较长 SQL 使用 `--sql-file <UTF-8文件>`。
+- 排查投资账本、行情、汇率或数据库迁移状态时，优先使用已配置 Agent 的签名只读查询接口：`Kage.exe server schema --json` 查看实际数据库版本与表结构，`Kage.exe server query --sql "SELECT ..." --json` 查询必要数据；较长 SQL 使用 `--sql-file <UTF-8文件>`。
 - `server schema` 可列举投资数据库的全部表结构，包括各表的建表 SQL、字段类型、非空约束、默认值、主键及索引；需要全表结构时直接使用该命令，不必逐表猜测。
 - 查询需要管理员已在后台为该 Agent 开启数据查询权限；权限未开启时如实说明，不自行开启或绕过鉴权。使用已有加密配置，不输出私钥、Token 或无关账本记录。
 - 接口仅支持只读查询，不得用它写入数据或执行迁移。确认迁移成功须核对线上实际 schema 版本和目标表结构，不能只凭 CI 通过、镜像已发布或服务端版本号作结论。

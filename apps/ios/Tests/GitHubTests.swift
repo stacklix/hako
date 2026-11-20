@@ -307,9 +307,10 @@ final class MockProtocol: URLProtocol {
         precondition(progress?.jobs.first { $0.name == "build" }?.activeStep == "Archive and export signed IPA")
         precondition(BuildStatusClient.statusText("completed", conclusion: "failure") == "失败")
         precondition(BuildStatusClient.statusText("completed", conclusion: "cancelled") == "已取消")
-        for workflow in [BuildStatusWorkflow.server, .windows] {
-            let names = workflow == .server ? ["build", "changes", "test"] : ["build"]
-            let runID = workflow == .server ? 321 : 654
+        for workflow in [BuildStatusWorkflow.server, .windows, .android] {
+            let names = workflow == .server ? ["build", "changes", "test"]
+                : workflow == .windows ? ["release", "build"] : ["build"]
+            let runID = workflow == .server ? 321 : workflow == .windows ? 654 : 987
             calls = 0
             MockProtocol.handler = { req in
                 calls += 1
@@ -326,6 +327,10 @@ final class MockProtocol: URLProtocol {
             precondition(snapshot?.jobs.map(\.name) == Array(names.reversed()))
         }
         precondition(BuildStatusWorkflow.server.jobTitle("build") == "构建并发布镜像")
+        precondition(BuildStatusWorkflow.android.jobTitle("build") == "构建、测试和打包 APK")
+        precondition(BuildStatusWorkflow.windows.jobTitle("release") == "发布 Agent")
+        precondition(BuildStatusWorkflow.allCases.map(\.title) == ["Hako iOS", "Sora Server", "Kage Windows", "Nami Android"])
+        precondition(BuildStatusWorkflow.android.pageURL.path == "/stacklix/hako/actions/workflows/android.yml")
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try json(["workflow_runs": []]) }
         let emptyBuild = try await builds.latest(workflow: .server)

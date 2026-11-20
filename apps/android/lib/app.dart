@@ -8,17 +8,17 @@ import 'pages/forwarding_page.dart';
 import 'pages/logs_page.dart';
 import 'pages/overview_page.dart';
 import 'pages/settings_page.dart';
-import 'platform/doppel_platform.dart';
+import 'platform/nami_platform.dart';
 
-class DoppelApp extends StatelessWidget {
-  const DoppelApp({super.key, this.autoRequestPermissionsOnStart = true});
+class NamiApp extends StatelessWidget {
+  const NamiApp({super.key, this.autoRequestPermissionsOnStart = true});
 
   final bool autoRequestPermissionsOnStart;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Doppel',
+      title: 'Nami',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
@@ -38,23 +38,23 @@ class DoppelApp extends StatelessWidget {
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         ),
       ),
-      home: DoppelHome(
+      home: NamiHome(
         autoRequestPermissionsOnStart: autoRequestPermissionsOnStart,
       ),
     );
   }
 }
 
-class DoppelHome extends StatefulWidget {
-  const DoppelHome({super.key, this.autoRequestPermissionsOnStart = true});
+class NamiHome extends StatefulWidget {
+  const NamiHome({super.key, this.autoRequestPermissionsOnStart = true});
 
   final bool autoRequestPermissionsOnStart;
 
   @override
-  State<DoppelHome> createState() => _DoppelHomeState();
+  State<NamiHome> createState() => _NamiHomeState();
 }
 
-class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
+class _NamiHomeState extends State<NamiHome> with WidgetsBindingObserver {
   int _selectedIndex = 0;
   List<LogEvent> _events = [];
   List<SimCardInfo> _simCards = [];
@@ -70,7 +70,7 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    DoppelPlatform.setSnapshotListener((snapshot) {
+    NamiPlatform.setSnapshotListener((snapshot) {
       if (!mounted) {
         return;
       }
@@ -87,7 +87,7 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
   @override
   void dispose() {
     _snapshotRefreshTimer?.cancel();
-    DoppelPlatform.clearSnapshotListener();
+    NamiPlatform.clearSnapshotListener();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -105,7 +105,7 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
     }
     _isLoadingSnapshot = true;
     try {
-      final snapshot = await DoppelPlatform.getSnapshot();
+      final snapshot = await NamiPlatform.getSnapshot();
       if (mounted) {
         setState(() {
           _applyPlatformSnapshot(snapshot);
@@ -136,7 +136,7 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('需要权限以开始工作'),
-          content: const Text('Doppel 需要短信、电话和电话状态权限，用于接收短信、识别指令和转发通知。'),
+          content: const Text('Nami 需要短信、电话和电话状态权限，用于接收短信、识别指令和转发通知。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -155,8 +155,8 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
       return;
     }
 
-    await DoppelPlatform.requestRequiredPermissions();
-    final refreshedSnapshot = await DoppelPlatform.getSnapshot();
+    await NamiPlatform.requestRequiredPermissions();
+    final refreshedSnapshot = await NamiPlatform.getSnapshot();
     if (!mounted) {
       return;
     }
@@ -275,7 +275,7 @@ class _DoppelHomeState extends State<DoppelHome> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Doppel',
+              'Nami',
               style: TextStyle(fontWeight: FontWeight.w800, fontSize: 24),
             ),
             SizedBox(height: 2),

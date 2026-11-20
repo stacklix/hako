@@ -16,6 +16,7 @@ class LogsPage extends StatelessWidget {
     'call_out_command',
     'sms_forwarded',
     'operation_log',
+    'agent_connection',
   };
 
   List<LogEvent> get visibleEvents {
@@ -37,7 +38,7 @@ class LogsPage extends StatelessWidget {
               ? const EmptyState(
                   icon: Icons.receipt_long_outlined,
                   title: '暂无日志',
-                  subtitle: '应用开始处理短信和来电后会写入日志',
+                  subtitle: '连接服务器或处理短信和来电后会写入日志',
                 )
               : Column(
                   children: logs

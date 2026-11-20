@@ -3,12 +3,21 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { generateKeyPairSync, createHash } = require('crypto');
 
 const rootDir = path.resolve(__dirname, '..');
 const assetDir = path.join(rootDir, 'android/app/src/main/assets');
 const port = Number(process.env.PORT || process.env.DOPPEL_MOCK_PORT || 18081);
 const password = process.env.DOPPEL_MOCK_PASSWORD || 'dev';
 const sessionCookie = 'doppel_mock_session=1';
+const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 3072 });
+let agent = {
+  enabled: true, server: 'https://hako.example.com', username: 'admin',
+  allowSms: false, allowCalls: false,
+  publicKey: publicKey.export({ type: 'spki', format: 'pem' }),
+  keyId: createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('base64url'),
+  batteryExempt: true, status: { state: 'connected', message: '已连接 Sora', agentId: 'mock-android-device' },
+};
 
 let snapshot = {
   permissions: {
@@ -209,6 +218,27 @@ async function route(req, res) {
     sendJson(res, 200, snapshot);
     return;
   }
+  if (req.method === 'GET' && pathname === '/api/agent/settings') {
+    sendJson(res, 200, agent);
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/agent/settings') {
+    const body = await readBody(req);
+    try {
+      for (const key of ['enabled', 'allowSms', 'allowCalls']) if (typeof body[key] !== 'boolean') throw new Error('设置字段无效');
+      const url = body.server ? new URL(body.server) : null;
+      if (url && (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash)) throw new Error('请输入 HTTPS 服务器地址，不包含路径');
+      if (body.enabled && (!url || !body.username || !agent.publicKey)) throw new Error('请先填写账号并登记公钥');
+      agent = { ...agent, enabled: body.enabled, server: url?.origin || '', username: body.username.trim(), allowSms: body.allowSms, allowCalls: body.allowCalls,
+        status: { state: 'disconnected', message: 'Mock 已保存配置', agentId: '' } };
+      sendJson(res, 200, agent);
+    } catch (error) { sendJson(res, 400, { error: 'invalid_params', message: error.message }); }
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/agent/key') {
+    sendJson(res, 200, agent);
+    return;
+  }
   if (req.method === 'POST' && pathname === '/api/config') {
     const body = await readBody(req);
     mergeDeep(snapshot.config, body.config || body);
@@ -256,6 +286,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  console.log(`Doppel remote control mock server: http://127.0.0.1:${port}`);
-  console.log(`Login password: ${password}`);
+  console.log(`Nami remote control mock server: http://127.0.0.1:${server.address().port}`);
 });

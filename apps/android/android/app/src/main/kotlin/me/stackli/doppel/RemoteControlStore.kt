@@ -23,7 +23,7 @@ internal data class RemoteActionResult(
 )
 
 internal object RemoteControlStore {
-    private const val TAG = "DoppelRemoteStore"
+    private const val TAG = "NamiRemoteStore"
     private const val PREFS_NAME = "doppel"
     private const val DIRECT_BOOT_PREFS_NAME = "doppel_direct_boot"
     private const val KEY_CONFIG = "config_json"

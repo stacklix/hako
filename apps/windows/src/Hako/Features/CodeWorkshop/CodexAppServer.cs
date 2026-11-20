@@ -22,11 +22,13 @@ internal sealed class CodexAppServer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> pending = new();
     private readonly Task reader;
     private readonly Task stderr;
+    private readonly Func<string, TimeSpan> requestTimeout;
     private int sequence;
     public event Action<JsonElement>? Event;
 
-    private CodexAppServer(ProcessStartInfo start)
+    private CodexAppServer(ProcessStartInfo start, Func<string, TimeSpan>? timeout)
     {
+        requestTimeout = timeout ?? RequestTimeout;
         start.UseShellExecute = false;
         start.CreateNoWindow = true;
         start.WindowStyle = ProcessWindowStyle.Hidden;
@@ -44,17 +46,17 @@ internal sealed class CodexAppServer : IAsyncDisposable
         stderr = DrainAsync();
     }
 
-    public static async Task<CodexAppServer> StartAsync(CancellationToken token, ProcessStartInfo? fixture = null)
+    public static async Task<CodexAppServer> StartAsync(CancellationToken token, ProcessStartInfo? fixture = null, Func<string, TimeSpan>? timeout = null)
     {
         CodexAppServer server;
-        try { server = new(fixture ?? Executable()); }
+        try { server = new(fixture ?? Executable(), timeout); }
         catch (Exception e) when (e is IOException or Win32Exception)
         { throw new WorkshopException("codex_unavailable", "无法启动 Codex，请在当前 Windows 用户下安装并登录 Codex CLI。"); }
         try
         {
             await server.RequestAsync("initialize", new
             {
-                clientInfo = new { name = "hako", title = "Hako", version = typeof(CodexAppServer).Assembly.GetName().Version?.ToString(3) ?? "1.0.0" },
+                clientInfo = new { name = "kage", title = "Kage", version = typeof(CodexAppServer).Assembly.GetName().Version?.ToString(3) ?? "1.0.0" },
                 capabilities = new { experimentalApi = true }
             }, token);
             await server.WriteAsync(new { method = "initialized" }, token);
@@ -98,7 +100,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
     // Startup can load a long conversation and initialize tools. It runs in the
     // durable worker, so it must not share the short interactive-read deadline.
     internal static TimeSpan RequestTimeout(string method) => TimeSpan.FromSeconds(
-        method is "initialize" or "thread/start" or "thread/resume" ? 60 : 8);
+        method is "initialize" or "thread/start" or "thread/resume" or "turn/start" or "thread/compact/start" ? 60 : 8);
 
     public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken token)
     {
@@ -109,14 +111,14 @@ internal sealed class CodexAppServer : IAsyncDisposable
         try
         {
             await WriteAsync(new { id, method, @params = parameters }, token);
-            return await completion.Task.WaitAsync(RequestTimeout(method), token);
+            return await completion.Task.WaitAsync(requestTimeout(method), token);
         }
         finally { pending.TryRemove(key, out _); }
     }
 
     public Task ReplyAsync(JsonElement id, object result, CancellationToken token) => WriteAsync(new { id, result }, token);
     public Task RejectAsync(JsonElement id, CancellationToken token) =>
-        WriteAsync(new { id, error = new { code = -32601, message = "Hako does not support this request type." } }, token);
+        WriteAsync(new { id, error = new { code = -32601, message = "Kage does not support this request type." } }, token);
 
     private async Task WriteAsync(object message, CancellationToken token)
     {

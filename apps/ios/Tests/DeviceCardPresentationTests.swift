@@ -34,6 +34,9 @@ import Foundation
         let manifest = ["system", "codex", "ports", "http", "disk", "processes", "services"]
         let terminal = DeviceCardOrder.terminalPageName
         let initialPages = DeviceCardOrder.pageNames(capabilities: manifest, saved: [])
+        precondition(DeviceCardOrder.pageNames(capabilities: ["query.device.status", "query.telephony.sims"],
+            saved: [terminal, "query.device.status"]) == ["query.device.status", "query.telephony.sims"],
+            "Android must not inherit a terminal page from desktop defaults or saved order")
         precondition(initialPages == manifest + [terminal])
         precondition(DeviceCardOrder.pageNames(capabilities: [], saved: []) == [terminal],
                      "The terminal is a local page, independent of the Agent capability manifest")

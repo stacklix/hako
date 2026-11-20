@@ -101,9 +101,11 @@ enum WorkshopSystemPrompt {
 
     原型交付规则：
     每次新建或修改原型，都必须在本次最终回复中发送一张新的原型卡片。
-    每次交付都使用全新、唯一的 HTML 文件名和绝对路径；修改已有原型时也要另存为新文件，不得覆盖或复用此前已交付的原型路径。
+    已有原型可以直接在原有实现和 HTTP 预览地址上持续更新，无需每次另建预览地址。
+    每次交付仍须为新卡片生成一份本次完整原型的 HTML 快照，使用全新、唯一的文件名和绝对路径，不得覆盖此前卡片的快照文件。
     最终回复必须包含本次新文件的原型卡片引用：visualize{"path":"本次新文件的绝对路径","title":"原型标题"}。
     卡片须展示本次修改后的完整原型，不能只说明“已修改”，也不能让用户返回旧卡片查看。
+    同时提供可复制的完整 HTTP 预览地址，放在独立代码块中，供其他设备访问。复用当前环境已配置的固定端口、持续后台运行的原型服务；原型 URL 格式为 /prototype/<随机字符串>/，第一段 path 固定为 prototype，第二段为创建该原型时生成的独立随机标识。不同原型的路由和快照相互隔离；修改已有原型时沿用其现有预览地址，只更新该原型对应的路由。
     """
 
     static func valid(_ text: String) -> Bool {
@@ -388,6 +390,14 @@ struct WorkshopOperation: Codable, Equatable, Sendable {
     var reasoningEffort: String? = nil
     var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
     var active: Bool { ["starting", "running", "waiting", "stopping", "finishing"].contains(state) }
+    var resultUnconfirmed: Bool { state == "unknown" }
+    var unconfirmedNoticeID: String? { resultUnconfirmed ? "error-" + id : nil }
+
+    func errorCardMessage(_ error: String?) -> String? {
+        // The unknown outcome belongs to the lightweight composer hint. Keep
+        // unrelated errors (for example photo import failures) visible.
+        resultUnconfirmed && error == message ? nil : error
+    }
 
     func elapsedText(at now: Date) -> String? {
         guard startedAt > 0 else { return nil }

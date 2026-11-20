@@ -25,7 +25,7 @@ public static class DataProtection
         {
             Marshal.Copy(bytes, 0, input.Data, bytes.Length);
             bool ok = encrypt
-                ? CryptProtectData(ref input, "Hako agent settings", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out output)
+                ? CryptProtectData(ref input, "Kage agent settings", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out output)
                 : CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, out output);
             if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(), "无法读取或保存当前 Windows 用户的加密配置。");
             var result = new byte[output.Length];

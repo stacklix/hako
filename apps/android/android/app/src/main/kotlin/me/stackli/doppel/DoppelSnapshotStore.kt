@@ -11,6 +11,7 @@ import android.telephony.SubscriptionManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
+import me.stackli.doppel.agent.AgentRuntime
 
 internal object DoppelSnapshotStore {
     private const val PREFS_NAME = "doppel"
@@ -36,6 +37,8 @@ internal object DoppelSnapshotStore {
     private fun permissionsJson(context: Context): JSONObject {
         return JSONObject()
             .put("receiveSms", hasPermission(context, Manifest.permission.RECEIVE_SMS))
+            .put("readSms", hasPermission(context, Manifest.permission.READ_SMS))
+            .put("readCallLog", hasPermission(context, Manifest.permission.READ_CALL_LOG))
             .put("sendSms", hasPermission(context, Manifest.permission.SEND_SMS))
             .put("callPhone", hasPermission(context, Manifest.permission.CALL_PHONE))
             .put("readPhoneState", hasPermission(context, Manifest.permission.READ_PHONE_STATE))
@@ -89,7 +92,8 @@ internal object DoppelSnapshotStore {
     }
 
     private fun readEvents(context: Context, config: JSONObject): JSONArray {
-        val storedEvents = readStoredEvents(context)
+        val agentEvents = AgentRuntime.snapshot(context).optJSONArray("events") ?: JSONArray()
+        val storedEvents = readStoredEvents(context) + List(agentEvents.length()) { agentEvents.getJSONObject(it) }
         val smsHistoryEvents = readRecentSmsHistory(context, config)
         return JSONArray(mergeEvents(storedEvents, smsHistoryEvents))
     }
@@ -214,7 +218,7 @@ internal object DoppelSnapshotStore {
                 JSONObject()
                     .put("id", "diagnostic_${event.optString("id")}")
                     .put("type", "sms_pipeline_debug")
-                    .put("detail", "历史短信导入发现新短信，但没有实时接收/转发日志；可能是系统短信广播没有送达 Doppel")
+                    .put("detail", "历史短信导入发现新短信，但没有实时接收/转发日志；可能是系统短信广播没有送达 Nami")
                     .put("timestamp", event.optString("timestamp"))
             }
     }

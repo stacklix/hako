@@ -3,7 +3,8 @@ import Combine
 
 @MainActor protocol LocalNetworkProviding: AnyObject {
     var changes: AnyPublisher<Void, Never> { get }
-    func endpoint(for application: LocalNetworkApplication) async -> LocalNetworkEndpoint?
+    var isLocal: Bool { get }
+    func refresh() async
 }
 
 @MainActor enum LocalNetworkService {
@@ -12,5 +13,6 @@ import Combine
 
 @MainActor private final class UnconfiguredLocalNetwork: LocalNetworkProviding {
     var changes: AnyPublisher<Void, Never> { Empty().eraseToAnyPublisher() }
-    func endpoint(for application: LocalNetworkApplication) async -> LocalNetworkEndpoint? { nil }
+    var isLocal: Bool { false }
+    func refresh() async {}
 }

@@ -49,7 +49,7 @@ public static class CliParser
             return new CliInvocation(profile, new AgentCommand("help", new() { ["topic"] = topic }), json, false);
         }
         int wordCount = tokens[0] is "key" or "config" or "server" ? 2 : 1;
-        if (tokens.Count < wordCount) throw new CliUsageException("子命令不完整，请运行 Hako.exe help。");
+        if (tokens.Count < wordCount) throw new CliUsageException("子命令不完整，请运行 Kage.exe help。");
         var command = string.Join(" ", tokens.Take(wordCount));
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         for (int i = wordCount; i < tokens.Count; i++)
@@ -74,7 +74,7 @@ public static class CliParser
     {
         if (request.Command == "help") { CliHelp.Get(request.Options.GetValueOrDefault("topic", "")); return; }
         if (!Allowed.TryGetValue(request.Command, out var allowed) || request.Options.Keys.Any(k => !allowed.Contains(k)))
-            throw new CliUsageException("未知命令或选项，请运行 Hako.exe help。");
+            throw new CliUsageException("未知命令或选项，请运行 Kage.exe help。");
         if (request.Command == "config set" && request.Options.Count == 0) throw new CliUsageException("config set 至少需要 --url、--account 或 --direct-port。");
         if (request.Options.TryGetValue("direct-port", out var port) && (!int.TryParse(port, out var number) || number < 0 || number > 65535))
             throw new CliUsageException("--direct-port 必须为 0–65535 的整数，0 表示关闭。");

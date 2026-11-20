@@ -1,8 +1,10 @@
-# Hako Server
+# Sora Server
+
+Sora 是服务端应用名称，程序为 `sora-server`，发布镜像为 `ghcr.io/stacklix/sora-server`。现有 `HAKO_*` 环境变量、`hako.db` 数据文件及认证协议标识继续作为稳定接口使用。客户端分别为 Hako（iOS）、Kage（Windows）和 Nami（Android）。
 
 先了解登录方式、凭据和会话边界，可阅读[登录与身份认证总览](../../docs/login-authentication-overview.md)。
 
-Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/admin/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
+Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/admin/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
 
 服务端还支持定时扫描 Caddy 访问日志，在管理页查看每域名每小时访问量、来源 IP 及其 UA/URL 排行，以及正常响应／异常响应URL 与来源排行，统计独立持久化。
 
@@ -22,7 +24,7 @@ Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子�
 
 ## 源码目录
 
-- `cmd/hako-server/` 读取运行配置并启动 HTTP 服务。
+- `cmd/sora-server/` 读取运行配置并启动 HTTP 服务。
 - `internal/server/` 注册路由并处理认证、OIDC、管理 API 和设备信任。随 Go 二进制嵌入的管理页资源位于 `internal/server/web/`。
 - `internal/agent/` 管理已认证的 Agent 连接、请求、遥测订阅和 SSH 通道。
 - `internal/accesslog/` 负责访问日志采集、SQLite 存储和查询。
@@ -32,7 +34,7 @@ Hako 的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子�
 
 ### 自动发布镜像到 GHCR
 
-GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服务端测试，并在 `master` 推送服务端或工作流改动、推送标签或手动运行时，将 Linux amd64 镜像发布到 `ghcr.io/stacklix/hako-server`。服务端 PR 运行测试。镜像发布任务使用自带的 `GITHUB_TOKEN` 和独立授予的 `packages: write` 权限。
+GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服务端测试，并在 `master` 推送服务端或工作流改动、推送标签或手动运行时，将 Linux amd64 镜像发布到 `ghcr.io/stacklix/sora-server`。服务端 PR 运行测试。镜像发布任务使用自带的 `GITHUB_TOKEN` 和独立授予的 `packages: write` 权限。
 
 - `master`：在 `apps/server/` 或镜像工作流有变更时发布，对比本次推送前后的提交，镜像带有 `latest`、`master` 和 `sha-<短提交号>` 标签。仅修改 iOS、Windows 或仓库级文档时跳过。
 - tag：推送任意 tag 都发布，不过滤路径，镜像带有对应 tag 和 `sha-<短提交号>` 标签。tag 名中的 `/` 等字符由 Docker metadata action 转换为合法镜像标签字符。
@@ -42,12 +44,12 @@ GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服�
 服务器直接拉取：
 
 ```sh
-docker pull ghcr.io/stacklix/hako-server:latest
+docker pull ghcr.io/stacklix/sora-server:latest
 ```
 
 GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性改为 Public；私有包需要先通过 `docker login ghcr.io` 登录，使用拥有该包读取权限且具有 `read:packages` scope 的 PAT（classic），通过 `--password-stdin` 传入。工作流发布使用的 `GITHUB_TOKEN` 无需手工配置该 PAT。参见 [GHCR 官方文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `hako-server`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
+仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `sora-server`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
 
 服务端要求已有数据库已完成 schema 2 迁移。未迁移的实例需先用迁移版（提交 `957cbb2`）成功启动一次，再升级到当前版本。迁移版首次启动会清空旧通知库，包括微信绑定、Webhook、历史消息和后台保存的 APNs 配置。当前版本直接初始化全新数据库。
 
@@ -75,8 +77,8 @@ docker compose pull
 docker run --rm --user 0 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/config:/app/config" \
-  --entrypoint sh ghcr.io/stacklix/hako-server:latest \
-  -c 'hako-server init && chown 10001:10001 /app/data /app/config /app/config/server.json && chmod 700 /app/data /app/config'
+  --entrypoint sh ghcr.io/stacklix/sora-server:latest \
+  -c 'sora-server init && chown 10001:10001 /app/data /app/config /app/config/server.json && chmod 700 /app/data /app/config'
 ```
 
 `init` 创建 `config/server.json`，自动生成 `masterKey`，账号默认为 `owner`，设备列表为空；已有配置文件不会被覆盖。`masterKey` 是 32 字节随机数据的 hex（十六进制）编码，共 64 个字符，读取时支持大小写，不带 `0x` 前缀，用于加密持久化业务状态和生成刷新令牌。配置与 SQLite 数据需要一起备份。
@@ -128,12 +130,12 @@ docker compose up -d
 
 ## 通知网关
 
-登录 Hako 管理后台，打开「通知网关」。工作台、通知渠道、消息中心和 Webhooks 使用同一个 Hako 管理会话。通知 API、SQLite 队列和平台投递由 Hako Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `web/notifications/` 执行 `npm ci && npm run build`。从 `apps/server/` 启动时默认加载 `web/notifications/dist/web`，也可以用 `HAKO_NOTIFICATION_WEB_DIR` 指定产物路径。
+登录 Sora 管理后台，打开「通知网关」。工作台、通知渠道、消息中心和 Webhooks 使用同一个 Sora 管理会话。通知 API、SQLite 队列和平台投递由 Sora Go 服务处理。Node.js 24 只用于构建前端资源。原生运行前，在 `web/notifications/` 执行 `npm ci && npm run build`。从 `apps/server/` 启动时默认加载 `web/notifications/dist/web`，也可以用 `HAKO_NOTIFICATION_WEB_DIR` 指定产物路径。
 
 - 在「通知渠道」中扫码绑定微信账号，或查看 Apple Push 接收设备。Apple Push 使用已经登记并登录 Hako 的 iPhone，允许系统通知后，Hako 会自动同步设备 Token。网关保留一台接收设备。移除该设备的 Console 公钥并重启后，其推送登记会失效。
 - 代码工坊后台任务通知复用此 APNs 设备、凭据和持久化队列，默认关闭；iOS 工坊设置主动开启后才通知任务完成、失败、中断或结果未知。`GET/PUT /api/v1/notifications/workshop` 使用现有 DPoP 登录，返回 `enabled`、`configured`、`registered`；PUT 只接受 `{"enabled":true/false}`。终态只接受已认证的 Windows 工坊连接，不提供公开完成 Webhook。局域网任务也可由配置了云端账号的 Windows 上报，离线不能即时推送。详细语义与限制见 [代码工坊](../../docs/code-workshop.md#后台任务通知)。投递结果在消息中心 Apple Push 历史中显示，来源为「代码工坊」。
 - 在「通知渠道 → Apple Push」配置 Apple Team ID、Key ID、Bundle ID（Hako 默认 `me.stackli.hako`）并上传 `.p8` 私钥。后台配置加密保存在通知网关数据库，保存后立即生效。未从后台保存配置时，继续读取 `APNS_TEAM_ID`、`APNS_KEY_ID`、`APNS_BUNDLE_ID` 和 `APNS_KEY_FILE`。设备登记后可在渠道页发送测试通知，也可在「消息中心 → Apple Push」直接发送文本通知，查看直接发送与 Webhooks 的投递结果。
-- Go 通知网关使用 Hako 数据目录下的 `notification-gateway/`。首次启动后在后台配置通知渠道并创建 Webhook，调用方使用生成的 Webhook 地址。
+- Go 通知网关使用 Sora 数据目录下的 `notification-gateway/`。首次启动后在后台配置通知渠道并创建 Webhook，调用方使用生成的 Webhook 地址。
 
 Webhook 使用 `POST /webhook/notifications/{token}`。每次请求都必须通过字符串字段 `channel` 指定一个已启用的渠道，取值为 `wechat` 或 `apns`。向两个渠道发送时，分别发起请求。
 
@@ -234,11 +236,11 @@ HAKO_CLIENT_SECRET=<生成的 SK>
 
 SK 仅在创建 / 轮换响应中出现一次；列表和数据库不保存原始 SK。无需编辑 `server.json` 或手工计算哈希。应用、启用状态和 SK 的 SHA-256 哈希保存到现有加密数据库，重启保留；备份时保留数据库及原 `masterKey`。
 
-在 iLinker 配置上述环境变量并重启，首次用本地密码进入「系统设置 → Hako 扫码登录」绑定。需同时更新手机端以显示第三方应用和绑定用途；旧版手机拒绝 v2 二维码。Hako 自身管理后台仍使用 v1 二维码，不受影响。
+在 iLinker 配置上述环境变量并重启，首次用本地密码进入「系统设置 → Hako 扫码登录」绑定。需同时更新手机端以显示第三方应用和绑定用途；旧版手机拒绝 v2 二维码。Sora 自身管理后台仍使用 v1 二维码，不受影响。
 
 应用管理支持停用 / 启用和轮换 SK。停用或轮换即时撤销该应用的待登录请求和授权会话；重新启用不恢复旧授权。轮换后在 iLinker 更新 SK 并重启；丢失 SK 时也通过轮换恢复。SK 不应发送到聊天、写入仓库或出现在二维码中。应用管理接口受原有管理 Cookie、来源校验和 CSRF 保护；应用 SK 本身不能创建应用或生成其他 SK。
 
-应用 API 位于 `/api/v1/app-login/*`，使用 `Authorization: Bearer <原始密钥>` 和 `X-Hako-Client`，只可操作本应用的请求和授权；手机批准仍需 DPoP。90 秒请求只可兑换一次，兑换私有凭据不进入二维码或浏览器。手机「已登录设备」可查看和移除应用会话。完整接口、稳定账号标识、过期与撤销规则见 [认证协议](../../docs/server-authentication.md#第三方应用扫码登录)。Hako 重启使现有应用会话失效，但持久化账号标识和 iLinker 绑定保持不变。应用凭证不可进入 Hako 管理后台。
+应用 API 位于 `/api/v1/app-login/*`，使用 `Authorization: Bearer <原始密钥>` 和 `X-Hako-Client`，只可操作本应用的请求和授权；手机批准仍需 DPoP。90 秒请求只可兑换一次，兑换私有凭据不进入二维码或浏览器。手机「已登录设备」可查看和移除应用会话。完整接口、稳定账号标识、过期与撤销规则见 [认证协议](../../docs/server-authentication.md#第三方应用扫码登录)。Sora 重启使现有应用会话失效，但持久化账号标识和 iLinker 绑定保持不变。应用凭证不可进入 Sora 管理后台。
 
 ## 应用级接口与命名
 
@@ -300,11 +302,11 @@ App 默认使用已配置并登录的 Hako 服务器，自动展示全部域名�
 ```sh
 go test ./...
 go vet ./...
-go run ./cmd/hako-server init
-go run ./cmd/hako-server
+go run ./cmd/sora-server init
+go run ./cmd/sora-server
 ```
 
-独立 Linux x64 二进制统一输出到仓库根目录 `dist/server/hako-server-linux-amd64`：Windows 执行 `./scripts/publish.ps1`，Linux/macOS 执行 `bash scripts/publish.sh`。CI 同时提供该产物；Docker 部署继续使用本目录的 Dockerfile 和 Compose 配置。
+独立 Linux x64 二进制统一输出到仓库根目录 `dist/server/sora-server-linux-amd64`：Windows 执行 `./scripts/publish.ps1`，Linux/macOS 执行 `bash scripts/publish.sh`。CI 同时提供该产物；Docker 部署继续使用本目录的 Dockerfile 和 Compose 配置。
 
 默认配置文件 `config/server.json`、数据目录 `data/`；可通过 `HAKO_CONFIG_FILE`、`HAKO_DATA_DIR` 覆盖。主密钥在配置文件的 `masterKey` 字段中维护。`HAKO_LISTEN` 默认 `:8080`。本地开发默认公开地址 `http://localhost:8080`；仅 loopback 允许 HTTP。iOS 始终要求 HTTPS。
 

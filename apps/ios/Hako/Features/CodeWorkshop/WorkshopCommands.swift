@@ -23,6 +23,8 @@ import CryptoKit
     private var socket: WorkshopRequestSocket?
     private var cursor: Int64 = 0
     @Published private(set) var commands: [WorkshopSavedCommand] = []
+    @Published private(set) var prompts: [WorkshopQuickPrompt] = []
+    private var promptFile: URL { file.deletingPathExtension().appendingPathExtension("prompts.json") }
     @Published private(set) var tasks: [WorkshopCommandSummary] = []
     @Published private(set) var task: WorkshopCommandTask?
     @Published private(set) var taskID: String?
@@ -45,6 +47,24 @@ import CryptoKit
             }
             commands = snapshot.commands; taskID = snapshot.taskID ?? snapshot.pending?.requestId
         } catch { self.error = "手机保存的快捷命令暂时无法读取。" }
+        do {
+            if FileManager.default.fileExists(atPath: promptFile.path) {
+                prompts = try JSONDecoder().decode([WorkshopQuickPrompt].self, from: Data(contentsOf: promptFile))
+            }
+        } catch { self.error = "手机保存的快捷提示词暂时无法读取。" }
+    }
+    func savePrompt(_ prompt: WorkshopQuickPrompt) throws {
+        guard prompt.valid else { throw HakoError(message: "请填写名称和提示词内容，内容最多 4,000 个字符。") }
+        var values = prompts
+        if let index = values.firstIndex(where: { $0.id == prompt.id }) { values[index] = prompt }
+        else { values.append(prompt) }
+        try writePrompts(values)
+    }
+    func deletePrompt(_ id: UUID) throws { try writePrompts(prompts.filter { $0.id != id }) }
+    private func writePrompts(_ values: [WorkshopQuickPrompt]) throws {
+        try FileManager.default.createDirectory(at: promptFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(values).write(to: promptFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        prompts = values
     }
     private func save(_ value: Snapshot) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -65,10 +85,10 @@ import CryptoKit
         var value = snapshot; value.commands.removeAll { $0.id == command.id }; try save(value)
     }
     private func request<Value: Decodable>(_ method: String, _ params: [String: Any]) async throws -> Value {
-        let ticket = store.scope
+        let ticket = store.commandContext(for: agent.id)
         guard context == ticket, let socket else { throw HakoError(message: "请先连接命令执行器。") }
         let data = try await socket.send(method, computerID: agent.id, params: params)
-        guard context == ticket, store.scope == ticket else { throw CancellationError() }
+        guard context == ticket, store.commandContext(for: agent.id) == ticket else { throw CancellationError() }
         return try JSONDecoder().decode(Value.self, from: data)
     }
     func prepare() async {
@@ -79,12 +99,12 @@ import CryptoKit
         catch { socket?.close(); socket = nil; self.error = error.localizedDescription }
     }
     private func connect() async throws {
-        let ticket = store.scope
+        let ticket = store.commandContext(for: agent.id)
         if context == ticket, socket != nil {
             let listing: Listing = try await request("commands.list", ["applicationId": application.id]); tasks = listing.tasks; return
         }
         context = ticket; socket?.close(); socket = nil
-        if let direct = store.localEndpoint {
+        if let direct = store.localEndpoint(for: agent.id) {
             let storage = SecureStorage.namespace("me.stackli.hako.commands")
             var cached: StoredEndpoint?
             if let data = try storage.read(account: key) { cached = try JSONDecoder().decode(StoredEndpoint.self, from: data) }
@@ -95,7 +115,7 @@ import CryptoKit
                 catch { socket?.close(); socket = nil }
             }
             let endpoint: Endpoint = try await store.call(agent, "commands.open")
-            guard store.scope == ticket else { throw CancellationError() }
+            guard store.commandContext(for: agent.id) == ticket else { throw CancellationError() }
             let value = StoredEndpoint(ip: direct.ip, endpoint: endpoint)
             try storage.save(JSONEncoder().encode(value), account: key, accessibility: .afterFirstUnlock)
             try useEndpoint(value, ticket: ticket)
@@ -117,9 +137,12 @@ import CryptoKit
     }
     private func useEndpoint(_ value: StoredEndpoint, ticket: String) throws {
         guard value.endpoint.token.count == 64, let endpoint = LocalNetworkEndpoint(ip: value.ip, port: value.endpoint.port) else { throw CocoaError(.coderReadCorrupt) }
-        socket = WorkshopRequestSocket(context: { [weak self] in self?.store.scope ?? "" }, open: { [weak self] in
-            guard let self, self.store.scope == ticket else { throw CancellationError() }
-            return try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1", commandToken: value.endpoint.token)
+        socket = WorkshopRequestSocket(context: { [weak self] in self.map { $0.store.commandContext(for: $0.agent.id) } ?? "" }, open: { [weak self] in
+            guard let self, self.store.commandContext(for: self.agent.id) == ticket else { throw CancellationError() }
+            let (connection, hello) = try await WorkshopLocalSocket.open(endpoint, path: "/workshop/v1", commandToken: value.endpoint.token)
+            do { try WorkshopNetworkConfiguration.requireComputer(hello, agentID: self.agent.id) }
+            catch { connection.closeWorkshop(); throw error }
+            return (connection, hello)
         })
     }
     func execute(_ command: WorkshopSavedCommand) async {
@@ -127,7 +150,7 @@ import CryptoKit
         if let pending = snapshot.pending, pending.command != command { error = "上一条命令的结果尚未确认，请先查看该任务。"; return }
         busy = true; defer { busy = false }
         do {
-            if socket == nil || context != store.scope { try await connect() }
+            if socket == nil || context != store.commandContext(for: agent.id) { try await connect() }
             let pending = snapshot.pending ?? Pending(requestId: UUID().uuidString.lowercased(), command: command)
             var saved = snapshot; saved.pending = pending; saved.taskID = pending.requestId; try save(saved)
             taskID = pending.requestId; observationID = UUID(); cursor = 0; output = ""; task = nil
@@ -160,7 +183,7 @@ import CryptoKit
         while !Task.isCancelled, taskID == id {
             do {
                 if busy { try await Task.sleep(for: .milliseconds(100)); continue }
-                if socket == nil || context != store.scope { try await connect() }
+                if socket == nil || context != store.commandContext(for: agent.id) { try await connect() }
                 let page: Page = try await request("commands.read", ["taskId": id, "cursor": cursor])
                 guard taskID == id else { return }
                 task = page.task; cursor = page.cursor

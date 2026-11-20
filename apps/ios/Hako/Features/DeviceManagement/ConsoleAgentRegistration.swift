@@ -35,6 +35,27 @@ struct ConsoleAgentRegistrationReply: Decodable {
     let keyId: String
 }
 
+struct ConsoleAgentDetails: Decodable {
+    let id: String
+    let name: String
+    let publicKeyPEM: String
+    let revision: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, revision
+        case publicKeyPEM = "publicKeyPem"
+    }
+
+    func updateBody(name: String, publicKeyPEM: String) throws -> [String: Any] {
+        var body = try ConsoleAgentRegistration(name: name, publicKeyPEM: publicKeyPEM).body
+        body["revision"] = revision
+        guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else {
+            throw ConsoleAgentRegistrationError.tooLarge
+        }
+        return body
+    }
+}
+
 enum ConsoleAgentRegistrationError: LocalizedError {
     case invalidName, privateKey, invalidPublicKey, tooLarge
 

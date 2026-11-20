@@ -6,7 +6,7 @@ import Combine
     let store: WorkshopStore
     let agent: WorkshopAgent
     let application: WorkshopApplication
-    let title: String
+    @Published private(set) var title: String
     let scope: String
     @Published private(set) var threadId: String? { didSet { persistDraft() } }
     @Published private(set) var isArchived: Bool
@@ -80,6 +80,18 @@ import Combine
     private var needsHistoryRefresh = false
     var connectionVerified: Bool {
         hasVerifiedSync || (threadId == nil && !models.isEmpty && modelError == nil)
+    }
+    var needsConnectionRecovery: Bool {
+        connectionIssue != nil || uncertain || operation?.resultUnconfirmed == true
+    }
+    var presentedError: String? {
+        if let operation { return operation.errorCardMessage(error) }
+        return error
+    }
+    var synchronizationHint: String? {
+        if connectionIssue != nil { return "会话暂未同步，自动重试中" }
+        if operation?.resultUnconfirmed == true { return "本轮结果待确认" }
+        return nil
     }
     private var cacheLoad: Task<WorkshopTranscript?, Never>?
     private let renderer = WorkshopTranscriptRenderer()
@@ -263,6 +275,52 @@ import Combine
             eventStream?.cancel()
         }
         catalogHint = session
+    }
+
+    var canCompact: Bool {
+        canConfigure && !busy && !awaitingSubmissionCheck && !loadingHistory && threadId != nil &&
+            operation?.active != true && !followups.contains { $0.editable || $0.state == "paused" } &&
+            operationId.map { store.pendingQueue(operationId: $0).isEmpty } != false
+    }
+
+    func rename(_ name: String) async throws {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canConfigure, !busy, !name.isEmpty, name.utf16.count <= 120,
+              !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw HakoError(message: "会话名称需为 1–120 个字符。")
+        }
+        guard name != title else { return }
+        busy = true
+        defer { busy = false }
+        if let threadId {
+            struct Reply: Decodable { let threadId: String; let name: String }
+            let reply: Reply = try await store.call(agent, "thread.rename", ["threadId": threadId, "applicationId": application.id, "name": name])
+            guard scope == store.scope, reply.threadId == threadId, reply.name == name else { throw CancellationError() }
+            store.renameSession(threadId, agentID: agent.id, title: name)
+        }
+        title = name
+        persistDraft()
+    }
+
+    func compactContext() async {
+        guard canCompact, let threadId else { return }
+        let id = UUID().uuidString.lowercased()
+        busy = true; error = nil
+        defer { busy = false }
+        operationId = id; operation = nil; eventCursor = 0; streamText = [:]; observedTerminal = nil
+        uncertain = true
+        saveTranscript()
+        do {
+            let result: WorkshopOperation = try await store.call(agent, "thread.compact", ["threadId": threadId,
+                "applicationId": application.id, "requestId": id, "permission": choice.permission.rawValue])
+            guard scope == store.scope, result.id == id else { throw CancellationError() }
+            operation = result; uncertain = false
+        } catch let failure as WorkshopFailure where ["invalid_params", "unsupported_method", "codex_busy", "codex_workspace_invalid"].contains(failure.code) {
+            if scope == store.scope { operationId = nil; uncertain = false; error = failure.message }
+        } catch {
+            if scope == store.scope { self.error = "压缩请求结果待确认，请检查任务状态。" }
+        }
+        saveTranscript()
     }
 
     func loadModels() async {
@@ -573,9 +631,18 @@ import Combine
         WorkshopTranscriptMerge.apply(event, entries: &entries, streamText: &streamText)
     }
 
-    func send() async {
-        let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSubmitMessage, hasDraftInput else { return }
+    func send() async { await sendInput(prompt: nil) }
+
+    var canSendPrompt: Bool { canSubmitMessage && editingMessageID == nil && draftSendingID == nil }
+    func sendPrompt(_ text: String) async {
+        guard canSendPrompt else { return }
+        await sendInput(prompt: text)
+    }
+
+    private func sendInput(prompt: String?) async {
+        let message = (prompt ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = prompt == nil ? photos : []
+        guard canSubmitMessage, prompt == nil ? hasDraftInput : !message.isEmpty else { return }
         guard message.utf16.count <= 4000 else { error = "消息最多 4,000 个字符，请分段发送。"; return }
         if let id = editingMessageID {
             await mutateMessage(id, action: "update", message: message)
@@ -585,18 +652,18 @@ import Combine
             await submitQueued(queued)
             return
         }
-        if !photos.isEmpty, let model = models.first(where: { $0.id == choice.model }), !model.supportsImages {
+        if !attachments.isEmpty, let model = models.first(where: { $0.id == choice.model }), !model.supportsImages {
             error = "当前模型不支持图片，请在更多页面选择支持图片的模型。"; return
         }
         if let operationId, outbox.activeID != nil || operation?.active == true || followups.contains(where: { $0.editable }) ||
             !store.pendingQueue(operationId: operationId).isEmpty {
             let resume = operation?.active != true
             let queued = WorkshopQueuedSend(id: UUID().uuidString.lowercased(), operationId: operationId,
-                message: message, imageIds: photos.map(\.id), reasoningEffort: choice.reasoningEffort)
+                message: message, imageIds: attachments.map(\.id), reasoningEffort: choice.reasoningEffort)
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存排队消息，请重试。"; return }
             store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
-            draftSendingID = queued.id
+            if prompt == nil { draftSendingID = queued.id }
             entries.append(queued.entry); appendedMessageID = queued.id; error = nil
             outbox.enqueue(queued.id)
             clearSentDraft(queued.message, imageIds: queued.imageIds, id: queued.id)
@@ -611,13 +678,13 @@ import Combine
         if threadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
         let next = WorkshopReceipt(id: UUID().uuidString.lowercased(), agentId: agent.id, applicationId: application.id,
             originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now, state: "pending",
-            model: choice.model, permission: choice.permission.rawValue, imageIds: photos.isEmpty ? nil : photos.map(\.id),
+            model: choice.model, permission: choice.permission.rawValue, imageIds: attachments.isEmpty ? nil : attachments.map(\.id),
             serviceTier: choice.serviceTier ?? "default", systemPrompt: threadId == nil ? store.systemPrompt : nil,
             reasoningEffort: choice.reasoningEffort)
         guard next.fitsRequestBudget else { error = "首条消息与系统提示词合计过长，请缩短提示词或消息内容。"; return }
         do { try store.saveReceipt(next) }
         catch { self.error = "无法保存发送记录，请重试。"; return }
-        draftSendingID = next.id
+        if prompt == nil { draftSendingID = next.id }
         receipt = next; uncertain = true; operationId = next.id; eventCursor = 0; streamText = [:]; observedTerminal = nil
         operation = nil; approvals = []; error = nil
         entries.append(next.entry); appendedMessageID = next.id; outbox.enqueue(next.id)

@@ -2,7 +2,11 @@ import SwiftUI
 
 struct WorkshopCommandLibraryView: View {
     @ObservedObject var client: WorkshopCommands
+    @ObservedObject var conversation: WorkshopConversation
+    @Environment(\.dismiss) private var dismiss
     @State private var editor: WorkshopSavedCommand?
+    @State private var promptEditor: WorkshopQuickPrompt?
+    @State private var confirmsCompact = false
 
     var body: some View {
         SettingsSheet(title: "快捷命令") {
@@ -10,6 +14,38 @@ struct WorkshopCommandLibraryView: View {
                 Section {
                     LabeledContent("执行电脑", value: client.agent.name)
                     LabeledContent("项目", value: client.application.name)
+                }
+                Section {
+                    Button {
+                        confirmsCompact = true
+                    } label: { Label("压缩上下文", systemImage: "arrow.down.right.and.arrow.up.left") }
+                        .disabled(!conversation.canCompact)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                } header: { Text("会话操作") } footer: {
+                    Text("会话空闲时可手动压缩上下文，保留会话历史；执行进度显示在会话中。")
+                }
+                Section {
+                    ForEach(client.prompts) { prompt in
+                        HStack {
+                            Button {
+                                Task { await conversation.sendPrompt(prompt.text) }
+                                dismiss()
+                            } label: {
+                                Label(prompt.name, systemImage: "paperplane")
+                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }
+                            .disabled(!conversation.canSendPrompt)
+                            Button { promptEditor = prompt } label: { Image(systemName: "pencil").frame(minWidth: 44, minHeight: 44) }
+                                .accessibilityLabel("编辑提示词：" + prompt.name)
+                        }
+                        .buttonStyle(.borderless)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                    }
+                    Button { promptEditor = WorkshopQuickPrompt() } label: { Label("添加快捷提示词", systemImage: "plus") }
+                } header: { Text("快捷提示词") } footer: {
+                    Text("保存在这台手机的当前项目中。点击名称直接发送到当前会话；保留输入框中的草稿。")
                 }
                 Section {
                     if client.commands.isEmpty {
@@ -76,7 +112,49 @@ struct WorkshopCommandLibraryView: View {
         .sheet(item: $editor) { editor in
             WorkshopCommandEditorView(client: client, initial: editor)
         }
+        .sheet(item: $promptEditor) { prompt in WorkshopQuickPromptEditor(client: client, initial: prompt) }
+        .alert("压缩上下文", isPresented: $confirmsCompact) {
+            Button("取消", role: .cancel) { }
+            Button("开始压缩") { Task { await conversation.compactContext() }; dismiss() }
+        } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
         .task { await client.prepare() }
+    }
+}
+
+private struct WorkshopQuickPromptEditor: View {
+    @ObservedObject var client: WorkshopCommands
+    let initial: WorkshopQuickPrompt
+    @State private var draft: WorkshopQuickPrompt
+    @State private var error: String?
+    @State private var confirmsDelete = false
+    @Environment(\.dismiss) private var dismiss
+    init(client: WorkshopCommands, initial: WorkshopQuickPrompt) {
+        self.client = client; self.initial = initial; _draft = State(initialValue: initial)
+    }
+    var body: some View {
+        SettingsSheet(title: "快捷提示词", hasChanges: draft != initial, saveEnabled: draft.valid, onSave: {
+            do { try client.savePrompt(draft); dismiss() } catch { self.error = error.localizedDescription }
+        }) {
+            Form {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("名称").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("例如检查代码", text: $draft.name).accessibilityLabel("提示词名称")
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("提示词内容").font(.subheadline).foregroundStyle(.secondary)
+                        TextEditor(text: $draft.text).frame(minHeight: 160).accessibilityLabel("提示词内容")
+                    }
+                }
+                if client.prompts.contains(where: { $0.id == initial.id }) {
+                    Section { HakoDeleteButton(title: "删除提示词") { confirmsDelete = true }.listRowBackground(Color.clear) }
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+            }
+        }
+        .hakoDeleteConfirmation(Text("删除这条快捷提示词？"), isPresented: $confirmsDelete, confirm: {
+            do { try client.deletePrompt(initial.id); dismiss() } catch { self.error = error.localizedDescription }
+        })
     }
 }
 

@@ -25,7 +25,7 @@ internal sealed class GitHubAgentUpdates(string repository, string cache, HttpMe
         var client = handler is null ? new HttpClient() : new HttpClient(handler);
         client.Timeout = TimeSpan.FromMinutes(5);
         client.MaxResponseContentBufferSize = 2 * 1024 * 1024;
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Hako-Agent-Guardian/1.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Kage-Agent-Guardian/1.0");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return client;
     }
@@ -43,7 +43,7 @@ internal sealed class GitHubAgentUpdates(string repository, string cache, HttpMe
             {
                 var name = asset.GetProperty("name").GetString();
                 if (name == "agent-update.json") manifestUrl = asset.GetProperty("browser_download_url").GetString();
-                if (name == "Hako.exe") executableUrl = asset.GetProperty("browser_download_url").GetString();
+                if (name == "Kage.exe") executableUrl = asset.GetProperty("browser_download_url").GetString();
             }
             if (manifestUrl is null || executableUrl is null) continue;
             ValidateAsset(manifestUrl, tag); ValidateAsset(executableUrl, tag);

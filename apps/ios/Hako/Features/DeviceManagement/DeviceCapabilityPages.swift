@@ -78,7 +78,9 @@ struct DeviceCapabilityPages<Overview: View, Content: View, Terminal: View>: Vie
                     if let selected {
                         Section {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text(selected.pageTitle).font(.headline).accessibilityAddTraits(.isHeader)
+                                if !selected.hasTelephonyHeading {
+                                    Text(selected.pageTitle).font(.headline).accessibilityAddTraits(.isHeader)
+                                }
                                 content(selected)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -268,8 +270,20 @@ private extension DeviceCardOrder {
 }
 
 private extension ConsoleAgentCapability {
+    var hasTelephonyHeading: Bool {
+        version == 1 && [AndroidDeviceCommand.messages, AndroidDeviceCommand.send,
+            AndroidDeviceCommand.calls, AndroidDeviceCommand.call].contains(name)
+    }
     var pageTitle: String {
         switch (name, version) {
+        case (AndroidDeviceCommand.status, 1): "设备状态"
+        case (AndroidDeviceCommand.storage, 1): "存储空间"
+        case (AndroidDeviceCommand.battery, 1): "电池信息"
+        case (AndroidDeviceCommand.wifi, 1): "Wi-Fi 信息"
+        case (AndroidDeviceCommand.sims, 1): "SIM 卡"
+        case (AndroidDeviceCommand.messages, 1), (AndroidDeviceCommand.send, 1): "短信"
+        case (AndroidDeviceCommand.calls, 1), (AndroidDeviceCommand.call, 1): "通话"
+        case (AndroidDeviceCommand.operation, 1): "操作结果查询"
         case ("query.system.metrics", 1): "系统指标"
         case (DeviceProcessCommand.status, 1): "进程占用"
         case ("query.codex.usage", 1): "Codex 活动"

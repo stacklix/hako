@@ -6,6 +6,7 @@ import Combine
     private let authentication: any AuthenticatedServerAccess
     private let socket: AgentRequestSocket
     private let defaults: UserDefaults
+    private let lan = AgentLanTransport()
     private var subscription: AnyCancellable?
     private struct State {
         var context = ""
@@ -13,6 +14,7 @@ import Combine
         var deviceData: [String: ConsoleDeviceData] = [:]
         var httpChecks: [String: ConsoleHTTPCheckState] = [:]
         var message: String?
+        var routes: [String: String] = [:]
     }
     @Published private var state = State()
     @Published private var working = false
@@ -23,7 +25,11 @@ import Combine
         self.socket = AgentRequestSocket(authentication: authentication, logSource: .devices)
         subscription = authentication.changes.sink { [weak self] _ in
             self?.objectWillChange.send()
-            Task { @MainActor [weak self] in self?.socket.resetIfContextChanged() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.socket.resetIfContextChanged()
+                self.lan.reset(context: self.requestContext)
+            }
         }
     }
     var serverURL: String { authentication.serverURL }
@@ -45,6 +51,9 @@ import Combine
         set { prepareContext(); state.inventory.agents = newValue; inventoryStorage.save(state.inventory) }
     }
     var hasFetchedAgents: Bool { current.inventory.hasFetched }
+    func transportLabel(_ agent: ConsoleAgent) -> String {
+        current.routes[agent.id].map { "局域网直连 · " + $0 } ?? "服务器转发"
+    }
     func selectedAgent(id: String?) -> ConsoleAgent? { current.inventory.selectedAgent(id: id) }
     private func markOffline(agentID: String? = nil) {
         prepareContext()
@@ -82,6 +91,8 @@ import Combine
             case "agent_timeout": text = "设备响应超时，动作可能仍在执行，请先确认结果。"
             case "unsupported_method": text = "设备不支持此动作，请刷新设备列表。"
             case "duplicate_agent": text = "此公钥已登记，请刷新设备列表查看对应设备。"
+            case "agent_not_found": text = "此设备已被移除，请关闭编辑页并刷新设备列表。"
+            case "agent_changed": text = "设备信息已在其他位置修改，请关闭编辑页后重新打开。"
             case "device_id_unavailable": text = "服务器暂时无法分配设备 ID，请稍后重试。"
             case "invalid_public_key_or_device": text = "设备名称或 RSA 公钥无效，请使用 Agent 导出的 RSA 2048–8192 位公钥，并确认服务端已更新。"
             case "agent_busy": text = "设备繁忙，请稍后重试。"
@@ -162,6 +173,49 @@ import Combine
         }
     }
 
+    func agentDetails(agentID: String) async throws -> ConsoleAgentDetails {
+        let details = try JSONDecoder().decode(ConsoleAgentDetails.self,
+            from: await authorized("detail", agentID: agentID))
+        guard details.id == agentID else { throw CocoaError(.coderReadCorrupt) }
+        return details
+    }
+
+    func updateAgent(_ original: ConsoleAgentDetails, name: String, publicKeyPEM: String) async throws {
+        guard !busy else { throw HakoError(message: "正在处理其他请求，请稍后重试。") }
+        guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
+        let body = try original.updateBody(name: name, publicKeyPEM: publicKeyPEM)
+        let context = requestContext
+        working = true; message = nil
+        defer { working = false }
+        let response: Data
+        do {
+            response = try await authorized("update", agentID: original.id, body: body)
+        } catch is URLError {
+            throw HakoError(message: "网络请求失败，保存结果尚未确认。请关闭并重新打开编辑页，核对信息后再操作。")
+        }
+        let saved = try JSONDecoder().decode(ConsoleAgentDetails.self, from: response)
+        guard context == requestContext, saved.id == original.id else { throw CancellationError() }
+        let keyChanged = saved.publicKeyPEM != original.publicKeyPEM
+        if let index = agents.firstIndex(where: { $0.id == saved.id }) {
+            let previous = agents[index]
+            agents[index] = ConsoleAgent(dataQueryEnabled: previous.dataQueryEnabled,
+                id: previous.id, name: saved.name, online: keyChanged ? false : previous.online,
+                lastSeen: previous.lastSeen, capabilities: keyChanged ? nil : previous.capabilities)
+        }
+        if keyChanged {
+            deviceData[original.id] = nil
+            httpChecks[original.id] = nil
+            lan.reset(context: requestContext)
+        }
+        do {
+            try await fetchAgentsInternal()
+            message = keyChanged ? "设备信息已保存，请使用对应私钥重新连接 Agent。" : "设备信息已保存。"
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            message = "设备信息已保存，列表刷新失败，请稍后刷新。"
+        }
+    }
+
     private func fetchAgentsInternal() async throws {
         struct List: Decodable { let agents: [ConsoleAgent] }
         let agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents
@@ -187,7 +241,8 @@ import Combine
                 // Initial cards use independent, parameter-free queries. Git and
                 // other on-demand pages own their requests and are not scanned here.
                 let initial = Set(["query.system.metrics", DeviceProcessCommand.status,
-                                   "query.network.listeners", "query.codex.usage"])
+                                   "query.network.listeners", "query.codex.usage", "query.device.status", "query.device.storage",
+                                   "query.device.battery", "query.network.wifi", "query.telephony.sims"])
                 for capability in capabilities where initial.contains(capability.name) {
                     group.addTask {
                         await self.refreshQuery(agent, capability: capability, context: context, revisions: liveUpdates)
@@ -218,28 +273,27 @@ import Combine
         value.mergeQuery(item, method: capability.name, since: revisions)
         deviceData[agent.id] = value
     }
+    func refreshCapability(_ agent: ConsoleAgent, capability: ConsoleAgentCapability) async {
+        guard capability.name.hasPrefix("query."), authenticated, !logoutPending else { return }
+        await refreshQuery(agent, capability: capability, context: requestContext,
+                           revisions: deviceData[agent.id]?.liveUpdates ?? [:])
+    }
 
     private func refreshAggregate(_ agent: ConsoleAgent, context: String, liveUpdates: [String: UUID]) async {
         guard context == requestContext, !Task.isCancelled else { return }
         do {
-            let data = try await authorized("request", agentID: agent.id,
-                                            body: ["method": "query.all", "version": 1, "params": [String: Any]()])
+            let result = try await invokeAgent(agent, method: "query.all", version: 1, as: ConsoleQueryResult.self)
             guard context == requestContext else { return }
             if let index = agents.firstIndex(where: { $0.id == agent.id }) {
                 let old = agents[index]
                 agents[index] = ConsoleAgent(id: old.id, name: old.name, online: true,
                                             lastSeen: old.lastSeen, capabilities: old.capabilities)
             }
-            let reply = try JSONDecoder().decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: data)
-            switch reply {
-            case .failure(let error): throw error
-            case .result(let result):
-                if var state = deviceData[agent.id] {
-                    state.mergeQueries(result.data, since: liveUpdates)
-                    deviceData[agent.id] = state
-                }
-                deviceData[agent.id]?.loaded = true
+            if var state = deviceData[agent.id] {
+                state.mergeQueries(result.data, since: liveUpdates)
+                deviceData[agent.id] = state
             }
+            deviceData[agent.id]?.loaded = true
         } catch is CancellationError { }
         catch { if context == requestContext { deviceData[agent.id]?.error = DeviceMonitorFailure.message(for: error) } }
     }
@@ -249,12 +303,26 @@ import Combine
             let method: String
         }
         let context = requestContext
+        if agent.capabilities?.contains(where: { $0.name == AgentLanDescriptor.command && $0.version == 1 }) == true {
+            // Poll state over LAN when available. History remains on-demand and is never aggregated.
+            if let data = try await lanData(agent, method: "query.all", version: 1, params: [:]) {
+                try mergeLanState(data, agent: agent, context: context)
+                onSubscribed()
+                while true {
+                    try await Task.sleep(for: .seconds(2))
+                    guard context == requestContext else { throw CancellationError() }
+                    guard let data = try await lanData(agent, method: "query.all", version: 1, params: [:]) else { break }
+                    try mergeLanState(data, agent: agent, context: context)
+                }
+            }
+        }
         let (socket, hello) = try await authentication.openWebSocket(AgentRequestSocket.path + "/live/" + agent.id, logSource: .devices)
         defer { socket.cancel(with: .goingAway, reason: nil) }
         try AgentSocketFrame.requireReady(hello)
         let decoder = JSONDecoder()
         try await withTaskCancellationHandler {
             var subscribed = false
+            var nextLanProbe = Date().addingTimeInterval(15)
             while true {
                 let data = try await socket.receiveData()
                 try Task.checkCancellation()
@@ -273,6 +341,14 @@ import Combine
                     state.liveUpdates[update.method] = UUID()
                     state.loaded = true
                     deviceData[agent.id] = state
+                    if Date() >= nextLanProbe {
+                        nextLanProbe = Date().addingTimeInterval(15)
+                        if let local = try await lanData(agent, method: "query.all", version: 1, params: [:]) {
+                            try mergeLanState(local, agent: agent, context: context)
+                            // The view restarts its live loop and selects LAN polling.
+                            return
+                        }
+                    }
                 case "error":
                     _ = try frame.replyData()
                     throw CocoaError(.coderReadCorrupt)
@@ -319,11 +395,43 @@ import Combine
     }
     func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }
-        let data = try await authorized("request", agentID: agent.id, body: ["method": method, "version": version, "params": params])
+        let context = requestContext
+        let data: Data
+        if let direct = try await lanData(agent, method: method, version: version, params: params) { data = direct }
+        else { data = try await authorized("request", agentID: agent.id, body: ["method": method, "version": version, "params": params]) }
+        guard context == requestContext else { throw CancellationError() }
         let reply = try JSONDecoder().decode(ConsoleAgentReply<Result>.self, from: data)
         switch reply {
         case .failure(let error): throw error
         case .result(let result): return result
+        }
+    }
+    private func lanData(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any]) async throws -> Data? {
+        guard authenticated, !logoutPending, method.hasPrefix("query."), method != AgentLanDescriptor.command,
+              agent.capabilities?.contains(where: { $0.name == AgentLanDescriptor.command && $0.version == 1 }) == true else { return nil }
+        let context = requestContext
+        let data = try await lan.invoke(agentID: agent.id, context: context, method: method, version: version, params: params) { [weak self] in
+            guard let self, self.requestContext == context else { throw CancellationError() }
+            return try await self.authorized("request", agentID: agent.id,
+                body: ["method": AgentLanDescriptor.command, "version": 1, "params": [String: Any]()])
+        }
+        guard context == requestContext else { throw CancellationError() }
+        prepareContext(); state.routes = lan.routes
+        return data
+    }
+    private func mergeLanState(_ data: Data, agent: ConsoleAgent, context: String) throws {
+        guard context == requestContext else { throw CancellationError() }
+        let reply = try JSONDecoder().decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: data)
+        switch reply {
+        case .failure(let error): throw error
+        case .result(let result):
+            var value = deviceData[agent.id] ?? ConsoleDeviceData()
+            for (method, entry) in result.data where method.hasPrefix("query.") {
+                value.entries[method] = entry
+                value.liveUpdates[method] = UUID()
+            }
+            value.loaded = true
+            deviceData[agent.id] = value
         }
     }
 }

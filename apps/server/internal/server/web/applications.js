@@ -39,11 +39,11 @@ async function refreshApplications() {
         $('application-error').hidden = true; $('application-dialog').showModal();
       }));
       buttons.append(action(app.enabled ? '停用' : '启用', async () => {
-        if (app.enabled && !confirm('停用「' + app.name + '」？该应用的扫码请求和 Hako 登录授权将失效。')) return;
+        if (app.enabled && !confirm('停用「' + app.name + '」？该应用的扫码请求和 Sora 登录授权将失效。')) return;
         await api('applications/' + encodeURIComponent(app.id), 'PATCH', { enabled: !app.enabled });
         await refreshApplications(); notice(app.enabled ? '应用已停用。' : '应用已启用，旧授权不会恢复。', true);
       }), action('轮换 SK', async () => {
-        if (!confirm('为「' + app.name + '」生成新 SK？旧 SK、待登录请求和已签发的 Hako 授权将失效，请同步更新应用配置。')) return;
+        if (!confirm('为「' + app.name + '」生成新 SK？旧 SK、待登录请求和已签发的 Sora 授权将失效，请同步更新应用配置。')) return;
         const result = await api('applications/' + encodeURIComponent(app.id) + '/rotate', 'POST', {});
         if (!csrf) return;
         showApplicationSecret(result); notice('SK 已轮换，请更新对应应用的配置并重启该应用。', true);

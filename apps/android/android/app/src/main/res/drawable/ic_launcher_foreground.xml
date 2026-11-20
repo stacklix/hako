@@ -5,11 +5,14 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M27,28 L81,28 C87.1,28 92,32.9 92,39 L92,61 C92,67.1 87.1,72 81,72 L59,72 L43,84 L47,72 L27,72 C20.9,72 16,67.1 16,61 L16,39 C16,32.9 20.9,28 27,28 Z" />
-
-    <path
-        android:fillColor="#0F766E"
-        android:pathData="M37,46 L58,46 L58,38 L76,54 L58,70 L58,62 L37,62 C32.6,62 29,58.4 29,54 C29,49.6 32.6,46 37,46 Z" />
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="0.9" android:scaleY="0.9">
+        <path
+            android:fillColor="#5EEAD4"
+            android:fillType="evenOdd"
+            android:pathData="M28,59 C37,59 38,68 47,68 C56,68 57,51 66,51 C74,51 76,59 80,59 L80,69 C72,69 71,61 66,61 C61,61 59,78 47,78 C35,78 35,69 28,69 Z" />
+        <path
+            android:fillColor="#F0FDFA"
+            android:fillType="evenOdd"
+            android:pathData="M28,37 C37,37 38,46 47,46 C56,46 57,29 66,29 C74,29 76,37 80,37 L80,47 C72,47 71,39 66,39 C61,39 59,56 47,56 C35,56 35,47 28,47 Z" />
+    </group>
 </vector>

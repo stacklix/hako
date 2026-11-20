@@ -13,7 +13,7 @@ internal static class GuardianHandoff
 {
     internal sealed record Ready(int ProcessId, string Nonce, DateTimeOffset ReadyAt);
     internal static string ExecutableFor(string canonical, string hash) =>
-        Path.Combine(Path.GetDirectoryName(canonical)!, "warm", hash, "Hako.Guardian.exe");
+        Path.Combine(Path.GetDirectoryName(canonical)!, "warm", hash, "Kage.Guardian.exe");
     internal static string PipeFor(string profile, string nonce) => LocalRpc.GuardianPipe(profile) + ".handoff." + nonce;
     internal static string ReadyPath(string profile) => AgentGuardianControl.FileFor(profile, "standby.json");
 

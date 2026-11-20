@@ -48,7 +48,7 @@ export function App() {
   }, []);
   useEffect(() => {
     let alive = true;
-    const expired = () => { setActive(false); setError('Hako 管理会话已到期，请重新登录'); };
+    const expired = () => { setActive(false); setError('Sora 管理会话已到期，请重新登录'); };
     void useHakoSession().then(() => { if (alive) setActive(true); }).catch(expired);
     window.addEventListener('unauthorized', expired);
     return () => { alive = false; window.removeEventListener('unauthorized', expired); };

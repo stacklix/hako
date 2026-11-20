@@ -44,7 +44,7 @@ public sealed record AgentSettings(string Url = "", string Username = "", string
 
 public sealed class AgentSettingsStore
 {
-    public static string DefaultDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hako");
+    public static string DefaultDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kage");
     public string DirectoryPath { get; }
     public string SettingsPath => Path.Combine(DirectoryPath, "agent.dat");
     public AgentSettingsStore(string? directory = null) => DirectoryPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory ?? DefaultDirectory));

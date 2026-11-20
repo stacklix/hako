@@ -111,7 +111,7 @@ struct SettingsView: View {
             Section("网络") {
                 LabeledContent("网络检测", value: network.isLocal ? "当前在局域网" : "当前在外网或未识别 Wi-Fi")
                 NavigationLink { NetworkSettingsView() } label: {
-                    LabeledContent("网络配置", value: network.currentSSID ?? "Wi-Fi 与局域网地址")
+                    LabeledContent("网络配置", value: network.currentSSID ?? "Wi-Fi 与网络环境")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }

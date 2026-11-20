@@ -1,18 +1,18 @@
 # AGENTS.md
 
-本文件给在 Doppel 仓库中工作的编码代理使用。请以当前代码为准，保持修改小而清晰，优先维护 Android 原生后台能力与 Flutter UI 展示之间的边界。
+本文件给在 Nami 仓库中工作的编码代理使用。请以当前代码为准，保持修改小而清晰，优先维护 Android 原生后台能力与 Flutter UI 展示之间的边界。
 
 ## 项目现状
 
-Doppel 是一个个人 Android/Flutter 应用，用于接收短信和来电事件，并按配置转发到短信、邮箱或 HTTP 目标。
+Nami 是一个个人 Android/Flutter 应用，用于接收短信和来电事件，并按配置转发到短信、邮箱或 HTTP 目标。
 
-- 应用名：`Doppel`
+- 应用名：`Nami`
 - Android application id / namespace：`me.stackli.doppel`
 - Flutter 入口：`lib/main.dart`
 - Flutter 应用壳：`lib/app.dart`
 - Flutter 页面：`lib/pages/overview_page.dart`、`forwarding_page.dart`、`commands_page.dart`、`logs_page.dart`、`settings_page.dart`
 - Flutter 数据模型：`lib/models/app_models.dart`
-- Flutter 平台通道封装：`lib/platform/doppel_platform.dart`
+- Flutter 平台通道封装：`lib/platform/nami_platform.dart`
 - Android 原生代码：`android/app/src/main/kotlin/me/stackli/doppel`
 - 平台通道名：`doppel/platform`
 
@@ -28,12 +28,12 @@ Doppel 是一个个人 Android/Flutter 应用，用于接收短信和来电事�
 
 ## 验证命令
 
-使用仓库指定的本地 Flutter SDK：
+使用本机已配置且满足 `pubspec.yaml` 的 Flutter SDK：
 
 ```bash
-/Users/liqiao/sdk/flutter/bin/flutter analyze
-/Users/liqiao/sdk/flutter/bin/flutter test test/widget_test.dart
-/Users/liqiao/sdk/flutter/bin/flutter build apk --debug
+flutter analyze
+flutter test
+flutter build apk --debug
 ```
 
 如只修改文档，可以不运行 Flutter 验证，但最终说明中要说清楚。除非用户明确要求，不运行 `adb install`。
@@ -42,8 +42,8 @@ Doppel 是一个个人 Android/Flutter 应用，用于接收短信和来电事�
 
 Flutter/Dart 侧负责 UI、展示状态和配置表单：
 
-- `DoppelApp` / `DoppelHome` 维护页面导航、权限提示、快照刷新和指标汇总。
-- `DoppelPlatform` 只封装 `MethodChannel` 调用和 `snapshotChanged` 回调。
+- `NamiApp` / `NamiHome` 维护页面导航、权限提示、快照刷新和指标汇总。
+- `NamiPlatform` 只封装 `MethodChannel` 调用和 `snapshotChanged` 回调。
 - `app_models.dart` 定义配置、权限、SIM 卡、日志事件等 UI 可消费模型。
 - 页面和 widget 负责配置编辑、日志展示、长内容查看、表单校验和用户文案。
 
@@ -107,7 +107,7 @@ Android/Kotlin 侧负责系统集成和后台业务：
 
 - 当前 UI 使用 Material 主题，主色为 `0xFF0F766E`，卡片圆角为 8。
 - 页面逻辑应尽量留在 `lib/pages`，可复用控件放在 `lib/widgets`。
-- 不要把平台通道调用散落到页面中，优先通过 `DoppelPlatform`。
+- 不要把平台通道调用散落到页面中，优先通过 `NamiPlatform`。
 - 面向用户的中文文案保持简洁，错误提示要说明用户能采取的动作。
 - 日志和详情展示要兼顾长短信内容，避免单行溢出或截断后不可查看。
 
@@ -117,3 +117,13 @@ Android/Kotlin 侧负责系统集成和后台业务：
 - Android 侧当前使用 `androidx.work:work-runtime-ktx`。
 - `android/app/build.gradle.kts` 中如发现重复依赖块，修改时要小心验证 Gradle 行为。
 - 不要提交本地机器专属配置、签名文件、密钥或临时构建产物。
+
+## Hako Android Agent
+
+- Agent 原生代码在 `android/app/src/main/kotlin/me/stackli/doppel/agent`，配置通过 `NamiPlatform` 和 `AgentSettingsPage` 管理。
+- 独立 `:agent` 守护进程只处理连接与认证；`query` / `action` 经 App 私有 Binder 交给主进程，不在守护进程直接执行。跨进程配置和状态使用带独占锁的原子文件，不使用 SharedPreferences 缓存通信。
+- `query.all` 和实时订阅只能读取当前状态，不聚合短信、通话记录、操作记录等历史数据。历史查询独立分页。
+- 服务端仅做鉴权和通用转发，不为 Android 命令新增服务端白名单、参数解释或专用业务路由。
+- 私钥保存在 Android Keystore，不返回 Flutter，不写日志或导出。远程操作默认关闭。
+- 发短信、拨号先持久化 `requestId`，相同操作不得重复执行；提交、发送回执、实际接通或送达须如实区分。
+- 原生协议与连接测试：在 `android` 目录运行 `./gradlew testDebugUnitTest`，Windows 使用 `gradlew.bat`。

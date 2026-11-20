@@ -16,16 +16,16 @@ internal static class Program
             throw new Exception("Agent rejected the current compatibility line");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.2.4","minimumAgentVersion":"1.4.0"}"""u8, "1.4.0")?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired server compatibility line");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.4.0"}"""u8, "1.1.3")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.4.0"}"""u8, "1.1.3")?.EndsWith("请升级 Kage。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted the retired Agent compatibility line");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0") is not null)
             throw new Exception("Agent rejected matching version floors");
         if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.10","minimumAgentVersion":"1.0.9"}"""u8, "1.0.10") is not null)
             throw new Exception("Agent did not compare compatible patch versions numerically");
-        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.0.2"}"""u8, "1.0.1")?.EndsWith("请升级 Kage。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a patch version below the required floor");
         var outdatedAgent = ServerCompatibility.WarningFor("""{"serverVersion":"0.8.0","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
-        if (outdatedAgent?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (outdatedAgent?.EndsWith("请升级 Kage。", StringComparison.Ordinal) != true)
             throw new Exception("Agent did not warn about its own version floor");
         var outdatedServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
         if (outdatedServer?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
@@ -34,7 +34,7 @@ internal static class Program
         if (newerAgent?.EndsWith("请升级 服务端。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer minor version than the server supports");
         var newerServer = ServerCompatibility.WarningFor("""{"serverVersion":"0.9.0","minimumAgentVersion":"1.0.0"}"""u8, "1.0.0");
-        if (newerServer?.EndsWith("请升级 Hako Agent。", StringComparison.Ordinal) != true)
+        if (newerServer?.EndsWith("请升级 Kage。", StringComparison.Ordinal) != true)
             throw new Exception("Agent accepted a newer server minor version");
         var both = ServerCompatibility.WarningFor("""{"serverVersion":"0.0.9","minimumAgentVersion":"1.1.0"}"""u8, "1.0.0");
         if (both != outdatedAgent + "\n\n" + outdatedServer)
@@ -98,6 +98,9 @@ internal static class Program
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "binary-uploads") { await BinaryUploadChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "agent-direct") { await AgentDirectChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "agent-lan") { await AgentLanChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "capabilities") { await CapabilityChecks.RunAsync(); return 0; }
+            if (args.Length == 2 && args[0] == "agent-lan-live") { await AgentLanChecks.RunInstalledAsync(args[1]); return 0; }
             if (args.Length == 2 && args[0] == "code-workshop-local")
             {
                 await using var workshop = new CodeWorkshop(args[1]);
@@ -239,6 +242,7 @@ internal static class Program
             catch (ArgumentException) { }
             var dispatcher = new AgentDispatcher(new SystemMetrics());
             if (!dispatcher.Capabilities.SequenceEqual(new[] {
+                new AgentCapability(AgentLanEndpoint.Command, 1),
                 new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
                 new AgentCapability("query.network.listeners", 1), new AgentCapability(ProcessMetrics.Command, 1),
                 new AgentCapability("action.network.http.check", 1),

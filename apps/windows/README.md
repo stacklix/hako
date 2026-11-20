@@ -1,19 +1,19 @@
-# Hako Windows
+# Kage Windows Agent
 
-Hako 工具集合的 Windows 应用，使用 C# / WPF / .NET 10。主应用管理工具入口、服务器配置、托盘、长连接和请求分发；第一个子应用为「设备监控」。
+Kage 是 Hako 的 Windows Agent，使用 C# / WPF / .NET 10，管理工具入口、服务器配置、托盘、长连接和请求分发。Android Agent 名称为 Doppel。可执行文件、守护进程、安装入口、配置目录、CLI、窗口和托盘统一使用 Kage 名称。
 
 ## 使用
 
 局域网代码工坊也可独立使用：在「服务器设置」填写「局域网直连端口」，点击「保存局域网配置」。`0` 表示关闭，启用后无需服务器登录或密钥认证。iOS 在主应用「设置 → 网络 → 网络配置」登记当前内网 Wi-Fi，再填写代码工坊的电脑 IP 与相同端口。匹配 Wi-Fi 时直连，其他网络沿用服务器连接。
 
-CLI 配置：`Hako.exe config set --direct-port <端口> --json`；查看 `Hako.exe status --json` 中的 `direct.listening` 和 `direct.port`。直连仅接受本机与本地网段客户端，当前仅提供代码工坊功能，和工坊云端连接共享正在执行的任务。设备监控与代码工坊使用独立协议和连接。
+CLI 配置：`Kage.exe config set --direct-port <端口> --json`；查看 `Kage.exe status --json` 中的 `direct.listening` 和 `direct.port`。直连仅接受本机与本地网段客户端。代码工坊与加密设备查询复用监听端口，使用独立协议。设备查询通过 `query.network.lan` 上报当前地址及会话凭据，iOS 在同一 Wi-Fi 子网优先直连，失败时回到服务器转发。详细协议见 [Agent 局域网数据查询](../../docs/agent-lan.md)。
 
 1. 服务器设置填写 HTTPS 根地址和唯一账号。
 2. 点击「生成公私钥对」生成 RSA 3072 位密钥，也可导入至少 2048 位的未加密 PKCS#8 / PKCS#1 PEM 私钥。密钥立即加密保存，无需先填写或连接服务器。
 3. 导出公钥，在服务端 `/admin/` 管理页登记 Agent，即时生效。
 4. 保存并连接。主应用使用 WSS 和一次性 RSA-PSS 挑战完成认证，连接成功后等待查询。
 
-私钥及配置通过当前 Windows 用户的 DPAPI 加密保存在 `%LOCALAPPDATA%/Hako/agent.dat`，私钥不上传。身份验证失败暂停重连，修改配置或点击“重新连接”后重试；网络中断采用退避重连。
+私钥及配置通过当前 Windows 用户的 DPAPI 加密保存在 `%LOCALAPPDATA%/Kage/agent.dat`，私钥不上传。身份验证失败暂停重连，修改配置或点击“重新连接”后重试；网络中断采用退避重连。
 
 版本不兼容时在左侧菜单下方显示原因，不弹出对话框。设备监控和代码工坊的云端连接暂停，每 30 秒重新检查服务端版本；版本兼容后自动连接并移除提示。版本检查请求失败时按网络错误重试。等待期间本机界面、CLI 和已配置的局域网功能继续可用，关闭或更新 Agent 无需处理版本提示。
 
@@ -23,9 +23,9 @@ CLI 配置：`Hako.exe config set --direct-port <端口> --json`；查看 `Hako.
 
 关闭窗口后保留系统托盘和长连接，通过托盘“退出”结束进程。不安装 Windows Service，默认不启用自启动。
 
-「服务器设置 → 启动设置」提供「登录 Windows 后自动启动」开关，切换后立即生效，无需保存服务器配置或管理员权限。开启后在当前用户的启动文件夹创建 `Hako Agent.lnk`，登录后在托盘后台运行并自动连接；关闭仅删除对应快捷方式，不退出当前 Agent。开关进入设置页时读取快捷方式的目标与参数，设置失败恢复实际状态并显示错误。独立 `--data-dir` 配置使用各自的启动项，互不影响。移动 EXE 后，在新位置重新开启以更新快捷方式。
+「服务器设置 → 启动设置」提供「登录 Windows 后自动启动」开关，切换后立即生效，无需保存服务器配置或管理员权限。开启后在当前用户的启动文件夹创建 `Kage Agent.lnk`，登录后在托盘后台运行并自动连接；关闭仅删除对应快捷方式，不退出当前 Agent。开关进入设置页时读取快捷方式的目标与参数，设置失败恢复实际状态并显示错误。独立 `--data-dir` 配置使用各自的启动项，互不影响。移动 EXE 后，在新位置重新开启以更新快捷方式。
 
-EXE、窗口与系统托盘统一使用由 iOS `AppIcon.appiconset/icon.png` 转换的 Hako 图标（`src/Hako/Assets/Hako.ico`，包含 16–256 像素尺寸）。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
+EXE、窗口与系统托盘统一使用独立的 Kage 图标（`src/Hako/Assets/Kage.ico`，包含 16–256 像素尺寸）；矢量源文件和导出脚本位于 `branding/`。CLI `connect` 启动的后台实例也保留托盘入口，不自动弹出主窗口。
 
 Agent 使用 WebSocket v4，在认证时上报注册动作与版本。`Core/AgentDispatcher.cs` 注册和分发主进程动作，新增动作时同步维护处理器与 `MainCapabilities`，测试核对二者一致；`GuardianDispatcher` 加入守护进程的管理能力。服务端透传 JSON 参数、结果和业务错误，无需为每个动作升级。当前注册 `query.system.metrics` v1、`query.codex.usage` v1 和 `query.network.listeners` v1（参数均为 `{}`），以及 `action.network.http.check` v1（参数 `url`），并支持 `query.all` v1 聚合常规查询。部署时同步更新服务端与客户端。
 
@@ -45,9 +45,9 @@ Python / pythonw 在端口列表中显示正在运行的脚本名或 `-m` 模块
 
 ## 更新与进程守护
 
-`scripts/install-guardian.ps1` 将已验证的发布产物部署为独立的 `Hako.Guardian.exe` 固定副本，启动独立后台进程，并将当前配置的登录启动项交给守护程序。服务器设置中的自启动开关同步管理这个启动项，避免主 Agent 与守护程序重复启动。主 Agent 更新不会覆盖正在运行的守护程序，也不会停止守护进程中的命令任务。开发验证时可用 `-NoStartup` 不登记登录启动项。
+`scripts/install-guardian.ps1` 将已验证的发布产物部署为独立的 `Kage.Guardian.exe` 固定副本，启动独立后台进程，并将当前配置的登录启动项交给守护程序。服务器设置中的自启动开关同步管理这个启动项，避免主 Agent 与守护程序重复启动。主 Agent 更新不会覆盖正在运行的守护程序，也不会停止守护进程中的命令任务。开发验证时可用 `-NoStartup` 不登记登录启动项。
 
-默认每 5 秒检查主进程，每 5 分钟检查仓库 `stacklix/hako` 的 GitHub Releases。Windows 流水线在默认分支验证通过后发布带 `windows-agent-` 前缀的独立版本，包含 `Hako.exe` 和 `agent-update.json`；不覆盖其他平台的 latest release。守护程序校验发布来源、文件大小、SHA-256 和版本，拒绝降级以及早于最近一次本机直接安装的发布。
+默认每 5 秒检查主进程，每 5 分钟检查仓库 `stacklix/hako` 的 GitHub Releases。Windows 流水线在默认分支验证通过后发布带 `windows-agent-` 前缀的独立版本，包含 `Kage.exe` 和 `agent-update.json`；不覆盖其他平台的 latest release。守护程序校验发布来源、文件大小、SHA-256 和版本，拒绝降级以及早于最近一次本机直接安装的发布。
 
 兼容更新仍由 Codex 验证后直接替换，无需等待 GitHub。只有服务端版本不兼容或无法确认时，才保留候选产物并登记到守护队列，待满足条件后安装。守护程序与本机直接安装共用 `update.lock`；替换前用候选 EXE 再次检查服务端版本，替换后回查新进程与本机接口。启动失败恢复原文件，保留备份、事务记录和被拒绝产物哈希，避免循环安装坏版本。中断的事务在守护程序重启后恢复。
 
@@ -55,7 +55,7 @@ Python / pythonw 在端口列表中显示正在运行的脚本名或 `-m` 模块
 
 主 Agent 异常退出持续 30 秒后自动拉起，连续短时退出或启动失败时逐步退避，最长 5 分钟。版本等待和网络断开不属于主进程异常退出。守护进程同时负责服务端连接、命令执行与 `admin` 管理能力；命令模块不再启动独立执行器进程。用户通过 CLI 或托盘退出时暂停拉起，手动重新打开主 Agent 后恢复守护。下载和更新检查在后台执行，不阻塞主进程检查。
 
-配置、状态和控制文件位于当前配置目录 `guardian/`，其中 `status.json` 包含守护 PID、主进程状态、更新状态和最近检查时间，`pending-update.json` 保留暂缓的本机候选版本。停止守护使用 `Hako.Guardian.exe --stop-guardian --config <配置目录>/guardian/config.json`；重新启动使用 `--start-guardian`。停止守护不会停止主 Agent。
+配置、状态和控制文件位于当前配置目录 `guardian/`，其中 `status.json` 包含守护 PID、主进程状态、更新状态和最近检查时间，`pending-update.json` 保留暂缓的本机候选版本。停止守护使用 `Kage.Guardian.exe --stop-guardian --config <配置目录>/guardian/config.json`；重新启动使用 `--start-guardian`。停止守护不会停止主 Agent。
 
 主程序与守护副本内容不一致时，主程序启动独立的临时更新工具，先用候选版本验证服务端兼容性，再按 `update.lock`、`guardian/install.lock` 的顺序等待安装互斥。工具先备份和校验文件，从不可变的版本目录启动新版待命进程，完成运行时、配置和调度器预热；此时旧版继续维持连接，新版不占用正式通信入口、命令执行器或服务端连接。确认新版就绪后，才请求旧版停止接收新命令，等待已有命令结束（仍可查询和取消），原子替换用于下次启动的守护副本，再激活已经预热的新版进程并回查 PID 和本机通信接口。预热失败保留旧进程，接管失败恢复备份。WebSocket 在接管时重新认证，因此仍可能短暂断连。更新完成后工具退出，常驻仍为主 Agent 和守护进程两个进程。`guardian/refresh.json` 记录等待、预热、排空、启动及完成状态；失败保留错误类型和备份。主程序的本机接口先就绪，避免更新器等待主程序、主程序又等待守护程序的循环等待。
 
@@ -74,33 +74,33 @@ Agent 在当前配置目录的 `logs/` 保存 `agent-lifecycle.jsonl` 和 `agent
 管理员可在 Web 后台「设备代理」为指定设备开启「线上投资数据查询」，也可在手机「设备管理 → 设置」选择设备后开启「允许查询投资账本」。权限默认关闭，持久保存，修改后下一次请求立即生效；设备离线时也可配置。Agent 不能自行开启权限。
 
 ```powershell
-Hako.exe server schema --json
-Hako.exe server query --sql "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name" --json
-Hako.exe server query --sql-file query.sql --limit 100 --offset 0 --json
+Kage.exe server schema --json
+Kage.exe server query --sql "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name" --json
+Kage.exe server query --sql-file query.sql --limit 100 --offset 0 --json
 ```
 
 CLI 直接使用当前配置中已加密保存的 Agent 密钥签名 HTTP 请求，不替换或断开现有设备连接。签名绑定服务端、账号、密钥指纹及完整查询内容，包含短时有效时间戳和一次性随机数；服务端校验权限并持久防重放。拒绝重定向，不把密钥、签名或查询内容写入诊断日志。查询仅限 `investment` 数据库，不能读取认证、通知或访问日志库。
 
 仅支持单条 SELECT/WITH，写入、PRAGMA、ATTACH 和多语句由服务端拒绝；最多 5 秒、每页 1–200 行，默认 100 行，使用 `--offset` 分页。JSON 结果含 `columns`、`rows`、`hasMore`、`clipped` 等字段，长字段可能按服务端规则截断。`server schema` 返回表结构和数据库版本。SQL 文件须使用 UTF-8，查询最多 20000 字节。需要包含此接口的新版服务端，未升级或权限未开启会返回明确错误。
 
-同一个 `Hako.exe` 支持 GUI 和 CLI。不带命令时打开窗口；CLI 复用当前用户已运行的实例，配置和连接状态与界面同步。没有实例时，查询和配置命令直接执行，`connect` 自动启动独立后台进程。
+同一个 `Kage.exe` 支持 GUI 和 CLI。不带命令时打开窗口；CLI 复用当前用户已运行的实例，配置和连接状态与界面同步。没有实例时，查询和配置命令直接执行，`connect` 自动启动独立后台进程。
 
 ```powershell
 # 总览、命令组帮助、指定命令帮助
-.\Hako.exe help | Out-String
-.\Hako.exe help key | Out-String
-.\Hako.exe config set --help | Out-String
+.\Kage.exe help | Out-String
+.\Kage.exe help key | Out-String
+.\Kage.exe config set --help | Out-String
 
 # 生成密钥、公钥导出、配置和连接
-.\Hako.exe key generate | Out-String
-.\Hako.exe key export-public --output desktop.public.pem | Out-String
-.\Hako.exe config set --url https://monitor.example.com --account owner | Out-String
+.\Kage.exe key generate | Out-String
+.\Kage.exe key export-public --output desktop.public.pem | Out-String
+.\Kage.exe config set --url https://monitor.example.com --account owner | Out-String
 # 将导出的公钥登记到服务端后执行
-.\Hako.exe connect | Out-String
-.\Hako.exe status --json | ConvertFrom-Json
-.\Hako.exe metrics --json | ConvertFrom-Json
-.\Hako.exe disconnect | Out-String
-.\Hako.exe exit | Out-String
+.\Kage.exe connect | Out-String
+.\Kage.exe status --json | ConvertFrom-Json
+.\Kage.exe metrics --json | ConvertFrom-Json
+.\Kage.exe disconnect | Out-String
+.\Kage.exe exit | Out-String
 ```
 
 `help` 的别名为 `--help`、`-h`；支持 `help config`、`help key export-public` 和各命令的 `--help`。命令总览如下：
@@ -123,7 +123,7 @@ CLI 直接使用当前配置中已加密保存的 Agent 密钥签名 HTTP 请求
 
 所有命令支持 `--json`，包含帮助和错误，格式为 `{"ok":true,"exitCode":0,"data":{...}}`；失败时包含 `error.code` 和 `error.message`。退出码为 `0` 成功、`1` 操作失败、`2` 参数错误、`3` 实例不可用、`4` 超时。超时后先查询状态再决定是否重试。
 
-这是 GUI/CLI 共用的 Windows EXE，PowerShell 脚本应通过上述管道等待完成并读取输出；需要进程退出码时可用 `Start-Process -FilePath .\Hako.exe -ArgumentList 'status','--json' -Wait -PassThru` 的 `ExitCode`。机器读取时优先使用 `--json`。
+这是 GUI/CLI 共用的 Windows EXE，PowerShell 脚本应通过上述管道等待完成并读取输出；需要进程退出码时可用 `Start-Process -FilePath .\Kage.exe -ArgumentList 'status','--json' -Wait -PassThru` 的 `ExitCode`。机器读取时优先使用 `--json`。
 
 `--data-dir <目录>` 可为任意命令选择独立配置和实例，默认仍为 `%LOCALAPPDATA%/Hako`。本机控制使用仅允许当前 Windows 用户的命名管道，不监听 TCP 端口；CLI 和运行中的应用应使用相同的用户和权限级别。
 
@@ -156,10 +156,10 @@ dotnet run --project src/Hako/Hako.csproj -c Release
 
 ```powershell
 ./scripts/publish.ps1
-./tests/cli-smoke.ps1 -Executable ../../dist/windows/Hako.exe
+./tests/cli-smoke.ps1 -Executable ../../dist/windows/Kage.exe
 ```
 
-输出统一位于仓库根目录 `dist/windows/Hako.exe`，只需复制这个 EXE，无需安装 .NET。脚本校验发布结果恰好只有一个 EXE 后再更新产物，CI 使用同一脚本。
+输出统一位于仓库根目录 `dist/windows/Kage.exe`，只需复制这个 EXE，无需安装 .NET。脚本校验发布结果恰好只有一个 EXE 后再更新产物，CI 使用同一脚本。
 
 CLI 冒烟检查使用独立配置目录，验证发布 EXE 的帮助、JSON、退出码、密钥、指标和后台/GUI 实例控制，不改动当前用户的默认配置。
 

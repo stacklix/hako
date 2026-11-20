@@ -196,7 +196,7 @@ func oidcParams(raw string, allowed string) (url.Values, error) {
 }
 func oidcError(w http.ResponseWriter, status int, code string) {
 	if status == http.StatusUnauthorized && code == "invalid_client" {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Hako OIDC"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="Sora OIDC"`)
 	}
 	respond(w, status, map[string]string{"error": code})
 }
@@ -334,18 +334,18 @@ func (s *Server) oidcBrowser(w http.ResponseWriter, r *http.Request) *adminLogin
 var oidcPageTemplate = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark"><title>使用 Hako 登录</title>
-<link rel="icon" type="image/svg+xml" href="/admin/hako-logo.svg">
+<meta name="color-scheme" content="light dark"><title>使用 Sora 登录</title>
+<link rel="icon" type="image/svg+xml" href="/admin/sora-logo.svg">
 <link rel="stylesheet" href="/oidc/consent.css"><script src="/oidc/consent.js" defer></script></head>
 <body><main class="auth-shell">
-<div class="brand"><img src="/admin/hako-logo.svg" width="28" height="28" alt=""><span>hako<span class="brand-dot">.</span></span></div>
+<div class="brand"><img src="/admin/sora-logo.svg" width="28" height="28" alt=""><span>sora<span class="brand-dot">.</span></span></div>
 <section class="auth-card" aria-labelledby="auth-title">
 <div class="auth-details">
-<p class="eyebrow">账号授权</p><h1 id="auth-title">使用 Hako 登录</h1>
+<p class="eyebrow">账号授权</p><h1 id="auth-title">使用 Sora 登录</h1>
 <p class="intro">即将登录到 <strong>{{.Name}}</strong></p>
 <div class="app-identity"><span class="app-icon" aria-hidden="true">↗</span><div><h2>{{.Name}}</h2><p class="origin-label">登记来源</p><p class="origin">{{.Origin}}</p></div></div>
 <section class="permissions" aria-labelledby="permissions-title"><h3 id="permissions-title">此应用将获取</h3>
-<ul><li><span class="permission-check" aria-hidden="true">✓</span><div>账号标识<small>用于识别你的 Hako 账号</small></div></li>
+<ul><li><span class="permission-check" aria-hidden="true">✓</span><div>账号标识<small>用于识别你的 Sora 账号</small></div></li>
 {{if .Profile}}<li><span class="permission-check" aria-hidden="true">✓</span><div>账号名称<small>用于显示你的个人资料</small></div></li>{{end}}</ul><p class="scope-note">授权范围：{{.Scope}}</p></section>
 <p class="privacy-note">请只批准你本人发起的登录。扫码或打开 Hako 后，仍需在手机上明确确认。</p>
 </div>
@@ -549,7 +549,7 @@ func (s *Server) oidcToken(w http.ResponseWriter, r *http.Request) {
 	}
 	c, ok := s.authClient(id)
 	if !ok || c.OIDC == nil || !c.OIDC.Enabled || c.OIDC.AuthMethod != method || !validLoginID(secret) || !equal(digest(secret), c.SecretHash) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="Hako OIDC"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="Sora OIDC"`)
 		oidcError(w, 401, "invalid_client")
 		return
 	}

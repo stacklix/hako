@@ -188,20 +188,20 @@ internal sealed class CommandTasks : IAsyncDisposable
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellation, timeout.Token);
         try
         {
-            using var startGate = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\Hako.Command." + state.Id);
+            using var startGate = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\Kage.Command." + state.Id);
             using var job = new CommandProcessJob(state.AllowBackgroundProcesses);
             using var process = new Process();
             var commandFile = Path.Combine(directory, "command.ps1");
             File.WriteAllText(commandFile,
-                "$gate=[Threading.EventWaitHandle]::OpenExisting('Local\\Hako.Command." + state.Id + "')\n" +
+                "$gate=[Threading.EventWaitHandle]::OpenExisting('Local\\Kage.Command." + state.Id + "')\n" +
                 "if (!$gate.WaitOne(30000)) { exit 124 }; $gate.Dispose()\n" +
                 "$ErrorActionPreference='Stop'\n$OutputEncoding=[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\n$global:LASTEXITCODE=0\n" + state.Command + "\nif (!$?) { exit 1 }; exit $global:LASTEXITCODE\n", new UTF8Encoding(false));
             var start = new ProcessStartInfo(shell) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = state.Directory,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
             foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", commandFile }) start.ArgumentList.Add(argument);
-            start.Environment["HAKO_COMMAND_EXECUTABLE"] = Environment.ProcessPath!;
-            start.Environment["HAKO_COMMAND_TASK_DIRECTORY"] = directory;
+            start.Environment["KAGE_COMMAND_EXECUTABLE"] = Environment.ProcessPath!;
+            start.Environment["KAGE_COMMAND_TASK_DIRECTORY"] = directory;
             process.StartInfo = start;
             lifetime.Token.ThrowIfCancellationRequested();
             process.Start(); process.StandardInput.Close(); job.Assign(process);

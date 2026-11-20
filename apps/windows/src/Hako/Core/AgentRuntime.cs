@@ -32,7 +32,9 @@ public sealed class AgentRuntime : IAsyncDisposable
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
         dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath);
         Connection = new GuardianConnection(store.DirectoryPath);
-        Workshop = new WorkshopService(store.DirectoryPath, Connection);
+        var lan = new AgentLanEndpoint(dispatcher);
+        dispatcher.LanSnapshot = lan.Snapshot;
+        Workshop = new WorkshopService(store.DirectoryPath, Connection, lan);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);
         dispatcher.MetricsReceived += value => MetricsReceived?.Invoke(value);
         if (running) rpc = new LocalRpcServer(LocalRpc.MainPipe(store.DirectoryPath), HandleLocalAsync);
@@ -173,7 +175,7 @@ public sealed class AgentRuntime : IAsyncDisposable
                     case "disconnect":
                         await Connection.StopAsync(); return CommandReply.Success(Status(), "已断开连接，并停止自动重试。");
                     case "exit": return CommandReply.Success(new { exiting = running }, running ? "正在退出后台实例。" : "后台实例未运行。");
-                    case "show": ShowRequested?.Invoke(); return CommandReply.Success(Status(), "已请求打开 Hako 窗口。");
+                    case "show": ShowRequested?.Invoke(); return CommandReply.Success(Status(), "已请求打开 Kage 窗口。");
                     default: throw new CliUsageException("未知命令。");
                 }
             }

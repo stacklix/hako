@@ -76,7 +76,7 @@ class RemoteControlService : Service() {
         }
         return builder
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
-            .setContentTitle("Doppel 远程控制运行中")
+            .setContentTitle("Nami 远程控制运行中")
             .setContentText("正在监听 HTTP 端口 $port")
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -100,7 +100,7 @@ class RemoteControlService : Service() {
         private const val ACTION_STOP = "me.stackli.doppel.action.REMOTE_CONTROL_STOP"
         private const val CHANNEL_ID = "doppel_remote_control"
         private const val NOTIFICATION_ID = 7318
-        private const val SERVICE_TAG = "DoppelRemoteService"
+        private const val SERVICE_TAG = "NamiRemoteService"
         @Volatile
         private var runtimeIsRunning = false
         @Volatile

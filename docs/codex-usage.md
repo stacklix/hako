@@ -1,6 +1,6 @@
 # 本机 Codex 用量采集
 
-Windows Agent 提供 `query.codex.usage` v1，参数固定为 `{}`，也加入 `query.all`。统计当前 Windows 用户在这台电脑上的 Codex 本地记录，不代表整个账号、其他电脑或云端任务的用量，也不是计费金额或套餐余额。
+Kage Windows Agent 提供 `query.codex.usage` v1，参数固定为 `{}`。该查询包含历史统计，独立按需调用，不参加当前状态的 `query.all`。统计当前 Windows 用户在这台电脑上的 Codex 本地记录，不代表整个账号、其他电脑或云端任务的用量，也不是计费金额或套餐余额。
 
 ## 请求与 token 口径
 

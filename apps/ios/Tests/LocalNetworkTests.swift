@@ -2,6 +2,12 @@ import Foundation
 
 @main struct LocalNetworkTests {
     static func main() throws {
+        let timeout = WorkshopNetworkConfiguration.connectionFailureMessage(URLError(.timedOut))
+        precondition(timeout.contains("未收到电脑") && timeout.contains("-1001"))
+        precondition(WorkshopNetworkConfiguration.connectionFailureMessage(URLError(.cannotConnectToHost)).contains("此端口"))
+        precondition(WorkshopNetworkConfiguration.connectionFailureMessage(URLError(.notConnectedToInternet)).contains("局域网权限"))
+        precondition(WorkshopNetworkConfiguration.connectionFailureMessage(WorkshopNetworkConfiguration.ConnectionError.wrongComputer)
+            == WorkshopNetworkConfiguration.ConnectionError.wrongComputer.localizedDescription)
         let endpoint = LocalNetworkEndpoint(ip: "192.168.0.10", port: 8005)!
         precondition(endpoint.url(path: "/agents")?.absoluteString == "ws://192.168.0.10:8005/agents")
         precondition(LocalNetworkEndpoint(ip: "fd12::1234", port: 8005)?.url()?.absoluteString == "ws://[fd12::1234]:8005/")
@@ -20,6 +26,30 @@ import Foundation
         let name = "hako-local-network-tests-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(try JSONEncoder().encode(configuration), forKey: AppNetworkConfigurationStore.storageKey)
+        let second = LocalNetworkEndpoint(ip: "192.168.0.20", port: 9005)!
+        try WorkshopNetworkConfiguration.save(endpoint, agentID: "A", namespace: "server-one", defaults: defaults)
+        try WorkshopNetworkConfiguration.save(second, agentID: "B", namespace: "server-one", defaults: defaults)
+        try WorkshopNetworkConfiguration.save(second, agentID: "A", namespace: "server-two", defaults: defaults)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-one", defaults: defaults) == endpoint)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "B", namespace: "server-one", defaults: defaults) == second)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-two", defaults: defaults) == second)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "unknown", namespace: "server-one", defaults: defaults) == nil,
+            "An unconfigured computer must never inherit another computer's address")
+        precondition(AppNetworkConfigurationStore.load(defaults: defaults).ssids == configuration.ssids,
+            "Subapplication address changes must preserve the host Wi-Fi list")
+        try WorkshopNetworkConfiguration.save(nil, agentID: "A", namespace: "server-one", defaults: defaults)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-one", defaults: defaults) == nil)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "B", namespace: "server-one", defaults: defaults) == second)
+        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-two", defaults: defaults) == second)
+        precondition(AppNetworkConfigurationStore.load(defaults: defaults).ssids == configuration.ssids)
+        let hello = Data(#"{"kind":"welcome","protocol":"hako.workshop/1","computerId":"A"}"#.utf8)
+        try WorkshopNetworkConfiguration.requireComputer(hello, agentID: "A")
+        do {
+            try WorkshopNetworkConfiguration.requireComputer(hello, agentID: "B")
+            preconditionFailure("A direct connection must reject the wrong computer before sending requests")
+        } catch WorkshopNetworkConfiguration.ConnectionError.wrongComputer { }
+        defaults.removeObject(forKey: AppNetworkConfigurationStore.storageKey)
         defaults.set(try JSONEncoder().encode(["Home", "家里 Wi-Fi"]), forKey: "choreUpdateWiFiSSIDs")
         defaults.set("Retired", forKey: "choreUpdateWiFiSSID")
         let migrated = AppNetworkConfigurationStore.load(defaults: defaults)

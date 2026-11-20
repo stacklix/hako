@@ -48,7 +48,7 @@ internal static class GuardianRefreshChecks
     {
         var root = Path.Combine(Path.GetTempPath(), "hako-guardian-refresh-" + Guid.NewGuid().ToString("N"));
         var profile = Path.Combine(root, "profile");
-        var target = Path.Combine(root, "install", "Hako.exe");
+        var target = Path.Combine(root, "install", "Kage.exe");
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
         File.Copy(executable, target);
         await using var server = new VersionServer();
@@ -109,7 +109,7 @@ internal static class GuardianRefreshChecks
                 || replacement.StartTime.ToUniversalTime() >= old.ExitTime.ToUniversalTime())
                 throw new Exception("The new guardian was not running and ready before the old guardian exited");
             await LocalRpc.CallAsync(LocalRpc.GuardianPipe(profile), LocalRpc.Request("status"), token);
-            if (!File.Exists(AgentGuardianControl.FileFor(profile, Path.Combine("refresh", hash, "Hako.Guardian.previous.exe"))))
+            if (!File.Exists(AgentGuardianControl.FileFor(profile, Path.Combine("refresh", hash, "Kage.Guardian.previous.exe"))))
                 throw new Exception("Guardian backup missing");
             Console.WriteLine("PASS: standby warms without taking ownership; refresh checks compatibility and update locks, confirms readiness before retirement, preserves the old image and activates the same warm process");
         }

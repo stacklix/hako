@@ -39,7 +39,11 @@ struct WorkshopConversationView: View {
     var body: some View {
         let transcript = conversation.presentation
         let artifactsByEntry = transcript.artifactsByEntry
-        let groups = transcript.groups
+        let groups = transcript.groups.compactMap { group -> WorkshopEntryGroup? in
+            var group = group
+            group.entries.removeAll { $0.kind == "notice" && $0.id == conversation.operation?.unconfirmedNoticeID }
+            return group.entries.isEmpty ? nil : group
+        }
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if conversation.historyCursor != nil {
@@ -82,10 +86,10 @@ struct WorkshopConversationView: View {
                 ForEach(conversation.approvals) { approval in
                     WorkshopApprovalView(approval: approval, conversation: conversation)
                 }
-                if let operation = conversation.operation {
+                if let operation = conversation.operation, !operation.resultUnconfirmed {
                     WorkshopOperationStatus(operation: operation)
                 }
-                if let error = conversation.error {
+                if let error = conversation.presentedError {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(error).font(.footnote).textSelection(.enabled)
                         Button(conversation.synchronizing ? "正在重新同步…" : "重新同步会话与任务状态") { Task { await conversation.checkResult() } }
@@ -243,7 +247,7 @@ struct WorkshopConversationView: View {
             }
         } message: { Text("请在系统设置中允许 Hako 使用相机，以拍照添加图片。") }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
-        .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands) }
+        .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands, conversation: conversation) }
         .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
         .task(id: commands.observationID) { await commands.observe() }
         .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
@@ -361,7 +365,7 @@ struct WorkshopConversationView: View {
             WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
                 agentID: conversation.agent.id, scope: conversation.scope,
                 verified: conversation.connectionVerified,
-                needsRecovery: conversation.connectionIssue != nil || conversation.uncertain)
+                needsRecovery: conversation.needsConnectionRecovery)
             Spacer()
             if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
@@ -480,7 +484,7 @@ private struct WorkshopProjectConnectionLabel: View {
     private var statusColor: Color {
         switch state {
         case .connected: connectedColor
-        case .reconnecting: .orange
+        case .reconnecting: HakoStyle.adaptive(0xa87900, 0xf5cf58)
         default: HakoStyle.muted
         }
     }
@@ -506,19 +510,19 @@ private struct WorkshopProjectConnectionLabel: View {
     private var label: some View { Label(name, systemImage: "folder") }
 }
 
-// Transient connection issues share the composer's lightweight status area.
+// Connection issues and unconfirmed outcomes share the composer's status area.
 private struct WorkshopSynchronizationHint: View {
     @ObservedObject var conversation: WorkshopConversation
 
     var body: some View {
-        if let issue = conversation.connectionIssue, conversation.error == nil {
+        if let hint = conversation.synchronizationHint, conversation.presentedError == nil {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Label("会话暂未同步，自动重试中", systemImage: "arrow.triangle.2.circlepath")
+                    Label(hint, systemImage: "arrow.triangle.2.circlepath")
                         .foregroundStyle(HakoStyle.muted)
-                        .accessibilityHint(issue)
+                        .accessibilityHint(conversation.connectionIssue ?? conversation.operation?.message ?? "重新同步以核对本轮执行结果，此消息不会自动重发。")
                     Spacer(minLength: 0)
-                    Button(conversation.synchronizing ? "同步中…" : "重试") {
+                    Button(conversation.synchronizing ? "同步中…" : "重新同步") {
                         Task { await conversation.checkResult() }
                     }
                     .foregroundStyle(HakoStyle.link)
@@ -561,7 +565,7 @@ private struct WorkshopComposerView: View {
             if !conversation.photos.isEmpty { WorkshopComposerAttachments(conversation: conversation, previewPhoto: $previewPhoto) }
             if loadingPhoto { Text("正在处理图片…").font(.caption).foregroundStyle(HakoStyle.muted) }
             WorkshopSynchronizationHint(conversation: conversation)
-            if conversation.canCompose && conversation.awaitingSubmissionCheck && conversation.connectionIssue == nil {
+            if conversation.canCompose && conversation.awaitingSubmissionCheck && conversation.synchronizationHint == nil {
                 Text(conversation.restoringCache || conversation.synchronizing ? "正在获取最新消息与任务状态，可先输入" : "任务状态待确认，可先输入，确认后可发送")
                     .font(.caption).foregroundStyle(HakoStyle.muted)
             }

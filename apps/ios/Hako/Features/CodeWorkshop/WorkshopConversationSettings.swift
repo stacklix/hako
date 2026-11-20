@@ -6,11 +6,14 @@ struct WorkshopConversationSettings: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selection: WorkshopChoice
     @State private var error: String?
+    @State private var name: String
+    @State private var saving = false
 
     init(conversation: WorkshopConversation) {
         self.conversation = conversation
         self.store = conversation.store
         _selection = State(initialValue: conversation.choice)
+        _name = State(initialValue: conversation.title)
     }
 
     private var selectedModelID: String? { selection.model ?? conversation.generation.model }
@@ -37,9 +40,11 @@ struct WorkshopConversationSettings: View {
         Binding(get: { selection.serviceTier ?? "default" }, set: { selection.serviceTier = $0 == "default" ? nil : $0 })
     }
 
+    private var hasChanges: Bool { selection != conversation.choice || name.trimmingCharacters(in: .whitespacesAndNewlines) != conversation.title }
+
     var body: some View {
-        SettingsSheet(title: "会话设置", hasChanges: selection != conversation.choice,
-            saveEnabled: conversation.canConfigure && selection != conversation.choice, onSave: save,
+        SettingsSheet(title: "会话设置", hasChanges: hasChanges, isBusy: saving,
+            saveEnabled: conversation.canConfigure && !conversation.busy && hasChanges && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 120, onSave: save,
             saveAccessibilityLabel: "保存会话设置") {
             Form {
                 Section {
@@ -104,7 +109,11 @@ struct WorkshopConversationSettings: View {
                 }.disabled(!conversation.canConfigure)
                 Section("会话信息") {
                     LabeledContent("应用", value: conversation.application.name)
-                    LabeledContent("会话名称", value: conversation.title)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("会话名称").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("输入会话名称", text: $name, axis: .vertical).lineLimit(1...3)
+                            .accessibilityLabel("会话名称")
+                    }.workshopSettingsRow().disabled(!conversation.canConfigure || saving)
                     LabeledContent("执行电脑", value: conversation.agent.name)
                 }
                 Section("项目目录") { Text(conversation.application.path).font(.caption.monospaced()).textSelection(.enabled) }
@@ -122,8 +131,15 @@ struct WorkshopConversationSettings: View {
     }
 
     private func save() {
-        do { try conversation.configure(selection); dismiss() }
-        catch { self.error = error.localizedDescription }
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                if name.trimmingCharacters(in: .whitespacesAndNewlines) != conversation.title { try await conversation.rename(name) }
+                try conversation.configure(selection)
+                dismiss()
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 

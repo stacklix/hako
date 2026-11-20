@@ -10,6 +10,13 @@ import Foundation
         let reply = try JSONDecoder().decode(ConsoleAgentRegistrationReply.self,
                                              from: Data("{\"id\":\"A1B2C\",\"keyId\":\"fingerprint\"}".utf8))
         precondition(reply.id == "A1B2C" && reply.keyId == "fingerprint")
+        let detailsJSON = try JSONSerialization.data(withJSONObject: ["id": "A1B2C", "name": "设备",
+            "publicKeyPem": pem, "revision": "revision-1"])
+        let details = try JSONDecoder().decode(ConsoleAgentDetails.self, from: detailsJSON)
+        precondition(details.id == "A1B2C" && details.publicKeyPEM == pem)
+        let update = try details.updateBody(name: " 新名称 ", publicKeyPEM: pem)
+        precondition(update["name"] as? String == "新名称" && update["revision"] as? String == "revision-1")
+        precondition(update["id"] == nil && update.count == 3, "An edit must preserve the server-assigned ID")
         _ = try ConsoleAgentRegistration(name: String(repeating: "n", count: 100), publicKeyPEM: pem)
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "PUBLIC KEY", with: "RSA PUBLIC KEY"))
         _ = try ConsoleAgentRegistration.validatePublicKey(pem.replacingOccurrences(of: "\n", with: "\r\n"))

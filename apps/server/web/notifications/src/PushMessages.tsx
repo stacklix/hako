@@ -50,8 +50,8 @@ export function PushMessages({ channel, revision, refresh, notify, onBack }: Pro
 }
 
 export function PushComposer({ test = false, onClose, onQueued }: { test?: boolean; onClose: () => void; onQueued: () => void }) {
-  const [title, setTitle] = useState(test ? 'Hako 测试通知' : 'Hako');
-  const [text, setText] = useState(test ? '这是一条来自 Hako 管理后台的测试通知。' : '');
+  const [title, setTitle] = useState(test ? 'Sora 测试通知' : 'Sora');
+  const [text, setText] = useState(test ? '这是一条来自 Sora 管理后台的测试通知。' : '');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   return <Modal title={test ? '测试 Apple Push' : '发送 Apple Push 通知'} onClose={onClose}>
     <form className="modal-form" onSubmit={async e => {

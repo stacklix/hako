@@ -47,6 +47,6 @@ class SmsReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val RECEIVER_TAG = "DoppelSms"
+        private const val RECEIVER_TAG = "NamiSms"
     }
 }

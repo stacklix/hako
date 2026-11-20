@@ -1,14 +1,15 @@
 # Hako
 
-个人模块化工具集合，包含 iOS、Windows 和服务端应用。各应用独立管理源码、依赖、资源、测试、脚本和构建流程，使用各自语言的项目组织惯例。
+个人模块化工具集合，包含 iOS、Android、Windows 和服务端应用。各应用独立管理源码、依赖、资源、测试、脚本和构建流程，使用各自语言的项目组织惯例。
 
 ## 应用入口
 
 | 应用 | 目录 | 当前状态 |
 | --- | --- | --- |
-| iOS | [apps/ios](apps/ios/README.md) | 主应用服务器登录与扫码；使用时间采集与 GitHub 同步；运动记录、趋势图及年度 GitHub 归档；设备监控 Console；Arcane 容器管理；青龙任务、脚本与订阅管理；阿里云 ECS 监控与终端 |
-| Windows | [apps/windows](apps/windows/README.md) | WPF 工具箱、设备代理、CPU 与内存监控 |
-| 服务端 | [apps/server](apps/server/README.md) | Hako 统一后端、Web 管理控制台、Docker 部署、公钥认证、通用 OIDC、设备请求转发与 Caddy 访问日志统计 |
+| Hako · iOS | [apps/ios](apps/ios/README.md) | 主应用服务器登录与扫码；使用时间采集与 GitHub 同步；运动记录、趋势图及年度 GitHub 归档；设备监控 Console；Arcane 容器管理；青龙任务、脚本与订阅管理；阿里云 ECS 监控与终端 |
+| Kage · Windows | [apps/windows](apps/windows/README.md) | Kage 设备代理、WPF 工具箱、系统监控与局域网加密查询 |
+| Nami · Android | [apps/android](apps/android/README.md) | Nami 短信与来电转发、Nami Agent、公钥认证、状态查询与远程短信/拨号 |
+| Sora · 服务端 | [apps/server](apps/server/README.md) | Sora 统一后端、Web 管理控制台、Docker 部署、公钥认证、通用 OIDC、设备请求转发与 Caddy 访问日志统计 |
 
 ## 仓库结构
 
@@ -16,6 +17,7 @@
 hako/
 ├─ apps/
 │  ├─ ios/           # iOS 工程、测试、脚本及安装页
+│  ├─ android/       # Flutter 界面、Kotlin Android Agent 与短信/电话能力
 │  ├─ windows/       # Windows 应用
 │  └─ server/        # 服务端应用
 ├─ docs/             # 整体架构、跨端协作及平台专项文档
@@ -33,8 +35,8 @@ hako/
 
 ```text
 dist/
-├─ windows/Hako.exe                    # 包含运行时的单文件 Windows 应用
-├─ server/hako-server-linux-amd64       # 独立 Linux x64 服务端
+├─ windows/Kage.exe                    # 包含运行时的单文件 Windows Agent
+├─ server/sora-server-linux-amd64       # 独立 Linux x64 服务端
 └─ ios/
    ├─ Hako.ipa                        # macOS CI 签名导出
    ├─ Hako.app                        # macOS 本地安装脚本生成

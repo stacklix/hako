@@ -13,9 +13,11 @@ internal sealed class WorkshopService : IAsyncDisposable
     private readonly string identityFile;
     private string? computerId;
     private WorkshopLocalServer? local;
+    private readonly AgentLanEndpoint? lan;
     internal string? ConfigurationError { get; set; }
-    internal WorkshopService(string dataDirectory, GuardianConnection connection)
+    internal WorkshopService(string dataDirectory, GuardianConnection connection, AgentLanEndpoint? lan = null)
     {
+        this.lan = lan;
         directory = dataDirectory;
         identityFile = Path.Combine(directory, "workshop-computer-id.txt");
         if (File.Exists(identityFile)) computerId = File.ReadAllText(identityFile).Trim();
@@ -28,12 +30,15 @@ internal sealed class WorkshopService : IAsyncDisposable
     {
         if (port is < 0 or > 65535) throw new ArgumentException("代码工坊直连端口无效。");
         if ((local?.Port ?? 0) == port) { ConfigurationError = null; return; }
+        if (lan != null) lan.Port = 0;
         if (local != null) { await local.DisposeAsync(); local = null; }
-        if (port != 0) local = new WorkshopLocalServer(Dispatcher, port, () => cloud.ComputerId ?? computerId, directory);
+        if (port != 0) local = new WorkshopLocalServer(Dispatcher, port, () => cloud.ComputerId ?? computerId, directory, lan: lan);
+        if (lan != null) lan.Port = local?.Port ?? 0;
         ConfigurationError = null;
     }
     public async ValueTask DisposeAsync()
     {
+        if (lan != null) lan.Port = 0;
         if (local != null) await local.DisposeAsync();
         await Dispatcher.DisposeAsync();
     }

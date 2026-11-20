@@ -5,14 +5,16 @@ enum BuildStatusWorkflow: String, CaseIterable, Identifiable {
     case ios = "ios.yml"
     case server = "server.yml"
     case windows = "windows.yml"
+    case android = "android.yml"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .ios: "iOS"
-        case .server: "服务端"
-        case .windows: "Windows"
+        case .ios: "Hako iOS"
+        case .server: "Sora Server"
+        case .windows: "Kage Windows"
+        case .android: "Nami Android"
         }
     }
 
@@ -20,7 +22,8 @@ enum BuildStatusWorkflow: String, CaseIterable, Identifiable {
         switch self {
         case .ios: [("snapshot", "Linux 测试"), ("test", "macOS 测试"), ("build", "打包 IPA"), ("deploy", "发布下载页面")]
         case .server: [("test", "服务端测试"), ("changes", "检查发布条件"), ("build", "构建并发布镜像")]
-        case .windows: [("build", "构建和打包")]
+        case .windows: [("build", "构建和打包"), ("release", "发布 Agent")]
+        case .android: [("build", "构建、测试和打包 APK")]
         }
     }
 

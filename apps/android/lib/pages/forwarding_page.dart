@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/app_models.dart';
-import '../platform/doppel_platform.dart';
+import '../platform/nami_platform.dart';
 import '../widgets/common_widgets.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/forwarding_widgets.dart';
@@ -227,7 +227,7 @@ class _ForwardingPageState extends State<ForwardingPage> {
   }
 
   Future<void> _persistPhoneForwardingConfig() {
-    return DoppelPlatform.saveConfig({
+    return NamiPlatform.saveConfig({
       'forwarding': {
         'smsTargets': _phoneTargets.map((target) => target.toMap()).toList(),
         if (_selectedSmsSimLabel != null)
@@ -237,7 +237,7 @@ class _ForwardingPageState extends State<ForwardingPage> {
   }
 
   Future<void> _persistEmailForwardingConfig() {
-    return DoppelPlatform.saveConfig({
+    return NamiPlatform.saveConfig({
       'forwarding': {
         'emailTargets': _emailTargets.map((target) => target.toMap()).toList(),
         if (_smtpSettings != null) 'smtp': _smtpSettings?.toMap(),
@@ -246,7 +246,7 @@ class _ForwardingPageState extends State<ForwardingPage> {
   }
 
   Future<void> _persistHttpForwardingConfig() {
-    return DoppelPlatform.saveConfig({
+    return NamiPlatform.saveConfig({
       'forwarding': {
         'httpTargets': _httpTargets.map((target) => target.toMap()).toList(),
       },

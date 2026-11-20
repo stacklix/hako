@@ -29,13 +29,14 @@ public interface IAgentDispatcher : IAsyncDisposable
 
 public sealed class AgentDispatcher : IAgentDispatcher
 {
-    private sealed record Handler(int Version, Func<JsonElement, CancellationToken, Task<object?>> Invoke);
+    private sealed record Handler(int Version, Func<JsonElement, CancellationToken, Task<object?>> Invoke, bool Aggregate = true);
     private readonly Dictionary<string, Handler> queries;
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
+    internal Func<object> LanSnapshot { get; set; } = () => new { enabled = false, addresses = AgentLanEndpoint.Addresses(), port = 0 };
     public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = new AgentCapability[] {
-        new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
+        new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
         new(ProcessMetrics.Command, 1),
         new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1)
@@ -50,6 +51,11 @@ public sealed class AgentDispatcher : IAgentDispatcher
         var processes = new ProcessMetrics();
         queries = new()
         {
+            [AgentLanEndpoint.Command] = new(1, (parameters, token) =>
+            {
+                if (parameters.EnumerateObject().Any()) throw new AgentActionException("invalid_params", "query.network.lan 不接受参数。");
+                return Task.FromResult<object?>(LanSnapshot());
+            }),
             ["query.system.metrics"] = new(1, async (parameters, token) =>
             {
                 if (parameters.EnumerateObject().Any())
@@ -68,7 +74,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
                 if (parameters.EnumerateObject().Any())
                     throw new AgentActionException("invalid_params", "query.codex.usage 不接受参数。");
                 return await codex.ReadAsync(token);
-            }),
+            }, Aggregate: false),
             ["query.network.listeners"] = new(1, async (parameters, token) =>
             {
                 if (parameters.EnumerateObject().Any())
@@ -109,6 +115,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
         [
             PublishPeriodicallyAsync("query.system.metrics", TimeSpan.FromSeconds(1), publish, streams.Token),
             PublishPeriodicallyAsync("query.network.listeners", TimeSpan.FromSeconds(10), publish, streams.Token),
+            PublishPeriodicallyAsync(AgentLanEndpoint.Command, TimeSpan.FromSeconds(10), publish, streams.Token),
             PublishPeriodicallyAsync(ProcessMetrics.Command, TimeSpan.FromSeconds(1), publish, streams.Token),
             codex.WatchAsync(value => publish("query.codex.usage", value is null
                 ? new CapabilityData(1, Error: new("query_failed", "Codex 数据采集失败。"))
@@ -152,8 +159,9 @@ public sealed class AgentDispatcher : IAgentDispatcher
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
             budget.CancelAfter(TimeSpan.FromSeconds(8));
             var data = new Dictionary<string, CapabilityData>();
+            var stateQueries = queries.Where(entry => entry.Value.Aggregate).ToArray();
             var remaining = 60 * 1024;
-            foreach (var (name, query) in queries)
+            foreach (var (name, query) in stateQueries)
             {
                 CapabilityData item;
                 try { item = new(query.Version, JsonSerializer.SerializeToElement(await query.Invoke(parameters, budget.Token), AgentConnection.Json)); }
@@ -163,7 +171,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
                 catch (Exception e) when (e is not OperationCanceledException)
                 { item = new(query.Version, Error: new("query_failed", "数据采集失败。")); }
                 var size = JsonSerializer.SerializeToUtf8Bytes(item, AgentConnection.Json).Length + name.Length + 8;
-                if (size > remaining - 256 * (queries.Count - data.Count))
+                if (size > remaining - 256 * (stateQueries.Length - data.Count))
                 {
                     item = new(query.Version, Error: new("result_too_large", "数据超出消息大小限制。"));
                     size = JsonSerializer.SerializeToUtf8Bytes(item, AgentConnection.Json).Length + name.Length + 8;

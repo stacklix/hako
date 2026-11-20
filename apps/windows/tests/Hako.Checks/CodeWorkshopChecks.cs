@@ -24,6 +24,10 @@ internal static class CodeWorkshopChecks
         await WorkshopReadChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
         WorkshopCatalogChecks.Run();
+        Check(CodexAppServer.RequestTimeout("turn/start") == TimeSpan.FromSeconds(60) &&
+            CodexAppServer.RequestTimeout("thread/compact/start") == TimeSpan.FromSeconds(60) &&
+            CodexAppServer.RequestTimeout("thread/items/list") == TimeSpan.FromSeconds(8),
+            "Durable turn startup must not use the interactive query deadline");
         var summarized = CodeWorkshop.SummarizeTurn(Json(new { id = "latest-turn", status = "completed", items = new object[] {
             new { id = "first", type = "userMessage", content = new[] { new { type = "text", text = "First prompt" } } },
             new { id = "last", type = "agentMessage", text = "Latest\n  response" },
@@ -119,11 +123,28 @@ internal static class CodeWorkshopChecks
             start.Environment["HAKO_CODEX_TEST_PROJECT"] = project;
             if (occupied) start.Environment["HAKO_CODEX_TEST_OCCUPIED"] = "1";
             if (scenario is not null) start.Environment["HAKO_CODEX_TEST_SCENARIO"] = scenario;
-            return CodexAppServer.StartAsync(token, start);
+            return CodexAppServer.StartAsync(token, start, scenario is "accepted-no-reply" or "unaccepted-timeout"
+                ? method => method == "turn/start" ? TimeSpan.FromMilliseconds(250) : CodexAppServer.RequestTimeout(method) : null);
         }
         var storage = Path.Combine(directory, "state");
         try
         {
+            await using (var maintenance = new CodeWorkshop(Path.Combine(directory, "maintenance"), code, directory, token => Start(token)))
+            {
+                var catalog = Result(await maintenance.CatalogAsync(Json(new { }), default));
+                var appId = catalog.GetProperty("applications")[0].GetProperty("id").GetString();
+                var renamed = Result(await maintenance.RenameAsync(Json(new { threadId = FixtureThread, applicationId = appId, name = "Renamed session" }), default));
+                Check(renamed.GetProperty("name").GetString() == "Renamed session", "Rename did not acknowledge the exact name");
+                var updated = Result(await maintenance.CatalogAsync(Json(new { }), default));
+                Check(updated.GetProperty("sessions")[0].GetProperty("title").GetString() == "Renamed session", "Rename did not persist to catalog");
+                var request = new { threadId = FixtureThread, applicationId = appId, requestId = Guid.NewGuid().ToString("D"), permission = "auto" };
+                await maintenance.CompactAsync(Json(request), default);
+                await maintenance.CompactAsync(Json(request), default);
+                var completed = await WaitAsync(maintenance, request.requestId, "completed");
+                Check(completed.GetProperty("operation").GetProperty("state").GetString() == "completed", "Compaction did not track completion");
+                Check(File.ReadAllLines(Path.Combine(project, ".compact-requests")).Length == 1, "Duplicate compaction request restarted work");
+                File.Delete(Path.Combine(project, ".thread-name"));
+            }
             await using (var parallel = new CodeWorkshop(Path.Combine(directory, "parallel-state"), code, directory,
                 token => Start(token, scenario: "concurrent-reads")))
             {
@@ -615,15 +636,33 @@ internal static class CodeWorkshopChecks
                 await slow.StopAsync(Json(new { operationId = slowId }), default);
                 await WaitAsync(slow, slowId, "interrupted");
             }
-            foreach (var scenario in new[] { "reject-resume", "lost-start-reply" })
+            foreach (var scenario in new[] { "slow-turn", "accepted-no-reply" })
+            {
+                await using var delayed = new CodeWorkshop(Path.Combine(directory, scenario), code, startServer: token => Start(token, scenario: scenario));
+                var delayedId = Guid.NewGuid().ToString();
+                await delayed.StartAsync(Json(new { requestId = delayedId, applicationId, threadId = FixtureThread, message = "Delayed acknowledgement" }), default);
+                var page = await WaitAsync(delayed, delayedId, scenario == "slow-turn" ? "waiting" : "completed");
+                Check(CodexJson.Text(page.GetProperty("operation"), "turnId") == "fixture-turn",
+                    "Replayed events stole the current task's turn identity");
+                Check(!page.GetProperty("events").EnumerateArray().Any(entry => CodexJson.Text(entry, "id") is "replayed" or "foreign"),
+                    "Old or foreign events leaked into the new request");
+                if (scenario == "slow-turn")
+                {
+                    await delayed.StopAsync(Json(new { operationId = delayedId }), default);
+                    await WaitAsync(delayed, delayedId, "interrupted");
+                }
+            }
+            foreach (var scenario in new[] { "reject-resume", "reject-turn", "lost-start-reply", "unaccepted-timeout" })
             {
                 await using var failing = new CodeWorkshop(Path.Combine(directory, scenario), code, startServer: token => Start(token, scenario: scenario));
                 var failedId = Guid.NewGuid().ToString();
                 var request = Json(new { requestId = failedId, applicationId, threadId = FixtureThread, message = "Fail safely" });
                 await failing.StartAsync(request, default);
-                var page = await WaitAsync(failing, failedId, scenario == "reject-resume" ? "failed" : "unknown");
+                var page = await WaitAsync(failing, failedId, scenario.StartsWith("reject-", StringComparison.Ordinal) ? "failed" : "unknown");
                 var detail = CodexJson.Text(page.GetProperty("operation"), "message");
-                Check(scenario == "reject-resume" ? detail.Contains("恢复会话") && detail.Contains("尚未发送") : detail.Contains("结果尚未确认") && !detail.Contains("尚未发送"),
+                Check(scenario == "reject-resume" ? detail.Contains("恢复会话") && detail.Contains("尚未发送") :
+                    scenario == "reject-turn" ? detail.Contains("启动轮次") && detail.Contains("未被接收") :
+                    detail.Contains("结果尚未确认") && !detail.Contains("尚未发送"),
                     "Startup rejection and an uncertain turn submission must have different recovery instructions: " + detail);
                 Check(!detail.Contains("登录"), "A startup error incorrectly diagnosed a login problem");
                 var duplicate = Result(await failing.StartAsync(request, default));
@@ -650,19 +689,35 @@ internal static class CodeWorkshopChecks
             var recoveryStorage = Path.Combine(directory, "recovery");
             Directory.CreateDirectory(recoveryStorage);
             var recoveredJob = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread,
-                TurnId = "fixture-turn", State = "unknown", Cwd = project, ApplicationId = applicationId,
+                TurnId = "stale-turn", State = "unknown", Cwd = project, ApplicationId = applicationId,
                 Submitted = true, Message = "Old uncertainty" };
+            var unrelated = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread,
+                TurnId = "fixture-turn", State = "unknown", Cwd = project, ApplicationId = applicationId,
+                Submitted = true, InputMessage = recoveredJob.InputMessage };
+            var unsent = new WorkshopJob { Id = Guid.NewGuid().ToString("D"), ThreadId = FixtureThread,
+                State = "starting", Cwd = project, ApplicationId = applicationId, Submitted = false };
             File.WriteAllBytes(Path.Combine(recoveryStorage, recoveredJob.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(recoveredJob, WorkshopProtocol.Json));
-            await using (var recovery = new CodeWorkshop(recoveryStorage, code, Path.Combine(directory, ".codex"), token => Start(token)))
+            File.WriteAllBytes(Path.Combine(recoveryStorage, unrelated.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(unrelated, WorkshopProtocol.Json));
+            File.WriteAllBytes(Path.Combine(recoveryStorage, unsent.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(unsent, WorkshopProtocol.Json));
+            File.WriteAllText(Path.Combine(project, ".recovery-client"), recoveredJob.Id);
+            await using (var recovery = new CodeWorkshop(recoveryStorage, code, Path.Combine(directory, ".codex"), token => Start(token, scenario: "recovery-older")))
             {
-                await recovery.HistoryAsync(Json(new { threadId = FixtureThread }), default);
                 var reconciled = Result(await recovery.OperationAsync(Json(new { operationId = recoveredJob.Id }), default)).GetProperty("operation");
                 Check(CodexJson.Text(reconciled, "state") == "completed" && CodexJson.Text(reconciled, "message") == "",
                     "History refresh did not persist a verified outcome for the operation API");
                 var saved = JsonSerializer.Deserialize<WorkshopJob>(File.ReadAllBytes(Path.Combine(recoveryStorage, recoveredJob.Id + ".json")), WorkshopProtocol.Json)!;
-                Check(saved.State == "completed" && saved.Message is null, "Reconciled outcome did not survive a restart");
+                Check(saved.State == "completed" && saved.Message is null && saved.TurnId == "fixture-turn" && saved.FinishedAt == 1001000,
+                    "Canonical client identity did not repair the wrong saved turn and completion time");
                 Check(saved.ReplySummary.Length == 0, "Recovery used an earlier display summary instead of the actual final reply containing only a prototype reference");
+                Check(CodexJson.Text(Result(await recovery.OperationAsync(Json(new { operationId = unrelated.Id }), default)).GetProperty("operation"), "state") == "unknown",
+                    "A matching prompt or stale turn ID must not resolve an unrelated receipt");
+                var notSent = Result(await recovery.OperationAsync(Json(new { operationId = unsent.Id }), default)).GetProperty("operation");
+                Check(CodexJson.Text(notSent, "state") == "failed" && CodexJson.Text(notSent, "message").Contains("尚未发送"),
+                    "A restart before submission must not create an outcome that can never be reconciled");
             }
+            await using (var restarted = new CodeWorkshop(recoveryStorage, code, startServer: _ => throw new Exception("A repaired terminal receipt should not require another Codex read")))
+                Check(CodexJson.Text(Result(await restarted.OperationAsync(Json(new { operationId = recoveredJob.Id }), default)).GetProperty("operation"), "state") == "completed",
+                    "The repaired outcome did not survive an Agent restart");
             Console.WriteLine("PASS: Codex stdio, durable queue/edit/cancel/Steer, stale revisions, automatic turn handoff, stop/resume, approval retries, images, models and artifacts");
         }
         finally
@@ -709,14 +764,14 @@ internal static class CodeWorkshopChecks
                         .GetProperty("answers")[0].GetString() == "服务器认证", "The user's confirmed selection was not returned to Codex");
                 if (CodexJson.Text(CodexJson.Field(input, "result"), "decision") == "decline")
                 {
-                    Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "failed" } } });
+                    Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "failed" } } });
                     continue;
                 }
-                Write(new { method = "item/completed", @params = new { item = new { id = "commentary", type = "agentMessage", text = "Earlier progress update" } } });
-                Write(new { method = "item/agentMessage/delta", @params = new { threadId = FixtureThread, itemId = "answer", delta = "Fixture " } });
-                Write(new { method = "item/completed", @params = new { item = new { id = "answer", type = "agentMessage", text = "Fixture completed" } } });
-                Write(new { method = "item/completed", @params = new { item = new { id = "tool-log", type = "commandExecution", command = "fixture", aggregatedOutput = "Tool output must not replace the reply" } } });
-                Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "completed" } } });
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "commentary", type = "agentMessage", text = "Earlier progress update" } } });
+                Write(new { method = "item/agentMessage/delta", @params = new { threadId = FixtureThread, turnId, itemId = "answer", delta = "Fixture " } });
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "answer", type = "agentMessage", text = "Fixture completed" } } });
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "tool-log", type = "commandExecution", command = "fixture", aggregatedOutput = "Tool output must not replace the reply" } } });
+                Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "completed" } } });
                 continue;
             }
             if (!input.TryGetProperty("id", out var id)) continue;
@@ -727,9 +782,9 @@ internal static class CodeWorkshopChecks
             {
                 if (File.Exists(Path.Combine(project, ".catalog-pages"))) File.AppendAllText(Path.Combine(project, ".catalog-summary-count"), "read\n");
                 var options = CodexJson.Field(input, "params");
-                Check(CodexJson.Text(options, "sortDirection") == "desc" && CodexJson.Field(options, "limit").GetInt32() == 1,
+                Check(CodexJson.Text(options, "sortDirection") == "desc" && CodexJson.Field(options, "limit").GetInt32() is 1 or 32,
                     "Catalog/history must request only one upstream turn");
-                Check(CodexJson.Text(options, "itemsView") == "summary", "History hydrated a complete upstream turn");
+                Check(CodexJson.Text(options, "itemsView") is "summary" or "notLoaded", "History hydrated a complete upstream turn");
             }
             if (method == "thread/list")
                 Check(CodexJson.Field(CodexJson.Field(input, "params"), "useStateDbOnly").ValueKind == JsonValueKind.True &&
@@ -783,6 +838,8 @@ internal static class CodeWorkshopChecks
                 archived = true;
             }
             if (method == "thread/unarchive") archived = false;
+            if (method == "thread/name/set")
+                File.WriteAllText(Path.Combine(project, ".thread-name"), CodexJson.Text(CodexJson.Field(input, "params"), "name"));
             if (method is "thread/start" or "thread/resume")
             {
                 var options = CodexJson.Field(input, "params");
@@ -836,8 +893,28 @@ internal static class CodeWorkshopChecks
                 }
             }
             if (method == "thread/resume" && scenario == "slow-resume") await Task.Delay(8500);
+            if (method == "thread/resume" && scenario == "slow-turn")
+            {
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId = "old-turn", item = new { id = "replayed", type = "agentMessage", text = "Old replay" } } });
+                Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = "old-turn", status = "completed" } } });
+            }
+            if (method == "turn/start" && scenario is "slow-turn" or "accepted-no-reply")
+            {
+                Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = "old-turn", status = "completed" } } });
+                Write(new { method = "item/completed", @params = new { threadId = "other-thread", turnId, item = new { id = "foreign", type = "agentMessage", text = "Wrong thread" } } });
+                Write(new { method = "item/started", @params = new { threadId = FixtureThread, turnId, item = new { id = "accepted-input", type = "userMessage", clientId = CodexJson.Text(CodexJson.Field(input, "params"), "clientUserMessageId"), content = Array.Empty<object>() } } });
+                if (scenario == "slow-turn") await Task.Delay(8500);
+                else
+                {
+                    Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "completed" } } });
+                    continue; // Acceptance/completion is durable even though its RPC reply was lost.
+                }
+            }
+            if (method == "turn/start" && scenario == "unaccepted-timeout") continue;
             if (method == "thread/resume" && scenario == "reject-resume")
             { Write(new { id, error = new { code = -32600, message = "Unable to resume this thread" } }); continue; }
+            if (method == "turn/start" && scenario == "reject-turn")
+            { Write(new { id, error = new { code = -32600, message = "Unable to start this turn" } }); continue; }
             if (method == "turn/start" && scenario == "lost-start-reply") return;
             var historyItems = new List<object>();
             var steeredInputs = Path.Combine(project, ".steered-inputs.jsonl");
@@ -849,6 +926,8 @@ internal static class CodeWorkshopChecks
                 }
             historyItems.Add(new { id = "generated-fixture", type = "imageGeneration", status = "completed", savedPath = Path.Combine(project, "generated-fixture.png") });
             historyItems.Add(new { id = "history", type = "agentMessage", text = "visualize" + JsonSerializer.Serialize(new { path = Path.Combine(project, "prototype.html") }) + "" });
+            if (File.Exists(Path.Combine(project, ".recovery-client")))
+                historyItems.Add(new { id = "recovery-input", type = "userMessage", clientId = File.ReadAllText(Path.Combine(project, ".recovery-client")), content = new[] { new { type = "text", text = "Original request" } } });
             if (scenario == "paged-history")
             {
                 historyItems = Enumerable.Range(0, File.Exists(Path.Combine(project, ".history-new-item")) ? 76 : 75)
@@ -863,18 +942,28 @@ internal static class CodeWorkshopChecks
             var thread = new
             {
                 id = FixtureThread, cwd = CodexJson.Text(CodexJson.Field(input, "params"), "threadId") == "22222222-2222-4222-8222-222222222222" ? Path.GetDirectoryName(project)! : project,
-                name = "Fixture", preview = "Fixture history", updatedAt = 1000, recencyAt = 1,
+                name = File.Exists(Path.Combine(project, ".thread-name")) ? File.ReadAllText(Path.Combine(project, ".thread-name")) : "Fixture", preview = "Fixture history", updatedAt = 1000, recencyAt = 1,
                 model = "fixture-session", reasoningEffort = "max",
                 fixtureRevision = string.Join("|", new[] { ".catalog-preview", ".summary-status" }.Select(name =>
                     File.Exists(Path.Combine(project, name)) ? File.ReadAllText(Path.Combine(project, name)) : "")),
                 status = new { type = method == "thread/list" ? "active" : "idle", activeFlags = Array.Empty<string>() },
                 turns = new[] { new { id = turnId, status = "completed", items = historyItems.ToArray() } }
             };
+            object[] turnRows = [new { id = turnId,
+                status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed",
+                completedAt = 1001,
+                items = CodexJson.Text(CodexJson.Field(input, "params"), "itemsView") == "full" ? historyItems.ToArray() : new object[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } }];
+            string? nextTurnCursor = null;
+            if (method == "thread/turns/list" && scenario == "recovery-older" && CodexJson.Text(itemOptions, "cursor").Length == 0)
+            {
+                turnRows = [new { id = "newer-external-turn", status = "completed", items = Array.Empty<object>() }];
+                nextTurnCursor = "older-turn-page";
+            }
             object result = method switch
             {
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
-                "thread/turns/list" => new { data = new[] { new { id = turnId, status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed", items = CodexJson.Text(CodexJson.Field(input, "params"), "itemsView") == "full" ? historyItems.ToArray() : new object[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } } }, nextCursor = (string?)null },
+                "thread/turns/list" => new { data = turnRows, nextCursor = nextTurnCursor },
                 "thread/read" => new { thread },
                 "thread/items/list" => new { data = historyItems.AsEnumerable().Reverse().Skip(itemOffset).Take(64)
                     .Select(item => new { turnId, item }).ToArray(), nextCursor = itemOffset + 64 < historyItems.Count ? (itemOffset + 64).ToString() : null },
@@ -884,6 +973,14 @@ internal static class CodeWorkshopChecks
                 _ => new { }
             };
             Write(new { id, result });
+            if (method == "thread/compact/start")
+            {
+                File.AppendAllLines(Path.Combine(project, ".compact-requests"), ["compact"]);
+                Write(new { method = "item/started", @params = new { threadId = FixtureThread, turnId, item = new { id = "compact", type = "contextCompaction" } } });
+                await Task.Delay(150);
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "compact", type = "contextCompaction" } } });
+                Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "completed" } } });
+            }
             if (method == "turn/start")
             {
                 if (CodexJson.Items(CodexJson.Field(CodexJson.Field(input, "params"), "input")).Any(value => CodexJson.Text(value, "text") == "Async question fixture"))
@@ -891,7 +988,7 @@ internal static class CodeWorkshopChecks
                     Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new {
                         id = "async-fixture", type = "agentMessage", text = "需要你选择升级方式", delivery = "async",
                         questions = new[] { new { title = "如何升级？", options = new[] { "保持现状", "同步升级" } } } } } });
-                    Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "completed" } } });
+                    Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "completed" } } });
                     continue;
                 }
                 if (CodexJson.Items(CodexJson.Field(CodexJson.Field(input, "params"), "input")).Any(value => CodexJson.Text(value, "text") == "Question fixture"))
@@ -902,7 +999,7 @@ internal static class CodeWorkshopChecks
                 else Write(new { id = 900, method = "item/commandExecution/requestApproval", @params = new { command = "fixture test", threadId = FixtureThread, turnId, itemId = "command" } });
             }
             if (method == "turn/interrupt")
-                Write(new { method = "turn/completed", @params = new { turn = new { id = turnId, status = "interrupted" } } });
+                Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "interrupted" } } });
         }
     }
 }

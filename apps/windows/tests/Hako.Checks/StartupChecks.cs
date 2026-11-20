@@ -15,7 +15,7 @@ internal static class StartupChecks
         Directory.CreateDirectory(root);
         try
         {
-            var executable = Path.Combine(root, "应用 with spaces", "Hako.exe");
+            var executable = Path.Combine(root, "应用 with spaces", "Kage.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
             File.Copy(Environment.ProcessPath!, executable);
             var startupDirectory = Path.Combine(root, "startup");
@@ -41,7 +41,7 @@ internal static class StartupChecks
 
             var defaults = new AgentStartup(executable, AgentSettingsStore.DefaultDirectory, startupDirectory);
             defaults.SetEnabled(true);
-            Check(Path.GetFileName(defaults.ShortcutPath) == "Hako Agent.lnk" && ReadShortcut(defaults.ShortcutPath).Arguments == "--background",
+            Check(Path.GetFileName(defaults.ShortcutPath) == "Kage Agent.lnk" && ReadShortcut(defaults.ShortcutPath).Arguments == "--background",
                 "Default startup shortcut must match the documented manual shortcut");
             var original = File.ReadAllBytes(defaults.ShortcutPath);
             try
@@ -66,7 +66,7 @@ internal static class StartupChecks
             try { failing.SetEnabled(true); throw new Exception("Unwritable startup location was accepted"); }
             catch (IOException) { }
             Check(!failing.IsEnabled && File.ReadAllText(blocked) == "not a directory", "Failed startup write changed registration state");
-            Check(!Directory.GetFiles(startupDirectory).Any(file => Path.GetFileName(file).StartsWith("Hako-", StringComparison.Ordinal)),
+            Check(!Directory.GetFiles(startupDirectory).Any(file => Path.GetFileName(file).StartsWith("Kage-", StringComparison.Ordinal)),
                 "Temporary startup shortcuts were left behind");
         }
         finally

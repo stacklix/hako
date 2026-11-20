@@ -111,7 +111,20 @@ import Foundation
                 state: state, message: nil, startedAt: 1)
             precondition((operation.statusIcon == "checkmark.circle") == (state == "completed"),
                 "Only a confirmed completed task may display a success icon: " + state)
+            precondition(operation.resultUnconfirmed == (state == "unknown"))
+            precondition(operation.unconfirmedNoticeID == (state == "unknown" ? "error-operation" : nil),
+                "Only the current unknown outcome should move out of the transcript")
+            precondition(WorkshopConnectionState.connected.forConversation(verified: true,
+                needsRecovery: operation.resultUnconfirmed) == (state == "unknown" ? .reconnecting : .connected),
+                "A successful read of an unknown result must not restore the green connection status")
         }
+        let unknownResult = WorkshopOperation(id: "unknown", applicationId: "app", threadId: "thread", turnId: nil,
+            state: "unknown", message: "Result not confirmed", startedAt: 1)
+        precondition(unknownResult.errorCardMessage("Result not confirmed") == nil,
+            "The unconfirmed result must use only the lightweight composer hint")
+        precondition(unknownResult.errorCardMessage("Photo import failed") == "Photo import failed",
+            "Unrelated errors must remain visible while the result is unconfirmed")
+        precondition(unknownResult.errorCardMessage(nil) == nil)
         precondition(WorkshopConnectionState.connecting.afterFailure(WorkshopFailure(code: "workshop_busy", message: "Server busy")) == .disconnected,
             "A broker response must not falsely verify an offline Agent")
         func timedOperation(_ state: String, start: Int64 = 1000, finish: Int64? = nil) -> WorkshopOperation {
@@ -143,7 +156,9 @@ import Foundation
             precondition(timedOperation(state).elapsedText(at: .now) == nil, "Missing or uncertain end times must not be invented")
         }
         precondition(timedOperation("unknown", finish: 1083999).elapsedText(at: .now) == nil)
-        precondition(WorkshopSystemPrompt.defaultText.contains("新的原型卡片") && WorkshopSystemPrompt.defaultText.contains("唯一") && WorkshopSystemPrompt.defaultText.contains("不得覆盖或复用"))
+        precondition(WorkshopSystemPrompt.defaultText.contains("新的原型卡片") && WorkshopSystemPrompt.defaultText.contains("唯一") && WorkshopSystemPrompt.defaultText.contains("不得覆盖此前卡片的快照文件"))
+        precondition(WorkshopSystemPrompt.defaultText.contains("沿用其现有预览地址") && WorkshopSystemPrompt.defaultText.contains("第一段 path 固定为 prototype"))
+        precondition(WorkshopSystemPrompt.defaultText.contains("/prototype/<随机字符串>/") && WorkshopSystemPrompt.defaultText.contains("路由和快照相互隔离"))
         precondition(WorkshopSystemPrompt.valid("") && !WorkshopSystemPrompt.valid(String(repeating: "a", count: 4001)) && !WorkshopSystemPrompt.valid("bad\0prompt"))
         precondition(!WorkshopSystemPrompt.valid(String(repeating: "😀", count: 2001)), "Prompt length must agree with the Agent's UTF-16 limit")
         var firstReceipt = WorkshopReceipt(id: "first", agentId: "pc", applicationId: "app", originalThreadId: nil,

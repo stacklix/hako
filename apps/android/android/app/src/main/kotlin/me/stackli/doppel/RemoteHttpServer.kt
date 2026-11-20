@@ -1,6 +1,11 @@
 package me.stackli.doppel
 
 import android.content.Context
+import android.content.Intent
+import me.stackli.doppel.agent.AgentError
+import me.stackli.doppel.agent.AgentKeys
+import me.stackli.doppel.agent.AgentService
+import me.stackli.doppel.agent.AgentSettingsStore
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.BufferedWriter
@@ -33,13 +38,13 @@ internal class RemoteHttpServer(
             return
         }
         isRunning = true
-        thread(name = "DoppelRemoteHttp", isDaemon = true) {
+        thread(name = "NamiRemoteHttp", isDaemon = true) {
             runCatching {
                 ServerSocket(config.port).use { socket ->
                     serverSocket = socket
                     while (isRunning) {
                         val client = runCatching { socket.accept() }.getOrNull() ?: continue
-                        thread(name = "DoppelRemoteHttpClient", isDaemon = true) {
+                        thread(name = "NamiRemoteHttpClient", isDaemon = true) {
                             handleClient(client)
                         }
                     }
@@ -101,6 +106,9 @@ internal class RemoteHttpServer(
             request.method == "POST" && request.path == "/api/sms/send" -> sendSms(request)
             request.method == "POST" && request.path == "/api/call/start" -> startCall(request)
             request.method == "POST" && request.path == "/api/config" -> saveConfig(request)
+            request.method == "GET" && request.path == "/api/agent/settings" -> agentSettings()
+            request.method == "POST" && request.path == "/api/agent/settings" -> agentSettings(request)
+            request.method == "POST" && request.path == "/api/agent/key" -> agentSettings(generateKey = true)
             else -> json(404, JSONObject().put("error", "not_found"))
         }
     }
@@ -162,6 +170,28 @@ internal class RemoteHttpServer(
         RemoteControlStore.mergeConfig(context, incoming)
         RemoteControlService.sync(context)
         return json(200, JSONObject().put("ok", true).put("snapshot", RemoteControlStore.buildSnapshot(context)))
+    }
+
+    // Uses the same native store and Keystore as the on-device settings page.
+    // These routes pass through the /api authentication check above.
+    private fun agentSettings(request: HttpRequest? = null, generateKey: Boolean = false): HttpResponse {
+        return try {
+            val store = AgentSettingsStore(context)
+            if (generateKey) AgentKeys.generate()
+            if (request != null) {
+                store.save(request.jsonBody())
+                AgentService.sync(context, restart = true)
+            }
+            if (request != null || generateKey) {
+                context.sendBroadcast(Intent(ACTION_DOPPEL_SNAPSHOT_CHANGED).setPackage(context.packageName))
+            }
+            json(200, store.snapshot())
+        } catch (error: AgentError) {
+            json(400, JSONObject().put("error", error.code).put("message", error.message))
+        } catch (_: Exception) {
+            json(500, JSONObject().put("error", "agent_settings_failed")
+                .put("message", "Agent 设置操作失败，请重试"))
+        }
     }
 
     private fun actionResponse(result: RemoteActionResult): HttpResponse {

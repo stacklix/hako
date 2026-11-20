@@ -25,6 +25,13 @@ private final class HTTPLogMockProtocol: URLProtocol, @unchecked Sendable {
 
 @main struct HakoLogTests {
     static func main() async throws {
+        let direct = HTTPTransport.makeSession(useSystemProxy: false)
+        let system = HTTPTransport.makeSession()
+        precondition(direct.configuration.connectionProxyDictionary?.isEmpty == true,
+                     "LAN sessions must explicitly bypass the system HTTP/PAC proxy")
+        precondition(system.configuration.connectionProxyDictionary == nil,
+                     "Cloud sessions must retain the system proxy policy")
+        direct.invalidateAndCancel(); system.invalidateAndCancel()
         try await checkHTTPLogs()
         // Exercise both public call shapes: an unlabeled middle default argument
         // cannot be omitted when the following argument is also unlabeled.
