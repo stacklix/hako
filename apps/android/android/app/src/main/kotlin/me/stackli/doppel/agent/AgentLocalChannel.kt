@@ -18,8 +18,6 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
 // Android's private Binder channel is the equivalent of the Windows per-user local pipe.
@@ -85,6 +83,10 @@ internal class AgentLocalChannel(private val context: Context) : AgentCommands, 
             if (error != null) throw AgentError(error.getString("code"), error.getString("message"))
             return response.getJSONObject("result")
         } catch (error: AgentError) { throw error }
+        catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw AgentError("main_process_unavailable", "本机调用已取消，未自动重发")
+        }
         catch (_: Exception) {
             throw AgentError("main_process_unavailable", "本机调用未确认完成；操作请用原 requestId 查询结果，不要自动重发")
         } finally { pending.remove(id) }
@@ -106,7 +108,7 @@ internal class AgentLocalChannel(private val context: Context) : AgentCommands, 
 
 class AgentCommandService : Service() {
     private val thread = HandlerThread("hako-agent-commands").apply { start() }
-    private val workers = ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS, SynchronousQueue())
+    private val workers = agentCommandWorkers()
     private lateinit var commands: AgentDispatcher
     private lateinit var messenger: Messenger
 
@@ -118,8 +120,14 @@ class AgentCommandService : Service() {
             val id = message.data.getString("id") ?: return@Handler true
             val reply = message.replyTo ?: return@Handler true
             val raw = message.data.getString("payload") ?: return@Handler true
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
             try {
                 workers.execute {
+                    if (System.nanoTime() >= deadline) {
+                        sendReply(reply, id, JSONObject().put("error", AgentProtocol.error(
+                            AgentError("execution_timeout", "设备请求在排队期间超时，未执行"))))
+                        return@execute
+                    }
                     val response = JSONObject()
                     try {
                         if (raw.toByteArray(Charsets.UTF_8).size > AgentProtocol.MAX_BYTES) AgentProtocol.invalid("请求过大")

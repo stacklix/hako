@@ -23,6 +23,7 @@ import java.security.spec.MGF1ParameterSpec
 import java.security.spec.PSSParameterSpec
 import java.util.Base64
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.io.IOException
 
@@ -42,6 +43,8 @@ class AgentConnectionTest {
         val messages = LinkedBlockingQueue<JSONObject>()
         val states = LinkedBlockingQueue<String>()
         val calls = LinkedBlockingQueue<String>()
+        val burstStarted = CountDownLatch(4)
+        val burstRelease = CountDownLatch(1)
         lateinit var peer: WebSocket
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
@@ -86,6 +89,10 @@ class AgentConnectionTest {
         }, object : AgentCommands {
             override fun invoke(method: String, version: Int, params: JSONObject): JSONObject {
                 calls.add(method)
+                if (params.optBoolean("hold")) {
+                    burstStarted.countDown()
+                    check(burstRelease.await(5, TimeUnit.SECONDS))
+                }
                 return if (method == "query.all") AgentProtocol.aggregate { JSONObject().put("state", "ok") }
                     else JSONObject().put("state", "ok")
             }
@@ -106,11 +113,21 @@ class AgentConnectionTest {
             assertEquals("r1", response.getString("id"))
             assertFalse(response.getJSONObject("result").getJSONObject("data").has("query.sms.messages"))
             assertEquals("query.all", calls.poll(5, TimeUnit.SECONDS))
+            // Reproduce the six independent queries opened by device details.
+            // Four execute while the remaining two must wait, not report busy.
+            for (index in 1..6) peer.send("""{"type":"request","id":"burst-$index","method":"query.device.status","version":1,"params":{"hold":true}}""")
+            assertTrue(burstStarted.await(3, TimeUnit.SECONDS))
+            peer.send("""{"type":"ping"}""")
+            assertEquals("pong", messages.poll(3, TimeUnit.SECONDS)!!.getString("type"))
+            burstRelease.countDown()
+            val burst = (1..6).map { messages.poll(5, TimeUnit.SECONDS)!! }
+            assertEquals((1..6).map { "burst-$it" }.toSet(), burst.map { it.getString("id") }.toSet())
+            assertTrue(burst.all { it.has("result") && !it.has("error") })
             peer.send("""{"type":"telemetry_start","id":"t1"}""")
             val methods = (1..7).map { messages.poll(5, TimeUnit.SECONDS)!!.getString("method") }.toSet()
             assertEquals(setOf("query.device.status", AgentStorage.COMMAND, AgentBattery.COMMAND, AgentWifi.COMMAND, AgentScreen.COMMAND, "query.network.lan", "query.telephony.sims"), methods)
             peer.send("""{"type":"telemetry_stop","id":"t1"}""")
-        } finally { connection.close(); server.close() }
+        } finally { burstRelease.countDown(); connection.close(); server.close() }
     }
 
     @Test fun websocketOpeningHandshakeTimesOutAndRetries() {

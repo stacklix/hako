@@ -14,8 +14,6 @@ import javax.net.ssl.SSLException
 import java.util.Base64
 import java.util.concurrent.Future
 import java.util.concurrent.ScheduledThreadPoolExecutor
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,7 +32,7 @@ internal class AgentConnection(
     private val handshakeTimeoutSeconds: Long = 10,
 ) : Closeable {
     private val control = ScheduledThreadPoolExecutor(1).apply { removeOnCancelPolicy = true }
-    private val workers = ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS, SynchronousQueue())
+    private val workers = agentCommandWorkers()
     @Volatile private var closed = false
     @Volatile private var epoch = 0L
     @Volatile private var socket: WebSocket? = null
@@ -199,6 +197,7 @@ internal class AgentConnection(
             val deadline = control.schedule({
                 if (currentEpoch == epoch && finished.compareAndSet(false, true)) {
                     activeRequests.remove(id)?.first?.cancel(true)
+                    workers.purge()
                     send(JSONObject().put("type", "response").put("id", id)
                         .put("error", AgentProtocol.error(AgentError("execution_timeout", "设备执行超时；操作请使用原 requestId 查询结果，不要自动重发"))))
                 }
@@ -214,6 +213,7 @@ internal class AgentConnection(
 
     private var telemetryId: String? = null
     private var collecting = false
+    private var telemetryWork: Future<*>? = null
     private fun startTelemetry(message: JSONObject, currentEpoch: Long) {
         stopTelemetry()
         val id = AgentProtocol.string(message, "id", 128)
@@ -222,8 +222,10 @@ internal class AgentConnection(
             if (closed || currentEpoch != epoch || collecting) return@scheduleWithFixedDelay
             collecting = true
             try {
-                workers.execute {
+                telemetryWork = workers.submit {
+                    if (closed || currentEpoch != epoch || Thread.currentThread().isInterrupted) return@submit
                     val updates = AgentProtocol.capabilities.filter { it.aggregate }.map { capability ->
+                        if (closed || currentEpoch != epoch || Thread.currentThread().isInterrupted) return@submit
                         val item = JSONObject().put("type", "telemetry_update").put("id", id)
                             .put("method", capability.name).put("version", 1)
                         try { item.put("result", commands.invoke(capability.name, 1, JSONObject())) }
@@ -232,15 +234,22 @@ internal class AgentConnection(
                         item
                     }
                     dispatch {
-                        collecting = false
-                        if (currentEpoch == epoch && telemetryId == id) updates.forEach(::sendBounded)
+                        if (currentEpoch == epoch && telemetryId == id) {
+                            collecting = false
+                            updates.forEach(::sendBounded)
+                        }
                     }
                 }
             } catch (_: RejectedExecutionException) { collecting = false }
         }, 0, 10, TimeUnit.SECONDS)
     }
 
-    private fun stopTelemetry() { telemetry?.cancel(false); telemetry = null; telemetryId = null }
+    private fun stopTelemetry() {
+        telemetry?.cancel(false); telemetry = null; telemetryId = null
+        telemetryWork?.cancel(true); telemetryWork = null
+        collecting = false
+        workers.purge()
+    }
 
     private fun sendBounded(value: JSONObject) {
         if (value.toString().toByteArray(Charsets.UTF_8).size > AgentProtocol.MAX_BYTES) {
