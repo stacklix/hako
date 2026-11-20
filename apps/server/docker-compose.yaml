@@ -1,7 +1,7 @@
 services:
   server:
-    image: ghcr.io/stacklix/sora-server:latest
-    container_name: sora-server
+    image: ghcr.io/stacklix/sora:latest
+    container_name: sora
     restart: unless-stopped
     environment:
       HAKO_PUBLIC_URL: ${HAKO_PUBLIC_URL:?Set HAKO_PUBLIC_URL to the public HTTPS origin}

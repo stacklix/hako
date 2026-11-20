@@ -758,19 +758,36 @@ private struct WorkshopKeyboardDismissal: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            // The window also hosts selection handles and system edit menus outside this transcript.
+            guard bounds.contains(touch.location(in: self)) else { return false }
             var view = touch.view
             while let current = view {
                 if let field = current as? UITextField, field.isEnabled { return false }
-                if let editor = current as? UITextView, editor.isEditable { return false }
+                if let editor = current as? UITextView, editor.isSelectable { return false }
                 view = current.superview
             }
-            return true
+            return window.flatMap(editingView(in:)) != nil
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
 
-        @objc private func dismissKeyboard() { window?.endEditing(true) }
+        private func editingView(in view: UIView) -> UIView? {
+            if view.isFirstResponder {
+                if let editor = view as? UITextView, editor.isEditable { return editor }
+                if let field = view as? UITextField, field.isEnabled { return field }
+                return nil
+            }
+            for child in view.subviews {
+                if let editor = editingView(in: child) { return editor }
+            }
+            return nil
+        }
+
+        @objc private func dismissKeyboard() {
+            // Dismiss only the input control, never a message's active text selection.
+            _ = window.flatMap(editingView(in:))?.resignFirstResponder()
+        }
     }
 }
 

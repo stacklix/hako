@@ -329,7 +329,7 @@ final class MockProtocol: URLProtocol {
         precondition(BuildStatusWorkflow.server.jobTitle("build") == "构建并发布镜像")
         precondition(BuildStatusWorkflow.android.jobTitle("build") == "构建、测试和打包 APK")
         precondition(BuildStatusWorkflow.windows.jobTitle("release") == "发布 Agent")
-        precondition(BuildStatusWorkflow.allCases.map(\.title) == ["Hako iOS", "Sora Server", "Kage Windows", "Nami Android"])
+        precondition(BuildStatusWorkflow.allCases.map(\.title) == ["Hako", "Sora", "Kage", "Nami"])
         precondition(BuildStatusWorkflow.android.pageURL.path == "/stacklix/hako/actions/workflows/android.yml")
         calls = 0
         MockProtocol.handler = { _ in calls += 1; return try json(["workflow_runs": []]) }

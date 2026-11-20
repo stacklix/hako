@@ -31,7 +31,7 @@ func TestAgentUpgradeNotificationsDeduplicateAndReusePushQueue(t *testing.T) {
 		if err := json.Unmarshal(data, &payload); err != nil {
 			t.Error(err)
 		}
-		expected := map[string]string{"started": "Kage Windows 开始升级", "completed": "Kage Windows 升级完成", "failed": "Kage Windows 升级失败"}
+		expected := map[string]string{"started": "Kage 开始升级", "completed": "Kage 升级完成", "failed": "Kage 升级失败"}
 		if payload.APS.Alert.Title != expected[payload.Stage] {
 			t.Errorf("upgrade title must identify the product: %q", payload.APS.Alert.Title)
 		}

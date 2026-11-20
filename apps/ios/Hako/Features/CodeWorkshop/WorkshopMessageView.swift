@@ -170,9 +170,8 @@ private struct WorkshopMessageCopy: ViewModifier {
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
-            // Give the whole-message double tap precedence over inline links
-            // and the system's word-selection gesture. Single taps still pass through.
-            .highPriorityGesture(TapGesture(count: 2).onEnded { copy() })
+            // Preserve the system's text-selection gestures alongside whole-message copying.
+            .simultaneousGesture(TapGesture(count: 2).onEnded { copy() })
             .accessibilityAction(named: Text("复制整条消息")) { copy() }
     }
 

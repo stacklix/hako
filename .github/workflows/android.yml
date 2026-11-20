@@ -1,4 +1,4 @@
-name: Nami Android
+name: Nami
 on:
   push:
     paths:

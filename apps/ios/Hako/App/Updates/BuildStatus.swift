@@ -11,10 +11,10 @@ enum BuildStatusWorkflow: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .ios: "Hako iOS"
-        case .server: "Sora Server"
-        case .windows: "Kage Windows"
-        case .android: "Nami Android"
+        case .ios: "Hako"
+        case .server: "Sora"
+        case .windows: "Kage"
+        case .android: "Nami"
         }
     }
 

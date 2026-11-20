@@ -1,4 +1,4 @@
-name: Kage Windows
+name: Kage
 on:
   push:
     paths: ['apps/windows/**', 'apps/server/internal/server/windows_test.go', '.github/workflows/windows.yml']

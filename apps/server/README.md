@@ -1,6 +1,6 @@
 # Sora Server
 
-Sora 是服务端应用名称，程序为 `sora-server`，发布镜像为 `ghcr.io/stacklix/sora-server`。现有 `HAKO_*` 环境变量、`hako.db` 数据文件及认证协议标识继续作为稳定接口使用。客户端分别为 Hako（iOS）、Kage（Windows）和 Nami（Android）。
+Sora 是服务端应用名称，程序为 `sora-server`，发布镜像为 `ghcr.io/stacklix/sora`。现有 `HAKO_*` 环境变量、`hako.db` 数据文件及认证协议标识继续作为稳定接口使用。客户端分别为 Hako（iOS）、Kage（Windows）和 Nami（Android）。
 
 先了解登录方式、凭据和会话边界，可阅读[登录与身份认证总览](../../docs/login-authentication-overview.md)。
 
@@ -34,7 +34,7 @@ Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主�
 
 ### 自动发布镜像到 GHCR
 
-GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服务端测试，并在 `master` 推送服务端或工作流改动、推送标签或手动运行时，将 Linux amd64 镜像发布到 `ghcr.io/stacklix/sora-server`。服务端 PR 运行测试。镜像发布任务使用自带的 `GITHUB_TOKEN` 和独立授予的 `packages: write` 权限。
+GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服务端测试，并在 `master` 推送服务端或工作流改动、推送标签或手动运行时，将 Linux amd64 镜像发布到 `ghcr.io/stacklix/sora`。服务端 PR 运行测试。镜像发布任务使用自带的 `GITHUB_TOKEN` 和独立授予的 `packages: write` 权限。
 
 - `master`：在 `apps/server/` 或镜像工作流有变更时发布，对比本次推送前后的提交，镜像带有 `latest`、`master` 和 `sha-<短提交号>` 标签。仅修改 iOS、Windows 或仓库级文档时跳过。
 - tag：推送任意 tag 都发布，不过滤路径，镜像带有对应 tag 和 `sha-<短提交号>` 标签。tag 名中的 `/` 等字符由 Docker metadata action 转换为合法镜像标签字符。
@@ -44,12 +44,12 @@ GitHub Actions 工作流 [Server](../../.github/workflows/server.yml) 运行服�
 服务器直接拉取：
 
 ```sh
-docker pull ghcr.io/stacklix/sora-server:latest
+docker pull ghcr.io/stacklix/sora:latest
 ```
 
 GHCR 新建包默认私有。需要匿名拉取时，在包设置中将可见性改为 Public；私有包需要先通过 `docker login ghcr.io` 登录，使用拥有该包读取权限且具有 `read:packages` scope 的 PAT（classic），通过 `--password-stdin` 传入。工作流发布使用的 `GITHUB_TOKEN` 无需手工配置该 PAT。参见 [GHCR 官方文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
 
-仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `sora-server`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
+仓库的 `docker-compose.yaml` 默认使用发布镜像，容器名为 `sora`。完成下方配置初始化与 Console 公钥登记后执行 `docker compose up -d`。更新执行 `docker compose pull && docker compose up -d`。生产环境可使用 `sha-<短提交号>` 或 digest 固定版本。
 
 服务端要求已有数据库已完成 schema 2 迁移。未迁移的实例需先用迁移版（提交 `957cbb2`）成功启动一次，再升级到当前版本。迁移版首次启动会清空旧通知库，包括微信绑定、Webhook、历史消息和后台保存的 APNs 配置。当前版本直接初始化全新数据库。
 
@@ -77,7 +77,7 @@ docker compose pull
 docker run --rm --user 0 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/config:/app/config" \
-  --entrypoint sh ghcr.io/stacklix/sora-server:latest \
+  --entrypoint sh ghcr.io/stacklix/sora:latest \
   -c 'sora-server init && chown 10001:10001 /app/data /app/config /app/config/server.json && chmod 700 /app/data /app/config'
 ```
 

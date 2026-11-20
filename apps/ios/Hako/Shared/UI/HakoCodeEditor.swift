@@ -109,8 +109,10 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
         init(_ parent: HakoCodeEditorTextView) { self.parent = parent }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-            // Only consume dismissal taps while editing; a tap with the keyboard hidden still focuses normally.
-            editor?.textView.isFirstResponder == true
+            // Keep the text area's native caret, selection handles and edit menu gestures.
+            // Only the gutter dismisses the keyboard; the toolbar also has a dismiss button.
+            guard let editor, editor.textView.isFirstResponder else { return false }
+            return !editor.textView.frame.contains(touch.location(in: editor))
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
@@ -152,7 +154,8 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
                 }
                 guard !Task.isCancelled else { return }
                 let tokens = await Task.detached(priority: .userInitiated) { HakoCodeSyntax.tokens(text, language: language) }.value
-                guard !Task.isCancelled, let self, let view, view.text == text, view.markedTextRange == nil else { return }
+                guard !Task.isCancelled, let self, let view, view.text == text,
+                      view.markedTextRange == nil, view.selectedRange.length == 0 else { return }
                 self.apply(tokens, text: text, to: view)
             }
         }
@@ -172,8 +175,8 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
                 storage.addAttribute(.foregroundColor, value: color(token.kind), range: token.range)
             }
             storage.endEditing()
-            view.selectedRange = selection
-            view.setContentOffset(offset, animated: false)
+            if view.selectedRange != selection { view.selectedRange = selection }
+            if view.contentOffset != offset { view.setContentOffset(offset, animated: false) }
             view.typingAttributes = [.font: HakoCodeEditorTextView.font, .foregroundColor: UIColor.label]
             editor?.redrawLineNumbers()
         }
@@ -201,6 +204,10 @@ private final class HakoEditorKeyboardState: ObservableObject {
             UIPasteboard.general.string = view.text ?? ""
             return
         }
+        if action == "收起键盘" {
+            view.resignFirstResponder()
+            return
+        }
         guard view.isEditable else { return }
         switch action {
         case "Tab":
@@ -226,14 +233,14 @@ private final class HakoEditorKeyboardState: ObservableObject {
 private struct HakoEditorKeyboardKeys: View {
     @ObservedObject var state: HakoEditorKeyboardState
     let editingEnabled: Bool
-    private let keys = ["Tab", "撤销", "重做", "粘贴", "覆盖粘贴", "复制全部"]
+    private let keys = ["Tab", "撤销", "重做", "粘贴", "覆盖粘贴", "复制全部", "收起键盘"]
     var body: some View {
         HakoShortcutBar {
             ForEach(keys, id: \.self) { key in
                 Button(key) { state.perform(key) }
                     .accessibilityLabel(key == "Tab" ? "插入制表符" : key)
                     .accessibilityHint(key == "覆盖粘贴" ? "用剪贴板文本替换全部文件内容，可撤销" : "")
-                    .disabled(key != "复制全部" && !editingEnabled)
+                    .disabled(key != "复制全部" && key != "收起键盘" && !editingEnabled)
             }
         }
     }
