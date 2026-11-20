@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -20,6 +21,19 @@ func TestAgentUpgradeNotificationsDeduplicateAndReusePushQueue(t *testing.T) {
 		data, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(data), `"type":"agent_update"`) || !strings.Contains(string(data), "工作电脑") {
 			t.Error("missing update identity")
+		}
+		var payload struct {
+			APS struct {
+				Alert struct{ Title string } `json:"alert"`
+			} `json:"aps"`
+			Stage string `json:"stage"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			t.Error(err)
+		}
+		expected := map[string]string{"started": "Kage Windows 开始升级", "completed": "Kage Windows 升级完成", "failed": "Kage Windows 升级失败"}
+		if payload.APS.Alert.Title != expected[payload.Stage] {
+			t.Errorf("upgrade title must identify the product: %q", payload.APS.Alert.Title)
 		}
 		return &http.Response{StatusCode: 200, ProtoMajor: 2, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 	})}
