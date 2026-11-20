@@ -921,11 +921,11 @@ private struct InvestmentTradeFields: View {
             InvestmentField("实收收益（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else {
             InvestmentField("数量（" + kind.unit + "）", text: $quantity, keyboard: .decimalPad)
-            InvestmentField("成交价（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
+            InvestmentField((stockConnect ? (event == .sell ? "卖出单价" : "买入单价") : "成交价") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         }
         if stockConnect {
-            InvestmentField(event == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）", text: $settlement, keyboard: .decimalPad)
-            Text("按券商交割单填写含费用的实际人民币金额。").font(.footnote).foregroundStyle(.secondary)
+            InvestmentField("清算金额（CNY）", text: $settlement, keyboard: .decimalPad)
+            Text("按券商交割单填写含费用的人民币总额，买入为实际支出，卖出为实际到账。").font(.footnote).foregroundStyle(.secondary)
         }
         if showsFee {
             InvestmentField("交易费用（" + currency.rawValue + "，选填）", text: $fee, keyboard: .decimalPad)
@@ -961,7 +961,7 @@ private struct InvestmentTradeFields: View {
         return InvestmentEvent(day: day, kind: event, assetID: assetID,
             quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell),
             margin: kind.usesMargin && event != .sell ? try investmentDecimal(margin, "保证金") : 0,
-            settledAmount: stockConnect ? try investmentDecimal(settlement, "实际人民币金额") : nil,
+            settledAmount: stockConnect ? try investmentDecimal(settlement, "清算金额") : nil,
             fee: showsFee && !investmentTrim(fee).isEmpty ? try investmentDecimal(fee, "交易费用", allowZero: true) : nil)
     }
 

@@ -61,6 +61,8 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
         if (parameters.ValueKind != JsonValueKind.Object) throw CodexJson.Invalid();
         if (method == "diagnostics.append") return WorkshopDiagnosticReports.ForProfile(directory).AppendIOS(parameters);
         if (Commands is not null) return await Commands.CallAsync(method, parameters, token);
+        if (method is "files.list" or "files.modified" or "files.read" or "files.write.begin" or "files.write.chunk" or "files.write.commit")
+            return await workshop.FilesAsync(method, parameters, token);
         if (method == "commands.open")
         {
             CodexJson.Keys(parameters);

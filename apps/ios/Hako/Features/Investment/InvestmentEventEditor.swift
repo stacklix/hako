@@ -112,12 +112,17 @@ struct InvestmentEventEditor: View {
                 field("变动后余额（\(currency)）", .settlement)
             } else if let asset {
                 let unit = asset.historyUnit
-                let priceTitle = asset.kind == .insurance ? (event.kind == .sell ? "退保到账金额" : "保费金额") : "成交价"
+                let priceTitle = asset.kind == .insurance ? (event.kind == .sell ? "退保到账金额" : "保费金额")
+                    : asset.isStockConnect ? (event.kind == .sell ? "卖出单价" : "买入单价") : "成交价"
                 let settlement = store.book.settlementUnit(for: asset)
                 if asset.kind != .insurance { field("数量（\(unit)）", .quantity) }
                 field("\(priceTitle)（\(store.book.quoteUnit(for: asset))）", .price)
                 if asset.kind.usesMargin && event.kind != .sell { field("保证金（\(settlement)）", .margin) }
-                if asset.isStockConnect { field("实际交收金额（CNY）", .settlement) }
+                if asset.isStockConnect {
+                    field("清算金额（CNY）", .settlement)
+                    Text("按券商交割单填写含费用的人民币总额，买入为实际支出，卖出为实际到账。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 if event.kind != .opening && asset.kind.supportsTradeFees && !asset.isStockConnect {
                     field("交易费用（\(settlement)，选填）", .fee)
                 }
@@ -205,7 +210,7 @@ struct InvestmentEventEditor: View {
                 }
                 edited.price = try number(.price, "成交金额或价格", allowZero: asset.kind == .insurance && event.kind == .sell)
                 if asset.kind.usesMargin && event.kind != .sell { edited.margin = try number(.margin, "保证金") }
-                if asset.isStockConnect { edited.settledAmount = try number(.settlement, "实际交收金额") }
+                if asset.isStockConnect { edited.settledAmount = try number(.settlement, "清算金额") }
                 if event.kind != .opening && asset.kind.supportsTradeFees && !asset.isStockConnect {
                     edited.fee = values[.fee, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
                         nil : try number(.fee, "交易费用", allowZero: true)

@@ -93,7 +93,7 @@ struct InvestmentAgentAction: Codable {
         let name = Field(key: "name", label: "名称", required: true)
         let currency = Field(key: "currency", label: "币种", required: true, choices: ["CNY", "USD", "HKD"])
         let enabled = Field(key: "enabled", label: "启用", required: true, choices: ["true", "false"])
-        let settlement = Field(key: "settled_amount", label: "港股通实际交收金额、存款操作后余额、通用标的首次录入余额或保险提取后现金价值（保险选填）")
+        let settlement = Field(key: "settled_amount", label: "港股通清算金额（含费用的人民币总额）、存款操作后余额、通用标的首次录入余额或保险提取后现金价值（保险选填）")
         let terms = [Field(key: "annual_rate", label: "年利率（百分数，例如 2.5 表示 2.5%）"),
                      Field(key: "maturity_date", label: "到期日（YYYY-MM-DD）")]
         let optional: (Field) -> Field = { var field = $0; field.required = false; return field }

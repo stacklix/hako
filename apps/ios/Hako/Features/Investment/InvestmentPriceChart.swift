@@ -197,7 +197,7 @@ struct InvestmentPriceChart: View {
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 3) {
-                Text("成交价 " + InvestmentText.price(trade.price, asset.currency))
+                Text((asset.isStockConnect ? (trade.isBuy ? "买入单价 " : "卖出单价 ") : "成交价 ") + InvestmentText.price(trade.price, asset.currency))
                 Text(InvestmentText.number(trade.quantity) + " " + asset.historyUnit).foregroundStyle(.secondary)
             }.monospacedDigit()
         }.font(.caption)

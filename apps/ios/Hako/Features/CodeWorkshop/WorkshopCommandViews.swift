@@ -1,72 +1,66 @@
 import SwiftUI
 
+enum WorkshopCommandLibraryKind: String, Identifiable {
+    case commands = "快捷命令", prompts = "快捷提示词"
+    var id: String { rawValue }
+}
+
 struct WorkshopCommandLibraryView: View {
     @ObservedObject var client: WorkshopCommands
-    @ObservedObject var conversation: WorkshopConversation
-    @Environment(\.dismiss) private var dismiss
+    let kind: WorkshopCommandLibraryKind
     @State private var editor: WorkshopSavedCommand?
     @State private var promptEditor: WorkshopQuickPrompt?
-    @State private var confirmsCompact = false
 
     var body: some View {
-        SettingsSheet(title: "快捷命令") {
+        SettingsSheet(title: kind.rawValue) {
             List {
                 Section {
                     LabeledContent("执行电脑", value: client.agent.name)
                     LabeledContent("项目", value: client.application.name)
                 }
-                Section {
-                    Button {
-                        confirmsCompact = true
-                    } label: { Label("压缩上下文", systemImage: "arrow.down.right.and.arrow.up.left") }
-                        .disabled(!conversation.canCompact)
-                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                } header: { Text("会话操作") } footer: {
-                    Text("会话空闲时可手动压缩上下文，保留会话历史；执行进度显示在会话中。")
-                }
+                if kind == .prompts {
                 Section {
                     ForEach(client.prompts) { prompt in
-                        HStack {
-                            Button {
-                                Task { await conversation.sendPrompt(prompt.text) }
-                                dismiss()
-                            } label: {
-                                Label(prompt.name, systemImage: "paperplane")
-                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        Button { promptEditor = prompt } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(prompt.name)
+                                    Text(prompt.text).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "pencil").foregroundStyle(.secondary)
                             }
-                            .disabled(!conversation.canSendPrompt)
-                            Button { promptEditor = prompt } label: { Image(systemName: "pencil").frame(minWidth: 44, minHeight: 44) }
-                                .accessibilityLabel("编辑提示词：" + prompt.name)
                         }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.plain)
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     }
-                    Button { promptEditor = WorkshopQuickPrompt() } label: { Label("添加快捷提示词", systemImage: "plus") }
+                    if client.prompts.isEmpty { Text("点击右上角 + 添加快捷提示词。").foregroundStyle(.secondary) }
                 } header: { Text("快捷提示词") } footer: {
-                    Text("保存在这台手机的当前项目中。点击名称直接发送到当前会话；保留输入框中的草稿。")
+                    Text("保存在这台手机的当前项目中。在会话更多菜单中点击名称，可填入输入框后继续编辑。")
                 }
+                } else {
                 Section {
                     if client.commands.isEmpty {
                         ContentUnavailableView("还没有快捷命令", systemImage: "terminal",
                             description: Text("点击右上角 +，添加要在电脑上执行的命令。"))
                     }
                     ForEach(client.commands) { command in
-                        NavigationLink {
-                            WorkshopCommandDetailView(client: client, commandID: command.id)
-                        } label: {
+                        Button { editor = command } label: {
+                            HStack {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(command.name)
                                 if !command.note.isEmpty { Text(command.note).font(.caption).foregroundStyle(.secondary) }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "pencil").foregroundStyle(.secondary)
+                            }
                         }
+                        .buttonStyle(.plain)
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     }
                 } header: { Text("保存在这台手机") } footer: {
-                    Text("命令直接发送到所选电脑执行，执行记录独立于 Codex 会话。")
+                    Text("点击条目编辑；在会话更多菜单中直接执行，执行记录独立于 Codex 会话。")
                 }
                 if let id = client.taskID, client.task?.active == true || client.pendingCommand != nil {
                     Section("当前任务") {
@@ -99,12 +93,16 @@ struct WorkshopCommandLibraryView: View {
                         }
                     }
                 }
+                }
                 if let error = client.error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { editor = WorkshopSavedCommand() } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("新增快捷命令").disabled(client.busy)
+                    Button {
+                        if kind == .commands { editor = WorkshopSavedCommand() }
+                        else { promptEditor = WorkshopQuickPrompt() }
+                    } label: { Image(systemName: "plus") }
+                        .accessibilityLabel(kind == .commands ? "新增快捷命令" : "新增快捷提示词").disabled(client.busy)
                 }
             }
             .refreshable { await client.prepare() }
@@ -113,11 +111,7 @@ struct WorkshopCommandLibraryView: View {
             WorkshopCommandEditorView(client: client, initial: editor)
         }
         .sheet(item: $promptEditor) { prompt in WorkshopQuickPromptEditor(client: client, initial: prompt) }
-        .alert("压缩上下文", isPresented: $confirmsCompact) {
-            Button("取消", role: .cancel) { }
-            Button("开始压缩") { Task { await conversation.compactContext() }; dismiss() }
-        } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
-        .task { await client.prepare() }
+        .task { if kind == .commands { await client.prepare() } }
     }
 }
 

@@ -8,8 +8,9 @@ namespace Hako.Platform;
 
 internal sealed partial class CodeWorkshop
 {
-    // All mutations and snapshot reads hold gate. Capture the next signal before
-    // reading, so an event arriving during publication cannot be lost.
+    // Capture the next signal before reading, so changes during the read or
+    // publication cannot be lost. Recovery may await Codex and reacquire gate;
+    // never hold the monitor while waiting for an asynchronous operation read.
     private TaskCompletionSource<bool> changed = NewSignal();
     private static TaskCompletionSource<bool> NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private void SignalChange()
@@ -30,13 +31,9 @@ internal sealed partial class CodeWorkshop
         {
             lifetime.Token.ThrowIfCancellationRequested();
             Task signal;
-            JsonElement page;
-            lock (gate)
-            {
-                signal = changed.Task;
-                var request = JsonSerializer.SerializeToElement(new { operationId = id, cursor }, WorkshopProtocol.Json);
-                page = JsonSerializer.SerializeToElement(OperationAsync(request, lifetime.Token).GetAwaiter().GetResult(), WorkshopProtocol.Json);
-            }
+            lock (gate) signal = changed.Task;
+            var request = JsonSerializer.SerializeToElement(new { operationId = id, cursor }, WorkshopProtocol.Json);
+            var page = JsonSerializer.SerializeToElement(await OperationAsync(request, lifetime.Token), WorkshopProtocol.Json);
             var payload = page.GetRawText();
             if (payload != previous) { await publish(page); previous = payload; }
             cursor = page.GetProperty("cursor").GetInt64();

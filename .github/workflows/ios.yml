@@ -31,6 +31,12 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
           swiftc Hako/App/Updates/AppUpdateRelease.swift Tests/AppUpdateReleaseTests.swift -o /tmp/hako-app-update-tests
           /tmp/hako-app-update-tests
+          swiftc Hako/Shared/Navigation/HakoPinnedPage.swift Tests/HakoPinnedPageTests.swift -o /tmp/hako-pin-tests
+          /tmp/hako-pin-tests
+          swiftc Hako/Shared/Navigation/HakoPinDrag.swift Tests/HakoPinDragTests.swift -o /tmp/hako-pin-drag-tests
+          /tmp/hako-pin-drag-tests
+          swiftc Hako/Shared/Navigation/HakoPinnedPage.swift Hako/Features/Containers/ArcanePinRoute.swift Tests/ArcanePinRouteTests.swift -o /tmp/hako-container-pin-tests
+          /tmp/hako-container-pin-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Tests/HakoServerCompatibilityTests.swift -o /tmp/hako-server-compatibility-tests
           /tmp/hako-server-compatibility-tests
           swiftc Hako/Shared/HakoServer/InvestmentDatabaseVersion.swift Tests/InvestmentDatabaseVersionTests.swift -o /tmp/hako-database-version-tests
@@ -63,6 +69,10 @@ jobs:
           /tmp/hako-investment-market-tests
       - name: Test code workshop request identity and message rendering
         run: |
+          swiftc Hako/Shared/Network/NetworkSSIDCache.swift Tests/NetworkSSIDCacheTests.swift -o /tmp/hako-network-ssid-cache-tests
+          /tmp/hako-network-ssid-cache-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopFileModels.swift Tests/WorkshopFileTests.swift -o /tmp/hako-workshop-file-tests
+          /tmp/hako-workshop-file-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopBrowserLink.swift Tests/WorkshopBrowserTests.swift -o /tmp/hako-workshop-browser-tests
           /tmp/hako-workshop-browser-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopCommandModels.swift Hako/Features/CodeWorkshop/WorkshopQuickPrompts.swift Tests/WorkshopCommandTests.swift -o /tmp/hako-workshop-command-tests

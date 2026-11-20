@@ -687,11 +687,11 @@ extension InvestmentAgentProposal {
             let quote = book.quoteUnit(for: asset)
             let priceLabel = asset.kind == .wealth ? (event?.kind == .sell ? "赎回到账金额（CNY）" : "申购金额（CNY）")
                 : asset.kind == .generic ? (event?.kind == .sell ? "取出金额（USD）" : "投入金额（USD）") : asset.kind.usesBalance ? (event?.kind == .sell ? "支取金额（CNY）" : "存入金额（CNY）")
-                : asset.kind == .insurance ? (event?.kind == .sell ? "退保到账金额（\(quote)）" : "保费金额（\(quote)）") : "成交价（\(quote)）"
+                : asset.kind == .insurance ? (event?.kind == .sell ? "退保到账金额（\(quote)）" : "保费金额（\(quote)）")
+                : asset.isStockConnect ? (event?.kind == .sell ? "卖出单价（\(quote)）" : "买入单价（\(quote)）") : "成交价（\(quote)）"
             values.append(form.field("unit_price", priceLabel, event.map { NSDecimalNumber(decimal: $0.price).stringValue }))
             if asset.isStockConnect || asset.kind.usesBalance {
-                values.append(form.field("settled_amount", asset.kind.usesBalance ? "变动后余额（\(asset.currency.rawValue)）" :
-                    (event?.kind == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）")))
+                values.append(form.field("settled_amount", asset.kind.usesBalance ? "变动后余额（\(asset.currency.rawValue)）" : "清算金额（CNY）"))
             }
             if asset.kind.supportsTradeFees && !asset.isStockConnect && event?.kind != .opening {
                 values.append(form.field("fee", "交易费用（\(settlement)，选填）", event?.fee.map { NSDecimalNumber(decimal: $0).stringValue } ?? "未填写"))

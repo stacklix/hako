@@ -33,7 +33,7 @@ struct HomeView: View {
     private typealias Application = HakoApplications.Application
 
     private enum Destination: Hashable {
-        case application(Application), notifications, settings
+        case application(Application), notifications, settings, pinned(HakoPinnedPage)
     }
 
     @ObservedObject private var console = ConsoleClient.shared
@@ -74,6 +74,7 @@ struct HomeView: View {
                 case .application(let app): app.destination
                 case .notifications: NotificationsView(store: notifications)
                 case .settings: SettingsView()
+                case .pinned(let page): HakoApplications.pins.content(for: page)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -105,6 +106,13 @@ struct HomeView: View {
             // Re-identifying only the workshop list leaves its old destination above it.
             .id(buildPush.workshopNavigationID)
             .tint(.primary)
+            .accessibilityAction(named: "打开 Pin 列表") { HakoPinPresenter.shared.openDrawer() }
+            .background {
+                HakoPinGestureHost { page in
+                    guard let application = Application(rawValue: page.applicationID) else { return }
+                    path = page.route == "root" ? [.application(application)] : [.application(application), .pinned(page)]
+                }.frame(width: 0, height: 0)
+            }
             .overlay(alignment: .top) {
                 if let notice = buildPush.workshopBanner {
                     WorkshopNotificationBanner(notice: notice, open: {

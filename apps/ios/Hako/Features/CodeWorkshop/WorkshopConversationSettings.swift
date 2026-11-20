@@ -2,15 +2,18 @@ import SwiftUI
 
 struct WorkshopConversationSettings: View {
     @ObservedObject var conversation: WorkshopConversation
+    @ObservedObject var commands: WorkshopCommands
     @ObservedObject private var store: WorkshopStore
     @Environment(\.dismiss) private var dismiss
     @State private var selection: WorkshopChoice
     @State private var error: String?
     @State private var name: String
     @State private var saving = false
+    @State private var library: WorkshopCommandLibraryKind?
 
-    init(conversation: WorkshopConversation) {
+    init(conversation: WorkshopConversation, commands: WorkshopCommands) {
         self.conversation = conversation
+        self.commands = commands
         self.store = conversation.store
         _selection = State(initialValue: conversation.choice)
         _name = State(initialValue: conversation.title)
@@ -47,6 +50,14 @@ struct WorkshopConversationSettings: View {
             saveEnabled: conversation.canConfigure && !conversation.busy && hasChanges && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 120, onSave: save,
             saveAccessibilityLabel: "保存会话设置") {
             Form {
+                Section("快捷操作") {
+                    Button { library = .commands } label: {
+                        HStack { Label("编辑快捷命令", systemImage: "terminal"); Spacer(); Text("\(commands.commands.count) 条").foregroundStyle(.secondary); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
+                    }.workshopSettingsRow()
+                    Button { library = .prompts } label: {
+                        HStack { Label("编辑快捷提示词", systemImage: "text.bubble"); Spacer(); Text("\(commands.prompts.count) 条").foregroundStyle(.secondary); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
+                    }.workshopSettingsRow()
+                }
                 Section {
                     Picker("模型", selection: modelSelection) {
                         Text("跟随会话设置").tag(Optional<String>.none)
@@ -128,6 +139,7 @@ struct WorkshopConversationSettings: View {
                 if let effort = selection.reasoningEffort, model?.reasoningEfforts.contains(where: { $0.id == effort }) != true { selection.reasoningEffort = nil }
             }
         }
+        .sheet(item: $library) { kind in WorkshopCommandLibraryView(client: commands, kind: kind) }
     }
 
     private func save() {

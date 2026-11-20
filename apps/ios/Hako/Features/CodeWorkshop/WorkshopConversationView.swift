@@ -10,12 +10,14 @@ struct WorkshopConversationView: View {
     private let onSwitch: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.hakoPinPreview) private var pinPreview
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
     @State private var browserLink: WorkshopBrowserLink?
     @State private var showingInfo = false
-    @State private var showingCommands = false
+    @State private var showingFiles = false
+    @State private var confirmsCompact = false
     @State private var showingCommandTask = false
     @StateObject private var commands: WorkshopCommands
     @State private var selectedPhotos: [PhotosPickerItem] = []
@@ -34,7 +36,7 @@ struct WorkshopConversationView: View {
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingCommands && !showingCommandTask }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask }
 
     var body: some View {
         let transcript = conversation.presentation
@@ -118,7 +120,7 @@ struct WorkshopConversationView: View {
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(scrollFollowing.shouldFollowUpdates ? .bottom : nil, for: .sizeChanges)
         .onAppear {
-            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil)
+            WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil || pinPreview)
             scrollFollowing = ConversationScrollFollowing()
             updateReadingLatest(scenePhase == .active && transcriptVisible)
             // Keep an edge target through the initial lazy layout and later
@@ -209,10 +211,40 @@ struct WorkshopConversationView: View {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                         .accessibilityLabel("关闭会话预览")
                 }
-            } else {
+            } else if !pinPreview {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { showingCommands = true } label: { Image(systemName: "terminal") }.accessibilityLabel("快捷命令")
-                    Button { showingInfo = true } label: { Image(systemName: "ellipsis") }.accessibilityLabel("更多会话设置")
+                    Button { showingFiles = true } label: { Image(systemName: "folder") }.accessibilityLabel("浏览项目文件")
+                    Menu {
+                        if let page = WorkshopPinContributor.page(for: conversation) { HakoPinButton(page: page) }
+                        Button { showingInfo = true } label: { Label("设置", systemImage: "slider.horizontal.3") }
+                        if !commands.commands.isEmpty {
+                            Section("快捷命令") {
+                                ForEach(commands.commands) { command in
+                                    Button {
+                                        showingCommandTask = true
+                                        Task { await commands.execute(command) }
+                                    } label: { Label(command.name, systemImage: "terminal") }
+                                    .disabled(commands.busy || commands.pendingCommand != nil && commands.pendingCommand?.id != command.id)
+                                }
+                            }
+                        }
+                        if !commands.prompts.isEmpty {
+                            Section("快捷提示词") {
+                                ForEach(commands.prompts) { prompt in
+                                    Button {
+                                        let current = conversation.draft
+                                        conversation.draft = current.isEmpty ? prompt.text : current + "\n\n" + prompt.text
+                                    } label: { Label(prompt.name, systemImage: "text.bubble") }
+                                    .disabled(!conversation.canSendPrompt)
+                                }
+                            }
+                        }
+                        Divider()
+                        Button { confirmsCompact = true } label: {
+                            Label("压缩上下文", systemImage: "arrow.down.right.and.arrow.up.left")
+                        }.disabled(!conversation.canCompact)
+                    } label: { Image(systemName: "ellipsis") }
+                    .accessibilityLabel("更多会话功能")
                 }
             }
         }
@@ -246,9 +278,13 @@ struct WorkshopConversationView: View {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
             }
         } message: { Text("请在系统设置中允许 Hako 使用相机，以拍照添加图片。") }
-        .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation) }
-        .sheet(isPresented: $showingCommands) { WorkshopCommandLibraryView(client: commands, conversation: conversation) }
+        .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation, commands: commands) }
+        .sheet(isPresented: $showingFiles) { WorkshopFilesView(store: conversation.store, agent: conversation.agent, application: conversation.application) }
         .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
+        .alert("压缩上下文", isPresented: $confirmsCompact) {
+            Button("取消", role: .cancel) { }
+            Button("开始压缩") { Task { await conversation.compactContext() } }
+        } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
         .task(id: commands.observationID) { await commands.observe() }
         .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
@@ -491,23 +527,18 @@ private struct WorkshopProjectConnectionLabel: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Group {
-                if (state == .connecting || state == .reconnecting) && !reduceMotion {
-                    label.phaseAnimator([false, true]) { content, filled in
-                        content.symbolVariant(filled ? .fill : .none)
-                            .foregroundStyle(statusColor)
-                    } animation: { _ in .easeInOut(duration: 0.7) }
-                } else {
-                    label.symbolVariant(state == .connected ? .fill : .none)
-                        .foregroundStyle(statusColor)
-                }
-            }
+            // Symbol effects animate drawing only. A phase animation on the
+            // whole label also animates its initial safe-area layout on entry.
+            Image(systemName: state == .connected ? "folder.fill" : "folder")
+                .symbolEffect(.pulse, options: .repeating,
+                    isActive: (state == .connecting || state == .reconnecting) && !reduceMotion)
+                .accessibilityHidden(true)
+            Text(name)
         }
+        .foregroundStyle(statusColor)
         .accessibilityElement(children: .combine)
         .accessibilityValue(state.conversationAccessibilityDescription)
     }
-
-    private var label: some View { Label(name, systemImage: "folder") }
 }
 
 // Connection issues and unconfirmed outcomes share the composer's status area.

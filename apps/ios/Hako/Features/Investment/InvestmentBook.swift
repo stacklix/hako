@@ -919,7 +919,7 @@ struct InvestmentBook: Codable {
     private func cashTradeValue(_ event: InvestmentEvent, asset: InvestmentAsset) throws -> Decimal {
         if asset.isStockConnect {
             guard let amount = event.settledAmount, amount > 0 else {
-                throw InvestmentError.invalid("请填写券商交割单上的实际人民币金额。")
+                throw InvestmentError.invalid("请填写券商交割单上的清算金额（含费用的人民币总额）。")
             }
             return amount
         }
@@ -948,7 +948,7 @@ struct InvestmentBook: Codable {
         if let fee = event.fee, fee != 0 {
             guard fee > 0, event.kind == .buy || event.kind == .sell,
                   let asset = asset(event.assetID), asset.kind.supportsTradeFees, !asset.isStockConnect else {
-                throw InvestmentError.invalid("请检查交易费用。港股通请填写已含费用的实际交收金额。")
+                throw InvestmentError.invalid("请检查交易费用。港股通请填写已含费用的清算金额（人民币总额）。")
             }
         }
         var draft = accounts[index]

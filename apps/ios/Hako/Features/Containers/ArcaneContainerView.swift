@@ -3,6 +3,7 @@ import SwiftUI
 struct ArcaneContainerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.hakoPinPreview) private var pinPreview
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var store: ArcaneStore
     let environment: ArcaneEnvironment
@@ -28,10 +29,11 @@ struct ArcaneContainerView: View {
     @State private var fileMutation: ArcaneFileMutationSession?
     @State private var terminalSession: ArcaneTerminalPresentation?
 
-    init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer) {
+    init(store: ArcaneStore, environment: ArcaneEnvironment, container: ArcaneContainer, initialTab: String = "overview") {
         self.store = store; self.environment = environment; self.container = container
         _containerID = State(initialValue: container.id)
         _update = State(initialValue: container.update)
+        _tab = State(initialValue: ArcanePinRoute.tabs.contains(initialTab) ? initialTab : "overview")
     }
     private var details: ArcaneContainerDetails? { data.details }
     private var loading: Bool { data.loading }
@@ -210,8 +212,22 @@ struct ArcaneContainerView: View {
 
     var body: some View {
         content
-        .navigationTitle("容器详情")
+        .navigationTitle(details?.displayName ?? container.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !pinPreview {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        if let connection = store.connection {
+                            HakoPinButton(page: ArcanePinRoute(connectionID: connection.id,
+                                environmentID: environment.id, containerID: containerID, tab: tab)
+                                .page(name: details?.displayName ?? container.name, environmentName: environment.displayName))
+                        }
+                    } label: { Image(systemName: "ellipsis") }
+                        .accessibilityLabel("更多容器功能").disabled(store.connection == nil)
+                }
+            }
+        }
         .fullScreenCover(item: $terminalSession) { session in
             ArcaneTerminalScreen(store: store, environment: environment, details: session.details, connectionID: session.connectionID)
         }

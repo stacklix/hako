@@ -254,9 +254,11 @@ extension InvestmentAgentAction {
                     if selected.kind != .insurance {
                         inputs.append(field("quantity", "数量（\(selected.kind.unit)）", required: true, value: decimal(original?.quantity)))
                     }
-                    inputs.append(field("price", selected.kind == .insurance ? (eventKind == .sell ? "退保到账金额（\(quote)）" : "保费金额（\(quote)）") : "成交价（\(quote)）",
+                    let priceLabel = selected.kind == .insurance ? (eventKind == .sell ? "退保到账金额" : "保费金额")
+                        : selected.isStockConnect ? (eventKind == .sell ? "卖出单价" : "买入单价") : "成交价"
+                    inputs.append(field("price", "\(priceLabel)（\(quote)）",
                                         required: true, value: decimal(original?.price)))
-                    if selected.isStockConnect { inputs.append(field("settled_amount", eventKind == .sell ? "实际到账金额（CNY）" : "实际成本金额（CNY）", required: true, value: decimal(original?.settledAmount))) }
+                    if selected.isStockConnect { inputs.append(field("settled_amount", "清算金额（CNY）", required: true, value: decimal(original?.settledAmount))) }
                     if selected.kind.supportsTradeFees && !selected.isStockConnect && eventKind != .opening {
                         inputs.append(field("fee", "交易费用（\(settlement)，选填）", value: decimal(original?.fee)))
                     }

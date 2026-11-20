@@ -433,18 +433,41 @@ struct InvestmentAccountView: View {
                     if let position = ledger.positions[asset.id] {
                         let value = book.positionValue(position, asset: asset)
                         let gain = value.map { $0 - position.netCost + position.realized }
+                        let rate = position.netCost > 0 ? value.map {
+                            ($0 - position.netCost + (asset.kind == .insurance ? position.realized : 0)) / position.netCost
+                        } : nil
                         InvestmentLink(route: .asset(account.id, asset.id)) {
                             HStack(alignment: .top, spacing: 8) {
-                                let details = "\(asset.kindLabel) · \(InvestmentText.number(position.quantity)) \(asset.kind.unit)"
-                                InvestmentTitle(asset.displayName, subtitle: asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + details)
-                                Spacer(minLength: 0)
-                                VStack(alignment: .trailing, spacing: 4) {
-                                    Text(InvestmentText.money(value, account.currency)).font(.subheadline.weight(.semibold))
-                                    Text(InvestmentText.money(gain, account.currency, signed: true))
-                                        .font(.caption).foregroundStyle(InvestmentText.tint(gain))
-                                }.monospacedDigit()
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                        Text(asset.displayName)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(InvestmentText.money(value, account.currency))
+                                            .layoutPriority(1)
+                                    }.font(.subheadline.weight(.semibold))
+                                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                        Text(asset.kind.usesBalance ? asset.kindLabel : asset.displayCode + " · " + asset.kindLabel)
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(InvestmentText.money(gain, account.currency, signed: true))
+                                            .foregroundStyle(InvestmentText.tint(gain))
+                                            .layoutPriority(1)
+                                    }.font(.caption)
+                                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                        Text(asset.kind.usesBalance ? "余额 " + InvestmentText.money(value, account.currency)
+                                             : InvestmentText.number(position.quantity) + " " + asset.historyUnit)
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(InvestmentText.percent(rate))
+                                            .foregroundStyle(InvestmentText.tint(rate))
+                                            .accessibilityLabel("盈亏比例 " + InvestmentText.percent(rate))
+                                            .layoutPriority(1)
+                                    }.font(.caption)
+                                }
+                                .lineLimit(1).minimumScaleFactor(0.75).monospacedDigit()
                                 InvestmentChevron()
                             }.frame(minHeight: 44).contentShape(Rectangle())
+                                .accessibilityElement(children: .combine)
                         }.buttonStyle(.plain)
                         if asset.id != assets.last?.id { Divider() }
                     }
@@ -472,7 +495,7 @@ enum InvestmentText {
     }
     static func tint(_ value: Decimal?) -> Color {
         guard let value, value != 0 else { return .primary }
-        return value > 0 ? HakoStyle.adaptive(0xac4841, 0xf6a199) : HakoStyle.adaptive(0x267669, 0x82c7b7)
+        return InvestmentTrendStyle.tint(value)
     }
     static func date(_ date: Date) -> String {
         var format = Date.FormatStyle(date: .numeric, time: .omitted)

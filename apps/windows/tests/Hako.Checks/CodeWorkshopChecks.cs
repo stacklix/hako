@@ -22,6 +22,7 @@ internal static class CodeWorkshopChecks
     public static async Task RunAsync()
     {
         await WorkshopReadChecks.RunAsync();
+        await WorkshopProjectFileChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
         WorkshopCatalogChecks.Run();
         Check(CodexAppServer.RequestTimeout("turn/start") == TimeSpan.FromSeconds(60) &&
@@ -700,8 +701,38 @@ internal static class CodeWorkshopChecks
             File.WriteAllBytes(Path.Combine(recoveryStorage, unrelated.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(unrelated, WorkshopProtocol.Json));
             File.WriteAllBytes(Path.Combine(recoveryStorage, unsent.Id + ".json"), JsonSerializer.SerializeToUtf8Bytes(unsent, WorkshopProtocol.Json));
             File.WriteAllText(Path.Combine(project, ".recovery-client"), recoveredJob.Id);
-            await using (var recovery = new CodeWorkshop(recoveryStorage, code, Path.Combine(directory, ".codex"), token => Start(token, scenario: "recovery-older")))
+            var recoveryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseRecovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using (var recovery = new CodeWorkshop(recoveryStorage, code, Path.Combine(directory, ".codex"), async token =>
             {
+                recoveryEntered.TrySetResult();
+                await releaseRecovery.Task.WaitAsync(token);
+                return await Start(token, scenario: "recovery-older");
+            }))
+            {
+                using var watching = new CancellationTokenSource();
+                var firstPage = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var stream = Task.Run(() => recovery.WatchOperationAsync(Json(new { operationId = recoveredJob.Id, cursor = 0 }),
+                    page => { firstPage.TrySetResult(page); return Task.CompletedTask; }, watching.Token));
+                try
+                {
+                    await recoveryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                    var independent = await Task.Run(() => recovery.OperationAsync(Json(new { operationId = unsent.Id }), default))
+                        .WaitAsync(TimeSpan.FromSeconds(3));
+                    Check(CodexJson.Text(Result(independent).GetProperty("operation"), "state") == "failed",
+                        "A recovering subscription blocked unrelated operation reads behind the global monitor");
+                    releaseRecovery.TrySetResult();
+                    var streamed = (await firstPage.Task.WaitAsync(TimeSpan.FromSeconds(10))).GetProperty("operation");
+                    Check(CodexJson.Text(streamed, "state") == "completed",
+                        "A restarted task subscription deadlocked while reconciling its canonical outcome");
+                }
+                finally
+                {
+                    releaseRecovery.TrySetResult();
+                    watching.Cancel();
+                    try { await stream.WaitAsync(TimeSpan.FromSeconds(5)); }
+                    catch (OperationCanceledException) when (watching.IsCancellationRequested) { }
+                }
                 var reconciled = Result(await recovery.OperationAsync(Json(new { operationId = recoveredJob.Id }), default)).GetProperty("operation");
                 Check(CodexJson.Text(reconciled, "state") == "completed" && CodexJson.Text(reconciled, "message") == "",
                     "History refresh did not persist a verified outcome for the operation API");

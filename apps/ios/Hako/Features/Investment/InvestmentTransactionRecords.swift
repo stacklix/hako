@@ -107,7 +107,8 @@ struct InvestmentTransactionRecords: View {
                 secondary(event.kind == .sell ? "实际回款" : "投入金额")
             } else {
                 if asset.kind != .insurance { Text(quantity(event.quantity)) }
-                secondary("成交价 " + InvestmentText.number(event.price) + " " + book.quoteUnit(for: asset))
+                let priceTitle = asset.isStockConnect ? (event.kind == .sell ? "卖出单价 " : "买入单价 ") : "成交价 "
+                secondary(priceTitle + InvestmentText.number(event.price) + " " + book.quoteUnit(for: asset))
             }
         case .adjustment where asset.kind.usesBalance:
             Text(InvestmentText.money(event.settledAmount, account.currency))
@@ -173,11 +174,13 @@ struct InvestmentTransactionRecords: View {
             secondary("送股增加持仓数量，不增加买入投入。")
         case .opening, .buy, .sell:
             if !asset.kind.usesBalance && asset.kind != .insurance { detailRow("成交数量", quantity(event.quantity)) }
-            detailRow(asset.kind.usesBalance ? "变动金额" : "成交价格", InvestmentText.number(event.price) + " " + book.quoteUnit(for: asset))
+            let priceTitle = asset.kind.usesBalance ? "变动金额"
+                : asset.isStockConnect ? (event.kind == .sell ? "卖出单价" : "买入单价") : "成交价格"
+            detailRow(priceTitle, InvestmentText.number(event.price) + " " + book.quoteUnit(for: asset))
             if asset.kind.supportsTradeFees { detailRow("交易费用", InvestmentText.money(event.fee ?? 0, asset.settlementCurrency)) }
             detailRow(event.kind == .opening ? "现金变化" : event.kind == .sell ? "实际回款" : "实际支出",
                       InvestmentText.money(cash.map(abs), account.currency))
-            if let balance = event.settledAmount { detailRow(asset.kind.usesBalance ? "变动后余额" : "实际交收金额", InvestmentText.money(balance, account.currency)) }
+            if let balance = event.settledAmount { detailRow(asset.kind.usesBalance ? "变动后余额" : "清算金额", InvestmentText.money(balance, account.currency)) }
             if asset.kind.usesMargin { detailRow("保证金", InvestmentText.money(event.margin, account.currency)) }
         case .adjustment where asset.kind.usesBalance:
             detailRow("调整前余额", InvestmentText.money(book.positionBefore(event, accountID: account.id)?.depositBalance, account.currency))

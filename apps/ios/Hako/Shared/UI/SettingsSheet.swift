@@ -11,6 +11,7 @@ struct SettingsSheet<Content: View>: View {
     private let saveAccessibilityLabel: String
     private let cancelTitle: String?
     private let saveTitle: String?
+    private let closePlacement: ToolbarItemPlacement
     private let content: Content
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingDiscard = false
@@ -19,6 +20,7 @@ struct SettingsSheet<Content: View>: View {
          saveEnabled: Bool = true, onSave: (() -> Void)? = nil,
          detents: Set<PresentationDetent> = [.large], saveAccessibilityLabel: String = "保存配置",
          cancelTitle: String? = nil, saveTitle: String? = nil,
+         closePlacement: ToolbarItemPlacement = .topBarLeading,
          @ViewBuilder content: () -> Content) {
         self.title = title
         self.hasChanges = hasChanges
@@ -29,6 +31,7 @@ struct SettingsSheet<Content: View>: View {
         self.saveAccessibilityLabel = saveAccessibilityLabel
         self.cancelTitle = cancelTitle
         self.saveTitle = saveTitle
+        self.closePlacement = closePlacement
         self.content = content()
     }
 
@@ -38,7 +41,7 @@ struct SettingsSheet<Content: View>: View {
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
+                    ToolbarItem(placement: closePlacement) {
                         Button(action: requestDismiss) {
                             if let cancelTitle { Text(cancelTitle) }
                             else { Image(systemName: "xmark") }

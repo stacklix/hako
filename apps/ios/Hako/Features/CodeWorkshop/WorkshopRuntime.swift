@@ -126,41 +126,45 @@ import UIKit
     // Resolve a notification without changing the project/computer selection
     // underneath a preview. A later full-page switch reuses this same object.
     func notificationConversation(_ notice: WorkshopPushNotice) async throws -> WorkshopConversation {
+        try await pageConversation(computerID: notice.computerId, threadID: notice.threadId, title: notice.subtitle)
+    }
+
+    func pageConversation(computerID: String, threadID: String, title: String) async throws -> WorkshopConversation {
         resetContext()
-        guard UUID(uuidString: notice.threadId) != nil else { throw HakoError(message: "这条通知没有可打开的会话。") }
+        guard UUID(uuidString: threadID) != nil else { throw HakoError(message: "此页面没有可打开的会话。") }
         if let existing = conversations.values.first(where: {
-            $0.conversation.scope == store.scope && $0.conversation.agent.id == notice.computerId &&
-            $0.conversation.threadId?.caseInsensitiveCompare(notice.threadId) == .orderedSame
+            $0.conversation.scope == store.scope && $0.conversation.agent.id == computerID &&
+            $0.conversation.threadId?.caseInsensitiveCompare(threadID) == .orderedSame
         })?.conversation {
             retain(existing)
             return existing
         }
         await store.prepareNetwork()
-        if !store.authenticated || !store.agents.contains(where: { $0.id == notice.computerId }) { await store.restore() }
+        if !store.authenticated || !store.agents.contains(where: { $0.id == computerID }) { await store.restore() }
         try Task.checkCancellation()
         let scope = store.scope
-        guard store.authenticated, let agent = store.agents.first(where: { $0.id == notice.computerId }) else {
-            throw HakoError(message: "通知对应的电脑当前不可用，请检查连接。")
+        guard store.authenticated, let agent = store.agents.first(where: { $0.id == computerID }) else {
+            throw HakoError(message: "页面对应的电脑当前不可用，请检查连接。")
         }
         if store.selectedAgentID == agent.id,
-           let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(notice.threadId) == .orderedSame }),
+           let session = store.sessions.first(where: { $0.id.caseInsensitiveCompare(threadID) == .orderedSame }),
            let application = store.applications.first(where: { $0.id == session.applicationId }) {
             return open(session, agent: agent, application: application, archived: store.showingArchived)
         }
         let catalog: WorkshopCatalog = try await store.call(agent, "applications.list")
         try Task.checkCancellation()
         guard scope == store.scope else { throw CancellationError() }
-        if let session = catalog.sessions.first(where: { $0.id.caseInsensitiveCompare(notice.threadId) == .orderedSame }),
+        if let session = catalog.sessions.first(where: { $0.id.caseInsensitiveCompare(threadID) == .orderedSame }),
            let application = catalog.applications.first(where: { $0.id == session.applicationId }) {
             return open(session, agent: agent, application: application, archived: false)
         }
-        let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": notice.threadId])
+        let history: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": threadID])
         try Task.checkCancellation()
         guard scope == store.scope else { throw CancellationError() }
         guard let application = WorkshopApplication.containing(history.cwd, in: catalog.applications) else {
-            throw HakoError(message: "通知对应的项目已不可用。")
+            throw HakoError(message: "页面对应的项目已不可用。")
         }
-        let session = WorkshopSession(id: notice.threadId, title: notice.subtitle.isEmpty ? "会话" : notice.subtitle,
+        let session = WorkshopSession(id: threadID, title: title.isEmpty ? "会话" : title,
             applicationId: application.id, cwd: history.cwd, preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970),
             state: "unknown", operationId: history.operationId, completionId: history.completionId)
         return open(session, agent: agent, application: application, archived: false)

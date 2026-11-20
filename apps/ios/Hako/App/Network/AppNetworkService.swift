@@ -13,6 +13,7 @@ import NetworkExtension
     private let monitor = NWPathMonitor()
     private let changed = PassthroughSubject<Void, Never>()
     private var pathGeneration = UUID()
+    private let ssidCache = NetworkSSIDCache { await NEHotspotNetwork.fetchCurrent()?.ssid }
     var changes: AnyPublisher<Void, Never> { changed.eraseToAnyPublisher() }
     var isLocal: Bool { LocalNetworkConfiguration(ssids: ssids).isLocal(ssid: currentSSID, usesWiFi: usesWiFi) }
 
@@ -23,6 +24,7 @@ import NetworkExtension
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.pathGeneration = UUID()
+                self.ssidCache.invalidate()
                 self.usesWiFi = path.status == .satisfied && path.usesInterfaceType(.wifi)
                 self.currentSSID = nil
                 self.changed.send()
@@ -43,7 +45,7 @@ import NetworkExtension
 
     func refresh() async {
         let generation = pathGeneration
-        let ssid = await NEHotspotNetwork.fetchCurrent()?.ssid
+        let ssid = await ssidCache.value(usesWiFi: usesWiFi, generation: generation)
         guard !Task.isCancelled, generation == pathGeneration else { return }
         let unchanged = currentSSID == nil && ssid == nil || currentSSID.flatMap { old in ssid.map { old.utf8.elementsEqual($0.utf8) } } == true
         if !unchanged { currentSSID = ssid; changed.send() }

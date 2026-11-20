@@ -88,6 +88,13 @@ enum HakoApplications {
         return registry
     }()
 
+    @MainActor static let pins: HakoPinRegistry = {
+        let registry = HakoPinRegistry()
+        WorkshopPinContributor.register(in: registry)
+        ArcanePinContributor.register(in: registry)
+        return registry
+    }()
+
     @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
         for application in Category.allCases.flatMap(\.applications) {
             application.registerShortcuts(in: registry)
