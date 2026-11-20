@@ -33,7 +33,7 @@ enum DeviceCardOrder {
     static func pageNames(capabilities: [String], saved: [String]) -> [String] {
         // Android exposes telephony capabilities but does not implement SSH.
         // Keep the existing local terminal for desktop agents.
-        let android = capabilities.contains { ["query.device.status", "query.device.storage", "query.device.battery", "query.network.wifi", "query.telephony.sims", "query.sms.messages",
+        let android = capabilities.contains { ["query.device.status", "query.device.storage", "query.device.battery", "query.network.wifi", "query.device.screen", "query.telephony.sims", "query.sms.messages",
             "query.telephony.calls", "action.sms.send", "action.telephony.call"].contains($0) }
         return arranged(available: capabilities + (android ? [] : [terminalPageName]), saved: saved)
     }

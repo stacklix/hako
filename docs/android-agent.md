@@ -34,6 +34,7 @@ Android Agent 位于 `apps/android`，基于 Nami 的 Flutter UI 和 Kotlin 短�
 | `query.device.storage` | `{}` | 是 |
 | `query.device.battery` | `{}` | 是 |
 | `query.network.wifi` | `{}` | 是 |
+| `query.device.screen` | `{}` | 是 |
 | `query.telephony.sims` | `{}` | 是 |
 | `query.sms.messages` | `limit`（1–50，默认 20）、可选 `cursor` | 否 |
 | `query.telephony.calls` | 同上 | 否 |
@@ -41,11 +42,13 @@ Android Agent 位于 `apps/android`，基于 Nami 的 Flutter UI 和 Kotlin 短�
 | `action.sms.send` | `requestId`、`number`、`text`、可选 `subscriptionId` | 否 |
 | `action.telephony.call` | `requestId`、`number` | 否 |
 
-`query.all` 仅聚合当前设备状态、内部存储空间、电池信息、Wi-Fi 信息、局域网入口和 SIM 状态，不读取短信、通话记录、操作历史或任何其他历史数据。某项状态读取失败时单独返回该项错误。实时订阅也仅采集这些状态，约每 10 秒推送一次。
+`query.all` 仅聚合当前设备状态、内部存储空间、电池信息、Wi-Fi 信息、屏幕状态、局域网入口和 SIM 状态，不读取短信、通话记录、操作历史或任何其他历史数据。某项状态读取失败时单独返回该项错误。实时订阅也仅采集这些状态，约每 10 秒推送一次。
 
 `query.device.storage` 返回 `storageTotalBytes`、`storageAvailableBytes` 和 `sampledAt`。容量取 App 私有数据所在的内部数据分区，可用空间为普通应用可用的字节数，不包含系统保留块；不把共享/模拟存储重复相加，不等同于厂商标称的整机存储容量。iOS 将此能力合并展示在设备状态页，与运行内存分别标注。
 
 `query.device.battery` 返回电量、充放电状态、供电方式、温度（°C）、电压（V）、瞬时电流（mA）、系统健康状态及采样时间。系统未提供的读数为 null；电流正值表示流入电池，负值表示放电；健康状态不是电池剩余寿命百分比。
+
+`query.device.screen` 返回主屏幕的 `displayState`、设备是否可交互 `interactive` 和 `sampledAt`。显示状态为 `on`、`off`、`doze`、`doze_suspend`、`on_suspend`、`vr` 或 `unknown`；iOS 分别展示亮屏、熄屏、息屏显示等状态。无主屏幕或未知状态不当作熄屏；通话贴耳关屏时可交互状态也不代替屏幕状态。本能力只读，不唤醒设备、不控制屏幕，不需要新增运行时权限。
 
 `query.network.wifi` 返回当前 Wi-Fi 的连接状态、SSID 及其可用状态、信号（dBm）、信号等级（0–4）、协商速率（Mbps）、频率（MHz）、互联网验证结果及采样时间。不扫描周边网络，不返回 BSSID、MAC、密码或 GPS 坐标。未连接时读数为 null；SSID 被系统隐藏时保留其他可用指标并说明权限、定位服务或后台访问限制。协商速率不代表实际下载速度。
 

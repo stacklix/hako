@@ -280,6 +280,7 @@ private extension ConsoleAgentCapability {
         case (AndroidDeviceCommand.storage, 1): "存储空间"
         case (AndroidDeviceCommand.battery, 1): "电池信息"
         case (AndroidDeviceCommand.wifi, 1): "Wi-Fi 信息"
+        case (AndroidDeviceCommand.screen, 1): "屏幕状态"
         case (AndroidDeviceCommand.sims, 1): "SIM 卡"
         case (AndroidDeviceCommand.messages, 1), (AndroidDeviceCommand.send, 1): "短信"
         case (AndroidDeviceCommand.calls, 1), (AndroidDeviceCommand.call, 1): "通话"

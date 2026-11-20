@@ -19,6 +19,8 @@ struct DeviceAndroidStatusView: View {
     let wifiEntry: ConsoleCapabilityData?
     let showsBattery: Bool
     let showsWifi: Bool
+    let screenEntry: ConsoleCapabilityData?
+    let showsScreen: Bool
     @State private var showingPermissions = false
 
     var body: some View {
@@ -51,6 +53,10 @@ struct DeviceAndroidStatusView: View {
                     LabeledContent("Agent 版本", value: status.appVersion)
                     Divider()
                     LabeledContent("网络", value: status.networkLabel)
+                    if showsScreen {
+                        Divider()
+                        DeviceAndroidScreenView(entry: screenEntry, compact: true)
+                    }
                     Divider()
                     LabeledContent("开机时长", value: status.uptimeLabel)
                 }.font(.subheadline).devicePagePanel()

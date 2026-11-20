@@ -38,6 +38,7 @@ internal class AgentDispatcher(private val context: Context) : AgentCommands {
             AgentStorage.COMMAND -> { AgentProtocol.fields(params, emptySet()); AgentStorage.snapshot(context) }
             AgentBattery.COMMAND -> { AgentProtocol.fields(params, emptySet()); AgentBattery.snapshot(context) }
             AgentWifi.COMMAND -> { AgentProtocol.fields(params, emptySet()); AgentWifi.snapshot(context) }
+            AgentScreen.COMMAND -> { AgentProtocol.fields(params, emptySet()); AgentScreen.snapshot(context) }
             "query.telephony.sims" -> { AgentProtocol.fields(params, emptySet()); sims() }
             "query.sms.messages" -> history(params, true)
             "query.telephony.calls" -> history(params, false)

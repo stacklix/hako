@@ -12,7 +12,7 @@ class AgentProtocolTest {
             if (it == "query.telephony.sims") throw AgentError("permission_denied", "未授权")
             JSONObject().put("platform", "android")
         }.getJSONObject("data")
-        assertEquals(listOf("query.device.status", AgentStorage.COMMAND, AgentBattery.COMMAND, AgentWifi.COMMAND, "query.network.lan", "query.telephony.sims"), calls)
+        assertEquals(listOf("query.device.status", AgentStorage.COMMAND, AgentBattery.COMMAND, AgentWifi.COMMAND, AgentScreen.COMMAND, "query.network.lan", "query.telephony.sims"), calls)
         assertEquals("android", data.getJSONObject("query.device.status").getJSONObject("result").getString("platform"))
         assertEquals("permission_denied", data.getJSONObject("query.telephony.sims").getJSONObject("error").getString("code"))
         assertFalse(data.has("query.sms.messages"))

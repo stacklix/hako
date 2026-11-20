@@ -23,6 +23,7 @@ internal object AgentProtocol {
         AgentCapability(AgentStorage.COMMAND, true),
         AgentCapability(AgentBattery.COMMAND, true),
         AgentCapability(AgentWifi.COMMAND, true),
+        AgentCapability(AgentScreen.COMMAND, true),
         AgentCapability("query.network.lan", true),
         AgentCapability("query.telephony.sims", true),
         AgentCapability("query.sms.messages"),

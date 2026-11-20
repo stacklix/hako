@@ -107,8 +107,8 @@ class AgentConnectionTest {
             assertFalse(response.getJSONObject("result").getJSONObject("data").has("query.sms.messages"))
             assertEquals("query.all", calls.poll(5, TimeUnit.SECONDS))
             peer.send("""{"type":"telemetry_start","id":"t1"}""")
-            val methods = (1..6).map { messages.poll(5, TimeUnit.SECONDS)!!.getString("method") }.toSet()
-            assertEquals(setOf("query.device.status", AgentStorage.COMMAND, AgentBattery.COMMAND, AgentWifi.COMMAND, "query.network.lan", "query.telephony.sims"), methods)
+            val methods = (1..7).map { messages.poll(5, TimeUnit.SECONDS)!!.getString("method") }.toSet()
+            assertEquals(setOf("query.device.status", AgentStorage.COMMAND, AgentBattery.COMMAND, AgentWifi.COMMAND, AgentScreen.COMMAND, "query.network.lan", "query.telephony.sims"), methods)
             peer.send("""{"type":"telemetry_stop","id":"t1"}""")
         } finally { connection.close(); server.close() }
     }

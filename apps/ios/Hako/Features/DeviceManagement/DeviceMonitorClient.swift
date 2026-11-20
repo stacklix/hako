@@ -242,7 +242,7 @@ import Combine
                 // other on-demand pages own their requests and are not scanned here.
                 let initial = Set(["query.system.metrics", DeviceProcessCommand.status,
                                    "query.network.listeners", "query.codex.usage", "query.device.status", "query.device.storage",
-                                   "query.device.battery", "query.network.wifi", "query.telephony.sims"])
+                                   "query.device.battery", "query.network.wifi", "query.device.screen", "query.telephony.sims"])
                 for capability in capabilities where initial.contains(capability.name) {
                     group.addTask {
                         await self.refreshQuery(agent, capability: capability, context: context, revisions: liveUpdates)

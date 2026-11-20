@@ -26,6 +26,16 @@ import Foundation
         precondition(hiddenWifi.isValid && hiddenWifi.nameLabel == "名称不可用" && hiddenWifi.nameExplanation != nil)
         let invalidWifi = try decoder.decode(AndroidWifiSnapshot.self, from: Data(wifiJSON.replacingOccurrences(of: "-55", with: "-127").utf8))
         precondition(!invalidWifi.isValid)
+        for (state, label) in [("on", "亮屏"), ("off", "熄屏"), ("doze", "息屏显示"),
+                               ("doze_suspend", "息屏显示"), ("on_suspend", "亮屏（低功耗）"), ("vr", "亮屏（VR）"), ("unknown", "未知")] {
+            for interactive in [true, false] {
+                let data = try JSONSerialization.data(withJSONObject: ["displayState": state, "interactive": interactive, "sampledAt": "2026-11-20T01:30:00Z"])
+                let screen = try decoder.decode(AndroidScreenSnapshot.self, from: data)
+                precondition(screen.isValid && screen.stateLabel == label && screen.interactive == interactive)
+            }
+        }
+        let invalidScreen = try decoder.decode(AndroidScreenSnapshot.self, from: Data(#"{"displayState":"unexpected","interactive":false,"sampledAt":"now"}"#.utf8))
+        precondition(!invalidScreen.isValid)
         let storageJSON = #"{"storageTotalBytes":113252478976,"storageAvailableBytes":92627828736,"sampledAt":"2026-11-19T14:51:05Z"}"#
         let storage = try decoder.decode(AndroidStorageSnapshot.self, from: Data(storageJSON.utf8))
         precondition(storage.isValid && storage.storageAvailableBytes == 92627828736)
@@ -45,7 +55,7 @@ import Foundation
         for number in ["12", "+", "138 0000", "123\n", "１２３", String(repeating: "1", count: 21)] {
             precondition(!AndroidDeviceCommand.validNumber(number))
         }
-        let all: Set<String> = [AndroidDeviceCommand.status, AndroidDeviceCommand.storage, AndroidDeviceCommand.battery, AndroidDeviceCommand.wifi, AndroidDeviceCommand.sims, AndroidDeviceCommand.messages,
+        let all: Set<String> = [AndroidDeviceCommand.status, AndroidDeviceCommand.storage, AndroidDeviceCommand.battery, AndroidDeviceCommand.wifi, AndroidDeviceCommand.screen, AndroidDeviceCommand.sims, AndroidDeviceCommand.messages,
             AndroidDeviceCommand.calls, AndroidDeviceCommand.operation, AndroidDeviceCommand.send, AndroidDeviceCommand.call]
         precondition(AndroidDeviceCommand.pageNames(all) == [AndroidDeviceCommand.status, AndroidDeviceCommand.sims,
             AndroidDeviceCommand.messages, AndroidDeviceCommand.calls])
@@ -54,6 +64,7 @@ import Foundation
         precondition(AndroidDeviceCommand.pageNames([AndroidDeviceCommand.operation]) == [AndroidDeviceCommand.operation])
         precondition(AndroidDeviceCommand.pageNames([AndroidDeviceCommand.storage]) == [AndroidDeviceCommand.storage])
         precondition(AndroidDeviceCommand.pageNames([AndroidDeviceCommand.battery, AndroidDeviceCommand.wifi]) == [AndroidDeviceCommand.battery, AndroidDeviceCommand.wifi])
+        precondition(AndroidDeviceCommand.pageNames([AndroidDeviceCommand.screen]) == [AndroidDeviceCommand.screen])
         let pending = AndroidPendingOperation(kind: "sms")
         precondition(pending.isValid && pending.result == nil)
         let restored = try decoder.decode(AndroidPendingOperation.self, from: JSONEncoder().encode(pending))

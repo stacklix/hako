@@ -464,6 +464,7 @@ struct DeviceMetricsView: View {
         case (AndroidDeviceCommand.storage, 1): return "存储"
         case (AndroidDeviceCommand.battery, 1): return "电池"
         case (AndroidDeviceCommand.wifi, 1): return "Wi-Fi"
+        case (AndroidDeviceCommand.screen, 1): return "屏幕"
         case (AndroidDeviceCommand.sims, 1): return "SIM 卡"
         case (AndroidDeviceCommand.messages, 1), (AndroidDeviceCommand.send, 1): return "短信"
         case (AndroidDeviceCommand.calls, 1), (AndroidDeviceCommand.call, 1): return "通话"
@@ -485,13 +486,16 @@ struct DeviceMetricsView: View {
                 storageEntry: state.entries[AndroidDeviceCommand.storage],
                 showsStorage: supportsAndroidCommand(AndroidDeviceCommand.storage),
                 batteryEntry: state.entries[AndroidDeviceCommand.battery], wifiEntry: state.entries[AndroidDeviceCommand.wifi],
-                showsBattery: supportsAndroidCommand(AndroidDeviceCommand.battery), showsWifi: supportsAndroidCommand(AndroidDeviceCommand.wifi))
+                showsBattery: supportsAndroidCommand(AndroidDeviceCommand.battery), showsWifi: supportsAndroidCommand(AndroidDeviceCommand.wifi),
+                screenEntry: state.entries[AndroidDeviceCommand.screen], showsScreen: supportsAndroidCommand(AndroidDeviceCommand.screen))
         case AndroidDeviceCommand.storage:
             DeviceAndroidStorageView(entry: state.entries[capability.name])
         case AndroidDeviceCommand.battery:
             DeviceAndroidBatteryView(entry: state.entries[capability.name])
         case AndroidDeviceCommand.wifi:
             DeviceAndroidWifiView(entry: state.entries[capability.name])
+        case AndroidDeviceCommand.screen:
+            DeviceAndroidScreenView(entry: state.entries[capability.name]).devicePagePanel()
         case AndroidDeviceCommand.sims:
             DeviceAndroidSimsView(entry: state.entries[capability.name])
         case AndroidDeviceCommand.messages, AndroidDeviceCommand.send:

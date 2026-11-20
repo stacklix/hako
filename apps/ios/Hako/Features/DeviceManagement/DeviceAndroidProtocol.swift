@@ -5,18 +5,19 @@ enum AndroidDeviceCommand {
     static let storage = "query.device.storage"
     static let battery = "query.device.battery"
     static let wifi = "query.network.wifi"
+    static let screen = "query.device.screen"
     static let sims = "query.telephony.sims"
     static let messages = "query.sms.messages"
     static let calls = "query.telephony.calls"
     static let operation = "query.device.operation"
     static let send = "action.sms.send"
     static let call = "action.telephony.call"
-    static let names: Set<String> = [status, storage, battery, wifi, sims, messages, calls, operation, send, call]
+    static let names: Set<String> = [status, storage, battery, wifi, screen, sims, messages, calls, operation, send, call]
 
     // A page can expose a query, an action, or both. Unknown versions stay separate.
     static func pageNames(_ supported: Set<String>) -> Set<String> {
         var pages = supported
-        if supported.contains(status) { pages.subtract([storage, battery, wifi]) }
+        if supported.contains(status) { pages.subtract([storage, battery, wifi, screen]) }
         if supported.contains(messages) { pages.remove(send) }
         if supported.contains(calls) { pages.remove(call) }
         if supported.contains(send) || supported.contains(call) { pages.remove(operation) }
@@ -33,6 +34,23 @@ struct AndroidStorageSnapshot: Decodable {
     let storageAvailableBytes: UInt64
     let sampledAt: String
     var isValid: Bool { storageTotalBytes > 0 && storageAvailableBytes <= storageTotalBytes }
+}
+
+struct AndroidScreenSnapshot: Decodable {
+    let displayState: String
+    let interactive: Bool
+    let sampledAt: String
+    var isValid: Bool { ["on", "off", "doze", "doze_suspend", "on_suspend", "vr", "unknown"].contains(displayState) }
+    var stateLabel: String {
+        switch displayState {
+        case "on": "亮屏"
+        case "off": "熄屏"
+        case "doze", "doze_suspend": "息屏显示"
+        case "on_suspend": "亮屏（低功耗）"
+        case "vr": "亮屏（VR）"
+        default: "未知"
+        }
+    }
 }
 
 struct AndroidBatterySnapshot: Decodable {
