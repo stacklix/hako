@@ -10,7 +10,8 @@ using Hako.Platform;
 
 namespace Hako.Core;
 
-internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSource source, Func<string, string[], Process>? launch = null)
+internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSource source, Func<string, string[], Process>? launch = null,
+    Func<string, string?>? productVersion = null)
 {
     internal sealed record Session(string Id, int ProcessId, DateTimeOffset StartedAt, DateTimeOffset LastHeartbeatAt,
         DateTimeOffset? EndedAt, string? ExitReason, int? ExitCode);
@@ -175,13 +176,10 @@ internal sealed class AgentGuardian(AgentGuardianOptions options, IAgentUpdateSo
         }
         if (saved.RejectedHash == candidate.Sha256) { updateState = "rejected"; return; }
         if (candidate.BuildId != 0 && candidate.BuildId <= saved.InstalledBuild) { updateState = "current"; return; }
-        var installedVersion = File.Exists(options.TargetPath) ? ReleaseVersion(FileVersionInfo.GetVersionInfo(options.TargetPath).ProductVersion) : null;
+        var installedVersion = File.Exists(options.TargetPath) ? ReleaseVersion(productVersion is null
+            ? FileVersionInfo.GetVersionInfo(options.TargetPath).ProductVersion : productVersion(options.TargetPath)) : null;
         var candidateVersion = ReleaseVersion(candidate.Version);
-        var stamp = AgentGuardianControl.Read<AgentInstallStamp>(PathFor("installed.json"));
-        if (candidateVersion == installedVersion && candidate.PublishedAt is not null && stamp is not null && candidate.PublishedAt <= stamp.InstalledAt &&
-            File.Exists(options.TargetPath) && Hash(options.TargetPath) == stamp.Sha256)
-        { updateState = "older_release"; return; }
-        if (candidateVersion is null || installedVersion is not null && candidateVersion < installedVersion)
+        if (candidateVersion is null || installedVersion is not null && candidateVersion <= installedVersion)
         { updateState = "older_release"; return; }
         // The candidate itself supplies the compatibility contract, before any stop or replacement.
         var preflight = await Cli(candidate.Path, ["--check-server-version"], token);

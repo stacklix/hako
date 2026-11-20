@@ -74,9 +74,14 @@ internal static class GuardianChecks
         internal AgentUpdateCandidate Candidate()
         {
             var path = Path.Combine(Root, "candidate.exe"); File.Copy(Target, path, true);
-            // A different valid bundle with the same release version exercises internal build updates.
+            // Append data so replacement and rollback verify a genuinely different hash.
             using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write)) stream.Write(Guid.NewGuid().ToByteArray());
             return new(path, AgentGuardian.Hash(path), 10, FileVersionInfo.GetVersionInfo(path).ProductVersion!.Split('+')[0]);
+        }
+        internal string? PreviousVersion(string path)
+        {
+            var version = Version.Parse(FileVersionInfo.GetVersionInfo(path).ProductVersion!.Split('+')[0]);
+            return path == Target ? new Version(version.Major, version.Minor, version.Build - 1).ToString() : version.ToString();
         }
         internal AgentGuardian.Session? Session => AgentGuardianControl.Read<AgentGuardian.Session>(Path.Combine(Profile, "logs", "agent-session.json"));
         internal static Process Launch(string executable, string[] arguments)
@@ -137,7 +142,14 @@ internal static class GuardianChecks
                     catch (ArgumentException) { }
                 }
                 if (!Path.GetFullPath(Root).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase)) throw new Exception("Unsafe fixture cleanup path.");
-                Directory.Delete(Root, true);
+                // Windows may release an exited process's executable mapping after WaitForExit.
+                var cleanupDeadline = DateTime.UtcNow.AddSeconds(5);
+                while (true)
+                {
+                    try { Directory.Delete(Root, true); break; }
+                    catch (IOException) when (DateTime.UtcNow < cleanupDeadline) { await Task.Delay(100); }
+                    catch (UnauthorizedAccessException) when (DateTime.UtcNow < cleanupDeadline) { await Task.Delay(100); }
+                }
             }
         }
     }
@@ -148,12 +160,28 @@ internal static class GuardianChecks
         await using var server = new Server();
         await using (var fixture = new Fixture(executable, server.Origin))
         {
+            using var old = await fixture.StartAsync();
+            var oldHash = AgentGuardian.Hash(fixture.Target);
+            var candidate = fixture.Candidate() with { PublishedAt = DateTimeOffset.UtcNow.AddMinutes(1), BuildId = long.MaxValue };
+            var guardian = new AgentGuardian(fixture.Options, new Source { Candidate = candidate }, Fixture.Launch);
+            await guardian.TickAsync(default);
+            using var status = JsonDocument.Parse(File.ReadAllText(AgentGuardianControl.FileFor(fixture.Profile, "status.json")));
+            Check(!old.HasExited && AgentGuardian.Hash(fixture.Target) == oldHash &&
+                status.RootElement.GetProperty("updateState").GetString() == "older_release" &&
+                !Directory.Exists(AgentGuardianControl.FileFor(fixture.Profile, "update-notifications")),
+                "A newer build of the same release replaced the Agent or emitted an upgrade notification.");
+            Console.WriteLine("PASS: same-version artifact with newer build and publication time does not replace or notify.");
+        }
+        await using (var fixture = new Fixture(executable, server.Origin))
+        {
             var source = new Source { Candidate = fixture.Candidate() };
             var staged = Path.Combine(Path.GetDirectoryName(fixture.Target)!, "updates", "pending", "Hako-new.exe");
             Directory.CreateDirectory(Path.GetDirectoryName(staged)!); File.Copy(source.Candidate.Path, staged);
             AgentGuardianControl.Write(AgentGuardianControl.FileFor(fixture.Profile, "pending-update.json"),
                 new AgentPendingUpdate(staged, source.Candidate.Sha256, source.Candidate.Version, DateTimeOffset.UtcNow, true));
-            var guardian = new AgentGuardian(fixture.Options, source, Fixture.Launch);
+            // Simulate the installed release's metadata while using one published binary
+            // to exercise real process replacement, restart, and rollback on hosted CI.
+            var guardian = new AgentGuardian(fixture.Options, source, Fixture.Launch, fixture.PreviousVersion);
             server.Version = "0.3.1";
             using var old = await fixture.StartAsync();
             var oldHash = AgentGuardian.Hash(fixture.Target);
@@ -187,7 +215,7 @@ internal static class GuardianChecks
             using var old = await fixture.StartAsync(); var oldHash = AgentGuardian.Hash(fixture.Target);
             var launches = 0;
             var guardian = new AgentGuardian(fixture.Options, source, (path, args) =>
-            { if (++launches == 1) throw new Win32Exception(5); return Fixture.Launch(path, args); });
+            { if (++launches == 1) throw new Win32Exception(5); return Fixture.Launch(path, args); }, fixture.PreviousVersion);
             await guardian.TickAsync(default);
             Check(AgentGuardian.Hash(fixture.Target) == oldHash && launches == 2, "Failed startup did not roll back and restart the original Agent.");
             var restoredId = fixture.Session!.ProcessId; await fixture.ReadyAsync(restoredId);
