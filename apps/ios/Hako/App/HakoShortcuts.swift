@@ -3,7 +3,7 @@ import Foundation
 
 struct SyncHakoDataIntent: AppIntent {
     static var title: LocalizedStringResource = "同步 Hako 数据"
-    static var description = IntentDescription("在后台更新各子应用数据，包括投资行情、到期定投和每日快照，并汇总执行结果。")
+    static var description = IntentDescription("在后台更新各子应用数据，包括投资行情、到期定投和每日快照，以及每周日的记账投资数据备份，并汇总执行结果。")
     static var openAppWhenRun = false
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {

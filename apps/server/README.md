@@ -6,6 +6,22 @@ Sora 是服务端应用名称，程序为 `sora-server`，发布镜像为 `ghcr.
 
 Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/admin/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
 
+## Hako 公开页面
+
+后端内嵌无需登录的应用介绍与政策页面，适用于 Google OAuth 品牌配置：
+
+| Google Auth Platform 字段 | 路径 |
+| --- | --- |
+| Application home page | `/` |
+| Application privacy policy link | `/privacy` |
+| Application terms of service link | `/terms` |
+
+将路径拼到实际配置的 `HAKO_PUBLIC_URL` 后，填写完整公网 HTTPS 地址。页面直接输出 HTML，无需 JavaScript、客户端证书或扫码登录；后台登录页也提供这三个入口。页面联系邮箱为 `xcamel@yeah.net`。公开说明与代码一起发布，部署者应核对说明和本实例实际配置相符。
+
+首页和隐私政策说明可选的 Google Drive `drive.file` 备份用途、客户端直传、令牌保存方式、Limited Use、撤回授权和删除远端备份的区别。正式提交 Google 品牌验证前，还需在 Google Search Console 验证域名，并把该域名加入 OAuth Authorized domains。新增公开页面不会放开后台或 Console API 的认证。
+
+## 功能概览
+
 服务端还支持定时扫描 Caddy 访问日志，在管理页查看每域名每小时访问量、来源 IP 及其 UA/URL 排行，以及正常响应／异常响应URL 与来源排行，统计独立持久化。
 
 管理控制台的「代码工坊」（`/admin/workshop`）通过已连接电脑上的 Codex 管理编程会话。页面提供独立的项目／会话菜单，支持电脑切换、搜索、会话历史分页、新建、归档与恢复、文字和图片输入、实时回复、排队消息的编辑／取消／立即追加、任务停止、审批与问题回答，以及模型、推理强度、速度和权限选择。项目内的「快捷命令」使用独立命令执行器，支持执行、超时、后台子进程选项、历史日志与停止。HTML 原型采用隔离的静态预览。任务和执行历史保存在电脑，网页关闭不停止任务；浏览器中的未发送草稿、附件、会话设置和命令编辑内容仅在当前页面内保留，刷新或退出登录后清除。

@@ -159,3 +159,4 @@ aside nav > a[aria-current="true"] { font-weight: 650; }
 .database-schema details{margin-top:10px}
 .database-schema summary{cursor:pointer;padding:6px 0}
 .database-schema pre{margin:4px 0 12px;padding:12px;background:var(--bg);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
+.login-legal-links{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 18px;margin-top:18px;font-size:12px}.login-legal-links a{color:var(--muted);text-decoration:underline;text-underline-offset:3px}

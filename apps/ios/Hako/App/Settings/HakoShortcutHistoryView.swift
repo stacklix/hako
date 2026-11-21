@@ -60,7 +60,7 @@ private struct HakoShortcutRunView: View {
                     Section {
                         HakoShortcutRetryButton(history: history, runID: runID)
                     } footer: {
-                        Text("仅重新执行未成功的子任务，成功后更新本条记录。")
+                        Text("仅重新执行失败或中断的子任务；成功和按计划跳过的子任务不重试。手动重试不受自动执行日期限制。")
                     }
                 }
                 if !run.steps.isEmpty {

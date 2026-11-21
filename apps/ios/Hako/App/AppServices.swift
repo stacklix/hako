@@ -1,6 +1,7 @@
 import Foundation
 
 enum AppServices {
+    @MainActor static func dataBackup() -> any HakoDataBackupAccess { HakoBackupService.shared }
     // Resolve configuration in the host. Token access remains private to the service,
     // and is deferred so child apps can still save local data while unconfigured.
     static func gitHub() -> any GitHubRepositoryAccess {

@@ -109,6 +109,13 @@ class SubappBoundariesTests(unittest.TestCase):
             self.assertIn(f"enum {folder}ShortcutContributor", sources)
             self.assertIn("registry.register(", sources)
 
+    def test_investment_data_backup_uses_only_the_host_contract(self):
+        sources = "\n".join(path.read_text(encoding="utf-8") for path in (FEATURES / "Investment").glob("*.swift"))
+        self.assertNotRegex(sources, r"GoogleDrive|WebDAV|google-drive|webdav")
+        self.assertIn("AppServices.dataBackup()", sources)
+        self.assertIn("InvestmentBackupSchedule.isDue(at: date)", sources)
+        self.assertIn("记账投资数据备份", sources)
+
     def test_common_code_contains_no_child_business_types(self):
         for name in ("Shared/GitHub/GitHubRepository.swift", "Shared/GitHub/GitHubService.swift", "App/AppServices.swift", "Shared/GitHub/GitHubSettings.swift", "Shared/GitHub/GitHubTokenStore.swift", "Shared/Infrastructure/CSV.swift", "Shared/Infrastructure/HakoError.swift"):
             source = (APP / name).read_text(encoding="utf-8")

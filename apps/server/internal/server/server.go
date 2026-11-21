@@ -159,6 +159,7 @@ func New(config Config) (*Server, error) {
 		st.db.Close()
 		return nil, err
 	}
+	s.publicRoutes()
 	s.adminRoutes()
 	if err := s.initOIDC(); err != nil {
 		st.db.Close()

@@ -155,8 +155,16 @@ jobs:
           /tmp/hako-execution-diagnostics-tests
       - name: Test shortcut history retries
         run: |
-          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/HakoError.swift Hako/App/HakoShortcutHistory.swift Hako/App/HakoShortcutRegistry.swift Tests/HakoShortcutRetryTests.swift -o /tmp/hako-shortcut-retry-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/HakoError.swift Hako/App/HakoShortcutHistory.swift Hako/Shared/Infrastructure/HakoShortcutSkip.swift Hako/Shared/Infrastructure/HakoShortcutExecution.swift Hako/App/HakoShortcutRegistry.swift Tests/HakoShortcutRetryTests.swift -o /tmp/hako-shortcut-retry-tests
           /tmp/hako-shortcut-retry-tests
+          swiftc Hako/Shared/Backup/HakoDataBackup.swift Hako/Shared/GoogleDrive/GoogleDriveModels.swift Hako/Shared/GoogleDrive/GoogleDriveClient.swift Tests/GoogleDriveBackupTests.swift -o /tmp/hako-google-drive-tests
+          /tmp/hako-google-drive-tests
+          swiftc Hako/Shared/Backup/HakoDataBackup.swift Hako/Shared/Backup/HakoBackupTargets.swift Hako/Features/Investment/InvestmentBackupSchedule.swift Tests/DataBackupTests.swift -o /tmp/hako-data-backup-tests
+          /tmp/hako-data-backup-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/HakoShortcutSkip.swift Hako/Shared/Infrastructure/HakoShortcutExecution.swift Hako/Shared/Backup/HakoDataBackup.swift Hako/Features/Investment/InvestmentBackupSchedule.swift Hako/Features/Investment/InvestmentDataBackup.swift Tests/InvestmentDataBackupTests.swift -o /tmp/hako-investment-data-backup-tests
+          /tmp/hako-investment-data-backup-tests
+          swiftc Hako/Shared/Backup/HakoDataBackup.swift Hako/Shared/Backup/HakoBackupTargets.swift Hako/Shared/Backup/WebDAVBackupClient.swift Tests/WebDAVBackupTests.swift -o /tmp/hako-webdav-backup-tests
+          /tmp/hako-webdav-backup-tests
       - name: Test host secure storage contract
         run: |
           swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/SecureStorage.swift Hako/Features/Containers/ArcaneProtocol.swift Hako/Features/Containers/ArcaneWorkspaceProtocol.swift Hako/Features/Containers/ArcaneKeychain.swift Hako/Features/CloudServers/ECSModels.swift Hako/Features/CloudServers/ECSKeychain.swift Tests/CredentialStorageTests.swift -o /tmp/hako-credential-tests

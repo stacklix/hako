@@ -3,7 +3,7 @@ import Foundation
 
 struct HakoShortcutRun: Codable, Identifiable {
     enum Status: String, Codable {
-        case running = "执行中", succeeded = "成功", failed = "失败", cancelled = "已取消", interrupted = "已中断"
+        case running = "执行中", succeeded = "成功", failed = "失败", cancelled = "已取消", interrupted = "已中断", skipped = "已跳过"
     }
 
     struct Step: Codable, Identifiable {

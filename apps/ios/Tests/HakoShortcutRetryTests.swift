@@ -13,9 +13,13 @@ import Foundation
         let history = HakoShortcutHistory(fileURL: file)
         let registry = HakoShortcutRegistry(history: history)
         var successfulCalls = 0, failedCalls = 0
+        var executionModes: [Bool] = []
         var expiredSink: HakoExecutionDiagnostics.Sink?
         registry.register("A") { successfulCalls += 1; return "ok" }
+        var skipCalls = 0
+        registry.register("Skip") { skipCalls += 1; throw HakoShortcutSkip(reason: "not Sunday") }
         registry.register("B") {
+            executionModes.append(HakoShortcutExecution.isManual)
             failedCalls += 1
             if failedCalls == 1 { expiredSink = HakoExecutionDiagnostics.sink }
             else { expiredSink?(HakoExecutionEvent(stage: "过期任务日志", state: .info, detail: "不应保存")) }
@@ -33,15 +37,17 @@ import Foundation
         precondition(failedStep.message?.contains("offline") == true && failedStep.finishedAt != nil)
         precondition(failedStep.events?.contains { $0.stage == "读取服务端登录会话" } == true)
         let firstEvents = failedStep.events!.map(\.id)
-        precondition(history.runs[0].status == .failed && history.runs[0].steps.count == 2)
+        precondition(history.runs[0].status == .failed && history.runs[0].steps.count == 3)
         do { _ = try await registry.retryRun(id); preconditionFailure("Retry failure was ignored") }
         catch {}
         precondition(history.runs[0].status == .failed && successfulCalls == 1 && failedCalls == 2)
         _ = try await registry.retryRun(id)
         precondition(history.runs.count == 1 && history.runs[0].id == id)
         precondition(history.runs[0].status == .succeeded && history.runs[0].finishedAt != nil)
-        precondition(history.runs[0].steps.count == 2 && history.runs[0].steps.allSatisfy { $0.status == .succeeded })
+        precondition(history.runs[0].steps.count == 3 && history.runs[0].steps.allSatisfy { [.succeeded, .skipped].contains($0.status) })
         precondition(successfulCalls == 1 && failedCalls == 3, "Successful steps must not run again")
+        precondition(executionModes == [false, true, true], "Explicit retries must run as manual executions")
+        precondition(!HakoShortcutExecution.isManual, "Execution mode leaked outside its callback")
         let step = history.runs[0].steps.first { $0.name == "B" }!
         precondition(step.attempts == 3 && step.message == "recovered")
         precondition(firstEvents.allSatisfy { id in step.events!.contains { $0.id == id } }, "Retry erased previous failure logs")
@@ -49,11 +55,26 @@ import Foundation
         let persisted = try Data(contentsOf: file)
         precondition(!String(decoding: persisted, as: UTF8.self).contains("fake-secret-456"))
         let restored = HakoShortcutHistory(fileURL: file)
-        precondition(restored.runs[0].status == .succeeded && restored.runs[0].steps.count == 2)
+        precondition(restored.runs[0].status == .succeeded && restored.runs[0].steps.count == 3)
         precondition(restored.runs[0].steps.first { $0.name == "B" }?.events?.count == step.events?.count)
         do { _ = try await registry.retryRun(id); preconditionFailure("Successful run was retried") }
         catch {}
         precondition(failedCalls == 3)
+        precondition(skipCalls == 1, "Skipped step was retried with failed steps")
+        _ = try await registry.runCallbacks(title: "Only skipped", names: ["Skip"])
+        precondition(skipCalls == 2 && successfulCalls == 1 && failedCalls == 3)
+        precondition(history.runs[0].status == .skipped && history.runs[0].steps[0].status == .skipped)
+        var manualModes: [Bool] = []
+        registry.register("Manual") {
+            await Task.yield()
+            manualModes.append(HakoShortcutExecution.isManual)
+            return "ok"
+        }
+        _ = try await registry.runCallbacks(title: "Manual backup", names: ["Manual"], manual: true)
+        _ = try await registry.runCallbacks(title: "Scheduled backup", names: ["Manual"])
+        precondition(manualModes == [true, false], "Manual execution affected a later scheduled run")
+        do { _ = try await registry.runCallbacks(title: "Unknown", names: ["removed"]); preconditionFailure("Unknown selection accepted") }
+        catch {}
         let unavailable = history.start("unavailable")
         history.recordStep("removed", status: .failed, runID: unavailable)
         history.finish(unavailable, status: .failed)

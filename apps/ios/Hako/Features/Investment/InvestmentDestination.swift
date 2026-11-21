@@ -618,7 +618,7 @@ private struct InvestmentLifecycleActions: View {
 
 private struct InvestmentSettings: View {
     private enum Sheet: Hashable, Identifiable {
-        case addAccount, account(UUID), credential(InvestmentQuoteSource)
+        case addAccount, account(UUID), credential(InvestmentQuoteSource), dataBackup
         var id: Self { self }
     }
 
@@ -725,6 +725,9 @@ private struct InvestmentSettings: View {
                 }
                 .disabled(preparingExport || showingExporter)
                 .investmentListRow()
+                Button { sheet = .dataBackup } label: {
+                    Label("数据备份", systemImage: "externaldrive.badge.icloud")
+                }.investmentListRow()
             } header: {
                 Text("数据导出")
             } footer: {
@@ -737,6 +740,7 @@ private struct InvestmentSettings: View {
             case .addAccount: InvestmentAccountEditor(store: store)
             case .account(let id): InvestmentAccountManagement(store: store, accountID: id)
             case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
+            case .dataBackup: InvestmentDataBackupSettings()
             }
         }
         .task(id: preparingExport) {
