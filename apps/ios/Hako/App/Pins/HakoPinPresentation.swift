@@ -45,12 +45,14 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     private var motion: HakoPinDrawerMotion?
     private var initialProgress: CGFloat = 0
     private var settlement: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
     private var onEnter: ((HakoPinnedPage) -> Void)?
     private let registry = HakoApplications.pins
 
     func attach(to window: UIWindow, onEnter: @escaping (HakoPinnedPage) -> Void) {
         self.onEnter = onEnter
         guard self.window !== window else { return }
+        selectionTask?.cancel()
         if let edge { self.window?.removeGestureRecognizer(edge) }
         removeDrawer()
         self.window = window
@@ -62,7 +64,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === edge {
-            guard drawer == nil, let edge, !(topController() is UIAlertController) else { return false }
+            guard drawer == nil, selectionTask == nil, let edge, !(topController() is UIAlertController) else { return false }
             let velocity = edge.velocity(in: window)
             return HakoPinDrag.opens(velocityX: Double(velocity.x), velocityY: Double(velocity.y))
         }
@@ -138,7 +140,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     }
 
     private func createDrawer() {
-        guard let window, let parent = topController(), drawer == nil else { return }
+        guard let window, let parent = topController(), drawer == nil, selectionTask == nil else { return }
         guard let scene = window.windowScene else { return }
         window.endEditing(true)
         let motion = HakoPinDrawerMotion(width: min(330, max(1, window.bounds.width - 52)))
@@ -152,6 +154,9 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
         overlay.backgroundColor = .clear; overlay.rootViewController = host
         let pan = UIPanGestureRecognizer(target: self, action: #selector(drawerSwiped(_:)))
         pan.delegate = self
+        pan.cancelsTouchesInView = false
+        pan.delaysTouchesBegan = false
+        pan.delaysTouchesEnded = false
         overlay.addGestureRecognizer(pan)
         drawerPan = pan
         self.motion = motion
@@ -190,15 +195,36 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     }
 
     private func select(_ page: HakoPinnedPage) {
+        guard selectionTask == nil, registry.contains(page) else { return }
         removeDrawer()
-        guard let presenter = topController(), !presenter.isBeingPresented, !presenter.isBeingDismissed else { return }
-        let content = HakoPinPreview(page: page, registry: registry, presenter: self) { [weak self] in self?.enter(page) }
-        let host = UIHostingController(rootView: content)
-        host.overrideUserInterfaceStyle = presenter.traitCollection.userInterfaceStyle
-        host.modalPresentationStyle = .pageSheet
-        host.sheetPresentationController?.detents = [.large()]
-        host.sheetPresentationController?.prefersGrabberVisible = true
-        presenter.present(host, animated: true)
+        selectionTask = Task { [weak self, weak sourceWindow = window] in
+            guard let self else { return }
+            defer { self.selectionTask = nil }
+            guard let sourceWindow else { return }
+            // Detach the drawer after its button event finishes before presenting
+            // another hosting tree. Keep one request through any ongoing transition.
+            await Task.yield()
+            while !Task.isCancelled {
+                guard self.window === sourceWindow, !sourceWindow.isHidden,
+                      sourceWindow.windowScene?.activationState == .foregroundActive else { return }
+                if let presenter = self.topController(), !(presenter is UIAlertController),
+                   presenter.viewIfLoaded?.window === sourceWindow,
+                   !presenter.isBeingPresented, !presenter.isBeingDismissed,
+                   presenter.transitionCoordinator == nil, presenter.presentedViewController == nil {
+                    let content = HakoPinPreview(page: page, registry: self.registry, presenter: self) { [weak self] in self?.enter(page) }
+                    let host = UIHostingController(rootView: content)
+                    host.overrideUserInterfaceStyle = presenter.traitCollection.userInterfaceStyle
+                    host.modalPresentationStyle = .pageSheet
+                    host.sheetPresentationController?.detents = [.large()]
+                    host.sheetPresentationController?.prefersGrabberVisible = true
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                        presenter.present(host, animated: true) { continuation.resume() }
+                    }
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
     }
 
     private func enter(_ page: HakoPinnedPage) {
@@ -227,10 +253,13 @@ private struct HakoPinPreview: View {
         SettingsSheet(title: page.title, closePlacement: .topBarTrailing) {
             registry.content(for: page)
                 .environment(\.hakoPinPreview, true)
+                .environment(\.hakoPinEnter, onEnter)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("进入", systemImage: "arrow.up.right", action: onEnter)
-                            .accessibilityLabel("进入" + page.title).disabled(!registry.contains(page))
+                    if !registry.providesPreviewNavigation(for: page) {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("进入", systemImage: "arrow.up.right", action: onEnter)
+                                .accessibilityLabel("进入" + page.title).disabled(!registry.contains(page))
+                        }
                     }
                 }
         }
@@ -282,6 +311,7 @@ private struct HakoPinDrawer: View {
                                         Spacer(minLength: 0)
                                         if !editing.isEditing { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
                                     }.frame(minHeight: 60).frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
                                 }.buttonStyle(.plain).disabled(editing.isEditing)
                                     .listRowBackground(HakoStyle.card)
                                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -304,7 +334,7 @@ private struct HakoPinDrawer: View {
                 .background(HakoStyle.background)
                 .clipShape(.rect(topLeadingRadius: 28, bottomLeadingRadius: 28))
                 .offset(x: motion.width * (1 - motion.progress))
-                .allowsHitTesting(!motion.dragging && !motion.settling)
+            .allowsHitTesting(!motion.dragging && (!motion.settling || motion.progress == 1))
             }
             .ignoresSafeArea()
             .foregroundStyle(HakoStyle.text).tint(.primary)

@@ -9,7 +9,7 @@ enum ConsoleKeychain {
         catch let error as SecretStorageError { throw SecretStorageError(status: error.status, context: "读取" + itemName(account)) }
     }
     static func save(_ account: String, data: Data) throws {
-        do { try storage.save(data, account: account, accessibility: .whenUnlocked) }
+        do { try storage.save(data, account: account, accessibility: .afterFirstUnlock) }
         catch let error as SecretStorageError { throw SecretStorageError(status: error.status, context: "保存" + itemName(account)) }
     }
     private static func itemName(_ account: String) -> String {
@@ -81,7 +81,7 @@ struct ConsoleIdentity: Codable {
     static func generate() throws -> Self {
         guard SecureEnclave.isAvailable else { throw HakoError(message: "设备绑定需要支持 Secure Enclave 的 iPhone。") }
         var error: Unmanaged<CFError>?
-        guard let control = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly, .privateKeyUsage, &error) else {
+        guard let control = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &error) else {
             throw HakoError(message: "无法创建设备密钥访问控制。")
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: control)

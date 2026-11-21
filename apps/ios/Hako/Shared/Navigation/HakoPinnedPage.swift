@@ -29,6 +29,13 @@ struct HakoPinnedPages {
 
     mutating func remove(_ ids: Set<String>) { pages.removeAll { ids.contains($0.id) } }
 
+    mutating func replace(_ id: String, with page: HakoPinnedPage) {
+        guard let index = pages.firstIndex(where: { $0.id == id }) else { return }
+        pages[index] = page
+        var seen = Set<String>()
+        pages = pages.filter { seen.insert($0.id).inserted }
+    }
+
     mutating func move(from offsets: IndexSet, to destination: Int) {
         guard destination >= 0, destination <= pages.count,
               offsets.allSatisfy({ pages.indices.contains($0) }) else { return }

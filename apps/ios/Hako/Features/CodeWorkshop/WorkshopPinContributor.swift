@@ -2,7 +2,7 @@ import SwiftUI
 
 @MainActor enum WorkshopPinContributor {
     static func register(in registry: HakoPinRegistry) {
-        registry.register(applicationID: "代码工坊", route: "conversation") { AnyView(WorkshopPinnedConversation(page: $0)) }
+        registry.register(applicationID: "代码工坊", route: "conversation", providesPreviewNavigation: true) { AnyView(WorkshopPinnedConversation(page: $0)) }
     }
 
     static func page(for conversation: WorkshopConversation) -> HakoPinnedPage? {
@@ -17,6 +17,7 @@ import SwiftUI
 
 private struct WorkshopPinnedConversation: View {
     let page: HakoPinnedPage
+    @Environment(\.hakoPinEnter) private var enterPinnedPage
     @ObservedObject private var store = WorkshopRuntime.shared.store
     @State private var conversation: WorkshopConversation?
     @State private var failure: String?
@@ -35,6 +36,14 @@ private struct WorkshopPinnedConversation: View {
         }
         .background(HakoStyle.background)
         .navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if conversation == nil || conversation?.scope != store.scope, let enterPinnedPage {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("进入", systemImage: "arrow.up.right", action: enterPinnedPage)
+                        .accessibilityLabel("进入" + page.title)
+                }
+            }
+        }
         .task(id: store.scope + "|\(attempt)") {
             conversation = nil; failure = nil
             guard page.parameters["namespace"] == store.networkNamespace.consoleDigest,

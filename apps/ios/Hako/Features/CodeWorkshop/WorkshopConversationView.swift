@@ -11,6 +11,7 @@ struct WorkshopConversationView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.hakoPinPreview) private var pinPreview
+    @Environment(\.hakoPinEnter) private var enterPinnedPage
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
@@ -26,6 +27,8 @@ struct WorkshopConversationView: View {
     @State private var showingCamera = false
     @State private var cameraPermissionDenied = false
     @State private var capturedPhoto: Data?
+    @StateObject private var pageCapture = WorkshopPageCapture()
+    @State private var capturingPage = false
     @State private var scrollFollowing = ConversationScrollFollowing()
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
@@ -166,6 +169,7 @@ struct WorkshopConversationView: View {
         .scrollDismissesKeyboard(.interactively)
         .background(HakoStyle.background)
         .background(WorkshopKeyboardDismissal())
+        .background(WorkshopPageCaptureHost(capture: pageCapture).frame(width: 0, height: 0))
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -202,11 +206,22 @@ struct WorkshopConversationView: View {
         }
         .refreshable { await conversation.synchronize() }
         .toolbar {
-            if let onSwitch {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("切换", systemImage: "arrow.up.right", action: onSwitch)
-                        .accessibilityLabel("切换到此会话")
+            ToolbarItemGroup(placement: .topBarLeading) {
+                if let enter = onSwitch ?? (pinPreview ? enterPinnedPage : nil) {
+                    Button("进入", systemImage: "arrow.up.right", action: enter)
+                        .accessibilityLabel("进入此会话")
                 }
+                if pageCapture.available {
+                    Button { Task { await capturePage() } } label: {
+                        if capturingPage { ProgressView() }
+                        else { Image(systemName: "camera.viewfinder") }
+                    }
+                    .accessibilityLabel(capturingPage ? "正在截取背后页面" : "截取背后页面")
+                    .accessibilityHint("将截图加入待发送图片，由你确认后发送")
+                    .disabled(!conversation.canCompose || conversation.isArchived || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
+                }
+            }
+            if onSwitch != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                         .accessibilityLabel("关闭会话预览")
@@ -413,6 +428,21 @@ struct WorkshopConversationView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(HakoStyle.background)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private func capturePage() async {
+        guard pageCapture.available, conversation.canCompose, conversation.editingMessageID == nil,
+              !loadingPhoto, conversation.photos.count < 3 else { return }
+        loadingPhoto = true; capturingPage = true
+        defer { loadingPhoto = false; capturingPage = false }
+        do {
+            let data = try pageCapture.capture()
+            let encoded = await Task.detached(priority: .userInitiated) { Self.encodePhoto(data) }.value
+            try Task.checkCancellation()
+            guard let encoded else { throw HakoError(message: "截图处理失败，未添加图片，请重试。") }
+            try conversation.attach(encoded)
+        } catch is CancellationError { }
+        catch { conversation.error = error.localizedDescription }
     }
 
     private func openCamera() async {

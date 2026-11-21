@@ -77,6 +77,16 @@ final class ArcaneClient: @unchecked Sendable {
         try await read(["environments", environment, "containers", id], as: ArcaneContainerDetails.self)
     }
 
+    func pinnedContainer(_ environment: String, name: String) async throws -> ArcaneContainer {
+        let details = try await details(environment, id: name)
+        guard details.name?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == name else {
+            throw ArcaneFailure(message: "服务端返回的容器名称与固定记录不一致，请重新读取。")
+        }
+        return ArcaneContainer(id: details.id, names: details.name.map { [$0] }, image: details.image,
+            state: details.state?.status, status: details.state?.health?.status, labels: details.labels,
+            updateInfo: details.updateInfo, resourceSample: nil, redeployDisabled: details.redeployDisabled)
+    }
+
     func projects(_ environment: String) async throws -> [ArcaneProjectSummary] {
         try await pages(["environments", environment, "projects"], as: ArcaneProjectSummary.self)
     }

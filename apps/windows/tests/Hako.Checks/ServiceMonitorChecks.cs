@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -115,15 +116,52 @@ internal static class ServiceMonitorChecks
             using var reopened = new RegisteredServices(registry, _ => Task.FromResult(listeners), startupDirectory: startup);
             if ((await reopened.StartAsync(parameters, default)).State != "exited" || File.ReadAllLines(marker).Length != 1)
                 throw new Exception("A replay after Agent restart executed the command twice");
+            var scope = Directory.GetDirectories(startup).Single();
+            var latest = Directory.GetFiles(scope, "service-*.json").Single();
+            File.Delete(Path.Combine(scope, requestID + ".exit"));
+            var recovered = (await monitor.ReadAsync(default)).Services[0];
+            if (recovered.Startup?.State != "exited" || !recovered.CanStart)
+                throw new Exception("An exited process without a completion receipt must not permanently block restart");
+            if ((await reopened.StartAsync(parameters, default)).State != "exited" || File.ReadAllLines(marker).Length != 1)
+                throw new Exception("Recovering a missing completion receipt must preserve request replay protection");
+            var originalReceipt = await File.ReadAllTextAsync(latest);
+            using (var current = Process.GetCurrentProcess())
+            {
+                async Task Receipt(long? ticks) => await File.WriteAllTextAsync(latest, JsonSerializer.Serialize(new {
+                    name = "launch", requestId = requestID, state = "submitted", requestedAt = now,
+                    processId = current.Id, processStartedAt = ticks
+                }));
+                await Receipt(current.StartTime.ToUniversalTime().Ticks);
+                if ((await monitor.ReadAsync(default)).Services[0].CanStart)
+                    throw new Exception("A live startup process must still block a duplicate start");
+                await Receipt(current.StartTime.ToUniversalTime().Ticks - 1);
+                if (!(await monitor.ReadAsync(default)).Services[0].CanStart)
+                    throw new Exception("A reused process ID must not be treated as the original startup process");
+                await Receipt(null);
+                var unknown = (await monitor.ReadAsync(default)).Services[0];
+                if (unknown.CanStart || unknown.Startup?.State != "unknown")
+                    throw new Exception("Missing process identity must not authorize another start");
+            }
+            await File.WriteAllTextAsync(latest, originalReceipt);
+            listeners = new(now, [], ["TCP IPv6 端口读取失败，结果可能不完整。"]);
+            if ((await monitor.ReadAsync(default)).Services[0].CanStart)
+                throw new Exception("A recovered process must not bypass an incomplete listener table");
             listeners = new(now, [Port(8100)], []);
             if ((await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "launch", requestId = Guid.NewGuid().ToString("D") }), default)).State != "already_listening")
                 throw new Exception("An occupied port did not prevent launch");
+            listeners = new(now, [], []);
+            var retry = await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "launch", requestId = Guid.NewGuid().ToString("D") }), default);
+            if (retry.State != "starting") throw new Exception("A confirmed exited startup must allow a new request");
+            deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && (await monitor.ReadAsync(default)).Services[0].Startup?.State == "starting") await Task.Delay(100);
+            if (File.ReadAllLines(marker).Length != 2 || (await monitor.ReadAsync(default)).Services[0].Startup?.State != "exited")
+                throw new Exception("Recovered startup did not run exactly one additional command");
             await ExpectError("invalid_params", async () => await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "launch", requestId = requestID, command = "injected" }), default));
             await ExpectError("service_not_registered", async () => await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "absent", requestId = Guid.NewGuid().ToString("D") }), default));
             listeners = new(now, [], []);
             await Registry([new { name = "no-command", port = 8100 }]);
             await ExpectError("start_command_missing", async () => await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "no-command", requestId = Guid.NewGuid().ToString("D") }), default));
-            Console.WriteLine("PASS: service registry reload/validation/privacy, configured health paths, HTTP status/body/timeout, LAN/IPv6/UDP, partial listener failure, detached startup, restart replay and duplicate/occupied-port protection");
+            Console.WriteLine("PASS: service registry reload/validation/privacy, health probes, detached startup, missing completion recovery, PID reuse, restart replay and duplicate/occupied-port protection");
         }
         finally
         {

@@ -3,6 +3,13 @@ import SwiftUI
 @MainActor enum ArcanePinContributor {
     static func register(in registry: HakoPinRegistry) {
         registry.register(applicationID: "容器管理", route: "container") { AnyView(ArcanePinnedContainer(page: $0)) }
+        let pins = HakoPinStore.shared
+        for page in pins.pages {
+            guard let route = ArcanePinRoute(page: page) else { continue }
+            var restored = route.page(environmentName: "")
+            restored.subtitle = page.subtitle
+            if restored != page { pins.replace(page.id, with: restored) }
+        }
     }
 }
 
@@ -39,11 +46,8 @@ private struct ArcanePinnedContainer: View {
                 guard let environment = environments.first(where: { $0.id == route.environmentID }) else {
                     throw ArcaneFailure(message: "固定容器所属的环境已不可用。")
                 }
-                let containers = try await client.containers(route.environmentID)
+                let container = try await client.pinnedContainer(route.environmentID, name: route.containerName)
                 try Task.checkCancellation()
-                guard let container = containers.first(where: { $0.id == route.containerID }) else {
-                    throw ArcaneFailure(message: "固定容器已不存在，可以从 Pin 列表中取消固定。")
-                }
                 guard store.connection?.id == route.connectionID else { throw CancellationError() }
                 selection = Selection(environment: environment, container: container)
             } catch is CancellationError { }

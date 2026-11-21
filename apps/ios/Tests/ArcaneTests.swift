@@ -169,6 +169,34 @@ private final class ArcaneMockProtocol: URLProtocol, @unchecked Sendable {
                 if let unknown { precondition(error.outcomeUnknown == unknown) }
             } catch { fatalError("Unexpected request failure: \(error)") }
         }
+        var pinRequests = 0
+        ArcaneMockProtocol.respond { request in
+            pinRequests += 1
+            precondition(request.httpMethod == "GET")
+            precondition(request.url!.path == "/docker/api/environments/env-pin/containers/sora")
+            precondition(request.url!.query == nil, "A pin must inspect its target directly, regardless of list filters")
+            return (200, bytes(#"{"success":true,"data":{"id":"sora-id","name":"/sora","image":"sora:latest","state":{"status":"exited","running":false},"redeployDisabled":true}}"#))
+        }
+        let pinned = try await client.pinnedContainer("env-pin", name: "sora")
+        precondition(pinned.id == "sora-id" && pinned.name == "sora" && pinned.stopped && pinned.redeployDisabled == true)
+        precondition(pinRequests == 1, "Opening a pin must not depend on a container list response")
+        ArcaneMockProtocol.respond { request in
+            precondition(request.url!.path.hasSuffix("/env-pin/containers/sora"))
+            return (200, bytes(#"{"success":true,"data":{"id":"rebuilt-sora-id","name":"/sora","state":{"status":"running"}}}"#))
+        }
+        let rebuiltPin = try await client.pinnedContainer("env-pin", name: "sora")
+        precondition(rebuiltPin.id == "rebuilt-sora-id" && rebuiltPin.name == "sora", "A rebuilt container must resolve by its unchanged name")
+        for body in [#"{"success":true,"data":{"id":"sora-id","name":"/sora-copy"}}"#,
+                     #"{"success":true,"data":{"id":"sora-id","name":"/Sora"}}"#,
+                     #"{"success":true,"data":{"id":"sora"}}"#] {
+            ArcaneMockProtocol.respond { _ in (200, bytes(body)) }
+            await failure { _ = try await client.pinnedContainer("env-pin", name: "sora") }
+        }
+        for status in [401, 403, 404, 500] {
+            ArcaneMockProtocol.respond { _ in (status, bytes("{}")) }
+            await failure(status: status) { _ = try await client.pinnedContainer("env-pin", name: "sora") }
+        }
+
         var starts: [String] = []
         ArcaneMockProtocol.respond { request in
             precondition(request.value(forHTTPHeaderField: "X-Api-Key") == "test-key")

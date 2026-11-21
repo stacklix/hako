@@ -218,10 +218,11 @@ struct ArcaneContainerView: View {
             if !pinPreview {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        if let connection = store.connection {
+                        if let connection = store.connection, let name = details?.name ?? container.names?.first {
                             HakoPinButton(page: ArcanePinRoute(connectionID: connection.id,
-                                environmentID: environment.id, containerID: containerID, tab: tab)
-                                .page(name: details?.displayName ?? container.name, environmentName: environment.displayName))
+                                environmentID: environment.id,
+                                containerName: name.trimmingCharacters(in: CharacterSet(charactersIn: "/")), tab: tab)
+                                .page(environmentName: environment.displayName))
                         }
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("更多容器功能").disabled(store.connection == nil)

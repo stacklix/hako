@@ -38,6 +38,17 @@ import Foundation
         let beforeInvalidMove = filtered.pages
         filtered.move(from: IndexSet(integer: 99), to: 0, among: visible)
         precondition(filtered.pages == beforeInvalidMove)
+        var replacing = HakoPinnedPages(data: try JSONEncoder().encode([first, third, second]))
+        let migrated = HakoPinnedPage(applicationID: "代码工坊", route: "conversation", key: "stable-name",
+            title: "会话", subtitle: "项目", symbol: "terminal")
+        replacing.replace(third.id, with: migrated)
+        precondition(replacing.pages.map(\.id) == [first.id, migrated.id, second.id], "Replacing a pin must preserve its position")
+        replacing.replace(second.id, with: migrated)
+        precondition(replacing.pages.map(\.id) == [first.id, migrated.id], "Pins converging to one route must be deduplicated")
+        replacing.replace("unknown", with: third)
+        precondition(replacing.pages.count == 2, "Migration must not recreate removed pins")
+        let migratedData = try replacing.encoded()
+        precondition(HakoPinnedPages(data: migratedData).pages == replacing.pages)
         print("PASS: Pin persistence, route identity, deduplication, metadata refresh, reorder and removal")
     }
 }

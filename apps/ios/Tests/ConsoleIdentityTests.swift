@@ -88,6 +88,14 @@ import Foundation
         let resetOtherServer = try load(otherOrigin)
         precondition(resetDefault.keyRepresentation == replacement.keyRepresentation)
         precondition(resetOldServer.keyRepresentation == replacement.keyRepresentation && resetOtherServer.keyRepresentation == replacement.keyRepresentation)
+        let beforeLockedRead = stored
+        do {
+            _ = try ConsoleIdentity.load(read: { _ in throw SecretStorageError(status: -25308) },
+                                         save: { _, _ in fatalError("Changed identity while Keychain was locked") },
+                                         generate: { fatalError("Rotated key after a locked read") })
+            fatalError("Locked Keychain was treated as an empty identity")
+        } catch let error as SecretStorageError { precondition(error.status == -25308) }
+        precondition(stored == beforeLockedRead)
         let second = ConsoleIdentity(deviceId: "second-replacement", keyRepresentation: Data("second-replacement-key".utf8))
         let resetAgain = try ConsoleIdentity.reset(save: { stored[$0] = $1 }, generate: { second }, prepare: { _ in })
         precondition(resetAgain.resetGeneration != reset.resetGeneration)

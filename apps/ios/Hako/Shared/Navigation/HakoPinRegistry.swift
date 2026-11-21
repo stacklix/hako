@@ -3,14 +3,19 @@ import Combine
 
 @MainActor final class HakoPinRegistry {
     private var routes: [String: [String: (HakoPinnedPage) -> AnyView]] = [:]
+    private var previewNavigation: [String: Set<String>] = [:]
 
-    func register(applicationID: String, route: String,
+    func register(applicationID: String, route: String, providesPreviewNavigation: Bool = false,
                   content: @escaping (HakoPinnedPage) -> AnyView) {
         precondition(routes[applicationID]?[route] == nil, "Pin route already registered")
         routes[applicationID, default: [:]][route] = content
+        if providesPreviewNavigation { previewNavigation[applicationID, default: []].insert(route) }
     }
 
     func contains(_ page: HakoPinnedPage) -> Bool { routes[page.applicationID]?[page.route] != nil }
+    func providesPreviewNavigation(for page: HakoPinnedPage) -> Bool {
+        previewNavigation[page.applicationID]?.contains(page.route) == true
+    }
 
     func content(for page: HakoPinnedPage) -> AnyView {
         routes[page.applicationID]?[page.route]?(page) ?? AnyView(
@@ -35,6 +40,7 @@ import Combine
 
     func contains(_ page: HakoPinnedPage) -> Bool { pages.contains { $0.id == page.id } }
     func pin(_ page: HakoPinnedPage) { update { $0.pin(page) } }
+    func replace(_ id: String, with page: HakoPinnedPage) { update { $0.replace(id, with: page) } }
     func remove(_ ids: Set<String>) { update { $0.remove(ids) } }
     func move(from offsets: IndexSet, to destination: Int) { update { $0.move(from: offsets, to: destination) } }
     func move(from offsets: IndexSet, to destination: Int, among visibleIDs: Set<String>) {
@@ -53,7 +59,12 @@ import Combine
 }
 
 private struct HakoPinPreviewKey: EnvironmentKey { static let defaultValue = false }
+private struct HakoPinEnterKey: EnvironmentKey { static let defaultValue: (() -> Void)? = nil }
 extension EnvironmentValues {
+    var hakoPinEnter: (() -> Void)? {
+        get { self[HakoPinEnterKey.self] }
+        set { self[HakoPinEnterKey.self] = newValue }
+    }
     var hakoPinPreview: Bool {
         get { self[HakoPinPreviewKey.self] }
         set { self[HakoPinPreviewKey.self] = newValue }

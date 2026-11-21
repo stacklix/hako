@@ -160,14 +160,23 @@ public sealed partial class RegisteredServices
                     ? new(exitCode == 0 ? "exited" : "failed", exitCode == 0 ? "启动命令已结束，请以端口和 HTTP 检查结果为准。" : $"启动命令失败（退出码 {exitCode}），请在设备上检查启动日志。", receipt.RequestedAt)
                     : new("unknown", "启动结果未确认，请在设备上检查。", receipt.RequestedAt);
             }
-            if (receipt.ProcessId is { } pid && receipt.ProcessStartedAt is { } ticks)
+            if (receipt.ProcessId is { } pid && pid > 0 && receipt.ProcessStartedAt is { } ticks && ticks > 0)
             {
-                using var process = Process.GetProcessById(pid);
-                if (!process.HasExited && process.StartTime.ToUniversalTime().Ticks == ticks)
+                Process process;
+                try { process = Process.GetProcessById(pid); }
+                catch (ArgumentException) { return ExitedWithoutReceipt(); }
+                using (process)
+                {
+                    if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != ticks)
+                        return ExitedWithoutReceipt();
                     return new("starting", "启动命令正在运行，请以端口和 HTTP 检查结果为准。", receipt.RequestedAt);
+                }
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or Win32Exception) { }
         return new("unknown", "启动结果未确认，请在设备上检查，勿重复启动。", receipt.RequestedAt);
+
+        ServiceStartupStatus ExitedWithoutReceipt() => new("exited",
+            "上次启动进程已退出，未留下退出回执；端口未监听时可重新启动。", receipt.RequestedAt);
     }
 }
