@@ -3,6 +3,7 @@ package server
 // Streams relay opaque binary messages. Device commands, codecs and encryption
 // are exclusively the responsibility of the two endpoints.
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -65,18 +66,39 @@ func (s *Server) consumeStream(w http.ResponseWriter, r *http.Request) {
 	if consumer.WriteJSON(map[string]string{"id": id, "producerToken": entry.secret}) != nil {
 		return
 	}
-	consumer.SetReadLimit(1024)
+	consumer.SetReadLimit(64 * 1024)
 	_ = consumer.SetReadDeadline(time.Now().Add(45 * time.Second))
 	consumer.SetPongHandler(func(string) error { return consumer.SetReadDeadline(time.Now().Add(45 * time.Second)) })
 	closed := make(chan struct{})
+	peerReady := make(chan *websocket.Conn, 1)
+	relayContext, cancelRelay := context.WithCancel(r.Context())
 	go func() {
 		defer close(closed)
+		var peer *websocket.Conn
 		for {
-			if _, _, err := consumer.ReadMessage(); err != nil {
+			kind, payload, err := consumer.ReadMessage()
+			if err != nil || kind != websocket.BinaryMessage || len(payload) == 0 || !valid() {
+				return
+			}
+			// At most one bounded frame waits for rendezvous. Keep one reader
+			// per socket, and never interpret endpoint-specific payloads.
+			if peer == nil {
+				select {
+				case peer = <-peerReady:
+				case <-relayContext.Done():
+					return
+				}
+			}
+			if !valid() {
+				return
+			}
+			_ = peer.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if peer.WriteMessage(kind, payload) != nil {
 				return
 			}
 		}
 	}()
+	defer func() { cancelRelay(); consumer.Close(); <-closed }()
 	wait := time.NewTimer(time.Until(entry.expires))
 	defer wait.Stop()
 	ticker := time.NewTicker(time.Second)
@@ -98,6 +120,7 @@ func (s *Server) consumeStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer producer.Close()
+	peerReady <- producer
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
