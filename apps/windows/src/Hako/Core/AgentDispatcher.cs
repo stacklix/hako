@@ -36,6 +36,8 @@ public sealed class AgentDispatcher : IAgentDispatcher
     private readonly CodexUsage codex;
     private readonly Lazy<AndroidManager> android;
     internal AndroidManager Android => android.Value;
+    internal Func<Uri?> StreamOrigin { get; set; } = () => null;
+    internal Func<int> StreamPort { get; set; } = () => 0;
     internal Func<object> LanSnapshot { get; set; } = () => new { enabled = false, addresses = AgentLanEndpoint.Addresses(), port = 0 };
     public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = [
         new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
@@ -52,7 +54,10 @@ public sealed class AgentDispatcher : IAgentDispatcher
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
         codex = codexUsage ?? new CodexUsage();
-        android = new(() => new AndroidManager(dataDirectory ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kage-android-dispatcher-" + Guid.NewGuid().ToString("N"))));
+        android = new(() => {
+            var manager = new AndroidManager(dataDirectory ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kage-android-dispatcher-" + Guid.NewGuid().ToString("N")), streamOrigin: () => StreamOrigin());
+            manager.VideoPort = () => StreamPort(); return manager;
+        });
         var processes = new ProcessMetrics();
         queries = new()
         {

@@ -19,6 +19,8 @@ Kage 在 Windows 本机执行 ADB 操作，Hako iOS 提供远程入口。服务�
 | `query.android.operation` | `requestId`；原任务状态 |
 | `query.android.logs` | `deviceId`、可选 `serial`；Nami Agent 当前进程近期日志，按需读取并遮蔽带敏感字段的行 |
 | `query.android.artifact` | `requestId`、`offset`；分块读取已完成任务的截图 |
+| `query.android.preview` | `requestId`；一次读取不超过 40 KB 的 JPEG 预览，原始 PNG 保持不变 |
+| `action.android.stream` | `operation=start/relay/stop`、`sessionId`；创建、接通或结束独立视频会话 |
 | `action.android.execute` | UUID `requestId`、`operation`，以及所需设备、连接或配对参数；立即返回独立任务 |
 | `action.android.upload` | UUID `uploadId`、`fileName`、`length`、`sha256`、`offset`、`data`；顺序上传 APK |
 
@@ -27,6 +29,18 @@ Kage 在 Windows 本机执行 ADB 操作，Hako iOS 提供远程入口。服务�
 相同物理序列号的 USB、无线连接合并显示。每次操作固定一条已授权连接，不因中断切换连接重复执行。操作编号先落盘，相同编号及相同内容只执行一次，内容冲突则拒绝。状态为 `queued`、`running`、`completed`、`failed`、`unknown`。Kage 重启后未结束的任务标记结果待确认，不重放；网络超时后应查询原编号和设备状态。收起 iOS 页面不终止已提交的电脑任务。
 
 APK 最大 256 MB，每块最多 8192 字节；块重传必须与已有字节一致，完成后校验 SHA-256。Kage 解析二进制 manifest，限定包名为 `me.stackli.doppel`，拒绝低于已安装版本的 APK。覆盖安装只使用 `adb install -r`，签名由 Android 安装器校验；不自动卸载、清空数据或降级。截图最大 16 MB，按需生成，操作与文件留在当前用户的 Kage 数据目录。上传缓存有数量上限，达到上限时会明确提示在电脑上清理。
+
+## 实时屏幕
+
+iOS 的 Android 设备 Sheet →「控制」直接显示连续 H.264 视频。进入控制页连接，离开页面、切换连接或进入后台断开；可以手动重新连接。亮屏与息屏仍走命令通道，视频不轮询截图，不持久保存录像，不自动解锁或唤醒手机，不包含声音或触控输入。
+
+Kage 内嵌官方 scrcpy 3.3.4 手机端编码器（Apache-2.0，许可证位于 `apps/windows/src/Hako/Assets/scrcpy-LICENSE.txt`），固定 SHA-256 `8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e`。连接时经 ADB 推送到独立的临时路径，通过 `app_process` 启动；H.264 上限 1280 像素、30 fps、2 Mbps，MediaCodec 保留完整帧边界和参数集。断开后关闭专属进程、移除该会话的 ADB forward 和临时文件，不终止 ADB 服务或其他会话。
+
+`start` 参数为 `sessionId`、`deviceId`、可选 `serial`；返回单会话随机 AES-256 密钥、局域网端口/地址及 `/agent/v1/streams/{sessionId}`。局域网 WebSocket 首包为 AES-GCM 加密的 `{sessionId,timestamp}`，AAD 为 `hako-agent-lan-v1:video-client:{sessionId}`。服务端包的 AAD 为 `hako-agent-lan-v1:video-server:{sessionId}`，明文为 8 字节大端递增序号、1 字节类型及负载：0=视频字节、1=错误、2=ready、3=alive。每包视频负载不超过 32768 字节，每 10 秒发送心跳；客户端拒绝乱序或重复包。密钥只经已鉴权命令交付，不放在 URL 或明文 HTTP 中。
+
+同一 Wi-Fi 子网优先直连现有 Kage 端口。外网经 Console 鉴权 WebSocket `/ws/streams` 创建通用二进制转发通道，获得一次性生产者凭据后以 `relay` 操作传给 Kage；Kage 只能连接已配置服务端的 `/ws/streams/{id}`，不接受任意目的 URL。服务器只转发密文，不解释 Android 命令、媒体或能力。转发需要部署包含此接口的服务端（0.8.10 起）；局域网直连不依赖该新接口。
+
+每台手机仅允许一个视频源，每个 Kage 最多两个会话，待连接 30 秒过期，单次最长一小时。服务端最多八个转发会话、生产者票据一次有效、媒体包最大 64 KB，并持续检查 Console 会话授权；任一方断开时关闭对应通道。原始视频协议见 [scrcpy 开发文档](https://github.com/Genymobile/scrcpy/blob/v3.3.4/doc/develop.md)。
 
 ## 验证
 

@@ -255,6 +255,7 @@ private struct KageAndroidDeviceSheet: View {
     }
     private var control: some View {
         VStack(alignment: .leading, spacing: 14) {
+            AndroidLiveScreenView(agent: store.agent, device: device, serial: serial, available: store.canControl(device))
             VStack(alignment: .leading, spacing: 17) {
                 Text("当前屏幕状态").font(.caption).foregroundStyle(.secondary)
                 Text(detail?.screenLabel ?? "未知").font(.title.weight(.medium))
@@ -266,10 +267,6 @@ private struct KageAndroidDeviceSheet: View {
             }.devicePagePanel()
             Text("亮屏不会解除锁屏。部分小米设备需要允许「USB 调试（安全设置）」。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("屏幕截图").font(.headline)
-            if let data = store.image, let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 460).frame(maxWidth: .infinity).devicePagePanel()
-            } else { Text("按需获取单张截图").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(25).devicePagePanel() }
         }
     }
     private var maintenance: some View {
@@ -344,11 +341,12 @@ private struct AndroidOperationSheet: View {
                 if let operation = store.operations.first(where: { $0.id == id }) {
                     Text(operation.statusLabel).font(.title2.weight(.semibold))
                     Text(operation.message).font(.subheadline)
+                    if operation.hasScreenshot { AndroidScreenshotView(store: store, id: id) }
                     VStack(alignment: .leading, spacing: 15) {
                         step("Kage 已收到指令", done: true)
                         step(operation.kind == "install" ? "Android 安装器校验并覆盖安装" : "在手机上执行操作",
                              done: ["verifying", "verified", "process_verified"].contains(operation.phase))
-                        step("回查手机实际状态", done: operation.status == "completed")
+                        step(operation.kind == "screenshot" ? "截图已保存到工作站" : "回查手机实际状态", done: operation.status == "completed")
                         if ["start", "restart", "install"].contains(operation.kind),
                            let device = store.inventory?.devices.first(where: { $0.id == operation.deviceId }) {
                             step(store.namiLabel(device), done: store.namiLabel(device) == "Nami 在线")
@@ -362,10 +360,47 @@ private struct AndroidOperationSheet: View {
                 if let error = store.error { Text(error).font(.caption).foregroundStyle(.orange) }
             }.padding(20)
         }.background(HakoStyle.background)
+        .task(id: id) { await store.check(id) }
     }
     private func step(_ title: String, done: Bool) -> some View {
         Label(title, systemImage: done ? "checkmark.circle.fill" : "circle")
             .font(.subheadline).foregroundStyle(done ? HakoStyle.text : HakoStyle.muted)
+    }
+}
+
+private struct AndroidScreenshotView: View {
+    @ObservedObject var store: KageAndroidStore
+    let id: String
+    @State private var showingPreview = false
+    private var data: Data? { store.screenshots[id] ?? store.screenshotPreviews[id] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let data, let image = UIImage(data: data) {
+                Button { showingPreview = true } label: {
+                    Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 460).frame(maxWidth: .infinity)
+                }.buttonStyle(.plain).accessibilityLabel("查看屏幕截图，可放大")
+                Text("轻点图片可放大预览。").font(.caption).foregroundStyle(.secondary)
+                Button(store.screenshots[id] == nil ? "查看原图" : "查看大图") {
+                    Task { await store.loadOriginalScreenshot(id); if store.screenshots[id] != nil { showingPreview = true } }
+                }.buttonStyle(HakoActionButtonStyle(primary: false))
+                    .disabled(store.screenshotProgress[id] != nil || (store.screenshots[id] == nil && (!store.canRequest || !store.computerOnline)))
+            } else if store.screenshotPreviewLoading.contains(id) {
+                ProgressView("正在读取截图预览")
+            }
+            if let progress = store.screenshotProgress[id] {
+                Text("正在读取原图 · \(Int(progress * 100))%").font(.subheadline)
+                ProgressView(value: progress)
+            }
+            if let error = store.screenshotErrors[id] { Text(error).font(.caption).foregroundStyle(.orange) }
+            if data == nil, !store.screenshotPreviewLoading.contains(id) {
+                Button("重新读取截图") { Task { await store.loadScreenshot(id, reload: true) } }
+                    .buttonStyle(HakoActionButtonStyle(primary: false)).disabled(!store.canRequest || !store.computerOnline)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).devicePagePanel()
+        .task(id: id) { await store.loadScreenshot(id) }
+        .sheet(isPresented: $showingPreview) {
+            if let data { AssistantPhotoPreview(images: [data], selection: 0) }
+        }
     }
 }
 

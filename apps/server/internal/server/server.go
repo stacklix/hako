@@ -62,6 +62,8 @@ type Server struct {
 	mux                 *http.ServeMux
 	mu                  sync.Mutex
 	agentHub            agent.Hub
+	streamMu            sync.Mutex
+	streams             map[string]*binaryStream
 	workshopHub         workshop.Hub
 	commandHub          workshop.Hub
 	workshopRequests    chan struct{}

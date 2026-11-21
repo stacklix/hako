@@ -36,7 +36,7 @@ struct WorkshopCommandLibraryView: View {
                     }
                     if client.prompts.isEmpty { Text("点击右上角 + 添加快捷提示词。").foregroundStyle(.secondary) }
                 } header: { Text("快捷提示词") } footer: {
-                    Text("保存在这台手机的当前项目中。在会话更多菜单中点击名称，可填入输入框后继续编辑。")
+                    Text("保存在这台手机的当前项目中。在会话更多菜单中点击名称，直接发送到当前会话。")
                 }
                 } else {
                 Section {
@@ -94,7 +94,12 @@ struct WorkshopCommandLibraryView: View {
                     }
                 }
                 }
-                if let error = client.error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
+                if let error = kind == .prompts ? client.promptLoadError : client.commandLoadError {
+                    Section { Text(error).font(.footnote).foregroundStyle(.red) }
+                }
+                if kind == .commands, let error = client.error {
+                    Section { Text(error).font(.footnote).foregroundStyle(.red) }
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -102,10 +107,14 @@ struct WorkshopCommandLibraryView: View {
                         if kind == .commands { editor = WorkshopSavedCommand() }
                         else { promptEditor = WorkshopQuickPrompt() }
                     } label: { Image(systemName: "plus") }
-                        .accessibilityLabel(kind == .commands ? "新增快捷命令" : "新增快捷提示词").disabled(client.busy)
+                        .accessibilityLabel(kind == .commands ? "新增快捷命令" : "新增快捷提示词")
+                        .disabled(kind == .commands && client.busy)
                 }
             }
-            .refreshable { await client.prepare() }
+            .refreshable {
+                if kind == .commands { await client.prepare() }
+                else { client.reloadPrompts() }
+            }
         }
         .sheet(item: $editor) { editor in
             WorkshopCommandEditorView(client: client, initial: editor)

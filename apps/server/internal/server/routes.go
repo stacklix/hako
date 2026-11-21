@@ -25,6 +25,8 @@ func (s *Server) accessLogRoutes() {
 }
 
 func (s *Server) agentRoutes() {
+	s.mux.HandleFunc("GET /ws/streams", s.consumeStream)
+	s.mux.HandleFunc("GET /ws/streams/{id}", s.produceStream)
 	s.mux.HandleFunc("POST /api/v1/agents/data-query", s.agentDataQuery)
 	s.mux.HandleFunc("GET /api/v1/agents", s.agents)
 	s.mux.HandleFunc("POST /api/v1/agents", s.addAgent)

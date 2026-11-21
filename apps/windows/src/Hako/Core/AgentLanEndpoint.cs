@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -19,6 +20,7 @@ internal sealed class AgentLanEndpoint(IAgentDispatcher dispatcher)
     internal const string Command = "query.network.lan";
     private readonly byte[] key = RandomNumberGenerator.GetBytes(32);
     internal int Port { get; set; }
+    internal Func<string, WebSocket, CancellationToken, Task>? OpenStream { get; set; }
     internal object Snapshot() => new { enabled = Port > 0, protocol = "hako-agent-lan-v1", port = Port,
         addresses = Addresses(), token = Port > 0 ? Convert.ToBase64String(key) : null };
     internal static string[] Addresses() => NetworkInterface.GetAllNetworkInterfaces()

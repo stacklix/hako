@@ -2,10 +2,12 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <EmbeddedResource Include="../../src/Hako/Assets/scrcpy-server-v3.3.4" LogicalName="Hako.scrcpy-server-v3.3.4"/>
     <Compile Include="../../src/Hako/Core/**/*.cs" Link="Core/%(RecursiveDir)%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Cli/*.cs" Link="Cli/%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Features/**/*.cs" Exclude="../../src/Hako/Features/**/*.xaml.cs"

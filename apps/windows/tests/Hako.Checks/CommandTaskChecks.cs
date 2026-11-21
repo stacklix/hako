@@ -95,6 +95,7 @@ internal static class CommandTaskChecks
     }
     internal static async Task RunAsync()
     {
+        await CommandRelayChecks.RunAsync();
         var root = Path.Combine(Path.GetTempPath(), "hako-command-tests-" + Guid.NewGuid().ToString("N"));
         var profile = Path.Combine(root, "profile");
         var project = Path.Combine(root, "repo with spaces");

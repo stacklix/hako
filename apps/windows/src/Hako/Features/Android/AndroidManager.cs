@@ -22,19 +22,22 @@ internal sealed record AndroidUpload(string Id, string FileName, long Length, st
 internal sealed class AndroidManager : IAsyncDisposable
 {
     internal const string ListCommand = "query.android.devices";
-    internal static readonly string[] QueryCommands = [ListCommand, "query.android.device", "query.android.operations", "query.android.operation", "query.android.logs", "query.android.artifact"];
-    internal static readonly string[] ActionCommands = ["action.android.execute", "action.android.upload"];
+    internal static readonly string[] QueryCommands = [ListCommand, "query.android.device", "query.android.operations", "query.android.operation", "query.android.logs", "query.android.artifact", "query.android.preview"];
+    internal static readonly string[] ActionCommands = ["action.android.execute", "action.android.upload", "action.android.stream"];
+    internal AndroidVideoStreams Video { get; }
+    internal Func<int> VideoPort { get; set; } = () => 0;
     private readonly string directory;
     private readonly IAndroidAdb adb;
-    private readonly SemaphoreSlim gate = new(1, 1), scanGate = new(1, 1);
+    private readonly SemaphoreSlim gate = new(1, 1), scanGate = new(1, 1), previewGate = new(1, 1);
     private readonly CancellationTokenSource stopping = new();
     private readonly Dictionary<string, AndroidOperation> operations = new();
     private readonly Dictionary<string, Task> running = new();
     private readonly Dictionary<string, AndroidManagedDevice> devices = new();
     private readonly object sync = new();
-    internal AndroidManager(string profile, IAndroidAdb? adb = null)
+    internal AndroidManager(string profile, IAndroidAdb? adb = null, Func<Uri?>? streamOrigin = null)
     {
         directory = Path.Combine(profile, "android"); this.adb = adb ?? new AndroidAdb(directory);
+        Video = new(this.adb, streamOrigin ?? (() => null), directory);
         Directory.CreateDirectory(directory);
         var inventory = Path.Combine(directory, "devices.json");
         if (File.Exists(inventory)) foreach (var d in JsonSerializer.Deserialize<AndroidManagedDevice[]>(File.ReadAllBytes(inventory), AgentConnection.Json) ?? [])
@@ -136,6 +139,34 @@ internal sealed class AndroidManager : IAsyncDisposable
             case "query.android.operation":
                 Fields(p, "requestId"); var requestId = Id(p, "requestId");
                 lock (sync) return operations.GetValueOrDefault(requestId) ?? throw new AgentActionException("operation_not_found", "未找到操作记录，请勿直接重复执行。");
+            case "query.android.preview":
+                Fields(p, "requestId"); var previewId = Id(p, "requestId");
+                lock (sync)
+                    if (!operations.TryGetValue(previewId, out var captured) || captured.Status != "completed" || captured.Artifact != "screen.png")
+                        throw new AgentActionException("artifact_unavailable", "截图尚未生成。");
+                await previewGate.WaitAsync(token);
+                try
+                {
+                    var previewPath = Path.Combine(TaskDirectory(previewId), "preview.jpg");
+                    byte[] preview;
+                    if (File.Exists(previewPath))
+                    {
+                        if (new FileInfo(previewPath).Length > AndroidScreenshotPreview.MaximumBytes) throw Invalid();
+                        preview = await File.ReadAllBytesAsync(previewPath, token);
+                    }
+                    else
+                    {
+                        var pngPath = Path.Combine(TaskDirectory(previewId), "screen.png");
+                        if (new FileInfo(pngPath).Length > 16 * 1024 * 1024) throw Invalid();
+                        preview = AndroidScreenshotPreview.Create(await File.ReadAllBytesAsync(pngPath, token));
+                        var temporary = previewPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                        try { await File.WriteAllBytesAsync(temporary, preview, token); File.Move(temporary, previewPath, true); }
+                        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                    }
+                    if (preview.Length > AndroidScreenshotPreview.MaximumBytes) throw Invalid();
+                    return new { contentType = "image/jpeg", total = preview.Length, data = Convert.ToBase64String(preview) };
+                }
+                finally { previewGate.Release(); }
             case "query.android.artifact":
                 Fields(p, "requestId", "offset"); var artifactId = Id(p, "requestId");
                 AndroidOperation op; lock (sync) op = operations.GetValueOrDefault(artifactId) ?? throw Invalid();
@@ -158,6 +189,20 @@ internal sealed class AndroidManager : IAsyncDisposable
     }
     internal async Task<object?> ActionAsync(string method, JsonElement p, CancellationToken token)
     {
+        if (method == "action.android.stream")
+        {
+            Fields(p, "sessionId", "operation", "deviceId", "serial", "relayId", "ticket");
+            var session = Id(p, "sessionId");
+            switch (Text(p, "operation"))
+            {
+                case "stop": return Video.Stop(session);
+                case "relay": return Video.Relay(session, Text(p, "relayId"), Text(p, "ticket"));
+                case "start":
+                    var target = Text(p, "deviceId");
+                    return Video.Create(session, target, await Resolve(target, p.TryGetProperty("serial", out _) ? Text(p, "serial", 256) : null, token), VideoPort());
+                default: throw Invalid();
+            }
+        }
         if (method == "action.android.upload") return await UploadAsync(p, token);
         Fields(p, "requestId", "operation", "deviceId", "serial", "address", "code", "uploadId", "agentId");
         var requestId = Id(p, "requestId"); var kind = Text(p, "operation");
@@ -314,5 +359,5 @@ internal sealed class AndroidManager : IAsyncDisposable
         File.Delete(zipPath);
     }
     public async ValueTask DisposeAsync()
-    { await stopping.CancelAsync(); Task[] tasks; lock (sync) tasks = running.Values.ToArray(); await Task.WhenAll(tasks); stopping.Dispose(); }
+    { await stopping.CancelAsync(); await Video.DisposeAsync(); Task[] tasks; lock (sync) tasks = running.Values.ToArray(); await Task.WhenAll(tasks); stopping.Dispose(); }
 }

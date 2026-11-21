@@ -1,8 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -20,9 +24,11 @@ internal static class AndroidChecks
         internal readonly List<string[]> Calls = [];
         internal TaskCompletionSource? Hold;
         internal bool Timeout;
+        internal byte[]? Screenshot;
         public async Task<byte[]> RunAsync(string[] args, CancellationToken token, string? input = null, int limit = 2097152)
         {
             lock (Calls) Calls.Add(args);
+            if (args.Contains("screencap")) return Screenshot ?? throw new Exception("Missing screenshot fixture");
             string output;
             if (args[0] == "devices") output = "List of devices attached\nSERIAL device usb:1 transport_id:1\nadb-SERIAL-abc._adb-tls-connect._tcp device transport_id:2\n";
             else if (args.Contains("getprop")) output = "[ro.serialno]: [SERIAL]\n[ro.product.model]: [Test phone]\n[ro.product.manufacturer]: [Xiaomi]\n[ro.build.version.release]: [14]\n";
@@ -45,6 +51,7 @@ internal static class AndroidChecks
     }
     internal static async Task RunAsync()
     {
+        await AndroidVideoChecks.RunAsync();
         var folder = Path.Combine(Path.GetTempPath(), "hako-android-check-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
@@ -55,6 +62,24 @@ internal static class AndroidChecks
                 var list = await manager.ListAsync(default);
                 Check(list.Devices.Length == 1 && list.Devices[0].Connections.Length == 2, "USB and TLS endpoints must merge by hardware identity");
                 var device = list.Devices[0];
+                using (var bitmap = new Bitmap(1000, 2000, PixelFormat.Format24bppRgb))
+                {
+                    var bits = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                    var pixels = new byte[bits.Stride * bits.Height]; new Random(21).NextBytes(pixels);
+                    Marshal.Copy(pixels, 0, bits.Scan0, pixels.Length); bitmap.UnlockBits(bits);
+                    using var png = new MemoryStream(); bitmap.Save(png, ImageFormat.Png); adb.Screenshot = png.ToArray();
+                }
+                var captureId = Guid.NewGuid().ToString("D");
+                _ = await manager.ActionAsync("action.android.execute", Json(new { requestId = captureId, operation = "screenshot", deviceId = device.Id }), default);
+                Check((await Wait(manager, captureId)).Status == "completed", "Screenshot fixture was not captured");
+                var preview = Json((await manager.QueryAsync("query.android.preview", Json(new { requestId = captureId }), default))!);
+                var jpeg = Convert.FromBase64String(preview.GetProperty("data").GetString()!);
+                Check(jpeg.Length <= AndroidScreenshotPreview.MaximumBytes && preview.GetProperty("contentType").GetString() == "image/jpeg", "Preview exceeds a single LAN response");
+                Check(Encoding.UTF8.GetByteCount(Json(new { id = Guid.NewGuid(), result = preview }).GetRawText()) < 65536, "Preview violates encrypted LAN result limit");
+                using (var picture = Image.FromStream(new MemoryStream(jpeg))) Check(picture.Width <= 720 && picture.Height <= 1600, "Preview did not scale the image");
+                var cached = Json((await manager.QueryAsync("query.android.preview", Json(new { requestId = captureId }), default))!);
+                Check(cached.GetProperty("data").GetString() == preview.GetProperty("data").GetString(), "Preview cache changed the screenshot");
+                Check(File.ReadAllBytes(Path.Combine(folder, "android", "tasks", captureId, "screen.png")).SequenceEqual(adb.Screenshot), "Preview modified the original PNG");
                 var detail = (AndroidDetail)(await manager.QueryAsync("query.android.device", Json(new { deviceId = device.Id }), default))!;
                 Check(detail.Screen == "off" && detail.MemoryAvailableBytes == 2048000000L && detail.StorageAvailableBytes == 65536000000L
                     && detail.NamiVersion == "1.0.14" && detail.ProcessRunning && detail.BatteryPercent == 89 && detail.Charging == false, "ADB state parsing must preserve units and process semantics");
@@ -110,5 +135,18 @@ internal static class AndroidChecks
         Console.WriteLine(JsonSerializer.Serialize(new { device.Name, device.Model, device.AndroidVersion, connections = device.Connections.Length,
             detail.Screen, detail.BatteryPercent, detail.MemoryAvailableBytes, detail.StorageAvailableBytes, detail.UptimeSeconds,
             detail.NamiVersion, detail.ProcessRunning, apkPackage = metadata.PackageName, apkVersionCode = metadata.VersionCode }, AgentConnection.Json));
+    }
+    internal static async Task PreviewLiveAsync(string folder, string requestId)
+    {
+        await using var manager = new AndroidManager(folder);
+        var clock = Stopwatch.StartNew();
+        var preview = Json((await manager.QueryAsync("query.android.preview", Json(new { requestId }), default))!);
+        var elapsed = clock.Elapsed.TotalMilliseconds;
+        var jpeg = Convert.FromBase64String(preview.GetProperty("data").GetString()!);
+        using var picture = Image.FromStream(new MemoryStream(jpeg));
+        var original = new FileInfo(Path.Combine(folder, "android", "tasks", requestId, "screen.png")).Length;
+        Console.WriteLine(JsonSerializer.Serialize(new { originalBytes = original, previewBytes = jpeg.Length,
+            originalRequests = (original + 24575) / 24576, previewRequests = 1, elapsedMilliseconds = elapsed,
+            width = picture.Width, height = picture.Height }, AgentConnection.Json));
     }
 }

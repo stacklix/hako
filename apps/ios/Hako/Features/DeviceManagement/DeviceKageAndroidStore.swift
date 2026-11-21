@@ -24,7 +24,13 @@ import CryptoKit
     @Published var loading = false
     @Published var submitting = false
     @Published var uploadProgress: Double?
-    @Published var image: Data?
+    @Published private(set) var screenshots: [String: Data] = [:]
+    @Published private(set) var screenshotPreviews: [String: Data] = [:]
+    @Published private(set) var screenshotPreviewLoading: Set<String> = []
+    @Published private(set) var screenshotProgress: [String: Double] = [:]
+    @Published private(set) var screenshotErrors: [String: String] = [:]
+    private var screenshotDownloads: [String: Task<Void, Never>] = [:]
+    private var screenshotOrder: [String] = []
     private var watching: [String: Task<Void, Never>] = [:]
     init(agent: ConsoleAgent) {
         let client = DeviceMonitorClient.shared
@@ -119,7 +125,7 @@ import CryptoKit
             let value = try await call(KageAndroidCommand.operation, params: ["requestId": id], as: KageAndroidOperation.self)
             guard value.isValid, value.id == id else { throw HakoError(message: "操作记录格式无效。") }
             merge(value)
-            if value.artifact != nil, value.status == "completed" { try await readImage(id) }
+            if value.hasScreenshot { await loadScreenshot(id) }
             if !value.active {
                 await refresh()
                 if let device = inventory?.devices.first(where: { $0.id == value.deviceId }) { await refreshDetail(device) }
@@ -172,17 +178,61 @@ import CryptoKit
             } catch { fail(error) }
         }
     }
-    private func readImage(_ id: String) async throws {
-        var output = Data(); var total: Int64?
-        repeat {
-            let reply = try await call(KageAndroidCommand.artifact, params: ["requestId": id, "offset": output.count], as: KageAndroidArtifact.self)
-            guard reply.offset == output.count, (1...16 * 1024 * 1024).contains(reply.total),
-                  total == nil || total == reply.total,
-                  let bytes = Data(base64Encoded: reply.data), !bytes.isEmpty, bytes.count <= 24576,
-                  output.count + bytes.count <= reply.total else { throw HakoError(message: "截图传输数据无效。") }
-            total = reply.total; output.append(bytes)
-        } while output.count < (total ?? 0)
-        image = output
+    func loadScreenshot(_ id: String, reload: Bool = false) async {
+        guard canRequest, operations.contains(where: { $0.id == id && $0.hasScreenshot }) else { return }
+        if let download = screenshotDownloads[id] { await download.value; return }
+        if !reload, screenshotPreviews[id] != nil || screenshots[id] != nil { return }
+        if reload { screenshotPreviews.removeValue(forKey: id) }
+        screenshotErrors.removeValue(forKey: id)
+        screenshotPreviewLoading.insert(id)
+        let download = Task { [weak self] in
+            guard let self else { return }
+            defer { self.screenshotDownloads.removeValue(forKey: id); self.screenshotPreviewLoading.remove(id) }
+            do {
+                let reply = try await self.call(KageAndroidCommand.preview, params: ["requestId": id], as: KageAndroidScreenshotPreview.self)
+                guard let data = reply.bytes else { throw HakoError(message: "截图预览数据无效，请重新读取。") }
+                guard self.canRequest else { return }
+                self.screenshotPreviews[id] = data
+                self.trimScreenshots(id)
+            } catch {
+                if self.canRequest, !(error is CancellationError) { self.screenshotErrors[id] = error.localizedDescription }
+            }
+        }
+        screenshotDownloads[id] = download
+        await download.value
+    }
+    func loadOriginalScreenshot(_ id: String) async {
+        guard canRequest, operations.contains(where: { $0.id == id && $0.hasScreenshot }) else { return }
+        let key = id + ":original"
+        if let download = screenshotDownloads[key] { await download.value; return }
+        if screenshots[id] != nil { return }
+        screenshotErrors.removeValue(forKey: id)
+        screenshotProgress[id] = 0
+        let download = Task { [weak self] in
+            guard let self else { return }
+            defer { self.screenshotDownloads.removeValue(forKey: key); self.screenshotProgress.removeValue(forKey: id) }
+            do {
+                let data = try await KageAndroidScreenshotDownload.read(fetch: { offset in
+                    try await self.call(KageAndroidCommand.artifact,
+                        params: ["requestId": id, "offset": offset], as: KageAndroidArtifact.self)
+                }, progress: { self.screenshotProgress[id] = $0 })
+                guard self.canRequest else { return }
+                self.screenshots[id] = data
+                self.trimScreenshots(id)
+            } catch {
+                if self.canRequest, !(error is CancellationError) { self.screenshotErrors[id] = error.localizedDescription }
+            }
+        }
+        screenshotDownloads[key] = download
+        await download.value
+    }
+    private func trimScreenshots(_ id: String) {
+        screenshotOrder.removeAll { $0 == id }; screenshotOrder.append(id)
+        while screenshotOrder.count > 1 && (screenshotOrder.count > 4
+            || screenshots.values.reduce(0, { $0 + $1.count }) > 32 * 1024 * 1024) {
+            let old = screenshotOrder.removeFirst()
+            screenshots.removeValue(forKey: old); screenshotPreviews.removeValue(forKey: old)
+        }
     }
     private func call<T: Decodable>(_ method: String, params: [String: Any] = [:], as type: T.Type) async throws -> T {
         guard canRequest else { throw CancellationError() }

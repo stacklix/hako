@@ -20,7 +20,7 @@ namespace Hako.Platform;
 // cancels an execution. Native LAN clients intentionally do not authenticate.
 internal sealed class WorkshopLocalServer : IAsyncDisposable
 {
-    private readonly WorkshopDispatcher dispatcher;
+    private readonly IWorkshopDispatcher dispatcher;
     private readonly Func<string?> computerId;
     private readonly string localId;
     private readonly string? accessToken;
@@ -33,7 +33,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
     private readonly Task accepting;
     public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-    internal WorkshopLocalServer(WorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity, string? accessToken = null, AgentLanEndpoint? lan = null)
+    internal WorkshopLocalServer(IWorkshopDispatcher dispatcher, int port, Func<string?> computerId, string identity, string? accessToken = null, AgentLanEndpoint? lan = null)
     {
         this.lan = lan;
         this.dispatcher = dispatcher; this.computerId = computerId;
@@ -112,6 +112,12 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                 var path = await AcceptRequestAsync(stream, handshake.Token, accessToken);
                 if (path is null) return;
                 using var socket = WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(15));
+                if (path.StartsWith("/agent/v1/streams/", StringComparison.Ordinal) && lan?.OpenStream is not null)
+                {
+                    var id = path["/agent/v1/streams/".Length..];
+                    if (!Guid.TryParseExact(id, "D", out _)) throw new InvalidDataException("Invalid stream ID.");
+                    await lan.OpenStream(id, socket, lifetime.Token); return;
+                }
                 using var writing = new SemaphoreSlim(1, 1);
                 async Task Send(object frame)
                 {
@@ -230,7 +236,7 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                     try { await Task.WhenAll(workers); } catch { }
                 }
             }
-            catch (Exception e) when (e is IOException or SocketException or WebSocketException or OperationCanceledException or InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException) { }
+            catch (Exception e) when (e is IOException or SocketException or WebSocketException or OperationCanceledException or InvalidDataException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException or AgentActionException or CryptographicException) { }
         }
     }
 
@@ -294,7 +300,8 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
             !headers.TryGetValue("Connection", out var connection) || !connection.Split(',').Any(value => value.Trim().Equals("Upgrade", StringComparison.OrdinalIgnoreCase)) ||
             !headers.TryGetValue("Sec-WebSocket-Version", out var version) || version != "13" ||
             !headers.TryGetValue("Sec-WebSocket-Key", out var key) || Convert.FromBase64String(key).Length != 16 ||
-            (request[1] != "/workshop/v1" && !request[1].StartsWith("/workshop/v1/events/", StringComparison.Ordinal)))
+            (request[1] != "/workshop/v1" && !request[1].StartsWith("/workshop/v1/events/", StringComparison.Ordinal)
+                && !(accessToken is null && lan?.OpenStream is not null && request[1].StartsWith("/agent/v1/streams/", StringComparison.Ordinal))))
             throw new InvalidDataException("Invalid WebSocket upgrade.");
         var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         var response = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n");

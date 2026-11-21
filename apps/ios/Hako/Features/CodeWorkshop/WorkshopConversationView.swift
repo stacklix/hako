@@ -232,8 +232,7 @@ struct WorkshopConversationView: View {
                             Section("快捷提示词") {
                                 ForEach(commands.prompts) { prompt in
                                     Button {
-                                        let current = conversation.draft
-                                        conversation.draft = current.isEmpty ? prompt.text : current + "\n\n" + prompt.text
+                                        Task { await conversation.sendPrompt(prompt.text) }
                                     } label: { Label(prompt.name, systemImage: "text.bubble") }
                                     .disabled(!conversation.canSendPrompt)
                                 }

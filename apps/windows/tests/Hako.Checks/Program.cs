@@ -80,6 +80,7 @@ internal static class Program
             if (args.Length == 2 && args[0] == "guardian-refresh") { await GuardianRefreshChecks.RunAsync(args[1]); return 0; }
             if (args.Length == 1 && args[0] == "lifecycle") { LifecycleChecks.Run(); return 0; }
             if (args.Length == 1 && args[0] == "update-notifications") { await AgentUpdateNotificationChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "command-relay") { await CommandRelayChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
@@ -87,6 +88,8 @@ internal static class Program
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "android") { await AndroidChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "android-live") { await AndroidChecks.ReadLiveAsync(args[1], args[2]); return 0; }
+            if (args.Length == 3 && args[0] == "android-preview-live") { await AndroidChecks.PreviewLiveAsync(args[1], args[2]); return 0; }
+            if (args.Length == 3 && args[0] == "android-video-live") { await AndroidVideoChecks.LiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "processes") { await ProcessMetricsChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "guardian-broker") { await GuardianBrokerChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "registered-services")
@@ -252,12 +255,13 @@ internal static class Program
                 new AgentCapability("action.network.http.check", 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
-                new AgentCapability("action.android.execute", 1), new AgentCapability("action.android.upload", 1),
+                new AgentCapability("action.android.execute", 1), new AgentCapability("action.android.upload", 1), new AgentCapability("action.android.stream", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
                 new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1),
                 new AgentCapability("query.android.device", 1), new AgentCapability("query.android.operations", 1),
                 new AgentCapability("query.android.operation", 1), new AgentCapability("query.android.logs", 1),
                 new AgentCapability("query.android.artifact", 1),
+                new AgentCapability("query.android.preview", 1),
             }))
                 throw new Exception("Agent capabilities do not match registered actions");
             if (!dispatcher.Capabilities.SequenceEqual(AgentDispatcher.MainCapabilities))

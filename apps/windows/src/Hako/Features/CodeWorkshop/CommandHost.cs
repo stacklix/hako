@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -42,13 +43,13 @@ internal static class CommandHost
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var bytes = new MemoryStream(); file.CopyTo(bytes); return bytes.ToArray();
     }
-    private static CommandHostEndpoint? Endpoint(AgentSettingsStore store, int guardianId)
+    private static CommandHostEndpoint? Endpoint(AgentSettingsStore store, int? guardianId = null)
     {
         var path = EndpointPath(store.DirectoryPath);
         if (!File.Exists(path)) return null;
         var endpoint = JsonSerializer.Deserialize<CommandHostEndpoint>(DataProtection.Unprotect(ReadShared(path)), WorkshopProtocol.Json)
             ?? throw new IOException("无效的命令执行器状态。");
-        if (endpoint.ProcessId != guardianId) return null;
+        if (guardianId is not null && endpoint.ProcessId != guardianId) return null;
         try
         {
             using var process = Process.GetProcessById(endpoint.ProcessId);
@@ -57,6 +58,46 @@ internal static class CommandHost
         catch (ArgumentException) { return null; }
         if (endpoint.Scope != Scope(store)) throw new WorkshopException("command_context_changed", "执行器仍属于之前的账号配置，请等待任务结束后重试。");
         return endpoint;
+    }
+    // LAN clients use the Agent's configured port. Only this local hop uses the
+    // guardian's authenticated, ephemeral endpoint; no extra firewall rule is needed.
+    internal static async Task<object?> ForwardAsync(string directory, string method, JsonElement parameters, CancellationToken token)
+    {
+        var endpoint = Endpoint(new AgentSettingsStore(directory))
+            ?? throw new WorkshopException("command_host_unavailable", "命令执行器尚未就绪，请重新连接快捷命令。");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var socket = new ClientWebSocket();
+        socket.Options.Proxy = null;
+        socket.Options.SetRequestHeader("X-Hako-Command", endpoint.Token);
+        await socket.ConnectAsync(new Uri($"ws://127.0.0.1:{endpoint.Port}/workshop/v1"), deadline.Token);
+        using var welcome = await Read(socket, deadline.Token);
+        if (CodexJson.Text(welcome.RootElement, "kind") != "welcome" || CodexJson.Text(welcome.RootElement, "protocol") != WorkshopProtocol.Name)
+            throw new WorkshopException("command_host_protocol", "本机命令执行器握手失败。");
+        var id = Guid.NewGuid().ToString("N");
+        await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(new { kind = "call", id, method, @params = parameters }),
+            WebSocketMessageType.Text, true, deadline.Token);
+        using var response = await Read(socket, deadline.Token);
+        var frame = response.RootElement;
+        if (CodexJson.Text(frame, "id") != id) throw new WorkshopException("command_host_protocol", "本机命令执行器返回了不匹配的请求。");
+        if (CodexJson.Text(frame, "kind") == "result") return frame.GetProperty("result").Clone();
+        if (frame.TryGetProperty("error", out var error))
+            throw new WorkshopException(CodexJson.Text(error, "code"), CodexJson.Text(error, "message"));
+        throw new WorkshopException("command_host_protocol", "本机命令执行器返回了无效结果。");
+    }
+    private static async Task<JsonDocument> Read(ClientWebSocket socket, CancellationToken token)
+    {
+        using var bytes = new MemoryStream();
+        var buffer = new byte[8192];
+        WebSocketReceiveResult frame;
+        do
+        {
+            frame = await socket.ReceiveAsync(buffer, token);
+            if (frame.MessageType != WebSocketMessageType.Text || bytes.Length + frame.Count > 65536)
+                throw new WorkshopException("command_host_protocol", "本机命令执行器返回的数据无效或过大。");
+            bytes.Write(buffer, 0, frame.Count);
+        } while (!frame.EndOfMessage);
+        return JsonDocument.Parse(bytes.ToArray());
     }
     internal static async Task<object> OpenAsync(string directory, CancellationToken token)
     {

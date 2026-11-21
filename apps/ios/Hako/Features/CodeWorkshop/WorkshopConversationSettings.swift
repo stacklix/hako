@@ -50,6 +50,19 @@ struct WorkshopConversationSettings: View {
             saveEnabled: conversation.canConfigure && !conversation.busy && hasChanges && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf16.count <= 120, onSave: save,
             saveAccessibilityLabel: "保存会话设置") {
             Form {
+                Section("会话信息") {
+                    LabeledContent("应用", value: conversation.application.name).workshopSettingsRow()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("会话名称").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("输入会话名称", text: $name, axis: .vertical).lineLimit(1...3)
+                            .accessibilityLabel("会话名称")
+                    }.workshopSettingsRow().disabled(!conversation.canConfigure || saving)
+                    LabeledContent("执行电脑", value: conversation.agent.name).workshopSettingsRow()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("项目目录").font(.subheadline).foregroundStyle(.secondary)
+                        Text(conversation.application.path).font(.caption.monospaced()).textSelection(.enabled)
+                    }.workshopSettingsRow()
+                }
                 Section("快捷操作") {
                     Button { library = .commands } label: {
                         HStack { Label("编辑快捷命令", systemImage: "terminal"); Spacer(); Text("\(commands.commands.count) 条").foregroundStyle(.secondary); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
@@ -118,16 +131,6 @@ struct WorkshopConversationSettings: View {
                 } header: { Text("执行权限") } footer: {
                     Text(selection.permission.detail).foregroundStyle(selection.permission == .full ? Color.orange : .secondary)
                 }.disabled(!conversation.canConfigure)
-                Section("会话信息") {
-                    LabeledContent("应用", value: conversation.application.name)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("会话名称").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("输入会话名称", text: $name, axis: .vertical).lineLimit(1...3)
-                            .accessibilityLabel("会话名称")
-                    }.workshopSettingsRow().disabled(!conversation.canConfigure || saving)
-                    LabeledContent("执行电脑", value: conversation.agent.name)
-                }
-                Section("项目目录") { Text(conversation.application.path).font(.caption.monospaced()).textSelection(.enabled) }
                 Section { Text("设置在下一轮任务开始时生效，当前正在执行的任务不受影响。").font(.footnote).foregroundStyle(.secondary) }
                 if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
             }
@@ -157,7 +160,7 @@ struct WorkshopConversationSettings: View {
 
 private extension View {
     func workshopSettingsRow() -> some View {
-        frame(maxWidth: .infinity)
+        frame(maxWidth: .infinity, alignment: .leading)
             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
     }

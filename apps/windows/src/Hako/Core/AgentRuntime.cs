@@ -34,6 +34,9 @@ public sealed class AgentRuntime : IAsyncDisposable
         dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath);
         Connection = new GuardianConnection(store.DirectoryPath);
         var lan = new AgentLanEndpoint(dispatcher);
+        dispatcher.StreamOrigin = () => Store.Load().Origin();
+        dispatcher.StreamPort = () => lan.Port;
+        lan.OpenStream = (id, socket, token) => Android.Video.AcceptAsync(id, socket, token);
         dispatcher.LanSnapshot = lan.Snapshot;
         Workshop = new WorkshopService(store.DirectoryPath, Connection, lan);
         Connection.StatusChanged += text => StatusChanged?.Invoke(text);

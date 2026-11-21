@@ -1,11 +1,20 @@
 param([Parameter(Mandatory = $true)][string]$Executable, [switch]$RestrictBackgroundLaunch)
 
 $ErrorActionPreference = 'Stop'
-$executablePath = (Resolve-Path -LiteralPath $Executable).Path
+$sourceExecutablePath = (Resolve-Path -LiteralPath $Executable).Path
 $appRoot = Split-Path -Parent $PSScriptRoot
 $workRoot = Join-Path $appRoot ('build/cli-smoke-' + [Guid]::NewGuid().ToString('N'))
 $profileDirectory = Join-Path $workRoot 'profile with spaces'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
+# Guardian images live beside the executable. Isolate those too: a previous
+# published guardian must not trigger an upgrade against the intentionally
+# unreachable fixture server, or change another smoke test's installation.
+$installationDirectory = Join-Path $workRoot 'installation'
+New-Item -ItemType Directory -Path $installationDirectory -Force | Out-Null
+$executablePath = Join-Path $installationDirectory 'Kage.exe'
+Copy-Item -LiteralPath $sourceExecutablePath -Destination $executablePath
+if ((Get-FileHash -LiteralPath $sourceExecutablePath -Algorithm SHA256).Hash -ne
+    (Get-FileHash -LiteralPath $executablePath -Algorithm SHA256).Hash) { throw 'Smoke candidate copy changed.' }
 $backgroundId = $null
 $controlledHost = $null
 
