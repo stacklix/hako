@@ -385,10 +385,10 @@ private struct WorkshopSettingsView: View {
             Form {
                 Section("执行电脑") {
                     ForEach(store.agents) { agent in
-                        WorkshopComputerSettingsRow(store: store, agent: agent, namespace: store.networkNamespace)
+                        WorkshopComputerSettingsRow(store: store, agent: agent)
                             .id(store.networkNamespace + "\n" + agent.id)
                     }
-                    if store.agents.isEmpty { Text("请先在设备管理中登记 Windows Agent。").foregroundStyle(.secondary) }
+                    if store.agents.isEmpty { Text("启动并连接电脑端 Agent 后，执行电脑将自动显示。").foregroundStyle(.secondary) }
                 }
                 Section("Codex") {
                     Button { editingSystemPrompt = true } label: {

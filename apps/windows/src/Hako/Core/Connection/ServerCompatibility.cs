@@ -10,7 +10,7 @@ namespace Hako.Core;
 
 internal static class ServerCompatibility
 {
-    internal const string MinimumServerVersion = "0.8.0";
+    internal const string MinimumServerVersion = "0.8.11";
     private const string InvalidMetadata = "服务端返回的版本信息无效，请检查 Hako 服务端版本。";
     internal static readonly string AgentVersion = typeof(AgentConnection).Assembly.GetName().Version!.ToString(3);
     private static readonly HttpClient Client = new(new SocketsHttpHandler

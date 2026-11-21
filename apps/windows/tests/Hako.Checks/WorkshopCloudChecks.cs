@@ -67,7 +67,7 @@ internal static class WorkshopCloudChecks
             if (pendingVersion.IsCompleted || identity is not null) throw new Exception("Workshop connected before the server was upgraded");
             version=await pendingVersion.WaitAsync(lifetime.Token);
             if (version.Request.Url?.AbsolutePath!="/api/v1/version") throw new Exception("Workshop did not poll the version endpoint while waiting");
-            versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.8.0",minimumAgentVersion=agentVersion});
+            versionBody=JsonSerializer.SerializeToUtf8Bytes(new {serverVersion="0.8.11",minimumAgentVersion=agentVersion});
             version.Response.ContentType="application/json";
             version.Response.ContentLength64=versionBody.Length;
             await version.Response.OutputStream.WriteAsync(versionBody,lifetime.Token);
@@ -77,6 +77,9 @@ internal static class WorkshopCloudChecks
             var accepted=await context.AcceptWebSocketAsync(null);using var socket=accepted.WebSocket;
             var hello=await Read(socket,lifetime.Token);
             if (CodexJson.Text(hello,"kind")!="hello" || CodexJson.Text(hello,"protocol")!=WorkshopProtocol.Name || hello.TryGetProperty("type",out _)) throw new Exception("Workshop reused the device hello");
+            if (hello.GetProperty("registration").GetProperty("protocolVersion").GetInt32() != 1 ||
+                hello.GetProperty("registration").GetProperty("port").GetInt32() != 0)
+                throw new Exception("Workshop did not register independently of device capability metadata");
             var payload=Encoding.UTF8.GetBytes("hako-workshop-auth/v1\n"+origin+"\nowner\n"+CodexJson.Text(hello,"keyId")+"\nfixture-nonce");
             await Send(socket,new{kind="challenge",protocol=WorkshopProtocol.Name,payload=Convert.ToBase64String(payload)},lifetime.Token);
             var proof=await Read(socket,lifetime.Token);
@@ -99,8 +102,16 @@ internal static class WorkshopCloudChecks
             if (CodexJson.Text(content, "projectName") != "fixture" || CodexJson.Text(content, "sessionName") != "Cloud session" || CodexJson.Text(content, "summary") != "Last round reply")
                 throw new Exception("Cloud terminal frame lost the notification content");
             await Send(socket,new{kind="terminal_ack",operationId=operation},lifetime.Token);
+            var lanProbe = new TcpListener(IPAddress.Loopback, 0); lanProbe.Start();
+            var lanPort = ((IPEndPoint)lanProbe.LocalEndpoint).Port; lanProbe.Stop();
+            await main.Workshop.ConfigureLocalAsync(lanPort);
             await Send(socket,new{kind="keepalive"},lifetime.Token);
             if (CodexJson.Text(await Read(socket,lifetime.Token),"kind")!="alive") throw new Exception("Workshop heartbeat failed");
+            var registration = await Read(socket, lifetime.Token);
+            if (CodexJson.Text(registration, "kind") != "register" || registration.GetProperty("registration").GetProperty("port").GetInt32() != lanPort)
+                throw new Exception("Workshop did not update its actual LAN port after a configuration change");
+            await Send(socket,new{kind="keepalive"},lifetime.Token);
+            if (CodexJson.Text(await Read(socket,lifetime.Token),"kind")!="alive") throw new Exception("Workshop heartbeat failed after registration");
             var reportPath=Path.Combine(directory,"logs","remote-workshop.jsonl");
             if (!File.Exists(reportPath) || !File.ReadAllText(reportPath).Contains("server-fixture")) throw new Exception("Server diagnostic was not collected over the authenticated socket");
             await Send(socket,new {kind="call",id="ios-diagnostic",method="diagnostics.append",@params=new {records=new[] {new {id=Guid.NewGuid(),time=DateTimeOffset.UtcNow,@event="disconnected",detail="error=NSURLErrorDomain/-1005"}}}},lifetime.Token);

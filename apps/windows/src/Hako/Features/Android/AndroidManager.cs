@@ -195,7 +195,7 @@ internal sealed class AndroidManager : IAsyncDisposable
             var session = Id(p, "sessionId");
             switch (Text(p, "operation"))
             {
-                case "stop": return Video.Stop(session);
+                case "stop": return await Video.StopAsync(session);
                 case "relay": return Video.Relay(session, Text(p, "relayId"), Text(p, "ticket"));
                 case "start":
                     var target = Text(p, "deviceId");

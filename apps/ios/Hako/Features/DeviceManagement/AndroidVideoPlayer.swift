@@ -23,6 +23,7 @@ private struct AndroidVideoDescriptor: Decodable {
     let layer = AVSampleBufferDisplayLayer()
     @Published private(set) var connecting = false
     @Published private(set) var connected = false
+    @Published private(set) var stopping = false
     @Published private(set) var message: String?
     @Published private(set) var route = ""
     @Published private(set) var aspect: CGFloat = 9 / 20
@@ -41,7 +42,7 @@ private struct AndroidVideoDescriptor: Decodable {
         return URLSession(configuration: config, delegate: NoRedirectDelegate(), delegateQueue: nil)
     }()
     func connect(agent: ConsoleAgent, device: KageAndroidDevice, serial: String?) {
-        guard worker == nil else { return }
+        guard worker == nil, !stopping else { return }
         let ticket = UUID(); generation = ticket
         let id = UUID().uuidString.lowercased(), client = DeviceMonitorClient.shared
         sessionID = id; self.agent = agent
@@ -178,18 +179,28 @@ private struct AndroidVideoDescriptor: Decodable {
     }
     func disconnect() { end(nil) }
     private func end(_ message: String?) {
+        guard sessionID != nil || worker != nil else { return }
         let id = sessionID, agent = agent, context = requestContext
         generation = UUID(); worker?.cancel(); worker = nil
+        let closing = generation
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         sessionID = nil; self.agent = nil
         connecting = false; connected = false; self.message = message
         format = nil; parameterSets = []; layer.flushAndRemoveImage()
         if let id, let agent {
+            stopping = true
             Task {
+                defer { if generation == closing { stopping = false } }
                 guard DeviceMonitorClient.shared.requestContext == context else { return }
-                struct Stopped: Decodable { let stopped: Bool }
-                let _: Stopped? = try? await DeviceMonitorClient.shared.invokeAgent(agent, method: KageAndroidCommand.stream, version: 1,
-                    params: ["operation":"stop", "sessionId":id], as: Stopped.self)
+                do {
+                    struct Stopped: Decodable { let stopped: Bool }
+                    let _: Stopped = try await DeviceMonitorClient.shared.invokeAgent(agent, method: KageAndroidCommand.stream, version: 1,
+                        params: ["operation":"stop", "sessionId":id], as: Stopped.self)
+                } catch {
+                    if generation == closing, DeviceMonitorClient.shared.requestContext == context {
+                        self.message = "投屏已关闭，自动息屏结果未确认：" + error.localizedDescription
+                    }
+                }
             }
         }
     }
@@ -207,6 +218,24 @@ private struct AndroidVideoSurface: UIViewRepresentable {
     func updateUIView(_ view: Surface, context: Context) { view.setNeedsLayout() }
 }
 
+private struct AndroidVideoViewport: Layout {
+    let aspect: CGFloat
+    let maximumHeight: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let heightLimit = min(proposal.height ?? maximumHeight, maximumHeight)
+        let width = min(proposal.width ?? heightLimit * aspect, heightLimit * aspect)
+        return CGSize(width: width, height: width / aspect)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for subview in subviews {
+            subview.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center,
+                          proposal: ProposedViewSize(bounds.size))
+        }
+    }
+}
+
 struct AndroidLiveScreenView: View {
     let agent: ConsoleAgent
     let device: KageAndroidDevice
@@ -217,24 +246,27 @@ struct AndroidLiveScreenView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack { Text("实时屏幕").font(.headline); Spacer(); if player.connected { Text(player.route).font(.caption).foregroundStyle(.secondary) } }
-            ZStack {
-                AndroidVideoSurface(layer: player.layer).aspectRatio(player.aspect, contentMode: .fit).frame(maxHeight: 480)
-                if !player.connected {
-                    VStack(spacing: 12) {
-                        if player.connecting { ProgressView().tint(.white); Text("正在连接屏幕…") }
-                        else { Image(systemName: "rectangle.on.rectangle").font(.title); Text("投屏未连接") }
-                    }.font(.subheadline).foregroundStyle(.white)
-                }
-            }.clipShape(RoundedRectangle(cornerRadius: 12))
+            AndroidVideoViewport(aspect: player.connected ? player.aspect : 16 / 9,
+                                 maximumHeight: player.connected ? 360 : 180) {
+                ZStack {
+                    AndroidVideoSurface(layer: player.layer)
+                    if !player.connected {
+                        VStack(spacing: 12) {
+                            if player.connecting { ProgressView().tint(.white); Text("正在连接屏幕…") }
+                            else { Image(systemName: "rectangle.on.rectangle").font(.title); Text("投屏未连接") }
+                        }.font(.subheadline).foregroundStyle(.white)
+                    }
+                }.clipShape(RoundedRectangle(cornerRadius: 12))
+            }.frame(maxWidth: .infinity, alignment: .center)
             if let message = player.message { Text(message).font(.caption).foregroundStyle(.orange) }
-            Button(player.connected || player.connecting ? "断开投屏" : "连接投屏") {
+            Button(player.stopping ? "正在关闭投屏…" : player.connected || player.connecting ? "关闭投屏" : "开启投屏") {
                 if player.connected || player.connecting { player.disconnect() }
                 else { player.connect(agent: agent, device: device, serial: serial) }
-            }.buttonStyle(HakoActionButtonStyle(primary: !player.connected)).disabled(!available && !player.connected && !player.connecting)
-            Text("连续视频画面。切换页面或进入后台会断开；手机需要先亮屏，投屏不会解锁手机。")
+            }.buttonStyle(HakoActionButtonStyle(primary: !player.connected))
+                .disabled(player.stopping || (!available && !player.connected && !player.connecting))
+            Text("开启投屏时自动亮屏，关闭时自动息屏。切换页面或进入后台也会关闭投屏；亮屏不会解锁手机。")
                 .font(.caption).foregroundStyle(.secondary)
         }.devicePagePanel()
-        .task { if available, scenePhase == .active { player.connect(agent: agent, device: device, serial: serial) } }
         .onDisappear { player.disconnect() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { player.disconnect() } }
         .onChange(of: serial) { _, _ in player.disconnect() }

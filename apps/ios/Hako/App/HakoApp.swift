@@ -107,6 +107,9 @@ struct HomeView: View {
             .id(buildPush.workshopNavigationID)
             .tint(.primary)
             .accessibilityAction(named: "打开 Pin 列表") { HakoPinPresenter.shared.openDrawer() }
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                HakoPinPresenter.shared.scenePhase = phase
+            }
             .background {
                 HakoPinGestureHost { page in
                     guard let application = Application(rawValue: page.applicationID) else { return }

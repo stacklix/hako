@@ -212,7 +212,8 @@ internal sealed class WorkshopLocalServer : IAsyncDisposable
                                 if (method == "computers.list")
                                 {
                                     await Send(new { kind = "result", id, result = new { computers = new[] {
-                                        new { id = computerId() ?? localId, name = Environment.MachineName, online = true, protocolVersion = 1 }
+                                        new { id = computerId() ?? localId, name = Environment.MachineName, online = true, protocolVersion = 1,
+                                            lan = new { addresses = WorkshopRegistration.Snapshot(Port).Addresses, port = Port } }
                                     } } });
                                     return;
                                 }

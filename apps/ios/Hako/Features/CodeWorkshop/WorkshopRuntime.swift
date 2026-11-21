@@ -62,6 +62,10 @@ import UIKit
                 BuildPushSubscription.shared.dismissWorkshopNotice()
             }
         }
+        if !synchronization.hasVisibleOwners {
+            store.beginVisit()
+            Task { await store.loadComputers() }
+        }
         synchronization.enter(owner, conversation: conversation != nil)
         updateNetworkVisibility()
         visibilityChanges.send()
@@ -200,7 +204,7 @@ import UIKit
         let store = store
         synchronization.register(catalogID, kind: .catalog) {
             await store.prepareNetwork()
-            if store.authenticated { await store.refresh() } else { await store.restore() }
+            if store.authenticated { await store.loadComputers(); await store.refresh() } else { await store.restore() }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
                 await store.refresh(reconcile: false)

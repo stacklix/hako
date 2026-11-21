@@ -55,6 +55,9 @@ func connectWorkshopRole(t *testing.T, f *fixture, commands bool, diagnosticCurs
 	}
 	t.Cleanup(func() { ws.Close() })
 	hello := workshop.Frame{Kind: "hello", Protocol: workshop.Protocol, Account: "owner", KeyID: f.s.config.Agents[0].keyID}
+	if !commands {
+		hello.Registration = &workshop.Registration{ProtocolVersion: 1, Addresses: []string{"192.168.0.10"}, Port: 8005}
+	}
 	if len(diagnosticCursor) > 0 {
 		hello.Diagnostics = true
 		hello.Cursor = diagnosticCursor[0]

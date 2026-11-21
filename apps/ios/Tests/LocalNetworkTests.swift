@@ -27,23 +27,9 @@ import Foundation
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set(try JSONEncoder().encode(configuration), forKey: AppNetworkConfigurationStore.storageKey)
-        let second = LocalNetworkEndpoint(ip: "192.168.0.20", port: 9005)!
-        try WorkshopNetworkConfiguration.save(endpoint, agentID: "A", namespace: "server-one", defaults: defaults)
-        try WorkshopNetworkConfiguration.save(second, agentID: "B", namespace: "server-one", defaults: defaults)
-        try WorkshopNetworkConfiguration.save(second, agentID: "A", namespace: "server-two", defaults: defaults)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-one", defaults: defaults) == endpoint)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "B", namespace: "server-one", defaults: defaults) == second)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-two", defaults: defaults) == second)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "unknown", namespace: "server-one", defaults: defaults) == nil,
-            "An unconfigured computer must never inherit another computer's address")
-        precondition(AppNetworkConfigurationStore.load(defaults: defaults).ssids == configuration.ssids,
-            "Subapplication address changes must preserve the host Wi-Fi list")
-        try WorkshopNetworkConfiguration.save(nil, agentID: "A", namespace: "server-one", defaults: defaults)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-one", defaults: defaults) == nil)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "B", namespace: "server-one", defaults: defaults) == second)
-        precondition(WorkshopNetworkConfiguration.load(agentID: "A", namespace: "server-two", defaults: defaults) == second)
-        precondition(AppNetworkConfigurationStore.load(defaults: defaults).ssids == configuration.ssids)
-        let hello = Data(#"{"kind":"welcome","protocol":"hako.workshop/1","computerId":"A"}"#.utf8)
+        precondition(WorkshopNetworkConfiguration.endpoints(addresses: ["192.168.0.10", "192.168.0.10", "8.8.8.8"], port: 8005) == [endpoint])
+        precondition(WorkshopNetworkConfiguration.endpoints(addresses: ["192.168.0.10"], port: 0).isEmpty)
+        let hello = Data(#"{"computerId":"A"}"#.utf8)
         try WorkshopNetworkConfiguration.requireComputer(hello, agentID: "A")
         do {
             try WorkshopNetworkConfiguration.requireComputer(hello, agentID: "B")

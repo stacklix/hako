@@ -4,6 +4,21 @@ import Foundation
     // A literal LAN endpoint must not be sent through a system HTTP/PAC proxy.
     private static let session = HTTPTransport.makeSession(requestTimeout: 8, useSystemProxy: false)
 
+    static func open(_ endpoints: [LocalNetworkEndpoint], computerID: String) async throws -> (any WorkshopSocketConnection, Data) {
+        var failure: Error = URLError(.cannotConnectToHost)
+        for endpoint in endpoints {
+            try Task.checkCancellation()
+            do {
+                let (connection, hello) = try await open(endpoint, path: "/workshop/v1")
+                do { try WorkshopNetworkConfiguration.requireComputer(hello, agentID: computerID) }
+                catch { connection.closeWorkshop(); throw error }
+                return (connection, hello)
+            } catch is CancellationError { throw CancellationError() }
+            catch { failure = error }
+        }
+        throw failure
+    }
+
     static func open(_ endpoint: LocalNetworkEndpoint, path: String, commandToken: String? = nil) async throws -> (any WorkshopSocketConnection, Data) {
         guard endpoint.isValid, let url = endpoint.url(scheme: "ws", path: path) else { throw CocoaError(.coderReadCorrupt) }
         var request = URLRequest(url: url)

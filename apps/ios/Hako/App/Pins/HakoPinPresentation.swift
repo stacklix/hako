@@ -33,8 +33,10 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     }
 }
 
-@MainActor final class HakoPinPresenter: NSObject, UIGestureRecognizerDelegate {
+@MainActor final class HakoPinPresenter: NSObject, ObservableObject, UIGestureRecognizerDelegate {
     static let shared = HakoPinPresenter()
+    // UIKit presents this independent hosting tree, so forward the owning SwiftUI scene's lifecycle.
+    @Published var scenePhase: ScenePhase = .inactive
     private weak var window: UIWindow?
     private var edge: UIPanGestureRecognizer?
     private var drawer: UIHostingController<HakoPinDrawer>?
@@ -190,7 +192,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
     private func select(_ page: HakoPinnedPage) {
         removeDrawer()
         guard let presenter = topController(), !presenter.isBeingPresented, !presenter.isBeingDismissed else { return }
-        let content = HakoPinPreview(page: page, registry: registry) { [weak self] in self?.enter(page) }
+        let content = HakoPinPreview(page: page, registry: registry, presenter: self) { [weak self] in self?.enter(page) }
         let host = UIHostingController(rootView: content)
         host.overrideUserInterfaceStyle = presenter.traitCollection.userInterfaceStyle
         host.modalPresentationStyle = .pageSheet
@@ -218,6 +220,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
 private struct HakoPinPreview: View {
     let page: HakoPinnedPage
     let registry: HakoPinRegistry
+    @ObservedObject var presenter: HakoPinPresenter
     let onEnter: () -> Void
 
     var body: some View {
@@ -231,6 +234,7 @@ private struct HakoPinPreview: View {
                     }
                 }
         }
+        .environment(\.scenePhase, presenter.scenePhase)
         .tint(.primary)
     }
 }

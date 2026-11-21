@@ -38,6 +38,12 @@ func (s *Server) agentRoutes() {
 }
 
 func (s *Server) workshopRoutes() {
+	s.mux.HandleFunc("GET /api/v1/workshop/computers", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.authorized(w, r); !ok {
+			return
+		}
+		respond(w, http.StatusOK, s.workshopComputers())
+	})
 	s.mux.HandleFunc("GET /ws/workshop/agent", s.workshopAgentSocket)
 	s.mux.HandleFunc("GET /ws/workshop/command-agent", s.commandAgentSocket)
 	s.mux.HandleFunc("GET /ws/workshop/client", s.workshopClientSocket)

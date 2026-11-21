@@ -107,6 +107,19 @@ func (s *Server) workshopWorkerSocket(w http.ResponseWriter, r *http.Request, hu
 		fail()
 		return
 	}
+	if terminals && hello.Registration != nil && !s.registerWorkshopComputer(*configured, hello.Registration) {
+		s.registryMu.Unlock()
+		fail()
+		return
+	}
+	if terminals {
+		c.Register = func(registration *workshop.Registration) bool {
+			s.registryMu.Lock()
+			defer s.registryMu.Unlock()
+			current, _ := hub.Lookup(configured.ID)
+			return current == c && s.registerWorkshopComputer(*configured, registration)
+		}
+	}
 	if err := c.Send(workshop.Frame{Kind: "welcome", Protocol: workshop.Protocol, ComputerID: configured.ID}); err != nil {
 		diagnostics.Event("authentication_welcome_write_failed", err)
 		s.registryMu.Unlock()
@@ -168,7 +181,17 @@ func workshopFailure(id, code, message string) workshop.Frame {
 
 func (s *Server) workshopComputers() any {
 	items := []map[string]any{}
+	registered := map[string]workshopComputer{}
+	s.store.inspect(func(st state) {
+		for id, computer := range st.WorkshopComputers {
+			registered[id] = computer
+		}
+	})
 	for _, entry := range s.registry.Load().Agents {
+		computer, ok := registered[entry.ID]
+		if !ok || computer.KeyID != entry.keyID {
+			continue
+		}
 		c, _ := s.workshopHub.Lookup(entry.ID)
 		online := c != nil
 		if online {
@@ -178,7 +201,8 @@ func (s *Server) workshopComputers() any {
 			default:
 			}
 		}
-		items = append(items, map[string]any{"id": entry.ID, "name": entry.Name, "online": online, "protocolVersion": 1})
+		items = append(items, map[string]any{"id": entry.ID, "name": entry.Name, "online": online,
+			"protocolVersion": computer.ProtocolVersion, "lan": map[string]any{"addresses": computer.Addresses, "port": computer.Port}})
 	}
 	return map[string]any{"computers": items}
 }

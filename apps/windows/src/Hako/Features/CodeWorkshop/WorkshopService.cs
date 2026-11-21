@@ -26,6 +26,7 @@ internal sealed class WorkshopService : IAsyncDisposable
     }
     internal object Status => new { connectionState = cloud.WorkshopState, computerId = cloud.ComputerId, direct = DirectStatus, error = ConfigurationError };
     internal object DirectStatus => new { listening = local != null, port = local?.Port ?? 0 };
+    internal WorkshopRegistration Registration => WorkshopRegistration.Snapshot(local?.Port ?? 0);
     internal async Task ConfigureLocalAsync(int port)
     {
         if (port is < 0 or > 65535) throw new ArgumentException("代码工坊直连端口无效。");

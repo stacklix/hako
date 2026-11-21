@@ -202,6 +202,8 @@ public sealed class AgentRuntime : IAsyncDisposable
         var workshop = Workshop.Dispatcher;
         switch (request.Kind)
         {
+            case "workshop.registration":
+                await publish(Workshop.Registration); break;
             case "workshop":
                 workshop.SetNotificationScope(request.Scope);
                 await publish(await workshop.CallAsync(request.Method, request.Parameters, token)); break;

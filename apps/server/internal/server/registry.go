@@ -148,6 +148,18 @@ func (s *Server) saveRegistry(next *Registry) error {
 	previous := s.registry.Load()
 	err := s.store.update(func(st *state) error {
 		st.Registry = next
+		for id, computer := range st.WorkshopComputers {
+			trusted := false
+			for _, current := range next.Agents {
+				if current.ID == id && current.keyID == computer.KeyID {
+					trusted = true
+					break
+				}
+			}
+			if !trusted {
+				delete(st.WorkshopComputers, id)
+			}
+		}
 		for id, ss := range st.Sessions {
 			if !trustedConsoleState(st, ss.Thumb) {
 				delete(st.Sessions, id)
@@ -172,6 +184,7 @@ func (s *Server) saveRegistry(next *Registry) error {
 			}
 			if !trusted {
 				s.commandHub.Remove(old.ID)
+				s.workshopHub.Remove(old.ID)
 			}
 		}
 	}

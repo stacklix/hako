@@ -2,6 +2,8 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let computer = try JSONDecoder().decode(WorkshopAgent.self, from: Data(#"{"id":"desktop","name":"PC","online":false,"protocolVersion":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}"#.utf8))
+        precondition(computer.lan.addresses == ["192.168.0.10"] && computer.lan.port == 8005 && !computer.online)
         precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_workspace_invalid", message: "invalid")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: URLError(.timedOut)))

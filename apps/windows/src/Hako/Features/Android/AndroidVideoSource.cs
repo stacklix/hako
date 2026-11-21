@@ -11,7 +11,12 @@ namespace Hako.Platform;
 
 // scrcpy 3.3.4 (Apache-2.0), pinned official server. It supplies MediaCodec
 // packet boundaries and configuration changes, including screen rotation.
-internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoint, string directory) : IAsyncDisposable
+internal interface IAndroidVideoSource : IAsyncDisposable
+{
+    byte[] Header { get; }
+    Task<Stream> OpenAsync(CancellationToken token);
+}
+internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoint, string directory) : IAndroidVideoSource
 {
     internal const string Sha256 = "8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e";
     private readonly string identity = Guid.NewGuid().ToString("N");
@@ -21,7 +26,7 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
     private Task? output, errors;
     private readonly CancellationTokenSource stopping = new();
     private string Remote => "/data/local/tmp/kage-video-" + identity + ".jar";
-    internal async Task<Stream> OpenAsync(CancellationToken token)
+    public async Task<Stream> OpenAsync(CancellationToken token)
     {
         using var resource = typeof(AndroidVideoSource).Assembly.GetManifestResourceStream("Hako.scrcpy-server-v3.3.4")
             ?? throw new IOException("投屏编码器资源缺失。");
@@ -65,7 +70,7 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
             }
         }
     }
-    internal byte[] Header { get; private set; } = [];
+    public byte[] Header { get; private set; } = [];
     private async Task Drain(Stream stream) { var bytes = new byte[4096]; try { while (await stream.ReadAsync(bytes, stopping.Token) != 0) { } } catch (OperationCanceledException) { } }
     public async ValueTask DisposeAsync()
     {

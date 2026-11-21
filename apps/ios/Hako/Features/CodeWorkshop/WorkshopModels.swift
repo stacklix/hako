@@ -121,10 +121,18 @@ enum WorkshopCacheIdentity {
 }
 
 struct WorkshopAgent: Codable, Identifiable, Sendable {
+    struct LAN: Codable, Sendable {
+        let addresses: [String]
+        let port: Int
+    }
     let id: String
     let name: String
     let online: Bool
     let protocolVersion: Int
+    let lan: LAN
+    init(id: String, name: String, online: Bool, protocolVersion: Int, lan: LAN = LAN(addresses: [], port: 0)) {
+        self.id = id; self.name = name; self.online = online; self.protocolVersion = protocolVersion; self.lan = lan
+    }
     var supported: Bool { protocolVersion == 1 }
     var supportsArchiving: Bool { protocolVersion == 1 }
 

@@ -96,7 +96,7 @@ private func androidNotice(_ title: String, _ message: String) -> some View {
 }
 
 private struct KageAndroidDeviceSheet: View {
-    enum Page: String, CaseIterable { case overview = "概览", control = "控制", maintenance = "维护", records = "记录" }
+    enum Page: String, CaseIterable { case overview = "概览", casting = "投屏", control = "控制", maintenance = "维护", records = "记录" }
     @ObservedObject var store: KageAndroidStore
     let original: KageAndroidDevice
     @ObservedObject private var client = DeviceMonitorClient.shared
@@ -155,6 +155,7 @@ private struct KageAndroidDeviceSheet: View {
                 }
                 switch page {
                 case .overview: overview
+                case .casting: AndroidLiveScreenView(agent: store.agent, device: device, serial: serial, available: store.canControl(device))
                 case .control: control
                 case .maintenance: maintenance
                 case .records: records
@@ -255,7 +256,6 @@ private struct KageAndroidDeviceSheet: View {
     }
     private var control: some View {
         VStack(alignment: .leading, spacing: 14) {
-            AndroidLiveScreenView(agent: store.agent, device: device, serial: serial, available: store.canControl(device))
             VStack(alignment: .leading, spacing: 17) {
                 Text("当前屏幕状态").font(.caption).foregroundStyle(.secondary)
                 Text(detail?.screenLabel ?? "未知").font(.title.weight(.medium))

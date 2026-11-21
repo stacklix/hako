@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Net.WebSockets;
@@ -32,9 +33,92 @@ internal static class AndroidVideoChecks
         try { streams.Create(Guid.NewGuid().ToString("D"), "phone", endpoint, 8003); throw new Exception("Parallel source on one phone accepted"); } catch (AgentActionException e) when (e.Code == "stream_busy") { }
         var second = Guid.NewGuid().ToString("D"); streams.Create(second, "second", endpoint, 8003);
         try { streams.Create(Guid.NewGuid().ToString("D"), "third", endpoint, 8003); throw new Exception("Unbounded video sessions accepted"); } catch (AgentActionException e) when (e.Code == "stream_busy") { }
-        streams.Stop(id); streams.Stop(id);
+        await streams.StopAsync(id); await streams.StopAsync(id);
         streams.Create(Guid.NewGuid().ToString("D"), "phone", endpoint, 8003);
+        await CheckPowerLifecycle(false, false);
+        await CheckPowerLifecycle(true, false);
+        await CheckPowerLifecycle(false, true);
         Console.WriteLine("PASS: video encoder integrity, idempotent session keys, device pinning, source limits and stop without launching ADB.");
+    }
+    private sealed class IdleStream : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] b, int o, int c) => throw new NotSupportedException();
+        public override long Seek(long o, SeekOrigin s) => throw new NotSupportedException();
+        public override void SetLength(long l) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+        public override async ValueTask<int> ReadAsync(Memory<byte> bytes, CancellationToken token = default)
+        { await Task.Delay(Timeout.Infinite, token); return 0; }
+    }
+    private sealed class Source : IAndroidVideoSource
+    {
+        internal readonly TaskCompletionSource Opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Disposing = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource? CloseGate;
+        internal bool Disposed;
+        public byte[] Header => [104, 50, 54, 52, 0, 0, 2, 28, 0, 0, 4, 176];
+        public Task<Stream> OpenAsync(CancellationToken token) { Opened.TrySetResult(); return Task.FromResult<Stream>(new IdleStream()); }
+        public async ValueTask DisposeAsync() { Disposed = true; Disposing.TrySetResult(); if (CloseGate is not null) await CloseGate.Task; }
+    }
+    private sealed class PowerAdb(Source source, bool failWake, bool failSleep) : IAndroidAdb
+    {
+        public string? Executable => "fixture";
+        internal bool Awake;
+        internal readonly List<string> Keys = [];
+        public Task<byte[]> RunAsync(string[] arguments, CancellationToken token, string? input = null, int limit = 2097152)
+        {
+            if (arguments[0] != "-t" || arguments[1] != "7") throw new Exception("Video power control changed transport");
+            if (arguments[^2] == "keyevent") {
+                var key = arguments[^1]; Keys.Add(key);
+                if ((key == "224" && failWake) || (key == "223" && failSleep)) throw new AgentActionException("adb_failed", "fixture denied");
+                if (key == "223" && !source.Disposed) throw new Exception("Phone slept before video source closed");
+                Awake = key == "224";
+            }
+            return Task.FromResult(Encoding.UTF8.GetBytes("mScreenState=" + (Awake ? "ON" : "OFF")));
+        }
+    }
+    private static async Task CheckPowerLifecycle(bool failWake, bool failSleep)
+    {
+        var source = new Source { CloseGate = failWake ? null : new(TaskCreationOptions.RunContinuationsAsynchronously) }; var adb = new PowerAdb(source, failWake, failSleep);
+        await using var streams = new AndroidVideoStreams(adb, () => null, Path.GetTempPath(), _ => source);
+        var id = Guid.NewGuid().ToString("D");
+        var descriptor = JsonSerializer.SerializeToElement(streams.Create(id, "phone", new("pinned", "7", "usb", "device"), 0), AgentConnection.Json);
+        if (adb.Keys.Count != 0) throw new Exception("Merely reserving a session woke the phone");
+        var key = Convert.FromBase64String(descriptor.GetProperty("key").GetString()!);
+        var name = "Kage.Video.Power." + Guid.NewGuid().ToString("N");
+        using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var peer = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var waiting = pipe.WaitForConnectionAsync(); await peer.ConnectAsync(3000); await waiting;
+        using var server = WebSocket.CreateFromStream(pipe, true, null, TimeSpan.FromSeconds(15));
+        using var client = WebSocket.CreateFromStream(peer, false, null, TimeSpan.FromSeconds(15));
+        var receiving = Task.Run(async () => {
+            try { var bytes = new byte[65564]; while (true) { var frame = await client.ReceiveAsync(bytes.AsMemory(), default); if (frame.MessageType == WebSocketMessageType.Close) return; } }
+            catch (Exception error) when (error is WebSocketException or IOException or OperationCanceledException) { }
+        });
+        var work = streams.AcceptAsync(id, server, default);
+        var hello = JsonSerializer.SerializeToUtf8Bytes(new { sessionId = id, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+        await client.SendAsync(AgentLanEndpoint.Seal(key, hello, "video-client:" + id).AsMemory(), WebSocketMessageType.Binary, true, default);
+        if (failWake) await work.WaitAsync(TimeSpan.FromSeconds(3));
+        else { await source.Opened.Task.WaitAsync(TimeSpan.FromSeconds(3)); if (!adb.Awake) throw new Exception("Capture started before wake verification"); }
+        var stop = streams.StopAsync(id);
+        if (source.CloseGate is not null) {
+            await source.Disposing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            try { streams.Create(Guid.NewGuid().ToString("D"), "phone", new("pinned", "7", "usb", "device"), 0); throw new Exception("Closing source allowed a new session to wake before old sleep"); }
+            catch (AgentActionException error) when (error.Code == "stream_busy") { }
+            source.CloseGate.TrySetResult();
+        }
+        try { await stop.WaitAsync(TimeSpan.FromSeconds(3)); if (failSleep) throw new Exception("Sleep failure was hidden"); }
+        catch (AgentActionException error) when (failSleep && error.Code == "screen_sleep_failed") { }
+        client.Abort(); try { await work; } catch (OperationCanceledException) { } await receiving;
+        if (!source.Disposed || (!failSleep && adb.Awake) || (failWake && source.Opened.Task.IsCompleted)) throw new Exception("Video power lifecycle failed");
+        if (!failWake && string.Join(",", adb.Keys) != "224,223") throw new Exception("Wake/sleep was repeated or omitted");
+        await streams.StopAsync(id).ContinueWith(_ => { });
+        if (adb.Keys.Count != (failWake ? 1 : 2)) throw new Exception("Repeated stop repeated input");
     }
     internal static async Task LiveAsync(string profile, string output)
     {

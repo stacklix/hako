@@ -24,22 +24,29 @@ type Error struct {
 }
 
 type Frame struct {
-	Binary      []byte          `json:"-"`
-	Kind        string          `json:"kind"`
-	Protocol    string          `json:"protocol,omitempty"`
-	ID          string          `json:"id,omitempty"`
-	ComputerID  string          `json:"computerId,omitempty"`
-	Method      string          `json:"method,omitempty"`
-	Params      json.RawMessage `json:"params,omitempty"`
-	OperationID string          `json:"operationId,omitempty"`
-	QuestionID  string          `json:"questionId,omitempty"`
-	Cursor      int64           `json:"cursor,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       *Error          `json:"error,omitempty"`
-	Account     string          `json:"account,omitempty"`
-	KeyID       string          `json:"keyId,omitempty"`
-	Signature   string          `json:"signature,omitempty"`
-	Diagnostics bool            `json:"diagnostics,omitempty"`
+	Binary       []byte          `json:"-"`
+	Kind         string          `json:"kind"`
+	Protocol     string          `json:"protocol,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	ComputerID   string          `json:"computerId,omitempty"`
+	Method       string          `json:"method,omitempty"`
+	Params       json.RawMessage `json:"params,omitempty"`
+	OperationID  string          `json:"operationId,omitempty"`
+	QuestionID   string          `json:"questionId,omitempty"`
+	Cursor       int64           `json:"cursor,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        *Error          `json:"error,omitempty"`
+	Account      string          `json:"account,omitempty"`
+	KeyID        string          `json:"keyId,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	Diagnostics  bool            `json:"diagnostics,omitempty"`
+	Registration *Registration   `json:"registration,omitempty"`
+}
+
+type Registration struct {
+	ProtocolVersion int      `json:"protocolVersion"`
+	Addresses       []string `json:"addresses"`
+	Port            int      `json:"port"`
 }
 
 type Subscription struct {
@@ -60,6 +67,7 @@ type Connection struct {
 	once    sync.Once
 	// Called only for unsolicited terminal receipts on an authenticated Agent socket.
 	Terminal    func(Frame) bool
+	Register    func(*Registration) bool
 	Diagnostics *SocketLog
 }
 
@@ -141,6 +149,12 @@ func (c *Connection) Run(seen func()) {
 		}
 		if frame.Kind == "alive" {
 			seen()
+			continue
+		}
+		if frame.Kind == "register" {
+			if c.Register == nil || !c.Register(frame.Registration) {
+				return
+			}
 			continue
 		}
 		if frame.Kind == "terminal" {

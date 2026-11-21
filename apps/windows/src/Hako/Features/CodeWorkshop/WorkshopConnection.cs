@@ -55,6 +55,7 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
             var id = Guid.NewGuid().ToString("N");
             var elapsed = Stopwatch.StartNew();
             var stage = "compatibility";
+            string? registered = null;
             using var socket = new ClientWebSocket();
             attempt++;
             diagnostics.Write(id, "connecting", stage, 0, attempt);
@@ -71,7 +72,9 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
                     stage = "authenticate";
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await Send(socket, new { kind = "hello", protocol = WorkshopProtocol.Name, account = settings.Username, keyId, diagnostics = reports is not null, cursor = reports?.ServerCursor ?? 0 }, authentication.Token);
+                    var registration = commandHost ? null : await WorkshopRegistration.ReadAsync(profileDirectory, authentication.Token);
+                    registered = registration is null ? null : JsonSerializer.Serialize(registration, WorkshopProtocol.Json);
+                    await Send(socket, new { kind = "hello", protocol = WorkshopProtocol.Name, account = settings.Username, keyId, registration, diagnostics = reports is not null, cursor = reports?.ServerCursor ?? 0 }, authentication.Token);
                     using var challenge = await Read(socket, authentication.Token);
                     var frame = challenge.RootElement;
                     if (CodexJson.Text(frame, "kind") != "challenge" || CodexJson.Text(frame, "protocol") != WorkshopProtocol.Name)
@@ -92,7 +95,7 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
                 diagnostics.Write(id, "connected", stage, elapsed.ElapsedMilliseconds, attempt, recovery?.ElapsedMilliseconds);
                 recovery = null;
                 attempt = 0;
-                await Serve(socket, NotificationScope(settings), token, id);
+                await Serve(socket, NotificationScope(settings), token, id, registered);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             { diagnostics.Write(id, "stopped", stage, elapsed.ElapsedMilliseconds, attempt, closeCode: socket.CloseStatus); break; }
@@ -114,7 +117,7 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(settings.Origin().GetLeftPart(UriPartial.Authority) + "\n" + settings.Username + "\n" + AgentSettings.KeyId(key))));
     }
 
-    private async Task Serve(ClientWebSocket socket, string scope, CancellationToken token, string connectionId)
+    private async Task Serve(ClientWebSocket socket, string scope, CancellationToken token, string connectionId, string? registered)
     {
         using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
         using var writing = new SemaphoreSlim(1, 1);
@@ -153,7 +156,17 @@ internal sealed class WorkshopConnection(IWorkshopDispatcher dispatcher, Action<
                     }
                     continue;
                 }
-                if (kind == "keepalive") { await Publish(new { kind = "alive" }); continue; }
+                if (kind == "keepalive")
+                {
+                    await Publish(new { kind = "alive" });
+                    if (!commandHost)
+                    {
+                        var registration = await WorkshopRegistration.ReadAsync(profileDirectory, connection.Token);
+                        var value = JsonSerializer.Serialize(registration, WorkshopProtocol.Json);
+                        if (value != registered) { await Publish(new { kind = "register", registration }); registered = value; }
+                    }
+                    continue;
+                }
                 if (kind == "terminal_ack")
                 {
                     var operationId = CodexJson.Text(frame, "operationId");

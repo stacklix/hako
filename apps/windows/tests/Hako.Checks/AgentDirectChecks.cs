@@ -94,6 +94,11 @@ internal static class AgentDirectChecks
             await Send(socket, new { id = "list", kind = "call", method = "computers.list", @params = new { } });
             var list = await Receive(socket);
             Check(list.GetProperty("result").GetProperty("computers")[0].GetProperty("id").GetString() == "PC", "LAN discovery required cloud authentication");
+            var lanRegistration = list.GetProperty("result").GetProperty("computers")[0].GetProperty("lan");
+            Check(lanRegistration.GetProperty("port").GetInt32() == server.Port && lanRegistration.GetProperty("addresses").ValueKind == JsonValueKind.Array,
+                "Workshop discovery did not expose the actual listening port and LAN addresses");
+            Check(WorkshopRegistration.Snapshot(0).Addresses.Length == 0 && WorkshopRegistration.Snapshot(0).Port == 0,
+                "Disabled Workshop LAN must not advertise an address");
             await Send(socket, new { id = "operation", kind = "call", computerId = "PC", method = "operation.read", @params = new { operationId = id } });
             var reply = await Receive(socket);
             var page = reply.GetProperty("result");

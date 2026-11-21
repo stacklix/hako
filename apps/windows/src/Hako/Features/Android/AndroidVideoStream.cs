@@ -16,7 +16,8 @@ namespace Hako.Platform;
 
 // A live, single-consumer session. No recorded video is written to disk, and
 // closing the media socket kills only its own ADB process.
-internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, string directory) : IAsyncDisposable
+internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, string directory,
+    Func<AndroidEndpoint, IAndroidVideoSource>? sourceFactory = null) : IAsyncDisposable
 {
     private sealed class Session(string id, string device, AndroidEndpoint endpoint)
     {
@@ -26,6 +27,8 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         internal readonly CancellationTokenSource Lifetime = new(TimeSpan.FromSeconds(30));
         internal bool Claimed;
         internal Task? Worker;
+        internal bool PowerOwned;
+        internal string? EndError;
     }
     private readonly object sync = new();
     private readonly Dictionary<string, Session> sessions = new();
@@ -42,7 +45,7 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
                 if (prior.Device != device || prior.Endpoint.Serial != endpoint.Serial) throw new AgentActionException("stream_conflict", "视频会话目标不一致。");
                 return Snapshot(prior, port);
             }
-            if (sessions.Count >= 2 || sessions.Values.Any(s => s.Device == device && !s.Lifetime.IsCancellationRequested))
+            if (sessions.Count >= 2 || sessions.Values.Any(s => s.Device == device && (!s.Lifetime.IsCancellationRequested || s.Worker?.IsCompleted == false)))
                 throw new AgentActionException("stream_busy", "这台手机已有投屏会话，请先结束原会话。");
             var session = new Session(id, device, endpoint);
             sessions.Add(id, session);
@@ -52,9 +55,12 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
     private static object Snapshot(Session s, int port) => new { sessionId = s.Id, codec = "h264", protocol = "hako-video-v1",
         key = Convert.ToBase64String(s.Key), port, addresses = AgentLanEndpoint.Addresses(), path = "/agent/v1/streams/" + s.Id };
 
-    internal object Stop(string id)
+    internal async Task<object> StopAsync(string id)
     {
-        lock (sync) if (sessions.TryGetValue(id, out var value)) value.Lifetime.Cancel();
+        Session? value;
+        lock (sync) { sessions.TryGetValue(id, out value); value?.Lifetime.Cancel(); }
+        if (value?.Worker is not null) try { await value.Worker; } catch (OperationCanceledException) { }
+        if (value?.EndError is { } error) throw new AgentActionException("screen_sleep_failed", error);
         return new { stopped = true };
     }
     private Session Get(string id)
@@ -118,7 +124,7 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(parent, s.Lifetime.Token);
         var token = lifetime.Token;
-        await using var source = new AndroidVideoSource(adb, s.Endpoint, directory);
+        var source = sourceFactory?.Invoke(s.Endpoint) ?? new AndroidVideoSource(adb, s.Endpoint, directory);
         Task? reading = null, heartbeat = null;
         using var sending = new SemaphoreSlim(1, 1);
         ulong sequence = 0;
@@ -142,8 +148,9 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
                     while (await timer.WaitForNextTickAsync(token)) await Send(3, Encoding.UTF8.GetBytes("alive"));
                 } finally { lifetime.Cancel(); }
             });
-            var raw = Encoding.UTF8.GetString(await adb.RunAsync(["-t", s.Endpoint.TransportId, "shell", "dumpsys display"], token));
-            if (raw.Contains("mScreenState=OFF", StringComparison.Ordinal)) throw new AgentActionException("screen_off", "手机当前息屏，请先亮屏再连接投屏。");
+            s.PowerOwned = true;
+            await AndroidVideoPower.SetAsync(adb, s.Endpoint, awake: true);
+            token.ThrowIfCancellationRequested();
             reading = Task.Run(async () =>
             {
                 try { var buffer = new byte[1024]; while (!token.IsCancellationRequested) {
@@ -173,6 +180,15 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
             lifetime.Cancel(); s.Lifetime.Cancel(); socket.Abort();
             if (reading is not null) try { await reading; } catch { }
             if (heartbeat is not null) try { await heartbeat; } catch { }
+            try { await source.DisposeAsync(); }
+            finally
+            {
+                if (s.PowerOwned)
+                {
+                    try { await AndroidVideoPower.SetAsync(adb, s.Endpoint, awake: false); }
+                    catch (AgentActionException error) { s.EndError = error.Message; }
+                }
+            }
         }
     }
     public async ValueTask DisposeAsync()

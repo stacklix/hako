@@ -31,25 +31,11 @@ enum WorkshopNetworkConfiguration {
             throw ConnectionError.wrongComputer
         }
     }
-    private static let key = "hako.workshop.network.endpoints"
-
-    static func endpoints(namespace: String, defaults: UserDefaults = .standard) -> [String: LocalNetworkEndpoint] {
-        read(defaults)[namespace, default: [:]].filter { !$0.key.isEmpty && $0.value.isValid }
-    }
-
-    static func load(agentID: String, namespace: String, defaults: UserDefaults = .standard) -> LocalNetworkEndpoint? {
-        endpoints(namespace: namespace, defaults: defaults)[agentID]
-    }
-
-    static func save(_ endpoint: LocalNetworkEndpoint?, agentID: String, namespace: String, defaults: UserDefaults = .standard) throws {
-        guard !agentID.isEmpty, endpoint?.isValid != false else { throw CocoaError(.coderInvalidValue) }
-        var configuration = read(defaults)
-        configuration[namespace, default: [:]][agentID] = endpoint
-        defaults.set(try JSONEncoder().encode(configuration), forKey: key)
-    }
-
-    private static func read(_ defaults: UserDefaults) -> [String: [String: LocalNetworkEndpoint]] {
-        guard let data = defaults.data(forKey: key) else { return [:] }
-        return (try? JSONDecoder().decode([String: [String: LocalNetworkEndpoint]].self, from: data)) ?? [:]
+    static func endpoints(addresses: [String], port: Int) -> [LocalNetworkEndpoint] {
+        var seen = Set<String>()
+        return addresses.compactMap { address in
+            guard seen.insert(address).inserted else { return nil }
+            return LocalNetworkEndpoint(ip: address, port: port)
+        }
     }
 }
