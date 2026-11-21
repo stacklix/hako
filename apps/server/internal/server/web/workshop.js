@@ -304,7 +304,7 @@
   function startStream(view) {
     if (!current(view) || !view.operation || document.hidden || stream) return;
     const generation = streamVersion, operation = view.operation;
-    const source = new EventSource('/admin/api/workshop/events/' + [view.computer, operation, view.cursor].map(encodeURIComponent).join('/'));
+    const source = new EventSource('/consilium/api/workshop/events/' + [view.computer, operation, view.cursor].map(encodeURIComponent).join('/'));
     stream = source;
     const disconnected = message => {
       if (!current(view) || stream !== source || generation !== streamVersion || operation !== view.operation) return;

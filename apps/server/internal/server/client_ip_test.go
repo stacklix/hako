@@ -30,7 +30,7 @@ func TestLoginClientIP(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := &Server{trustedProxies: proxies}
-			r := httptest.NewRequest("POST", "/admin/api/login/requests", nil)
+			r := httptest.NewRequest("POST", "/consilium/api/login/requests", nil)
 			r.RemoteAddr = tc.remote
 			r.Header.Set("X-Forwarded-For", tc.forwarded)
 			if got := s.loginClientIP(r); got != tc.want {

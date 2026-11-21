@@ -48,6 +48,11 @@ func (s *Server) publicRoutes() {
 			http.ServeContent(w, r, file, time.Time{}, bytes.NewReader(data))
 		})
 	}
+	s.mux.HandleFunc("GET /public/sora-logo.svg", func(w http.ResponseWriter, r *http.Request) {
+		data, _ := adminFiles.ReadFile("web/sora-logo.svg")
+		publicHeaders(w)
+		http.ServeContent(w, r, "sora-logo.svg", time.Time{}, bytes.NewReader(data))
+	})
 }
 
 func publicHeaders(w http.ResponseWriter) {

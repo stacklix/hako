@@ -21,19 +21,19 @@ func TestNativeNotificationGatewayUsesHakoAuthentication(t *testing.T) {
 	}
 	a := loginAdmin(f)
 	external := &adminClient{f: f}
-	if code, _, _ := external.request("GET", "/admin/api/notifications/webhooks", nil, "", ""); code != 401 {
+	if code, _, _ := external.request("GET", "/consilium/api/notifications/webhooks", nil, "", ""); code != 401 {
 		t.Fatalf("unauthenticated administration: %d", code)
 	}
-	if code, _, _ := a.request("POST", "/admin/api/notifications/webhooks", map[string]string{}, f.s.config.PublicURL, "bad"); code != 403 {
+	if code, _, _ := a.request("POST", "/consilium/api/notifications/webhooks", map[string]string{}, f.s.config.PublicURL, "bad"); code != 403 {
 		t.Fatalf("invalid CSRF: %d", code)
 	}
-	if code, body, response := a.request("GET", "/admin/notifications-ui/?view=webhooks", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知网关") || response.Header.Get("X-Frame-Options") != "SAMEORIGIN" {
+	if code, body, response := a.request("GET", "/consilium/notifications-ui/?view=webhooks", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知网关") || response.Header.Get("X-Frame-Options") != "SAMEORIGIN" {
 		t.Fatalf("embedded page: %d", code)
 	}
-	if code, body, _ := a.request("GET", "/admin/notifications/channels", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知渠道") {
+	if code, body, _ := a.request("GET", "/consilium/notifications/channels", nil, "", ""); code != 200 || !strings.Contains(string(body), "通知渠道") {
 		t.Fatalf("channel page: %d", code)
 	}
-	if code, _, _ := a.request("PUT", "/admin/api/notifications/channels/wechat", map[string]any{}, f.s.config.PublicURL, "bad"); code != 403 {
+	if code, _, _ := a.request("PUT", "/consilium/api/notifications/channels/wechat", map[string]any{}, f.s.config.PublicURL, "bad"); code != 403 {
 		t.Fatalf("invalid channel initialization CSRF: %d", code)
 	}
 	initial := a.call("GET", "notifications/channels/wechat", nil, 200)

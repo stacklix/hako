@@ -103,7 +103,7 @@ func TestAgentActionErrorAndValidation(t *testing.T) {
 		t.Fatal("unsigned request accepted", status)
 	}
 	a := loginAdmin(f)
-	status, _, _ = a.request("POST", "/admin/api/agents/PC/requests", body, f.s.config.PublicURL, "")
+	status, _, _ = a.request("POST", "/consilium/api/agents/PC/requests", body, f.s.config.PublicURL, "")
 	if status != 403 {
 		t.Fatal("request without CSRF accepted", status)
 	}
@@ -112,7 +112,7 @@ func TestAgentActionErrorAndValidation(t *testing.T) {
 		if status != 404 {
 			t.Fatal("legacy Console route retained", status)
 		}
-		// The GET /admin/ subtree makes unknown POST paths return 405.
+		// The GET /consilium/ subtree makes unknown POST paths return 405.
 		a.call("POST", path, map[string]any{}, 405)
 	}
 }

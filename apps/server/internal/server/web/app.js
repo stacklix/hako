@@ -1,21 +1,21 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const notificationPages = {overview:'工作台', channels:'通知渠道', messages:'消息中心', webhooks:'Webhooks'};
-const notificationPath = /^\/admin\/notifications(?:\/(overview|channels|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
+const notificationPath = /^\/consilium\/notifications(?:\/(overview|channels|bots|messages|webhooks|settings))?$/.exec(window.location.pathname);
 const notificationView = notificationPath?.[1] || 'overview';
 const notificationPage = notificationPath ? (['bots', 'settings'].includes(notificationView) ? 'channels' : notificationView) : null;
 const investmentPages = {overview:'总览', accounts:'账户', watchlist:'关注', 'balance-sheet':'资产负债'};
-const investmentPath = /^\/admin\/investment(?:\/(overview|accounts|watchlist|balance-sheet))?$/.exec(window.location.pathname);
+const investmentPath = /^\/consilium\/investment(?:\/(overview|accounts|watchlist|balance-sheet))?$/.exec(window.location.pathname);
 const investmentPage = investmentPath ? investmentPath[1] || 'overview' : null;
 const adminPages = {
-  '/admin/workshop': {id: 'workshop', title: '代码工坊', description: '连接执行电脑，在项目中继续你的编程会话。'},
-  '/admin/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
-  '/admin/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
-  '/admin/applications': {id: 'applications', title: '应用管理', description: '创建应用、管理 SK 与扫码登录授权。'},
-  '/admin/system': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'},
-  '/admin/system/data': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'}
+  '/consilium/workshop': {id: 'workshop', title: '代码工坊', description: '连接执行电脑，在项目中继续你的编程会话。'},
+  '/consilium/agents': {id: 'agents', title: '设备代理', description: '管理设备、查看在线状态与调用设备能力。'},
+  '/consilium/access-logs': {id: 'access-logs', title: '访问日志', description: '查看 Caddy 访问统计、来源与请求排行。'},
+  '/consilium/applications': {id: 'applications', title: '应用管理', description: '创建应用、管理 SK 与扫码登录授权。'},
+  '/consilium/system': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'},
+  '/consilium/system/data': {id: 'system', title: '系统管理 · 数据管理', description: '浏览数据库与表数据，执行 SQL 查询。'}
 };
-const adminPage = adminPages[window.location.pathname] ?? adminPages['/admin/agents'];
+const adminPage = adminPages[window.location.pathname] ?? adminPages['/consilium/agents'];
 const currentPage = notificationPage ? 'notifications' : investmentPage ? 'investment' : adminPage.id;
 
 function showNotificationFrame(visible) {
@@ -29,7 +29,7 @@ function showNotificationFrame(visible) {
   if (bot) query.set('bot', bot);
   const channel = new URLSearchParams(window.location.search).get('channel');
   if (notificationPage === 'messages' && (channel === 'wechat' || channel === 'apns')) query.set('channel', channel);
-  frame.setAttribute('src', '/admin/notifications-ui/?' + query);
+  frame.setAttribute('src', '/consilium/notifications-ui/?' + query);
 }
 function showPage() {
   const agents = currentPage === 'agents';
@@ -108,7 +108,7 @@ async function api(path, method = 'GET', data, passive = false) {
   const headers = { 'Content-Type':'application/json' };
   if (passive) headers['X-Hako-Passive'] = '1';
   if (method !== 'GET' && csrf) headers['X-CSRF-Token'] = csrf;
-  const response = await fetch('/admin/api/' + path, { method, headers, credentials:'same-origin', cache:'no-store', body:data === undefined ? undefined : JSON.stringify(data), signal:AbortSignal.timeout(20000) });
+  const response = await fetch('/consilium/api/' + path, { method, headers, credentials:'same-origin', cache:'no-store', body:data === undefined ? undefined : JSON.stringify(data), signal:AbortSignal.timeout(20000) });
   const result = await response.json();
   if (!response.ok) {
     if (response.status === 401 && path !== 'session' && !path.startsWith('login/')) {
@@ -190,7 +190,7 @@ async function startQr() {
       if (generation !== qrGeneration) return;
       stopQr(); qrOverlay('二维码加载失败'); $('qr-status').textContent = '请刷新二维码重试';
     };
-    $('login-qr').src = '/admin/api/login/requests/' + request.id + '/qr'; $('login-qr').hidden = false; $('qr-status').textContent = '等待 Console 扫码';
+    $('login-qr').src = '/consilium/api/login/requests/' + request.id + '/qr'; $('login-qr').hidden = false; $('qr-status').textContent = '等待 Console 扫码';
     const countdown = () => {
       if (generation !== qrGeneration) return false;
       const left = Math.max(0,Math.ceil((Date.parse(request.expiresAt) - Date.now()) / 1000));

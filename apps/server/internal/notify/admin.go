@@ -26,7 +26,7 @@ const messageView = `messages.id,messages.bot_id botId,messages.conversation_id 
 	messages.type,messages.text,messages.status,messages.source,messages.webhook_id webhookId,messages.error,
 	messages.created_at createdAt,messages.updated_at updatedAt,
 	CASE WHEN EXISTS(SELECT 1 FROM message_images img WHERE img.message_id=messages.id AND img.data IS NOT NULL)
-		THEN '/admin/api/notifications/messages/' || messages.id || '/image' ELSE NULL END imageUrl`
+		THEN '/consilium/api/notifications/messages/' || messages.id || '/image' ELSE NULL END imageUrl`
 
 var verificationCode = regexp.MustCompile("^[A-Za-z0-9-]{1,32}$")
 var ok = object{"ok": true}

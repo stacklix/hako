@@ -24,7 +24,7 @@ func TestAdminWorkshopAuthenticationAndForwarding(t *testing.T) {
 	}
 	frame := workshop.Frame{Kind: "call", ID: "browser-request", ComputerID: "PC", Method: "turn.start", Params: json.RawMessage(`{"requestId":"11111111-1111-4111-8111-111111111111","applicationId":"demo","message":"hello","systemPrompt":"example"}`)}
 	for _, check := range []struct{ origin, csrf string }{{"", a.csrf}, {"https://attacker.example", a.csrf}, {f.http.URL, "wrong"}} {
-		status, _, _ := a.request("POST", "/admin/api/workshop/calls", frame, check.origin, check.csrf)
+		status, _, _ := a.request("POST", "/consilium/api/workshop/calls", frame, check.origin, check.csrf)
 		if status != http.StatusForbidden {
 			t.Fatal("workshop mutation bypassed CSRF", status)
 		}
@@ -58,7 +58,7 @@ func TestAdminWorkshopEventsResumeRevokeAndUnsubscribe(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
 	worker := connectWorkshop(t, f)
-	r, _ := http.NewRequest("GET", f.http.URL+"/admin/api/workshop/events/PC/11111111-1111-4111-8111-111111111111/12", nil)
+	r, _ := http.NewRequest("GET", f.http.URL+"/consilium/api/workshop/events/PC/11111111-1111-4111-8111-111111111111/12", nil)
 	r.AddCookie(a.cookie)
 	response, err := f.http.Client().Do(r)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestAdminWorkshopPassiveReadsDoNotExtendIdleSession(t *testing.T) {
 	f.s.adminSessions[id] = ss
 	f.s.adminMu.Unlock()
 	a.call("GET", "workshop/computers", nil, 200)
-	r, _ := http.NewRequest("POST", f.http.URL+"/admin/api/workshop/calls", strings.NewReader(`{"kind":"call","id":"poll","method":"computers.list","params":{}}`))
+	r, _ := http.NewRequest("POST", f.http.URL+"/consilium/api/workshop/calls", strings.NewReader(`{"kind":"call","id":"poll","method":"computers.list","params":{}}`))
 	r.AddCookie(a.cookie)
 	r.Header.Set("Origin", f.http.URL)
 	r.Header.Set("Content-Type", "application/json")

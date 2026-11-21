@@ -85,7 +85,7 @@ func TestAccessLogsAdminRankingsAndAuthentication(t *testing.T) {
 		t.Fatal("passive log polling extended idle session")
 	}
 	rec := httptest.NewRecorder()
-	s.adminAccessLogHour(rec, httptest.NewRequest("GET", "/admin/api/access-logs/hour?"+query.Encode(), nil))
+	s.adminAccessLogHour(rec, httptest.NewRequest("GET", "/consilium/api/access-logs/hour?"+query.Encode(), nil))
 	var detail struct {
 		Visits, NonSuccess                  int64
 		TopClients                          []accesslog.Client

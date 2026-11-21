@@ -61,7 +61,7 @@ func TestAdminOriginChecksRemainStrict(t *testing.T) {
 		{"foreign-host", f.s.config.PublicURL, "same-origin", "attacker.invalid", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, f.s.config.PublicURL+"/admin/api/login/requests", strings.NewReader("{}"))
+			r := httptest.NewRequest(http.MethodPost, f.s.config.PublicURL+"/consilium/api/login/requests", strings.NewReader("{}"))
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Origin", test.origin)
 			r.Header.Set("Sec-Fetch-Site", test.site)

@@ -23,10 +23,10 @@ func publicApplication(c AuthClientConfig) applicationView {
 }
 
 func (s *Server) applicationManagementRoutes() {
-	s.mux.HandleFunc("GET /admin/api/applications", s.admin(s.listApplications))
-	s.mux.HandleFunc("POST /admin/api/applications", s.admin(s.createApplication))
-	s.mux.HandleFunc("PATCH /admin/api/applications/{id}", s.admin(s.updateApplication))
-	s.mux.HandleFunc("POST /admin/api/applications/{id}/rotate", s.admin(s.rotateApplication))
+	s.mux.HandleFunc("GET /consilium/api/applications", s.admin(s.listApplications))
+	s.mux.HandleFunc("POST /consilium/api/applications", s.admin(s.createApplication))
+	s.mux.HandleFunc("PATCH /consilium/api/applications/{id}", s.admin(s.updateApplication))
+	s.mux.HandleFunc("POST /consilium/api/applications/{id}/rotate", s.admin(s.rotateApplication))
 	s.mux.HandleFunc("GET /api/v1/applications", s.consoleApplications(s.listApplications))
 	s.mux.HandleFunc("POST /api/v1/applications", s.consoleApplications(s.createApplication))
 	s.mux.HandleFunc("PATCH /api/v1/applications/{id}", s.consoleApplications(s.updateApplication))

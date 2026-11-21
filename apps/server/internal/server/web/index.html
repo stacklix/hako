@@ -2,27 +2,27 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Sora · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/admin/sora-logo.svg"><link rel="stylesheet" href="/admin/style.css"><script src="/admin/app.js" defer></script><script src="/admin/access-logs.js" defer></script><script src="/admin/applications.js" defer></script><script src="/admin/investment.js" defer></script><script src="/admin/system-data.js" defer></script><link rel="stylesheet" href="/admin/system-data.css"><script src="/admin/workshop.js" defer></script><script src="/admin/workshop-commands.js" defer></script><link rel="stylesheet" href="/admin/workshop.css">
+  <title>Sora · 管理控制台</title><link rel="icon" type="image/svg+xml" href="/consilium/sora-logo.svg"><link rel="stylesheet" href="/consilium/style.css"><script src="/consilium/app.js" defer></script><script src="/consilium/access-logs.js" defer></script><script src="/consilium/applications.js" defer></script><script src="/consilium/investment.js" defer></script><script src="/consilium/system-data.js" defer></script><link rel="stylesheet" href="/consilium/system-data.css"><script src="/consilium/workshop.js" defer></script><script src="/consilium/workshop-commands.js" defer></script><link rel="stylesheet" href="/consilium/workshop.css">
 </head>
 <body>
-<nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/admin/"><span class="landing-mark"><img class="sora-logo" src="/admin/sora-logo.svg" alt=""></span><span>sora<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">扫码登录 <span aria-hidden="true">↗</span></a></div></nav>
+<nav id="landing-nav" class="landing-nav" aria-label="首页导航" hidden><a class="landing-brand" href="/consilium/"><span class="landing-mark"><img class="sora-logo" src="/consilium/sora-logo.svg" alt=""></span><span>sora<span class="brand-dot">.</span></span></a><div class="landing-links"><a class="landing-nav-cta" href="#login-panel">扫码登录 <span aria-hidden="true">↗</span></a></div></nav>
 <div class="shell">
-  <aside><a class="brand" href="/admin/"><span class="mark"><img class="sora-logo" src="/admin/sora-logo.svg" alt=""></span> SORA</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/admin/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/admin/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/admin/applications">应用管理 <span>Apps</span></a>
-    <a id="nav-notifications" href="/admin/notifications">通知网关 <span>Push</span></a>
+  <aside><a class="brand" href="/consilium/"><span class="mark"><img class="sora-logo" src="/consilium/sora-logo.svg" alt=""></span> SORA</a><p class="aside-label">管理控制台</p><nav aria-label="后台页面"><a id="nav-agents" href="/consilium/agents">设备代理 <span>Agent</span></a><a id="nav-access-logs" href="/consilium/access-logs">访问日志 <span>Caddy</span></a><a id="nav-applications" href="/consilium/applications">应用管理 <span>Apps</span></a>
+    <a id="nav-notifications" href="/consilium/notifications">通知网关 <span>Push</span></a>
     <div id="notification-subnav" class="admin-subnav" role="group" aria-label="通知网关二级菜单" hidden>
-      <a id="nav-notifications-overview" href="/admin/notifications/overview">工作台</a>
-      <a id="nav-notifications-channels" href="/admin/notifications/channels">通知渠道</a>
-      <a id="nav-notifications-messages" href="/admin/notifications/messages">消息中心</a>
-      <a id="nav-notifications-webhooks" href="/admin/notifications/webhooks">Webhooks</a>
+      <a id="nav-notifications-overview" href="/consilium/notifications/overview">工作台</a>
+      <a id="nav-notifications-channels" href="/consilium/notifications/channels">通知渠道</a>
+      <a id="nav-notifications-messages" href="/consilium/notifications/messages">消息中心</a>
+      <a id="nav-notifications-webhooks" href="/consilium/notifications/webhooks">Webhooks</a>
     </div>
-    <a id="nav-workshop" href="/admin/workshop">代码工坊 <span>Code</span></a>
-    <a id="nav-investment" href="/admin/investment">投资记账 <span>Invest</span></a>
+    <a id="nav-workshop" href="/consilium/workshop">代码工坊 <span>Code</span></a>
+    <a id="nav-investment" href="/consilium/investment">投资记账 <span>Invest</span></a>
     <div id="investment-subnav" class="admin-subnav" role="group" aria-label="投资记账二级菜单" hidden>
-      <a id="nav-investment-overview" href="/admin/investment/overview">总览</a>
-      <a id="nav-investment-accounts" href="/admin/investment/accounts">账户</a>
-      <a id="nav-investment-watchlist" href="/admin/investment/watchlist">关注</a>
-      <a id="nav-investment-balance-sheet" href="/admin/investment/balance-sheet">资产负债</a>
-    </div><a id="nav-system" href="/admin/system/data">系统管理 <span>System</span></a><div id="system-subnav" class="admin-subnav" role="group" aria-label="系统管理二级菜单" hidden><a id="nav-system-data" href="/admin/system/data">数据管理</a></div></nav><p class="aside-footer">让设备与应用彼此连接。<br>Sora Server</p></aside>
+      <a id="nav-investment-overview" href="/consilium/investment/overview">总览</a>
+      <a id="nav-investment-accounts" href="/consilium/investment/accounts">账户</a>
+      <a id="nav-investment-watchlist" href="/consilium/investment/watchlist">关注</a>
+      <a id="nav-investment-balance-sheet" href="/consilium/investment/balance-sheet">资产负债</a>
+    </div><a id="nav-system" href="/consilium/system/data">系统管理 <span>System</span></a><div id="system-subnav" class="admin-subnav" role="group" aria-label="系统管理二级菜单" hidden><a id="nav-system-data" href="/consilium/system/data">数据管理</a></div></nav><p class="aside-footer">让设备与应用彼此连接。<br>Sora Server</p></aside>
   <main>
     <header class="dashboard-header"><div><p class="eyebrow">SORA SERVER</p><h1 id="page-title">管理控制台</h1><p id="page-description" class="muted">管理 Sora 服务与设备。</p></div><div id="account-bar" hidden><span id="account"></span><button id="logout" class="quiet">退出管理</button></div></header>
     <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -38,14 +38,14 @@
         <div class="tool-scene" aria-label="Sora 连接手机、设备和应用的示意图">
           <div class="scene-orbit"></div><div class="scene-line"></div>
           <div class="scene-device scene-phone"><span class="scene-icon" aria-hidden="true">↗</span><div><strong>在手机上确认</strong><small>Hako · iOS</small></div><span class="scene-status"></span></div>
-          <div class="scene-center"><span><img class="sora-logo" src="/admin/sora-logo.svg" alt="Sora"></span><small>让工具彼此连接</small></div>
+          <div class="scene-center"><span><img class="sora-logo" src="/consilium/sora-logo.svg" alt="Sora"></span><small>让工具彼此连接</small></div>
           <div class="scene-device scene-agent"><span class="scene-icon" aria-hidden="true">⌘</span><div><strong>你的设备</strong><small>设备监控与远程调用</small></div></div>
           <div class="scene-device scene-app"><span class="scene-icon" aria-hidden="true">▦</span><div><strong>你的应用</strong><small>扫码授权，轻松进入</small></div><span aria-hidden="true">↗</span></div>
           <span class="scene-caption">YOUR DEVICES. YOUR SPACE.</span>
         </div>
       </section>
       <section id="login-panel" class="card login">
-        <div class="login-heading"><span class="login-symbol" aria-hidden="true"><img class="sora-logo" src="/admin/sora-logo.svg" alt=""></span><span class="login-private"><span></span> 你的专属空间</span></div>
+        <div class="login-heading"><span class="login-symbol" aria-hidden="true"><img class="sora-logo" src="/consilium/sora-logo.svg" alt=""></span><span class="login-private"><span></span> 你的专属空间</span></div>
         <p class="landing-eyebrow login-eyebrow">WELCOME TO SORA</p>
         <h2>从一次扫码开始。</h2><p class="login-description">打开 Hako，确认是你，即可进入工作空间。</p>
         <div class="qr-box">

@@ -15,7 +15,7 @@ function loginPage() {
   const document = {getElementById: get, addEventListener() {}, activeElement: null};
   get('dashboard').hidden = true; get('login-qr').hidden = true; get('qr-overlay').hidden = true;
   class Clock extends Date { static now() { return now; } }
-  const context = vm.createContext({document, window: {location: {pathname: '/admin/'}}, Date: Clock, AbortSignal,
+  const context = vm.createContext({document, window: {location: {pathname: '/consilium/'}}, Date: Clock, AbortSignal,
     setInterval(fn, ms) { const id = ++nextTimer; intervals.set(id, {fn, ms}); return id; },
     clearInterval(id) { intervals.delete(id); },
     setTimeout(fn) { const id = ++nextTimer; timeouts.set(id, fn); return id; },

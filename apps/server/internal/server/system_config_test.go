@@ -30,7 +30,7 @@ func TestAdminDatabaseSchemas(t *testing.T) {
 	}
 
 	guest := &adminClient{f: f}
-	if code, _, _ := guest.request("GET", "/admin/api/system/databases", nil, "", ""); code != http.StatusUnauthorized {
+	if code, _, _ := guest.request("GET", "/consilium/api/system/databases", nil, "", ""); code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated schema request: %d", code)
 	}
 	admin := loginAdmin(f)
@@ -78,7 +78,7 @@ func TestAdminDatabaseQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	guest := &adminClient{f: f}
-	path := "/admin/api/system/databases/main/query"
+	path := "/consilium/api/system/databases/main/query"
 	body := map[string]any{"sql": "SELECT * FROM preview ORDER BY id", "limit": 1}
 	if code, _, _ := guest.request("POST", path, body, f.s.config.PublicURL, ""); code != 401 {
 		t.Fatalf("guest query: %d", code)

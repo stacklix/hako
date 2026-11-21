@@ -99,7 +99,7 @@ func TestApplicationLoginAuthenticationIsolationAndSingleUse(t *testing.T) {
 		t.Fatal("application session invalid")
 	}
 	// Provider tokens cannot be used as Hako admin cookies.
-	r = httptest.NewRequest("GET", f.s.config.PublicURL+"/admin/api/session", nil)
+	r = httptest.NewRequest("GET", f.s.config.PublicURL+"/consilium/api/session", nil)
 	r.AddCookie(&http.Cookie{Name: f.s.adminCookieName(), Value: grant["sessionToken"]})
 	w = httptest.NewRecorder()
 	f.s.ServeHTTP(w, r)

@@ -13,7 +13,7 @@ export interface Route { page: Page; botId?: string; channel?: NotificationChann
 export type Navigate = (page: Page, botId?: string, channel?: NotificationChannel) => void;
 function readRoute(source = location): Route {
   const params = new URLSearchParams(source.search);
-  const view = /^\/admin\/notifications\/([^/]+)$/.exec(source.pathname)?.[1] ?? params.get('view');
+  const view = /^\/consilium\/notifications\/([^/]+)$/.exec(source.pathname)?.[1] ?? params.get('view');
   const page = view === 'bots' || view === 'settings' ? 'channels' : pages.find(value => value === view) ?? 'overview';
   const channel = params.get('channel');
   return { page, botId: params.get('bot') || undefined, channel: channel === 'apns' || channel === 'wechat' ? channel : undefined };
@@ -29,7 +29,7 @@ export function App() {
     const params = new URLSearchParams();
     if (botId) params.set('bot', botId);
     if (channel) params.set('channel', channel);
-    const url = '/admin/notifications/' + page + (params.size ? '?' + params : '');
+    const url = '/consilium/notifications/' + page + (params.size ? '?' + params : '');
     if (page !== route.page) {
       host.location.assign(url);
       return;
@@ -55,7 +55,7 @@ export function App() {
   }, []);
   useEffect(() => {
     if (!active) return;
-    const stream = new EventSource('/admin/api/notifications/events');
+    const stream = new EventSource('/consilium/api/notifications/events');
     let debounce: ReturnType<typeof setTimeout> | undefined;
     stream.onmessage = () => {
       if (!debounce) debounce = setTimeout(() => { debounce = undefined; refresh(); }, 250);

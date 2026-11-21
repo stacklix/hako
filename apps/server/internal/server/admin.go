@@ -24,16 +24,16 @@ type adminSession struct {
 }
 
 func (s *Server) adminRoutes() {
-	s.mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/admin/", http.StatusSeeOther) })
-	pages := map[string]string{"/admin/": "index.html", "/admin/agents": "index.html", "/admin/access-logs": "index.html", "/admin/applications": "index.html", "/admin/system": "index.html", "/admin/notifications": "index.html", "/admin/notifications/overview": "index.html", "/admin/notifications/channels": "index.html", "/admin/notifications/bots": "index.html", "/admin/notifications/messages": "index.html", "/admin/notifications/webhooks": "index.html", "/admin/notifications/settings": "index.html", "/admin/app.js": "app.js", "/admin/access-logs.js": "access-logs.js", "/admin/applications.js": "applications.js", "/admin/style.css": "style.css", "/admin/sora-logo.svg": "sora-logo.svg",
-		"/admin/investment": "index.html", "/admin/investment.js": "investment.js",
-		"/admin/workshop": "index.html", "/admin/workshop.js": "workshop.js", "/admin/workshop.css": "workshop.css", "/admin/workshop-commands.js": "workshop-commands.js"}
+	s.mux.HandleFunc("GET /consilium", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/consilium/", http.StatusSeeOther) })
+	pages := map[string]string{"/consilium/": "index.html", "/consilium/agents": "index.html", "/consilium/access-logs": "index.html", "/consilium/applications": "index.html", "/consilium/system": "index.html", "/consilium/notifications": "index.html", "/consilium/notifications/overview": "index.html", "/consilium/notifications/channels": "index.html", "/consilium/notifications/bots": "index.html", "/consilium/notifications/messages": "index.html", "/consilium/notifications/webhooks": "index.html", "/consilium/notifications/settings": "index.html", "/consilium/app.js": "app.js", "/consilium/access-logs.js": "access-logs.js", "/consilium/applications.js": "applications.js", "/consilium/style.css": "style.css", "/consilium/sora-logo.svg": "sora-logo.svg",
+		"/consilium/investment": "index.html", "/consilium/investment.js": "investment.js",
+		"/consilium/workshop": "index.html", "/consilium/workshop.js": "workshop.js", "/consilium/workshop.css": "workshop.css", "/consilium/workshop-commands.js": "workshop-commands.js"}
 	for view := range investmentAdminTables {
-		pages["/admin/investment/"+view] = "index.html"
+		pages["/consilium/investment/"+view] = "index.html"
 	}
-	pages["/admin/system/data"] = "index.html"
-	pages["/admin/system-data.js"] = "system-data.js"
-	pages["/admin/system-data.css"] = "system-data.css"
+	pages["/consilium/system/data"] = "index.html"
+	pages["/consilium/system-data.js"] = "system-data.js"
+	pages["/consilium/system-data.css"] = "system-data.css"
 	for route, file := range pages {
 		s.mux.HandleFunc("GET "+route, func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != route {
@@ -41,10 +41,10 @@ func (s *Server) adminRoutes() {
 				return
 			}
 			adminHeaders(w)
-			if route == "/admin/workshop" {
+			if route == "/consilium/workshop" {
 				w.Header().Set("Content-Security-Policy", strings.Replace(w.Header().Get("Content-Security-Policy"), "img-src 'self'", "img-src 'self' blob: data:", 1)+"; frame-src blob:")
 			}
-			if route == "/admin/notifications" || strings.HasPrefix(route, "/admin/notifications/") {
+			if route == "/consilium/notifications" || strings.HasPrefix(route, "/consilium/notifications/") {
 				w.Header().Set("Content-Security-Policy", w.Header().Get("Content-Security-Policy")+"; frame-src 'self'")
 			}
 			data, _ := adminFiles.ReadFile("web/" + file)
@@ -55,20 +55,20 @@ func (s *Server) adminRoutes() {
 	s.qrLoginRoutes()
 	s.workshopAdminRoutes()
 	s.applicationManagementRoutes()
-	s.mux.HandleFunc("GET /admin/api/investment/{view}", s.admin(s.adminInvestment))
-	s.mux.HandleFunc("GET /admin/api/system/databases", s.admin(s.adminDatabaseSchemas))
-	s.mux.HandleFunc("POST /admin/api/system/databases/{database}/query", s.admin(s.adminDatabaseQuery))
-	s.mux.HandleFunc("GET /admin/api/session", s.admin(s.adminCurrent))
-	s.mux.HandleFunc("POST /admin/api/logout", s.admin(s.adminLogout))
-	s.mux.HandleFunc("GET /admin/api/agents", s.admin(s.adminAgents))
-	s.mux.HandleFunc("GET /admin/api/access-logs", s.admin(s.adminAccessLogs))
-	s.mux.HandleFunc("GET /admin/api/access-logs/hour", s.admin(s.adminAccessLogHour))
-	s.mux.HandleFunc("GET /admin/api/access-logs/rankings", s.admin(s.adminAccessLogRankings))
-	s.mux.HandleFunc("GET /admin/api/access-logs/records", s.admin(s.adminAccessLogRecords))
-	s.mux.HandleFunc("POST /admin/api/agents", s.admin(s.registerAgent))
-	s.mux.HandleFunc("PATCH /admin/api/agents/{id}/data-query", s.admin(s.adminAgentDataPermission))
-	s.mux.HandleFunc("DELETE /admin/api/agents/{id}", s.admin(s.adminDeleteAgent))
-	s.mux.HandleFunc("POST /admin/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
+	s.mux.HandleFunc("GET /consilium/api/investment/{view}", s.admin(s.adminInvestment))
+	s.mux.HandleFunc("GET /consilium/api/system/databases", s.admin(s.adminDatabaseSchemas))
+	s.mux.HandleFunc("POST /consilium/api/system/databases/{database}/query", s.admin(s.adminDatabaseQuery))
+	s.mux.HandleFunc("GET /consilium/api/session", s.admin(s.adminCurrent))
+	s.mux.HandleFunc("POST /consilium/api/logout", s.admin(s.adminLogout))
+	s.mux.HandleFunc("GET /consilium/api/agents", s.admin(s.adminAgents))
+	s.mux.HandleFunc("GET /consilium/api/access-logs", s.admin(s.adminAccessLogs))
+	s.mux.HandleFunc("GET /consilium/api/access-logs/hour", s.admin(s.adminAccessLogHour))
+	s.mux.HandleFunc("GET /consilium/api/access-logs/rankings", s.admin(s.adminAccessLogRankings))
+	s.mux.HandleFunc("GET /consilium/api/access-logs/records", s.admin(s.adminAccessLogRecords))
+	s.mux.HandleFunc("POST /consilium/api/agents", s.admin(s.registerAgent))
+	s.mux.HandleFunc("PATCH /consilium/api/agents/{id}/data-query", s.admin(s.adminAgentDataPermission))
+	s.mux.HandleFunc("DELETE /consilium/api/agents/{id}", s.admin(s.adminDeleteAgent))
+	s.mux.HandleFunc("POST /consilium/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
 }
 
 func adminHeaders(w http.ResponseWriter) {
@@ -158,8 +158,8 @@ func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		// Passive polling does not extend an idle administrator's session.
-		passiveWorkshop := r.URL.Path == "/admin/api/workshop/calls" && r.Header.Get("X-Hako-Passive") == "1"
-		if !passiveWorkshop && (r.Method != http.MethodGet || (r.URL.Path != "/admin/api/agents" && !strings.HasPrefix(r.URL.Path, "/admin/api/access-logs") && !strings.HasPrefix(r.URL.Path, "/admin/api/notifications/") && !strings.HasPrefix(r.URL.Path, "/admin/api/workshop/"))) {
+		passiveWorkshop := r.URL.Path == "/consilium/api/workshop/calls" && r.Header.Get("X-Hako-Passive") == "1"
+		if !passiveWorkshop && (r.Method != http.MethodGet || (r.URL.Path != "/consilium/api/agents" && !strings.HasPrefix(r.URL.Path, "/consilium/api/access-logs") && !strings.HasPrefix(r.URL.Path, "/consilium/api/notifications/") && !strings.HasPrefix(r.URL.Path, "/consilium/api/workshop/"))) {
 			ss.LastUsed = time.Now()
 			s.adminSessions[id] = ss
 		}

@@ -45,11 +45,11 @@ func TestAgentDataPermissionAndReadOnlyQueries(t *testing.T) {
 	if status, _ := f.call("POST", endpoint, request("SELECT 1"), ""); status != 403 {
 		t.Fatal("permission default must be closed", status)
 	}
-	if status, _ := f.call("PATCH", "/admin/api/agents/PC/data-query", map[string]bool{"enabled": true}, f.tokens.AccessToken); status != 403 {
+	if status, _ := f.call("PATCH", "/consilium/api/agents/PC/data-query", map[string]bool{"enabled": true}, f.tokens.AccessToken); status != 403 {
 		t.Fatal("Console/Agent credentials must not substitute for administrator session", status)
 	}
 	admin := loginAdmin(f)
-	if status, _, _ := admin.request("PATCH", "/admin/api/agents/PC/data-query", map[string]bool{"enabled": true}, f.s.config.PublicURL, "wrong"); status != 403 {
+	if status, _, _ := admin.request("PATCH", "/consilium/api/agents/PC/data-query", map[string]bool{"enabled": true}, f.s.config.PublicURL, "wrong"); status != 403 {
 		t.Fatal("missing CSRF protection", status)
 	}
 	admin.call("PATCH", "agents/PC/data-query", map[string]bool{"enabled": true}, 200)

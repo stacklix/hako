@@ -335,10 +335,10 @@ var oidcPageTemplate = template.Must(template.New("consent").Parse(`<!doctype ht
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>使用 Sora 登录</title>
-<link rel="icon" type="image/svg+xml" href="/admin/sora-logo.svg">
+<link rel="icon" type="image/svg+xml" href="/public/sora-logo.svg">
 <link rel="stylesheet" href="/oidc/consent.css"><script src="/oidc/consent.js" defer></script></head>
 <body><main class="auth-shell">
-<div class="brand"><img src="/admin/sora-logo.svg" width="28" height="28" alt=""><span>sora<span class="brand-dot">.</span></span></div>
+<div class="brand"><img src="/public/sora-logo.svg" width="28" height="28" alt=""><span>sora<span class="brand-dot">.</span></span></div>
 <section class="auth-card" aria-labelledby="auth-title">
 <div class="auth-details">
 <p class="eyebrow">账号授权</p><h1 id="auth-title">使用 Sora 登录</h1>

@@ -10,17 +10,17 @@ import (
 )
 
 func (s *Server) workshopAdminRoutes() {
-	s.mux.HandleFunc("GET /admin/api/workshop/computers", s.admin(func(w http.ResponseWriter, r *http.Request) {
+	s.mux.HandleFunc("GET /consilium/api/workshop/computers", s.admin(func(w http.ResponseWriter, r *http.Request) {
 		respond(w, http.StatusOK, s.workshopComputers())
 	}))
-	s.mux.HandleFunc("POST /admin/api/workshop/calls", s.admin(func(w http.ResponseWriter, r *http.Request) {
+	s.mux.HandleFunc("POST /consilium/api/workshop/calls", s.admin(func(w http.ResponseWriter, r *http.Request) {
 		var frame workshop.Frame
 		if !decode(w, r, &frame) {
 			return
 		}
 		respond(w, http.StatusOK, s.workshopCall(r.Context(), frame))
 	}))
-	s.mux.HandleFunc("GET /admin/api/workshop/events/{computerID}/{operationID}/{cursor}", s.admin(s.adminWorkshopEvents))
+	s.mux.HandleFunc("GET /consilium/api/workshop/events/{computerID}/{operationID}/{cursor}", s.admin(s.adminWorkshopEvents))
 }
 
 // Streams share the existing workshop subscription pool and cursor semantics.

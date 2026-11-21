@@ -58,7 +58,7 @@ func (a *adminClient) request(method, path string, body any, origin, csrf string
 }
 func (a *adminClient) call(method, path string, body any, expected int) []byte {
 	a.f.t.Helper()
-	status, data, _ := a.request(method, "/admin/api/"+path, body, a.f.s.config.PublicURL, a.csrf)
+	status, data, _ := a.request(method, "/consilium/api/"+path, body, a.f.s.config.PublicURL, a.csrf)
 	if status != expected {
 		a.f.t.Fatalf("%s %s: got %d want %d: %s", method, path, status, expected, data)
 	}
@@ -68,7 +68,7 @@ func loginAdmin(f *fixture) *adminClient {
 	f.t.Helper()
 	a := &adminClient{f: f}
 	ensureConsoleLogin(f)
-	status, data, res := a.request("POST", "/admin/api/login/requests", map[string]bool{}, f.s.config.PublicURL, "")
+	status, data, res := a.request("POST", "/consilium/api/login/requests", map[string]bool{}, f.s.config.PublicURL, "")
 	if status != 201 {
 		f.t.Fatalf("create QR login: %d %s", status, data)
 	}
@@ -86,7 +86,7 @@ func loginAdmin(f *fixture) *adminClient {
 	if status != 200 {
 		f.t.Fatalf("approve QR login: %d %s", status, data)
 	}
-	status, data, res = a.request("POST", "/admin/api/login/requests/"+qr.ID+"/complete", map[string]bool{}, f.s.config.PublicURL, "")
+	status, data, res = a.request("POST", "/consilium/api/login/requests/"+qr.ID+"/complete", map[string]bool{}, f.s.config.PublicURL, "")
 	if status != 200 {
 		f.t.Fatalf("admin login: %d %s", status, data)
 	}
@@ -118,7 +118,7 @@ func TestAdminAuthenticationAndCSRF(t *testing.T) {
 	f := newFixture(t, false)
 	a := &adminClient{f: f}
 	a.call("GET", "agents", nil, 401)
-	status, _, _ := a.request("POST", "/admin/api/login/requests", map[string]string{}, "https://attacker.example", "")
+	status, _, _ := a.request("POST", "/consilium/api/login/requests", map[string]string{}, "https://attacker.example", "")
 	if status != 403 {
 		t.Fatal("cross-origin login accepted")
 	}
@@ -127,7 +127,7 @@ func TestAdminAuthenticationAndCSRF(t *testing.T) {
 		t.Fatal("insecure admin cookie")
 	}
 	for _, test := range []struct{ origin, csrf string }{{"", a.csrf}, {"https://attacker.example", a.csrf}, {f.http.URL, ""}, {f.http.URL, "wrong"}} {
-		status, _, _ = a.request("DELETE", "/admin/api/agents/PC", nil, test.origin, test.csrf)
+		status, _, _ = a.request("DELETE", "/consilium/api/agents/PC", nil, test.origin, test.csrf)
 		if status != 403 {
 			t.Fatal("CSRF mutation accepted", test)
 		}
@@ -201,12 +201,12 @@ func TestAdminLoginRateLimit(t *testing.T) {
 func TestAdminEmbeddedPagesAndNoSecrets(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
-	for _, path := range []string{"/admin/", "/admin/agents", "/admin/access-logs", "/admin/app.js", "/admin/access-logs.js", "/admin/style.css", "/admin/sora-logo.svg"} {
+	for _, path := range []string{"/consilium/", "/consilium/agents", "/consilium/access-logs", "/consilium/app.js", "/consilium/access-logs.js", "/consilium/style.css", "/consilium/sora-logo.svg"} {
 		status, data, res := a.request("GET", path, nil, "", "")
 		if status != 200 || len(data) == 0 || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") || res.Header.Get("Cache-Control") != "no-store" {
 			t.Fatal("embedded page or headers missing", path)
 		}
-		if path == "/admin/sora-logo.svg" && (res.Header.Get("Content-Type") != "image/svg+xml" || !bytes.Contains(data, []byte("<svg"))) {
+		if path == "/consilium/sora-logo.svg" && (res.Header.Get("Content-Type") != "image/svg+xml" || !bytes.Contains(data, []byte("<svg"))) {
 			t.Fatal("Hako logo content or image MIME type missing")
 		}
 	}
@@ -324,7 +324,7 @@ func TestAdminRejectsPrivateKeysWrongAlgorithmsAndUnsafeIDs(t *testing.T) {
 	a.call("POST", "agents", map[string]string{"id": "PC2", "name": "PC", "publicKeyPem": private}, 400)
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	a.call("POST", "agents", map[string]string{"id": "PC2", "name": "PC", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, 400)
-	status, _, _ := a.request("POST", "/admin/api/consoles", map[string]string{"name": "Phone", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, f.s.config.PublicURL, a.csrf)
+	status, _, _ := a.request("POST", "/consilium/api/consoles", map[string]string{"name": "Phone", "publicKeyPem": publicPEM(t, &ec.PublicKey)}, f.s.config.PublicURL, a.csrf)
 	if status != 405 && status != 404 {
 		t.Fatal("Console configuration is writable through Web API")
 	}

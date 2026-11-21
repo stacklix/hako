@@ -14,7 +14,7 @@
 </body></html>{{end}}
 {{define "home"}}{{template "header" .}}
 <main id="content">
-  <section class="hero"><p class="eyebrow">YOUR TOOLS, IN ONE PLACE</p><h1>设备、代码与日常数据，<br>一个熟悉的入口。</h1><p class="lead">Hako 是面向个人使用的工具应用，通过 Sora 后端和已授权的设备代理，连接你的设备、服务与项目。按需开启功能，由你决定哪些数据参与同步和备份。</p><a class="button" href="/admin/">打开 Sora 管理后台 <span aria-hidden="true">↗</span></a><p class="note">后台操作需要已授权的 Hako 客户端确认登录；本页及政策页面无需登录。</p></section>
+  <section class="hero"><p class="eyebrow">YOUR TOOLS, IN ONE PLACE</p><h1>设备、代码与日常数据，<br>一个熟悉的入口。</h1><p class="lead">Hako 是面向个人使用的工具应用，通过 Sora 后端和已授权的设备代理，连接你的设备、服务与项目。按需开启功能，由你决定哪些数据参与同步和备份。</p><a class="button" href="/privacy#google-drive">了解备份与隐私 <span aria-hidden="true">↗</span></a><p class="note">由你选择连接、授权与备份目的地。</p></section>
   <section class="features" aria-label="应用功能"><article><span class="number">01 / CONNECT</span><h2>管理自己的设备</h2><p>查看已连接设备的状态，通过受信任的设备代理执行操作，并管理应用与服务的连接。</p></article><article><span class="number">02 / CREATE</span><h2>继续项目里的工作</h2><p>在代码工坊中查看电脑上的项目与会话，发送消息、读取进度，把工作留在原来的项目里。</p></article><article><span class="number">03 / KEEP</span><h2>记账、同步与备份</h2><p>管理投资账本，并将已保存的数据导出备份到你配置的 Google Drive 或 WebDAV 目的地。</p></article></section>
   <section class="backup-summary"><div><p class="eyebrow">OPTIONAL GOOGLE DRIVE BACKUP</p><h2>备份到你自己的云端硬盘。</h2></div><div><p>Google Drive 是可选功能。连接时只申请 <code>drive.file</code> 权限，用于创建备份目录、上传或更新 Hako 可访问的备份文件，以及读取元数据进行完整性校验，不申请整个云端硬盘的访问权限。</p><p>Google 授权令牌保存在 iOS 系统钥匙串中；备份由客户端直接上传到你选择的目的地。你可以随时断开连接，并在 Google 账号中撤销授权。</p><a class="text-link" href="/privacy#google-drive">了解 Google 数据的使用方式 <span aria-hidden="true">↗</span></a></div></section>
   <section class="contact"><h2>需要帮助？</h2><p>功能咨询、隐私问题与数据删除请求，请联系 <a href="mailto:{{.Email}}">{{.Email}}</a>。</p></section>

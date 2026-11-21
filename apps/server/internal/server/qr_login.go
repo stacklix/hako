@@ -28,10 +28,10 @@ type adminLoginRequest struct {
 }
 
 func (s *Server) qrLoginRoutes() {
-	s.mux.HandleFunc("POST /admin/api/login/requests", s.createAdminLogin)
-	s.mux.HandleFunc("GET /admin/api/login/requests/{id}", s.pollAdminLogin)
-	s.mux.HandleFunc("GET /admin/api/login/requests/{id}/qr", s.adminLoginQR)
-	s.mux.HandleFunc("POST /admin/api/login/requests/{id}/complete", s.completeAdminLogin)
+	s.mux.HandleFunc("POST /consilium/api/login/requests", s.createAdminLogin)
+	s.mux.HandleFunc("GET /consilium/api/login/requests/{id}", s.pollAdminLogin)
+	s.mux.HandleFunc("GET /consilium/api/login/requests/{id}/qr", s.adminLoginQR)
+	s.mux.HandleFunc("POST /consilium/api/login/requests/{id}/complete", s.completeAdminLogin)
 	s.mux.HandleFunc("GET /api/v1/auth/web-login/requests/{id}", s.inspectAdminLogin)
 	s.mux.HandleFunc("GET /api/v1/auth/login-prompts", s.pendingLoginPrompts)
 	s.mux.HandleFunc("GET /api/v1/auth/login-prompts/stream", s.loginPromptStream)

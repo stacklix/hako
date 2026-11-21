@@ -202,7 +202,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		limit = 32 * 1024 * 1024
 	}
 	if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/webhook/notifications/") ||
-		strings.HasPrefix(r.URL.Path, "/admin/api/notifications/webhooks/")) {
+		strings.HasPrefix(r.URL.Path, "/consilium/api/notifications/webhooks/")) {
 		limit = notificationBodyLimit
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)

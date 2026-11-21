@@ -180,7 +180,7 @@ func TestInvestmentBookRequiresAuthAndCommitsAtomically(t *testing.T) {
 
 func TestAdminInvestmentIsReadOnlyAndUsesTheIOSBook(t *testing.T) {
 	f := newFixture(t, true)
-	const path = "/admin/api/investment/"
+	const path = "/consilium/api/investment/"
 	guest := &adminClient{f: f}
 	if status, _, _ := guest.request(http.MethodGet, path+"accounts", nil, "", ""); status != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated investment read = %d", status)
@@ -194,7 +194,7 @@ func TestAdminInvestmentIsReadOnlyAndUsesTheIOSBook(t *testing.T) {
 	}
 	admin := loginAdmin(f)
 	for _, view := range []string{"overview", "accounts", "watchlist", "balance-sheet"} {
-		status, html, _ := guest.request(http.MethodGet, "/admin/investment/"+view, nil, "", "")
+		status, html, _ := guest.request(http.MethodGet, "/consilium/investment/"+view, nil, "", "")
 		if status != 200 || !strings.Contains(string(html), "investment-subnav") || strings.Contains(string(html), "测试账户") {
 			t.Fatalf("investment shell %s = %d", view, status)
 		}

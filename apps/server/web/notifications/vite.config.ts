@@ -3,6 +3,6 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  base: '/admin/notifications-ui/',
+  base: '/consilium/notifications-ui/',
   build: { outDir: 'dist/web' },
 });

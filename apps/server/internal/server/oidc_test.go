@@ -187,7 +187,7 @@ func TestOIDCIndependentClientEndToEnd(t *testing.T) {
 	if appCall(f, c, secret, "GET", "/session", "", token.AccessToken, nil).Code != 401 {
 		t.Fatal("OIDC token accepted as application session")
 	}
-	if oidcRequest(f, "GET", "/admin/api/agents", "", &http.Cookie{Name: f.s.adminCookieName(), Value: token.AccessToken}, "", "", "").Code != 401 {
+	if oidcRequest(f, "GET", "/consilium/api/agents", "", &http.Cookie{Name: f.s.adminCookieName(), Value: token.AccessToken}, "", "", "").Code != 401 {
 		t.Fatal("OIDC token accepted as admin Cookie")
 	}
 }

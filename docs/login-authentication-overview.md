@@ -70,7 +70,7 @@ flowchart TD
 
 ## 二、Hako 管理网页：手机批准网页登录
 
-适用于 `/admin/`、设备代理、访问日志及应用管理页面。管理网页本身没有密码入口，也不接收 Console 长期凭据。
+适用于 `/consilium/`、设备代理、访问日志及应用管理页面。管理网页本身没有密码入口，也不接收 Console 长期凭据。
 
 ```mermaid
 sequenceDiagram
@@ -116,7 +116,7 @@ Agent 不取得 Console 会话，不能批准用户登录，也不能凭设备�
 
 ## 四、第三方应用接入 Hako：先登记客户端
 
-自定义扫码和 OIDC 共用服务器上的应用登记，可从网页 `/admin/applications` 或 iOS「设置 → Hako 服务 → 第三方应用」管理。应用后端持有 Client ID 和随机 Client Secret；用户手机持有 Console 身份；两种身份不能相互替代。
+自定义扫码和 OIDC 共用服务器上的应用登记，可从网页 `/consilium/applications` 或 iOS「设置 → Hako 服务 → 第三方应用」管理。应用后端持有 Client ID 和随机 Client Secret；用户手机持有 Console 身份；两种身份不能相互替代。
 
 ```mermaid
 flowchart TD

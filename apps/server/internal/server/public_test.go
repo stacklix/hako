@@ -16,6 +16,7 @@ func TestPublicPagesWithoutLogin(t *testing.T) {
 		{"/terms", "服务条款", "text/html"},
 		{"/public/site.css", "prefers-color-scheme", "text/css"},
 		{"/public/mark.svg", "<svg", "image/svg+xml"},
+		{"/public/sora-logo.svg", "<svg", "image/svg+xml"},
 	} {
 		t.Run(page.path, func(t *testing.T) {
 			response, err := f.http.Client().Get(f.http.URL + page.path)
@@ -24,6 +25,11 @@ func TestPublicPagesWithoutLogin(t *testing.T) {
 			}
 			defer response.Body.Close()
 			data, _ := io.ReadAll(response.Body)
+			for _, privatePath := range []string{"/admin", "/consilium"} {
+				if strings.Contains(string(data), privatePath) {
+					t.Errorf("public content exposes management path %s", privatePath)
+				}
+			}
 			if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Type"), page.contentType) || !strings.Contains(string(data), page.title) {
 				t.Fatalf("public response: %d %q %s", response.StatusCode, response.Header.Get("Content-Type"), data)
 			}
@@ -60,6 +66,19 @@ func TestPublicPagesWithoutLogin(t *testing.T) {
 	}
 }
 
+func TestOldAdminNamespaceDoesNotRevealControlRoom(t *testing.T) {
+	f := newFixture(t, false)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+		for _, path := range []string{"/admin", "/admin/", "/admin/agents", "/admin/app.js", "/admin/style.css", "/admin/sora-logo.svg", "/admin/api/session", "/admin/api/login/requests", "/admin/notifications-ui/"} {
+			response := httptest.NewRecorder()
+			f.s.ServeHTTP(response, httptest.NewRequest(method, f.s.config.PublicURL+path, nil))
+			if response.Code != http.StatusNotFound || response.Header().Get("Location") != "" || strings.Contains(response.Body.String(), "/consilium") {
+				t.Errorf("old namespace remains discoverable: %s %s: %d %q", method, path, response.Code, response.Header().Get("Location"))
+			}
+		}
+	}
+}
+
 func TestPublicRoutesAreExactAndDoNotExposePrivateAPIs(t *testing.T) {
 	f := newFixture(t, false)
 	for _, request := range []struct {
@@ -72,7 +91,7 @@ func TestPublicRoutesAreExactAndDoNotExposePrivateAPIs(t *testing.T) {
 		{http.MethodGet, "/public/", http.StatusNotFound},
 		{http.MethodPost, "/privacy", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/api/v1/agents", http.StatusUnauthorized},
-		{http.MethodGet, "/admin/api/session", http.StatusUnauthorized},
+		{http.MethodGet, "/consilium/api/session", http.StatusUnauthorized},
 	} {
 		response := httptest.NewRecorder()
 		f.s.ServeHTTP(response, httptest.NewRequest(request.method, f.s.config.PublicURL+request.path, nil))

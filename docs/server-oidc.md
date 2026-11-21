@@ -17,7 +17,7 @@ Hako 在单账号、多个可信 Console 设备的模型上提供 OIDC。不同 
 ## 配置与部署
 
 1. 配置固定 `HAKO_PUBLIC_URL=https://hako.example.com`，只允许根 origin。反向代理保持路径，提供可信 HTTPS 证书；不根据 Host 或转发头推导 issuer。
-2. 按服务端 README 登记 Console 公钥，使用 iOS 登录 Console，再扫码登录 `/admin/applications`。
+2. 按服务端 README 登记 Console 公钥，使用 iOS 登录 Console，再扫码登录 `/consilium/applications`。
 3. 创建应用，填写可识别名称和登记来源。勾选「启用通用 OIDC 登录」，逐行填写实际的完整回调 URL，选择 scopes、PKCE 和客户端认证方式。已有扫码应用可点击「配置 OIDC」开启。也可在 iOS「设置 → Hako 服务 → 第三方应用」通过 Console 身份登记和管理，同样须明确启用 OIDC。
 4. 保存仅在创建时显示的 Client Secret；已丢失时轮换，不能读取旧值。已有应用配置 OIDC 不重新显示 Secret。列表可复制 Issuer、Client ID、回调、scope、认证方式。
 5. 客户端设置 `scope=openid profile`，推荐启用 PKCE S256；若应用登记为要求 PKCE，客户端省略或使用 plain 均被拒绝。每个客户端只允许所登记的一种 Secret 认证方式。
@@ -41,7 +41,7 @@ Hako 在单账号、多个可信 Console 设备的模型上提供 OIDC。不同 
 }
 ```
 
-正文用于 `POST /admin/api/applications`。更新用 `PATCH /admin/api/applications/{id}`，正文可为 `{"oidc":{...完整配置...}}` 或 `{"enabled":false}`。关闭 OIDC 用完整配置中的 `enabled:false`；不影响同一应用的自定义扫码接口启用状态。`POST /admin/api/applications/{id}/rotate` 正文 `{}` 返回新 Secret。每次更新、停用或轮换使该客户端原有请求、授权码和访问授权失效；重新开启不能恢复。其他客户端保持隔离。
+正文用于 `POST /consilium/api/applications`。更新用 `PATCH /consilium/api/applications/{id}`，正文可为 `{"oidc":{...完整配置...}}` 或 `{"enabled":false}`。关闭 OIDC 用完整配置中的 `enabled:false`；不影响同一应用的自定义扫码接口启用状态。`POST /consilium/api/applications/{id}/rotate` 正文 `{}` 返回新 Secret。每次更新、停用或轮换使该客户端原有请求、授权码和访问授权失效；重新开启不能恢复。其他客户端保持隔离。
 
 ## 配置与登录流程图
 

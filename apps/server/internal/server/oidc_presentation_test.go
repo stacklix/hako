@@ -20,6 +20,9 @@ func TestOIDCConsentPresentation(t *testing.T) {
 	if strings.Contains(page.String(), "<script>alert(1)</script>") || strings.Contains(page.String(), "用于显示你的个人资料") || !strings.Contains(page.String(), "用于识别你的 Sora 账号") {
 		t.Fatal("consent must escape application names and describe only requested identity")
 	}
+	if strings.Contains(page.String(), "/admin") || strings.Contains(page.String(), "/consilium") || !strings.Contains(page.String(), "/public/sora-logo.svg") {
+		t.Fatal("public consent page exposes the management namespace or uses a private logo URL")
+	}
 	// Optional preview artifacts use synthetic data, never a live login or Cookie.
 	if dir := os.Getenv("HAKO_OIDC_PREVIEW"); dir != "" {
 		if err := os.MkdirAll(dir, 0700); err != nil {

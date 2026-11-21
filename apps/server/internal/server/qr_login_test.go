@@ -52,7 +52,7 @@ func ensureConsoleLogin(f *fixture) {
 func startLogin(f *fixture) (*adminClient, qrStart) {
 	f.t.Helper()
 	a := &adminClient{f: f}
-	status, data, res := a.request("POST", "/admin/api/login/requests", map[string]bool{}, f.s.config.PublicURL, "")
+	status, data, res := a.request("POST", "/consilium/api/login/requests", map[string]bool{}, f.s.config.PublicURL, "")
 	if status != 201 {
 		f.t.Fatalf("QR creation: %d %s", status, data)
 	}
@@ -105,7 +105,7 @@ func TestQRInspectionShowsCreatingBrowserSourceIP(t *testing.T) {
 	for _, forwarded := range []bool{false, true} {
 		t.Run(map[bool]string{false: "direct", true: "proxy"}[forwarded], func(t *testing.T) {
 			f := newFixture(t, true)
-			r := httptest.NewRequest("POST", f.s.config.PublicURL+"/admin/api/login/requests", strings.NewReader("{}"))
+			r := httptest.NewRequest("POST", f.s.config.PublicURL+"/consilium/api/login/requests", strings.NewReader("{}"))
 			r.Header.Set("Origin", f.s.config.PublicURL)
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("User-Agent", "Mozilla/5.0 (iPhone) CriOS/130.0 Mobile/15E148 Safari/604.1")
@@ -157,7 +157,7 @@ func TestQRLoginBindsBrowserAndDoesNotExposeApprovalNonce(t *testing.T) {
 	if strings.Contains(string(data), "nonce") || strings.Contains(string(data), "confirmationCode") || strings.Contains(string(data), "clientIP") {
 		t.Fatal("poll response exposes Console approval data")
 	}
-	status, png, res := a.request("GET", "/admin/api/login/requests/"+qr.ID+"/qr", nil, "", "")
+	status, png, res := a.request("GET", "/consilium/api/login/requests/"+qr.ID+"/qr", nil, "", "")
 	if status != 200 || res.Header.Get("Content-Type") != "image/png" || len(png) < 8 || string(png[1:4]) != "PNG" {
 		t.Fatal("QR PNG not served")
 	}
@@ -192,7 +192,7 @@ func TestQRLoginApprovalAndRedemptionAreSingleUse(t *testing.T) {
 	if !strings.Contains(string(data), "approved") {
 		t.Fatal("approval not visible")
 	}
-	_, _, response := a.request("GET", "/admin/api/login/requests/"+qr.ID, nil, "", "")
+	_, _, response := a.request("GET", "/consilium/api/login/requests/"+qr.ID, nil, "", "")
 	for _, c := range response.Cookies() {
 		if c.Name == f.s.adminCookieName() {
 			t.Fatal("GET polling issued a session")
@@ -267,13 +267,13 @@ func TestQRLoginRequiresRegisteredConsole(t *testing.T) {
 func TestRemovedAdminKeyLoginAndConsoleMutationEndpoints(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
-	for _, path := range []string{"/admin/api/login", "/admin/api/consoles"} {
+	for _, path := range []string{"/consilium/api/login", "/consilium/api/consoles"} {
 		status, _, _ := a.request("POST", path, map[string]string{"key": "old-admin-key"}, f.s.config.PublicURL, a.csrf)
 		if status != 404 && status != 405 {
 			t.Fatal("removed authentication/configuration endpoint is still active", path, status)
 		}
 	}
-	status, _, _ := a.request("DELETE", "/admin/api/consoles/"+f.deviceID, nil, f.s.config.PublicURL, a.csrf)
+	status, _, _ := a.request("DELETE", "/consilium/api/consoles/"+f.deviceID, nil, f.s.config.PublicURL, a.csrf)
 	if status != 404 && status != 405 {
 		t.Fatal("Console key can be removed in browser")
 	}

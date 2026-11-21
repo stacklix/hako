@@ -4,7 +4,9 @@ Sora 是服务端应用名称，程序为 `sora-server`，发布镜像为 `ghcr.
 
 先了解登录方式、凭据和会话边界，可阅读[登录与身份认证总览](../../docs/login-authentication-overview.md)。
 
-Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/admin/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
+Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主应用及各子应用提供服务，内置 `/consilium/` Web 管理控制台。服务器身份认证、会话和扫码登录属于应用级能力；设备管理与通用 Agent 请求转发是当前业务模块。设备代理（Agent）可运行在不同平台，仓库当前提供 Windows 实现；iOS 是管理客户端（Console）。服务端按需转发通用设备动作与 JSON 结果，当前 Agent 提供 CPU、内存查询，不保存历史指标。
+
+后台入口使用拉丁文 consilium（议事、谋划），地址为 `/consilium/`，页面、资源和浏览器管理 API 均位于此命名空间。公开首页、政策页及 OIDC 授权页不提供或引用后台入口；旧 `/admin` 路径返回 404，不保留跳转。部署后使用新地址打开后台，原生客户端的认证和设备接口不受影响。
 
 ## Hako 公开页面
 
@@ -24,17 +26,17 @@ Sora 是这组应用的统一后端，使用 Go、SQLite 和 WebSocket，为主�
 
 服务端还支持定时扫描 Caddy 访问日志，在管理页查看每域名每小时访问量、来源 IP 及其 UA/URL 排行，以及正常响应／异常响应URL 与来源排行，统计独立持久化。
 
-管理控制台的「代码工坊」（`/admin/workshop`）通过已连接电脑上的 Codex 管理编程会话。页面提供独立的项目／会话菜单，支持电脑切换、搜索、会话历史分页、新建、归档与恢复、文字和图片输入、实时回复、排队消息的编辑／取消／立即追加、任务停止、审批与问题回答，以及模型、推理强度、速度和权限选择。项目内的「快捷命令」使用独立命令执行器，支持执行、超时、后台子进程选项、历史日志与停止。HTML 原型采用隔离的静态预览。任务和执行历史保存在电脑，网页关闭不停止任务；浏览器中的未发送草稿、附件、会话设置和命令编辑内容仅在当前页面内保留，刷新或退出登录后清除。
+管理控制台的「代码工坊」（`/consilium/workshop`）通过已连接电脑上的 Codex 管理编程会话。页面提供独立的项目／会话菜单，支持电脑切换、搜索、会话历史分页、新建、归档与恢复、文字和图片输入、实时回复、排队消息的编辑／取消／立即追加、任务停止、审批与问题回答，以及模型、推理强度、速度和权限选择。项目内的「快捷命令」使用独立命令执行器，支持执行、超时、后台子进程选项、历史日志与停止。HTML 原型采用隔离的静态预览。任务和执行历史保存在电脑，网页关闭不停止任务；浏览器中的未发送草稿、附件、会话设置和命令编辑内容仅在当前页面内保留，刷新或退出登录后清除。
 
-网页工坊沿用扫码管理会话：`GET /admin/api/workshop/computers` 读取电脑，`POST /admin/api/workshop/calls` 接受原工坊请求帧并原样转发，`GET /admin/api/workshop/events/{computerID}/{operationID}/{cursor}` 通过 SSE 转发事件。写入使用现有同源及 CSRF 校验，事件流持续复核浏览器与批准登录的 Console 身份；后台读取携带 `X-Hako-Passive: 1`，不延长管理会话的空闲期限。原生客户端的 DPoP WebSocket 认证保持独立。此管理接口扩展将服务端版本递增为 `0.6.1`，客户端最低版本要求保持不变。
+网页工坊沿用扫码管理会话：`GET /consilium/api/workshop/computers` 读取电脑，`POST /consilium/api/workshop/calls` 接受原工坊请求帧并原样转发，`GET /consilium/api/workshop/events/{computerID}/{operationID}/{cursor}` 通过 SSE 转发事件。写入使用现有同源及 CSRF 校验，事件流持续复核浏览器与批准登录的 Console 身份；后台读取携带 `X-Hako-Passive: 1`，不延长管理会话的空闲期限。原生客户端的 DPoP WebSocket 认证保持独立。此管理接口扩展将服务端版本递增为 `0.6.1`，客户端最低版本要求保持不变。
 
 两类客户端使用配置中的唯一账号及预先登记的设备公钥：Agent 使用 RSA-PSS/SHA-256，Console 使用 Secure Enclave P-256 和 DPoP。所有已登记 Console 都是管理员，可以批准网页登录。没有密码、TOTP、管理密钥登录或公开注册入口。
 
 ### 数据管理
 
-后台「系统管理 → 数据管理」（`/admin/system/data`）采用三栏布局：主菜单、数据库及表、数据工作区。工作区可在「数据」和「表结构」之间切换，结构包括字段类型、NULL 约束、默认值、主键、生成列及建表和索引 SQL。支持服务端主库、通知网关、访问日志与投资记账库；未启用或尚未创建的库会显示对应状态。主库中加密保存的内容仍以 BLOB 展示，不在页面解密。
+后台「系统管理 → 数据管理」（`/consilium/system/data`）采用三栏布局：主菜单、数据库及表、数据工作区。工作区可在「数据」和「表结构」之间切换，结构包括字段类型、NULL 约束、默认值、主键、生成列及建表和索引 SQL。支持服务端主库、通知网关、访问日志与投资记账库；未启用或尚未创建的库会显示对应状态。主库中加密保存的内容仍以 BLOB 展示，不在页面解密。
 
-`GET /admin/api/system/databases` 返回带稳定 ID 的数据库清单、表及字段结构；`POST /admin/api/system/databases/{database}/query` 接受 `sql`、`limit` 和 `offset`，其中数据库 ID 为 `main`、`notifications`、`access` 或 `investment`。查询仅支持单条只读 SELECT / WITH，不执行写入、DDL、PRAGMA、ATTACH 或多语句。沿用后台 Cookie、同源与 CSRF 校验；查询执行计入用户操作。服务端版本为 `0.6.2`，两端最低版本不变。
+`GET /consilium/api/system/databases` 返回带稳定 ID 的数据库清单、表及字段结构；`POST /consilium/api/system/databases/{database}/query` 接受 `sql`、`limit` 和 `offset`，其中数据库 ID 为 `main`、`notifications`、`access` 或 `investment`。查询仅支持单条只读 SELECT / WITH，不执行写入、DDL、PRAGMA、ATTACH 或多语句。沿用后台 Cookie、同源与 CSRF 校验；查询执行计入用户操作。服务端版本为 `0.6.2`，两端最低版本不变。
 
 默认每页 100 行，可选 50 / 100 / 200 行；接口范围为 1–200 行、offset 为 0–1,000,000，执行时间最多 5 秒。结果返回列名、行数据及 `hasMore`，64 位整数以字符串返回以保留精度，BLOB 显示字节数，超长文本截断到约 8 KiB 并标记，单页内容最多 2 MiB。翻页沿用上次执行的 SQL；编辑后需重新执行。跨页期间数据可能变化，需要固定顺序时在 SQL 中指定 ORDER BY。
 
@@ -167,10 +169,10 @@ Webhook 使用 `POST /webhook/notifications/{token}`。每次请求都必须通�
 
 ## Web 管理页
 
-左侧菜单分别打开独立页面：「设备代理」位于 `/admin/agents`，「访问日志」位于 `/admin/access-logs`；`/admin/` 默认显示设备代理。页面支持直接访问、刷新和浏览器前进/后退，共用管理登录状态，且只加载和定时刷新当前页面的数据。
+左侧菜单分别打开独立页面：「设备代理」位于 `/consilium/agents`，「访问日志」位于 `/consilium/access-logs`；`/consilium/` 默认显示设备代理。页面支持直接访问、刷新和浏览器前进/后退，共用管理登录状态，且只加载和定时刷新当前页面的数据。
 
 1. 在 Hako iOS「设置 → 服务器与登录」使用本机密钥登录 Console。
-2. 浏览器打开 `https://你的服务地址/admin/`，显示二维码和六位确认码。
+2. 浏览器打开 `https://你的服务地址/consilium/`，显示二维码和六位确认码。
 3. Hako iOS「设置 → 扫码登录」直接扫描二维码，或在扫码区域下方粘贴并解析网页登录请求。
 4. 在确认页核对服务器、来源 IP 及两端确认码，点击「确认登录」，使用设备签名和有效 Console 会话提交批准，无需额外的 Face ID、Touch ID 或设备密码验证。
 5. 网页自动完成登录；只扫描不会登录。也可在 Console 拒绝请求。
@@ -182,7 +184,7 @@ Webhook 使用 `POST /webhook/notifications/{token}`。每次请求都必须通�
 - Agent：查看在线/离线状态、最近活动时间、密钥指纹；粘贴或读取 PEM 公钥文件登记，查看和下载公钥，移除设备。
 - 能力调用：下拉选项完全来自 Agent 上报的能力清单，显示能力名称与版本；用户填写 JSON 对象参数后提交，统一以 JSON 展示返回结果或业务错误。网页不内置具体业务能力、参数模板、字段校验或专用数据展示，也不额外插入清单以外的命令。状态每 10 秒刷新，不自动调用能力。
 - 支持 Codex 统计的 Agent 会声明 `query.codex.usage` v1，网页选择该能力并提交 `{}` 即可获取近 7 天用户调用数/token 和处理中会话数、项目名与显示标题；服务端仅透传，不读取本机 Codex 文件或保存历史用量。[统计说明](../../docs/codex-usage.md)。
-- 网页 `GET /admin/api/agents` 返回 `agents,updatedAt`，只展示 Agent，不展示管理客户端列表、数量、公钥或手机登录会话；设备列表接口不返回管理客户端信息。会话查看和网页登录撤销仅接受 iOS Console 的 DPoP 认证，Console 公钥在服务端配置文件中手工维护。
+- 网页 `GET /consilium/api/agents` 返回 `agents,updatedAt`，只展示 Agent，不展示管理客户端列表、数量、公钥或手机登录会话；设备列表接口不返回管理客户端信息。会话查看和网页登录撤销仅接受 iOS Console 的 DPoP 认证，Console 公钥在服务端配置文件中手工维护。
 - Agent 修改即时生效，移除后关闭现有连接并拒绝后续认证。Console 从配置移除并重启后，清理其所有会话和未完成的登录挑战；重新加入不会恢复旧会话。
 
 二维码有效期 90 秒，批准和领取只允许一次；二维码不包含浏览器私有 Cookie、Console 凭据或私钥。领取会话必须由原浏览器持有 HttpOnly Cookie 并从正确 origin 发起。刷新二维码废弃同一浏览器之前的请求。只扫描自己正在使用的网页，不批准他人转发的二维码；两端确认码核对参考 [RFC 8628 远程诱导防护](https://www.rfc-editor.org/rfc/rfc8628.html#section-5.4)。
@@ -227,7 +229,7 @@ iOS「设置 → 服务器与登录 → 已登录设备」统一显示 Console �
 
 统计和读取进度保存在数据目录的 `hako.db.access.db`（SQLite），与认证数据库分开，避免扫描占用认证写入连接。该统计库保存未加密的域名、IP、UA、URL 路径及聚合计数，不保存原始日志、请求头或查询参数；应与日志一样限制数据目录访问。启用统计的服务启动时，以及每轮扫描结束时，删除早于当前时间七天的统计记录；读取进度保留以防老日志重复导入。清理统计不会删除原始 Caddy 日志。SQLite 可复用清理后的空间，文件不会立即缩小。备份时停止服务并备份整个数据目录；删除统计库会从现存日志重新导入，已删除日志无法恢复。更改统计时区时，需停止服务，删除统计库及其 `-wal`/`-shm` 附属文件后重建，原认证库保持不变。
 
-查询接口均要求现有网页登录 Cookie：`GET /admin/api/access-logs?rangeHours=24&domain=example.com` 返回扫描状态、起止时间、域名区间合计及小时访问量，`rangeHours` 仅允许 `1,3,6,12,24,72,168`，默认 24，日期参数已移除；`GET /admin/api/access-logs/rankings?domain=example.com&rangeHours=24` 返回区间排行；`GET /admin/api/access-logs/hour?domain=example.com&hour=<RFC3339整点>&rangeHours=24` 返回该小时落在区间内的排行。列表返回的 RFC3339 `from,to` 可原样传给排行接口，使列表和详情沿用相同时间边界；服务器始终限制最长七天、过滤过期记录。列表最多返回 2000 个域名/小时组合，超限时提示按域名筛选；区间合计不受该行数上限影响，无记录的小时不生成零值行。页面每分钟及手动刷新时读取统计，不触发额外扫描，也不延长网页登录的闲置有效期。列表和详情各自在同一数据库快照中读取。
+查询接口均要求现有网页登录 Cookie：`GET /consilium/api/access-logs?rangeHours=24&domain=example.com` 返回扫描状态、起止时间、域名区间合计及小时访问量，`rangeHours` 仅允许 `1,3,6,12,24,72,168`，默认 24，日期参数已移除；`GET /consilium/api/access-logs/rankings?domain=example.com&rangeHours=24` 返回区间排行；`GET /consilium/api/access-logs/hour?domain=example.com&hour=<RFC3339整点>&rangeHours=24` 返回该小时落在区间内的排行。列表返回的 RFC3339 `from,to` 可原样传给排行接口，使列表和详情沿用相同时间边界；服务器始终限制最长七天、过滤过期记录。列表最多返回 2000 个域名/小时组合，超限时提示按域名筛选；区间合计不受该行数上限影响，无记录的小时不生成零值行。页面每分钟及手动刷新时读取统计，不触发额外扫描，也不延长网页登录的闲置有效期。列表和详情各自在同一数据库快照中读取。
 
 经迁移版升级的小时级历史使用小时起点作为记录时间，部分小时边界的统计仍为小时精度。若要从现存日志重新获得精确时间，可停服后只重建统计库；新导入记录均使用秒级时间。
 
@@ -236,7 +238,7 @@ iOS「设置 → 服务器与登录 → 已登录设备」统一显示 Console �
 
 管理页访问日志的「按 IP / 路径 / 状态码查询全部记录」与 iOS 访问统计中的同名入口支持组合筛选：域名、来源 IP 及 HTTP 状态码为精确匹配，URL 路径忽略末尾斜杠（`/blog`、`/blog/` 等效，但不匹配 `/blog/post`），留空不限；指定起止时间，最多查询最近 7 天已入库的数据。URL 路径不包含查询参数。同一个路径返回的不同状态码分别显示，可用来核对正常响应／异常响应分类。
 
-只读接口为 `GET /admin/api/access-logs/records`（管理会话）和 `GET /api/v1/access-logs/records`（Console DPoP）。参数为 `domain`、`ip`、`path`、`status`、`from`、`to`、`rangeHours`、`limit`、`offset`；时间使用 RFC3339，自定义最多 7 天窗口传 `rangeHours=168`，状态码为 100–599 整数。默认每页 200 条，`limit` 为 1–500，按时间倒序、其余维度排序翻页，无 Top 10 或总条数截断。
+只读接口为 `GET /consilium/api/access-logs/records`（管理会话）和 `GET /api/v1/access-logs/records`（Console DPoP）。参数为 `domain`、`ip`、`path`、`status`、`from`、`to`、`rangeHours`、`limit`、`offset`；时间使用 RFC3339，自定义最多 7 天窗口传 `rangeHours=168`，状态码为 100–599 整数。默认每页 200 条，`limit` 为 1–500，按时间倒序、其余维度排序翻页，无 Top 10 或总条数截断。
 
 响应含 `rows`、`requests`（匹配请求次数）、`totalRows`（匹配聚合记录数）、`hasMore`、`from`、`to` 和 `timezone`。每行包含 `time`、`domain`、`status`、`ip`、`path`、`userAgent`、`count`。相同秒、域名、状态码、IP、路径及 UA 的请求已合并成计数，历史原始日志全文、查询参数和请求头无法从统计库恢复。分页沿用服务端返回的固定起止时间，持续入库或保留期清理可能改变记录总量，重新查询获取最新结果。未启用采集返回 409，非法条件返回 400。
 
@@ -262,15 +264,15 @@ SK 仅在创建 / 轮换响应中出现一次；列表和数据库不保存原�
 
 认证使用 `/api/v1/auth/*`，会话管理使用 `/api/v1/sessions` 与 `/api/v1/web-sessions/{id}`，设备业务使用 `/api/v1/agents/*`，名称已按职责划分，继续沿用。Console 是管理客户端角色，不限定为设备监控。
 
-扫码请求详情、批准和拒绝统一使用 `/api/v1/auth/web-login/requests/{id}` 及其 `/approve`、`/deny` 子路径，二维码使用 `hako://web-login?v=1&server=<origin>&request=<id>`。原 `/api/v1/admin-login/requests/*` 和 `hako://admin-login` 不再支持，服务端与 iOS 必须同步更新，更新后刷新网页二维码。`/admin/` 和 `/admin/api/*` 表示 Web 管理控制台及其 Cookie/CSRF 接口，继续沿用。完整约定见 [Hako 服务器认证协议](../../docs/server-authentication.md)。
+扫码请求详情、批准和拒绝统一使用 `/api/v1/auth/web-login/requests/{id}` 及其 `/approve`、`/deny` 子路径，二维码使用 `hako://web-login?v=1&server=<origin>&request=<id>`。原 `/api/v1/admin-login/requests/*` 和 `hako://admin-login` 不再支持，服务端与 iOS 必须同步更新，更新后刷新网页二维码。`/consilium/` 和 `/consilium/api/*` 表示 Web 管理控制台及其 Cookie/CSRF 接口，继续沿用。完整约定见 [Hako 服务器认证协议](../../docs/server-authentication.md)。
 
-网页 Agent 列表统一使用 `GET /admin/api/agents`，原 `/admin/api/overview` 已移除。账号信息仍由 `/admin/api/session` 返回。Console 会话可查看，但不再提供 `DELETE /api/v1/sessions/{id}`；本机退出使用 `/api/v1/auth/logout`。要禁止某台 Console 再次登录，应移除配置文件中的公钥并重启服务。
+网页 Agent 列表统一使用 `GET /consilium/api/agents`，原 `/admin/api/overview` 已移除。账号信息仍由 `/consilium/api/session` 返回。Console 会话可查看，但不再提供 `DELETE /api/v1/sessions/{id}`；本机退出使用 `/api/v1/auth/logout`。要禁止某台 Console 再次登录，应移除配置文件中的公钥并重启服务。
 
 ## 设备调用接口
 
 - Console：`POST /api/v1/agents/{id}/requests`，使用 DPoP 会话认证。
 - Console 登记 Agent：`POST /api/v1/agents`，使用同样的 DPoP 会话与设备签名认证，正文为 `{"name":"我的设备","publicKeyPem":"PEM 公钥"}`；服务端自动生成 5 位设备 ID（大写字母和数字，以字母开头），成功返回 HTTP 201 及 `id,keyId`，无需重启。iOS 和网页只需填写名称与公钥。接口仍接受可选的 `id`，格式为 `[A-Z][A-Z0-9]{0,4}`。与网页共用 RSA 公钥校验、重复检查及持久化；重复公钥或显式指定的 ID 返回 409，非法设备信息、公钥或私钥返回 400。需要同步更新服务端与 iOS。
-- 网页：`POST /admin/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
+- 网页：`POST /consilium/api/agents/{id}/requests`，使用管理 Cookie 与 CSRF。
 - 正文：`{"method":"query.all","version":1,"params":{}}`。
 - HTTP 200 返回 `{"result":任意JSON值}` 或 `{"error":{"code":"错误码","message":"错误信息"}}`；转发及鉴权失败使用 HTTP 错误状态。
 - Agent 使用 WebSocket v4，在 `hello.capabilities` 中声明动作名与版本；Console 和网页的设备列表接口返回最近一次成功认证的 `capabilities`（离线仍保留，首次连接前为 null）。服务端原样保存能力清单，不校验或解释命令名称、类别、版本、参数、结果与新增字段，也不按清单拦截调用。新增设备命令无需修改服务端。

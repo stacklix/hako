@@ -62,7 +62,7 @@ Console 通过 DPoP 认证访问 `GET /ws/console/agents/terminal/{id}`。服务
 
 ## 通用设备调用
 
-iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /admin/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证，正文上限 16 KiB。当前设备实现要求命令为 JSON 对象，包含 `method`、`version`、对象 `params`，由设备拒绝额外业务顶层字段；服务端只要求可转发的 JSON 对象信封。
+iOS 发送 WebSocket `request` 消息，原有 Console HTTP 接口 `POST /api/v1/agents/{id}/requests` 仍可用，两者使用 DPoP 认证。网页使用 `POST /consilium/api/agents/{id}/requests`，沿用 Cookie/CSRF 认证，正文上限 16 KiB。当前设备实现要求命令为 JSON 对象，包含 `method`、`version`、对象 `params`，由设备拒绝额外业务顶层字段；服务端只要求可转发的 JSON 对象信封。
 
 ```json
 {"method":"query.all","version":1,"params":{}}

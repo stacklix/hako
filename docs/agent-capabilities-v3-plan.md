@@ -39,7 +39,7 @@ Agent 认证连接时上报统一的 `capabilities` 数组，前缀就是分类�
 
 ## 接口与请求分发
 
-保留通用转发入口：Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /admin/api/agents/{id}/requests`。两类调用在方法名和分发规则上区分，继续复用同一套认证、限流和 WebSocket 转发。
+保留通用转发入口：Console 使用 `POST /api/v1/agents/{id}/requests`，网页使用 `POST /consilium/api/agents/{id}/requests`。两类调用在方法名和分发规则上区分，继续复用同一套认证、限流和 WebSocket 转发。
 
 统一查询：
 

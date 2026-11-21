@@ -83,11 +83,11 @@ func TestManagedApplicationCreationPersistenceAndSecretRedaction(t *testing.T) {
 		}
 	})
 	// Same-origin native administrator authentication and CSRF remain mandatory.
-	status, _, _ := a.request("POST", "/admin/api/applications", map[string]string{"name": "forbidden", "origin": c.Origin}, f.s.config.PublicURL, "")
+	status, _, _ := a.request("POST", "/consilium/api/applications", map[string]string{"name": "forbidden", "origin": c.Origin}, f.s.config.PublicURL, "")
 	if status != 403 {
 		t.Fatal("missing CSRF accepted")
 	}
-	r := httptest.NewRequest("POST", f.s.config.PublicURL+"/admin/api/applications", strings.NewReader(`{"name":"forbidden","origin":"https://notify.example.com"}`))
+	r := httptest.NewRequest("POST", f.s.config.PublicURL+"/consilium/api/applications", strings.NewReader(`{"name":"forbidden","origin":"https://notify.example.com"}`))
 	r.Header.Set("Authorization", "Bearer "+result.Secret)
 	r.Header.Set("X-Hako-Client", c.ID)
 	r.Header.Set("Origin", f.s.config.PublicURL)

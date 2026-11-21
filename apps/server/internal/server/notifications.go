@@ -48,9 +48,9 @@ func (s *Server) startNotifications() error {
 func (s *Server) notificationRoutes() {
 	s.mux.HandleFunc("POST /api/v1/agents/update-notifications", s.agentUpdateNotification)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
-		s.mux.HandleFunc(method+" /admin/api/notifications/{resource...}", s.admin(s.adminNotifications))
+		s.mux.HandleFunc(method+" /consilium/api/notifications/{resource...}", s.admin(s.adminNotifications))
 	}
-	s.mux.HandleFunc("GET /admin/notifications-ui/{asset...}", s.admin(s.notificationUI))
+	s.mux.HandleFunc("GET /consilium/notifications-ui/{asset...}", s.admin(s.notificationUI))
 	s.mux.HandleFunc("POST /webhook/notifications/{token}", s.notificationWebhook)
 	s.mux.HandleFunc("GET /webhook/notifications/{token}/{notificationID}", s.notificationWebhook)
 	s.mux.HandleFunc("PUT /api/v1/notifications/device", s.registerNotificationDevice)

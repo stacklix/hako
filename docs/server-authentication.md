@@ -22,7 +22,7 @@ iOS 在启动、回到前台或更换服务器地址时检查。Agent 在连接�
 
 ## 配置与身份
 
-服务端 `config/server.json` 包含唯一 `username` 和手工登记的 `consoles` P-256 公钥，所有 Console 都是管理员。每次启动以文件更新 Console 信任，增删需重启。`agents` 仅用于首次导入，之后由数据库、`/admin/` 管理页及已登录 iOS Console 即时维护。Console 无密码、TOTP 或公开注册，私钥由 iPhone Secure Enclave 保存，只导出 SPKI PEM 公钥；Agent 使用 RSA，私钥由 Agent 所在设备保存。
+服务端 `config/server.json` 包含唯一 `username` 和手工登记的 `consoles` P-256 公钥，所有 Console 都是管理员。每次启动以文件更新 Console 信任，增删需重启。`agents` 仅用于首次导入，之后由数据库、`/consilium/` 管理页及已登录 iOS Console 即时维护。Console 无密码、TOTP 或公开注册，私钥由 iPhone Secure Enclave 保存，只导出 SPKI PEM 公钥；Agent 使用 RSA，私钥由 Agent 所在设备保存。
 
 Console 设备身份可在未配置服务器、未联网、未登录时本地生成并单独导出公钥，立即持久保存，后续新服务器沿用该身份。旧版本已有的服务器密钥绑定继续保留，首次读取时可作为本机默认身份；重复导出不重新生成密钥，登录会话仍按服务器和账号隔离。
 
@@ -32,21 +32,21 @@ iOS 可通过红色「重置密钥对」并二次确认替换本机身份。新�
 
 ## Web 管理
 
-`/admin/` 只支持已登录 Console 扫码批准，没有管理密钥入口。网页 POST `/admin/api/login/requests` 创建 90 秒有效请求，获得 ID、确认码、到期时间和 `hako://web-login?v=1&server=<origin>&request=<id>` 二维码。浏览器私有绑定凭据仅保存在 HttpOnly、SameSite=Strict 的 Cookie 中，不放入二维码。
+`/consilium/` 只支持已登录 Console 扫码批准，没有管理密钥入口。网页 POST `/consilium/api/login/requests` 创建 90 秒有效请求，获得 ID、确认码、到期时间和 `hako://web-login?v=1&server=<origin>&request=<id>` 二维码。浏览器私有绑定凭据仅保存在 HttpOnly、SameSite=Strict 的 Cookie 中，不放入二维码。
 
 Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请求，带现有 DPoP 会话 GET `/api/v1/auth/web-login/requests/{id}` 获取服务器、确认码、浏览器、`clientIP` 及 nonce。`clientIP` 是创建二维码的浏览器访问来源（IPv4/IPv6），确认页显示「来源 IP」；不是扫码手机的 IP 或浏览器的局域网地址。默认取连接地址，仅对 `HAKO_TRUSTED_PROXIES` 配置的可信代理按 `X-Forwarded-For` 从右向左解析，取首个不可信地址。该字段不出现在二维码、创建响应或网页轮询中。浏览器名由 User-Agent 提示，用于会话列表，支持桌面与 iOS 的 Chrome/Firefox/Edge 标识。核对确认页并点击确认或拒绝后，POST 同一路径的 `/approve` 或 `/deny`，正文为 `confirmationCode`，DPoP 声明必须包含 nonce。确认登录不再额外要求 Face ID、Touch ID 或设备密码。签名绑定完整请求路径、方法、访问令牌和挑战，防止替换与重放。
 
-网页 GET `/admin/api/login/requests/{id}` 轮询 pending/scanned/approved/denied，仅原浏览器可读取；批准后由原浏览器 POST `/complete` 领取一次性会话。扫码和 GET 轮询不颁发会话；重复批准、领取、过期或被刷新替换的请求均拒绝。二维码不携带 Console 令牌或私钥。
+网页 GET `/consilium/api/login/requests/{id}` 轮询 pending/scanned/approved/denied，仅原浏览器可读取；批准后由原浏览器 POST `/complete` 领取一次性会话。扫码和 GET 轮询不颁发会话；重复批准、领取、过期或被刷新替换的请求均拒绝。二维码不携带 Console 令牌或私钥。
 
 网页会话使用独立 Cookie 与 CSRF，HTTPS 启用 Secure 与 `__Host-`；修改请求验证 origin。闲置 30 分钟、登录 12 小时或服务重启后过期，轮询不续期。每次访问还检查批准它的 Console 会话有效，Console 退出或撤销使关联网页会话失效。
 
-`/admin/api/` 保留 `session`、`logout`、`agents` 资源及通用能力调用；网页展示 Agent、访问日志及第三方应用，不展示管理客户端列表、数量、公钥或 Console 登录会话，`GET /admin/api/agents` 只返回 `agents,updatedAt`，不返回账号、`consoles` 或手机会话列表，账号由 `/admin/api/session` 返回；网页不能撤销手机会话，服务端不提供 `DELETE /admin/api/sessions/{id}` 路由。Console 会话管理仅接受 Console 的 DPoP 认证；Console 公钥只能在服务端配置文件修改。Agent 删除立即断开连接，完成挑战后的设备也会在注册在线前再次检查信任。手工移除 Console 并重启会清理其会话和登录挑战，重新添加不恢复旧会话。部署见 [服务端说明](../apps/server/README.md)。
+`/consilium/api/` 保留 `session`、`logout`、`agents` 资源及通用能力调用；网页展示 Agent、访问日志及第三方应用，不展示管理客户端列表、数量、公钥或 Console 登录会话，`GET /consilium/api/agents` 只返回 `agents,updatedAt`，不返回账号、`consoles` 或手机会话列表，账号由 `/consilium/api/session` 返回；网页不能撤销手机会话，服务端不提供 `DELETE /consilium/api/sessions/{id}` 路由。Console 会话管理仅接受 Console 的 DPoP 认证；Console 公钥只能在服务端配置文件修改。Agent 删除立即断开连接，完成挑战后的设备也会在注册在线前再次检查信任。手工移除 Console 并重启会清理其会话和登录挑战，重新添加不恢复旧会话。部署见 [服务端说明](../apps/server/README.md)。
 
 ## 第三方应用扫码登录
 
-可信管理员登录 `/admin/applications` 创建应用，填写名称与实际应用根地址（HTTPS 或局域网 HTTP）。服务器自动生成唯一应用 ID 和随机 32 字节 Base64url SK，仅创建 / 轮换响应返回原始 SK 和可复制的 `HAKO_URL / HAKO_CLIENT_ID / HAKO_CLIENT_SECRET` 配置。应用记录、启用状态和 `base64url(SHA256(SK))`（无填充）持久保存在现有加密数据库，不使用 `server.json` 管理应用，不保存原始 SK；重启不丢失。
+可信管理员登录 `/consilium/applications` 创建应用，填写名称与实际应用根地址（HTTPS 或局域网 HTTP）。服务器自动生成唯一应用 ID 和随机 32 字节 Base64url SK，仅创建 / 轮换响应返回原始 SK 和可复制的 `HAKO_URL / HAKO_CLIENT_ID / HAKO_CLIENT_SECRET` 配置。应用记录、启用状态和 `base64url(SHA256(SK))`（无填充）持久保存在现有加密数据库，不使用 `server.json` 管理应用，不保存原始 SK；重启不丢失。
 
-管理接口为 `GET/POST /admin/api/applications`、`PATCH /admin/api/applications/{id}`（正文 `enabled`）、`POST /admin/api/applications/{id}/rotate`（正文 `{}`），全部要求原生 Hako 管理 Cookie，写请求还要求 CSRF 和同源。列表仅返回 `id,name,origin,enabled,createdAt`，不返回 SK 或其哈希。最多 64 个应用。停用 / 轮换立即清除该应用的待授权请求及授权会话；每次请求和授权还绑定创建时的密钥哈希，防止并发轮换恢复旧授权。重新启用不恢复旧授权。轮换后应用更新 SK 并重启；SK 遗失只能轮换，不能查看旧值。
+管理接口为 `GET/POST /consilium/api/applications`、`PATCH /consilium/api/applications/{id}`（正文 `enabled`）、`POST /consilium/api/applications/{id}/rotate`（正文 `{}`），全部要求原生 Hako 管理 Cookie，写请求还要求 CSRF 和同源。列表仅返回 `id,name,origin,enabled,createdAt`，不返回 SK 或其哈希。最多 64 个应用。停用 / 轮换立即清除该应用的待授权请求及授权会话；每次请求和授权还绑定创建时的密钥哈希，防止并发轮换恢复旧授权。重新启用不恢复旧授权。轮换后应用更新 SK 并重启；SK 遗失只能轮换，不能查看旧值。
 
 应用后端使用 HTTPS，携带 `Authorization: Bearer <clientSecret>` 和 `X-Hako-Client: <id>`。服务端常量时间校验密钥摘要，按客户端隔离请求和授权会话；带浏览器 Origin / Sec-Fetch-Site 的调用拒绝。应用凭证不能调用 Console 批准接口，不能获得 Hako 管理后台会话。禁止将应用密钥、私有兑换凭据或手机令牌放入二维码。
 
@@ -79,7 +79,7 @@ Console 的会话列表新增 `type=application`，含 `application,origin,brows
 | `DELETE /api/v1/applications/{id}` | JSON `{}`，移除应用登记并使该应用的待授权请求、授权码及 Hako 访问授权失效；已移除时仍返回 `{"ok":true}` |
 | `POST /api/v1/applications/{id}/rotate` | JSON `{}`，轮换 Secret，返回新的一次性凭据 |
 
-全部要求当前可信 Console 会话、`X-Hako-Device` 及绑定路径/方法/令牌的 DPoP，每次消耗防重放 jti；写请求要求 JSON，按 Console 会话限制每分钟 30 次。带浏览器 Origin/Sec-Fetch-Site 的调用被拒绝。管理 Cookie、第三方 Secret、扫码 sessionToken 和 OIDC Access Token 均不能认证这些接口。Web 原有 `/admin/api/applications` 的 Cookie/CSRF 边界保持不变。
+全部要求当前可信 Console 会话、`X-Hako-Device` 及绑定路径/方法/令牌的 DPoP，每次消耗防重放 jti；写请求要求 JSON，按 Console 会话限制每分钟 30 次。带浏览器 Origin/Sec-Fetch-Site 的调用被拒绝。管理 Cookie、第三方 Secret、扫码 sessionToken 和 OIDC Access Token 均不能认证这些接口。Web 原有 `/consilium/api/applications` 的 Cookie/CSRF 边界保持不变。
 
 原生与网页复用同一管理逻辑，停用、轮换和 OIDC 配置变更执行相同的授权失效操作。iOS 仅在创建/轮换响应后展示 Secret，内存结果绑定发起请求的服务器、账号及会话；切换上下文后丢弃旧响应并关闭凭据页，不持久化原始 Secret。网络失败不自动重试写入，先刷新核对；响应遗失且 Secret 不可恢复时由用户明确轮换。
 
@@ -115,10 +115,10 @@ Console 的会话列表新增 `type=application`，含 `application,origin,brows
 - Console 扫码接口：`GET /api/v1/auth/web-login/requests/{id}`，`POST /api/v1/auth/web-login/requests/{id}/approve`、`/deny`，归属应用认证。
 - 原 `/api/v1/admin-login/requests/*` 接口已移除，二维码不再接受 `hako://admin-login`。服务端与 iOS 必须同步更新，并刷新网页二维码，不提供旧版兼容。
 - `/api/v1/auth/*`、`/api/v1/sessions`、`/api/v1/web-sessions/{id}` 已是通用认证与会话命名，继续沿用。`Console` 是角色名称，配置字段、设备身份和长期凭据不因功能迁移而重建。
-- `/admin/`、`/admin/api/*` 表示 Hako Web 管理控制台及其 Cookie/CSRF 接口，继续沿用；`/api/v1/agents/*` 和 `/ws/agent` 属于设备业务，详见 [设备监控协议](device-monitoring.md)。
+- Hako Web 管理控制台及其 Cookie/CSRF 接口现位于 `/consilium/`、`/consilium/api/*`；旧 `/admin` 命名空间返回 404，不提供跳转。`/api/v1/agents/*` 和 `/ws/agent` 属于设备业务，详见 [设备监控协议](device-monitoring.md)。
 - 主应用验证与登录只访问认证接口，设备列表仅由设备监控按需加载。
 
-Console 会话仅支持查看与本机退出，不提供远程删除接口；`DELETE /api/v1/sessions/{id}` 已移除。退出或会话失效不会取消公钥信任，持有已登记私钥的设备可以重新登录；要禁用设备，应在配置文件中移除对应 Console 公钥并重启。网页 Agent 列表改为 `GET /admin/api/agents`，原 `/admin/api/overview` 已移除，不提供兼容路由。
+Console 会话仅支持查看与本机退出，不提供远程删除接口；`DELETE /api/v1/sessions/{id}` 已移除。退出或会话失效不会取消公钥信任，持有已登记私钥的设备可以重新登录；要禁用设备，应在配置文件中移除对应 Console 公钥并重启。网页 Agent 列表改为 `GET /consilium/api/agents`，原 `/admin/api/overview` 已移除，不提供兼容路由。
 
 局域网 iLinker 可登记 `http://192.168.0.2:8001`（含端口）。HTTP 应用地址支持私有 IPv4、IPv6 ULA、回环、链路本地地址、localhost / .localhost 和 .local 主机；公网应用仍使用 HTTPS，地址不带路径、查询或片段。手机端需同步更新地址校验。该地址仅用于手机确认展示，Hako 不请求该地址；应用 SK 和手机认证仍发送到 HTTPS Hako 服务。
 

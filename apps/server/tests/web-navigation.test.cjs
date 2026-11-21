@@ -35,11 +35,11 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
     setInterval(callback) { timers.push(callback); },
     fetch: async (url, options) => {
       calls.push(url);
-      if (url.startsWith('/admin/api/access-logs/records?')) {
+      if (url.startsWith('/consilium/api/access-logs/records?')) {
         assert.ok(recordPages.length, 'unexpected records request');
         return {ok: true, json: async () => recordPages.shift()};
       }
-      if (url.startsWith('/admin/api/investment/') && investmentData) {
+      if (url.startsWith('/consilium/api/investment/') && investmentData) {
         return {ok: true, json: async () => investmentData};
       }
       if (/\/system\/databases\/[^/]+\/query$/.test(url)) {
@@ -49,7 +49,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
         return {ok: true, json: async () => ({columns: ['id', 'name'], rows, offset: request.offset, limit: request.limit, hasMore: request.offset === 0})};
       }
       const responses = {
-        '/admin/api/system/databases': {databases: [
+        '/consilium/api/system/databases': {databases: [
           {id: 'main', name: '服务端主库', file: 'hako.db', status: 'available', expectedVersion: 2, schema: {
             version: 2, tables: [{name: 'state', sql: 'CREATE TABLE state(id INTEGER PRIMARY KEY)', columns: [{name:'id', type:'INTEGER', notNull:false, default:null, primaryKey:1, hidden:0}]}]
           }},
@@ -58,12 +58,12 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
             version: 3, tables: [{name: 'investment_accounts', sql: 'CREATE TABLE investment_accounts(id TEXT PRIMARY KEY)'}]
           }}
         ]},
-        '/admin/api/session': {csrfToken: 'test', username: 'Admin'},
-        '/admin/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
-        '/admin/api/applications': {applications: []},
-        '/admin/api/access-logs?rangeHours=24': logs
+        '/consilium/api/session': {csrfToken: 'test', username: 'Admin'},
+        '/consilium/api/agents': {agents: [], updatedAt: '2026-10-30T12:00:00Z'},
+        '/consilium/api/applications': {applications: []},
+        '/consilium/api/access-logs?rangeHours=24': logs
       };
-      if (url.startsWith('/admin/api/access-logs/rankings?')) {
+      if (url.startsWith('/consilium/api/access-logs/rankings?')) {
         return {ok: true, json: async () => ({visits: 12, success: 10, nonSuccess: 2, topURLs: [], successURLs: [{value: '/domain-success', count: 10}], topClients: [{value: '192.0.2.1', count: 12, userAgents: [], urls: [{value: '/legacy-combined', count: 12}], successURLs: [{value: '/ok', count: 10}], nonSuccessURLs: [{value: '/missing', count: 2}]}], nonSuccessPages: [], nonSuccessIPs: [], nonSuccessUserAgents: []})};
       }
       assert.ok(url in responses, `unexpected request: ${url}`);
@@ -80,7 +80,7 @@ async function openPage(pathname, logs = {status: {enabled: false}}, recordPages
 
 test('access logs show rankings without a duplicate domain table or an hour filter', async () => {
   const from = '2026-11-01T00:00:00Z', to = '2026-11-02T00:00:00Z';
-  const {document, calls} = await openPage('/admin/access-logs', {
+  const {document, calls} = await openPage('/consilium/access-logs', {
     status: {enabled: true, timezone: 'Asia/Shanghai', scanIntervalSeconds: 60, retentionDays: 7},
     rangeHours: 24, from, to, domains: ['a.test'],
     totals: [{domain: 'a.test', visits: 12, success: 10, nonSuccess: 2}],
@@ -88,7 +88,7 @@ test('access logs show rankings without a duplicate domain table or an hour filt
   });
   assert.equal(calls.length, 3);
   const request = new URL(calls[2], 'https://hako.test');
-  assert.equal(request.pathname, '/admin/api/access-logs/rankings');
+  assert.equal(request.pathname, '/consilium/api/access-logs/rankings');
   assert.equal(request.searchParams.get('domain'), 'a.test');
   assert.equal(request.searchParams.get('from'), from);
   assert.equal(request.searchParams.get('to'), to);
@@ -113,7 +113,7 @@ test('access logs show rankings without a duplicate domain table or an hour filt
 test('record queries combine filters and load every page with a fixed window', async () => {
   const from = '2026-11-02T00:00:00Z', to = '2026-11-02T01:00:00Z';
   const row = {time: from, domain: 'a.test', ip: '192.0.2.1', path: '/a+b', status: 404, userAgent: 'UA', count: 2};
-  const {document, calls, context} = await openPage('/admin/access-logs', undefined, [
+  const {document, calls, context} = await openPage('/consilium/access-logs', undefined, [
     {from, to, timezone: 'UTC', requests: 3, totalRows: 2, rows: [row], hasMore: true},
     {from, to, timezone: 'UTC', requests: 3, totalRows: 2, rows: [{...row, time: to, count: 1}], hasMore: false}
   ]);
@@ -140,10 +140,10 @@ test('record queries combine filters and load every page with a fixed window', a
 });
 
 for (const [path, page, title] of [
-  ['/admin/', 'agents', '设备代理'],
-  ['/admin/agents', 'agents', '设备代理'],
-  ['/admin/access-logs', 'access-logs', '访问日志'],
-  ['/admin/applications', 'applications', '应用管理']
+  ['/consilium/', 'agents', '设备代理'],
+  ['/consilium/agents', 'agents', '设备代理'],
+  ['/consilium/access-logs', 'access-logs', '访问日志'],
+  ['/consilium/applications', 'applications', '应用管理']
 ]) {
   test(`${path} opens only its page and refreshes only its data`, async () => {
     const {document, calls, timers, context} = await openPage(path);
@@ -155,15 +155,15 @@ for (const [path, page, title] of [
     assert.equal(get(`nav-${page}`).attributes['aria-current'], 'page');
     assert.equal(get('page-title').textContent, title);
     assert.equal(document.title, `${title} · Sora 管理控制台`);
-    const endpoint = page === 'agents' ? '/admin/api/agents' : page === 'applications' ? '/admin/api/applications' : '/admin/api/access-logs?rangeHours=24';
-    assert.deepEqual(calls, ['/admin/api/session', endpoint]);
+    const endpoint = page === 'agents' ? '/consilium/api/agents' : page === 'applications' ? '/consilium/api/applications' : '/consilium/api/access-logs?rangeHours=24';
+    assert.deepEqual(calls, ['/consilium/api/session', endpoint]);
     timers.forEach(callback => callback());
     await new Promise(setImmediate);
     if (page === 'applications') {
-      assert.deepEqual(calls, ['/admin/api/session', endpoint], 'application credentials are refreshed on demand');
+      assert.deepEqual(calls, ['/consilium/api/session', endpoint], 'application credentials are refreshed on demand');
       await context.refreshApplications();
     }
-    assert.deepEqual(calls, ['/admin/api/session', endpoint, endpoint]);
+    assert.deepEqual(calls, ['/consilium/api/session', endpoint, endpoint]);
     context.loggedIn(false);
     assert.equal(get('dashboard').hidden, true);
     assert.equal(get('login-panel').hidden, false);
@@ -174,13 +174,13 @@ for (const [path, page, title] of [
 }
 
 test('notification gateway opens the requested second-level menu after Hako login', async () => {
-  const {document, calls, context} = await openPage('/admin/notifications/webhooks');
+  const {document, calls, context} = await openPage('/consilium/notifications/webhooks');
   const get = id => document.getElementById(id);
   assert.equal(get('notification-subnav').hidden, false);
   assert.equal(get('notifications-page').hidden, false);
   assert.equal(get('nav-notifications-webhooks').attributes['aria-current'], 'page');
-  assert.equal(get('notifications-frame').attributes.src, '/admin/notifications-ui/?view=webhooks');
-  assert.deepEqual(calls, ['/admin/api/session']);
+  assert.equal(get('notifications-frame').attributes.src, '/consilium/notifications-ui/?view=webhooks');
+  assert.deepEqual(calls, ['/consilium/api/session']);
   context.loggedIn(false);
   assert.equal(get('notifications-frame').attributes.src, 'about:blank');
 });
@@ -217,11 +217,11 @@ for (const [view, title, contents] of [
     /现金钱包/, /2026-10-31.*950\.00/]]
 ]) {
   test(`investment ${view} displays saved values under its read-only menu`, async () => {
-    const path = view === 'overview' ? '/admin/investment' : '/admin/investment/' + view;
+    const path = view === 'overview' ? '/consilium/investment' : '/consilium/investment/' + view;
     const {document, calls, context} = await openPage(path, undefined, [], investmentData);
     const get = id => document.getElementById(id);
     const text = node => [node.textContent || '', ...node.children.map(text)].join(' ');
-    assert.deepEqual(calls, ['/admin/api/session', '/admin/api/investment/' + view]);
+    assert.deepEqual(calls, ['/consilium/api/session', '/consilium/api/investment/' + view]);
     assert.equal(get('investment-subnav').hidden, false);
     assert.equal(get('investment-page').hidden, false);
     assert.equal(get('nav-investment-' + view).attributes['aria-current'], 'page');
@@ -234,7 +234,7 @@ for (const [view, title, contents] of [
 }
 
 test('balance charts align recorded balances to Beijing dates and leave missing valuation days open', async () => {
-  const {context} = await openPage('/admin/investment/balance-sheet', undefined, [], investmentData);
+  const {context} = await openPage('/consilium/investment/balance-sheet', undefined, [], investmentData);
   const {points, monthEnds} = vm.runInContext(`investmentBalanceHistory(
     [{balance_account_id: 'cash', amount: '50', recorded_at: '2026-10-31T16:15:00Z'}],
     new Map([['cash', {category: 'cash'}]]),
@@ -251,8 +251,8 @@ test('balance charts align recorded balances to Beijing dates and leave missing 
 });
 
 test('data management shows database tables, queries rows and switches to structure', async () => {
-  const {document, calls, context} = await openPage('/admin/system/data');
-  assert.deepEqual(calls, ['/admin/api/session', '/admin/api/system/databases', '/admin/api/system/databases/main/query']);
+  const {document, calls, context} = await openPage('/consilium/system/data');
+  assert.deepEqual(calls, ['/consilium/api/session', '/consilium/api/system/databases', '/consilium/api/system/databases/main/query']);
   assert.equal(document.getElementById('system-page').hidden, false);
   assert.equal(document.getElementById('nav-system').attributes['aria-current'], 'page');
   assert.equal(document.getElementById('page-title').textContent, '系统管理 · 数据管理');
@@ -276,7 +276,7 @@ test('data management shows database tables, queries rows and switches to struct
   await vm.runInContext('selectDataTable("investment", "investment_accounts")', context);
   await new Promise(setImmediate);
   assert.match(document.getElementById('data-ddl').textContent, /investment_accounts/);
-  assert.equal(calls.at(-1), '/admin/api/system/databases/investment/query');
+  assert.equal(calls.at(-1), '/consilium/api/system/databases/investment/query');
   vm.runInContext('resetDatabaseManager()', context);
   assert.equal(document.getElementById('data-results').children.length, 0);
   assert.equal(document.getElementById('data-sql').value, '');
@@ -284,7 +284,7 @@ test('data management shows database tables, queries rows and switches to struct
 });
 
 test('database groups start collapsed and keep only one open across catalog renders', async () => {
-  const {document, context} = await openPage('/admin/system/data');
+  const {document, context} = await openPage('/consilium/system/data');
   const groups = () => document.getElementById('system-databases').children;
   const states = () => groups().map(group => group.open);
   const toggle = index => groups()[index].children[0].events.click({preventDefault() {}});
@@ -308,7 +308,7 @@ test('database groups start collapsed and keep only one open across catalog rend
 });
 
 test('late database query responses cannot replace a new table or restore logged-out data', async () => {
-  const {document, context} = await openPage('/admin/system/data');
+  const {document, context} = await openPage('/consilium/system/data');
   let finish;
   const nativeFetch = context.fetch;
   context.fetch = (url, options) => url.includes('/main/query') ? new Promise(resolve => { finish = resolve; }) : nativeFetch(url, options);

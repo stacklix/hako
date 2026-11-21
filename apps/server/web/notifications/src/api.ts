@@ -4,7 +4,7 @@ export class ApiError extends Error {
 
 let csrf = '';
 export async function useHakoSession() {
-  const response = await fetch('/admin/api/session', { credentials: 'same-origin', cache: 'no-store' });
+  const response = await fetch('/consilium/api/session', { credentials: 'same-origin', cache: 'no-store' });
   if (!response.ok) throw new ApiError('Sora 管理会话已到期，请重新登录', 'ADMIN_LOGIN_REQUIRED', response.status);
   const data: { csrfToken: string } = await response.json();
   csrf = data.csrfToken;
@@ -12,7 +12,7 @@ export async function useHakoSession() {
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const mutation = options.method !== undefined && options.method !== 'GET';
-  const response = await fetch('/admin/api/notifications' + path, {
+  const response = await fetch('/consilium/api/notifications' + path, {
     ...options, credentials: 'same-origin', cache: 'no-store',
     headers: {
       ...(mutation ? { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' } : {}),
