@@ -2,6 +2,13 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        for state in ["available", "workshop", "occupied", "unknown", "unrecognized"] {
+            let access = WorkshopThreadAccess(state: state, checkedAt: 123)
+            precondition(access.canSend == ["available", "workshop"].contains(state))
+            precondition((access.unavailableReason == nil) == access.canSend)
+            let decoded = try JSONDecoder().decode(WorkshopThreadAccess.self, from: JSONEncoder().encode(access))
+            precondition(decoded == access)
+        }
         let computer = try JSONDecoder().decode(WorkshopAgent.self, from: Data(#"{"id":"desktop","name":"PC","online":false,"protocolVersion":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}"#.utf8))
         precondition(computer.lan.addresses == ["192.168.0.10"] && computer.lan.port == 8005 && !computer.online)
         precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))

@@ -15,7 +15,7 @@ namespace Hako.Platform;
 
 internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
-    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0);
+    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0, WorkshopThreadAccess? Access = null);
 internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null);
 internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
@@ -39,9 +39,10 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly WorkshopDownloadCache downloads = new();
     private readonly HashSet<string> changingArchive = new();
     private bool recovered;
+    private readonly Func<string, CodexWriterState> readWriter;
 
     public CodeWorkshop(string storage, string? root = null, string? codexHome = null,
-        Func<CancellationToken, Task<CodexAppServer>>? startServer = null)
+        Func<CancellationToken, Task<CodexAppServer>>? startServer = null, Func<string, CodexWriterState>? readWriter = null)
     {
         this.startServer = startServer ?? (token => CodexAppServer.StartAsync(token));
         this.storage = Path.GetFullPath(storage);
@@ -49,6 +50,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         this.root = Path.GetFullPath(root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Code"));
         home = Path.GetFullPath(codexHome ?? Environment.GetEnvironmentVariable("CODEX_HOME") ??
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
+        this.readWriter = readWriter ?? (thread => CodexWriterLock.Read(home, thread));
     }
 
     private void RecoverJobs()
@@ -333,7 +335,7 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             older.Length > 0 ? new HistoryPosition(id, older, 0, currentTurn, used.ToArray(), "").Encode() : null;
         if (nextCursor == cursor) throw new WorkshopException("codex_history_cursor", "会话历史游标未前进，请重新刷新。");
         object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor, operationId, completionId,
-            model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort") };
+            model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort"), access = ThreadAccess(id) };
         while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];
         return Page();

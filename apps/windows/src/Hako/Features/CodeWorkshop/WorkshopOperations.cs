@@ -55,6 +55,7 @@ internal sealed class WorkshopJob
     [JsonIgnore] public HashSet<string> Answered { get; } = new();
     [JsonIgnore] public SemaphoreSlim Control { get; } = new(1, 1);
     [JsonIgnore] public bool StopRequested { get; set; }
+    [JsonIgnore] public bool OwnsThreadWriter { get; set; }
     [JsonIgnore] public List<JsonElement> PendingEvents { get; } = new();
     [JsonIgnore] public string Outcome { get; set; } = "completed";
     [JsonIgnore] public bool Active => State is "starting" or "running" or "waiting" or "stopping" or "finishing";
@@ -156,6 +157,7 @@ internal sealed partial class CodeWorkshop
                 throw new WorkshopException("codex_busy", "会话正在归档，请稍后再发送消息。");
             if (threadId.Length > 0 && jobs.Values.Any(job => (job.Active || job.State is "queued" or "paused" or "steering") && job.ThreadId == threadId))
                 throw new WorkshopException("codex_busy", "此会话已有执行中或待处理的任务，请在该任务中追加消息。");
+            RequireThreadAccess(threadId);
             if (images.Any(image => !File.Exists(UploadPath(image))))
                 throw new WorkshopException("codex_image_missing", "图片尚未上传完成，请重新发送。");
             var job = new WorkshopJob { Id = id, Fingerprint = fingerprint, ApplicationId = applicationId, Cwd = cwd,
@@ -192,6 +194,7 @@ internal sealed partial class CodeWorkshop
         var startupStage = "启动 Codex";
         try
         {
+            RequireThreadAccess(job.ThreadId);
             await using (var server = await startServer(stopping.Token))
             {
                 job.Server = server;
@@ -236,6 +239,7 @@ internal sealed partial class CodeWorkshop
                 }
                 lock (gate)
                 {
+                    job.OwnsThreadWriter = true;
                     if (job.StopRequested) throw new OperationCanceledException();
                     job.Submitted = true;
                     job.State = "running";
@@ -283,6 +287,7 @@ internal sealed partial class CodeWorkshop
             // Disposal closes the worker's thread writer before reporting handoff readiness.
             lock (gate)
             {
+                job.OwnsThreadWriter = false;
                 if (job.State == "finishing") job.State = job.Outcome;
                 job.Server = null;
                 job.Approvals.Clear();
@@ -295,6 +300,7 @@ internal sealed partial class CodeWorkshop
             queryLog.Write(startupStage, 0, 0, e.GetType().Name);
             lock (gate)
             {
+                job.OwnsThreadWriter = false;
                 job.Server = null;
                 job.Approvals.Clear();
                 job.PendingEvents.Clear();
@@ -302,7 +308,7 @@ internal sealed partial class CodeWorkshop
                 var rejected = job.Submitted && e is CodexRpcException && job.TurnId is null;
                 job.State = writerConflict || !job.Submitted || rejected ? "failed" : "unknown";
                 job.Outcome = job.State;
-                job.Message = writerConflict ? "桌面版仍占用此会话。释放会话后，再发送新消息。" :
+                job.Message = writerConflict ? "其他客户端占用此会话。释放会话后，再发送新消息。" :
                     e is WorkshopException action ? action.Message :
                     rejected ? $"Codex 拒绝了{startupStage}请求，本条消息未被接收。请在电脑端检查此会话。" :
                     job.Submitted ? "任务结果尚未确认，请先刷新会话历史。此消息不会自动重发。" :

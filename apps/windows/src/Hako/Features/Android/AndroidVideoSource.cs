@@ -15,6 +15,7 @@ internal interface IAndroidVideoSource : IAsyncDisposable
 {
     byte[] Header { get; }
     Task<Stream> OpenAsync(CancellationToken token);
+    Task TouchAsync(ReadOnlyMemory<byte> message, CancellationToken token);
 }
 internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoint, string directory) : IAndroidVideoSource
 {
@@ -22,8 +23,10 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
     private readonly string identity = Guid.NewGuid().ToString("N");
     private Process? process;
     private TcpClient? client;
+    private TcpClient? control;
+    private byte[]? activeTouch;
     private int port;
-    private Task? output, errors;
+    private Task? output, errors, controlReplies;
     private readonly CancellationTokenSource stopping = new();
     private string Remote => "/data/local/tmp/kage-video-" + identity + ".jar";
     public async Task<Stream> OpenAsync(CancellationToken token)
@@ -44,7 +47,7 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
         var start = new ProcessStartInfo(adb.Executable ?? throw new IOException("ADB 不可用。")) {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var arg in new[] { "-t", endpoint.TransportId, "shell", "CLASSPATH=" + Remote, "app_process", "/", "com.genymobile.scrcpy.Server", "3.3.4",
-            "scid=" + scid, "tunnel_forward=true", "audio=false", "control=false", "cleanup=false", "power_on=false",
+            "scid=" + scid, "tunnel_forward=true", "audio=false", "control=true", "clipboard_autosync=false", "cleanup=false", "power_on=false",
             "send_device_meta=false", "send_dummy_byte=false", "send_codec_meta=true", "send_frame_meta=true",
             "video_codec=h264", "video_bit_rate=2000000", "max_size=1280", "max_fps=30" }) start.ArgumentList.Add(arg);
         process = Process.Start(start) ?? throw new IOException("无法启动手机投屏编码器。");
@@ -57,24 +60,42 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
             client = new TcpClient { NoDelay = true };
             try {
                 await client.ConnectAsync("127.0.0.1", port, deadline.Token);
+                // scrcpy accepts video, then control, before starting the encoder.
+                control = new TcpClient { NoDelay = true };
+                await control.ConnectAsync("127.0.0.1", port, deadline.Token);
                 var stream = client.GetStream();
                 // An ADB forward may accept before the Android socket is ready.
                 // Read the codec header to distinguish that from a live source.
                 var header = new byte[12]; await stream.ReadExactlyAsync(header, deadline.Token);
                 if (!header.AsSpan(0, 4).SequenceEqual("h264"u8)) throw new IOException("手机视频编码格式无效。");
+                controlReplies = Drain(control.GetStream());
                 Header = header; return stream;
             } catch (Exception e) when (e is IOException or SocketException) {
                 client.Dispose(); client = null;
+                control?.Dispose(); control = null;
                 if (process.HasExited) throw new IOException("手机投屏编码器不可用，请确认已亮屏且允许屏幕捕获。", e);
                 await Task.Delay(100, deadline.Token);
             }
         }
     }
     public byte[] Header { get; private set; } = [];
+    public async Task TouchAsync(ReadOnlyMemory<byte> message, CancellationToken token)
+    {
+        if (control is null) throw new IOException("手机触控通道未连接。");
+        await control.GetStream().WriteAsync(message, token);
+        activeTouch = message.Span[1] is 0 or 2 ? message.ToArray() : null;
+    }
     private async Task Drain(Stream stream) { var bytes = new byte[4096]; try { while (await stream.ReadAsync(bytes, stopping.Token) != 0) { } } catch (OperationCanceledException) { } }
     public async ValueTask DisposeAsync()
     {
+        if (control is not null && activeTouch is { } touch)
+        {
+            touch[1] = 3; touch[22] = 0; touch[23] = 0;
+            using var release = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            try { await control.GetStream().WriteAsync(touch, release.Token); } catch { }
+        }
         client?.Dispose();
+        control?.Dispose();
         if (process is not null) {
             try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromMilliseconds(500)); } catch { }
             try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
@@ -83,6 +104,7 @@ internal sealed class AndroidVideoSource(IAndroidAdb adb, AndroidEndpoint endpoi
         stopping.Cancel();
         if (output is not null) try { await output; } catch { }
         if (errors is not null) try { await errors; } catch { }
+        if (controlReplies is not null) try { await controlReplies; } catch { }
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(4));
         if (port > 0) try { await adb.RunAsync(["-t", endpoint.TransportId, "forward", "--remove", "tcp:" + port], cleanup.Token); } catch { }
         try { await adb.RunAsync(["-t", endpoint.TransportId, "shell", "rm", "-f", Remote], cleanup.Token); } catch { }

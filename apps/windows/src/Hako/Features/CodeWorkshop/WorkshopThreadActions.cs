@@ -59,6 +59,7 @@ internal sealed partial class CodeWorkshop
                 throw new WorkshopException("codex_workspace_invalid", "会话与所选项目不一致，请刷新列表。");
             if (CodexJson.Text(CodexJson.Field(thread, "status"), "type") == "active")
                 throw new WorkshopException("codex_busy", "会话仍在执行任务，请结束后再压缩。");
+            RequireThreadAccess(threadId);
             token.ThrowIfCancellationRequested();
             lock (gate)
             {

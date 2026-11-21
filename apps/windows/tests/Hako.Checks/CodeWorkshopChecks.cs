@@ -130,6 +130,7 @@ internal static class CodeWorkshopChecks
         var storage = Path.Combine(directory, "state");
         try
         {
+            await WorkshopAccessChecks.RunAsync(directory, code, FixtureThread, token => Start(token), token => Start(token, scenario: "slow-turn"));
             await using (var maintenance = new CodeWorkshop(Path.Combine(directory, "maintenance"), code, directory, token => Start(token)))
             {
                 var catalog = Result(await maintenance.CatalogAsync(Json(new { }), default));
@@ -627,7 +628,7 @@ internal static class CodeWorkshopChecks
                 var busyId = Guid.NewGuid().ToString();
                 await occupied.StartAsync(Json(new { requestId = busyId, applicationId, threadId = FixtureThread, message = "Check lock" }), default);
                 var failed = await WaitAsync(occupied, busyId, "failed");
-                Check(CodexJson.Text(failed.GetProperty("operation"), "message").Contains("桌面版仍占用"), "Writer conflict was not translated");
+                Check(CodexJson.Text(failed.GetProperty("operation"), "message").Contains("其他客户端占用"), "Writer conflict was not translated");
             }
             await using (var slow = new CodeWorkshop(Path.Combine(directory, "slow"), code, startServer: token => Start(token, scenario: "slow-resume")))
             {

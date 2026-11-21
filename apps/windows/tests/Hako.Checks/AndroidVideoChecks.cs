@@ -38,6 +38,7 @@ internal static class AndroidVideoChecks
         await CheckPowerLifecycle(false, false);
         await CheckPowerLifecycle(true, false);
         await CheckPowerLifecycle(false, true);
+        CheckTouchValidation();
         Console.WriteLine("PASS: video encoder integrity, idempotent session keys, device pinning, source limits and stop without launching ADB.");
     }
     private sealed class IdleStream : Stream
@@ -61,8 +62,13 @@ internal static class AndroidVideoChecks
         internal readonly TaskCompletionSource Disposing = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource? CloseGate;
         internal bool Disposed;
+        internal readonly List<byte[]> Touches = [];
+        internal readonly TaskCompletionSource Touched = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public byte[] Header => [104, 50, 54, 52, 0, 0, 2, 28, 0, 0, 4, 176];
         public Task<Stream> OpenAsync(CancellationToken token) { Opened.TrySetResult(); return Task.FromResult<Stream>(new IdleStream()); }
+        public Task TouchAsync(ReadOnlyMemory<byte> message, CancellationToken token) {
+            Touches.Add(message.ToArray()); if (Touches.Count == 3) Touched.TrySetResult(); return Task.CompletedTask;
+        }
         public async ValueTask DisposeAsync() { Disposed = true; Disposing.TrySetResult(); if (CloseGate is not null) await CloseGate.Task; }
     }
     private sealed class PowerAdb(Source source, bool failWake, bool failSleep) : IAndroidAdb
@@ -105,6 +111,21 @@ internal static class AndroidVideoChecks
         await client.SendAsync(AgentLanEndpoint.Seal(key, hello, "video-client:" + id).AsMemory(), WebSocketMessageType.Binary, true, default);
         if (failWake) await work.WaitAsync(TimeSpan.FromSeconds(3));
         else { await source.Opened.Task.WaitAsync(TimeSpan.FromSeconds(3)); if (!adb.Awake) throw new Exception("Capture started before wake verification"); }
+        if (!failWake && !failSleep)
+        {
+            for (ulong i = 0; i < 3; i++)
+            {
+                var plain = Touch(i, i == 0 ? (byte)0 : i == 1 ? (byte)2 : (byte)1);
+                var encrypted = AgentLanEndpoint.Seal(key, plain, "video-input:" + id);
+                if (i == 1) {
+                    await client.SendAsync(encrypted.AsMemory(0, 17), WebSocketMessageType.Binary, false, default);
+                    await client.SendAsync(encrypted.AsMemory(17), WebSocketMessageType.Binary, true, default);
+                } else await client.SendAsync(encrypted.AsMemory(), WebSocketMessageType.Binary, true, default);
+            }
+            await source.Touched.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            if (source.Touches[0][1] != 0 || source.Touches[1][1] != 2 || source.Touches[2][1] != 1)
+                throw new Exception("Encrypted touch events were dropped or reordered");
+        }
         var stop = streams.StopAsync(id);
         if (source.CloseGate is not null) {
             await source.Disposing.Task.WaitAsync(TimeSpan.FromSeconds(3));
@@ -119,6 +140,34 @@ internal static class AndroidVideoChecks
         if (!failWake && string.Join(",", adb.Keys) != "224,223") throw new Exception("Wake/sleep was repeated or omitted");
         await streams.StopAsync(id).ContinueWith(_ => { });
         if (adb.Keys.Count != (failWake ? 1 : 2)) throw new Exception("Repeated stop repeated input");
+    }
+    private static byte[] Touch(ulong sequence, byte action)
+    {
+        var bytes = new byte[40]; BinaryPrimitives.WriteUInt64BigEndian(bytes, sequence);
+        bytes[8] = 2; bytes[9] = action;
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(18), 270);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(22), 600);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(26), 540);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(28), 1200);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(30), (ushort)(action is 1 or 3 ? 0 : 65535));
+        return bytes;
+    }
+    private static void CheckTouchValidation()
+    {
+        var input = new AndroidVideoInput();
+        void Reject(byte[] packet) {
+            try { input.Read(packet); throw new Exception("Unsafe touch packet accepted"); } catch (InvalidDataException) { }
+        }
+        Reject(Touch(0, 2)); // No move without a finger down.
+        var invalid = Touch(0, 0); invalid[8] = 1; Reject(invalid); // No text/clipboard commands.
+        invalid = Touch(0, 0); BinaryPrimitives.WriteUInt32BigEndian(invalid.AsSpan(18), 540); Reject(invalid);
+        input.Read(Touch(0, 0));
+        Reject(Touch(0, 0)); // No replay.
+        Reject(Touch(1, 0)); // No second finger.
+        input.Read(Touch(1, 2)); input.Read(Touch(2, 3));
+        Reject(Touch(3, 1));
+        input.Read(Touch(3, 0)); input.Read(Touch(4, 1));
+        Console.WriteLine("PASS: encrypted ordered touch delivery, coordinate bounds, gesture lifecycle and replay rejection.");
     }
     internal static async Task LiveAsync(string profile, string output)
     {

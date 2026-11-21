@@ -6,12 +6,13 @@ struct HakoCodeEditor: View {
     let filename: String
     let editable: Bool
     let saving: Bool
+    var active = true
     @StateObject private var keyboard = HakoEditorKeyboardState()
 
     var body: some View {
-        HakoCodeEditorTextView(text: $text, filename: filename, editable: editable, saving: saving, keyboard: keyboard)
+        HakoCodeEditorTextView(text: $text, filename: filename, editable: editable, saving: saving, active: active, keyboard: keyboard)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if keyboard.focused {
+                if active && keyboard.focused {
                     HakoEditorKeyboardKeys(state: keyboard, editingEnabled: editable && !saving)
                 }
             }
@@ -23,6 +24,7 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
     let filename: String
     let editable: Bool
     let saving: Bool
+    let active: Bool
 
     let keyboard: HakoEditorKeyboardState
 
@@ -64,7 +66,8 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
         coordinator.parent = self
         coordinator.applying = true
         defer { coordinator.applying = false }
-        view.isEditable = editable && !saving
+        if !active && view.isFirstResponder { view.resignFirstResponder() }
+        view.isEditable = editable && !saving && active
         view.isSelectable = !saving
         view.accessibilityLabel = "文件内容：\(filename)"
         if changedFont, view.markedTextRange == nil { view.font = Self.font }

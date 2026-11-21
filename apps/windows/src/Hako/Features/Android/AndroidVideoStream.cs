@@ -151,16 +151,30 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
             s.PowerOwned = true;
             await AndroidVideoPower.SetAsync(adb, s.Endpoint, awake: true);
             token.ThrowIfCancellationRequested();
+            var video = await source.OpenAsync(token);
             reading = Task.Run(async () =>
             {
+                var input = new AndroidVideoInput();
                 try { var buffer = new byte[1024]; while (!token.IsCancellationRequested) {
                     var result = await socket.ReceiveAsync(buffer.AsMemory(), token);
                     if (result.MessageType == WebSocketMessageType.Close) break;
-                    // Consumer frames after authentication are not part of this protocol.
-                    throw new InvalidDataException("Unexpected video input.");
+                    var count = result.Count;
+                    if (result.MessageType != WebSocketMessageType.Binary || count > 68)
+                        throw new InvalidDataException("Invalid video input.");
+                    while (!result.EndOfMessage)
+                    {
+                        if (count >= 68) throw new InvalidDataException("Oversized video input.");
+                        result = await socket.ReceiveAsync(buffer.AsMemory(count, 68 - count), token);
+                        if (result.MessageType != WebSocketMessageType.Binary) throw new InvalidDataException("Invalid video input.");
+                        count += result.Count;
+                    }
+                    if (count != 68) throw new InvalidDataException("Invalid video input size.");
+                    var plain = AgentLanEndpoint.Open(s.Key, buffer[..count], "video-input:" + s.Id);
+                    using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    budget.CancelAfter(TimeSpan.FromSeconds(3));
+                    await source.TouchAsync(input.Read(plain), budget.Token);
                 } } finally { lifetime.Cancel(); }
             });
-            var video = await source.OpenAsync(token);
             await Send(0, source.Header);
             var data = new byte[32768];
             while (true)
@@ -173,7 +187,7 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         }
         catch (Exception error) when (!token.IsCancellationRequested)
         {
-            try { await Send(1, Encoding.UTF8.GetBytes(error is AgentActionException ? error.Message : "视频源已中断，请确认手机已亮屏、ADB 连接正常且允许屏幕捕获。")); } catch { }
+            try { await Send(1, Encoding.UTF8.GetBytes(error is AgentActionException ? error.Message : "投屏或触控通道中断，请检查 ADB 连接、屏幕捕获及「USB 调试（安全设置）」授权。")); } catch { }
         }
         finally
         {

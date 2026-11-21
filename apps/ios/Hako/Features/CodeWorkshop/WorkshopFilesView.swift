@@ -189,6 +189,8 @@ private struct WorkshopProjectFileEditor: View {
     @StateObject private var data = WorkshopFileEditorData()
     @Environment(\.dismiss) private var dismiss
     @State private var pending: FileAction?
+    @State private var showingPreview = false
+    @State private var previewSource: String?
     private enum FileAction { case close, reload }
     var body: some View {
         NavigationStack {
@@ -206,7 +208,20 @@ private struct WorkshopProjectFileEditor: View {
                 Divider()
                 if data.loading { ProgressView("正在读取文件…").frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else if data.viewable {
-                    HakoCodeEditor(text: $data.draft, filename: file.path, editable: data.editable, saving: data.saving)
+                    ZStack {
+                        // Preserve selection, undo history and scrolling while previewing.
+                        HakoCodeEditor(text: $data.draft, filename: file.path, editable: data.editable,
+                            saving: data.saving, active: !showingPreview)
+                            .opacity(showingPreview ? 0 : 1)
+                            .allowsHitTesting(!showingPreview)
+                            .accessibilityHidden(showingPreview)
+                        if let previewSource {
+                            WorkshopMarkdownPreview(source: previewSource)
+                                .opacity(showingPreview ? 1 : 0)
+                                .allowsHitTesting(showingPreview)
+                                .accessibilityHidden(!showingPreview)
+                        }
+                    }
                 } else {
                     ContentUnavailableView("无法预览内容", systemImage: "doc",
                         description: Text(data.reason ?? data.error ?? "此文件不支持文本预览。"))
@@ -219,7 +234,15 @@ private struct WorkshopProjectFileEditor: View {
                         .accessibilityLabel("返回项目文件").disabled(data.saving)
                 }
                 ToolbarItem(placement: .principal) { Text(file.name).font(.subheadline.weight(.semibold)).lineLimit(1) }
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    if WorkshopMarkdownDocument.supports(file.path) {
+                        Button {
+                            if !showingPreview { previewSource = data.draft }
+                            showingPreview.toggle()
+                        } label: { Image(systemName: showingPreview ? "square.and.pencil" : "eye") }
+                            .accessibilityLabel(showingPreview ? "编辑 Markdown 源码" : "预览 Markdown")
+                            .disabled(data.loading || data.saving || !data.viewable)
+                    }
                     Button { Task { await save() } } label: {
                         if data.saving { ProgressView() } else { Text("保存") }
                     }.disabled(!data.canSave).accessibilityLabel("保存文件")
@@ -241,7 +264,9 @@ private struct WorkshopProjectFileEditor: View {
         pending = nil
         switch action {
         case .close: dismiss()
-        case .reload: Task { await data.load(client, file: file) }
+        case .reload:
+            showingPreview = false; previewSource = nil
+            Task { await data.load(client, file: file) }
         }
     }
     private func save(then action: FileAction? = nil) async {

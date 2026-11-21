@@ -64,6 +64,7 @@ internal sealed partial class CodeWorkshop
             }
             if (root.ThreadId is not null && changingArchive.Contains(root.ThreadId))
                 throw new WorkshopException("codex_busy", "会话正在归档，请稍后再发送消息。");
+            RequireThreadAccess(root.ThreadId);
             if (Group(root).Count(value => value.RootId is not null) >= 30)
                 throw new WorkshopException("codex_queue_full", "本轮后续消息过多，请等待本轮完成后再发送。");
             if (images.Any(image => !File.Exists(UploadPath(image))))

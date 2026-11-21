@@ -76,6 +76,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
         {
             "applications.list" => workshop.CatalogAsync, "models.list" => workshop.ModelsAsync,
             "history.read" => workshop.HistoryAsync, "operation.read" => workshop.OperationAsync,
+            "thread.access.read" => workshop.ThreadAccessAsync,
             "artifact.read" => workshop.ArtifactAsync, "image.read" => workshop.ImageAsync,
             "turn.start" => workshop.StartAsync, "turn.stop" => workshop.StopAsync,
             "thread.archive" => workshop.ArchiveAsync, "image.upload" => workshop.UploadImageAsync,

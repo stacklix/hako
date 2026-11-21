@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
+using Hako.Core;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -443,23 +443,11 @@ public sealed class CodexUsage : IAsyncDisposable
     private bool WriterAlive(string thread)
     {
         if (!Guid.TryParse(thread, out _)) return false;
-        var path = Path.Combine(home, "thread-writer-locks", thread + ".lock");
-        if (!File.Exists(path)) return false;
-        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        var overlap = new NativeOverlapped();
-        if (LockFileEx(file.SafeFileHandle.DangerousGetHandle(), 3, 0, 1, 0, ref overlap))
-        {
-            UnlockFileEx(file.SafeFileHandle.DangerousGetHandle(), 0, 1, 0, ref overlap);
-            return false;
-        }
-        var error = Marshal.GetLastWin32Error();
-        if (error != 33) throw new IOException("Cannot inspect Codex writer lock.");
-        return true;
+        return CodexWriterLock.Read(home, thread) switch {
+            CodexWriterState.Free => false, CodexWriterState.Held => true,
+            _ => throw new IOException("Cannot inspect Codex writer lock.")
+        };
     }
-    [DllImport("kernel32", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool LockFileEx(IntPtr handle, uint flags, uint reserved, uint low, uint high, ref NativeOverlapped overlap);
-    [DllImport("kernel32", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnlockFileEx(IntPtr handle, uint reserved, uint low, uint high, ref NativeOverlapped overlap);
 
     public async ValueTask DisposeAsync()
     {

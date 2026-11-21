@@ -73,6 +73,8 @@ jobs:
           /tmp/hako-network-ssid-cache-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopFileModels.swift Tests/WorkshopFileTests.swift -o /tmp/hako-workshop-file-tests
           /tmp/hako-workshop-file-tests
+          swiftc Hako/Shared/UI/AssistantMarkdown.swift Hako/Features/CodeWorkshop/WorkshopMessage.swift Hako/Features/CodeWorkshop/WorkshopMarkdownPreview.swift Tests/WorkshopMarkdownPreviewTests.swift -o /tmp/hako-workshop-markdown-preview-tests
+          /tmp/hako-workshop-markdown-preview-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopBrowserLink.swift Tests/WorkshopBrowserTests.swift -o /tmp/hako-workshop-browser-tests
           /tmp/hako-workshop-browser-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopCommandModels.swift Hako/Features/CodeWorkshop/WorkshopQuickPrompts.swift Tests/WorkshopCommandTests.swift -o /tmp/hako-workshop-command-tests
@@ -127,6 +129,8 @@ jobs:
           /tmp/hako-device-ssh-tests
           swiftc Hako/Features/DeviceManagement/AndroidH264Stream.swift Tests/AndroidH264StreamTests.swift -o /tmp/hako-video-tests
           /tmp/hako-video-tests
+            swiftc Hako/Features/DeviceManagement/AndroidVideoShutdown.swift Tests/AndroidVideoShutdownTests.swift -o /tmp/hako-video-shutdown-tests
+            /tmp/hako-video-shutdown-tests
           swiftc Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Tests/ConsoleWebLoginTests.swift -o /tmp/hako-web-login-tests
           /tmp/hako-web-login-tests
           swiftc Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Features/Notifications/HakoNotification.swift Tests/NotificationTests.swift -o /tmp/hako-notification-tests

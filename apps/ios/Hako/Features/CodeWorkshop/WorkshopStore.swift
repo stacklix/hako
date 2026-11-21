@@ -277,7 +277,8 @@ import CryptoKit
               previous.operationId == operationId || previous.operationId == nil else { return }
         let updated = WorkshopSession(id: previous.id, title: previous.title, applicationId: previous.applicationId,
             cwd: previous.cwd, preview: previous.preview, updatedAt: previous.updatedAt, state: state,
-            operationId: operationId, completionId: state == "completed" ? completionId : nil, lastSentAt: previous.lastSentAt)
+            operationId: operationId, completionId: state == "completed" ? completionId : nil, lastSentAt: previous.lastSentAt,
+            access: previous.access)
         let terminal = ["completed", "failed", "interrupted", "cancelled", "unknown", "paused"].contains(state)
         if terminal {
             // Also settle the durable receipt, so reopening the app cannot
@@ -481,7 +482,7 @@ import CryptoKit
             guard value.id == threadID else { return value }
             return WorkshopSession(id: value.id, title: title, applicationId: value.applicationId, cwd: value.cwd,
                 preview: value.preview, updatedAt: value.updatedAt, state: value.state,
-                operationId: value.operationId, completionId: value.completionId, lastSentAt: value.lastSentAt)
+                operationId: value.operationId, completionId: value.completionId, lastSentAt: value.lastSentAt, access: value.access)
         }
         if selectedAgentID == agentID { sessions = sessions.map(renamed) }
         for (key, value) in cachedCatalogs where key == agentID || key == agentID + ":archived" {

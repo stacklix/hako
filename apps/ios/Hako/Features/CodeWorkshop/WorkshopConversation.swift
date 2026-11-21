@@ -18,6 +18,8 @@ import Combine
     @Published private(set) var approvals: [WorkshopApproval] = []
     @Published private(set) var historyCursor: String?
     @Published private(set) var busy = false
+    @Published private(set) var access: WorkshopThreadAccess?
+    @Published private(set) var checkingAccess = false
     @Published private(set) var loadingHistory = false
     @Published private(set) var uncertain = false
     let composerInput = WorkshopComposerInput()
@@ -75,7 +77,9 @@ import Combine
         }
     }
     private var historyCursorVerified = false
-    var networkVisible = false
+    var networkVisible = false {
+        didSet { if networkVisible && !oldValue { Task { await refreshThreadAccess() } } }
+    }
     private var catalogHint: WorkshopSession?
     private var needsHistoryRefresh = false
     var connectionVerified: Bool {
@@ -89,6 +93,7 @@ import Combine
         return error
     }
     var synchronizationHint: String? {
+        if !threadWritable { return access?.unavailableReason ?? "正在检查会话是否可写，可先编辑草稿" }
         if connectionIssue != nil { return "会话暂未同步，自动重试中" }
         if operation?.resultUnconfirmed == true { return "本轮结果待确认" }
         return nil
@@ -103,6 +108,7 @@ import Combine
         self.title = title ?? session?.title ?? "新会话"
         scope = store.scope
         catalogHint = session
+        access = session?.access
         isArchived = archived
         threadId = session.flatMap { UUID(uuidString: $0.id) == nil ? nil : $0.id }
         receipt = store.receipt(for: session, agent: agent)
@@ -236,6 +242,64 @@ import Combine
 
     var notificationOperationID: String? { operationId }
 
+    private func observeAccess(_ value: WorkshopThreadAccess?) {
+        guard let value, value.checkedAt >= (access?.checkedAt ?? 0) else { return }
+        access = value
+    }
+
+    private func verifyThreadAccess() async -> Bool {
+        guard let threadId else { return true }
+        guard !checkingAccess, scope == store.scope else { return false }
+        checkingAccess = true
+        defer { checkingAccess = false }
+        do {
+            let current: WorkshopThreadAccess = try await store.call(agent, "thread.access.read",
+                ["threadId": threadId, "applicationId": application.id])
+            guard scope == store.scope, self.threadId == threadId else { return false }
+            access = current
+            if let reason = current.unavailableReason { error = reason }
+            return current.canSend
+        } catch {
+            guard scope == store.scope else { return false }
+            access = WorkshopThreadAccess(state: "unknown", checkedAt: access?.checkedAt ?? 0)
+            self.error = "无法确认会话是否可写，文字和图片已保留。" + error.localizedDescription
+            return false
+        }
+    }
+
+    private func requireThreadAccess() async throws {
+        guard await verifyThreadAccess() else {
+            throw WorkshopFailure(code: access?.state == "occupied" ? "codex_thread_occupied" : "codex_thread_access_unknown",
+                message: error ?? "会话暂不可写，文字和图片已保留。")
+        }
+    }
+
+    private func watchAccess() async {
+        while !Task.isCancelled, scope == store.scope {
+            await refreshThreadAccess()
+            do { try await Task.sleep(for: .seconds(networkVisible ? 10 : 60)) } catch { return }
+        }
+    }
+
+    private func refreshThreadAccess() async {
+        guard let threadId, !checkingAccess, scope == store.scope else { return }
+        do {
+            let value: WorkshopThreadAccess = try await store.call(agent, "thread.access.read",
+                ["threadId": threadId, "applicationId": application.id])
+            guard !Task.isCancelled, scope == store.scope, self.threadId == threadId else { return }
+            observeAccess(value)
+        } catch {
+            guard !Task.isCancelled, scope == store.scope else { return }
+            access = WorkshopThreadAccess(state: "unknown", checkedAt: access?.checkedAt ?? 0)
+        }
+    }
+
+    private func accessRejected(_ failure: WorkshopFailure) {
+        guard ["codex_thread_occupied", "codex_thread_access_unknown"].contains(failure.code) else { return }
+        access = WorkshopThreadAccess(state: failure.code == "codex_thread_occupied" ? "occupied" : "unknown",
+            checkedAt: access?.checkedAt ?? 0)
+    }
+
     var canCompose: Bool { !isArchived && (!busy || outbox.activeID != nil) && store.authenticated && scope == store.scope }
     var configurationUnavailableReason: String? {
         if isArchived { return "此会话已归档，取消归档后可修改设置。" }
@@ -245,11 +309,12 @@ import Combine
     }
     var canConfigure: Bool { configurationUnavailableReason == nil }
     var awaitingSubmissionCheck: Bool { restoringCache || synchronizing || (uncertain && outbox.activeID == nil) }
-    var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck }
+    private var threadWritable: Bool { threadId == nil || (access?.canSend ?? (operation?.active == true)) }
+    var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck && !checkingAccess && threadWritable }
     var canEditMessages: Bool { canSubmitMessage && !busy && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
-    var canRetry: Bool { !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
+    var canRetry: Bool { threadWritable && !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
     var generation: WorkshopGenerationSettings { .displayed(history: historyGeneration, operation: operation) }
     var modelLabel: String { models.first { $0.id == generation.model }?.name ?? generation.model ?? "Model pending" }
     var speedLabel: String {
@@ -268,6 +333,7 @@ import Combine
     }
 
     func prepareForReentry(_ session: WorkshopSession) {
+        observeAccess(session.access)
         if WorkshopWatchStep.catalogNeedsSynchronization(previous: catalogHint, current: session,
             operationId: operationId, operationActive: operation?.active == true, completionId: latestCompletionID) {
             lastVerifiedAt = nil
@@ -278,7 +344,7 @@ import Combine
     }
 
     var canCompact: Bool {
-        canConfigure && !busy && !awaitingSubmissionCheck && !loadingHistory && threadId != nil &&
+        canConfigure && threadWritable && !busy && !awaitingSubmissionCheck && !loadingHistory && threadId != nil &&
             operation?.active != true && !followups.contains { $0.editable || $0.state == "paused" } &&
             operationId.map { store.pendingQueue(operationId: $0).isEmpty } != false
     }
@@ -393,7 +459,7 @@ import Combine
             if more { params["cursor"] = historyCursor }
             var result: WorkshopHistory = try await store.call(agent, "history.read", params)
             guard scope == store.scope, result.threadId == threadId else { return false }
-            if !more { historyGeneration = result.generation }
+            if !more { historyGeneration = result.generation; observeAccess(result.access) }
             let newestOperation = result.operationId
             let newestCompletion = result.completionId
             var newestArtifacts = result.artifacts
@@ -455,6 +521,8 @@ import Combine
     }
 
     func watch() async {
+        let accessWatch = Task { await watchAccess() }
+        defer { accessWatch.cancel() }
         await restoreTranscript()
         guard !Task.isCancelled, scope == store.scope else { return }
         let entryStep = WorkshopWatchStep.onEntry(lastVerifiedAt: lastVerifiedAt,
@@ -648,6 +716,7 @@ import Combine
             await mutateMessage(id, action: "update", message: message)
             return
         }
+        guard await verifyThreadAccess() else { return }
         if let id = draftSendingID, let queued = pendingSend(id) {
             await submitQueued(queued)
             return
@@ -737,7 +806,7 @@ import Combine
     }
 
     func canRetryDelivery(_ id: String) -> Bool {
-        guard !busy, scope == store.scope, !isArchived else { return false }
+        guard threadWritable, !busy, scope == store.scope, !isArchived else { return false }
         if receipt?.id == id { return canRetry }
         guard !uncertain, let operationId else { return false }
         return store.pendingQueue(operationId: operationId).first?.id == id
@@ -768,7 +837,7 @@ import Combine
     }
 
     private func resumePendingSends() {
-        guard !busy, !synchronizing, !uncertain, scope == store.scope, let operationId,
+        guard threadWritable, !busy, !synchronizing, !uncertain, scope == store.scope, let operationId,
               let id = outbox.nextQueued(store.pendingQueue(operationId: operationId).map(\.id)),
               let queued = pendingSend(id) else { return }
         Task { await submitQueued(queued) }
@@ -784,6 +853,7 @@ import Combine
             resumePendingSends()
         }
         do {
+            try await requireThreadAccess()
             try await uploadMessageImages(receipt.imageIds ?? [], id: receipt.id)
             guard scope == store.scope else { throw CancellationError() }
             outbox.sending(receipt.id); submitted = true
@@ -807,9 +877,10 @@ import Combine
                 outbox.failed(receipt.id, message: submitted ? "发送结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
             }
         }
-        catch let failure as WorkshopFailure where ["invalid_params", "codex_application_missing", "codex_workspace_invalid", "codex_busy", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {
+        catch let failure as WorkshopFailure where ["invalid_params", "codex_application_missing", "codex_workspace_invalid", "codex_busy", "codex_image_missing", "codex_image_invalid", "codex_thread_occupied", "codex_thread_access_unknown"].contains(failure.code) {
             guard scope == store.scope else { return }
             if accepted || outbox.states[receipt.id] == nil { readFailed(failure); return }
+            accessRejected(failure)
             outbox.failed(receipt.id, message: failure.message, submitted: false)
             saveTranscript()
         }
@@ -884,6 +955,7 @@ import Combine
             resumePendingSends()
         }
         do {
+            try await requireThreadAccess()
             try await uploadMessageImages(queued.imageIds, id: queued.id)
             guard scope == store.scope else { throw CancellationError() }
             outbox.sending(queued.id); submitted = true
@@ -900,9 +972,10 @@ import Combine
                 outbox.failed(queued.id, message: submitted ? "排队结果待确认，请检查结果或重试原消息。" : "上传已取消，文字和图片已保留。", submitted: submitted)
             }
         }
-        catch let failure as WorkshopFailure where ["invalid_params", "codex_queue_full", "codex_image_missing", "codex_image_invalid"].contains(failure.code) {
+        catch let failure as WorkshopFailure where ["invalid_params", "codex_queue_full", "codex_image_missing", "codex_image_invalid", "codex_thread_occupied", "codex_thread_access_unknown"].contains(failure.code) {
             guard scope == store.scope else { return }
             if accepted || outbox.states[queued.id] == nil { readFailed(failure); return }
+            accessRejected(failure)
             store.rejectQueuedActivity(queued, agent: agent, scope: scope)
             outbox.failed(queued.id, message: failure.message, submitted: false)
         }

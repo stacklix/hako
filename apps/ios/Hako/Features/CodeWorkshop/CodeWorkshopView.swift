@@ -326,19 +326,21 @@ struct CodeWorkshopView: View {
             Section {
                 ForEach(sessions) { session in
                     let hasDraft = store.hasDraft(session)
+                    let isOccupied = session.access?.state == "occupied"
                     Button {
                         guard let application = store.applications.first(where: { $0.id == session.applicationId }) else { return }
                         conversation = WorkshopRuntime.shared.open(session, agent: agent,
                             application: application, archived: store.showingArchived)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: hasDraft || session.inProgress || store.isUnread(session, at: date) ? "terminal.fill" : "terminal")
+                            Image(systemName: isOccupied ? "lock" : hasDraft || session.inProgress || store.isUnread(session, at: date) ? "terminal.fill" : "terminal")
                                 .symbolRenderingMode(.monochrome)
                                 .font(.subheadline).padding(.top, 3)
                                 .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
                                 Text(session.title).font(.subheadline.weight(.medium))
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                WorkshopSessionAccessLabel(access: session.access)
                                 Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -348,7 +350,7 @@ struct CodeWorkshopView: View {
                         }
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                    .accessibilityValue(hasDraft ? "有未发送的草稿" : session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读")
+                    .accessibilityValue((isOccupied ? "其他客户端占用，" : "") + (hasDraft ? "有未发送的草稿" : session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读"))
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(HakoStyle.card)
                     .listRowSeparatorTint(HakoStyle.line)
@@ -441,6 +443,16 @@ private struct WorkshopNewSessionView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct WorkshopSessionAccessLabel: View {
+    let access: WorkshopThreadAccess?
+    var body: some View {
+        if let access, access.state != "occupied", let reason = access.unavailableReason {
+            Label("可写状态待确认", systemImage: "lock")
+                .font(.caption).foregroundStyle(.secondary).accessibilityLabel(reason)
         }
     }
 }

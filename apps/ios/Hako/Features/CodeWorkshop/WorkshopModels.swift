@@ -157,6 +157,19 @@ struct WorkshopApplication: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct WorkshopThreadAccess: Codable, Hashable, Sendable {
+    let state: String
+    let checkedAt: Int64
+    var canSend: Bool { state == "available" || state == "workshop" }
+    var unavailableReason: String? {
+        switch state {
+        case "available", "workshop": nil
+        case "occupied": "其他客户端占用此会话，请释放后再发送；可先编辑草稿。"
+        default: "暂时无法确认会话是否可写，请重新检查；草稿已保留。"
+        }
+    }
+}
+
 struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -168,6 +181,7 @@ struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     let operationId: String?
     var completionId: String? = nil
     var lastSentAt: Int64 = 0
+    var access: WorkshopThreadAccess? = nil
 
     var inProgress: Bool { ["starting", "running", "waiting", "stopping", "finishing", "queued", "steering"].contains(state) }
 }
@@ -226,7 +240,8 @@ struct WorkshopSessionUpdates {
             guard update.revision > checkpoint || staleRunning else { return session }
             return WorkshopSession(id: session.id, title: session.title, applicationId: session.applicationId,
                 cwd: session.cwd, preview: session.preview, updatedAt: session.updatedAt,
-                state: known.state, operationId: known.operationId, completionId: known.completionId, lastSentAt: session.lastSentAt)
+                state: known.state, operationId: known.operationId, completionId: known.completionId, lastSentAt: session.lastSentAt,
+                access: session.access)
         }
     }
 }
@@ -344,6 +359,7 @@ struct WorkshopHistory: Decodable {
     let completionId: String?
     var model: String? = nil
     var reasoningEffort: String? = nil
+    var access: WorkshopThreadAccess? = nil
     var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
 }
 
@@ -769,7 +785,8 @@ struct WorkshopLocalSessions {
                     (!activity.queued && remote?.operationId == receipt.id ? remote!.preview : activity.preview),
                 updatedAt: max(Int64(activity.date.timeIntervalSince1970), remote?.updatedAt ?? 0),
                 state: receipt.state == "pending" ? (receipt.threadId == nil ? "unknown" : "starting") : receipt.state,
-                operationId: receipt.id, lastSentAt: max(Int64(activity.date.timeIntervalSince1970), remote?.lastSentAt ?? 0))
+                operationId: receipt.id, lastSentAt: max(Int64(activity.date.timeIntervalSince1970), remote?.lastSentAt ?? 0),
+                access: remote?.access)
             if let index { result[index] = local } else { result.append(local) }
             localDates[local.id] = activity.date
         }

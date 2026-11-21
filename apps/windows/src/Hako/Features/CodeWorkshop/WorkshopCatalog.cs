@@ -201,7 +201,7 @@ internal sealed partial class CodeWorkshop
             sessions[index] = new(row.Id, CodexJson.Clip(name.Length > 0 ? name : preview.Length > 0 ? preview : "未命名会话", 120),
                 row.Application.Id, CodexJson.Text(row.Thread, "cwd"), summary.Preview,
                 CodexJson.Field(row.Thread, "updatedAt").GetInt64(), summary.State, operation?.RootId ?? operation?.Id,
-                summary.CompletionId, row.LastSentAt);
+                summary.CompletionId, row.LastSentAt, ThreadAccess(row.Id));
         });
         var applications = snapshot.Applications.Concat(selected.Rows.Select(row => row.Application)).DistinctBy(value => value.Id).ToArray();
         return new { applications, sessions, nextCursor = selected.NextCursor };
