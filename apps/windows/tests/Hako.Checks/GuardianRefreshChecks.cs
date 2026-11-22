@@ -29,7 +29,7 @@ internal static class GuardianRefreshChecks
                     using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
                     string? line;
                     do { line = await reader.ReadLineAsync(stopping.Token); } while (!string.IsNullOrEmpty(line));
-                    var body = "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.4.0\"}";
+                    var body = "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.5.0\"}";
                     var response = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + Encoding.UTF8.GetByteCount(body) + "\r\nConnection: close\r\n\r\n" + body);
                     await stream.WriteAsync(response, stopping.Token);
                 }

@@ -41,7 +41,7 @@ internal static class GuardianChecks
                         var request = await reader.ReadLineAsync(stopping.Token);
                         while (!string.IsNullOrEmpty(await reader.ReadLineAsync(stopping.Token))) { }
                         var body = request?.StartsWith("GET /api/v1/version ") == true
-                            ? "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.4.0\"}" : "";
+                            ? "{\"serverVersion\":\"" + Version + "\",\"minimumAgentVersion\":\"1.5.0\"}" : "";
                         var bytes = Encoding.ASCII.GetBytes("HTTP/1.1 " + (body.Length > 0 ? "200 OK" : "404 Not Found") +
                             "\r\nContent-Type: application/json\r\nContent-Length: " + body.Length + "\r\nConnection: close\r\n\r\n" + body);
                         await stream.WriteAsync(bytes, stopping.Token);
@@ -81,7 +81,10 @@ internal static class GuardianChecks
         internal string? PreviousVersion(string path)
         {
             var version = Version.Parse(FileVersionInfo.GetVersionInfo(path).ProductVersion!.Split('+')[0]);
-            return path == Target ? new Version(version.Major, version.Minor, version.Build - 1).ToString() : version.ToString();
+            if (path != Target) return version.ToString();
+            return version.Build > 0 ? new Version(version.Major, version.Minor, version.Build - 1).ToString()
+                : version.Minor > 0 ? new Version(version.Major, version.Minor - 1, 0).ToString()
+                : new Version(Math.Max(0, version.Major - 1), 0, 0).ToString();
         }
         internal AgentGuardian.Session? Session => AgentGuardianControl.Read<AgentGuardian.Session>(Path.Combine(Profile, "logs", "agent-session.json"));
         internal static Process Launch(string executable, string[] arguments)
