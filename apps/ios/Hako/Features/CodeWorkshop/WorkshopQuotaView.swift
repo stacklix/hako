@@ -59,14 +59,16 @@ import SwiftUI
     let agent: WorkshopAgent
     @ObservedObject var state: WorkshopQuotaState
     private let scope: String
+    private let stateIdentity: ObjectIdentifier
 
     init(store: WorkshopStore, agent: WorkshopAgent, state: WorkshopQuotaState) {
         self.store = store; self.agent = agent; self.state = state
         scope = store.scope
+        stateIdentity = ObjectIdentifier(state)
     }
 
     nonisolated static func == (left: Self, right: Self) -> Bool {
-        left.store === right.store && left.agent == right.agent && left.state === right.state && left.scope == right.scope
+        left.store === right.store && left.agent == right.agent && left.stateIdentity == right.stateIdentity && left.scope == right.scope
     }
 
     var body: some View {
