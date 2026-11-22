@@ -6,7 +6,7 @@ enum HakoApplications {
 
         var applications: [Application] {
             switch self {
-            case .it: [.headplane, .qinglong, .cloudServers, .containers, .devices, .codeWorkshop]
+            case .it: [.headplane, .router, .qinglong, .cloudServers, .containers, .devices, .codeWorkshop]
             case .finance: [.investment, .crypto]
             case .life: [.sports, .usage]
             }
@@ -18,11 +18,13 @@ enum HakoApplications {
         case containers = "容器管理", devices = "设备管理", sports = "运动记录", usage = "使用时间"
         case investment = "投资记账", crypto = "加密资产"
         case codeWorkshop = "代码工坊"
+        case router = "路由器"
 
         var id: Self { self }
         var subtitle: String {
             switch self {
             case .headplane: "Headplane · 设备 · 路由与访问控制"
+            case .router: "TP-LINK · 接入设备 · IP/MAC 绑定"
             case .qinglong: "定时任务 · 脚本 · 订阅管理"
             case .cloudServers: "阿里云 ECS · 监控 · 进程与终端"
             case .containers: "Arcane · 容器状态 · 日志与更新"
@@ -37,6 +39,7 @@ enum HakoApplications {
         var symbol: String {
             switch self {
             case .headplane: "network"
+            case .router: "wifi.router"
             case .qinglong: "checklist"
             case .cloudServers: "server.rack"
             case .containers: "shippingbox"
@@ -51,6 +54,7 @@ enum HakoApplications {
         @MainActor @ViewBuilder var destination: some View {
             switch self {
             case .headplane: HeadplaneView()
+            case .router: RouterView()
             case .qinglong: QinglongView()
             case .cloudServers: CloudServersView()
             case .containers: ContainersView()

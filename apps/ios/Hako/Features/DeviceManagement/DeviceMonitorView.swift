@@ -5,7 +5,7 @@ struct DeviceMonitorView: View {
         case automatic, device(String)
     }
     private enum Sheet: String, Identifiable {
-        case addAgent, settings
+        case settings
         var id: String { rawValue }
     }
 
@@ -15,9 +15,6 @@ struct DeviceMonitorView: View {
     @State private var selection = Selection.automatic
     @State private var resolvedEntryScope: String?
     @State private var sheet: Sheet?
-    @State private var addingAgentFromSettings = false
-    @State private var editingAgents = false
-    @State private var agentToEdit: ConsoleAgent?
 
     private var scope: String { client.serverURL + "\n" + client.username }
     private var lastAgentID: String? { DeviceAgentHistory.agentID(in: savedLastAgents, scope: scope) }
@@ -66,8 +63,6 @@ struct DeviceMonitorView: View {
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
-            case .addAgent:
-                AddAgentSheet()
             case .settings:
                 settings
             }
@@ -76,15 +71,9 @@ struct DeviceMonitorView: View {
             selection = .automatic
             resolvedEntryScope = nil
             sheet = nil
-            editingAgents = false
-            agentToEdit = nil
-            addingAgentFromSettings = false
         }
-        .onChange(of: sheet) { _, value in
-            if value != .settings { editingAgents = false }
-        }
-        .task(id: "\(scenePhase)-\(sheet == .addAgent)-\(scope)") {
-            guard scenePhase == .active, sheet != .addAgent, !Task.isCancelled else { return }
+        .task(id: "\(scenePhase)-\(scope)") {
+            guard scenePhase == .active, !Task.isCancelled else { return }
             let entryScope = scope
             await client.restore()
             guard !Task.isCancelled, scope == entryScope else { return }
@@ -110,7 +99,7 @@ struct DeviceMonitorView: View {
                 Section {
                     if client.agents.isEmpty {
                         if client.hasFetchedAgents {
-                            Text("暂无登记的设备，点击“添加 Agent”登记设备公钥。").foregroundStyle(.secondary)
+                            Text("暂无登记的设备，请前往主应用“设置 → Agent 管理”添加。").foregroundStyle(.secondary)
                         } else {
                             ContentUnavailableView("暂时无法获取设备", systemImage: "wifi.slash",
                                 description: Text("请检查网络后重试，连接失败不会移除已登记的设备。"))
@@ -125,24 +114,7 @@ struct DeviceMonitorView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if client.agents.isEmpty, client.hasFetchedAgents {
-                        Button { sheet = .addAgent } label: { Label("添加 Agent", systemImage: "plus") }
-                            .disabled(client.busy)
-                            .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
-                    }
-                } header: {
-                    HStack {
-                        Text("设备")
-                        Spacer()
-                        if !client.agents.isEmpty, client.authenticated {
-                            Button { sheet = .addAgent } label: {
-                                Image(systemName: "plus").font(.body.weight(.medium)).frame(minWidth: 44, minHeight: 44)
-                            }
-                            .buttonStyle(.plain).foregroundStyle(.primary)
-                            .accessibilityLabel("添加 Agent").disabled(client.busy)
-                        }
-                    }
-                }
+                } header: { Text("设备") }
             } else {
                 Section("服务器连接") {
                     LabeledContent("账号", value: client.username)
@@ -163,42 +135,17 @@ struct DeviceMonitorView: View {
                         Text(client.hasFetchedAgents ? "暂无登记的设备" : "暂时无法获取设备列表").foregroundStyle(.secondary)
                     }
                     ForEach(client.agents) { agent in
-                        Button {
-                            if editingAgents { agentToEdit = agent }
-                            else { openAgent(agent.id); sheet = nil }
-                        } label: {
-                            HStack(spacing: 8) {
-                                deviceRow(agent, current: !editingAgents && agent.id == selectedAgent?.id)
-                                if editingAgents {
-                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                            .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                        Button { openAgent(agent.id); sheet = nil } label: {
+                            deviceRow(agent, current: agent.id == selectedAgent?.id)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel((editingAgents ? "编辑 " : "切换到 ") + agent.name)
-                        .accessibilityAddTraits(!editingAgents && agent.id == selectedAgent?.id ? .isSelected : [])
+                        .accessibilityLabel("切换到 " + agent.name)
+                        .accessibilityAddTraits(agent.id == selectedAgent?.id ? .isSelected : [])
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     }
-                    Button { addingAgentFromSettings = true } label: {
-                        Label("添加 Agent", systemImage: "plus")
-                    }
-                    .disabled(client.busy || !client.authenticated || client.logoutPending)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
-                } header: {
-                    HStack {
-                        Text("切换 Agent")
-                        Spacer()
-                        Button(editingAgents ? "完成" : "编辑") { editingAgents.toggle() }
-                            .textCase(nil)
-                            .disabled(client.agents.isEmpty || client.busy)
-                            .accessibilityLabel(editingAgents ? "完成编辑 Agent 列表" : "编辑 Agent 列表")
-                    }
-                } footer: {
-                    if editingAgents { Text("点击 Agent 编辑设备信息。") }
+                } header: { Text("切换 Agent") } footer: {
+                    Text("添加和修改 Agent 请前往主应用“设置 → Agent 管理”。")
                 }
                 if let agent = selectedAgent {
                     DeviceDataQueryPermissionSection(client: client, agent: agent)
@@ -218,13 +165,7 @@ struct DeviceMonitorView: View {
                 }
             }
         }
-        .sheet(isPresented: $addingAgentFromSettings) {
-            AddAgentSheet()
-        }
-        .sheet(item: $agentToEdit) { agent in
-            EditAgentSheet(agent: agent)
-                .id(client.requestContext + "\n" + agent.id)
-        }
+
     }
 
     private var about: some View {

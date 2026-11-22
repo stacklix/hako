@@ -110,6 +110,13 @@ struct CodeWorkshopView: View {
                             Text("此电脑的 Agent 尚不支持代码工坊，请更新 Windows Agent 后重新连接。")
                                 .font(.subheadline).foregroundStyle(HakoStyle.muted)
                         } else {
+                            VStack(alignment:.leading,spacing:10) {
+                                Text("Codex 额度").font(.subheadline.weight(.semibold))
+                                WorkshopQuotaView(store:store,agent:agent,active:conversation == nil && !creating && !settingsPresented)
+                                    .id(agent.id)
+                            }
+                            .padding(14).frame(maxWidth:.infinity,alignment:.leading)
+                            .background(HakoStyle.card,in:RoundedRectangle(cornerRadius:12))
                             VStack(alignment: .leading, spacing: 4) {
                                 applicationTabs
                                 HStack {

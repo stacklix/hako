@@ -31,9 +31,13 @@ import Foundation
             if failedCalls < 3 { throw HakoError(message: "offline") }
             return "recovered"
         }
+        precondition(registry.registeredTaskNames == ["A", "B", "Skip"])
+        precondition(successfulCalls == 0 && failedCalls == 0 && skipCalls == 0,
+                     "Reading the task catalog must not execute callbacks")
         do { _ = try await registry.runCallbacks(title: "同步 Hako 数据"); preconditionFailure("Failure was ignored") }
         catch {}
         let id = history.runs[0].id
+        precondition(history.runs[0].triggerSource == .shortcuts)
         let failedStep = history.runs[0].steps.first { $0.name == "B" }!
         precondition(failedStep.message?.contains("offline") == true && failedStep.finishedAt != nil)
         precondition(failedStep.events?.contains { $0.stage == "读取服务端登录会话" } == true)
@@ -45,6 +49,8 @@ import Foundation
         _ = try await registry.retryRun(id)
         precondition(history.runs.count == 1 && history.runs[0].id == id)
         precondition(history.runs[0].status == .succeeded && history.runs[0].finishedAt != nil)
+        precondition(history.runs[0].triggerSource == .shortcuts, "Retry must retain the original trigger source")
+        precondition(history.runs[0].lastRetrySource == .manual)
         precondition(history.runs[0].steps.count == 3 && history.runs[0].steps.allSatisfy { [.succeeded, .skipped].contains($0.status) })
         precondition(successfulCalls == 1 && failedCalls == 3, "Successful steps must not run again")
         precondition(executionModes == [false, true, true], "Explicit retries must run as manual executions")
@@ -57,6 +63,8 @@ import Foundation
         precondition(!String(decoding: persisted, as: UTF8.self).contains("fake-secret-456"))
         let restored = HakoShortcutHistory(fileURL: file)
         precondition(restored.runs[0].status == .succeeded && restored.runs[0].steps.count == 3)
+        precondition(restored.runs[0].triggerSource == .shortcuts && restored.runs[0].lastRetrySource == .manual)
+        precondition(step.events?.contains { $0.stage == "触发来源" && $0.detail == "App 内触发（重试）" } == true)
         precondition(restored.runs[0].steps.first { $0.name == "B" }?.events?.count == step.events?.count)
         do { _ = try await registry.retryRun(id); preconditionFailure("Successful run was retried") }
         catch {}
@@ -72,7 +80,9 @@ import Foundation
             return "ok"
         }
         _ = try await registry.runCallbacks(title: "Manual backup", names: ["Manual"], manual: true)
+        precondition(history.runs[0].triggerSource == .manual)
         _ = try await registry.runCallbacks(title: "Scheduled backup", names: ["Manual"])
+        precondition(history.runs[0].triggerSource == .shortcuts, "Do not assume external shortcuts are automatic")
         precondition(manualModes == [true, false], "Manual execution affected a later scheduled run")
         var reported: [Int] = []
         _ = try await registry.runCallbacks(title: "Progress", names: ["Manual"], progress: { task, stage, completed, total in

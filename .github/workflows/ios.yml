@@ -31,6 +31,8 @@ jobs:
           python3 -m unittest discover -s Tests -p 'test_*.py'
           swiftc Hako/App/Updates/AppUpdateRelease.swift Tests/AppUpdateReleaseTests.swift -o /tmp/hako-app-update-tests
           /tmp/hako-app-update-tests
+          swiftc Hako/Shared/Infrastructure/TaskProgress.swift Tests/TaskProgressTests.swift -o /tmp/hako-task-progress-tests
+          /tmp/hako-task-progress-tests
           swiftc Hako/Shared/Navigation/HakoPinnedPage.swift Tests/HakoPinnedPageTests.swift -o /tmp/hako-pin-tests
           /tmp/hako-pin-tests
           swiftc Hako/Shared/Navigation/HakoPinDrag.swift Tests/HakoPinDragTests.swift -o /tmp/hako-pin-drag-tests
@@ -80,6 +82,8 @@ jobs:
           swiftc Hako/Features/CodeWorkshop/WorkshopCommandModels.swift Hako/Features/CodeWorkshop/WorkshopQuickPrompts.swift Tests/WorkshopCommandTests.swift -o /tmp/hako-workshop-command-tests
           /tmp/hako-workshop-command-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopModels.swift Tests/WorkshopModelTests.swift -o /tmp/hako-workshop-tests
+          swiftc Hako/Features/CodeWorkshop/WorkshopQuota.swift Tests/WorkshopQuotaTests.swift -o /tmp/hako-workshop-quota-tests
+          /tmp/hako-workshop-quota-tests
           swiftc Hako/Features/CodeWorkshop/WorkshopMessage.swift Tests/WorkshopMessageTests.swift -o /tmp/hako-workshop-message-tests
           /tmp/hako-workshop-message-tests
           /tmp/hako-workshop-tests
@@ -143,6 +147,10 @@ jobs:
         run: |
           swiftc Hako/App/HakoApplicationOrder.swift Tests/HakoApplicationOrderTests.swift -o /tmp/hako-application-order-tests
           /tmp/hako-application-order-tests
+      - name: Test TP-LINK router protocol and transport
+        run: |
+          swiftc Hako/Features/Router/RouterProtocol.swift Hako/Features/Router/RouterResources.swift Hako/Features/Router/RouterChanges.swift Hako/Features/Router/RouterClient.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Tests/RouterTests.swift -o /tmp/hako-router-tests
+          /tmp/hako-router-tests
       - name: Test iCloud recovery policies
         run: |
           swiftc Hako/Shared/Infrastructure/CloudPreferenceState.swift Hako/Shared/Infrastructure/HakoBackupPolicy.swift Hako/Features/CodeWorkshop/WorkshopBackup.swift Hako/Features/Investment/InvestmentBackup.swift Hako/Features/Qinglong/QinglongBackup.swift Tests/CloudRecoveryPolicyTests.swift -o /tmp/hako-cloud-recovery-tests
@@ -177,6 +185,12 @@ jobs:
           /tmp/hako-core-tests
           swiftc Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/SecureStorage.swift -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/HakoError.swift Hako/Features/Usage/UsageModels.swift Hako/Shared/Infrastructure/CSV.swift Hako/Features/Usage/UsageCSV.swift Hako/Shared/GitHub/GitHubSettings.swift Hako/Shared/GitHub/GitHubTokenStore.swift Hako/Shared/GitHub/GitHubRepository.swift Hako/Shared/GitHub/GitHubService.swift Hako/Features/Usage/UsageGitHub.swift Hako/Features/Usage/UsageSync.swift Hako/App/Updates/BuildStatus.swift Tests/GitHubTests.swift -o /tmp/hako-github-tests
           /tmp/hako-github-tests
+      - name: Test HTTP proxy request and response envelopes
+        run: |
+          swiftc Hako/Shared/Infrastructure/HakoHTTPProxy.swift Tests/HTTPProxyTests.swift -o /tmp/hako-http-proxy-tests
+          /tmp/hako-http-proxy-tests
+          swiftc Hako/Shared/Infrastructure/HakoHTTPProxy.swift Hako/Shared/HakoServer/HakoProxyURLProtocol.swift Tests/HTTPProxyProtocolTests.swift -o /tmp/hako-http-proxy-protocol-tests
+          /tmp/hako-http-proxy-protocol-tests
       - name: Test sports records, timestamps and annual GitHub synchronization
         run: |
           swiftc Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/Infrastructure/CSV.swift Hako/Features/Sports/SportsModels.swift Tests/SportsTests.swift -o /tmp/hako-sports-tests

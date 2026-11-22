@@ -3,8 +3,14 @@ import Combine
 
 @MainActor final class CryptoStore: ObservableObject {
     static let shared = CryptoStore()
-    private var running: Task<Void, Never>?
+    private struct RefreshOutcome: Sendable {
+        let failure: String?
+        let summary: String
+        let sourceCount: Int
+    }
+    private var running: Task<RefreshOutcome, Never>?
     private var runningSyncs = false
+    private var runningForced = false
     private var synchronizationResult = "本机缓存已同步到 GitHub。"
     private let repositoryProvider: () -> any GitHubRepositoryAccess
     private let client: CryptoClient
@@ -30,27 +36,49 @@ import Combine
         catch { message=error.localizedDescription }
     }
     // Collection updates the published cache; explicit synchronization never queries asset APIs.
-    func collect(force: Bool = false) async { await run(sync:false,force:force) }
+    func collect(force: Bool = false) async { _ = await run(sync:false,force:force) }
     var assetsExpired: Bool { !CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:nowProvider()) }
     var pricesExpired: Bool { !CryptoSyncPolicy.canReusePrices(updatedAt:cache.pricesUpdatedAt,now:nowProvider()) }
     func trigger() async -> String {
-        await run(sync:true)
-        return message ?? synchronizationResult
+        let result = await run(sync:true)
+        return result.failure ?? result.summary
     }
-    private func run(sync: Bool, force: Bool = false) async {
-        if let running {
-            let satisfies = sync == runningSyncs
-            await HakoExecutionDiagnostics.measure("等待当前资产任务", success: { _ in "当前资产任务已结束。" }) { await running.value }
-            if !satisfies { await run(sync:sync,force:force) }
-            return
+    func collectAndSynchronize() async throws -> String {
+        try await HakoExecutionDiagnostics.measure("采集交易所与链上资产", success: { _ in "最新资产已采集并保存到本机。" }) {
+            let result = await run(sync:false,force:true)
+            try Task.checkCancellation()
+            if let failure = result.failure { throw HakoError(message: failure) }
+            guard result.sourceCount > 0 else {
+                throw HakoError(message:"尚未配置资产来源，请先设置交易所 API 或观察地址。")
+            }
         }
-        runningSyncs=sync
+        let summary = try await HakoExecutionDiagnostics.measure("同步最新资产记录", success: { $0 }) {
+            let result = await run(sync:true)
+            try Task.checkCancellation()
+            if let failure = result.failure { throw HakoError(message: failure) }
+            return result.summary
+        }
+        return "最新资产已采集并保存到本机。\n" + summary
+    }
+    private func run(sync: Bool, force: Bool = false) async -> RefreshOutcome {
+        if let running {
+            let satisfies = sync == runningSyncs && (!force || runningForced)
+            let result = await HakoExecutionDiagnostics.measure("等待当前资产任务", success: { _ in "当前资产任务已结束。" }) { await running.value }
+            if !satisfies && !Task.isCancelled { return await run(sync:sync,force:force) }
+            return result
+        }
+        runningSyncs=sync;runningForced=force
         let task=Task {
             await self.refresh(sync:sync,force:force)
-            self.running=nil;self.runningSyncs=false
+            let detailFailure = !sync && self.htxDetailsNeedRetry
+                ? "HTX 分账户资产未读取完整：\n" + (self.htxSnapshot?.errors.joined(separator:"\n") ?? "") : nil
+            let result = RefreshOutcome(failure: self.message ?? detailFailure, summary: self.synchronizationResult,
+                sourceCount: (self.htxConfigured ? 1 : 0) + (self.binanceConfigured ? 1 : 0) + self.wallets.count)
+            self.running=nil;self.runningSyncs=false;self.runningForced=false
+            return result
         }
         running=task
-        await task.value
+        return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
     struct Cache: Codable {
         var records: [CryptoRecord] = []
@@ -175,6 +203,7 @@ import Combine
             busy=false
         }
         do {
+            try Task.checkCancellation()
             let repository=repositoryProvider()
             try HakoExecutionDiagnostics.measure("读取本机资产缓存", success: { _ in
                 "已加载 \(self.cache.records.count) 条资产记录，待同步 \(self.cache.pending.count) 条。"
@@ -184,7 +213,7 @@ import Combine
             scope=CryptoDay.hash(htx.key+"|"+binance.key+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
             var errors:[String]=[]
             if sync {
-                HakoExecutionDiagnostics.record("资产采集范围", detail: "本次只同步本机缓存，未请求交易所或链上资产。")
+                HakoExecutionDiagnostics.record("同步资产日记录", detail: "将本机已保存的日记录与 GitHub 归档合并。")
                 try await synchronize(repository)
                 return
             }
@@ -200,6 +229,7 @@ import Combine
                 do { try await rebuildArchiveCache(repository) }
                 catch { errors.append("GitHub 历史缓存："+error.localizedDescription) }
             }
+            try Task.checkCancellation()
             // Inspect local records first. Network requests are derived only from this missing-data plan.
             let contractRequests: [(day:Date,fields:Set<String>)] = htx.configured
                 ? CryptoSyncPolicy.recentContractDays(now:now).compactMap { day in
@@ -223,6 +253,7 @@ import Combine
                 } catch { currentResult = .failure(error);errors.append("今日 TRX 合约："+error.localizedDescription) }
                 try await refreshHTXDetails(htx,now:now,force:force)
             } else { HakoExecutionDiagnostics.record("HTX 资产来源", detail: "未配置，未请求交易所。") }
+            try Task.checkCancellation()
             if binance.configured {
                 binanceError=nil
                 do {
@@ -246,6 +277,7 @@ import Combine
             walletErrors=[:]
             if wallets.isEmpty { HakoExecutionDiagnostics.record("链上资产来源", detail: "未配置观察地址，未请求链上资产。") }
             for (index, wallet) in wallets.enumerated() {
+                try Task.checkCancellation()
                 do {
                     let snapshot=try await HakoExecutionDiagnostics.measure("读取链上钱包 \(index + 1)", success: {
                         "已读取 \($0.assets.count) 项链上资产。"
@@ -264,6 +296,7 @@ import Combine
                 }
             }
             if !wallets.isEmpty && chainComplete { totals["chain"]=chain }
+            try Task.checkCancellation()
             let complete=(!htx.configured || totals["htx"] != nil) && (!binance.configured || totals["binance"] != nil) && chainComplete
             if complete && !totals.isEmpty {
                 totals["total"]=totals.values.reduce(0,+)
@@ -277,6 +310,7 @@ import Combine
                 !htx.configured ? "未配置 HTX，未读取合约历史。" : contractRequests.isEmpty ? "历史记录完整，无需补充。" : "已检查 \(contractRequests.count) 天的缺失字段。"
             }) { try await client.contractHistory(htx,now:now,requests:contractRequests,current:currentResult) }
             for request in contractRequests {
+                try Task.checkCancellation()
                 do {
                     let result=try await HakoExecutionDiagnostics.measure("补充合约记录 · \(CryptoDay.key(request.day))", success: {
                         $0.errors.isEmpty ? "缺失字段已检查并补充。" : "部分字段未完成：" + $0.errors.joined(separator: "；")
@@ -387,6 +421,7 @@ import Combine
     }
     private func synchronize(_ repository: any GitHubRepositoryAccess) async throws {
         for attempt in 0..<3 {
+            try Task.checkCancellation()
             let archive=try await HakoExecutionDiagnostics.measure("读取 GitHub 资产归档", success: {
                 "已读取 \($0.records.count) 条归档记录。"
             }) { try await readArchive(repository) }
@@ -423,6 +458,7 @@ import Combine
             try HakoExecutionDiagnostics.measure("合并并保存待同步记录", success: { _ in
                 "合并后共 \(value.records.count) 条，待同步 \(value.pending.count) 条，涉及 \(files.count) 个年度文件。"
             }) { try persist(value) }
+            try Task.checkCancellation()
             let result=try await HakoExecutionDiagnostics.measure("同步 GitHub 年度文件", success: { result in
                 switch result {
                 case .committed: "已提交 \(value.pending.count) 条记录，更新 \(files.count) 个年度文件。"

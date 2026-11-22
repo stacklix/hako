@@ -2,6 +2,17 @@ import Combine
 import Foundation
 
 struct HakoShortcutRun: Codable, Identifiable {
+    enum TriggerSource: String, Codable, Sendable {
+        case manual, shortcuts
+
+        var title: String {
+            switch self {
+            case .manual: "App 内触发"
+            case .shortcuts: "快捷指令触发"
+            }
+        }
+    }
+
     enum Status: String, Codable {
         case pending = "待执行", running = "执行中", succeeded = "成功", failed = "失败", cancelled = "已取消", interrupted = "已中断", skipped = "已跳过"
 
@@ -26,6 +37,8 @@ struct HakoShortcutRun: Codable, Identifiable {
     var finishedAt: Date? = nil
     var status: Status = .running
     var steps: [Step] = []
+    var triggerSource: TriggerSource? = nil
+    var lastRetrySource: TriggerSource? = nil
 }
 
 @MainActor final class HakoShortcutHistory: ObservableObject {
@@ -58,9 +71,9 @@ struct HakoShortcutRun: Codable, Identifiable {
         }
     }
 
-    func start(_ name: String, steps: [String] = []) -> UUID {
+    func start(_ name: String, steps: [String] = [], source: HakoShortcutRun.TriggerSource? = nil) -> UUID {
         let run = HakoShortcutRun(id: UUID(), name: name, startedAt: .now,
-                                  steps: steps.map { HakoShortcutRun.Step(name: $0, status: .pending) })
+                                  steps: steps.map { HakoShortcutRun.Step(name: $0, status: .pending) }, triggerSource: source)
         runs.insert(run, at: 0)
         if runs.count > Self.capacity { runs.removeLast() }
         save()
@@ -107,6 +120,7 @@ struct HakoShortcutRun: Codable, Identifiable {
               let index = runs.firstIndex(where: { $0.id == id }), runs[index].status.canRetry else { return false }
         runs[index].status = .running
         runs[index].finishedAt = nil
+        runs[index].lastRetrySource = .manual
         save()
         return true
     }

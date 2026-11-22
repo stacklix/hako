@@ -123,7 +123,8 @@ private struct CryptoDataExplanationView: View {
             Section("Binance 币种与股票") {
                 explanation("持有金额","合并币种的可用、锁定、冻结和提现中数量，只展示合计，不单独展示各组成部分。")
                 explanation("币种单价与折值","USDT 单价为 1。其他币种优先使用 Binance 对 USDT 的现货价格，没有直接交易对时尝试通过 BTC、ETH、BNB、USDC 或 FDUSD 换算；折值为持有数量乘单价。")
-                explanation("EQ_ 股票","去掉 EQ_ 前缀后查询 Binance 股票行情，取买卖报价中间值作为美元单价；USD 与 USDT 按 1:1 计算，折值为缓存持股数量乘最新单价。报价缓存 1 小时且仅限同一自然日；失败保留上次报价，无历史报价时显示 —。")
+                explanation("Stock 股票","Funding 中 EQ 开头的持仓单独列为 Stock，金额从 Funding 中扣除；缺少股票报价时分类金额显示 —，不当作零。去掉 EQ 及其后的下划线查询股票行情，取买卖报价中间值作为美元单价；USD 与 USDT 按 1:1 计算。报价缓存 1 小时且仅限同一自然日。")
+                explanation("图表与分布","Binance 页面可切换资产和图表。资产总额使用每日余额，缺失日期不连线。分布使用最新持仓快照，包含小额资产；点击扇区或行内容只高亮，点击右侧箭头查看每项资产的分类内占比和总资产占比。")
                 explanation("明细筛选","隐藏折算绝对值不足 1 USDT 的币种及没有可展示币种的资产类型。无法估值的非零持仓继续显示。")
             }
             Section("链上资产范围") {

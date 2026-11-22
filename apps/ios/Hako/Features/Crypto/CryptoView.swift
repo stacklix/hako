@@ -230,6 +230,7 @@ struct CryptoView: View {
     @State private var collecting = true
     @State private var contractTableWidth: CGFloat = 0
     @State private var expandedBinanceAccount: CryptoBinanceAccount.ID?
+    @State private var binanceCharts=false
     @State private var expandedHTXGroup: CryptoHTXSnapshot.Group?
     private var latest: CryptoRecord? { store.portfolio.last }
     private var showingHTXAssets: Bool { tab == .htx && !trends }
@@ -284,8 +285,14 @@ struct CryptoView: View {
                         recentContractTable
                     }
                 } else if tab == .binance {
-                    amountPanel("Binance 总资产",value:store.binanceSnapshot?.total ?? latest?.values["binance"])
-                    binanceDetails
+                    Picker("Binance 页面",selection:$binanceCharts) { Text("资产").tag(false);Text("图表").tag(true) }
+                        .pickerStyle(.segmented)
+                    if binanceCharts {
+                        CryptoBinanceAnalyticsView(records:store.portfolio,snapshot:store.binanceSnapshot)
+                    } else {
+                        amountPanel("Binance 总资产",value:store.binanceSnapshot?.total ?? latest?.values["binance"])
+                        binanceDetails
+                    }
                 } else {
                     amountPanel("链上资产",value:store.chainTotal)
                     CryptoChainAssetsView(store:store)
@@ -409,7 +416,9 @@ struct CryptoView: View {
             if let snapshot=store.binanceSnapshot {
                 Text("余额更新于："+snapshot.sampledAt.formatted(date:.numeric,time:.standard))
                     .font(.caption).foregroundStyle(.secondary)
-                let accounts = snapshot.visibleAccounts
+                let accounts = CryptoBinanceCategory.categories(snapshot).filter {
+                    $0.assets?.contains(where:{ $0.isVisible || $0.isStock && $0.quantity != 0 }) == true
+                }
                 let hasUnavailableDetails = snapshot.accounts.contains { $0.assets == nil && $0.balance != 0 }
                 if accounts.isEmpty && !hasUnavailableDetails {
                     Text("暂无账户资产").font(.subheadline).foregroundStyle(.secondary)
@@ -426,8 +435,8 @@ struct CryptoView: View {
                     Text("部分账户暂未返回币种明细，其估值仍计入总资产。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if accounts.contains(where: { $0.visibleAssets?.contains(where: { $0.equitySymbol != nil }) == true }) {
-                    Text("股票单价采用买卖报价中间值；USD 与 USDT 按 1:1 计算折值。")
+                if accounts.contains(where: \.isStock) {
+                    Text("Funding 中 EQ 开头的股票单独列为 Stock，不重复计入 Funding。股票单价采用买卖报价中间值；USD 与 USDT 按 1:1 计算折值。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
@@ -505,10 +514,12 @@ struct CryptoView: View {
         }
     }
 
-    private func binanceAccountRow(_ account: CryptoBinanceAccount) -> some View {
-        let assets = account.visibleAssets ?? []
+    private func binanceAccountRow(_ account: CryptoBinanceCategory) -> some View {
+        let assets = account.assets?.filter { $0.isVisible || $0.isStock && $0.quantity != 0 } ?? []
         let expanded = expandedBinanceAccount == account.id
-        return assetAccountRow(title:account.name,subtitle:"\(assets.count) 个币种",value:account.currentBalance,unit:"USDT",expanded:expanded) {
+        let subtitle=account.isStock ? "\(assets.count) 只股票 · 来自 \(account.source)" : "\(assets.count) 个币种"
+        return assetAccountRow(title:account.name,subtitle:subtitle,value:account.value,unit:"USDT",expanded:expanded,
+                               systemImage:account.isStock ? "chart.xyaxis.line" : "wallet.bifold") {
             expandedBinanceAccount = expanded ? nil : account.id
         } details: {
             ForEach(assets) { asset in
@@ -519,11 +530,12 @@ struct CryptoView: View {
     }
 
     private func assetAccountRow<Details: View>(title: String, subtitle: String, value: Double?, unit: String, expanded: Bool,
+                                                systemImage: String = "wallet.bifold",
                                                 toggle: @escaping () -> Void, @ViewBuilder details: () -> Details) -> some View {
         VStack(alignment:.leading,spacing:0) {
             Button(action:toggle) {
                 HStack(spacing:10) {
-                    Image(systemName:"wallet.bifold").frame(width:22).accessibilityHidden(true)
+                    Image(systemName:systemImage).frame(width:22).accessibilityHidden(true)
                     VStack(alignment:.leading,spacing:4) {
                         Text(title).font(.subheadline.weight(.semibold))
                         Text(subtitle).font(.caption).foregroundStyle(.secondary)
@@ -555,7 +567,7 @@ struct CryptoView: View {
     }
 
     private func binanceAssetRow(_ asset: CryptoBinanceAsset) -> some View {
-        let isStock = asset.equitySymbol != nil
+        let isStock = asset.isStock
         let unitPrice = asset.price.map { String(format:"%.2f",$0) }
         return exchangeAssetRow(symbol:asset.symbol,quantity:asset.quantity,unit:isStock ? "股" : asset.symbol,value:asset.usdtValue) {
             if asset.name != asset.symbol { Text(asset.name).font(.caption).foregroundStyle(.secondary) }

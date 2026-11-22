@@ -1,0 +1,36 @@
+import Foundation
+
+@main struct WorkshopQuotaTests {
+    static func main() throws {
+        let now=Date(timeIntervalSince1970:1_800_000_000)
+        let window=WorkshopQuotaWindow(usedPercent:27.5,windowDurationMins:300,resetsAt:now.timeIntervalSince1970+3661)
+        precondition(window.remaining(at:now) == 72.5 && window.periodLabel(primary:true) == "5小时")
+        precondition(window.countdown(at:now) == "1小时1分后重置")
+        precondition(window.countdown(at:now.addingTimeInterval(3660)) == "1秒后重置")
+        precondition(window.remaining(at:now.addingTimeInterval(3661)) == nil,"an elapsed timer does not prove quota recovery")
+        precondition(window.countdown(at:now.addingTimeInterval(3661)) == "等待刷新额度")
+        let unknown=WorkshopQuotaWindow(usedPercent:0,windowDurationMins:nil,resetsAt:nil)
+        precondition(unknown.periodLabel(primary:false) == "次周期" && unknown.countdown(at:now) == "重置时间未知")
+        precondition(WorkshopQuotaWindow(usedPercent:120,windowDurationMins:10080,resetsAt:nil).remaining(at:now) == 0)
+        precondition(WorkshopQuotaWindow(usedPercent: -1,windowDurationMins:60,resetsAt:nil).remaining(at:now) == nil)
+        precondition(WorkshopQuotaWindow(usedPercent:Double.nan,windowDurationMins:60,resetsAt:nil).remaining(at:now) == nil)
+        precondition(WorkshopQuotaWindow(usedPercent:1,windowDurationMins:10080,resetsAt:nil).periodLabel(primary:false) == "1周")
+        let data=Data(#"{"checkedAt":1800000000,"buckets":[{"id":"codex","name":"","model":"","primary":{"usedPercent":27.5,"windowDurationMins":300,"resetsAt":1800003661},"secondary":null},{"id":"other","name":"Other model","model":"other-model","primary":null,"secondary":{"usedPercent":1,"windowDurationMins":10080,"resetsAt":null}}]}"#.utf8)
+        let snapshot=try JSONDecoder().decode(WorkshopQuotaSnapshot.self,from:data)
+        precondition(snapshot.buckets[0].title == "Codex" && snapshot.buckets[1].title == "Other model")
+        precondition(snapshot.displayBuckets(model:"other-model").map(\.id) == ["codex","other"],"model quota must not hide shared account quota")
+        precondition(snapshot.displayBuckets(model:"unmetered-model").count == 2)
+        let entry=WorkshopQuotaCacheEntry(value:snapshot,cachedAt:now)
+        precondition(entry.snapshot(at:now)?.buckets[0].primary?.usedPercent == 27.5)
+        precondition(entry.snapshot(at:now.addingTimeInterval(3599.999)) != nil,"keep the last response while refreshing within one hour")
+        precondition(entry.snapshot(at:now.addingTimeInterval(3600)) == nil,"expire at exactly one hour even if refresh is still running")
+        precondition(entry.snapshot(at:now.addingTimeInterval(-1)) == nil,"a clock rollback cannot extend the cache")
+        let reopened=try JSONDecoder().decode(WorkshopQuotaCacheEntry.self,from:JSONEncoder().encode(entry))
+        precondition(reopened.snapshot(at:now.addingTimeInterval(1800))?.buckets[0].primary?.usedPercent == 27.5,"reopening preserves the last successful response")
+        precondition(reopened.snapshot(at:now.addingTimeInterval(3601)) == nil,"reading persisted data must not renew its lifetime")
+        precondition(reopened.cachedAt == now,"failed refreshes do not update the successful fetch time")
+        let refreshed=WorkshopQuotaCacheEntry(value:snapshot,cachedAt:now.addingTimeInterval(3600))
+        precondition(refreshed.snapshot(at:now.addingTimeInterval(3601)) != nil,"only a successful new response renews the cache")
+        print("Workshop quota: decoding, countdown, invalid values, persisted cache and strict one-hour expiration passed")
+    }
+}

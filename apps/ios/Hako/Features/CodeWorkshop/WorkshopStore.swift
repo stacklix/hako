@@ -233,6 +233,27 @@ import CryptoKit
     private var readStateFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("read.json") }
     private var computerCatalogFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("workshop-computers.json") }
 
+    private func quotaCacheFile(for agentID: String) -> URL {
+        let digest = SHA256.hash(data: Data(agentID.utf8)).map { String(format: "%02x", $0) }.joined()
+        return cacheFile.deletingPathExtension().appendingPathExtension("quota")
+            .appendingPathComponent(digest + ".json")
+    }
+
+    func cachedQuota(for agentID: String, at now: Date = .now) -> WorkshopQuotaCacheEntry? {
+        let file = quotaCacheFile(for: agentID)
+        guard let entry = try? stateDisk.read(WorkshopQuotaCacheEntry.self, from: file) else { return nil }
+        guard entry.snapshot(at: now) != nil else {
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        }
+        return entry
+    }
+
+    func cacheQuota(_ entry: WorkshopQuotaCacheEntry, for agentID: String) {
+        // Quota is disposable metadata; a disk failure must not affect the live result or conversation.
+        try? stateDisk.write(entry, to: quotaCacheFile(for: agentID))
+    }
+
     var settingsAccount: String {
         WorkshopCacheIdentity.account(serverURL: authentication.serverURL, username: authentication.username)
     }
@@ -919,9 +940,8 @@ import CryptoKit
         guard authenticated else { throw HakoError(message: "请先在 Hako 设置中登录服务器。") }
         let body: [String: Any] = ["method": method, "params": params]
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw HakoError(message: "消息过长，请分段发送。") }
-        // Shortcut commands use a separate Agent channel, so they cannot verify
-        // the conversation's connection.
-        let tracksConversation = !method.hasPrefix("commands.")
+        // Command and account metadata reads cannot verify the conversation's connection.
+        let tracksConversation = !method.hasPrefix("commands.") && !method.hasPrefix("account.")
         if tracksConversation { connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest }
         do {
             let data = try await requests(for: agent.id).send(method, computerID: agent.id, params: params)

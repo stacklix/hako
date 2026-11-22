@@ -1,5 +1,9 @@
 # 代码工坊
 
+代码工坊主页在电脑选择区下方显示当前所选电脑登录的 Codex 账号额度，包括各周期的剩余百分比和重置倒计时；切换电脑后重新读取对应账号，不显示在单个会话中。iOS 在主页前台期间每分钟异步读取 `account.limits.read`，并在重置时间到达后重新查询；离开主页或进入后台时暂停，返回时立即刷新。成功响应按服务器账号和电脑分别缓存在本地，重新进入主页、应用重启和刷新期间先显示上次数据；从成功收到响应起最多保留 1 小时，读取缓存和刷新失败不会延长有效期，超时后停止显示旧额度。倒计时按秒更新，归零只表示需要核对新额度，不自动把剩余量恢复为 100%。缺少有效缓存或读取失败时显示不可用或未更新，可点击重试；额度读取独立于会话发送和连接状态。
+
+Agent 使用只读的 Codex `account/rateLimits/read`，将当前接口提供的多额度桶或单额度视图规范为 `buckets`（`id`、`name`、`model`、`primary`、`secondary`）及 `checkedAt`。周期保留 `usedPercent`、可空的 `windowDurationMins` 和 Unix 秒 `resetsAt`；不返回账号标识、凭据或充值信息。服务端沿用工坊通用透传，不解释额度业务。
+
 代码工坊通过 Windows 应用中的独立工坊服务使用本机 Codex CLI App Server。它拥有独立的 hako.workshop/1 协议、WebSocket 连接、请求池和在线状态，不借用设备监控协议或 Agent 连接。账号登录和已登记的电脑公钥仍由 Hako 主应用管理。电脑需要在当前 Windows 用户下安装并登录 Codex CLI。
 
 当前按 Codex CLI 0.164.0 的本机协议验证。含后台任务通知的工坊需要服务端 0.2.1、Windows 1.1.1 和 iOS 0.2.1，三端需协同升级，不回退到设备监控通道。
@@ -122,6 +126,7 @@ Agent `1.4.16` 起提供 `files.list`、`files.modified`、`files.read` 和 `fil
 | `applications.list` | 应用列表和分页会话，`archived: true` 查看已归档会话 |
 | `thread.archive` | 按 `threadId` 和 `archived` 归档或取消归档会话 |
 | `models.list` | 本机 Codex 模型列表及图片输入能力 |
+| `account.limits.read` | 当前 Codex 账号剩余额度与各周期重置时间，参数固定为 `{}` |
 | `image.upload` | 原有 JSON 分片上传接口 |
 | `image.upload.begin` | 初始化或查询二进制上传的持久化进度、最终校验状态 |
 | `image.upload.binary` | Agent 内部接收二进制分片，校验后落盘；云端透明转发载荷 |

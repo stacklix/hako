@@ -40,7 +40,7 @@ public sealed class AgentProfile
 
 public static class CliWire
 {
-    public const int MaximumFrameBytes = 65536;
+    public const int MaximumFrameBytes = 12 * 1024 * 1024;
     public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

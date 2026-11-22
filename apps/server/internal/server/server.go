@@ -198,6 +198,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	limit := int64(16 * 1024)
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/requests") &&
+		(strings.HasPrefix(r.URL.Path, "/api/v1/agents/") || strings.HasPrefix(r.URL.Path, "/consilium/api/agents/")) {
+		limit = agent.MaxRequestBytes
+	}
 	if r.Method == http.MethodPut && r.URL.Path == "/api/v1/investment/book" {
 		limit = 32 * 1024 * 1024
 	}

@@ -96,7 +96,10 @@ internal static class ServiceMonitorChecks
             await File.WriteAllTextAsync(registry, new string(' ', 256 * 1024 + 1));
             await ExpectError("registry_invalid", async () => await monitor.ReadAsync(default));
             var marker = Path.Combine(directory, "launches.txt");
-            var command = "Add-Content -LiteralPath '" + marker.Replace("'", "''") + "' -Value launched\nStart-Sleep -Milliseconds 900";
+            var release = Path.Combine(directory, "release-startup.txt");
+            var command = "Add-Content -LiteralPath '" + marker.Replace("'", "''") + "' -Value launched\n"
+                + "$fixtureDeadline = [DateTime]::UtcNow.AddSeconds(30)\nwhile (!(Test-Path -LiteralPath '" + release.Replace("'", "''")
+                + "') -and [DateTime]::UtcNow -lt $fixtureDeadline) { Start-Sleep -Milliseconds 50 }";
             await Registry([new { name = "launch", port = 8100, startCommand = command, workingDirectory = directory }]);
             listeners = new(now, [], []);
             using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
@@ -108,6 +111,7 @@ internal static class ServiceMonitorChecks
             if (reply.State != "starting") throw new Exception("Launch did not return submitted state");
             var repeated = await monitor.StartAsync(JsonSerializer.SerializeToElement(new { name = "launch", requestId = Guid.NewGuid().ToString("D") }), default);
             if (repeated.State != "starting") throw new Exception("Concurrent start was not deduplicated");
+            await File.WriteAllTextAsync(release, "release");
             var deadline = DateTime.UtcNow.AddSeconds(10);
             while (DateTime.UtcNow < deadline && (await monitor.ReadAsync(default)).Services[0].Startup?.State == "starting") await Task.Delay(100);
             var complete = (await monitor.ReadAsync(default)).Services[0];
@@ -118,6 +122,17 @@ internal static class ServiceMonitorChecks
                 throw new Exception("A replay after Agent restart executed the command twice");
             var scope = Directory.GetDirectories(startup).Single();
             var latest = Directory.GetFiles(scope, "service-*.json").Single();
+            // A completion receipt is written before PowerShell itself exits. Wait for
+            // the actual process exit before exercising recovery without that receipt.
+            using (var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(latest)))
+            {
+                try
+                {
+                    using var launched = System.Diagnostics.Process.GetProcessById(receipt.RootElement.GetProperty("processId").GetInt32());
+                    await launched.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                catch (ArgumentException) { }
+            }
             File.Delete(Path.Combine(scope, requestID + ".exit"));
             var recovered = (await monitor.ReadAsync(default)).Services[0];
             if (recovered.Startup?.State != "exited" || !recovered.CanStart)

@@ -331,7 +331,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
             (data, response) = try await HakoExecutionDiagnostics.measure("发送请求 \(method) \(url.path)") {
                 try await HTTPTransport.data(for: request, using: transport, source: logSource,
                                              secrets: [token ?? "", nonce ?? ""],
-                                             logBody: !path.hasPrefix("/api/v1/investment/"))
+                                             logBody: !path.hasPrefix("/api/v1/investment/") &&
+                                                !(path.hasPrefix("/api/v1/agents/") && path.hasSuffix("/requests")))
             }
         } catch {
             // A transport-level -999 alone does not prove the caller was cancelled.

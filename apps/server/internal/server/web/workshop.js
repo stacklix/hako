@@ -4,6 +4,21 @@
   let catalogCursor = null, catalogBusy = false, catalogVersion = 0, selected = null, stream = null, reconnect = null;
   let streamVersion = 0, previewURL = null, approvalSignature = '';
   const conversations = new Map(), collapsed = new Set();
+  const imageQueue = [];
+  let imageReads = 0;
+  function loadImages() {
+    while (enabled && imageReads < 3 && imageQueue.length) {
+      const tile = imageQueue.shift(); imageReads++;
+      void tile.loadImage().finally(() => { imageReads--; loadImages(); });
+    }
+  }
+  const imageObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) {
+      imageObserver.unobserve(entry.target);
+      imageQueue.push(entry.target);
+    }
+    loadImages();
+  }, {root:$('workshop-transcript'), rootMargin:'300px'});
   const running = state => ['starting', 'running', 'waiting', 'finishing', 'queued', 'steering'].includes(state);
   const stateName = state => ({starting:'正在启动', running:'执行中', waiting:'等待确认', finishing:'正在收尾', queued:'排队中', paused:'已暂停', completed:'已完成', interrupted:'已停止', failed:'执行失败', unknown:'结果待核对', idle:'就绪', sent:'已发送', steered:'已追加', cancelled:'已取消'})[state] || state || '就绪';
   const current = view => enabled && csrf && selected === view;
@@ -28,7 +43,7 @@
     const id = key(computer, app.id, session?.id);
     if (!conversations.has(id)) conversations.set(id, {
       computer, app, thread:session?.id || '', title:session?.title || '新会话', archived:$('workshop-archived').checked,
-      history:[], live:new Map(), followups:[], approvals:[], artifacts:[], operation:session?.operationId || '',
+      history:[], live:new Map(), followups:[], approvals:[], artifacts:[], images:new Map(), operation:session?.operationId || '',
       cursor:0, historyCursor:null, historyLoaded:false, loading:false, state:session?.state || 'idle',
       draft:'', attachments:[], pending:null, sending:false, questionId:'', model:'', effort:'', tier:'', permission:'auto', name:'', prompt:''
     });
@@ -180,7 +195,7 @@
       }
       if (current(view)) {
         if (!view.operation) connectionRecovered(view);
-        drawTranscript(view, !more); drawArtifacts(view);
+        drawTranscript(view, !more);
       }
     } catch (e) { if (current(view)) error(e.message); }
     finally { view.loading = false; if (current(view)) { $('workshop-history-more').disabled = false; $('workshop-history-more').hidden = !view.historyCursor; drawControls(view); } }
@@ -193,23 +208,80 @@
     }
     return [...entries.values()].filter(entry => entry.kind !== 'followup' || entry.state !== 'cancelled');
   }
+  function artifactPath(value) {
+    try { value = decodeURIComponent(value); } catch {}
+    return value.replace(/\\\\/g, '\\').replace(/\\/g, '/').toLowerCase();
+  }
+  function artifactPlacement(view, entries) {
+    const byEntry = new Map(), remaining = [], project = artifactPath(view.app.path || '').replace(/\/$/, '') + '/';
+    const candidates = entries.filter(entry => entry.role === 'assistant' || entry.kind === 'fileChange').map(entry => {
+      const references = [];
+      for (const match of (entry.text || '').matchAll(/visualize(\{[^\r\n]*?\})/g)) {
+        try { const ref = JSON.parse(match[1]); if (typeof ref.path === 'string') references.push(ref); } catch {}
+      }
+      return {entry, references, text:artifactPath(entry.text || '')};
+    });
+    for (const artifact of view.artifacts) {
+      const path = artifactPath(artifact.path), paths = [path];
+      if (path.startsWith(project)) paths.push(path.slice(project.length));
+      if (/^[a-z]:\//.test(path)) paths.push('/' + path);
+      const escaped = paths.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const pattern = new RegExp('(^|[^\\p{L}\\p{N}_./:-])(?:' + escaped.join('|') + ')(?=$|[^\\p{L}\\p{N}_./-])', 'u');
+      const referencesArtifact = ref => paths.includes(artifactPath(ref.path));
+      const matches = candidates.filter(candidate => candidate.references.some(referencesArtifact) || pattern.test(candidate.text));
+      const owner = matches.find(candidate => candidate.entry.role === 'assistant') || matches[0];
+      const reference = owner?.references.find(referencesArtifact);
+      const card = {artifact, title:typeof reference?.title === 'string' && reference.title.trim() ? reference.title : artifact.name};
+      if (!owner) { remaining.push(card); continue; }
+      if (!byEntry.has(owner.entry.id)) byEntry.set(owner.entry.id, []);
+      byEntry.get(owner.entry.id).push(card);
+    }
+    return {byEntry, remaining};
+  }
+  function messageText(entry) {
+    const source = entry.text || '';
+    if (entry.role !== 'assistant') return source;
+    const text = source.replace(/visualize[^]*(?:|$)/g, '');
+    const tail = text.lastIndexOf('');
+    return (tail >= 0 && 'visualize'.startsWith(text.slice(tail)) ? text.slice(0, tail) : text).trimEnd();
+  }
+  function artifactCards(view, cards) {
+    const group = node('div', undefined, 'workshop-artifact-cards');
+    for (const {artifact, title} of cards) {
+      const card = button('', () => openArtifact(view, artifact, title), 'workshop-artifact-card');
+      card.setAttribute('aria-label', '预览原型：' + title);
+      const icon = node('span', '▧', 'workshop-artifact-icon'), arrow = node('span', '↗', 'workshop-artifact-arrow');
+      icon.setAttribute('aria-hidden', 'true'); arrow.setAttribute('aria-hidden', 'true');
+      const copy = node('span', undefined, 'workshop-artifact-copy');
+      copy.append(node('strong', title), node('small', '原型 · 点击预览'));
+      card.append(icon, copy, arrow); group.append(card);
+    }
+    return group;
+  }
   function drawTranscript(view, keepBottom = true) {
     const target = $('workshop-transcript');
     const atBottom = target.scrollHeight - target.clientHeight - target.scrollTop < 100;
     const oldHeight = target.scrollHeight, oldTop = target.scrollTop;
     const entries = mergedEntries(view);
+    const artifacts = artifactPlacement(view, entries);
     target.replaceChildren(...entries.map(entry => {
       const message = node('article', undefined, 'workshop-message ' + (entry.role || 'notice'));
       message.append(node('div', entry.role === 'user' ? '你' : entry.role === 'assistant' ? 'Codex' : '执行记录', 'workshop-role'));
       if (['commandExecution', 'fileChange', 'plan'].includes(entry.kind)) {
         const details = node('details'); details.append(node('summary', (entry.text || '工具执行').split('\n')[0].slice(0, 110)), node('pre', entry.text)); message.append(details);
-      } else message.append(node('div', entry.text, 'workshop-message-text'));
-      if (entry.truncated) message.append(node('small', '内容已截断'));
-      if (entry.kind === 'imageGeneration' && entry.state === 'completed' && /\[图片 × 1\]/.test(entry.text)) message.append(button('查看图片', () => showMessageImage(view, entry, 0)));
-      if (entry.role === 'user' && /\[图片 × \d\]/.test(entry.text || '')) {
-        const count = Number(/\[图片 × (\d)\]/.exec(entry.text)[1]);
-        for (let i = 0; i < count; i++) message.append(button('查看图片 ' + (i + 1), () => showMessageImage(view, entry, i)));
+      } else {
+        const source = messageText(entry), caption = source.match(/(?:^|\n)\[图片 × ([1-3])\]$/);
+        const count = entry.role === 'user' ? Number(caption?.[1] || 0)
+          : entry.kind === 'imageGeneration' && entry.state === 'completed' && caption ? 1 : 0;
+        const text = count ? source.slice(0, caption.index) : source;
+        if (text) message.append(node('div', text, 'workshop-message-text'));
+        if (count) {
+          const images = node('div', undefined, 'workshop-message-images');
+          for (let index = 0; index < count; index++) images.append(messageImage(view, entry, index));
+          message.append(images);
+        }
       }
+      if (entry.truncated) message.append(node('small', '内容已截断'));
       for (const question of entry.questions || []) {
         message.append(node('p', question.title));
         for (const answer of question.options) message.append(button(answer, () => chooseAnswer(view, entry, answer)));
@@ -224,8 +296,13 @@
             button('取消', () => mutateFollowup(view, followup, 'cancel')));
         }
       }
+      if (artifacts.byEntry.has(entry.id)) message.append(artifactCards(view, artifacts.byEntry.get(entry.id)));
       return message;
     }));
+    if (artifacts.remaining.length) {
+      const files = node('article', undefined, 'workshop-message workshop-prototype-files');
+      files.append(node('div', '会话原型', 'workshop-role'), artifactCards(view, artifacts.remaining)); target.append(files);
+    }
     if (!entries.length) target.append(node('p', view.thread ? (view.historyLoaded ? '会话暂无消息。' : '正在读取历史消息…') : '写下第一条消息，开始这个项目的新会话。', 'empty'));
     if (keepBottom && atBottom) target.scrollTop = target.scrollHeight;
     if (!keepBottom) target.scrollTop = oldTop + target.scrollHeight - oldHeight;
@@ -268,14 +345,14 @@
     drawControls(view);
     if (!view) {
       approvalSignature = '';
-      for (const id of ['workshop-transcript', 'workshop-approvals', 'workshop-artifacts', 'workshop-attachments']) $(id).replaceChildren();
+      for (const id of ['workshop-transcript', 'workshop-approvals', 'workshop-attachments']) $(id).replaceChildren();
       $('workshop-transcript').append(node('p', '选择左侧项目，打开会话或开始新的任务。', 'empty'));
       $('workshop-history-more').hidden = true; $('workshop-message').value = ''; error(''); return;
     }
     $('workshop-message').value = view.draft; $('workshop-permission').value = view.permission;
     $('workshop-session-name').value = view.name; $('workshop-system-prompt').value = view.prompt;
     $('workshop-send-status').textContent = view.pending ? '发送结果待确认，输入已保留。重试会沿用原请求 ID。' : '';
-    drawModelOptions(); drawTranscript(view); drawAttachments(view); drawApprovals(view); drawArtifacts(view);
+    drawModelOptions(); drawTranscript(view); drawAttachments(view); drawApprovals(view);
   }
   function applyPage(view, page) {
     if (!Number.isSafeInteger(page.cursor) || page.cursor < view.cursor) return false;
@@ -296,7 +373,7 @@
     }
     if (current(view)) {
       $('workshop-title').textContent = view.title;
-      drawControls(view); drawTranscript(view); drawApprovals(view); drawArtifacts(view);
+      drawControls(view); drawTranscript(view); drawApprovals(view);
       if (page.operation.message) error(page.operation.message);
     }
     return true;
@@ -471,22 +548,53 @@
     if (hash !== revision) throw new Error('文件摘要不匹配，请重新打开。');
     return blob;
   }
-  function drawArtifacts(view) {
-    $('workshop-artifacts').replaceChildren(...view.artifacts.map(artifact => button('▧ ' + artifact.name, async () => {
-      const blob = await readFile(view, 'artifact.read', {threadId:view.thread, artifactId:artifact.id}, 2 * 1024 * 1024);
-      if (!current(view)) return;
-      const html = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; form-action \'none\'; base-uri \'none\'">' + await blob.text();
-      if (previewURL) URL.revokeObjectURL(previewURL);
-      previewURL = URL.createObjectURL(new Blob([html], {type:'text/html'}));
-      $('workshop-preview-title').textContent = artifact.name; $('workshop-preview-frame').src = previewURL; $('workshop-preview-dialog').showModal();
-    })));
-  }
-  async function showMessageImage(view, entry, index) {
-    const blob = await readFile(view, 'image.read', {threadId:view.thread, messageId:entry.id, index}, 8 * 1024 * 1024);
+  async function openArtifact(view, artifact, title) {
+    const blob = await readFile(view, 'artifact.read', {threadId:view.thread, artifactId:artifact.id}, 2 * 1024 * 1024);
     if (!current(view)) return;
+    const html = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; form-action \'none\'; base-uri \'none\'">' + await blob.text();
     if (previewURL) URL.revokeObjectURL(previewURL);
-    previewURL = URL.createObjectURL(new Blob([blob], {type:'image/jpeg'}));
-    $('workshop-preview-title').textContent = '消息图片'; $('workshop-preview-frame').src = previewURL; $('workshop-preview-dialog').showModal();
+    previewURL = URL.createObjectURL(new Blob([html], {type:'text/html'}));
+    $('workshop-preview-title').textContent = title; $('workshop-preview-frame').src = previewURL; $('workshop-preview-dialog').showModal();
+  }
+  function messageImage(view, entry, index) {
+    const id = JSON.stringify([view.thread, entry.id, index]);
+    if (view.images.has(id)) return view.images.get(id).tile;
+    const image = node('img'), status = node('span', '正在加载图片…');
+    image.alt = (entry.role === 'user' ? '消息图片 ' : '生成图片 ') + (index + 1); image.hidden = true;
+    const item = {url:null, tile:null};
+    const tile = node('button', undefined, 'workshop-message-image'); tile.type = 'button';
+    tile.addEventListener('click', () => {
+      if (!item.url) return tile.loadImage();
+      if (!current(view)) return;
+      if (previewURL) URL.revokeObjectURL(previewURL); previewURL = null;
+      $('workshop-preview-title').textContent = image.alt;
+      $('workshop-preview-frame').src = item.url; $('workshop-preview-dialog').showModal();
+    });
+    tile.setAttribute('aria-label', '查看' + image.alt); tile.disabled = true;
+    tile.append(image, status); item.tile = tile; view.images.set(id, item);
+    const failed = message => {
+      if (item.url) URL.revokeObjectURL(item.url); item.url = null;
+      image.removeAttribute('src'); image.hidden = true; status.hidden = false;
+      status.textContent = '图片加载失败，点击重试'; tile.title = message; tile.disabled = false;
+    };
+    tile.loadImage = async () => {
+      if (!enabled || !csrf) return;
+      const generation = epoch;
+      tile.disabled = true; tile.title = ''; status.textContent = '正在加载图片…';
+      try {
+        const blob = await readFile(view, 'image.read', {threadId:view.thread, messageId:entry.id, index}, 8 * 1024 * 1024);
+        if (!enabled || generation !== epoch) return;
+        item.url = URL.createObjectURL(new Blob([blob], {type:'image/jpeg'})); image.src = item.url;
+      } catch (e) { if (enabled && generation === epoch) failed(e.message); }
+    };
+    image.addEventListener('load', () => {
+      const target = $('workshop-transcript'), atBottom = target.scrollHeight - target.clientHeight - target.scrollTop < 100;
+      image.hidden = false; status.hidden = true; tile.disabled = false;
+      if (current(view) && atBottom) target.scrollTop = target.scrollHeight;
+    });
+    image.addEventListener('error', () => failed('图片无法显示，请重试。'));
+    imageObserver.observe(tile);
+    return tile;
   }
   async function refreshAll(passive = true) {
     try {
@@ -504,11 +612,15 @@
     reset() {
       enabled = false; epoch++; catalogVersion++; approvalSignature = ''; stopStream();
       window.hakoWorkshopCommands?.reset();
-      for (const view of conversations.values()) for (const file of view.attachments) URL.revokeObjectURL(file.url);
+      imageObserver.disconnect(); imageQueue.length = 0;
+      for (const view of conversations.values()) {
+        for (const file of view.attachments) URL.revokeObjectURL(file.url);
+        for (const image of view.images.values()) if (image.url) URL.revokeObjectURL(image.url);
+      }
       conversations.clear(); collapsed.clear(); selected = null; computer = ''; computers = []; applications = []; sessions = []; models = []; catalogCursor = null;
       if (previewURL) URL.revokeObjectURL(previewURL); previewURL = null;
       $('workshop-preview-dialog').close(); $('workshop-preview-frame').removeAttribute('src');
-      for (const id of ['workshop-projects', 'workshop-transcript', 'workshop-approvals', 'workshop-artifacts', 'workshop-attachments']) $(id).replaceChildren();
+      for (const id of ['workshop-projects', 'workshop-transcript', 'workshop-approvals', 'workshop-attachments']) $(id).replaceChildren();
       $('workshop-message').value = ''; error('');
       drawConversation();
     }

@@ -1,8 +1,51 @@
 import Foundation
 
 @main struct CryptoModelsTests {
+    static func binanceAnalytics() {
+        func asset(_ symbol: String,_ quantity: Double,_ price: Double? = nil) -> CryptoBinanceAsset {
+            CryptoBinanceAsset(symbol:symbol,name:symbol,free:quantity,locked:0,frozen:0,withdrawing:0,
+                               unitPrice:price,equityUSDPrice:symbol.hasPrefix("EQ") ? price : nil)
+        }
+        let usdt=asset("USDT",10),stock=asset("EQ_AAPL",2,10),earn=asset("USDT",5)
+        let snapshot=CryptoBinanceSnapshot(scope:"scope",sampledAt:.now,accounts:[
+            CryptoBinanceAccount(name:"Funding",balance:30,assets:[usdt,stock]),
+            CryptoBinanceAccount(name:"Earn",balance:5,assets:[earn])])
+        let categories=CryptoBinanceCategory.categories(snapshot)
+        precondition(categories.map(\.name) == ["Funding","Stock","Earn"])
+        precondition(categories.map(\.value) == [10,20,5] && snapshot.total == 35,"Stock removed from Funding without changing source totals")
+        precondition(categories[0].assets == [usdt] && categories[1].assets == [stock])
+        precondition(snapshot.accounts[0].assets == [usdt,stock],"classification must not mutate cached source holdings")
+        precondition(asset("EQMSFT",1,10).isStock && asset("EQMSFT",1,10).equitySymbol == "MSFT","all EQ-prefix Funding assets are stocks")
+        let root=CryptoBinanceDistributionPart.categories(categories,total:35)
+        precondition(CryptoBinanceDistributionPart.canChart(root,total:35))
+        let items=CryptoBinanceDistributionPart.assets(categories[1],total:35)
+        precondition(items[0].categoryRatio == 1 && abs(items[0].totalRatio!-20/35) < 0.00001,"category and overall denominators differ")
+        let dust=CryptoBinanceSnapshot(scope:"scope",sampledAt:.now,accounts:[.init(name:"Funding",balance:0.2,assets:[asset("USDT",0.2)])])
+        precondition(CryptoBinanceCategory.categories(dust)[0].value == 0.2,"allocation retains dust to preserve the whole")
+        let missing=CryptoBinanceSnapshot(scope:"scope",sampledAt:.now,accounts:[.init(name:"Funding",balance:30,assets:[usdt,asset("EQ_AAPL",2)])])
+        let incomplete=CryptoBinanceCategory.categories(missing)
+        precondition(incomplete.allSatisfy { $0.value == nil },"unpriced stocks cannot be subtracted as zero")
+        precondition(!CryptoBinanceDistributionPart.canChart(CryptoBinanceDistributionPart.categories(incomplete,total:30),total:30))
+        let stockOnly=CryptoBinanceSnapshot(scope:"scope",sampledAt:.now,accounts:[.init(name:"Funding",balance:20,assets:[stock])])
+        precondition(CryptoBinanceCategory.categories(stockOnly).map(\.name) == ["Stock"],"stock-only Funding does not duplicate an empty Funding category")
+        precondition(CryptoBinanceDistributionPart.ratio(1,of:0) == nil)
+        precondition(!CryptoBinanceDistributionPart.canChart([.init(id:"negative",name:"Debt",value:-1,categoryRatio:nil,totalRatio:nil)],total:1))
+        precondition(!CryptoBinanceDistributionPart.canChart([.init(id:"partial",name:"Partial",value:1,categoryRatio:nil,totalRatio:nil)],total:10),"partial balances must not be renormalized to 100 percent")
+        let calendar=CryptoDay.calendar,day=calendar.date(from:DateComponents(year:2026,month:11,day:1))!
+        func offset(_ value: Int) -> Date { calendar.date(byAdding:.day,value:value,to:day)! }
+        let history=[CryptoRecord(kind:"portfolio",day:CryptoDay.key(day),sampledAt:0,scope:"scope",values:["binance":0]),
+                     CryptoRecord(kind:"portfolio",day:CryptoDay.key(offset(2)),sampledAt:0,scope:"scope",values:["binance":100])]
+        let points=CryptoBinanceHistory.samples(history,snapshot:nil,from:day,through:offset(2),now:offset(2))
+        precondition(points.map(\.value) == [0,nil,100] && points[0].segment != points[2].segment,"zero is real, missing days break the curve")
+        var current=snapshot;current.sampledAt=offset(2)
+        precondition(CryptoBinanceHistory.samples(history,snapshot:current,from:day,through:offset(2),now:offset(2)).last?.value == 35)
+        current.sampledAt=offset(1)
+        precondition(CryptoBinanceHistory.samples(history,snapshot:current,from:day,through:offset(2),now:offset(2)).last?.value == 100,"stale holdings must not rewrite historical balances")
+        precondition(CryptoBinanceHistory.samples(history,snapshot:nil,from:offset(2),through:day).isEmpty)
+    }
     static func main() throws {
         chartDatesStaySeparated()
+        binanceAnalytics()
         func check(_ condition: Bool, _ message: String) { precondition(condition,message) }
         let dust=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0.000009,locked:0,frozen:0,withdrawing:0,unitPrice:100000)
         let boundary=CryptoBinanceAsset(symbol:"BTC",name:"Bitcoin",free:0,locked:0.00001,frozen:0,withdrawing:0,unitPrice:100000)

@@ -75,6 +75,9 @@ enum HTTPTransport {
     static func makeSession(requestTimeout: TimeInterval = 60, resourceTimeout: TimeInterval = 604800,
                             delegate: (any URLSessionDelegate)? = nil, useSystemProxy: Bool = true) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
+#if os(iOS)
+        config.protocolClasses = [HakoProxyURLProtocol.self] + (config.protocolClasses ?? [])
+#endif
         config.httpShouldSetCookies = false
         config.httpCookieStorage = nil
         config.urlCache = nil

@@ -1,0 +1,63 @@
+import Foundation
+
+struct WorkshopQuotaCacheEntry: Codable, Sendable {
+    let value: WorkshopQuotaSnapshot
+    let cachedAt: Date
+
+    func snapshot(at now: Date) -> WorkshopQuotaSnapshot? {
+        let age=now.timeIntervalSince(cachedAt)
+        return age >= 0 && age < 3600 ? value : nil
+    }
+}
+
+struct WorkshopQuotaSnapshot: Codable, Sendable {
+    let buckets: [WorkshopQuotaBucket]
+    let checkedAt: Double
+    var nextRefreshDelay: TimeInterval {
+        let future=buckets.flatMap { [$0.primary,$0.secondary].compactMap { $0?.resetsAt } }
+            .map { $0-Date.now.timeIntervalSince1970 }.filter { $0 > 0 }
+        return min(60,max(1,(future.min() ?? 59)+1))
+    }
+    func displayBuckets(model: String?) -> [WorkshopQuotaBucket] {
+        let matching=buckets.filter { !$0.model.isEmpty && $0.model == model }
+        return matching.isEmpty ? buckets : buckets.filter { $0.model.isEmpty || $0.model == model }
+    }
+}
+
+struct WorkshopQuotaBucket: Codable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let model: String
+    let primary: WorkshopQuotaWindow?
+    let secondary: WorkshopQuotaWindow?
+    var title: String { name.isEmpty ? (id == "codex" || id.isEmpty ? "Codex" : id) : name }
+}
+
+struct WorkshopQuotaWindow: Codable, Sendable {
+    let usedPercent: Double
+    let windowDurationMins: Int?
+    let resetsAt: Double?
+    func remaining(at now: Date) -> Double? {
+        guard usedPercent.isFinite,usedPercent >= 0, resetsAt.map({ $0 > now.timeIntervalSince1970 }) ?? true else { return nil }
+        return min(100,max(0,100-usedPercent))
+    }
+    func periodLabel(primary: Bool) -> String {
+        guard let minutes=windowDurationMins,minutes > 0 else { return primary ? "主周期" : "次周期" }
+        if minutes % 10080 == 0 { return "\(minutes/10080)周" }
+        if minutes % 1440 == 0 { return "\(minutes/1440)天" }
+        if minutes % 60 == 0 { return "\(minutes/60)小时" }
+        return "\(minutes)分钟"
+    }
+    func countdown(at now: Date) -> String {
+        guard let resetsAt,resetsAt.isFinite else { return "重置时间未知" }
+        let interval=resetsAt-now.timeIntervalSince1970
+        guard interval > 0 else { return "等待刷新额度" }
+        // Protect the conversion against invalid or unreasonable remote timestamps.
+        guard interval < Double(Int.max/2) else { return "重置时间未知" }
+        let seconds=Int(ceil(interval)),days=seconds/86400,hours=seconds/3600 % 24,minutes=seconds/60 % 60
+        if days > 0 { return "\(days)天\(hours)小时后重置" }
+        if hours > 0 { return "\(hours)小时\(minutes)分后重置" }
+        if minutes > 0 { return "\(minutes)分\(seconds % 60)秒后重置" }
+        return "\(seconds)秒后重置"
+    }
+}

@@ -21,6 +21,8 @@ internal static class CodeWorkshopChecks
 
     public static async Task RunAsync()
     {
+        WorkshopTaskProgressChecks.Run();
+        WorkshopQuotaChecks.Run();
         await WorkshopReadChecks.RunAsync();
         await WorkshopProjectFileChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
@@ -322,6 +324,12 @@ internal static class CodeWorkshopChecks
                 try { await service.CatalogAsync(Json(new { archived = "true" }), default); throw new Exception("Non-boolean archive filter accepted"); }
                 catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 var models = Result(await service.ModelsAsync(Json(new { }), default));
+                var quota = Result(await service.QuotaAsync(Json(new { }), default));
+                Check(quota.GetProperty("buckets")[0].GetProperty("primary").GetProperty("usedPercent").GetDouble() == 25.5 &&
+                    quota.GetProperty("checkedAt").GetInt64() > 0 && !quota.GetRawText().Contains("private-account"),
+                    "The read-only quota RPC was not normalized or leaked account identity");
+                try { await service.QuotaAsync(Json(new { unexpected = true }), default); throw new Exception("Quota query accepted unknown parameters"); }
+                catch (WorkshopException e) when (e.Code == "invalid_params") { }
                 Check(models.GetProperty("models")[0].GetProperty("supportsImages").GetBoolean(), "Model image capability was lost");
                 Check(models.GetProperty("models")[0].GetProperty("serviceTiers")[0].GetProperty("id").GetString() == "priority", "Fast service tier identity was lost");
                 Check(models.GetProperty("models")[0].GetProperty("reasoningEfforts").EnumerateArray().Select(value => CodexJson.Text(value, "id")).SequenceEqual(new[] { "high", "low", "future-effort" }), "Advertised reasoning efforts were reordered or hard-coded");
@@ -1002,6 +1010,10 @@ internal static class CodeWorkshopChecks
             }
             object result = method switch
             {
+                "account/rateLimits/read" => new { accountId = "private-account", rateLimitsByLimitId = new { codex = new {
+                    primary = new { usedPercent = 25.5, windowDurationMins = 300, resetsAt = 1800000000 },
+                    secondary = new { usedPercent = 60, windowDurationMins = 10080, resetsAt = 1800600000 }
+                } } },
                 "model/list" => new { data = new[] { new { model = "fixture-vision", displayName = "Fixture Vision", description = "Fixture", isDefault = true, defaultReasoningEffort = "low", supportedReasoningEfforts = new[] { new { reasoningEffort = "high", description = "Deep reasoning" }, new { reasoningEffort = "low", description = "Quick reasoning" }, new { reasoningEffort = "future-effort", description = "Future model level" } }, inputModalities = new[] { "text", "image" }, serviceTiers = new[] { new { id = "priority", name = "Fast", description = "Faster fixture" } } } }, nextCursor = (string?)null },
                 "thread/list" => new { data = archived == (CodexJson.Field(CodexJson.Field(input, "params"), "archived").ValueKind == JsonValueKind.True) ? new[] { thread } : [], nextCursor = (string?)null },
                 "thread/turns/list" => new { data = turnRows, nextCursor = nextTurnCursor },

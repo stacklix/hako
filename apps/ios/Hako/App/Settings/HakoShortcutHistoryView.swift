@@ -1,4 +1,103 @@
 import SwiftUI
+import AppIntents
+
+struct HakoShortcutRunControl: View {
+    @ObservedObject private var history = HakoShortcutHistory.shared
+    private var active: HakoShortcutRun? { history.runs.first { $0.status == .running } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(intent: ManualSyncHakoDataIntent()) {
+                Label(active == nil ? "立即同步 Hako 数据" : "正在同步…", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .buttonStyle(HakoActionButtonStyle())
+            .disabled(active != nil)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+    }
+}
+
+struct HakoShortcutsView: View {
+    @ObservedObject private var history = HakoShortcutHistory.shared
+    private var displayedRun: HakoShortcutRun? {
+        history.runs.first { $0.status == .running } ?? history.runs.first
+    }
+
+    var body: some View {
+        List {
+            Section("子任务") {
+                ForEach(HakoShortcutRegistry.availableTaskNames, id: \.self) { name in
+                    let step = displayedRun?.steps.first { $0.name == name }
+                    VStack(alignment: .leading, spacing: 6) {
+                        LabeledContent(name, value: step?.status.rawValue ?? (displayedRun == nil ? "待执行" : "本次未执行"))
+                        if step?.status == .running, let event = step?.events?.last {
+                            Text(event.stage + " · " + event.state.rawValue)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                }
+            }
+            Section {
+                HakoShortcutRunControl()
+            } header: { Text("同步 Hako 数据") } footer: {
+                Text("执行全部同步子任务，结果保存在执行历史中。App 内手动执行投资备份不受星期限制。")
+            }
+            if let issue = history.storageIssue {
+                Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
+            }
+            if let run = displayedRun {
+                Section(run.status == .running ? "处理进度" : "最近一次执行") {
+                    HakoShortcutProgressView(run: run)
+                    NavigationLink {
+                        HakoShortcutRunView(history: history, runID: run.id)
+                    } label: {
+                        Label("查看执行详情", systemImage: "list.bullet.rectangle")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                }
+            }
+        }
+        .navigationTitle("快捷指令")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct HakoShortcutProgressView: View {
+    let run: HakoShortcutRun
+
+    var body: some View {
+        let completed = run.steps.filter { $0.status != .running && $0.status != .pending }.count
+        let active = run.steps.first { $0.status == .running }
+        VStack(alignment: .leading, spacing: 12) {
+            LabeledContent(run.name, value: run.status.rawValue)
+            if !run.steps.isEmpty {
+                ProgressView(value: Double(completed), total: Double(run.steps.count)) {
+                    Text("已处理 \(completed)/\(run.steps.count) 个子任务")
+                        .font(.subheadline)
+                }
+            }
+            if run.status == .running {
+                Text(active?.name ?? "正在准备子任务…").font(.subheadline.weight(.medium))
+                if let event = active?.events?.last {
+                    Text(event.stage + " · " + event.state.rawValue)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+    }
+}
 
 struct HakoShortcutHistoryView: View {
     @ObservedObject private var history = HakoShortcutHistory.shared
@@ -22,6 +121,11 @@ struct HakoShortcutHistoryView: View {
                                 Text(run.name).font(.headline)
                                 Text(run.startedAt, format: .dateTime.year().month().day().hour().minute().second())
                                     .font(.caption).foregroundStyle(.secondary)
+                                Text("触发来源：" + (run.triggerSource?.title ?? "未记录"))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if run.lastRetrySource != nil {
+                                    Text("最近重试来源：App 内触发").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             Spacer(minLength: 4)
                             Text(run.status.rawValue).font(.subheadline).foregroundStyle(.secondary)
@@ -50,6 +154,10 @@ private struct HakoShortcutRunView: View {
                 Section("执行概况") {
                     LabeledContent("快捷指令", value: run.name)
                     LabeledContent("状态", value: run.status.rawValue)
+                    LabeledContent("触发来源", value: run.triggerSource?.title ?? "未记录")
+                    if let source = run.lastRetrySource {
+                        LabeledContent("最近重试来源", value: source.title)
+                    }
                     LabeledContent("开始时间", value: run.startedAt.formatted(date: .abbreviated, time: .standard))
                     if let finished = run.finishedAt {
                         LabeledContent("结束时间", value: finished.formatted(date: .abbreviated, time: .standard))

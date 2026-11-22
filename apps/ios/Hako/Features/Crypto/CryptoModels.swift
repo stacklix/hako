@@ -15,9 +15,12 @@ struct CryptoBinanceAsset: Codable, Identifiable, Equatable {
     var withdrawing: Double
     var unitPrice: Double? = nil
     var equityUSDPrice: Double? = nil
+    var isStock: Bool { symbol.uppercased().hasPrefix("EQ") }
     var equitySymbol: String? {
         let code=symbol.uppercased()
-        return code.hasPrefix("EQ_") && code.count > 3 ? String(code.dropFirst(3)) : nil
+        guard isStock else { return nil }
+        let ticker=code.dropFirst(2).drop(while: { $0 == "_" })
+        return ticker.isEmpty ? nil : String(ticker)
     }
     var id: String { symbol }
     var quantity: Double { free + locked + frozen + withdrawing }
@@ -56,6 +59,100 @@ struct CryptoBinanceSnapshot: Codable, Equatable {
     var quoteError: String? = nil
     var total: Double { accounts.reduce(0) { $0 + $1.currentBalance } }
     var visibleAccounts: [CryptoBinanceAccount] { accounts.filter(\.isVisible) }
+}
+
+// Presentation-only categories: preserve the source snapshot and count Funding stocks once.
+struct CryptoBinanceCategory: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let source: String
+    let value: Double?
+    let assets: [CryptoBinanceAsset]?
+    let isStock: Bool
+
+    static func categories(_ snapshot: CryptoBinanceSnapshot) -> [Self] {
+        snapshot.accounts.flatMap { account -> [Self] in
+            let stocks=account.assets?.filter { $0.isStock && $0.quantity != 0 } ?? []
+            guard account.name.lowercased() == "funding", !stocks.isEmpty else {
+                guard account.currentBalance != 0 || account.assets?.isEmpty == false else { return [] }
+                return [Self(id:"account:"+account.id,name:account.name,source:account.name,
+                             value:account.currentBalance,assets:account.assets,isStock:false)]
+            }
+            let stockValues=stocks.compactMap(\.usdtValue)
+            let subtotal=stockValues.reduce(0,+)
+            let stockTotal=stockValues.count == stocks.count && subtotal.isFinite ? subtotal : nil
+            let other=account.assets?.filter { !$0.isStock }
+            var result=[Self]()
+            if other?.isEmpty == false || stockTotal.map({ account.currentBalance - $0 != 0 }) == true {
+                result.append(Self(id:"account:"+account.id,name:account.name,source:account.name,
+                    value:stockTotal.map { account.currentBalance - $0 },assets:other,isStock:false))
+            }
+            result.append(Self(id:"stock:"+account.id,name:"Stock",source:account.name,
+                               value:stockTotal,assets:stocks,isStock:true))
+            return result
+        }
+    }
+}
+
+struct CryptoBinanceDistributionPart: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let value: Double?
+    let categoryRatio: Double?
+    let totalRatio: Double?
+
+    static func ratio(_ value: Double?, of total: Double?) -> Double? {
+        guard let value, let total, value.isFinite, total.isFinite, total > 0 else { return nil }
+        let result=value/total
+        return result.isFinite ? result : nil
+    }
+    static func categories(_ categories: [CryptoBinanceCategory], total: Double) -> [Self] {
+        categories.map { Self(id:$0.id,name:$0.name,value:$0.value,
+            categoryRatio:ratio($0.value,of:total),totalRatio:ratio($0.value,of:total)) }
+    }
+    static func assets(_ category: CryptoBinanceCategory, total: Double) -> [Self] {
+        (category.assets ?? []).map { Self(id:$0.id,name:$0.symbol,value:$0.usdtValue,
+            categoryRatio:ratio($0.usdtValue,of:category.value),totalRatio:ratio($0.usdtValue,of:total)) }
+    }
+    static func canChart(_ parts: [Self], total: Double?) -> Bool {
+        guard !parts.isEmpty, let total, total.isFinite, total > 0,
+              parts.allSatisfy({ $0.value.map { $0.isFinite && $0 >= 0 } == true }) else { return false }
+        let sum=parts.compactMap(\.value).reduce(0,+)
+        return abs(sum-total) <= max(0.01,abs(total)*0.000001)
+    }
+}
+
+enum CryptoBinanceHistory {
+    struct Sample: Identifiable, Equatable {
+        let date: Date
+        let value: Double?
+        let segment: Int
+        var id: Date { date }
+    }
+    static func samples(_ records: [CryptoRecord], snapshot: CryptoBinanceSnapshot?,
+                        from start: Date, through end: Date, now: Date = .now) -> [Sample] {
+        let calendar=CryptoDay.calendar
+        var amounts=[Date:Double]()
+        for record in records where record.kind == "portfolio" {
+            if let value=record.values["binance"], value.isFinite {
+                amounts[calendar.startOfDay(for:record.date)]=value
+            }
+        }
+        // A current snapshot can update today, never rewrite an earlier day's closing value.
+        if let snapshot, CryptoDay.key(snapshot.sampledAt) == CryptoDay.key(now), snapshot.total.isFinite {
+            amounts[calendar.startOfDay(for:now)]=snapshot.total
+        }
+        var day=calendar.startOfDay(for:start),result=[Sample](),segment=0
+        let last=calendar.startOfDay(for:end)
+        while day <= last {
+            let amount=amounts[day]
+            if amount == nil { segment += 1 }
+            result.append(Sample(date:day,value:amount,segment:segment))
+            guard let next=calendar.date(byAdding:.day,value:1,to:day) else { break }
+            day=next
+        }
+        return result
+    }
 }
 
 struct CryptoHTXSnapshot: Codable, Equatable {

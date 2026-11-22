@@ -42,7 +42,7 @@ struct HakoDataBackupSettings: View {
                     .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
                 Section("快捷指令") {
-                    Text("使用统一的“同步 Hako 数据”操作。“记账投资数据备份”子任务自动运行时仅在北京时间周日备份，其他日期记录为跳过；在投资记账设置中手动执行，或在执行历史中手动重试失败的备份，不受星期限制。")
+                    Text("使用统一的“同步 Hako 数据”操作。“记账投资数据备份”子任务自动运行时仅在北京时间周日备份，其他日期记录为跳过；在主应用“设置 → 快捷指令”中点击“立即同步 Hako 数据”、在投资记账设置中手动执行，或在执行历史中手动重试失败的备份，不受星期限制。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

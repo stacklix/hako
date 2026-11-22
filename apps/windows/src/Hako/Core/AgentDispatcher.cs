@@ -42,7 +42,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = [
         new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
         new(ProcessMetrics.Command, 1), new(AndroidManager.ListCommand, 1),
-        new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
+        new("action.network.http.check", 1), new(HttpProxy.Command, 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         .. AndroidManager.ActionCommands.Select(name => new AgentCapability(name, 1)),
         new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1),
         .. AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand).Select(name => new AgentCapability(name, 1))
@@ -103,6 +103,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
         actions = new()
         {
             ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
+            [HttpProxy.Command] = new(1, HttpProxy.SendAsync),
             ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
             ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
             ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token)),

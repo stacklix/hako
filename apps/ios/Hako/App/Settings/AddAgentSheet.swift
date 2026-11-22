@@ -15,7 +15,9 @@ struct AddAgentSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        SettingsSheet(title: "添加 Agent", hasChanges: !name.isEmpty || !publicKeyPEM.isEmpty,
+                      isBusy: submitting, saveEnabled: !client.busy && client.authenticated && !missingInput,
+                      onSave: { Task { await submit() } }, saveAccessibilityLabel: "添加 Agent") {
             Form {
                 Section {
                     LabeledContent("服务器", value: client.serverURL)
@@ -47,19 +49,7 @@ struct AddAgentSheet: View {
                 if submitting { Section { ProgressView("正在添加 Agent…") } }
             }
             .disabled(submitting)
-            .navigationTitle("添加 Agent")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }.disabled(submitting)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("添加") { Task { await submit() } }
-                        .disabled(submitting || client.busy || !client.authenticated || missingInput)
-                }
-            }
         }
-        .interactiveDismissDisabled(submitting)
         .fileImporter(isPresented: $importingKey, allowedContentTypes: [.plainText, .data]) { result in
             importPublicKey(result)
         }

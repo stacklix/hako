@@ -79,11 +79,13 @@ internal static class Program
             if (args.Length == 2 && args[0] == "guardian") { await GuardianChecks.RunAsync(args[1]); return 0; }
             if (args.Length == 2 && args[0] == "guardian-refresh") { await GuardianRefreshChecks.RunAsync(args[1]); return 0; }
             if (args.Length == 1 && args[0] == "lifecycle") { LifecycleChecks.Run(); return 0; }
+            if (args.Length == 1 && args[0] == "workshop-quota") { await WorkshopQuotaChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "update-notifications") { await AgentUpdateNotificationChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "command-relay") { await CommandRelayChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "command-tasks") { await CommandTaskChecks.RunAsync(); return 0; }
             if (args.Length == 3 && args[0] == "command-host") { await CommandHostChecks.RunAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "agent-requests") { await AgentRequestChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "http-proxy") { await HttpProxyChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-cloud") { WorkshopConnectionLogChecks.Run(); await WorkshopCloudChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "services") { await ServiceMonitorChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "android") { await AndroidChecks.RunAsync(); return 0; }
@@ -210,6 +212,7 @@ internal static class Program
             LifecycleChecks.Run();
             await AgentUpdateNotificationChecks.RunAsync();
             await AgentRequestChecks.RunAsync();
+            await HttpProxyChecks.RunAsync();
             await GuardianBrokerChecks.RunAsync();
             WorkshopConnectionLogChecks.Run();
             await WorkshopCloudChecks.RunAsync();
@@ -253,6 +256,7 @@ internal static class Program
                 new AgentCapability("query.network.listeners", 1), new AgentCapability(ProcessMetrics.Command, 1),
                 new AgentCapability("query.android.devices", 1),
                 new AgentCapability("action.network.http.check", 1),
+                new AgentCapability(HttpProxy.Command, 1),
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
                 new AgentCapability("action.android.execute", 1), new AgentCapability("action.android.upload", 1), new AgentCapability("action.android.stream", 1),

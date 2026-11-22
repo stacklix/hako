@@ -14,6 +14,9 @@ import Foundation
 
     private var callbacks: [String: @MainActor () async throws -> String] = [:]
 
+    static var availableTaskNames: [String] { shared.registeredTaskNames }
+    var registeredTaskNames: [String] { callbacks.keys.sorted() }
+
     func register(_ name: String, run: @escaping @MainActor () async throws -> String) {
         callbacks[name] = run
     }
@@ -56,7 +59,7 @@ import Foundation
             guard history.beginRetry(retryRunID) else { throw HakoError(message: "这条记录暂时无法重试。") }
             runID = retryRunID
         } else {
-            runID = history.start(title, steps: ordered.map(\.key))
+            runID = history.start(title, steps: ordered.map(\.key), source: manual ? .manual : .shortcuts)
         }
         HakoExecutionDiagnostics.cancellation.get()?.bind(to: runID)
         var status = HakoShortcutRun.Status.failed
@@ -83,6 +86,9 @@ import Foundation
                         return try await HakoExecutionDiagnostics.context.withValue(record) {
                             try Task.checkCancellation()
                             record(execution)
+                            HakoExecutionDiagnostics.record("触发来源", detail: retryRunID == nil
+                                ? (manual ? HakoShortcutRun.TriggerSource.manual.title : HakoShortcutRun.TriggerSource.shortcuts.title)
+                                : "App 内触发（重试）")
                             HakoExecutionDiagnostics.environment()
                             let result = try await HakoShortcutExecution.manual.withValue(manual) { try await run() }
                             try Task.checkCancellation()

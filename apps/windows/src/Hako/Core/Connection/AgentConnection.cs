@@ -279,7 +279,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 if (read.CloseStatus == WebSocketCloseStatus.PolicyViolation) throw new AuthenticationException("服务端拒绝设备身份。");
                 throw new IOException("连接已关闭。");
             }
-            if (read.MessageType != WebSocketMessageType.Text || stream.Length + read.Count > 65536) throw new IOException("消息格式或长度无效。");
+            if (read.MessageType != WebSocketMessageType.Text || stream.Length + read.Count > 1024 * 1024) throw new IOException("消息格式或长度无效。");
             stream.Write(buffer, 0, read.Count);
             if (read.EndOfMessage) return JsonDocument.Parse(stream.ToArray());
         }

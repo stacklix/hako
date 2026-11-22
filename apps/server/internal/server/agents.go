@@ -104,6 +104,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	old := s.agentHub.Register(configured.ID, c)
+	ws.SetReadLimit(agent.MaxReplyBytes)
 	s.registryMu.Unlock()
 	if old != nil {
 		old.Close()

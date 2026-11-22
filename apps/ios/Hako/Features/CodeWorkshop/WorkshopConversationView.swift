@@ -21,6 +21,7 @@ struct WorkshopConversationView: View {
     @State private var confirmsCompact = false
     @State private var showingCommandTask = false
     @StateObject private var commands: WorkshopCommands
+    @StateObject private var taskProgress = WorkshopTaskProgress()
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
@@ -49,6 +50,9 @@ struct WorkshopConversationView: View {
             group.entries.removeAll { $0.kind == "notice" && $0.id == conversation.operation?.unconfirmedNoticeID }
             return group.entries.isEmpty ? nil : group
         }
+        let progressPlacement = TaskProgressPlacement(tasks: taskProgress.snapshot.tasks, messages: groups.flatMap { group in
+            group.entries.map { TaskProgressPlacement.Message(id: $0.id, text: $0.text, isUser: $0.role == "user") }
+        })
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 if conversation.historyCursor != nil {
@@ -87,6 +91,9 @@ struct WorkshopConversationView: View {
                     }
                     .padding(.vertical, group.isRecords ? 3 : 0)
                     .background(group.isRecords ? HakoStyle.card : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+                    if let last = group.entries.last, let tasks = progressPlacement.after[last.id] {
+                        TaskProgressCard(tasks: tasks, warning: taskProgress.issue ?? taskProgress.snapshot.warning)
+                    }
                 }
                 ForEach(conversation.approvals) { approval in
                     WorkshopApprovalView(approval: approval, conversation: conversation)
@@ -120,6 +127,9 @@ struct WorkshopConversationView: View {
             })
         }
         .scrollPosition($scrollPosition)
+        .task(id: "\(scenePhase == .active && transcriptVisible):\(conversation.threadId ?? "")") {
+            await taskProgress.watch(conversation: conversation, active: scenePhase == .active && transcriptVisible)
+        }
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(scrollFollowing.shouldFollowUpdates ? .bottom : nil, for: .sizeChanges)
         .onAppear {

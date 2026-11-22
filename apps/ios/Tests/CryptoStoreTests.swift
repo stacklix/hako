@@ -39,6 +39,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
     var staleOnce=false
     var pauseNextRead=false
     var blocked=false
+    var beforeCommit: (() throws -> Void)?
     var resume:CheckedContinuation<Void,Never>?
     func listFiles(in directory:String) async throws -> GitHubDirectorySnapshot {
         reads+=1
@@ -57,6 +58,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
     }
     func commit(files:[String:String],expectedHead:String,message:GitHubCommitMessage) async throws -> GitHubCommitResult {
         guard !files.isEmpty else { return .unchanged }
+        try beforeCommit?()
         if failWrites { throw HakoError(message:"test upload failure") }
         if staleOnce { staleOnce=false;return .staleHead }
         commits.append(files);self.files.merge(files){_,new in new};return .committed("head")
@@ -118,6 +120,14 @@ private final class AssetRepository: GitHubRepositoryAccess {
                     ]]]
                 case "/market/tickers": return ["status":"ok","data":[["symbol":"trxusdt","close":0.25]]]
                 case "/market/detail/merged": return ["tick":["close":1]]
+                case let path where path.contains("/cosmos/bank/v1beta1/balances/"):
+                    return ["balances":[["denom":"uatom","amount":"1000000"]],"pagination":["next_key":NSNull()]]
+                case let path where path.contains("/cosmos/staking/v1beta1/delegations/"):
+                    return ["delegation_responses":[],"pagination":["next_key":NSNull()]]
+                case let path where path.contains("/cosmos/staking/v1beta1/delegators/"):
+                    return ["unbonding_responses":[],"pagination":["next_key":NSNull()]]
+                case let path where path.contains("/cosmos/distribution/v1beta1/delegators/"):
+                    return ["total":[]]
                 case "/swap-api/v1/swap_balance_valuation": return ["data":[["valuation_asset":"USDT","balance":currentTRX]]]
                 case "/sapi/v1/asset/wallet/balance":
                     if failBinance { throw HakoError(message:"test unavailable") }
@@ -215,7 +225,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         var syncEvents: [HakoExecutionEvent] = []
         _ = await HakoExecutionDiagnostics.context.withValue({ syncEvents.append($0) }) { await restored.trigger() }
         let syncRows = HakoExecutionLogRow.merging(syncEvents)
-        precondition(syncRows.contains { $0.stage == "资产采集范围" && $0.detail.contains("未请求交易所") })
+        precondition(syncRows.contains { $0.stage == "同步资产日记录" && $0.detail.contains("GitHub 归档合并") })
         precondition(syncRows.contains { $0.stage == "读取 GitHub 资产归档" && $0.state == .succeeded })
         precondition(syncRows.contains { $0.stage == "同步 GitHub 年度文件" && $0.state == .failed })
         precondition(!syncRows.contains { $0.stage == "保存资产同步状态" }, "Failed uploads must not report a cleared pending queue")
@@ -601,6 +611,82 @@ private final class AssetRepository: GitHubRepositoryAccess {
         let recoveredCalls = AssetMockProtocol.requests.count
         await retryStore().collect()
         precondition(AssetMockProtocol.requests.count == recoveredCalls, "successful HTX details use the normal cache lifetime")
-        print("Crypto store: cache bootstrap, scoped clearing, archive retry, cache-only sync, pending reminders and source collection passed")
+        let shortcutRepository = AssetRepository()
+        var wallet = CryptoWallet()
+        wallet.name = "Cosmos"; wallet.network = CryptoWallet.cosmosHub
+        wallet.address = "cosmos1y8nyfvmqh50p6ldpzljk3yrglppdv3t8h938ez"
+        let shortcutFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(shortcutRepository.storageScope) + ".json")
+        try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:shortcutFile)
+        let shortcutStore = CryptoStore(repositoryProvider:{shortcutRepository}, client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+            loadCredential:{$0 == "htx" ? htx : binance}, loadWallets:{[wallet]}, cacheDirectory:directory, nowProvider:{now})
+        configure(total:900)
+        shortcutRepository.beforeCommit = {
+            let saved = try JSONDecoder().decode(CryptoStore.Cache.self, from:Data(contentsOf:shortcutFile))
+            precondition(saved.records.first { $0.kind == "portfolio" && $0.day == CryptoDay.key(now) }?.values["total"] == 951,
+                         "The fresh snapshot must reach disk before GitHub upload")
+            precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1)
+        }
+        var shortcutEvents: [HakoExecutionEvent] = []
+        let shortcutSummary = try await HakoExecutionDiagnostics.context.withValue({ shortcutEvents.append($0) }) {
+            try await shortcutStore.collectAndSynchronize()
+        }
+        shortcutRepository.beforeCommit = nil
+        precondition(shortcutSummary.contains("最新资产已采集") && shortcutStore.pendingCount == 0)
+        precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1 && AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == 1)
+        precondition(shortcutStore.walletSnapshot(wallet)?.total == 1)
+        let shortcutPaths = Set(shortcutRepository.files.keys)
+        precondition(shortcutPaths.contains("data/crypto/portfolio/2026.csv") && shortcutPaths.contains("data/crypto/htx-trx/2026.csv"),
+                     "The shortcut did not upload both portfolio and contract records")
+        let shortcutRows = HakoExecutionLogRow.merging(shortcutEvents)
+        precondition(shortcutRows.contains { $0.stage == "采集交易所与链上资产" && $0.state == .succeeded })
+        precondition(shortcutRows.firstIndex { $0.stage == "读取 HTX 总资产" }! < shortcutRows.firstIndex { $0.stage == "同步最新资产记录" }!)
+        configure(total:901)
+        _ = try await shortcutStore.collectAndSynchronize()
+        precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1 && shortcutStore.portfolio.last?.values["total"] == 952,
+                     "A fresh balance cache incorrectly prevented shortcut collection")
+
+        let archivedBeforeFailure = shortcutRepository.files
+        configure(total:1000,failBinance:true)
+        do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Partial collection was reported as success") }
+        catch let error as HakoError { precondition(error.message.contains("Binance")) }
+        precondition(shortcutRepository.files == archivedBeforeFailure && shortcutStore.portfolio.last?.values["total"] == 952,
+                     "Partial collection overwrote the last complete snapshot or uploaded stale totals")
+        configure(total:1010,failSpotDetails:true)
+        do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Incomplete HTX accounts were reported as a complete collection") }
+        catch let error as HakoError { precondition(error.message.contains("HTX 分账户资产未读取完整")) }
+        precondition(shortcutRepository.files == archivedBeforeFailure, "Incomplete HTX detail collection still uploaded an archive")
+        shortcutRepository.failWrites = true
+        configure(total:1100)
+        do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Upload failure was reported as success") }
+        catch let error as HakoError { precondition(error.message.contains("test upload failure")) }
+        precondition(shortcutStore.pendingCount > 0 && shortcutRepository.files == archivedBeforeFailure)
+        shortcutRepository.failWrites = false
+        configure(total:1200)
+        _ = try await shortcutStore.collectAndSynchronize()
+        precondition(shortcutStore.pendingCount == 0 && shortcutStore.portfolio.last?.values["total"] == 1251)
+
+        let emptyRepository = AssetRepository()
+        let emptyFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(emptyRepository.storageScope) + ".json")
+        try JSONEncoder().encode(CryptoStore.Cache(records:shortcutStore.cache.records,archiveLoaded:true,archivedPortfolioDays:[])).write(to:emptyFile)
+        let unconfigured = CryptoStore(repositoryProvider:{emptyRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+            loadCredential:{_ in CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+        configure()
+        do { _ = try await unconfigured.collectAndSynchronize(); preconditionFailure("Old cached records disguised missing asset sources") }
+        catch let error as HakoError { precondition(error.message.contains("尚未配置资产来源")) }
+        precondition(emptyRepository.reads == 0 && emptyRepository.commits.isEmpty && AssetMockProtocol.requests.isEmpty)
+
+        let cancelledRepository = AssetRepository()
+        cancelledRepository.pauseNextRead = true
+        let cancelledStore = CryptoStore(repositoryProvider:{cancelledRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+            loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+        configure()
+        let cancelled = Task { try await cancelledStore.collectAndSynchronize() }
+        while !cancelledRepository.blocked { await Task.yield() }
+        cancelled.cancel()
+        cancelledRepository.resume?.resume();cancelledRepository.resume = nil
+        do { _ = try await cancelled.value; preconditionFailure("Cancelled collection continued to upload") }
+        catch is CancellationError { }
+        precondition(AssetMockProtocol.requests.isEmpty && cancelledRepository.commits.isEmpty && !cancelledStore.busy)
+        print("Crypto store: fresh shortcut collection, both archives, cache-only manual sync, partial failures, upload recovery and cancellation passed")
     }
 }

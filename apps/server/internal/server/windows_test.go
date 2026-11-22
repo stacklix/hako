@@ -89,6 +89,7 @@ func TestWindowsAgentEndToEnd(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	f.s.config.RequestTimeout = 10 * time.Second
+	checkWindowsHTTPProxy(t, f)
 	status, data := f.call("GET", "/api/v1/agents", nil, f.tokens.AccessToken)
 	var agents struct {
 		Agents []struct{ Capabilities []agent.Capability }

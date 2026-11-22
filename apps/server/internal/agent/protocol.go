@@ -12,6 +12,10 @@ type Capability struct {
 
 const ProtocolVersion = 4
 
+// Resource limits for opaque device requests and replies, including JSON framing.
+const MaxRequestBytes = 1024 * 1024
+const MaxReplyBytes = 12 * 1024 * 1024
+
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

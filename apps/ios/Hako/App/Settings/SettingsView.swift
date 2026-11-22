@@ -33,7 +33,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, applications, github, languageModel, cloud, dataBackup
+        case server, scanner, applications, github, languageModel, cloud, dataBackup, httpProxy, agents
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -83,6 +83,11 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section("Hako 服务") {
+                Button { sheet = .agents } label: {
+                    settingsEntry("Agent 管理", systemImage: "desktopcomputer")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 Button { sheet = .server } label: {
                     settingsEntry("服务器与登录", systemImage: "server.rack")
                 }
@@ -119,6 +124,11 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section("网络") {
+                Button { sheet = .httpProxy } label: {
+                    settingsEntry("HTTP 代理", systemImage: "arrow.triangle.branch")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 LabeledContent("网络检测", value: network.isLocal ? "当前在局域网" : "当前在外网或未识别 Wi-Fi")
                 NavigationLink { NetworkSettingsView() } label: {
                     LabeledContent("网络配置", value: network.currentSSID ?? "Wi-Fi 与网络环境")
@@ -127,13 +137,21 @@ struct SettingsView: View {
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
-            Section("工具") {
+            Section {
+                NavigationLink { HakoShortcutsView() } label: {
+                    Label("快捷指令", systemImage: "square.stack.3d.up")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 NavigationLink { HakoShortcutHistoryView() } label: {
                     Label("快捷指令执行历史", systemImage: "clock.arrow.circlepath")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+            } header: { Text("快捷指令") }
+            Section("工具") {
                 NavigationLink { HakoLogsView() } label: {
                     Label("日志", systemImage: "doc.text.magnifyingglass")
                 }
@@ -186,6 +204,8 @@ struct SettingsView: View {
                 case .languageModel: LanguageModelSettingsSheet()
                 case .cloud: HakoCloudSettingsView()
                 case .dataBackup: HakoDataBackupSettings()
+                case .httpProxy: HTTPProxySettingsSheet()
+                case .agents: AgentSettingsSheet()
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in
