@@ -52,24 +52,13 @@ struct ECSTerminalView: View {
     private var connectionOverlay: some View {
         ScrollView {
             VStack(spacing: 18) {
-                Image(systemName: data.error == nil ? "terminal" : "network.slash")
-                    .font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
-                Text(data.connecting ? "正在连接终端" : data.error == nil ? "终端未连接" : "终端连接已断开")
-                    .font(.headline)
-                if let error = data.error {
-                    Text(error).font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
-                }
                 if data.connecting {
-                    Text("正在建立会话…").foregroundStyle(.secondary)
-                    Button("取消连接") { data.disconnect() }.buttonStyle(.bordered)
+                    ProgressView("正在连接终端")
+                    Button("取消连接") { data.disconnect() }
+                        .buttonStyle(HakoActionButtonStyle(primary: false))
                 } else {
-                    if data.cleaning { Text("正在结束上一次会话…").foregroundStyle(.secondary) }
-                    Button { data.connect(connection) } label: {
-                        Text(data.error == nil ? "连接" : "重新连接")
-                            .foregroundStyle(Color(uiColor: .systemBackground))
-                    }
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                        .tint(.primary)
+                    Button("连接") { data.connect(connection) }
+                        .buttonStyle(HakoActionButtonStyle())
                         .disabled(data.cleaning || !active || scenePhase != .active)
                 }
             }

@@ -131,6 +131,8 @@ internal static class CodeWorkshopChecks
         try
         {
             await WorkshopAccessChecks.RunAsync(directory, code, FixtureThread, token => Start(token), token => Start(token, scenario: "slow-turn"));
+            await WorkshopAccessChecks.CheckAcquisitionAsync(directory, code, project, FixtureThread,
+                token => Start(token, scenario: "writer-acquisition"));
             await using (var maintenance = new CodeWorkshop(Path.Combine(directory, "maintenance"), code, directory, token => Start(token)))
             {
                 var catalog = Result(await maintenance.CatalogAsync(Json(new { }), default));
@@ -923,6 +925,13 @@ internal static class CodeWorkshopChecks
                     Write(new { id = modelId, result = new { data = Array.Empty<object>(), nextCursor = (string?)null } });
                     waitingModel = null;
                 }
+            }
+            if (method == "thread/resume" && scenario == "writer-acquisition")
+            {
+                File.WriteAllText(Path.Combine(project, ".writer-acquiring"), "held");
+                while (!File.Exists(Path.Combine(project, ".writer-release"))) await Task.Delay(10);
+                if (File.Exists(Path.Combine(project, ".writer-reject")))
+                { Write(new { id, error = new { code = -32600, message = "thread-store conflict: already has an active writer" } }); continue; }
             }
             if (method == "thread/resume" && scenario == "slow-resume") await Task.Delay(8500);
             if (method == "thread/resume" && scenario == "slow-turn")

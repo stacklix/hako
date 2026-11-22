@@ -3,7 +3,9 @@ import Foundation
 
 struct HakoShortcutRun: Codable, Identifiable {
     enum Status: String, Codable {
-        case running = "执行中", succeeded = "成功", failed = "失败", cancelled = "已取消", interrupted = "已中断", skipped = "已跳过"
+        case pending = "待执行", running = "执行中", succeeded = "成功", failed = "失败", cancelled = "已取消", interrupted = "已中断", skipped = "已跳过"
+
+        var canRetry: Bool { self == .failed || self == .cancelled || self == .interrupted }
     }
 
     struct Step: Codable, Identifiable {
@@ -56,8 +58,9 @@ struct HakoShortcutRun: Codable, Identifiable {
         }
     }
 
-    func start(_ name: String) -> UUID {
-        let run = HakoShortcutRun(id: UUID(), name: name, startedAt: .now)
+    func start(_ name: String, steps: [String] = []) -> UUID {
+        let run = HakoShortcutRun(id: UUID(), name: name, startedAt: .now,
+                                  steps: steps.map { HakoShortcutRun.Step(name: $0, status: .pending) })
         runs.insert(run, at: 0)
         if runs.count > Self.capacity { runs.removeLast() }
         save()
@@ -101,11 +104,23 @@ struct HakoShortcutRun: Codable, Identifiable {
 
     func beginRetry(_ id: UUID) -> Bool {
         guard !runs.contains(where: { $0.status == .running }),
-              let index = runs.firstIndex(where: { $0.id == id }), runs[index].status == .failed else { return false }
+              let index = runs.firstIndex(where: { $0.id == id }), runs[index].status.canRetry else { return false }
         runs[index].status = .running
         runs[index].finishedAt = nil
         save()
         return true
+    }
+
+    func recordCancellation(_ context: HakoExecutionCancellation) {
+        guard let id = context.runID, let attempt = context.attempt, let reason = context.reason,
+              let index = runs.firstIndex(where: { $0.id == id }),
+              let step = runs[index].steps.firstIndex(where: { $0.name == attempt.step && $0.attemptID == attempt.id }),
+              !(runs[index].steps[step].events ?? []).contains(where: { $0.id == context.id }) else { return }
+        var events = runs[index].steps[step].events ?? []
+        events.append(HakoExecutionEvent(id: context.id, stage: "快捷指令取消原因", state: .info, detail: HakoLog.sanitize(reason)))
+        runs[index].steps[step].events = Array(events.suffix(Self.eventCapacity))
+        if runs[index].steps[step].status == .cancelled { runs[index].steps[step].message = HakoLog.sanitize(reason) }
+        save()
     }
 
     func finish(_ id: UUID, status: HakoShortcutRun.Status) {

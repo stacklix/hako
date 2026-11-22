@@ -154,6 +154,15 @@ final class InvestmentStore: ObservableObject {
         }
     }
 
+    func loadForSynchronization() async throws {
+        lastServerReadSucceeded = false
+        await load(force: true)
+        try Task.checkCancellation()
+        guard lastServerReadSucceeded else {
+            throw InvestmentError.invalid(loadError ?? (quoteStatus.isEmpty ? "本次未能读取服务端投资账本，请检查网络后重试。" : quoteStatus))
+        }
+    }
+
     func exportLedger() async throws -> Data {
         await authentication.restore()
         guard authentication.authenticated else {

@@ -312,7 +312,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
                 detail: "\(HakoLog.safeURL(url.absoluteString))\n\(outcome)\n耗时：\(Int(Date.now.timeIntervalSince(started) * 1000)) ms",
                 secrets: [token ?? "", nonce ?? ""])
         }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        let timeout: TimeInterval = method == "GET" && path.hasPrefix("/api/v1/investment/") ? 90 : 15
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         if signed {
@@ -333,9 +334,8 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
                                              logBody: !path.hasPrefix("/api/v1/investment/"))
             }
         } catch {
-            // URLSession uses URLError.cancelled for task cancellation; callers
-            // already handle CancellationError silently and retain credentials.
-            if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+            // A transport-level -999 alone does not prove the caller was cancelled.
+            if HTTPTransport.isTaskCancellation(error) {
                 outcome = "请求已取消"; logLevel = .info
                 throw CancellationError()
             }

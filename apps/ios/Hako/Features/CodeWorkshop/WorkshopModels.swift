@@ -168,6 +168,15 @@ struct WorkshopThreadAccess: Codable, Hashable, Sendable {
         default: "暂时无法确认会话是否可写，请重新检查；草稿已保留。"
         }
     }
+
+    func synchronizationWarning(operation: WorkshopOperation?, threadId: String?) -> String? {
+        // Startup ownership checks can lag behind the accepted operation stream.
+        // Keep send permissions conservative while avoiding a contradictory notice.
+        if state == "unknown", let threadId, operation?.threadId == threadId, operation?.active == true {
+            return nil
+        }
+        return unavailableReason
+    }
 }
 
 struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {

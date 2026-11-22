@@ -9,6 +9,7 @@ import Foundation
     @MainActor static func main() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
+        try await checkFailureIsolation(in: directory)
         let file = directory.appendingPathComponent("runs.json")
         let history = HakoShortcutHistory(fileURL: file)
         let registry = HakoShortcutRegistry(history: history)
@@ -73,6 +74,54 @@ import Foundation
         _ = try await registry.runCallbacks(title: "Manual backup", names: ["Manual"], manual: true)
         _ = try await registry.runCallbacks(title: "Scheduled backup", names: ["Manual"])
         precondition(manualModes == [true, false], "Manual execution affected a later scheduled run")
+        var reported: [Int] = []
+        _ = try await registry.runCallbacks(title: "Progress", names: ["Manual"], progress: { task, stage, completed, total in
+            precondition(task == "Manual" && !stage.isEmpty && total == 1)
+            reported.append(completed)
+        })
+        precondition(reported.first == 0 && reported.last == 1, "Intent progress did not follow real task completion")
+        let merged = HakoExecutionLogRow.merging(history.runs[0].steps[0].events ?? [])
+        precondition(merged.filter { $0.stage == "执行子任务" }.count == 1)
+        precondition(merged.first { $0.stage == "执行子任务" }?.finishedAt != nil)
+        registry.register("Cancellation") { throw CancellationError() }
+        let cancellation = HakoExecutionCancellation()
+        cancellation.record("用户取消了快捷指令。")
+        do {
+            _ = try await HakoExecutionDiagnostics.cancellation.withValue(cancellation) {
+                try await registry.runCallbacks(title: "User cancellation", names: ["Cancellation"])
+            }
+            preconditionFailure("Cancellation was swallowed")
+        } catch is CancellationError { }
+        precondition(history.runs[0].status == .cancelled && history.runs[0].steps[0].message?.contains("用户取消") == true)
+        cancellation.record("系统结束后台执行：超过允许的执行时间。")
+        history.recordCancellation(cancellation)
+        history.recordCancellation(cancellation)
+        precondition(history.runs[0].steps[0].events?.filter { $0.id == cancellation.id }.count == 1)
+        precondition(history.runs[0].steps[0].message?.contains("系统结束后台执行") == true, "A late system cancellation reason was lost")
+        let oldAttempt = cancellation.attempt!.id
+        history.recordStep("Cancellation", status: .running, runID: cancellation.runID!)
+        history.recordCancellation(cancellation)
+        precondition(history.runs[0].steps[0].attemptID != oldAttempt && history.runs[0].steps[0].message == nil,
+                     "Cancellation from an older attempt contaminated a retry")
+        history.recordStep("Cancellation", status: .cancelled, runID: cancellation.runID!)
+        var firstCalls = 0, cancelledCalls = 0, pendingCalls = 0
+        registry.register("Retry A") { firstCalls += 1; return "done" }
+        registry.register("Retry B") {
+            cancelledCalls += 1
+            if cancelledCalls == 1 { throw CancellationError() }
+            precondition(HakoShortcutExecution.isManual)
+            return "recovered"
+        }
+        registry.register("Retry C") { pendingCalls += 1; return "started after retry" }
+        do {
+            _ = try await registry.runCallbacks(title: "Cancelled child with remaining work", names: ["Retry A", "Retry B", "Retry C"])
+            preconditionFailure("Cancelled task completed")
+        } catch let error as HakoError { precondition(error.message.contains("Retry B")) }
+        let cancelledID = history.runs[0].id
+        precondition(history.runs[0].steps.map(\.status) == [.succeeded, .cancelled, .succeeded])
+        _ = try await registry.retryRun(cancelledID)
+        precondition(history.runs[0].id == cancelledID && history.runs[0].status == .succeeded)
+        precondition(firstCalls == 1 && cancelledCalls == 2 && pendingCalls == 1, "Retry repeated another child's successful work")
         do { _ = try await registry.runCallbacks(title: "Unknown", names: ["removed"]); preconditionFailure("Unknown selection accepted") }
         catch {}
         let unavailable = history.start("unavailable")
@@ -90,6 +139,80 @@ import Foundation
         let interrupted = HakoShortcutHistory(fileURL: file)
         precondition(interrupted.runs[0].status == .interrupted && interrupted.runs[0].steps[0].status == .interrupted)
         precondition(interrupted.runs[0].steps[0].events?.count == HakoShortcutHistory.eventCapacity)
-        print("PASS: shortcut retry updates and persists the original record, preserves successful steps, rejects duplicate and unavailable tasks")
+        let retryInterrupted = HakoShortcutRegistry(history: interrupted)
+        retryInterrupted.register("bounded") { "recovered after restart" }
+        _ = try await retryInterrupted.retryRun(interrupted.runs[0].id)
+        precondition(interrupted.runs[0].status == .succeeded && interrupted.runs[0].steps[0].attempts == 2)
+        print("PASS: isolated child failures and cancellations, whole-run cancellation, progress, persistent retries and preserved successful steps")
+    }
+
+    @MainActor private static func checkFailureIsolation(in directory: URL) async throws {
+        let history = HakoShortcutHistory(fileURL: directory.appendingPathComponent("isolation.json"))
+        let registry = HakoShortcutRegistry(history: history)
+        var afterFailure = 0
+        registry.register("Failure A") { throw HakoError(message: "ordinary failure") }
+        registry.register("Failure B") { afterFailure += 1; return "backup completed" }
+        do {
+            _ = try await registry.runCallbacks(title: "Ordinary failure", names: ["Failure A", "Failure B"])
+            preconditionFailure("An ordinary failure was reported as success")
+        } catch let error as HakoError {
+            precondition(error.message.contains("ordinary failure") && error.message.contains("backup completed"))
+        }
+        precondition(afterFailure == 1 && history.runs[0].steps.map(\.status) == [.failed, .succeeded])
+
+        var cancelledCalls = 0, backupCalls = 0
+        registry.register("Local A") {
+            cancelledCalls += 1
+            if cancelledCalls == 1 { throw CancellationError() }
+            return "recovered"
+        }
+        registry.register("Local B") { backupCalls += 1; return "backup completed" }
+        do {
+            _ = try await registry.runCallbacks(title: "Child cancellation", names: ["Local A", "Local B"])
+            preconditionFailure("A cancelled child was reported as success")
+        } catch let error as HakoError {
+            precondition(error.message.contains("Local A") && error.message.contains("backup completed"))
+        } catch { preconditionFailure("A single child cancellation stopped the whole run: \(error)") }
+        precondition(backupCalls == 1 && history.runs[0].status == .failed)
+        precondition(history.runs[0].steps.map(\.status) == [.cancelled, .succeeded])
+        _ = try await registry.retryRun(history.runs[0].id)
+        precondition(cancelledCalls == 2 && backupCalls == 1, "Retry repeated an already completed backup")
+
+        var isolatedBackup = 0
+        registry.register("Self A") {
+            withUnsafeCurrentTask { $0?.cancel() }
+            throw URLError(.cancelled)
+        }
+        registry.register("Self B") {
+            precondition(!Task.isCancelled, "Cancellation leaked from another child")
+            isolatedBackup += 1
+            return "backup completed"
+        }
+        var progress: [Int] = []
+        do {
+            _ = try await registry.runCallbacks(title: "Self-cancelled child", names: ["Self A", "Self B"], progress: { _, _, done, _ in progress.append(done) })
+            preconditionFailure("A self-cancelled child was reported as success")
+        } catch is HakoError { }
+        precondition(!Task.isCancelled && isolatedBackup == 1)
+        precondition(history.runs[0].steps.map(\.status) == [.cancelled, .succeeded])
+        precondition(progress.last == 2, "Progress stopped at an isolated child cancellation")
+
+        var childStarted = false, childSawCancellation = false, laterCalls = 0
+        registry.register("Whole A") {
+            childStarted = true
+            do { try await Task.sleep(for: .seconds(60)) }
+            catch { childSawCancellation = Task.isCancelled; throw error }
+            return "unexpected"
+        }
+        registry.register("Whole B") { laterCalls += 1; return "unexpected" }
+        let whole = Task { @MainActor in
+            try await registry.runCallbacks(title: "Whole run cancellation", names: ["Whole A", "Whole B"])
+        }
+        while !childStarted { await Task.yield() }
+        whole.cancel()
+        do { _ = try await whole.value; preconditionFailure("Whole-run cancellation was swallowed") }
+        catch is CancellationError { }
+        precondition(childSawCancellation && laterCalls == 0)
+        precondition(history.runs[0].status == .cancelled && history.runs[0].steps.map(\.status) == [.cancelled, .pending])
     }
 }

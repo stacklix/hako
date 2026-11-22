@@ -13,6 +13,10 @@ final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sen
 enum HTTPTransport {
     static let shared = makeSession()
 
+    static func isTaskCancellation(_ error: Error, taskCancelled: Bool = Task.isCancelled) -> Bool {
+        taskCancelled || error is CancellationError
+    }
+
     static func data(for request: URLRequest, using session: URLSession = shared,
                      source: HakoLogSource = .hako, secrets: [String] = [],
                      logBody: Bool = true) async throws -> (Data, URLResponse) {

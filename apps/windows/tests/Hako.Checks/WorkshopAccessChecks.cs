@@ -12,6 +12,48 @@ internal static class WorkshopAccessChecks
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, WorkshopProtocol.Json);
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
 
+    internal static async Task CheckAcquisitionAsync(string directory, string code, string project, string thread,
+        Func<CancellationToken, Task<CodexAppServer>> start)
+    {
+        var acquiring = Path.Combine(project, ".writer-acquiring");
+        var release = Path.Combine(project, ".writer-release");
+        var reject = Path.Combine(project, ".writer-reject");
+        foreach (var conflict in new[] { false, true })
+        {
+            File.Delete(acquiring); File.Delete(release); File.Delete(reject);
+            if (conflict) File.WriteAllText(reject, "external writer wins");
+            await using var workshop = new CodeWorkshop(Path.Combine(directory, "writer-acquisition-" + conflict), code,
+                startServer: start, readWriter: _ => File.Exists(acquiring) ? CodexWriterState.Held : CodexWriterState.Free);
+            try
+            {
+                var catalog = Json((await workshop.CatalogAsync(Json(new { }), default))!);
+                var applicationId = catalog.GetProperty("applications")[0].GetProperty("id").GetString()!;
+                var id = Guid.NewGuid().ToString("D");
+                await workshop.StartAsync(Json(new { requestId = id, applicationId, threadId = thread, message = "Acquire writer" }), default);
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (!File.Exists(acquiring) && DateTime.UtcNow < deadline) await Task.Delay(10);
+                Check(File.Exists(acquiring), "Fixture did not acquire its writer before acknowledging resume");
+                async Task<string?> Access() => Json((await workshop.ThreadAccessAsync(Json(new { applicationId, threadId = thread }), default))!)
+                    .GetProperty("state").GetString();
+                Check(await Access() == "unknown", "A pending workshop resume was mistaken for an external writer or granted unconfirmed ownership");
+                try
+                {
+                    await workshop.QueueAsync(Json(new { operationId = id, requestId = Guid.NewGuid().ToString("D"), message = "Not yet owned" }), default);
+                    throw new Exception("Pending writer ownership accepted a follow-up");
+                }
+                catch (WorkshopException error) when (error.Code == "codex_thread_access_unknown") { }
+                File.WriteAllText(release, "resume acknowledgement");
+                var expected = conflict ? "occupied" : "workshop";
+                deadline = DateTime.UtcNow.AddSeconds(5);
+                while (await Access() != expected && DateTime.UtcNow < deadline) await Task.Delay(10);
+                Check(await Access() == expected, "Resume outcome did not distinguish an owned writer from a real external conflict");
+            }
+            finally { File.WriteAllText(release, "cleanup"); }
+        }
+        File.Delete(acquiring); File.Delete(release); File.Delete(reject);
+        Console.WriteLine("PASS: pending writer acquisition stays unconfirmed; successful resume owns it, rejected resume preserves external-writer protection");
+    }
+
     internal static async Task RunAsync(string directory, string code, string thread,
         Func<CancellationToken, Task<CodexAppServer>> start, Func<CancellationToken, Task<CodexAppServer>> slow)
     {

@@ -7,7 +7,6 @@ struct HeadplaneSettingsView: View {
     @State private var original = HeadplaneConnection()
     @State private var error: String?
     @State private var disconnect = false
-    @State private var diagnostics = false
     var body: some View {
         HeadplaneSheet(title: "连接设置", busy: store.busy, dirty: draft != original) {
             HeadplaneField(title: "实例名称") { TextField("Homelab", text: $draft.name) }
@@ -28,26 +27,22 @@ struct HeadplaneSettingsView: View {
             if draft.allowHTTP { Text("HTTP 会以未加密方式传输密钥和会话。").font(.footnote).foregroundStyle(HeadplaneStyle.orange) }
             Text("填写 Headplane 的管理页面地址。连接验证成功后保存到系统钥匙串，并可通过 iCloud 钥匙串同步。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
             HeadplaneErrorText(message: error ?? store.configurationError)
-            Button(store.busy ? "正在验证连接…" : "验证并保存") {
-                Task {
-                    error = nil
-                    do { try await store.connect(draft); dismiss() }
-                    catch { self.error = error.localizedDescription }
+            HStack(spacing: 12) {
+                if store.connection != nil {
+                    HakoDeleteButton(title: "移除此连接") { disconnect = true }
+                        .disabled(store.busy || store.pending != nil)
                 }
-            }.buttonStyle(HeadplaneButtonStyle(primary: true))
-                .disabled(store.busy || store.pending != nil || store.configurationError != nil)
-            if store.connection != nil {
-                Button("服务器状态与能力") { diagnostics = true }.buttonStyle(HeadplaneButtonStyle())
-                    .disabled(store.busy)
-                if draft != original {
-                    Text("服务器检查使用已保存的连接。修改地址或密钥后，请先验证并保存。").font(.footnote).foregroundStyle(HeadplaneStyle.muted)
-                }
-                HakoDeleteButton(title: "移除此连接") { disconnect = true }
-                    .padding(.top, 10).disabled(store.busy || store.pending != nil)
+                Button(store.busy ? "正在验证连接…" : "验证并保存") {
+                    Task {
+                        error = nil
+                        do { try await store.connect(draft); dismiss() }
+                        catch { self.error = error.localizedDescription }
+                    }
+                }.buttonStyle(HeadplaneButtonStyle(primary: true))
+                    .disabled(store.busy || store.pending != nil || store.configurationError != nil)
             }
         }
         .onAppear { draft = store.connection ?? HeadplaneConnection(); original = draft }
-        .sheet(isPresented: $diagnostics) { HeadplaneDiagnosticsView(store: store, revision: store.revision) }
         .hakoDeleteConfirmation(Text("移除本机保存的连接和凭据？"), isPresented: $disconnect,
                                 disabled: store.busy || store.pending != nil) {
             do { try store.disconnect(); dismiss() } catch { self.error = error.localizedDescription }

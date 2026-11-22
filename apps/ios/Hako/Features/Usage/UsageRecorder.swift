@@ -25,9 +25,15 @@ import SwiftData
         let context = try UsageDatabase.context()
         var backfill = UsageBackfill.Result()
         if collect {
-            try await ScreenTime.prepareAuthorization(requestAuthorization: requestAuthorization)
-            backfill = try await UsageBackfill.insertMissing(days: UsageDay.recentWeek(), context: context) {
-                try await ScreenTime.collect($0)
+            try await HakoExecutionDiagnostics.measure("检查使用时间授权", success: { _ in "已确认使用时间数据访问权限。" }) {
+                try await ScreenTime.prepareAuthorization(requestAuthorization: requestAuthorization)
+            }
+            backfill = try await HakoExecutionDiagnostics.measure("补采最近七天使用时间", success: {
+                "新增 \($0.inserted) 天，已有 \($0.skipped) 天，未完成 \($0.failures.count) 天。"
+            }) {
+                try await UsageBackfill.insertMissing(days: UsageDay.recentWeek(), context: context) {
+                    try await ScreenTime.collect($0)
+                }
             }
         }
         if !collect {
@@ -45,7 +51,9 @@ import SwiftData
         for year in grouped.keys.sorted() {
             let records = grouped[year]!
             let rows = records.map(\.csvRow)
-            try await client.push(directory: syncDirectory, year: year, rows: rows)
+            try await HakoExecutionDiagnostics.measure("同步使用时间 · \(year)", success: { _ in
+                "已检查 \(records.count) 天记录并补齐 GitHub 缺失日期，已有行保持不变。"
+            }) { try await client.push(directory: syncDirectory, year: year, rows: rows) }
             for record in records { record.syncedAt = .now }
             try context.save()
         }

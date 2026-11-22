@@ -9,6 +9,20 @@ import Foundation
             let decoded = try JSONDecoder().decode(WorkshopThreadAccess.self, from: JSONEncoder().encode(access))
             precondition(decoded == access)
         }
+        let unknownAccess = WorkshopThreadAccess(state: "unknown", checkedAt: 123)
+        for state in ["starting", "running", "waiting", "stopping", "finishing", "completed", "failed", "unknown"] {
+            let operation = WorkshopOperation(id: "accepted", applicationId: "app", threadId: "thread", turnId: nil,
+                state: state, message: nil, startedAt: 1)
+            precondition((unknownAccess.synchronizationWarning(operation: operation, threadId: "thread") == nil) == operation.active,
+                         "A confirmed active operation still displays the unknown-writer warning")
+            precondition(unknownAccess.synchronizationWarning(operation: operation, threadId: "another-thread") != nil,
+                         "An unrelated operation hid this thread's warning")
+            let occupied = WorkshopThreadAccess(state: "occupied", checkedAt: 123)
+            precondition(occupied.synchronizationWarning(operation: operation, threadId: "thread") == occupied.unavailableReason,
+                         "A confirmed external writer conflict was hidden")
+        }
+        precondition(!unknownAccess.canSend, "Hiding a redundant notice must not grant write access")
+        precondition(unknownAccess.synchronizationWarning(operation: nil, threadId: "thread") != nil)
         let computer = try JSONDecoder().decode(WorkshopAgent.self, from: Data(#"{"id":"desktop","name":"PC","online":false,"protocolVersion":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}"#.utf8))
         precondition(computer.lan.addresses == ["192.168.0.10"] && computer.lan.port == 8005 && !computer.online)
         precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))

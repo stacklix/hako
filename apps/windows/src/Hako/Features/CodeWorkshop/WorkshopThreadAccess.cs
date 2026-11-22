@@ -16,6 +16,10 @@ internal sealed partial class CodeWorkshop
         lock (gate)
         {
             var state = jobs.Values.Any(job => job.ThreadId == threadId && job.OwnsThreadWriter) ? "workshop" :
+                // Codex can acquire its byte lock before acknowledging resume.
+                // Until that RPC finishes, neither ownership nor an external
+                // conflict has been established; keep writes blocked meanwhile.
+                jobs.Values.Any(job => job.ThreadId == threadId && job.AcquiringThreadWriter) ? "unknown" :
                 readWriter(threadId) switch { CodexWriterState.Free => "available", CodexWriterState.Held => "occupied", _ => "unknown" };
             return new(state, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }

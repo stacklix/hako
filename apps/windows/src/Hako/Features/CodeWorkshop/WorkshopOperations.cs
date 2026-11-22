@@ -56,6 +56,7 @@ internal sealed class WorkshopJob
     [JsonIgnore] public SemaphoreSlim Control { get; } = new(1, 1);
     [JsonIgnore] public bool StopRequested { get; set; }
     [JsonIgnore] public bool OwnsThreadWriter { get; set; }
+    [JsonIgnore] public bool AcquiringThreadWriter { get; set; }
     [JsonIgnore] public List<JsonElement> PendingEvents { get; } = new();
     [JsonIgnore] public string Outcome { get; set; } = "completed";
     [JsonIgnore] public bool Active => State is "starting" or "running" or "waiting" or "stopping" or "finishing";
@@ -208,6 +209,7 @@ internal sealed partial class CodeWorkshop
                     if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
                     options["cwd"] = job.Cwd;
                     startupStage = "创建会话";
+                    lock (gate) job.AcquiringThreadWriter = true;
                     var reply = await server.RequestAsync("thread/start", options, stopping.Token);
                     settings = reply;
                     lock (gate)
@@ -235,11 +237,13 @@ internal sealed partial class CodeWorkshop
                     options["threadId"] = job.ThreadId;
                     options["excludeTurns"] = true;
                     startupStage = "恢复会话";
+                    lock (gate) job.AcquiringThreadWriter = true;
                     settings = await server.RequestAsync("thread/resume", options, stopping.Token);
                 }
                 lock (gate)
                 {
                     job.OwnsThreadWriter = true;
+                    job.AcquiringThreadWriter = false;
                     if (job.StopRequested) throw new OperationCanceledException();
                     job.Submitted = true;
                     job.State = "running";
@@ -288,6 +292,7 @@ internal sealed partial class CodeWorkshop
             lock (gate)
             {
                 job.OwnsThreadWriter = false;
+                job.AcquiringThreadWriter = false;
                 if (job.State == "finishing") job.State = job.Outcome;
                 job.Server = null;
                 job.Approvals.Clear();
@@ -301,6 +306,7 @@ internal sealed partial class CodeWorkshop
             lock (gate)
             {
                 job.OwnsThreadWriter = false;
+                job.AcquiringThreadWriter = false;
                 job.Server = null;
                 job.Approvals.Clear();
                 job.PendingEvents.Clear();

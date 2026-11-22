@@ -5,6 +5,7 @@ import Combine
     static let shared = CryptoStore()
     private var running: Task<Void, Never>?
     private var runningSyncs = false
+    private var synchronizationResult = "本机缓存已同步到 GitHub。"
     private let repositoryProvider: () -> any GitHubRepositoryAccess
     private let client: CryptoClient
     private let loadCredential: (String) throws -> CryptoCredential
@@ -34,12 +35,12 @@ import Combine
     var pricesExpired: Bool { !CryptoSyncPolicy.canReusePrices(updatedAt:cache.pricesUpdatedAt,now:nowProvider()) }
     func trigger() async -> String {
         await run(sync:true)
-        return message ?? "本机缓存已同步到 GitHub。"
+        return message ?? synchronizationResult
     }
     private func run(sync: Bool, force: Bool = false) async {
         if let running {
             let satisfies = sync == runningSyncs
-            await running.value
+            await HakoExecutionDiagnostics.measure("等待当前资产任务", success: { _ in "当前资产任务已结束。" }) { await running.value }
             if !satisfies { await run(sync:sync,force:force) }
             return
         }
@@ -175,18 +176,22 @@ import Combine
         }
         do {
             let repository=repositoryProvider()
-            try restoreLocalData(repository)
+            try HakoExecutionDiagnostics.measure("读取本机资产缓存", success: { _ in
+                "已加载 \(self.cache.records.count) 条资产记录，待同步 \(self.cache.pending.count) 条。"
+            }) { try restoreLocalData(repository) }
             let htx=try loadCredential("htx"), binance=try loadCredential("binance")
             contractScope=CryptoDay.hash(htx.key)
             scope=CryptoDay.hash(htx.key+"|"+binance.key+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
             var errors:[String]=[]
             if sync {
+                HakoExecutionDiagnostics.record("资产采集范围", detail: "本次只同步本机缓存，未请求交易所或链上资产。")
                 try await synchronize(repository)
                 return
             }
             let now=nowProvider()
             let assetsScope=CryptoDay.hash(htx.key+"|"+htx.secret+"|"+binance.key+"|"+binance.secret+"|"+wallets.map(\.identity).sorted().joined(separator:"|"))
             if !force && cache.assetsScope == assetsScope && CryptoSyncPolicy.canReuseAssets(updatedAt:cache.assetsUpdatedAt,now:now) {
+                HakoExecutionDiagnostics.record("复用有效资产缓存", detail: "资产余额仍在有效期内，本次不重复读取交易所和钱包余额。")
                 if pricesExpired { try await refreshPrices(htx:htx,binance:binance) }
                 try await refreshHTXDetails(htx,now:now,force:false)
                 return
@@ -205,34 +210,46 @@ import Combine
             var totals:[String:Double]=[:]
             var currentResult:Result<CryptoCurrentContract,Error>?
             if htx.configured {
-                do { totals["htx"]=try await client.htxTotal(htx) } catch { errors.append("HTX 总资产："+error.localizedDescription) }
                 do {
-                    let current=try await client.currentContract(htx,scope:contractScope,now:now,cached:cache.currentContract)
+                    totals["htx"]=try await HakoExecutionDiagnostics.measure("读取 HTX 总资产", success: { _ in "交易所总资产校验通过。" }) { try await client.htxTotal(htx) }
+                } catch { errors.append("HTX 总资产："+error.localizedDescription) }
+                do {
+                    let current=try await HakoExecutionDiagnostics.measure("读取今日 TRX 合约", success: { _ in "当前合约数据已读取。" }) {
+                        try await client.currentContract(htx,scope:contractScope,now:now,cached:cache.currentContract)
+                    }
                     currentResult = .success(current)
                     var value=cache;value.currentContract=current
                     try persist(value)
                 } catch { currentResult = .failure(error);errors.append("今日 TRX 合约："+error.localizedDescription) }
                 try await refreshHTXDetails(htx,now:now,force:force)
-            }
+            } else { HakoExecutionDiagnostics.record("HTX 资产来源", detail: "未配置，未请求交易所。") }
             if binance.configured {
                 binanceError=nil
                 do {
-                    let snapshot=try await client.binanceSnapshot(binance)
+                    let snapshot=try await HakoExecutionDiagnostics.measure("读取 Binance 资产", success: {
+                        "已读取 \($0.accounts.count) 个账户；" + ($0.quoteError == nil ? "资产报价已完成。" : "部分报价未完成。")
+                    }) { try await client.binanceSnapshot(binance) }
                     var value=cache;value.binanceSnapshot=snapshot
                     try persist(value)
                     totals["binance"]=snapshot.total
                     binanceError=snapshot.quoteError
-                    if let error=snapshot.quoteError { errors.append("Binance 报价："+error) }
+                    if let error=snapshot.quoteError {
+                        errors.append("Binance 报价："+error)
+                        HakoExecutionDiagnostics.record("Binance 资产报价", state: .failed, detail: error)
+                    }
                 } catch {
                     binanceError=error.localizedDescription
                     errors.append("Binance："+error.localizedDescription)
                 }
-            }
+            } else { HakoExecutionDiagnostics.record("Binance 资产来源", detail: "未配置，未请求交易所。") }
             var chain=0.0,chainComplete=true
             walletErrors=[:]
-            for wallet in wallets {
+            if wallets.isEmpty { HakoExecutionDiagnostics.record("链上资产来源", detail: "未配置观察地址，未请求链上资产。") }
+            for (index, wallet) in wallets.enumerated() {
                 do {
-                    let snapshot=try await client.walletSnapshot(wallet)
+                    let snapshot=try await HakoExecutionDiagnostics.measure("读取链上钱包 \(index + 1)", success: {
+                        "已读取 \($0.assets.count) 项链上资产。"
+                    }) { try await client.walletSnapshot(wallet) }
                     var value=cache
                     if value.walletSnapshots == nil { value.walletSnapshots=[:] }
                     if value.walletBalances == nil { value.walletBalances=[:] }
@@ -250,12 +267,20 @@ import Combine
             let complete=(!htx.configured || totals["htx"] != nil) && (!binance.configured || totals["binance"] != nil) && chainComplete
             if complete && !totals.isEmpty {
                 totals["total"]=totals.values.reduce(0,+)
-                try saveAcquired(CryptoRecord(kind:"portfolio",day:CryptoDay.key(now),sampledAt:now.timeIntervalSince1970,scope:scope,values:totals))
+                try HakoExecutionDiagnostics.measure("保存当日资产快照", success: { _ in "总资产已汇总，当日快照已保存到本机。" }) {
+                    try saveAcquired(CryptoRecord(kind:"portfolio",day:CryptoDay.key(now),sampledAt:now.timeIntervalSince1970,scope:scope,values:totals))
+                }
+            } else if !complete {
+                HakoExecutionDiagnostics.record("保存当日资产快照", state: .failed, detail: "部分资产来源未读取成功，保留上次完整快照。")
             }
-            let history=try await client.contractHistory(htx,now:now,requests:contractRequests,current:currentResult)
+            let history=try await HakoExecutionDiagnostics.measure("读取待补充合约历史", success: { _ in
+                !htx.configured ? "未配置 HTX，未读取合约历史。" : contractRequests.isEmpty ? "历史记录完整，无需补充。" : "已检查 \(contractRequests.count) 天的缺失字段。"
+            }) { try await client.contractHistory(htx,now:now,requests:contractRequests,current:currentResult) }
             for request in contractRequests {
                 do {
-                    let result=try await client.contract(htx,now:now,scope:contractScope,day:request.day,fields:request.fields,history:history)
+                    let result=try await HakoExecutionDiagnostics.measure("补充合约记录 · \(CryptoDay.key(request.day))", success: {
+                        $0.errors.isEmpty ? "缺失字段已检查并补充。" : "部分字段未完成：" + $0.errors.joined(separator: "；")
+                    }) { try await client.contract(htx,now:now,scope:contractScope,day:request.day,fields:request.fields,history:history) }
                     if !result.record.values.isEmpty { try saveAcquired(result.record) }
                     errors += result.errors.map { CryptoDay.key(request.day)+" TRX 合约 · "+$0 }
                 }
@@ -274,7 +299,12 @@ import Combine
         let previous = htxSnapshot
         guard force || htxDetailsNeedRetry || previous?.balanceVersion != CryptoHTXSnapshot.currentBalanceVersion ||
                 !CryptoSyncPolicy.canReuseAssets(updatedAt:previous?.sampledAt,now:now) else { return }
-        let snapshot = try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous)
+        let snapshot = try await HakoExecutionDiagnostics.measure("读取 HTX 分账户资产", success: {
+            $0.errors.isEmpty ? "分账户资产已读取。" : "已读取可用账户，\($0.errors.count) 个分项未完成。"
+        }) { try await client.htxAssetDetails(credential,scope:htxScope,now:now,previous:previous) }
+        if !snapshot.errors.isEmpty {
+            HakoExecutionDiagnostics.record("HTX 分账户读取结果", state: .failed, detail: snapshot.errors.joined(separator: "\n"))
+        }
         var value = cache
         value.htxSnapshot = snapshot
         try persist(value)
@@ -357,7 +387,9 @@ import Combine
     }
     private func synchronize(_ repository: any GitHubRepositoryAccess) async throws {
         for attempt in 0..<3 {
-            let archive=try await readArchive(repository)
+            let archive=try await HakoExecutionDiagnostics.measure("读取 GitHub 资产归档", success: {
+                "已读取 \($0.records.count) 条归档记录。"
+            }) { try await readArchive(repository) }
             var remote=archive.records
             let head=archive.head
             var value=cache
@@ -388,11 +420,26 @@ import Combine
                 files[path]=try CryptoRecord.encode(value.records.filter { $0.path == path },kind:String(kind))
             }
             // Keep the merged cache visible even if uploading fails; pending rows remain retryable.
-            try persist(value)
-            let result=try await repository.commit(files:files,expectedHead:head,message:GitHubCommitMessage(headline:"Update private asset snapshots"))
-            if result == .staleHead { if attempt == 2 { throw HakoError(message:"私有库持续变化，请稍后重试。") }; continue }
+            try HakoExecutionDiagnostics.measure("合并并保存待同步记录", success: { _ in
+                "合并后共 \(value.records.count) 条，待同步 \(value.pending.count) 条，涉及 \(files.count) 个年度文件。"
+            }) { try persist(value) }
+            let result=try await HakoExecutionDiagnostics.measure("同步 GitHub 年度文件", success: { result in
+                switch result {
+                case .committed: "已提交 \(value.pending.count) 条记录，更新 \(files.count) 个年度文件。"
+                case .unchanged: "归档已是最新，无需提交。"
+                case .staleHead: "仓库在同步期间发生变化，需要重新读取并合并。"
+                }
+            }) { try await repository.commit(files:files,expectedHead:head,message:GitHubCommitMessage(headline:"Update private asset snapshots")) }
+            if result == .staleHead {
+                if attempt == 2 { throw HakoError(message:"私有库持续变化，请稍后重试。") }
+                HakoExecutionDiagnostics.record("重新合并资产归档", detail: "检测到并发更新，即将进行第 \(attempt + 2) 次同步。")
+                continue
+            }
+            synchronizationResult = result == .unchanged ? "GitHub 归档已是最新，无需提交。" : "已同步 \(value.pending.count) 条记录，更新 \(files.count) 个年度文件。"
             value.archivedPortfolioDays=Set(value.records.filter { $0.kind == "portfolio" && $0.values["total"] != nil }.map(\.day))
-            value.pending=[];value.syncedAt = .now;try persist(value);message=nil;return
+            value.pending=[];value.syncedAt = .now
+            try HakoExecutionDiagnostics.measure("保存资产同步状态", success: { _ in "同步状态已保存，待同步记录已清空。" }) { try persist(value) }
+            message=nil;return
         }
     }
 }

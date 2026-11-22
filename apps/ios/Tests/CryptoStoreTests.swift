@@ -151,7 +151,15 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(failDay:failed)
         store.loadCachedData()
         precondition(store.contracts.count == 2 && AssetMockProtocol.requests.isEmpty && repository.reads == 0,"cached records are published before any network request")
-        await store.collect(force:true)
+        var collectionEvents: [HakoExecutionEvent] = []
+        await HakoExecutionDiagnostics.context.withValue({ collectionEvents.append($0) }) {
+            await store.collect(force:true)
+        }
+        let collectionRows = HakoExecutionLogRow.merging(collectionEvents)
+        precondition(collectionRows.contains { $0.stage == "读取 HTX 总资产" && $0.state == .succeeded })
+        precondition(collectionRows.contains { $0.stage == "读取 Binance 资产" && $0.detail.contains("1 个账户") })
+        precondition(collectionRows.contains { $0.stage == "保存当日资产快照" && $0.state == .succeeded })
+        precondition(!collectionEvents.contains { $0.detail.contains(htx.key) || $0.detail.contains(htx.secret) })
         let htxDetails = store.htxSnapshot!
         let htxSpot = htxDetails.rows(in:.spot).first!
         precondition(htxSpot.quantity == 40 && htxSpot.frozen == 10 && htxDetails.value(htxSpot) == 10)
@@ -204,7 +212,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
         repository.files[remote.path]=try CryptoRecord.encode([existing,ancient,remote],kind:"htx-trx")
         repository.failWrites=true
         configure(total:400)
-        _ = await restored.trigger()
+        var syncEvents: [HakoExecutionEvent] = []
+        _ = await HakoExecutionDiagnostics.context.withValue({ syncEvents.append($0) }) { await restored.trigger() }
+        let syncRows = HakoExecutionLogRow.merging(syncEvents)
+        precondition(syncRows.contains { $0.stage == "资产采集范围" && $0.detail.contains("未请求交易所") })
+        precondition(syncRows.contains { $0.stage == "读取 GitHub 资产归档" && $0.state == .succeeded })
+        precondition(syncRows.contains { $0.stage == "同步 GitHub 年度文件" && $0.state == .failed })
+        precondition(!syncRows.contains { $0.stage == "保存资产同步状态" }, "Failed uploads must not report a cleared pending queue")
         precondition(restored.message != nil && restored.pendingCount > 0,"upload failures retain pending rows")
         precondition(AssetMockProtocol.requests.isEmpty,"explicit synchronization never queries asset APIs")
         precondition(restored.contracts.first{$0.id==remote.id}?.values["trx"] == 777,"remote existing contracts cannot be overwritten")

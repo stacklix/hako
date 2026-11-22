@@ -239,12 +239,12 @@ private struct WorkshopProjectFileEditor: View {
                         Button {
                             if !showingPreview { previewSource = data.draft }
                             showingPreview.toggle()
-                        } label: { Image(systemName: showingPreview ? "square.and.pencil" : "eye") }
+                        } label: { Image(systemName: showingPreview ? "square.and.pencil" : "book") }
                             .accessibilityLabel(showingPreview ? "编辑 Markdown 源码" : "预览 Markdown")
                             .disabled(data.loading || data.saving || !data.viewable)
                     }
                     Button { Task { await save() } } label: {
-                        if data.saving { ProgressView() } else { Text("保存") }
+                        if data.saving { ProgressView() } else { Image(systemName: "checkmark") }
                     }.disabled(!data.canSave).accessibilityLabel("保存文件")
                 }
             }

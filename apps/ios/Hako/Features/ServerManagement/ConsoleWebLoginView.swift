@@ -17,9 +17,10 @@ struct ConsoleWebLoginView: View {
     @State private var scannerError: String?
     @State private var message: String?
     @State private var now = Date.now
+    @State private var initialRemaining: TimeInterval = 1
 
     var body: some View {
-        SettingsSheet(title: request != nil ? "确认网页登录" : approved != nil ? "网页登录" : "扫描二维码",
+        SettingsSheet(title: request != nil || approved != nil ? "网页登录" : "扫描二维码",
                       isBusy: busy) {
             Group {
                 if !client.authenticated || client.logoutPending {
@@ -39,36 +40,17 @@ struct ConsoleWebLoginView: View {
                         }
                     }
                 } else if let request {
-                    Form {
-                        Section("网页登录请求") {
-                            if request.isApplication {
-                                LabeledContent("应用", value: request.application ?? "")
-                                LabeledContent("应用地址", value: request.applicationOrigin ?? "").textSelection(.enabled)
-                                if request.purpose == "oidc" {
-                                    LabeledContent("申请身份信息", value: request.scopes ?? "")
-                                    Text("openid：稳定账号标识。profile：当前账号名称。不提供邮箱；不授予 Hako 管理权限。")
-                                        .font(.footnote).foregroundStyle(.secondary)
-                                }
-                                LabeledContent("操作", value: request.purpose == "bind" ? "绑定已有管理员账号" : "登录应用")
-                            }
-                            LabeledContent("服务器", value: request.origin)
-                            LabeledContent(request.isApplication && request.purpose != "oidc" ? "来源 IP（应用报告）" : "来源 IP", value: request.clientIP ?? "未知（请更新服务器）")
-                                .textSelection(.enabled)
-                            Text(request.confirmationCode).font(.system(size: 34, weight: .semibold, design: .monospaced))
-                                .frame(maxWidth: .infinity).padding(.vertical, 12)
-                            Text("请核对网页上的六位确认码，确认一致后点击“确认登录”。不要确认他人发送的二维码。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                            Text(remaining(request)).font(.footnote).foregroundStyle(.secondary)
-                        }
-                        Section {
-                            Button("确认登录") { Task { await confirm(request, approve: true) } }
-                                .disabled(busy || expired(request) || !client.authenticated)
-                            Button("拒绝此次登录", role: .destructive) { Task { await confirm(request, approve: false) } }
-                                .disabled(busy || expired(request) || !client.authenticated)
+                    ConsoleWebLoginConfirmation(
+                        request: request, now: now, initialRemaining: initialRemaining,
+                        busy: busy, canRespond: !expired(request) && client.authenticated,
+                        message: message,
+                        onConfirm: { Task { await confirm(request, approve: true) } },
+                        onReject: { Task { await confirm(request, approve: false) } }
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
                             Button("重新扫码") { scanAgain() }.disabled(busy)
                         }
-                        if busy { ProgressView("正在处理…") }
-                        if let message { Section { Text(message).font(.footnote).foregroundStyle(.secondary) } }
                     }
                 } else if let approved {
                     ContentUnavailableView {
@@ -139,15 +121,16 @@ struct ConsoleWebLoginView: View {
         request = nil; approved = nil; text = ""; scannerError = nil; message = nil; now = .now
     }
     private func expired(_ request: ConsoleWebLoginRequest) -> Bool { (request.expiry ?? .distantPast) <= now }
-    private func remaining(_ request: ConsoleWebLoginRequest) -> String {
-        guard let expiry = request.expiry, expiry > now else { return "二维码已过期，请在网页刷新后重新扫码。" }
-        return "\(Int(ceil(expiry.timeIntervalSince(now)))) 秒后过期"
-    }
     @MainActor private func inspect(_ payload: String, scanned: Bool = false) async {
         guard !busy else { return }
         busy = true; message = nil; request = nil
         defer { busy = false }
-        do { request = try await client.inspectWebLogin(payload); text = ""; now = .now }
+        do {
+            let inspected = try await client.inspectWebLogin(payload)
+            now = .now
+            initialRemaining = max(1, (inspected.expiry ?? now).timeIntervalSince(now))
+            request = inspected; text = ""
+        }
         catch {
             if scanned { scannerError = error.localizedDescription }
             else { message = error.localizedDescription }
@@ -161,6 +144,198 @@ struct ConsoleWebLoginView: View {
             try await client.confirmWebLogin(request, approve: approve)
             self.request = nil; approved = approve
         } catch { message = error.localizedDescription }
+    }
+}
+
+private struct ConsoleWebLoginConfirmation: View {
+    let request: ConsoleWebLoginRequest
+    let now: Date
+    let initialRemaining: TimeInterval
+    let busy: Bool
+    let canRespond: Bool
+    let message: String?
+    let onConfirm: () -> Void
+    let onReject: () -> Void
+    @ScaledMetric(relativeTo: .largeTitle) private var codeSize = 52.0
+
+    private var remaining: TimeInterval { max(0, (request.expiry ?? now).timeIntervalSince(now)) }
+    private var expired: Bool { remaining <= 0 }
+    private var groupedCode: String {
+        let code = request.confirmationCode
+        return String(code.prefix(3)) + " " + String(code.dropFirst(3))
+    }
+    private var serverName: String {
+        guard let url = URL(string: request.origin), let host = url.host else { return request.origin }
+        return host + (url.port.map { ":\($0)" } ?? "")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                introduction
+                requestDetails
+                confirmationCode
+                warning
+                if let message {
+                    Text(message).font(.footnote).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 28)
+            .padding(.bottom, 20)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actions
+                .padding(.horizontal, 24)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .frame(maxWidth: 560)
+                .frame(maxWidth: .infinity)
+                .background(Color(uiColor: .systemGroupedBackground))
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+
+    private var introduction: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "macwindow")
+                .font(.system(size: 46, weight: .ultraLight))
+                .rotationEffect(.degrees(-5))
+                .padding(.bottom, 8)
+                .accessibilityHidden(true)
+            Text("是你在登录吗？").font(.title2.bold())
+            Text("核对网页上的确认码，再允许此次登录。")
+                .font(.footnote).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var requestDetails: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("登录服务器").font(.caption).foregroundStyle(.secondary)
+                Text(serverName).font(.headline).textSelection(.enabled)
+                Text(request.origin).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Divider()
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(ipLabel).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(request.clientIP ?? "未知（请更新服务器）").font(.subheadline).textSelection(.enabled)
+                }
+                detail(ipLabel, value: request.clientIP ?? "未知（请更新服务器）")
+            }
+            if request.isApplication {
+                Divider()
+                detail("应用", value: request.application ?? "")
+                detail("应用地址", value: request.applicationOrigin ?? "")
+                detail("操作", value: request.purpose == "bind" ? "绑定已有管理员账号" : "登录应用")
+                if request.purpose == "oidc" {
+                    detail("申请身份信息", value: request.scopes ?? "")
+                    Text("openid：稳定账号标识。profile：当前账号名称。不提供邮箱；不授予 Hako 管理权限。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 19))
+    }
+
+    private var ipLabel: String {
+        request.isApplication && request.purpose != "oidc" ? "来源 IP（应用报告）" : "来源 IP"
+    }
+
+    private func detail(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.subheadline).textSelection(.enabled)
+        }
+    }
+
+    private var confirmationCode: some View {
+        VStack(spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("网页确认码")
+                    Spacer(minLength: 12)
+                    expiryLabel
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("网页确认码")
+                    expiryLabel
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Text(groupedCode)
+                .font(.system(size: codeSize, weight: .semibold, design: .monospaced))
+                .tracking(2).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("确认码")
+                .accessibilityValue(request.confirmationCode.map(String.init).joined(separator: " "))
+                .privacySensitive()
+            GeometryReader { geometry in
+                Capsule().fill(.primary.opacity(0.12))
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(.primary)
+                            .frame(width: geometry.size.width * min(1, remaining / initialRemaining))
+                    }
+            }
+            .frame(height: 3)
+            .accessibilityHidden(true)
+            Text(expired ? "请在网页刷新后，点击右上角「重新扫码」。" : "请确认与网页显示的六位数字完全一致")
+                .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    private var expiryLabel: some View {
+        Text(expired ? "已过期" : "\(Int(ceil(remaining))) 秒后过期")
+            .monospacedDigit()
+    }
+
+    private var warning: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.circle").padding(.top, 2).accessibilityHidden(true)
+            Text("仅确认你本人发起的登录。\n不要扫描或确认他人发来的二维码。")
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.caption)
+        .foregroundStyle(HakoStyle.adaptive(0x725e3e, 0xd8c29d))
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HakoStyle.adaptive(0xf1ece3, 0x302b23), in: RoundedRectangle(cornerRadius: 13))
+    }
+
+    private var actions: some View {
+        VStack(spacing: 10) {
+            Button(action: onConfirm) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Text(busy ? "正在处理…" : expired ? "请求已过期" : "确认登录")
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: 24)
+                .overlay(alignment: .trailing) {
+                    if !busy && !expired { Image(systemName: "arrow.up.right").accessibilityHidden(true) }
+                }
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(HakoActionButtonStyle())
+            Button("拒绝此次登录", role: .destructive, action: onReject)
+                .font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
+                .buttonStyle(.plain).foregroundStyle(.red)
+        }
+        .disabled(busy || !canRespond)
     }
 }
 

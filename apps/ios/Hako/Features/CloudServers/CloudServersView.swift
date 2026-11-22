@@ -48,23 +48,31 @@ struct CloudServersView: View {
                         .allowsHitTesting(page == .terminal)
                         .accessibilityHidden(page != .terminal)
                     if page != .terminal {
-                        List {
-                            if let error = store.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }
-                            switch page {
-                            case .overview: overview
-                            case .network: network
-                            case .processes: processes(connection)
-                            case .terminal: EmptyView()
+                        VStack(spacing: 0) {
+                            if page == .processes {
+                                processHeader
+                                    .padding(.horizontal, 32)
+                                    .padding(.top, 20)
+                            }
+                            List {
+                                if let error = store.error { Section { Label(error, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.orange) } }
+                                switch page {
+                                case .overview: overview
+                                case .network: network
+                                case .processes: processes(connection)
+                                case .terminal: EmptyView()
+                                }
+                            }
+                            .contentMargins(.top, page == .processes ? 8 : 24, for: .scrollContent)
+                            .refreshable {
+                                let activePage = page
+                                async let instance: Void = store.refresh(activePage)
+                                async let history: Void = store.refreshMonitorHistory(activePage == .network ? monitorRange : .hour)
+                                if activePage == .overview { await access.refresh(client: console) }
+                                _ = await (instance, history)
                             }
                         }
-                        .contentMargins(.top, 24, for: .scrollContent)
-                        .refreshable {
-                            let activePage = page
-                            async let instance: Void = store.refresh(activePage)
-                            async let history: Void = store.refreshMonitorHistory(activePage == .network ? monitorRange : .hour)
-                            if activePage == .overview { await access.refresh(client: console) }
-                            _ = await (instance, history)
-                        }
+                        .background(Color(uiColor: .systemGroupedBackground))
                     }
                 }
             } else {
@@ -217,7 +225,7 @@ struct CloudServersView: View {
                     }.font(.caption).foregroundStyle(.secondary)
                 }
             }
-        } header: { processHeader }
+        }
         Section { Text("CPU 按单核 100% 计；内存为 RSS。容器进程归入用户，阿里云服务单独分组；无法确认的保留为未分类。").font(.caption).foregroundStyle(.secondary) }
         if let snapshot = store.processes { snapshotFooter(snapshot) }
     }

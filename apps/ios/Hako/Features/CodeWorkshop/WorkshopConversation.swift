@@ -93,7 +93,13 @@ import Combine
         return error
     }
     var synchronizationHint: String? {
-        if !threadWritable { return access?.unavailableReason ?? "正在检查会话是否可写，可先编辑草稿" }
+        if !threadWritable {
+            if let access {
+                if let warning = access.synchronizationWarning(operation: operation, threadId: threadId) { return warning }
+            } else {
+                return "正在检查会话是否可写，可先编辑草稿"
+            }
+        }
         if connectionIssue != nil { return "会话暂未同步，自动重试中" }
         if operation?.resultUnconfirmed == true { return "本轮结果待确认" }
         return nil

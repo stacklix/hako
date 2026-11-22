@@ -11,12 +11,10 @@ struct HakoDeleteButton: View {
                 if let systemImage { Label(title, systemImage: systemImage) }
                 else { Text(title) }
             }
-            .frame(maxWidth: .infinity, minHeight: 28)
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(.white)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(.red)
-        .buttonBorderShape(.capsule)
-        .controlSize(.large)
+        .buttonStyle(HakoActionButtonStyle(backgroundColor: .red))
     }
 }
 
@@ -47,14 +45,11 @@ struct HakoDeleteConfirmation: View {
                         .disabled(disabled || busy)
 
                     Button(role: .cancel) { dismiss() } label: {
-                        Text("取消").frame(maxWidth: .infinity, minHeight: 28)
+                        Text("取消").frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.gray)
+                    .buttonStyle(HakoActionButtonStyle(primary: false))
                     .disabled(busy)
                 }
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
                 .padding(.top, 6)
             }
             .multilineTextAlignment(.center)

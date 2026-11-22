@@ -56,11 +56,11 @@ private struct HakoShortcutRunView: View {
                         LabeledContent("耗时", value: "\(max(0, Int(finished.timeIntervalSince(run.startedAt)))) 秒")
                     }
                 }
-                if run.status == .failed {
+                if run.status.canRetry {
                     Section {
                         HakoShortcutRetryButton(history: history, runID: runID)
                     } footer: {
-                        Text("仅重新执行失败或中断的子任务；成功和按计划跳过的子任务不重试。手动重试不受自动执行日期限制。")
+                        Text("仅重新执行失败、取消或中断的子任务；成功和按计划跳过的子任务不重试。手动重试不受自动执行日期限制。")
                     }
                 }
                 if !run.steps.isEmpty {
@@ -90,6 +90,7 @@ private struct HakoShortcutStepView: View {
     @ObservedObject var history: HakoShortcutHistory
     let runID: UUID
     let name: String
+    @State private var diagnosticsExpanded = false
 
     private var step: HakoShortcutRun.Step? {
         history.runs.first(where: { $0.id == runID })?.steps.first(where: { $0.name == name })
@@ -98,44 +99,58 @@ private struct HakoShortcutStepView: View {
     var body: some View {
         List {
             if let step {
-                Section("子任务概况") {
-                    LabeledContent("状态", value: step.status.rawValue)
-                    if let count = step.attempts { LabeledContent("执行次数", value: "\(count)") }
-                    if let start = step.startedAt {
-                        LabeledContent("本次开始", value: start.formatted(date: .abbreviated, time: .standard))
-                        if let end = step.finishedAt {
-                            LabeledContent("本次耗时", value: "\(max(0, Int(end.timeIntervalSince(start)))) 秒")
+                let rows = HakoExecutionLogRow.merging(step.events ?? [])
+                let keySteps = rows.filter { !$0.isDiagnostic }
+                let diagnostics = rows.filter(\.isDiagnostic)
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(step.status.rawValue, systemImage: statusSymbol(step.status))
+                            .font(.headline)
+                            .foregroundStyle(step.status == .failed ? Color.red : Color.primary)
+                        if let message = step.message, !message.isEmpty {
+                            Text(message).font(.subheadline).textSelection(.enabled)
+                        }
+                        if let start = step.startedAt {
+                            Text(start, format: .dateTime.month().day().hour().minute().second())
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let message = step.message, !message.isEmpty {
-                    Section("执行结果") { Text(message).textSelection(.enabled) }
-                }
-                Section {
-                    if let events = step.events, !events.isEmpty {
-                        ForEach(events) { event in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text(event.time, format: .dateTime.hour().minute().second())
-                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(event.state.rawValue).font(.caption)
-                                        .foregroundStyle(event.state == .failed ? Color.red : Color.secondary)
-                                }
-                                Text(event.stage).font(.subheadline.weight(.medium))
-                                if !event.detail.isEmpty { Text(event.detail).font(.footnote).foregroundStyle(.secondary) }
-                            }
+                Section("关键步骤") {
+                    if !keySteps.isEmpty {
+                        ForEach(keySteps) { row in
+                            HakoShortcutEventRow(row: row, running: step.status == .running)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                             .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                         }
                     } else {
-                        Text("此记录没有详细日志。更新后重新执行可生成日志。")
+                        Text("此记录未记录业务步骤。已有诊断信息可在下方展开；下次执行会记录实际步骤和结果。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
-                } header: { Text("详细日志") } footer: {
-                    Text("最多保留最近 \(HakoShortcutHistory.eventCapacity) 条日志，包含重试前的记录。时间为本机时间。")
+                }
+                Section {
+                    DisclosureGroup("诊断信息 · \(diagnostics.count) 项", isExpanded: $diagnosticsExpanded) {
+                        ForEach(diagnostics) { row in
+                            HakoShortcutEventRow(row: row, running: step.status == .running)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    DisclosureGroup("执行信息") {
+                        if let count = step.attempts { LabeledContent("执行次数", value: "\(count)") }
+                        if let start = step.startedAt {
+                            LabeledContent("本次开始", value: start.formatted(date: .abbreviated, time: .standard))
+                            if let end = step.finishedAt {
+                                LabeledContent("本次结束", value: end.formatted(date: .abbreviated, time: .standard))
+                                LabeledContent("本次耗时", value: String(format: "%.2f 秒", max(0, end.timeIntervalSince(start))))
+                            }
+                        }
+                    }
+                } footer: {
+                    Text("保留最近 \(HakoShortcutHistory.eventCapacity) 条原始事件，包含重试前的记录。展开步骤可查看起止时间和详情。")
                 }
             } else {
                 ContentUnavailableView("记录已移出历史", systemImage: "clock")
@@ -154,10 +169,82 @@ private struct HakoShortcutStepView: View {
         }
     }
 
+    private func statusSymbol(_ status: HakoShortcutRun.Status) -> String {
+        switch status {
+        case .succeeded: "checkmark.circle.fill"
+        case .failed: "exclamationmark.circle.fill"
+        case .cancelled, .interrupted: "pause.circle"
+        case .skipped: "arrow.right.circle"
+        case .pending, .running: "clock"
+        }
+    }
+
     private func logText(_ step: HakoShortcutRun.Step) -> String {
-        (["\(name)：\(step.status.rawValue)", step.message ?? ""] + (step.events ?? []).map {
-            "[\($0.time.formatted(date: .numeric, time: .standard))] [\($0.state.rawValue)] \($0.stage)\n\($0.detail)"
-        }).joined(separator: "\n")
+        let rows = HakoExecutionLogRow.merging(step.events ?? [])
+        func format(_ row: HakoExecutionLogRow) -> String {
+            let start = row.startedAt?.formatted(date: .numeric, time: .standard) ?? "未记录"
+            let end = row.finishedAt?.formatted(date: .numeric, time: .standard) ?? "未记录"
+            let result = row.state == .started && step.status == .running ? "执行中" : row.state.rawValue
+            let duration = row.finishedAt == nil && step.status != .running ? "—" : row.elapsed(at: .now)
+            return "\(row.stage)\n结果：\(result)\n开始时间：\(start)\n结束时间：\(end)\n耗时：\(duration)\n\(row.detail)"
+        }
+        return (["\(name)：\(step.status.rawValue)", step.message ?? "", "关键步骤"]
+            + rows.filter { !$0.isDiagnostic }.map(format)
+            + ["诊断信息"] + rows.filter(\.isDiagnostic).map(format)).joined(separator: "\n")
+    }
+}
+
+private struct HakoShortcutEventRow: View {
+    let row: HakoExecutionLogRow
+    let running: Bool
+
+    var body: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("开始：" + (row.startedAt?.formatted(date: .abbreviated, time: .standard) ?? "未记录"))
+                Text("结束：" + (row.finishedAt?.formatted(date: .abbreviated, time: .standard) ?? "未记录"))
+                if !row.detail.isEmpty { Text(row.detail).textSelection(.enabled) }
+            }
+            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: symbol).foregroundStyle(tint).font(.subheadline)
+                    .frame(width: 18).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(row.stage).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                    if !row.detail.isEmpty && row.detail != "执行成功。" {
+                        Text(row.detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                    if row.state != .info {
+                        if row.state == .started && running {
+                            TimelineView(.periodic(from: .now, by: 1)) { context in timing(at: context.date) }
+                        } else {
+                            timing(at: row.finishedAt ?? .now)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 3)
+        }
+    }
+
+    private var tint: Color { row.state == .failed ? .red : row.state == .succeeded ? .green : .secondary }
+
+    private var symbol: String {
+        switch row.state {
+        case .succeeded: "checkmark.circle.fill"
+        case .failed: "exclamationmark.circle.fill"
+        case .cancelled: "pause.circle"
+        case .started: "clock"
+        case .info: "info.circle"
+        }
+    }
+
+    private func timing(at now: Date) -> some View {
+        let result = row.state == .started ? (running ? "执行中" : "未记录结束") : row.state.rawValue
+        let duration = row.finishedAt == nil && !running ? "—" : row.elapsed(at: now)
+        return Text(result + (duration == "—" ? "" : " · " + duration))
+        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
     }
 }
 
@@ -175,7 +262,7 @@ private struct HakoShortcutRetryButton: View {
                     catch { self.error = error.localizedDescription }
                 }
             } label: {
-                Label("重试失败任务", systemImage: "arrow.clockwise")
+                Label("重试未完成任务", systemImage: "arrow.clockwise")
             }
             .buttonStyle(HakoActionButtonStyle())
             .disabled(history.runs.contains { $0.status == .running })

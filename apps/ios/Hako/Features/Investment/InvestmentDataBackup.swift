@@ -27,10 +27,10 @@ extension InvestmentBackup {
         }
         let destination = backupFile()
         _ = try destination.resolved()
-        let data = try await HakoExecutionDiagnostics.measure("导出服务端投资账本") {
+        let data = try await HakoExecutionDiagnostics.measure("导出服务端投资账本", success: { "已取得账本 ZIP，\($0.count) 字节。" }) {
             try await InvestmentStore.shared.exportLedger()
         }
-        let receipt = try await HakoExecutionDiagnostics.measure("提交主应用备份并校验各目的地") {
+        let receipt = try await HakoExecutionDiagnostics.measure("提交主应用备份并校验各目的地", success: { $0.message }) {
             try await AppServices.dataBackup().backup(data: data, applicationID: applicationID,
                 file: destination, mimeType: "application/zip", at: date)
         }
