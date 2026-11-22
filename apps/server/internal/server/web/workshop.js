@@ -34,6 +34,9 @@
   }
   async function call(pc, method, params = {}, passive = true) {
     const session = csrf, generation = epoch;
+    const opened = await api('agents/' + encodeURIComponent(pc) + '/modules/open', 'POST', {module:'workshop',version:1}, passive);
+    if (!enabled || csrf !== session || generation !== epoch) throw new Error('登录状态已变化，请重新打开会话。');
+    if (opened.result?.module !== 'workshop' || opened.result?.version !== 1 || opened.result?.path !== '/ws/workshop/client') throw new Error(opened.error?.message || '代码工坊模块未就绪。');
     const reply = await api('workshop/calls', 'POST', {kind:'call', id:crypto.randomUUID(), computerId:pc, method, params}, passive);
     if (!enabled || csrf !== session || generation !== epoch) throw new Error('登录状态已变化，请重新打开会话。');
     if (reply.kind !== 'result') throw new Error(reply.error?.message || '工坊请求失败，请核对电脑状态。', {cause:reply.error?.code});
@@ -104,9 +107,9 @@
   }
   async function refreshComputers() {
     const generation = epoch;
-    const result = await api('workshop/computers');
+    const result = await api('agents');
     if (!enabled || generation !== epoch) return;
-    computers = result.computers;
+    computers = result.agents.filter(item => item.modules?.workshop?.version === 1);
     const previous = computer;
     if (!computers.some(item => item.id === computer)) computer = computers.find(item => item.online)?.id || computers[0]?.id || '';
     $('workshop-computer').replaceChildren(...computers.map(item => {

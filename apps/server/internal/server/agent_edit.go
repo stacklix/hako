@@ -60,6 +60,7 @@ func (s *Server) saveAgentUpdate(id string, request agentUpdate) agentAPIReply {
 	if keyChanged {
 		// Capabilities authenticated by the previous key are no longer authoritative.
 		updated.Capabilities = nil
+		updated.Modules = nil
 	}
 	next := *old
 	next.Agents = append([]AgentConfig{}, old.Agents...)
@@ -71,6 +72,7 @@ func (s *Server) saveAgentUpdate(id string, request agentUpdate) agentAPIReply {
 		// Hold registryMu until old connections are removed so a newly authenticated
 		// connection cannot be mistaken for one using the revoked key.
 		s.agentHub.Remove(id)
+		s.proxyHub.Remove(id)
 		s.workshopHub.Remove(id)
 	}
 	return agentDetailReply(updated)

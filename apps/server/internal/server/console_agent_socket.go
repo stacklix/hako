@@ -41,6 +41,14 @@ type consoleAgentReply struct {
 }
 
 func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
+	s.consoleServiceSocket(w, r, false)
+}
+
+func (s *Server) proxyClientSocket(w http.ResponseWriter, r *http.Request) {
+	s.consoleServiceSocket(w, r, true)
+}
+
+func (s *Server) consoleServiceSocket(w http.ResponseWriter, r *http.Request, proxy bool) {
 	if r.Header.Get("Origin") != "" {
 		reject(w, 403, "origin_not_allowed")
 		return
@@ -48,6 +56,14 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := s.authorized(w, r)
 	if !ok {
 		return
+	}
+	var proxyPeer *agent.Connection
+	if proxy {
+		proxyPeer, _ = s.proxyHub.Lookup(r.PathValue("id"))
+		if proxyPeer == nil {
+			reject(w, 409, "proxy_offline")
+			return
+		}
 	}
 	if !s.allow("console-agents:"+sessionID, 30, time.Minute) {
 		reject(w, 429, "rate_limited")
@@ -61,6 +77,15 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+	if proxyPeer != nil {
+		go func() {
+			select {
+			case <-proxyPeer.Done():
+				_ = ws.Close()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	tokenDigest := digest(strings.TrimPrefix(r.Header.Get("Authorization"), "DPoP "))
 	valid := func() bool {
 		active := false
@@ -83,8 +108,14 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	liveID := r.PathValue("id")
-	commands := make(chan consoleAgentCommand, agent.MaxConcurrentRequests)
-	ws.SetReadLimit(17 * 1024)
+	limit, readLimit := agent.MaxConcurrentRequests, int64(17*1024)
+	if proxy {
+		liveID = ""
+		limit = 4
+		readLimit = agent.MaxRequestBytes + 1024
+	}
+	commands := make(chan consoleAgentCommand, limit)
+	ws.SetReadLimit(readLimit)
 	_ = ws.SetReadDeadline(time.Now().Add(45 * time.Second))
 	ws.SetPongHandler(func(string) error { return ws.SetReadDeadline(time.Now().Add(45 * time.Second)) })
 	go func() {
@@ -115,7 +146,7 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	replies := make(chan consoleAgentReply, agent.MaxConcurrentRequests)
+	replies := make(chan consoleAgentReply, limit)
 	inFlight := 0
 	for {
 		select {
@@ -138,7 +169,16 @@ func (s *Server) consoleAgentSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			inFlight++
 			go func() {
-				reply := s.consoleAgentCall(ctx, command)
+				var reply agentAPIReply
+				if proxy {
+					reply = agentAPIFailure(400, "invalid_request")
+					var request agent.Request
+					if command.Type == "request" && len(command.Body) <= agent.MaxRequestBytes && decodeJSON(bytes.NewReader(command.Body), &request) {
+						reply = s.callProxy(ctx, r.PathValue("id"), request)
+					}
+				} else {
+					reply = s.consoleAgentCall(ctx, command)
+				}
 				replies <- consoleAgentReply{"reply", command.ID, reply.Status, reply.Body}
 			}()
 		case reply := <-replies:
@@ -180,6 +220,11 @@ func (s *Server) consoleAgentCall(ctx context.Context, command consoleAgentComma
 		var request agent.Request
 		if decodeJSON(bytes.NewReader(command.Body), &request) {
 			return s.callAgent(ctx, command.AgentID, request)
+		}
+	case "module_open":
+		var request agent.Request
+		if decodeJSON(bytes.NewReader(command.Body), &request) {
+			return s.callAgentModule(ctx, command.AgentID, request)
 		}
 	}
 	return agentAPIFailure(400, "invalid_request")

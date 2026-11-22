@@ -42,7 +42,8 @@ async function workshop(history = [{id:'old',kind:'item',role:'assistant',text:'
       emit(result) { this.onmessage({data:JSON.stringify({kind:'event', result})}); }
     },
     api:async (path, method, frame, passive) => {
-      if (path === 'workshop/computers') return {computers:[{id:pc,name:'Windows',online:true}]};
+      if (path === 'agents') return {agents:[{id:pc,name:'Windows',online:true,modules:{workshop:{version:1}}}]};
+      if (path === 'agents/PC/modules/open') return {result:{module:'workshop',version:1,path:'/ws/workshop/client'}};
       calls.push({method:frame.method, params:frame.params, passive});
       let result;
       switch (frame.method) {
@@ -241,12 +242,13 @@ test('logout discards in-flight image reads and invalid digests cannot display',
   w.context.api = async (...args) => args[2]?.method === 'image.read'
     ? new Promise(done => { resolve = () => done(imageReply(args[2].params)); }) : api(...args);
   const tile = descendants(w.el('workshop-transcript'), 'workshop-message-image')[0];
-  w.revealImages(); w.context.window.hakoWorkshop.reset(); resolve(); await tick();
+  w.revealImages(); await until(() => resolve); w.context.window.hakoWorkshop.reset(); resolve(); await tick();
   assert.equal(tile.children[0].src, undefined);
   assert.equal(w.el('workshop-preview-dialog').open, false);
 
   const invalid = await workshop([{id:'photo',kind:'item',role:'user',text:'[图片 × 1]'}]);
   invalid.context.api = async (...args) => {
+    if (args[0] === 'agents/PC/modules/open') return {result:{module:'workshop',version:1,path:'/ws/workshop/client'}};
     const reply = imageReply(args[2].params); reply.result.revision = '0'.repeat(64); return reply;
   };
   const invalidTile = descendants(invalid.el('workshop-transcript'), 'workshop-message-image')[0];

@@ -9,6 +9,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"hako/server/internal/agent"
 )
 
 //go:embed web/*
@@ -69,6 +71,12 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("PATCH /consilium/api/agents/{id}/data-query", s.admin(s.adminAgentDataPermission))
 	s.mux.HandleFunc("DELETE /consilium/api/agents/{id}", s.admin(s.adminDeleteAgent))
 	s.mux.HandleFunc("POST /consilium/api/agents/{id}/requests", s.admin(s.forwardAgentRequest))
+	s.mux.HandleFunc("POST /consilium/api/agents/{id}/modules/open", s.admin(func(w http.ResponseWriter, r *http.Request) {
+		var request agent.Request
+		if decode(w, r, &request) {
+			s.callAgentModule(r.Context(), r.PathValue("id"), request).writeHTTP(w)
+		}
+	}))
 }
 
 func adminHeaders(w http.ResponseWriter) {
@@ -261,6 +269,7 @@ func (s *Server) adminDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.agentHub.Remove(r.PathValue("id"))
+	s.proxyHub.Remove(r.PathValue("id"))
 	s.workshopHub.Remove(r.PathValue("id"))
 	s.commandHub.Remove(r.PathValue("id"))
 	respond(w, 200, map[string]bool{"ok": true})

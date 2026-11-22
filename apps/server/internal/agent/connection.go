@@ -20,9 +20,11 @@ type Connection struct {
 	writeMu         sync.Mutex
 	mu              sync.Mutex
 	pending         map[string]chan Message
+	modulePending   map[string]chan Message
 	done            chan struct{}
 	once            sync.Once
 	capabilities    json.RawMessage
+	modules         json.RawMessage
 	sshTunnel       bool
 	ssh             *agentSSH
 	telemetryMu     sync.Mutex
@@ -41,14 +43,18 @@ func (c *Connection) Close() { c.once.Do(func() { close(c.done); _ = c.conn.Clos
 
 func NewConnection(ws *websocket.Conn, capabilities json.RawMessage, sshTunnel bool, newID func() string) *Connection {
 	return &Connection{
-		conn: ws, pending: make(map[string]chan Message), done: make(chan struct{}),
+		conn: ws, pending: make(map[string]chan Message), modulePending: make(map[string]chan Message), done: make(chan struct{}),
 		capabilities: append(json.RawMessage(nil), capabilities...), sshTunnel: sshTunnel, newID: newID,
 	}
 }
 
 func (c *Connection) Capabilities() json.RawMessage { return c.capabilities }
-func (c *Connection) HasSSHTunnel() bool            { return c.sshTunnel }
-func (c *Connection) Done() <-chan struct{}         { return c.done }
+func (c *Connection) Modules() json.RawMessage      { return c.modules }
+func (c *Connection) SetModules(value json.RawMessage) {
+	c.modules = append(json.RawMessage(nil), value...)
+}
+func (c *Connection) HasSSHTunnel() bool    { return c.sshTunnel }
+func (c *Connection) Done() <-chan struct{} { return c.done }
 
 func (c *Connection) run(onPong func()) {
 	go func() {
@@ -99,7 +105,7 @@ func (c *Connection) run(onPong func()) {
 			c.publishSSH(message)
 			continue
 		}
-		if message.Type != "response" || message.ID == "" {
+		if (message.Type != "response" && message.Type != "module_response") || message.ID == "" {
 			return
 		}
 		delete(fields, "type")
@@ -107,6 +113,9 @@ func (c *Connection) run(onPong func()) {
 		message.Payload, _ = json.Marshal(fields)
 		c.mu.Lock()
 		ch := c.pending[message.ID]
+		if message.Type == "module_response" {
+			ch = c.modulePending[message.ID]
+		}
 		c.mu.Unlock()
 		if ch != nil {
 			select {
@@ -118,22 +127,32 @@ func (c *Connection) run(onPong func()) {
 }
 
 func (c *Connection) Request(ctx context.Context, request Request) (Message, error) {
+	return c.exchange(ctx, request, "request", c.pending, MaxConcurrentRequests)
+}
+
+func (c *Connection) OpenModule(ctx context.Context, request Request) (Message, error) {
+	return c.exchange(ctx, request, "module_open", c.modulePending, 4)
+}
+
+func (c *Connection) exchange(ctx context.Context, request Request, kind string, pending map[string]chan Message, limit int) (Message, error) {
 	id := c.newID()
 	ch := make(chan Message, 1)
 	c.mu.Lock()
 	// Device monitoring has its own sixteen request slots.
-	if len(c.pending) >= MaxConcurrentRequests {
+	if len(pending) >= limit {
 		c.mu.Unlock()
 		return Message{}, ErrBusy
 	}
-	c.pending[id] = ch
+	pending[id] = ch
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
-		delete(c.pending, id)
+		delete(pending, id)
 		c.mu.Unlock()
 	}()
-	if err := c.Send(request.envelope(id)); err != nil {
+	frame := request.envelope(id)
+	frame["type"], _ = json.Marshal(kind)
+	if err := c.Send(frame); err != nil {
 		c.Close()
 		return Message{}, err
 	}

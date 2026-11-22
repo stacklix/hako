@@ -30,6 +30,7 @@ type AgentConfig struct {
 	PublicKeyFile    string          `json:"publicKeyFile"`
 	PublicKeyPEM     string          `json:"publicKeyPem,omitempty"`
 	Capabilities     json.RawMessage `json:"capabilities"`
+	Modules          json.RawMessage `json:"modules"`
 	key              *rsa.PublicKey
 	keyID            string
 }
@@ -62,6 +63,8 @@ type Server struct {
 	mux                 *http.ServeMux
 	mu                  sync.Mutex
 	agentHub            agent.Hub
+	proxyHub            agent.Hub
+	proxyRequests       chan struct{}
 	streamMu            sync.Mutex
 	streams             map[string]*binaryStream
 	workshopHub         workshop.Hub
@@ -109,6 +112,7 @@ func New(config Config) (*Server, error) {
 	}
 	s := &Server{config: config, store: st, mux: http.NewServeMux(), limits: map[string]bucket{}, requests: make(chan struct{}, 32), workshopRequests: make(chan struct{}, 32), adminSessions: map[string]adminSession{}, adminLogins: map[string]*adminLoginRequest{}}
 	s.trustedProxies = proxies
+	s.proxyRequests = make(chan struct{}, 32)
 	diagnosticPath := ""
 	if config.Database != "" && config.Database != ":memory:" {
 		diagnosticPath = config.Database + ".workshop-diagnostics.jsonl"
@@ -170,6 +174,7 @@ func New(config Config) (*Server, error) {
 	s.consoleRoutes()
 	s.accessLogRoutes()
 	s.agentRoutes()
+	s.proxyRoutes()
 	s.workshopRoutes()
 	s.notificationRoutes()
 	if s.investment, err = openInvestmentDB(config.Database); err != nil {
@@ -199,7 +204,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := int64(16 * 1024)
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/requests") &&
-		(strings.HasPrefix(r.URL.Path, "/api/v1/agents/") || strings.HasPrefix(r.URL.Path, "/consilium/api/agents/")) {
+		(strings.HasPrefix(r.URL.Path, "/api/v1/agents/") || strings.HasPrefix(r.URL.Path, "/api/v1/proxy/") || strings.HasPrefix(r.URL.Path, "/consilium/api/agents/")) {
 		limit = agent.MaxRequestBytes
 	}
 	if r.Method == http.MethodPut && r.URL.Path == "/api/v1/investment/book" {
@@ -228,6 +233,7 @@ func (s *Server) Close() error {
 		notificationErr = s.notifications.Close()
 	}
 	s.agentHub.Close()
+	s.proxyHub.Close()
 	s.workshopHub.Close()
 	s.commandHub.Close()
 	var investmentErr error

@@ -37,6 +37,12 @@ func (s *Server) agentRoutes() {
 	s.mux.HandleFunc("GET /ws/console/agents/terminal/{terminalID}", s.consoleAgentSocket)
 }
 
+func (s *Server) proxyRoutes() {
+	s.mux.HandleFunc("GET /ws/proxy/client/{id}", s.proxyClientSocket)
+	s.mux.HandleFunc("GET /ws/proxy/agent", s.proxySocket)
+	s.mux.HandleFunc("POST /api/v1/proxy/{id}/requests", s.requestProxy)
+}
+
 func (s *Server) workshopRoutes() {
 	s.mux.HandleFunc("GET /api/v1/workshop/computers", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := s.authorized(w, r); !ok {

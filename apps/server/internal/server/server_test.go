@@ -382,15 +382,27 @@ func (f *fixture) connectAgentFeatures(id string, wrongKey, sshTunnel bool, meth
 }
 
 func (f *fixture) connectAgentMetadata(id string, wrongKey, sshTunnel bool, metadata, version any) *websocket.Conn {
+	return f.connectChannelMetadata(id, wrongKey, sshTunnel, metadata, version, false)
+}
+
+func (f *fixture) connectChannelMetadata(id string, wrongKey, sshTunnel bool, metadata, version any, proxy bool, modules ...any) *websocket.Conn {
 	f.t.Helper()
-	previous, _ := f.s.agentHub.Lookup(id)
+	hub, path, domain := &f.s.agentHub, "/ws/agent", "hako-agent-auth/v4\n"
+	if proxy {
+		hub, path, domain = &f.s.proxyHub, "/ws/proxy/agent", "hako-proxy-auth/v1\n"
+	}
+	previous, _ := hub.Lookup(id)
 	dialer := websocket.Dialer{TLSClientConfig: f.http.Client().Transport.(*http.Transport).TLSClientConfig}
-	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+"/ws/agent", nil)
+	ws, _, err := dialer.Dial("wss"+strings.TrimPrefix(f.http.URL, "https")+path, nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { ws.Close() })
-	_ = ws.WriteJSON(map[string]any{"type": "hello", "version": version, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": metadata, "sshTunnel": sshTunnel})
+	hello := map[string]any{"type": "hello", "version": version, "username": "owner", "keyId": f.s.config.Agents[0].keyID, "capabilities": metadata, "sshTunnel": sshTunnel}
+	if len(modules) > 0 {
+		hello["modules"] = modules[0]
+	}
+	_ = ws.WriteJSON(hello)
 	var challenge struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`
@@ -399,6 +411,9 @@ func (f *fixture) connectAgentMetadata(id string, wrongKey, sshTunnel bool, meta
 		f.t.Fatal(err)
 	}
 	payload, _ := base64.StdEncoding.DecodeString(challenge.Payload)
+	if !strings.HasPrefix(string(payload), domain) {
+		f.t.Fatal("authentication challenge crossed service domains")
+	}
 	hash := sha256.Sum256(payload)
 	key := f.agentKey
 	if wrongKey {
@@ -419,7 +434,7 @@ func (f *fixture) connectAgentMetadata(id string, wrongKey, sshTunnel bool, meta
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		peer, _ := f.s.agentHub.Lookup(id)
+		peer, _ := hub.Lookup(id)
 		online := peer != nil && peer != previous
 		if online {
 			return ws

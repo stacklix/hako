@@ -17,7 +17,17 @@ import (
 )
 
 func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.allow("ws", 30, time.Minute) {
+	s.deviceSocket(w, r, &s.agentHub, false)
+}
+
+func (s *Server) proxySocket(w http.ResponseWriter, r *http.Request) {
+	s.deviceSocket(w, r, &s.proxyHub, true)
+}
+
+// Proxy and device commands share trust, but have separate sockets, hubs,
+// request budgets and challenge domains. Payloads remain opaque to Sora.
+func (s *Server) deviceSocket(w http.ResponseWriter, r *http.Request, hub *agent.Hub, proxy bool) {
+	if !s.allow("ws:"+r.URL.Path, 30, time.Minute) {
 		reject(w, 429, "rate_limited")
 		return
 	}
@@ -38,6 +48,7 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		Username     string          `json:"username"`
 		KeyID        string          `json:"keyId"`
 		Capabilities json.RawMessage `json:"capabilities"`
+		Modules      json.RawMessage `json:"modules"`
 		SSHTunnel    bool            `json:"sshTunnel"`
 	}
 	if ws.ReadJSON(&hello) != nil || hello.Type != "hello" {
@@ -57,8 +68,17 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		authFail()
 		return
 	}
+	domain := "hako-agent-auth/v4\n"
+	if proxy {
+		domain = "hako-proxy-auth/v1\n"
+		hello.Capabilities = nil
+		hello.SSHTunnel = false
+	}
 	c := agent.NewConnection(ws, hello.Capabilities, hello.SSHTunnel, randomToken)
-	payload := []byte("hako-agent-auth/v4\n" + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
+	if !proxy {
+		c.SetModules(hello.Modules)
+	}
+	payload := []byte(domain + s.config.PublicURL + "\n" + hello.Username + "\n" + hello.KeyID + "\n" + randomToken())
 	if c.Send(map[string]any{"type": "challenge", "payload": base64.StdEncoding.EncodeToString(payload)}) != nil {
 		return
 	}
@@ -91,11 +111,12 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 	next := *s.registry.Load()
 	next.Agents = append([]AgentConfig{}, next.Agents...)
 	for i := range next.Agents {
-		if next.Agents[i].ID == configured.ID {
+		if !proxy && next.Agents[i].ID == configured.ID {
 			next.Agents[i].Capabilities = c.Capabilities()
+			next.Agents[i].Modules = c.Modules()
 		}
 	}
-	if s.saveRegistry(&next) != nil {
+	if !proxy && s.saveRegistry(&next) != nil {
 		s.registryMu.Unlock()
 		return
 	}
@@ -103,13 +124,13 @@ func (s *Server) agentSocket(w http.ResponseWriter, r *http.Request) {
 		s.registryMu.Unlock()
 		return
 	}
-	old := s.agentHub.Register(configured.ID, c)
+	old := hub.Register(configured.ID, c)
 	ws.SetReadLimit(agent.MaxReplyBytes)
 	s.registryMu.Unlock()
 	if old != nil {
 		old.Close()
 	}
-	s.agentHub.Run(configured.ID, c)
+	hub.Run(configured.ID, c)
 }
 
 func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +164,11 @@ func (s *Server) agentItems(includeKey bool) []map[string]any {
 		if online {
 			capabilities = c.Capabilities()
 		}
-		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": lastSeen, "capabilities": capabilities, "dataQueryEnabled": a.DataQueryEnabled}
+		modules := a.Modules
+		if online {
+			modules = c.Modules()
+		}
+		item := map[string]any{"id": a.ID, "name": a.Name, "online": online, "lastSeen": lastSeen, "capabilities": capabilities, "modules": modules, "dataQueryEnabled": a.DataQueryEnabled}
 		if includeKey {
 			item["keyId"] = a.keyID
 			item["publicKeyPem"] = a.PublicKeyPEM

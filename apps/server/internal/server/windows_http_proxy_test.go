@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"hako/server/internal/agent"
 )
@@ -33,7 +35,32 @@ func checkWindowsHTTPProxy(t *testing.T, f *fixture) {
 		"method": "POST", "headers": map[string]string{"Authorization": "Bearer target-fixture", "X-Proxy": "hidden", "Connection": "X-Hop", "X-Hop": "private"},
 		"body": base64.URLEncoding.EncodeToString(upload), "timeoutMs": 8000,
 	})
-	status, data := f.call("POST", "/api/v1/agents/PC/requests", agent.Request{Method: "action.network.http.proxy", Version: 1, Params: params}, f.tokens.AccessToken)
+	// The proxy service connects independently from the monitoring socket.
+	if peer, _ := f.s.proxyHub.Lookup("PC"); peer != nil {
+		t.Fatal("proxy connected before a module-open request")
+	}
+	opened := f.s.callAgentModule(context.Background(), "PC", agent.Request{Payload: json.RawMessage(`{"module":"proxy","version":1}`)})
+	if opened.Status != 200 {
+		t.Fatal("module-open transport failed", opened.Status)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if peer, _ := f.s.proxyHub.Lookup("PC"); peer != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	client := openConsoleAgentSocket(t, f, "/ws/proxy/client/PC")
+	writeAgentFrame(t, client, map[string]any{"type": "request", "id": "proxy-roundtrip", "body": map[string]any{"version": 1, "request": json.RawMessage(params)}})
+	_ = client.SetReadDeadline(time.Now().Add(30 * time.Second))
+	var frame struct {
+		Status int
+		Body   json.RawMessage
+	}
+	if err := client.ReadJSON(&frame); err != nil {
+		t.Fatal(err)
+	}
+	status, data := frame.Status, []byte(frame.Body)
 	var reply struct {
 		Result struct {
 			Status  int
@@ -49,5 +76,5 @@ func checkWindowsHTTPProxy(t *testing.T, f *fixture) {
 	if err != nil || !bytes.Equal(decoded, download) {
 		t.Fatalf("Windows proxy response corrupted: %d", len(decoded))
 	}
-	t.Log("Real HTTP → Sora → Agent WebSocket → guardian/main RPC → target HTTP proxy passed with 512 KiB upload and 8 MiB binary response")
+	t.Log("Independent client WebSocket → Sora → proxy WebSocket → target HTTP service passed with 512 KiB upload and 8 MiB binary response")
 }
