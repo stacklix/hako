@@ -5,6 +5,7 @@ import Combine
     static let shared = DeviceMonitorClient()
     private let authentication: any AuthenticatedServerAccess
     private let socket: AgentRequestSocket
+    private let usesHostCatalog: Bool
     private let defaults: UserDefaults
     private let lan = AgentLanTransport()
     private var subscription: AnyCancellable?
@@ -19,10 +20,12 @@ import Combine
     @Published private var state = State()
     @Published private var working = false
     init(authentication: (any AuthenticatedServerAccess)? = nil, defaults: UserDefaults = .standard) {
+        let hostCatalog = authentication == nil
+        usesHostCatalog = hostCatalog
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
         self.defaults = defaults
-        self.socket = AgentRequestSocket(authentication: authentication, logSource: .devices)
+        self.socket = hostCatalog ? HakoAgents.controlSocket : AgentRequestSocket(authentication: authentication, logSource: .devices)
         subscription = authentication.changes.sink { [weak self] _ in
             self?.objectWillChange.send()
             Task { @MainActor [weak self] in
@@ -218,7 +221,9 @@ import Combine
 
     private func fetchAgentsInternal() async throws {
         struct List: Decodable { let agents: [ConsoleAgent] }
-        let agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents
+        let agents: [ConsoleAgent]
+        if usesHostCatalog { agents = try await HakoAgents.list(refresh: true) }
+        else { agents = try JSONDecoder().decode(List.self, from: await authorized("list")).agents }
         prepareContext()
         state.inventory.receive(agents)
         inventoryStorage.save(state.inventory)

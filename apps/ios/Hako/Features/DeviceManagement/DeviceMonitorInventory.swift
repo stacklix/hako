@@ -28,7 +28,7 @@ struct DeviceMonitorInventory {
     mutating func markOffline(agentID: String? = nil) {
         agents = agents.map { agent in
             guard agentID == nil || agent.id == agentID else { return agent }
-            return ConsoleAgent(dataQueryEnabled: agent.dataQueryEnabled, id: agent.id, name: agent.name, online: false,
+            return ConsoleAgent(dataQueryEnabled: agent.dataQueryEnabled, modules: agent.modules, id: agent.id, name: agent.name, online: false,
                                 lastSeen: agent.lastSeen, capabilities: agent.capabilities)
         }
     }

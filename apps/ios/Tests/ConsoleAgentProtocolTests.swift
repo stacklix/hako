@@ -12,6 +12,9 @@ import Foundation
         precondition(empty.capabilities?.isEmpty == true)
         let manifest = try agent("[{\"name\":\"query.system.metrics\",\"version\":1},{\"name\":\"action.network.http.check\",\"version\":1}]")
         precondition(manifest.capabilities?.count == 2)
+        let proxy = try decoder.decode(ConsoleAgent.self, from: Data(#"{"id":"PC","name":"PC","online":false,"lastSeen":"","capabilities":[],"modules":{"proxy":{"version":1},"workshop":{"version":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}}}"#.utf8))
+        precondition(proxy.supportsProxy && proxy.supportsWorkshop && !proxy.supportsCommands && !proxy.online)
+        precondition(proxy.modules?.workshop?.lan?.port == 8005 && unknown.modules == nil)
         let listenerJSON = #"{"collectedAt":"2026-10-31T12:00:00Z","ports":[{"protocol":"TCP","port":8080,"processes":[{"processId":10,"processName":"hako","startedAt":"2026-10-30T10:58:59Z","uptimeSeconds":90061,"addresses":["0.0.0.0","::"]},{"processId":11,"addresses":["127.0.0.2"]}]}],"warnings":[]}"#
         let listeners = try decoder.decode(ConsoleListenerSnapshot.self, from: Data(listenerJSON.utf8))
         precondition(listeners.isValid && listeners.ports.count == 1 && listeners.ports[0].processes.count == 2)

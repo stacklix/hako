@@ -13,7 +13,6 @@ namespace Hako.Platform;
 
 internal static class HttpProxy
 {
-    internal const string Command = "action.network.http.proxy";
     internal const int RequestLimit = 512 * 1024;
     internal const int ResponseLimit = 8 * 1024 * 1024;
     private static readonly SemaphoreSlim Slots = new(4, 4);

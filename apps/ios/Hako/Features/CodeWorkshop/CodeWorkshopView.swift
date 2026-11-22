@@ -120,6 +120,7 @@ struct CodeWorkshopView: View {
                                 .font(.subheadline).foregroundStyle(HakoStyle.muted)
                         } else {
                             Button {
+                                quotaState.prepareManualRefresh()
                                 clearQuotaCache = true
                                 quotaVisit = UUID()
                             } label: {
@@ -271,7 +272,7 @@ struct CodeWorkshopView: View {
                         Text(store.selectedAgent?.name ?? "选择电脑").lineLimit(1)
                         Circle().fill(store.selectedAgent?.online == true ? Color.green : HakoStyle.muted).frame(width: 5, height: 5)
                     }
-                      Text(store.selectedAgent?.online == true ? store.transportLabel : "离线").foregroundStyle(HakoStyle.muted)
+                      Text(store.selectedAgent == nil ? "请选择执行电脑" : store.selectedAgent?.online == true ? store.transportLabel : "离线").foregroundStyle(HakoStyle.muted)
                 }
                 .font(.caption).frame(minHeight: 44)
             }

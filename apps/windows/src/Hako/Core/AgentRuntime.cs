@@ -33,7 +33,7 @@ public sealed class AgentRuntime : IAsyncDisposable
         Store = store; this.running = running;
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
         var history = new ResourceHistory(Path.Combine(store.DirectoryPath, "resource-history"));
-        resourceHistorySampler = new ResourceHistorySampler(history);
+        resourceHistorySampler = new ResourceHistorySampler(history, Metrics);
         dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath, resourceHistory: history);
         Connection = new GuardianConnection(store.DirectoryPath);
         var lan = new AgentLanEndpoint(dispatcher);

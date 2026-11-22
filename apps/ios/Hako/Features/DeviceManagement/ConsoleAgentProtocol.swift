@@ -1,18 +1,5 @@
 import Foundation
 
-struct ConsoleAgent: Codable, Identifiable {
-    var dataQueryEnabled: Bool? = nil
-    let id: String
-    let name: String
-    let online: Bool
-    let lastSeen: String
-    let capabilities: [ConsoleAgentCapability]?
-}
-struct ConsoleAgentCapability: Codable, Identifiable {
-    let name: String
-    let version: Int
-    var id: String { name }
-}
 struct ConsoleListenerSnapshot: Decodable {
     let collectedAt: String
     let ports: [ConsoleListenerPort]
@@ -159,24 +146,6 @@ struct ConsoleCodexUsageDay: Decodable, Identifiable {
             && reasoningOutputTokens >= 0 && totalTokens >= 0
             && (!breakdownAvailable || (cachedInputTokens <= inputTokens && reasoningOutputTokens <= outputTokens
                 && inputTokens <= Int64.max - outputTokens && totalTokens == inputTokens + outputTokens))
-    }
-}
-struct ConsoleAgentError: Decodable, Error, LocalizedError {
-    let code: String
-    let message: String
-    var errorDescription: String? { message.isEmpty ? "设备执行失败（\(code)）。" : message }
-}
-enum ConsoleAgentReply<Result: Decodable>: Decodable {
-    case result(Result)
-    case failure(ConsoleAgentError)
-    private enum CodingKeys: String, CodingKey { case result, error }
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        guard container.contains(.result) != container.contains(.error) else {
-            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Expected result or error"))
-        }
-        if container.contains(.error) { self = .failure(try container.decode(ConsoleAgentError.self, forKey: .error)) }
-        else { self = .result(try container.decode(Result.self, forKey: .result)) }
     }
 }
 struct ConsoleMetrics: Decodable {

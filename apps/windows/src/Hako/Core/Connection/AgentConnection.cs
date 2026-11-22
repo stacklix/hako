@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Security.Authentication;
@@ -26,6 +27,10 @@ public sealed class AgentConnection : IAsyncDisposable
     private readonly SemaphoreSlim writing = new(1, 1);
     private CancellationTokenSource? lifetime;
     private Task? running;
+    private Task? proxyRunning;
+    private volatile bool proxyOnline;
+    private readonly SemaphoreSlim moduleGate = new(1, 1);
+    private readonly Func<CancellationToken, Task>? openWorkshop;
     public static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     public AgentConnection(SystemMetrics metrics, CodexUsage? codexUsage = null, string? dataDirectory = null)
     {
@@ -33,7 +38,8 @@ public sealed class AgentConnection : IAsyncDisposable
         local.MetricsReceived += value => MetricsReceived?.Invoke(value);
         dispatcher = local;
     }
-    internal AgentConnection(IAgentDispatcher dispatcher) { this.dispatcher = dispatcher; }
+    internal AgentConnection(IAgentDispatcher dispatcher, Func<CancellationToken, Task>? openWorkshop = null)
+    { this.dispatcher = dispatcher; this.openWorkshop = openWorkshop; }
 
     public async Task StartAsync(AgentSettings settings)
     {
@@ -47,6 +53,8 @@ public sealed class AgentConnection : IAsyncDisposable
         if (lifetime is null) { CompatibilityWarning = null; SetStatus("disconnected", "未连接"); return; }
         await lifetime.CancelAsync();
         if (running is not null) { try { await running; } catch (OperationCanceledException) { } }
+        if (proxyRunning is not null) { try { await proxyRunning; } catch (OperationCanceledException) { } proxyRunning = null; }
+        proxyOnline = false;
         lifetime.Dispose(); lifetime = null;
         CompatibilityWarning = null;
         SetStatus("disconnected", "未连接");
@@ -87,7 +95,9 @@ public sealed class AgentConnection : IAsyncDisposable
                     SetStatus("authenticating", "正在验证身份…");
                     using var rsa = RSA.Create(); rsa.ImportFromPem(settings.PrivateKey);
                     var keyId = AgentSettings.KeyId(rsa);
-                    await SendAsync(socket, new { type = "hello", version = ProtocolVersion, username = settings.Username, keyId, capabilities = dispatcher.Capabilities, sshTunnel = true }, authTimeout.Token);
+                    var registration = WorkshopRegistration.Snapshot(settings.DirectPort);
+                    var modules = new { workshop = openWorkshop is null ? null : new { version = 1, lan = new { addresses = registration.Addresses, port = registration.Port } }, proxy = new { version = 1 } };
+                    await SendAsync(socket, new { type = "hello", version = ProtocolVersion, username = settings.Username, keyId, capabilities = dispatcher.Capabilities, modules, sshTunnel = true }, authTimeout.Token);
                     using var challenge = await ReceiveAsync(socket, authTimeout.Token);
                     if (challenge.RootElement.GetProperty("type").GetString() != "challenge") throw new AuthenticationException("服务端未提供认证挑战。");
                     var payload = Convert.FromBase64String(challenge.RootElement.GetProperty("payload").GetString()!);
@@ -103,6 +113,7 @@ public sealed class AgentConnection : IAsyncDisposable
                 using var connection = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var workers = new List<Task>();
                 var requestSlots = new AgentRequestSlots();
+                using var moduleSlots = new SemaphoreSlim(4, 4);
                 CancellationTokenSource? telemetry = null;
                 Task? telemetryWorker = null;
                 string? telemetryId = null;
@@ -141,6 +152,16 @@ public sealed class AgentConnection : IAsyncDisposable
                                     {
                                         using (slot) await ExecuteRequestAsync(socket, request, connection.Token);
                                     }));
+                                break;
+                            case "module_open":
+                                workers.RemoveAll(task => task.IsCompleted);
+                                var opening = root.Clone();
+                                if (!await moduleSlots.WaitAsync(0, connection.Token))
+                                    await SendAsync(socket, new { type = "module_response", id = root.GetProperty("id").GetString(), error = new { code = "module_busy", message = "模块正在打开，请稍后重试。" } }, connection.Token);
+                                else workers.Add(Task.Run(async () => {
+                                    try { await OpenModuleAsync(socket, opening, settings, connection.Token); }
+                                    finally { moduleSlots.Release(); }
+                                }));
                                 break;
                             case "telemetry_start":
                                 await StopTelemetryAsync();
@@ -242,6 +263,40 @@ public sealed class AgentConnection : IAsyncDisposable
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { socket.Abort(); }
+    }
+
+    private async Task OpenModuleAsync(ClientWebSocket socket, JsonElement request, AgentSettings settings, CancellationToken token)
+    {
+        var id = request.GetProperty("id").GetString();
+        object response;
+        try
+        {
+            if (request.EnumerateObject().Any(p => p.Name is not ("type" or "id" or "module" or "version")) ||
+                !request.TryGetProperty("version", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var v) || v != 1 ||
+                !request.TryGetProperty("module", out var name) || name.ValueKind != JsonValueKind.String)
+                throw new AgentActionException("invalid_module_request", "模块打开请求无效。");
+            var module = name.GetString();
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadline.CancelAfter(TimeSpan.FromSeconds(8));
+            if (module == "proxy")
+            {
+                await moduleGate.WaitAsync(deadline.Token);
+                try {
+                    if (proxyRunning is null || proxyRunning.IsCompleted)
+                        proxyRunning = HttpProxyConnection.RunAsync(settings, lifetime!.Token, online => proxyOnline = online);
+                } finally { moduleGate.Release(); }
+                while (!proxyOnline) await Task.Delay(50, deadline.Token);
+            }
+            else if (module == "workshop" && openWorkshop is not null) await openWorkshop(deadline.Token);
+            else throw new AgentActionException("unsupported_module", "设备不支持此模块或版本。");
+            token.ThrowIfCancellationRequested();
+            var path = module == "proxy" ? "/ws/proxy/client/" + Status.AgentId : "/ws/workshop/client";
+            response = new { type = "module_response", id, result = new { module, version = 1, path } };
+        }
+        catch (AgentActionException e) { response = new { type = "module_response", id, error = new { code = e.Code, message = e.Message } }; }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { response = new { type = "module_response", id, error = new { code = "module_timeout", message = "模块连接未就绪，请稍后重试。" } }; }
+        catch (Exception e) when (e is not OperationCanceledException) { response = new { type = "module_response", id, error = new { code = "module_failed", message = "模块连接失败，请检查设备状态。" } }; }
+        await SendAsync(socket, response, token);
     }
 
     internal static (string Method, int Version, JsonElement Parameters) ReadRequest(JsonElement request)

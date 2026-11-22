@@ -25,19 +25,17 @@ final class HakoProxyURLProtocol: URLProtocol, @unchecked Sendable {
                 guard authentication.authenticated, !authentication.logoutPending else {
                     throw HakoHTTPProxy.failure("HTTP 代理需要先登录 Sora 服务器。")
                 }
-                // Require the larger opaque relay envelope before sending a mutating request.
+                // Require the independent proxy service before sending a mutating request.
                 struct Version: Decodable { let serverVersion: String }
                 let version = try JSONDecoder().decode(Version.self, from: await authentication.send(
                     "/api/v1/version", method: "GET", body: nil, logSource: .hako)).serverVersion
                 let parts = version.split(separator: ".").compactMap { Int($0) }
-                guard parts.count == 3, parts[0] == 0, parts[1] == 8, parts[2] >= 15 else {
-                    throw HakoHTTPProxy.failure("HTTP 代理要求 Sora 0.8.15 或更高的 0.8.x 版本。")
+                guard parts.count == 3, parts[0] == 0, parts[1] == 8, parts[2] >= 16 else {
+                    throw HakoHTTPProxy.failure("独立 HTTP 代理要求 Sora 0.8.16 或更高的 0.8.x 版本。")
                 }
                 try Task.checkCancellation()
                 guard context == authentication.requestContext else { throw CancellationError() }
-                let escaped = agentID.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-                let data = try await authentication.send("/api/v1/agents/\(escaped)/requests", method: "POST",
-                    body: ["method": HakoHTTPProxy.command, "version": 1, "params": parameters], logSource: .hako)
+                let data = try await HakoHTTPProxyClient.send(agentID: agentID, parameters: parameters)
                 guard context == authentication.requestContext else { throw CancellationError() }
                 let reply = try JSONDecoder().decode(HakoHTTPProxy.Reply.self, from: data)
                 if let error = reply.error { throw HakoHTTPProxy.failure("\(error.message)（\(error.code)）") }

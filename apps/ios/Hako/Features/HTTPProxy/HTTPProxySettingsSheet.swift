@@ -2,19 +2,21 @@ import SwiftUI
 
 @MainActor struct HTTPProxySettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var devices = DeviceMonitorClient.shared
+    private let authentication = AuthenticatedServerService.shared
+    @State private var agents: [ConsoleAgent] = []
+    @State private var loading = false
     @State private var selected = ""
     @State private var saved = ""
     @State private var scope = ""
     @State private var error: String?
 
-    private var key: String { HakoHTTPProxy.settingsKey(server: devices.serverURL, account: devices.username) }
+    private var key: String { HakoHTTPProxy.settingsKey(server: authentication.serverURL, account: authentication.username) }
     private var candidates: [ConsoleAgent] {
-        devices.agents.filter { $0.capabilities?.contains { $0.name == HakoHTTPProxy.command && $0.version == 1 } == true }
+        agents.filter(\.supportsProxy)
     }
     var body: some View {
         SettingsSheet(title: "HTTP 代理", hasChanges: selected != saved,
-                      saveEnabled: scope == devices.requestContext, onSave: save) {
+                      saveEnabled: scope == authentication.requestContext, onSave: save) {
             Form {
                 Section {
                     Picker("代理 Agent", selection: $selected) {
@@ -30,7 +32,7 @@ import SwiftUI
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     Button("刷新 Agent") { Task { await refresh() } }
-                        .disabled(devices.busy)
+                        .disabled(loading)
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 } header: { Text("转发设备") } footer: {
@@ -45,21 +47,30 @@ import SwiftUI
             }
         }
         .task {
-            scope = devices.requestContext
+            scope = authentication.requestContext
             selected = UserDefaults.standard.string(forKey: key) ?? ""
             saved = selected
             await refresh()
         }
-        .onChange(of: devices.requestContext) { _, _ in dismiss() }
+        .onReceive(authentication.changes) { if scope != authentication.requestContext { dismiss() } }
     }
     private func refresh() async {
-        await devices.restore()
-        if !devices.authenticated { error = "请先登录 Sora 服务器。"; return }
-        if await devices.fetchAgents() { error = candidates.isEmpty ? "暂无支持代理的 Agent，请升级 Kage 后刷新。" : nil }
-        else { error = devices.message ?? "刷新 Agent 失败。" }
+        await authentication.restore()
+        if !authentication.authenticated { error = "请先登录 Sora 服务器。"; return }
+        guard !loading else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await HakoAgents.list(refresh: true)
+            guard !Task.isCancelled, scope == authentication.requestContext else { return }
+            agents = result
+            error = candidates.isEmpty ? "暂无支持代理的 Agent，请升级 Kage 后刷新。" : nil
+        } catch {
+            if !Task.isCancelled, scope == authentication.requestContext { self.error = error.localizedDescription }
+        }
     }
     private func save() {
-        guard scope == devices.requestContext else { return }
+        guard scope == authentication.requestContext else { return }
         UserDefaults.standard.set(selected, forKey: key)
         dismiss()
     }

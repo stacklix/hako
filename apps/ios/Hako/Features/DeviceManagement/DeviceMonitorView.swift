@@ -17,6 +17,7 @@ struct DeviceMonitorView: View {
     @State private var sheet: Sheet?
 
     private var scope: String { client.serverURL + "\n" + client.username }
+    private var monitoringAgents: [ConsoleAgent] { client.agents.filter(\.supportsCommands) }
     private var lastAgentID: String? { DeviceAgentHistory.agentID(in: savedLastAgents, scope: scope) }
     private var requestedAgentID: String? {
         switch selection {
@@ -26,7 +27,8 @@ struct DeviceMonitorView: View {
     }
     private var selectedAgent: ConsoleAgent? {
         guard client.authenticated || client.hasSavedSession, !client.logoutPending else { return nil }
-        return client.selectedAgent(id: requestedAgentID)
+        let agent = client.selectedAgent(id: requestedAgentID)
+        return agent?.supportsCommands == true || !client.hasFetchedAgents ? agent : nil
     }
     private var awaitingEntry: Bool {
         resolvedEntryScope != scope && !client.serverURL.isEmpty && !client.logoutPending
@@ -97,7 +99,7 @@ struct DeviceMonitorView: View {
                 }
             } else if (client.authenticated || client.hasSavedSession), !client.logoutPending {
                 Section {
-                    if client.agents.isEmpty {
+                    if monitoringAgents.isEmpty {
                         if client.hasFetchedAgents {
                             Text("暂无登记的设备，请前往主应用“设置 → Agent 管理”添加。").foregroundStyle(.secondary)
                         } else {
@@ -108,7 +110,7 @@ struct DeviceMonitorView: View {
                                 .disabled(client.busy)
                         }
                     }
-                    ForEach(client.agents) { agent in
+                    ForEach(monitoringAgents) { agent in
                         Button { openAgent(agent.id) } label: {
                             deviceRow(agent, current: false)
                         }
@@ -131,10 +133,10 @@ struct DeviceMonitorView: View {
         SettingsSheet(title: "设备管理设置") {
             List {
                 Section {
-                    if client.agents.isEmpty {
+                    if monitoringAgents.isEmpty {
                         Text(client.hasFetchedAgents ? "暂无登记的设备" : "暂时无法获取设备列表").foregroundStyle(.secondary)
                     }
-                    ForEach(client.agents) { agent in
+                    ForEach(monitoringAgents) { agent in
                         Button { openAgent(agent.id); sheet = nil } label: {
                             deviceRow(agent, current: agent.id == selectedAgent?.id)
                         }

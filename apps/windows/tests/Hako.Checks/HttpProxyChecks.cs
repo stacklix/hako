@@ -18,12 +18,18 @@ internal static class HttpProxyChecks
     internal static async Task RunAsync()
     {
         await using var dispatcher = new AgentDispatcher(new SystemMetrics());
-        Check(dispatcher.Capabilities.Contains(new(HttpProxy.Command, 1)), "Proxy capability missing");
+        Check(!dispatcher.Capabilities.Any(c => c.Name == "action.network.http.proxy"), "Proxy leaked into device commands");
+        async Task<object?> Send(JsonElement request, CancellationToken token = default) => await HttpProxyConnection.ExecuteAsync(
+            JsonSerializer.SerializeToElement(new { version = 1, request }, AgentConnection.Json), token);
+        try { await dispatcher.InvokeAsync("action.network.http.proxy", 1, JsonSerializer.SerializeToElement(new { }), default); throw new Exception("Proxy still executes as an Agent command"); }
+        catch (AgentActionException e) when (e.Code == "unsupported_method") { }
+        try { await HttpProxyConnection.ExecuteAsync(JsonSerializer.SerializeToElement(new { version = 2, request = new { } }), default); throw new Exception("Unsupported proxy version accepted"); }
+        catch (AgentActionException e) when (e.Code == "invalid_proxy_request") { }
         async Task Reject(string target, string body = "", string method = "POST")
         {
             var invalid = JsonSerializer.SerializeToElement(new { url = "http://example.invalid/a", target, method,
                 headers = new Dictionary<string, string>(), body, timeoutMs = 1000 }, AgentConnection.Json);
-            try { await dispatcher.InvokeAsync(HttpProxy.Command, 1, invalid, default); throw new Exception("Invalid proxy request accepted: " + target); }
+            try { await Send(invalid); throw new Exception("Invalid proxy request accepted: " + target); }
             catch (AgentActionException e) when (e.Code is "invalid_params" or "request_too_large") { }
         }
         foreach (var target in new[] { "localhost:80", "127.0.0.1", "http://127.0.0.1:80", "127.0.0.1:80/path", "127.0.0.1:80?x", "user@127.0.0.1:80", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:80\r\nX: x" })
@@ -94,7 +100,7 @@ internal static class HttpProxyChecks
             if (scenario == "cancel") cancel.CancelAfter(100);
             try
             {
-                var output = (HttpProxy.Output)(await dispatcher.InvokeAsync(HttpProxy.Command, 1, parameters, cancel.Token))!;
+                var output = (HttpProxy.Output)(await Send(parameters, cancel.Token))!;
                 Check(scenario is not ("oversized" or "timeout" or "cancel"), "Expected proxy failure");
                 Check(output.Status == (scenario == "redirect" ? 302 : 404), "Status changed or redirect followed");
                 Check(output.Body == HttpProxy.EncodeBody(download), "Response corrupted or compressed twice");

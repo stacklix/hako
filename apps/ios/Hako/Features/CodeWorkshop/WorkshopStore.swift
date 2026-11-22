@@ -4,7 +4,7 @@ import CryptoKit
 
 @MainActor final class WorkshopStore: ObservableObject {
     let authentication: any AuthenticatedServerAccess
-    private let socket: WorkshopRequestSocket
+    private var cloudSockets: [String: WorkshopRequestSocket] = [:]
     private var directSockets: [String: WorkshopRequestSocket] = [:]
     @Published private var localEndpoints: [String: LocalNetworkEndpoint] = [:]
     private var localCandidates: [String: [LocalNetworkEndpoint]] = [:]
@@ -58,10 +58,6 @@ import CryptoKit
     init(authentication: (any AuthenticatedServerAccess)? = nil) {
         let authentication = authentication ?? AuthenticatedServerService.shared
         self.authentication = authentication
-        socket = WorkshopRequestSocket(authentication: authentication, logSource: .codeWorkshop)
-        socket.onDisconnect = { [weak self] in self?.connectionInterrupted() }
-        socket.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
-        socket.onFailure = { HakoLog.record(.codeWorkshop, "工坊共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
         subscription = authentication.changes.sink { [weak self] _ in
             Task { @MainActor [weak self] in self?.prepareContext() }
         }
@@ -92,7 +88,7 @@ import CryptoKit
             try stateDisk.write(computers, to: computerCatalogFile)
             agents = computers
             if selectedAgent == nil {
-                selectedAgentID = agents.first(where: { $0.online && $0.supported })?.id ?? agents.first?.id ?? ""
+                selectedAgentID = ""
                 showCachedCatalog()
             }
             await prepareNetwork()
@@ -107,9 +103,12 @@ import CryptoKit
 
     private func cloudComputers() async throws -> [WorkshopAgent] {
         let ticket = scope
-        struct List: Decodable { let computers: [WorkshopAgent] }
-        let data = try await authentication.send("/api/v1/workshop/computers", method: "GET", body: nil, logSource: .codeWorkshop)
-        let computers = try JSONDecoder().decode(List.self, from: data).computers
+        let catalog = try await HakoAgents.list(refresh: true)
+        let computers = catalog.filter(\.supportsWorkshop).map { agent in
+            let service = agent.modules?.workshop
+            return WorkshopAgent(id: agent.id, name: agent.name, online: agent.online, protocolVersion: service?.version ?? 0,
+                lan: .init(addresses: service?.lan?.addresses ?? [], port: service?.lan?.port ?? 0))
+        }
         guard ticket == scope else { throw CancellationError() }
         return computers
     }
@@ -130,7 +129,7 @@ import CryptoKit
         let candidates = await configuredLocalEndpoints()
         guard !Task.isCancelled, ticket == scope, check == networkCheck, candidates != localCandidates else { return }
         let endpoints = candidates.compactMapValues(\.first)
-        socket.close()
+        cloudSockets.values.forEach { $0.close() }; cloudSockets.removeAll()
         directSockets.values.forEach { $0.close() }; directSockets.removeAll()
         transportRevision = UUID()
         connections.removeAll()
@@ -154,7 +153,26 @@ import CryptoKit
         routeChanges.send()
     }
 
-    private func requests(for agentID: String) -> WorkshopRequestSocket { directSockets[agentID] ?? socket }
+    private func requests(for agentID: String) -> WorkshopRequestSocket {
+        if let direct = directSockets[agentID] { return direct }
+        if let existing = cloudSockets[agentID] { return existing }
+        let authentication = self.authentication
+        let socket = WorkshopRequestSocket(context: { authentication.requestContext }, open: {
+            let ticket = authentication.requestContext
+            let ready = try await HakoAgents.open("workshop", agentID: agentID)
+            guard ticket == authentication.requestContext else { throw CancellationError() }
+            return try await authentication.openWebSocket(ready.path, logSource: .codeWorkshop)
+        }, diagnostic: { event, detail in
+            HakoLog.record(.codeWorkshop, event.contains("failed") || event == "disconnected" ? .warning : .info,
+                           "会话连接：\(event)", detail: detail)
+        })
+        socket.onDisconnect = { [weak self] in self?.connections[agentID] = .reconnecting }
+        socket.onDiagnostic = { [weak self] in self?.recordDiagnostic($0, detail: $1) }
+        socket.onFailure = { HakoLog.record(.codeWorkshop, "工坊共享连接中断", detail: WorkshopSocketDiagnostics.error($0)) }
+        socket.setPersistent(connectionPersistent)
+        cloudSockets[agentID] = socket
+        return socket
+    }
 
     func recordDiagnostic(_ event: String, detail: String) {
         let file = cacheFile.deletingPathExtension().appendingPathExtension("diagnostics.json")
@@ -188,7 +206,7 @@ import CryptoKit
 
     func setConnectionForeground(_ foreground: Bool) {
         connectionPersistent = foreground
-        socket.setPersistent(foreground); directSockets.values.forEach { $0.setPersistent(foreground) }
+        cloudSockets.values.forEach { $0.setPersistent(foreground) }; directSockets.values.forEach { $0.setPersistent(foreground) }
     }
 
     private func connectionInterrupted() {
@@ -440,7 +458,7 @@ import CryptoKit
         connections.removeAll()
         localEndpoints = [:]; localCandidates = [:]
         directSockets.values.forEach { $0.close() }; directSockets.removeAll()
-        socket.resetIfContextChanged()
+        cloudSockets.values.forEach { $0.close() }; cloudSockets.removeAll()
         preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
         savedPreferences = preferences
         queuedSends = (try? stateDisk.read([WorkshopQueuedSend].self, from: queueFile)) ?? []
@@ -467,12 +485,10 @@ import CryptoKit
             // A saved list is available immediately, but cannot establish live connectivity.
             agents = snapshot.agents.map { WorkshopAgent(id: $0.id, name: $0.name, online: false,
                 protocolVersion: $0.protocolVersion, lan: $0.lan) }
-            if selectedAgent == nil { selectedAgentID = agents.first?.id ?? "" }
             showCachedCatalog()
         }
         if let computers = try? stateDisk.read([WorkshopAgent].self, from: computerCatalogFile) {
             agents = computers.map { WorkshopAgent(id: $0.id, name: $0.name, online: false, protocolVersion: $0.protocolVersion, lan: $0.lan) }
-            if selectedAgent == nil { selectedAgentID = agents.first?.id ?? "" }
             showCachedCatalog()
         }
     }
@@ -974,6 +990,7 @@ import CryptoKit
             }
         } catch {
             if ticket == scope, route == transportRevision {
+                if let failure = error as? WorkshopFailure, ["computer_offline", "workshop_disconnected"].contains(failure.code) { cloudSockets[agent.id]?.close() }
                 connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)
             }
             throw error
@@ -1004,6 +1021,10 @@ import CryptoKit
             if tracksConversation { uploadDiagnostics(to: agent) }
             return result
         } catch {
+            if ticket == scope, route == transportRevision,
+               let failure = error as? WorkshopFailure, ["computer_offline", "workshop_disconnected"].contains(failure.code) {
+                cloudSockets[agent.id]?.close()
+            }
             if tracksConversation, ticket == scope, route == transportRevision {
                 setConnection((connections[agent.id] ?? .disconnected).afterFailure(error), for: agent.id)
             }

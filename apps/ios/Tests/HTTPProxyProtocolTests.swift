@@ -5,22 +5,28 @@ import FoundationNetworking
 
 enum HakoLogSource { case hako }
 @MainActor enum AuthenticatedServerService { static let shared = ProxyTestAccess() }
+@MainActor enum HakoHTTPProxyClient {
+    static func send(agentID: String, parameters: [String: Any]) async throws -> Data {
+        try await AuthenticatedServerService.shared.send("/ws/proxy/client/" + agentID, method: "WS",
+            body: ["version": 1, "request": parameters], logSource: .hako)
+    }
+}
 @MainActor final class ProxyTestAccess {
     let serverURL = "https://proxy-test.invalid"
     let username = "test-" + UUID().uuidString
     var authenticated = true
     var logoutPending = false
     var requestContext = "original"
-    var version = "0.8.15"
+    var version = "0.8.16"
     var failure: String?
     var invalidate = false
     var stall = false
     var requests = 0
     func send(_ path: String, method: String, body: [String: Any]?, logSource: HakoLogSource) async throws -> Data {
         if path == "/api/v1/version" { return try JSONSerialization.data(withJSONObject: ["serverVersion": version]) }
-        precondition(path == "/api/v1/agents/fixture/requests" && method == "POST")
-        precondition(body?["method"] as? String == HakoHTTPProxy.command && body?["version"] as? Int == 1)
-        let parameters = body?["params"] as! [String: Any]
+        precondition(path == "/ws/proxy/client/fixture" && method == "WS")
+        precondition(body?["method"] == nil && body?["version"] as? Int == 1)
+        let parameters = body?["request"] as! [String: Any]
         precondition(parameters["target"] as? String == "127.0.0.1:8080")
         precondition(parameters["url"] as? String == "http://unreachable.invalid/a%2Fb?q=1")
         precondition(parameters["body"] as? String == "AP-A")
@@ -56,10 +62,10 @@ enum HakoLogSource { case hako }
         let (data, response) = try await session.data(for: request)
         precondition(data == Data([0, 255, 128]) && (response as? HTTPURLResponse)?.statusCode == 404)
         precondition(response.url == request.url && access.requests == 1)
-        access.version = "0.8.14"
+        access.version = "0.8.15"
         do { _ = try await session.data(for: request); preconditionFailure("Old relay received a mutating request") } catch { }
         precondition(access.requests == 1)
-        access.version = "0.8.15"
+        access.version = "0.8.16"
         access.failure = "Test target error"
         do { _ = try await session.data(for: request); preconditionFailure("Agent error lost") } catch {
             precondition(error.localizedDescription.contains("Test target error"))
@@ -69,6 +75,6 @@ enum HakoLogSource { case hako }
         while access.requests < 3 { await Task.yield() }
         pending.cancel()
         do { _ = try await pending.value; preconditionFailure("Cancellation ignored") } catch { }
-        print("PASS: real URLSession proxy interception, authenticated HTTP relay envelope, status/binary response, missing settings, relay version, Agent error and cancellation")
+        print("PASS: real URLSession proxy interception, authenticated proxy WebSocket envelope, status/binary response, missing settings, relay version, Agent error and cancellation")
     }
 }

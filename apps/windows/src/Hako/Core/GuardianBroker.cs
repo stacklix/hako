@@ -19,6 +19,7 @@ internal sealed class GuardianBroker : IAsyncDisposable
     private readonly WorkshopConnection workshop;
     private LocalRpcServer? rpc;
     private readonly SemaphoreSlim operations = new(1, 1);
+    private readonly SemaphoreSlim workshopOpening = new(1, 1);
     private readonly CancellationTokenSource stopping = new();
     private Task watching = Task.CompletedTask;
     private string? activeScope, error;
@@ -27,7 +28,7 @@ internal sealed class GuardianBroker : IAsyncDisposable
     {
         this.profile = profile; store = new AgentSettingsStore(profile);
         dispatcher = new GuardianDispatcher(profile);
-        connection = new AgentConnection(dispatcher);
+        connection = new AgentConnection(dispatcher, OpenWorkshopAsync);
         workshop = new WorkshopConnection(new GuardianWorkshopDispatcher(profile), id =>
         {
             try { Directory.CreateDirectory(profile); File.WriteAllText(Path.Combine(profile, "workshop-computer-id.txt"), id); }
@@ -109,11 +110,19 @@ internal sealed class GuardianBroker : IAsyncDisposable
         {
             try
             {
-                await connection.StartAsync(settings); await workshop.StartAsync(settings);
+                await connection.StartAsync(settings);
                 activeScope = scope;
             }
             catch { await connection.StopAsync(); await workshop.StopAsync(); throw; }
         }
+    }
+    private async Task OpenWorkshopAsync(CancellationToken token)
+    {
+        await workshopOpening.WaitAsync(token);
+        try {
+            if (workshop.State is "disconnected" or "authentication_failed") await workshop.StartAsync(store.Load());
+            while (workshop.State != "connected") await Task.Delay(50, token);
+        } finally { workshopOpening.Release(); }
     }
     public async ValueTask DisposeAsync()
     {

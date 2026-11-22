@@ -5,11 +5,23 @@ import SwiftUI
 @MainActor final class WorkshopQuotaState: ObservableObject {
     @Published var cached: WorkshopQuotaCacheEntry?
     @Published var identity = ""
+    @Published private(set) var fetching = false
+    private var refreshID = UUID()
     private var expiration: Task<Void, Never>?
     @Published var displayedAt = Date.now
 
+    func prepareManualRefresh() {
+        refreshID = UUID()
+        fetching = true
+        display(nil)
+    }
+
     func refresh(store: WorkshopStore, agent: WorkshopAgent, clearCache: Bool) async {
         guard !Task.isCancelled else { return }
+        let request = UUID()
+        refreshID = request
+        fetching = true
+        defer { if refreshID == request { fetching = false } }
         let ticket = store.scope
         let account = store.settingsAccount + "|" + agent.id
         identity = account
@@ -17,23 +29,23 @@ import SwiftUI
             display(nil)
             do { try await store.clearCachedQuota(for: agent.id) }
             catch { HakoLog.record(.codeWorkshop, .warning, "额度缓存无法清空", detail: WorkshopSocketDiagnostics.error(error)) }
-            guard !Task.isCancelled, ticket == store.scope else { return }
+            guard !Task.isCancelled, refreshID == request, ticket == store.scope else { return }
         }
         display(store.cachedQuota(for: agent.id))
         if cached == nil {
             let entry = await store.loadCachedQuota(for: agent.id)
-            guard !Task.isCancelled, ticket == store.scope else { return }
+            guard !Task.isCancelled, refreshID == request, ticket == store.scope else { return }
             display(entry)
         }
         do {
             let result: WorkshopQuotaSnapshot = try await store.call(agent, "account.limits.read")
             try Task.checkCancellation()
-            guard ticket == store.scope else { return }
+            guard refreshID == request, ticket == store.scope else { return }
             let entry = WorkshopQuotaCacheEntry(value: result, cachedAt: .now)
             display(entry)
             store.cacheQuota(entry, for: agent.id)
         } catch {
-            if !Task.isCancelled, ticket == store.scope { display(cached) }
+            if !Task.isCancelled, refreshID == request, ticket == store.scope { display(cached) }
         }
     }
 
@@ -81,7 +93,7 @@ import SwiftUI
                     if let window = bucket.secondary { row(bucket, window: window, primary: false) }
                 }
             } else {
-                Text("未知")
+                Text(state.identity == identity && state.fetching ? "正在获取额度…" : "未知")
             }
         }
         .font(.caption).foregroundStyle(.secondary)

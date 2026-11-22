@@ -41,6 +41,22 @@ struct EditAgentSheet: View {
                                 .accessibilityLabel("设备名称")
                         }
                     }
+                    Section("支持能力") {
+                        LabeledContent("Agent 命令", value: currentAgent.capabilities == nil ? "未声明" : currentAgent.supportsCommands ? "支持" : "不支持")
+                        LabeledContent("代码工坊", value: currentAgent.modules == nil ? "未声明" : currentAgent.supportsWorkshop ? "支持" : "不支持")
+                        LabeledContent("HTTP 代理", value: currentAgent.modules == nil ? "未声明" : currentAgent.supportsProxy ? "支持" : "不支持")
+                    }
+                    if let commands = currentAgent.capabilities, !commands.isEmpty {
+                        Section("Agent 命令列表") {
+                            ForEach(commands) { command in
+                                LabeledContent(command.name, value: "v\(command.version)")
+                                    .font(.caption.monospaced())
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                            }
+                        }
+                    }
                     Section {
                         TextEditor(text: $publicKeyPEM)
                             .font(.caption.monospaced()).frame(minHeight: 180)

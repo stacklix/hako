@@ -12,12 +12,88 @@ public sealed record Metrics(double CpuUsagePercent, double MemoryUsagePercent, 
 public sealed record DiskMetrics(DiskVolume[] Volumes, double? ReadBytesPerSecond, double? WriteBytesPerSecond);
 public sealed record DiskVolume(string Name, ulong UsedBytes, ulong TotalBytes);
 
-public sealed class SystemMetrics
+public sealed class SystemMetrics : IAsyncDisposable
 {
     private const uint PdhFormatDouble = 0x200;
     private const uint PdhFormatNoScale = 0x1000;
     private const uint PdhFormatNoCap100 = 0x8000;
-    private readonly SemaphoreSlim sampling = new(1, 1);
+    private readonly object gate = new();
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly Func<CancellationToken, Task<Metrics>> collect;
+    private TaskCompletionSource<Metrics> next = NewCompletion();
+    private Task? worker;
+    private Metrics? latest;
+    private long receivedAt;
+    private bool disposed;
+    internal event Action<Metrics>? Sampled;
+    internal event Action? SamplingFailed;
+
+    public SystemMetrics() { collect = CollectAsync; }
+    internal SystemMetrics(Func<CancellationToken, Task<Metrics>> collector) { collect = collector; }
+    private static TaskCompletionSource<Metrics> NewCompletion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public void Start()
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            worker ??= Task.Run(() => RunAsync(lifetime.Token));
+        }
+    }
+
+    // All live consumers read the same autonomous one-second sample.
+    public Task<Metrics> SampleAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        Start();
+        lock (gate)
+        {
+            if (latest is not null && Environment.TickCount64 - receivedAt < 2000) return Task.FromResult(latest);
+            return next.Task.WaitAsync(token);
+        }
+    }
+
+    private async Task RunAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    var value = await collect(token);
+                    token.ThrowIfCancellationRequested();
+                    Sampled?.Invoke(value);
+                    TaskCompletionSource<Metrics> ready;
+                    lock (gate) { latest = value; receivedAt = Environment.TickCount64; ready = next; next = NewCompletion(); }
+                    ready.TrySetResult(value);
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    TaskCompletionSource<Metrics> ready;
+                    lock (gate) { latest = null; ready = next; next = NewCompletion(); }
+                    ready.TrySetException(error);
+                    _ = ready.Task.Exception;
+                    SamplingFailed?.Invoke();
+                    await Task.Delay(1000, token);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Task? running;
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true; running = worker;
+            lifetime.Cancel(); next.TrySetCanceled();
+        }
+        if (running is not null) await running;
+        lifetime.Dispose();
+    }
     [StructLayout(LayoutKind.Sequential)]
     private struct MemoryStatus
     {
@@ -39,9 +115,8 @@ public sealed class SystemMetrics
     [DllImport("pdh.dll")]
     private static extern uint PdhCloseQuery(IntPtr query);
 
-    public async Task<Metrics> SampleAsync(CancellationToken token)
+    private async Task<Metrics> CollectAsync(CancellationToken token)
     {
-        await sampling.WaitAsync(token);
         IntPtr query = IntPtr.Zero;
         try
         {
@@ -66,7 +141,7 @@ public sealed class SystemMetrics
                 NetworkTraffic.Measure(networkBefore, networkAfter),
                 new DiskMetrics(ReadDiskVolumes(), ReadDiskRate(diskRead), ReadDiskRate(diskWrite)));
         }
-        finally { if (query != IntPtr.Zero) PdhCloseQuery(query); sampling.Release(); }
+        finally { if (query != IntPtr.Zero) PdhCloseQuery(query); }
     }
     private static IntPtr AddOptionalCounter(IntPtr query, string path) =>
         PdhAddEnglishCounter(query, path, UIntPtr.Zero, out var counter) == 0 ? counter : IntPtr.Zero;

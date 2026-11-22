@@ -34,6 +34,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     private readonly Dictionary<string, Handler> onDemandQueries;
     private readonly Dictionary<string, Handler> actions;
     private readonly CodexUsage codex;
+    private readonly SystemMetrics metrics;
     private readonly Lazy<AndroidManager> android;
     internal AndroidManager Android => android.Value;
     internal Func<Uri?> StreamOrigin { get; set; } = () => null;
@@ -43,7 +44,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
         new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
         new(ResourceHistory.Command, 1),
         new(ProcessMetrics.Command, 1), new(AndroidManager.ListCommand, 1),
-        new("action.network.http.check", 1), new(HttpProxy.Command, 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
+        new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         .. AndroidManager.ActionCommands.Select(name => new AgentCapability(name, 1)),
         new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1),
         .. AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand).Select(name => new AgentCapability(name, 1))
@@ -54,6 +55,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
 
     public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null, ResourceHistory? resourceHistory = null)
     {
+        this.metrics = metrics;
         codex = codexUsage ?? new CodexUsage();
         android = new(() => {
             var manager = new AndroidManager(dataDirectory ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kage-android-dispatcher-" + Guid.NewGuid().ToString("N")), streamOrigin: () => StreamOrigin());
@@ -106,7 +108,6 @@ public sealed class AgentDispatcher : IAgentDispatcher
         actions = new()
         {
             ["action.network.http.check"] = new(1, async (parameters, token) => await probe.CheckAsync(parameters, token)),
-            [HttpProxy.Command] = new(1, HttpProxy.SendAsync),
             ["action.git.commit"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Commit, token)),
             ["action.git.push"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Push, token)),
             ["action.git.pull"] = new(1, (parameters, token) => git.StartAsync(parameters, GitOperationKind.Pull, token)),
@@ -125,7 +126,11 @@ public sealed class AgentDispatcher : IAgentDispatcher
             actions[name] = new(1, (p, t) => Android.ActionAsync(name, p, t));
     }
 
-    public ValueTask DisposeAsync() => android.IsValueCreated ? android.Value.DisposeAsync() : ValueTask.CompletedTask;
+    public async ValueTask DisposeAsync()
+    {
+        if (android.IsValueCreated) await android.Value.DisposeAsync();
+        await metrics.DisposeAsync();
+    }
 
     public async Task RunTelemetryAsync(Func<string, CapabilityData, Task> publish, CancellationToken token)
     {

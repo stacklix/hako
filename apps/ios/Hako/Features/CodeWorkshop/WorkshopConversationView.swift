@@ -21,7 +21,6 @@ struct WorkshopConversationView: View {
     @State private var confirmsCompact = false
     @State private var showingCommandTask = false
     @StateObject private var commands: WorkshopCommands
-    @State private var showingBuildProgress = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var previewPhoto: WorkshopPhoto?
     @State private var loadingPhoto = false
@@ -40,7 +39,7 @@ struct WorkshopConversationView: View {
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask && !showingBuildProgress }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask }
 
     var body: some View {
         let transcript = conversation.presentation
@@ -190,10 +189,6 @@ struct WorkshopConversationView: View {
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
-                WorkshopBuildProgressBar(conversation: conversation,
-                    references: conversation.presentation.recentTaskReferences,
-                    active: scenePhase == .active && (transcriptVisible || showingBuildProgress),
-                    showingDetails: $showingBuildProgress)
                 if conversation.isArchived {
                     VStack(alignment: .leading, spacing: 8) {
                         WorkshopSynchronizationHint(conversation: conversation)

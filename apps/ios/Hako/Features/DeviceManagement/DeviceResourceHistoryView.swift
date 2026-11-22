@@ -30,7 +30,7 @@ struct DeviceResourceHistoryView: View {
             .pickerStyle(.segmented)
             if let history {
                 if history.points.isEmpty {
-                    Text("此时间范围暂无历史记录。Kage 运行后每 10 秒记录一次。").font(.footnote).foregroundStyle(.secondary)
+                    Text("此时间范围暂无历史记录。Kage 运行后每秒采样一次。").font(.footnote).foregroundStyle(.secondary)
                 } else {
                     resourceChart(history, cpu: true)
                     resourceChart(history, cpu: false)
@@ -50,7 +50,7 @@ struct DeviceResourceHistoryView: View {
             if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
             Text(liveRefresh ? "实时刷新已开启 · 每 10 秒更新历史曲线" : "开启「实时刷新」后自动更新历史曲线")
                 .font(.caption2).foregroundStyle(.secondary)
-            Text("每 10 秒在设备本机记录，自动保留最近 7 天；Kage 停止或电脑休眠期间没有样本。")
+            Text("与实时指标共用每秒采样，每 5 分钟批量写盘，保留最近 7 天；未写盘数据也可查看。Kage 正常退出时保存，异常退出可能丢失最近 5 分钟的数据。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .devicePagePanel()

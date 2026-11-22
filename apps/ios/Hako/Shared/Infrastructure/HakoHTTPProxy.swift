@@ -4,7 +4,6 @@ import FoundationNetworking
 #endif
 
 enum HakoHTTPProxy {
-    static let command = "action.network.http.proxy"
     static let requestLimit = 512 * 1024
     static let responseLimit = 8 * 1024 * 1024
 

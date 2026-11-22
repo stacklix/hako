@@ -14,7 +14,7 @@ import Foundation
         precondition(DeviceAgentHistory.agentID(in: history, scope: alice) == nil)
         precondition(DeviceAgentHistory.agentID(in: history, scope: bob) == "B5678")
         precondition(DeviceAgentHistory.agentID(in: history, scope: "https://two.example\nbob") == nil)
-        let first = ConsoleAgent(dataQueryEnabled: true, id: "A1234", name: "工作电脑", online: true,
+        let first = ConsoleAgent(dataQueryEnabled: true, modules: .init(workshop: nil, proxy: .init(version: 1, lan: nil)), id: "A1234", name: "工作电脑", online: true,
                                  lastSeen: "2026-11-14T06:00:00Z",
                                  capabilities: [.init(name: "query.system.metrics", version: 1)])
         let second = ConsoleAgent(id: "B5678", name: "备用电脑", online: true, lastSeen: "", capabilities: nil)
@@ -29,6 +29,8 @@ import Foundation
         inventory.receive([first, second])
         inventory.markOffline(agentID: first.id)
         precondition(inventory.selectedAgent(id: first.id)?.online == false)
+        precondition(inventory.selectedAgent(id: first.id)?.supportsProxy == true,
+                     "Going offline must preserve the declared module support")
         precondition(inventory.selectedAgent(id: second.id)?.online == true,
                      "One offline Agent must not mark another Agent offline")
         inventory.markOffline()

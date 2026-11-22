@@ -29,7 +29,7 @@ struct DeviceResourceHistory: Decodable {
     let points: [DeviceResourceHistoryPoint]
 
     var isValid: Bool {
-        from >= 0 && to >= from && to <= collectedAt && retentionDays == 7 && sampleIntervalSeconds == 10
+        from >= 0 && to >= from && to <= collectedAt && retentionDays == 7 && sampleIntervalSeconds == 1
             && bucketSeconds >= sampleIntervalSeconds && bucketSeconds <= 2520
             && bucketSeconds % sampleIntervalSeconds == 0 && to - from <= 604_800_000
             && points.count <= 240 && lastSampleAt.map { $0 >= collectedAt - 604_800_000 && $0 <= collectedAt } != false
@@ -58,7 +58,7 @@ struct DeviceResourceHistoryPoint: Decodable, Identifiable {
     var id: Int64 { timestamp }
     var date: Date { DeviceResourceHistory.date(timestamp) }
     var isValid: Bool {
-        sampleCount > 0 && sampleCount <= 60_481 && [cpuUsagePercent, cpuMaxPercent, memoryUsagePercent, memoryMaxPercent]
+        sampleCount > 0 && sampleCount <= 604_801 && [cpuUsagePercent, cpuMaxPercent, memoryUsagePercent, memoryMaxPercent]
             .allSatisfy { $0.isFinite && (0...100).contains($0) }
             && cpuMaxPercent + 0.000001 >= cpuUsagePercent && memoryMaxPercent + 0.000001 >= memoryUsagePercent
     }
