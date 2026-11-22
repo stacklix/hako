@@ -51,6 +51,20 @@ import Foundation
         await gate.finish(entry)
         let resolved = await loading.value
         precondition(resolved?.cachedAt == live.cachedAt, "A late disk response must not replace fresher network quota")
+        let clearingGate = QuotaReadGate()
+        let clearingFile = URL(fileURLWithPath: "/account-a/clearing-cache.json")
+        let clearing = Task { await memory.load(clearingFile) { await clearingGate.read() } }
+        await clearingGate.waitForRead()
+        memory.remove(at: clearingFile)
+        await clearingGate.finish(live)
+        let cleared = await clearing.value
+        precondition(cleared == nil && memory.cached(at: clearingFile) == nil,
+            "Clearing quota must fence a disk read already in flight")
+        _ = await memory.load(clearingFile) { preconditionFailure("Cleared data must not be loaded again") }
+        precondition(memory.cached(at: otherAccount)?.cachedAt == live.cachedAt,
+            "Clearing one computer must preserve other quota caches")
+        memory.store(live, at: clearingFile)
+        precondition(memory.cached(at: clearingFile)?.cachedAt == live.cachedAt)
         let resetGate = QuotaReadGate()
         let stale = Task { await memory.load(URL(fileURLWithPath: "/old-account/cache.json")) { await resetGate.read() } }
         await resetGate.waitForRead()

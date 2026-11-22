@@ -1,125 +1,104 @@
 import SwiftUI
 
-@MainActor private final class WorkshopQuotaState: ObservableObject {
+// Owned by the page rather than its lazy List cell. Scrolling the header off
+// screen must neither cancel the request nor start another quota read.
+@MainActor final class WorkshopQuotaState: ObservableObject {
     @Published var cached: WorkshopQuotaCacheEntry?
-    var identity = ""
-    @Published var failed = false
+    @Published var identity = ""
+    private var expiration: Task<Void, Never>?
+    @Published var displayedAt = Date.now
+
+    func refresh(store: WorkshopStore, agent: WorkshopAgent, clearCache: Bool) async {
+        guard !Task.isCancelled else { return }
+        let ticket = store.scope
+        let account = store.settingsAccount + "|" + agent.id
+        identity = account
+        if clearCache {
+            display(nil)
+            do { try await store.clearCachedQuota(for: agent.id) }
+            catch { HakoLog.record(.codeWorkshop, .warning, "额度缓存无法清空", detail: WorkshopSocketDiagnostics.error(error)) }
+            guard !Task.isCancelled, ticket == store.scope else { return }
+        }
+        display(store.cachedQuota(for: agent.id))
+        if cached == nil {
+            let entry = await store.loadCachedQuota(for: agent.id)
+            guard !Task.isCancelled, ticket == store.scope else { return }
+            display(entry)
+        }
+        do {
+            let result: WorkshopQuotaSnapshot = try await store.call(agent, "account.limits.read")
+            try Task.checkCancellation()
+            guard ticket == store.scope else { return }
+            let entry = WorkshopQuotaCacheEntry(value: result, cachedAt: .now)
+            display(entry)
+            store.cacheQuota(entry, for: agent.id)
+        } catch {
+            if !Task.isCancelled, ticket == store.scope { display(cached) }
+        }
+    }
+
+    private func display(_ entry: WorkshopQuotaCacheEntry?) {
+        expiration?.cancel(); expiration = nil
+        displayedAt = .now
+        cached = entry?.snapshot(at: displayedAt) == nil ? nil : entry
+        guard let cached else { return }
+        let expiry = cached.cachedAt.addingTimeInterval(3600)
+        expiration = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, expiry.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled, self?.cached?.cachedAt == cached.cachedAt else { return }
+            self?.cached = nil
+        }
+    }
+
+    deinit { expiration?.cancel() }
 }
 
 @MainActor struct WorkshopQuotaView: View, Equatable {
     let store: WorkshopStore
     let agent: WorkshopAgent
-    let active: Bool
+    @ObservedObject var state: WorkshopQuotaState
     private let scope: String
-    @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var state = WorkshopQuotaState()
-    @State private var retry=0
 
-    init(store: WorkshopStore, agent: WorkshopAgent, active: Bool) {
-        self.store=store;self.agent=agent;self.active=active
+    init(store: WorkshopStore, agent: WorkshopAgent, state: WorkshopQuotaState) {
+        self.store = store; self.agent = agent; self.state = state
         scope = store.scope
     }
 
     nonisolated static func == (left: Self, right: Self) -> Bool {
-        left.store === right.store && left.agent == right.agent && left.active == right.active && left.scope == right.scope
+        left.store === right.store && left.agent == right.agent && left.state === right.state && left.scope == right.scope
     }
 
-    private var identity: String { store.settingsAccount+"|"+agent.id }
-
     var body: some View {
-        let snapshot = state.identity == identity ? state.cached?.snapshot(at: .now) : nil
-        VStack(alignment:.leading,spacing:5) {
-            if let snapshot,!snapshot.buckets.isEmpty {
-                VStack(alignment:.leading,spacing:5) {
-                    ForEach(snapshot.buckets) { bucket in
-                        if let window=bucket.primary { row(bucket,window:window,primary:true) }
-                        if let window=bucket.secondary { row(bucket,window:window,primary:false) }
-                    }
+        let identity = store.settingsAccount + "|" + agent.id
+        let snapshot = state.identity == identity ? state.cached?.snapshot(at: state.displayedAt) : nil
+        VStack(alignment: .leading, spacing: 5) {
+            if let snapshot, !snapshot.buckets.isEmpty {
+                ForEach(snapshot.buckets) { bucket in
+                    if let window = bucket.primary { row(bucket, window: window, primary: true) }
+                    if let window = bucket.secondary { row(bucket, window: window, primary: false) }
                 }
-                if state.failed { retryButton("额度未更新 · 点击重试") }
             } else {
-                if state.failed { retryButton("Codex 额度暂不可用 · 点击重试") }
-                else { Text(snapshot == nil ? "正在读取 Codex 额度…" : "Codex 未返回额度数据") }
+                Text("未知")
             }
         }
         .font(.caption).foregroundStyle(.secondary)
-        .frame(maxWidth:.infinity,alignment:.leading)
-        .task(id: state.cached?.cachedAt) {
-            guard let entry = state.cached else { return }
-            while entry.snapshot(at: .now) != nil {
-                let remaining = max(0.001, entry.cachedAt.addingTimeInterval(3600).timeIntervalSinceNow)
-                do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
-            }
-            if state.cached?.cachedAt == entry.cachedAt { state.cached = nil }
-        }
-        .task(id:store.scope+"|"+agent.id+"|"+String(describing:scenePhase)+"|\(active)|\(retry)") {
-            let ticket = identity
-            if state.identity != ticket {
-                state.cached = nil; state.identity = ticket
-            }
-            if state.cached?.snapshot(at: .now) == nil {
-                state.cached = store.cachedQuota(for: agent.id)
-                if state.cached == nil {
-                    let entry = await store.loadCachedQuota(for: agent.id)
-                    guard !Task.isCancelled, identity == ticket else { return }
-                    state.cached = entry
-                }
-            }
-            if state.failed { state.failed = false }
-            guard active,scenePhase == .active else { return }
-            while !Task.isCancelled {
-                do {
-                    let result: WorkshopQuotaSnapshot = try await store.call(agent,"account.limits.read")
-                    try Task.checkCancellation()
-                    guard identity == ticket else { return }
-                    let entry=WorkshopQuotaCacheEntry(value:result,cachedAt:.now)
-                    state.cached = entry
-                    if state.failed { state.failed = false }
-                    store.cacheQuota(entry,for:agent.id)
-                } catch {
-                    if Task.isCancelled { return }
-                    if !state.failed { state.failed = true }
-                }
-                do { try await Task.sleep(for:.seconds(state.cached?.snapshot(at:.now)?.nextRefreshDelay ?? 60)) }
-                catch { return }
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func row(_ bucket: WorkshopQuotaBucket,window: WorkshopQuotaWindow,primary: Bool) -> some View {
+    private func row(_ bucket: WorkshopQuotaBucket, window: WorkshopQuotaWindow, primary: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(bucket.title + " · " + window.periodLabel(primary: primary))
                 .lineLimit(1).minimumScaleFactor(0.85)
-            WorkshopQuotaReadout(window: window, active: active && scenePhase == .active)
-        }
-        .accessibilityElement(children:.combine)
-    }
-    private func retryButton(_ title: String) -> some View {
-        Button(title) { retry += 1 }.buttonStyle(.plain).accessibilityLabel("重新读取 Codex 账号额度")
-    }
-}
-
-private struct WorkshopQuotaReadout: View {
-    let window: WorkshopQuotaWindow
-    let active: Bool
-
-    var body: some View {
-        Group {
-            if active {
-                TimelineView(.periodic(from: .now, by: 1)) { context in readout(at: context.date) }
-            } else {
-                readout(at: .now)
+            HStack(spacing: 8) {
+                Text(window.remaining(at: state.displayedAt).map { "剩余 " + $0.formatted(.number.precision(.fractionLength(0...1))) + "%" } ?? "剩余 —")
+                    .fontWeight(.medium)
+                Spacer(minLength: 0)
+                Text(window.countdown(at: state.displayedAt))
             }
+            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
         }
+        .accessibilityElement(children: .combine)
     }
 
-    private func readout(at date: Date) -> some View {
-        HStack(spacing: 8) {
-            Text(window.remaining(at: date).map { "剩余 " + $0.formatted(.number.precision(.fractionLength(0...1))) + "%" } ?? "剩余 —")
-                .fontWeight(.medium)
-            Spacer(minLength: 0)
-            Text(window.countdown(at: date))
-        }
-        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.85)
-    }
 }

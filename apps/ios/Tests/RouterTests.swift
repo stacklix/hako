@@ -14,6 +14,18 @@ private final class RouterMockProtocol: URLProtocol {
     nonisolated(unsafe) static var expectedProxy: String?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    static func body(_ request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { throw CocoaError(.fileReadUnknown) }
+        stream.open(); defer { stream.close() }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count >= 0 else { throw stream.streamError ?? CocoaError(.fileReadUnknown) }
+            if count == 0 { return data }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+    }
     override func startLoading() {
         do {
             precondition(request.httpMethod == "POST", "Network classification must not probe router HTTP pages")
@@ -47,6 +59,16 @@ private final class RouterMockProtocol: URLProtocol {
     }
 
     static func main() async throws {
+        // URLSession may deliver POST bytes through a stream to URLProtocol on macOS.
+        let bytes = Data((0..<9_000).map { UInt8($0 % 256) })
+        var request = URLRequest(url: URL(string: "https://example.invalid/")!)
+        request.httpBody = bytes
+        let directBody = try RouterMockProtocol.body(request)
+        assert(directBody == bytes)
+        request.httpBody = nil
+        request.httpBodyStream = InputStream(data: bytes)
+        let streamedBody = try RouterMockProtocol.body(request)
+        assert(streamedBody == bytes)
         let snapshot = try RouterSnapshot(fixture())
         assert(snapshot.devices.count == 1 && snapshot.devices[0].name == "电脑")
         assert(snapshot.devices[0].connection == "有线" && snapshot.devices[0].download == 2048)
@@ -129,7 +151,7 @@ private final class RouterMockProtocol: URLProtocol {
             var paths: [String] = []
             RouterMockProtocol.handle = { request in
                 paths.append(request.url!.path)
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
                 requests.append(body)
                 let method = body["method"] as! String
                 if body["login"] != nil {
@@ -161,7 +183,7 @@ private final class RouterMockProtocol: URLProtocol {
 
             var mutations = 0
             RouterMockProtocol.handle = { request in
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
                 if body["method"] as? String == "set" {
                     mutations += 1
                     let fields = (body["wireless"] as! [String: Any])["wlan_host_2g"] as! [String: String]
@@ -179,7 +201,7 @@ private final class RouterMockProtocol: URLProtocol {
             var attempts = 0
             RouterMockProtocol.handle = { request in
                 attempts += 1
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
                 if attempts == 1 { return (200, Data("{\"error_code\":-40401}".utf8)) }
                 if body["login"] != nil { return (200, Data("{\"error_code\":0,\"stok\":\"new-token\"}".utf8)) }
                 return (200, try JSONSerialization.data(withJSONObject: fixture()))
@@ -194,7 +216,7 @@ private final class RouterMockProtocol: URLProtocol {
             // A lost write response must never cause an automatic second write.
             var writes = 0
             RouterMockProtocol.handle = { request in
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
                 if body["method"] as? String == "add" { writes += 1; throw URLError(.timedOut) }
                 return (200, try JSONSerialization.data(withJSONObject: fixture()))
             }
@@ -232,7 +254,7 @@ private final class RouterMockProtocol: URLProtocol {
         let switchingClient = try RouterClient(connection: connection, isLocal: { await switchingNetwork.local }, session: session)
         var logins = 0
         RouterMockProtocol.handle = { request in
-            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
             if body["login"] != nil {
                 logins += 1
                 return (200, Data("{\"error_code\":0,\"stok\":\"switch-token\"}".utf8))
@@ -249,7 +271,7 @@ private final class RouterMockProtocol: URLProtocol {
         assert(logins == 3)
         var wakeRequests = 0, rebootRequests = 0
         RouterMockProtocol.handle = { request in
-            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
             if body["wake_on_lan"] != nil { wakeRequests += 1 }
             if (body["system"] as? [String: Any])?["reboot"] != nil { rebootRequests += 1 }
             if body["login"] != nil { return (200, Data("{\"error_code\":0,\"stok\":\"action-token\"}".utf8)) }

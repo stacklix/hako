@@ -138,6 +138,15 @@ private final class Counter: @unchecked Sendable {
         try coalescing.write(["revision": 102], to: stateFile)
         await coalescing.flush()
         let afterDurableSend = try await coalescing.readAsync([String: Int].self, from: stateFile)
+        let quotaFile = directory.appendingPathComponent("quota.json")
+        coalescing.schedule(["quota": 42], to: quotaFile) { _ in }
+        try await coalescing.remove(quotaFile)
+        await coalescing.flush()
+        precondition(!FileManager.default.fileExists(atPath: quotaFile.path),
+            "Clearing quota must not be undone by a previously scheduled cache write")
+        try await coalescing.remove(quotaFile)
+        let preservedState = try await coalescing.readAsync([String: Int].self, from: stateFile)
+        precondition(preservedState == afterDurableSend, "Clearing quota must preserve conversation state")
         precondition(afterDurableSend["revision"] == 102, "A delayed list save must never overwrite a later durable write")
 
         let parses = Counter()

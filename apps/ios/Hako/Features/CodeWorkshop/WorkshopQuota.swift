@@ -6,6 +6,7 @@ import Foundation
     private var loaded = Set<URL>()
     private var loads: [URL: Task<WorkshopQuotaCacheEntry?, Never>] = [:]
     private var generation = UUID()
+    private var revisions: [URL: UUID] = [:]
 
     func cached(at file: URL, now: Date = .now) -> WorkshopQuotaCacheEntry? {
         guard let entry = entries[file], entry.snapshot(at: now) != nil else { return nil }
@@ -15,11 +16,12 @@ import Foundation
     func load(_ file: URL, read: @escaping @Sendable () async -> WorkshopQuotaCacheEntry?) async -> WorkshopQuotaCacheEntry? {
         if loaded.contains(file) { return cached(at: file) }
         let ticket = generation
+        let revision = revisions[file]
         let load: Task<WorkshopQuotaCacheEntry?, Never>
         if let existing = loads[file] { load = existing }
         else { load = Task { await read() }; loads[file] = load }
         let entry = await load.value
-        guard !Task.isCancelled, ticket == generation else { return nil }
+        guard !Task.isCancelled, ticket == generation, revision == revisions[file] else { return nil }
         loads[file] = nil; loaded.insert(file)
         // Never replace a live response that arrived during the disk read.
         if entries[file] == nil, let entry, entry.snapshot(at: .now) != nil { entries[file] = entry }
@@ -30,10 +32,18 @@ import Foundation
         entries[file] = entry; loaded.insert(file)
     }
 
+    func remove(at file: URL) {
+        revisions[file] = UUID()
+        loads.removeValue(forKey: file)?.cancel()
+        entries[file] = nil
+        loaded.insert(file)
+    }
+
     func reset() {
         generation = UUID()
         loads.values.forEach { $0.cancel() }; loads.removeAll()
         entries.removeAll(); loaded.removeAll()
+        revisions.removeAll()
     }
 }
 

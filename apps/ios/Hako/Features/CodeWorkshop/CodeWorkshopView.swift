@@ -60,6 +60,14 @@ struct CodeWorkshopView: View {
     @State private var creating = false
     @State private var conversation: WorkshopConversation?
     @State private var pendingArchive: WorkshopSession?
+    @State private var quotaState = WorkshopQuotaState()
+    @State private var quotaVisit = UUID()
+    @State private var quotaPageVisible = false
+    @State private var clearQuotaCache = false
+
+    private var quotaRefreshID: String {
+        store.scope + "|" + store.selectedAgentID + "|\(quotaVisit)|\(quotaPageVisible && store.authenticated && conversation == nil && !creating && !settingsPresented)"
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
@@ -111,14 +119,21 @@ struct CodeWorkshopView: View {
                             Text("此电脑的 Agent 尚不支持代码工坊，请更新 Windows Agent 后重新连接。")
                                 .font(.subheadline).foregroundStyle(HakoStyle.muted)
                         } else {
-                            VStack(alignment:.leading,spacing:10) {
-                                Text("Codex 额度").font(.subheadline.weight(.semibold))
-                                WorkshopQuotaView(store:store,agent:agent,active:conversation == nil && !creating && !settingsPresented)
-                                    .equatable()
-                                    .id(agent.id)
+                            Button {
+                                clearQuotaCache = true
+                                quotaVisit = UUID()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Codex 额度").font(.subheadline.weight(.semibold))
+                                    WorkshopQuotaView(store: store, agent: agent, state: quotaState)
+                                        .equatable()
+                                        .id(agent.id)
+                                }
+                                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
-                            .padding(14).frame(maxWidth:.infinity,alignment:.leading)
                             .background(HakoStyle.card,in:RoundedRectangle(cornerRadius:12))
+                            .accessibilityHint("清空缓存并重新获取额度")
                             VStack(alignment: .leading, spacing: 4) {
                                 applicationTabs
                                 HStack {
@@ -220,8 +235,15 @@ struct CodeWorkshopView: View {
         .onChange(of: store.selectedAgentID) { _, _ in pendingArchive = nil }
         .onChange(of: store.selectedApplicationID) { _, _ in pendingArchive = nil }
         .onChange(of: store.showingArchived) { _, _ in pendingArchive = nil }
-        .onAppear { WorkshopRuntime.shared.enter(synchronizationOwner) }
-        .onDisappear { WorkshopRuntime.shared.leave(synchronizationOwner) }
+        .task(id: quotaRefreshID) {
+            guard quotaPageVisible, conversation == nil, !creating, !settingsPresented, store.authenticated,
+                  let agent = store.selectedAgent, agent.supported else { return }
+            let clearCache = clearQuotaCache
+            clearQuotaCache = false
+            await quotaState.refresh(store: store, agent: agent, clearCache: clearCache)
+        }
+        .onAppear { quotaVisit = UUID(); quotaPageVisible = true; WorkshopRuntime.shared.enter(synchronizationOwner) }
+        .onDisappear { quotaPageVisible = false; WorkshopRuntime.shared.leave(synchronizationOwner) }
     }
 
     private func archive(_ session: WorkshopSession) {
@@ -258,42 +280,9 @@ struct CodeWorkshopView: View {
     }
 
     private var applicationTabs: some View {
-        GeometryReader { proxy in
-            let applications = store.orderedApplications
-            let count = applications.count * 78 <= Int(proxy.size.width) ? applications.count : max(1, Int((proxy.size.width - 64) / 78))
-            let visible = Array(applications.prefix(count))
-            let overflow = Array(applications.dropFirst(count))
-            let overflowSelection = overflow.first { $0.id == store.selectedApplicationID }
-            HStack(spacing: 4) {
-                ForEach(visible) { application in
-                    Button { store.selectApplication(application.id) } label: {
-                        tabLabel(application.name, selected: application.id == store.selectedApplicationID)
-                    }.buttonStyle(.plain).accessibilityAddTraits(application.id == store.selectedApplicationID ? .isSelected : [])
-                }
-                if !overflow.isEmpty {
-                    Menu {
-                        ForEach(overflow) { application in
-                            Button { store.selectApplication(application.id) } label: {
-                                if application.id == store.selectedApplicationID { Label(application.name, systemImage: "checkmark") }
-                                else { Text(application.name) }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(overflowSelection?.name ?? "更多").lineLimit(1).minimumScaleFactor(0.85)
-                            Image(systemName: "chevron.down").font(.caption2)
-                        }
-                        .font(.subheadline).frame(minWidth: 48, maxWidth: 90, minHeight: 44)
-                        .foregroundStyle(overflowSelection == nil ? HakoStyle.muted : HakoStyle.text)
-                        .overlay(alignment: .bottom) { if overflowSelection != nil { Rectangle().frame(height: 2) } }
-                    }
-                    .menuOrder(.fixed).accessibilityLabel("更多应用，当前为\(overflowSelection?.name ?? "未选择")")
-                }
-            }
-            .background(alignment: .bottom) { HakoStyle.line.frame(height: 1) }
-            .accessibilityElement(children: .contain).accessibilityLabel("应用")
+        WorkshopApplicationTabs(applications: store.orderedApplications, selectedID: store.selectedApplicationID) {
+            store.selectApplication($0)
         }
-        .frame(height: 44)
     }
 
     private func sessionFilter(count: Int) -> some View {
@@ -312,13 +301,6 @@ struct CodeWorkshopView: View {
         }
         .disabled(store.loading || store.archivingSessionID != nil)
         .accessibilityLabel("当前已加载 \(count) 个\(store.showingArchived ? "已归档" : "")会话，切换列表")
-    }
-
-    private func tabLabel(_ name: String, selected: Bool) -> some View {
-        Text(name).font(.subheadline.weight(selected ? .semibold : .regular))
-            .lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity, minHeight: 44)
-            .foregroundStyle(selected ? HakoStyle.text : HakoStyle.muted)
-            .overlay(alignment: .bottom) { if selected { Rectangle().fill(HakoStyle.text).frame(height: 2) } }
     }
 
     @ViewBuilder private func sessionList(_ agent: WorkshopAgent, items: [WorkshopSessionListItem]) -> some View {
@@ -387,6 +369,62 @@ struct CodeWorkshopView: View {
             }
         }
     }
+}
+
+// Keep scroll-position geometry out of the header's view construction. Only a
+// change in horizontal capacity invalidates this view's tab partition.
+private struct WorkshopApplicationTabs: View {
+    let applications: [WorkshopApplication]
+    let selectedID: String
+    let select: (String) -> Void
+    @State private var capacity = 1
+
+    var body: some View {
+        let visible = Array(applications.prefix(capacity))
+        let overflow = Array(applications.dropFirst(capacity))
+        let overflowSelection = overflow.first { $0.id == selectedID }
+        HStack(spacing: 4) {
+            ForEach(visible) { application in
+                Button { select(application.id) } label: {
+                    tabLabel(application.name, selected: application.id == selectedID)
+                }.buttonStyle(.plain).accessibilityAddTraits(application.id == selectedID ? .isSelected : [])
+            }
+            if !overflow.isEmpty {
+                Menu {
+                    ForEach(overflow) { application in
+                        Button { select(application.id) } label: {
+                            if application.id == selectedID { Label(application.name, systemImage: "checkmark") }
+                            else { Text(application.name) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(overflowSelection?.name ?? "更多").lineLimit(1).minimumScaleFactor(0.85)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }
+                    .font(.subheadline).frame(minWidth: 48, maxWidth: 90, minHeight: 44)
+                    .foregroundStyle(overflowSelection == nil ? HakoStyle.muted : HakoStyle.text)
+                    .overlay(alignment: .bottom) { if overflowSelection != nil { Rectangle().frame(height: 2) } }
+                }
+                .menuOrder(.fixed).accessibilityLabel("更多应用，当前为\(overflowSelection?.name ?? "未选择")")
+            }
+        }
+        .background(alignment: .bottom) { HakoStyle.line.frame(height: 1) }
+        .accessibilityElement(children: .contain).accessibilityLabel("应用")
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44, alignment: .leading)
+        .onGeometryChange(for: Int.self) { geometry in
+            let width = max(0, geometry.size.width)
+            return CGFloat(applications.count * 78) <= width ? applications.count : max(1, Int((width - 64) / 78))
+        } action: { capacity = $0 }
+    }
+
+    private func tabLabel(_ name: String, selected: Bool) -> some View {
+        Text(name).font(.subheadline.weight(selected ? .semibold : .regular))
+            .lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity, minHeight: 44)
+            .foregroundStyle(selected ? HakoStyle.text : HakoStyle.muted)
+            .overlay(alignment: .bottom) { if selected { Rectangle().fill(HakoStyle.text).frame(height: 2) } }
+    }
+
 }
 
 private struct WorkshopSettingsView: View {

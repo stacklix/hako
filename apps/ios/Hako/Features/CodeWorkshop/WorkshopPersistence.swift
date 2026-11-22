@@ -58,6 +58,18 @@ final class WorkshopPersistence: @unchecked Sendable {
         }
     }
 
+    func remove(_ file: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                self.drain(file)
+                continuation.resume(with: Result {
+                    do { try FileManager.default.removeItem(at: file) }
+                    catch let error as CocoaError where error.code == .fileNoSuchFile { }
+                })
+            }
+        }
+    }
+
     private func drain(_ file: URL? = nil) {
         let writes: [Pending]
         if let file { writes = pending.removeValue(forKey: file).map { [$0] } ?? [] }

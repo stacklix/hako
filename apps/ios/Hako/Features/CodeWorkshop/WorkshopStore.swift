@@ -263,6 +263,12 @@ import CryptoKit
         stateDisk.schedule(entry, to: file) { _ in }
     }
 
+    func clearCachedQuota(for agentID: String) async throws {
+        let file = quotaCacheFile(for: agentID)
+        quotaCache.remove(at: file)
+        try await stateDisk.remove(file)
+    }
+
     var settingsAccount: String {
         WorkshopCacheIdentity.account(serverURL: authentication.serverURL, username: authentication.username)
     }
