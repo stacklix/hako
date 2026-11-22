@@ -78,7 +78,12 @@ import Combine
     }
     private var historyCursorVerified = false
     var networkVisible = false {
-        didSet { if networkVisible && !oldValue { Task { await refreshThreadAccess() } } }
+        didSet {
+            if networkVisible && !oldValue {
+                schedulePresentation()
+                Task { await refreshThreadAccess() }
+            }
+        }
     }
     private var catalogHint: WorkshopSession?
     private var needsHistoryRefresh = false
@@ -180,15 +185,15 @@ import Combine
 
     private func schedulePresentation() {
         presentationRevision += 1
-        guard presentationTask == nil else { return }
+        guard networkVisible, presentationTask == nil else { return }
         presentationTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
-                guard let self, self.scope == self.store.scope else { break }
+                guard let self, self.networkVisible, self.scope == self.store.scope else { break }
                 let revision = self.presentationRevision
                 let layout = await self.renderer.render(entries: self.entries, followups: self.followups,
                     artifacts: self.artifacts, projectPath: self.application.path, revision: revision)
-                guard !Task.isCancelled, self.scope == self.store.scope else { break }
+                guard !Task.isCancelled, self.networkVisible, self.scope == self.store.scope else { break }
                 self.presentation = layout
                 if revision == self.presentationRevision { break }
             }

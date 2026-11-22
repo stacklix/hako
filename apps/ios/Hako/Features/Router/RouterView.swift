@@ -186,9 +186,19 @@ struct RouterView: View {
                 }
             }
             RouterSection(title: "物理连接") {
+                let ports = RouterPort.all(store.value(.ports))
                 RouterPanel {
-                    ForEach(RouterPort.all(store.value(.ports))) { port in
-                        RouterMenuRow(title: "\(port.name) · \(port.role)", symbol: "cable.connector", value: port.rate) { screen = .resource(.ports) }
+                    ForEach(ports) { port in
+                        HStack(spacing: 12) {
+                            Image(systemName: "cable.connector").font(.subheadline).frame(width: 32, height: 32)
+                                .background(RouterStyle.fill, in: RoundedRectangle(cornerRadius: 9)).accessibilityHidden(true)
+                            Text("\(port.name) · \(port.role)").font(.subheadline.weight(.medium))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(port.rate).font(.caption).foregroundStyle(RouterStyle.muted).multilineTextAlignment(.trailing)
+                        }.padding(15).accessibilityElement(children: .combine)
+                            .overlay(alignment: .bottom) {
+                                if port.id != ports.last?.id { Divider().padding(.horizontal, 15) }
+                            }
                     }
                 }
                 if let error = store.errors[.ports] { Text(error).font(.caption).foregroundStyle(.orange) }

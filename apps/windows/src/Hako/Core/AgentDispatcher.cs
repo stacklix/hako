@@ -41,6 +41,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
     internal Func<object> LanSnapshot { get; set; } = () => new { enabled = false, addresses = AgentLanEndpoint.Addresses(), port = 0 };
     public static IReadOnlyList<AgentCapability> MainCapabilities { get; } = [
         new(AgentLanEndpoint.Command, 1), new("query.system.metrics", 1), new("query.codex.usage", 1), new("query.network.listeners", 1),
+        new(ResourceHistory.Command, 1),
         new(ProcessMetrics.Command, 1), new(AndroidManager.ListCommand, 1),
         new("action.network.http.check", 1), new(HttpProxy.Command, 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         .. AndroidManager.ActionCommands.Select(name => new AgentCapability(name, 1)),
@@ -51,7 +52,7 @@ public sealed class AgentDispatcher : IAgentDispatcher
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
     public event Action<Metrics>? MetricsReceived;
 
-    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null)
+    public AgentDispatcher(SystemMetrics metrics, HttpConnectivity? connectivity = null, CodexUsage? codexUsage = null, string? dataDirectory = null, ResourceHistory? resourceHistory = null)
     {
         codex = codexUsage ?? new CodexUsage();
         android = new(() => {
@@ -92,6 +93,8 @@ public sealed class AgentDispatcher : IAgentDispatcher
                 return await new NetworkListeners().ReadAsync(token);
             })
         };
+        var history = resourceHistory ?? new ResourceHistory(System.IO.Path.Combine(dataDirectory ?? System.IO.Path.GetTempPath(), "resource-history"));
+        queries[ResourceHistory.Command] = new(1, history.QueryAsync, Aggregate: false);
         queries[ProcessMetrics.Command] = new(1, (parameters, token) =>
         {
             if (parameters.EnumerateObject().Any())

@@ -24,6 +24,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     private string? configurationError;
     private readonly CodexUsage codexUsage;
     private readonly AgentDispatcher dispatcher;
+    private readonly ResourceHistorySampler resourceHistorySampler;
     internal AndroidManager Android => dispatcher.Android;
     private readonly LocalRpcServer? rpc;
 
@@ -31,7 +32,9 @@ public sealed class AgentRuntime : IAsyncDisposable
     {
         Store = store; this.running = running;
         codexUsage = new CodexUsage(cachePath: Path.Combine(store.DirectoryPath, "codex-usage.json"));
-        dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath);
+        var history = new ResourceHistory(Path.Combine(store.DirectoryPath, "resource-history"));
+        resourceHistorySampler = new ResourceHistorySampler(history);
+        dispatcher = new AgentDispatcher(Metrics, codexUsage: codexUsage, dataDirectory: store.DirectoryPath, resourceHistory: history);
         Connection = new GuardianConnection(store.DirectoryPath);
         var lan = new AgentLanEndpoint(dispatcher);
         dispatcher.StreamOrigin = () => Store.Load().Origin();
@@ -45,7 +48,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     }
     public async Task InitializeAsync(bool autoConnect)
     {
-        if (running) codexUsage.Start();
+        if (running) { codexUsage.Start(); resourceHistorySampler.Start(); }
         try
         {
             var saved = Store.Load();
@@ -222,6 +225,7 @@ public sealed class AgentRuntime : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
+        await resourceHistorySampler.DisposeAsync();
         if (rpc is not null) await rpc.DisposeAsync();
         await Connection.DisposeAsync();
         await Workshop.DisposeAsync();

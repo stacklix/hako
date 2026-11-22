@@ -1,7 +1,7 @@
 import Foundation
 
 @main struct WorkshopQuotaTests {
-    static func main() throws {
+    @MainActor static func main() async throws {
         let now=Date(timeIntervalSince1970:1_800_000_000)
         let window=WorkshopQuotaWindow(usedPercent:27.5,windowDurationMins:300,resetsAt:now.timeIntervalSince1970+3661)
         precondition(window.remaining(at:now) == 72.5 && window.periodLabel(primary:true) == "5小时")
@@ -31,6 +31,50 @@ import Foundation
         precondition(reopened.cachedAt == now,"failed refreshes do not update the successful fetch time")
         let refreshed=WorkshopQuotaCacheEntry(value:snapshot,cachedAt:now.addingTimeInterval(3600))
         precondition(refreshed.snapshot(at:now.addingTimeInterval(3601)) != nil,"only a successful new response renews the cache")
+        let memory = WorkshopQuotaCache()
+        let computerA = URL(fileURLWithPath: "/account-a/computer-a.json")
+        let computerB = URL(fileURLWithPath: "/account-a/computer-b.json")
+        let otherAccount = URL(fileURLWithPath: "/account-b/computer-a.json")
+        let live = WorkshopQuotaCacheEntry(value: snapshot, cachedAt: .now)
+        let first = await memory.load(computerA) { live }
+        precondition(first?.cachedAt == live.cachedAt)
+        let reused = await memory.load(computerA) { preconditionFailure("View recreation must not reread quota from disk") }
+        precondition(reused?.cachedAt == live.cachedAt)
+        precondition(memory.cached(at: computerB) == nil && memory.cached(at: otherAccount) == nil,
+            "Quota memory must be isolated by account and computer")
+        _ = await memory.load(computerB) { nil }
+        _ = await memory.load(computerB) { preconditionFailure("A missing cache must also be loaded only once") }
+        let gate = QuotaReadGate()
+        let loading = Task { await memory.load(otherAccount) { await gate.read() } }
+        await gate.waitForRead()
+        memory.store(live, at: otherAccount)
+        await gate.finish(entry)
+        let resolved = await loading.value
+        precondition(resolved?.cachedAt == live.cachedAt, "A late disk response must not replace fresher network quota")
+        let resetGate = QuotaReadGate()
+        let stale = Task { await memory.load(URL(fileURLWithPath: "/old-account/cache.json")) { await resetGate.read() } }
+        await resetGate.waitForRead()
+        memory.reset()
+        await resetGate.finish(live)
+        let staleResult = await stale.value
+        precondition(staleResult == nil && memory.cached(at: computerA) == nil,
+            "Account changes must fence reads already in flight and clear old memory")
         print("Workshop quota: decoding, countdown, invalid values, persisted cache and strict one-hour expiration passed")
     }
+}
+
+private actor QuotaReadGate {
+    private var readContinuation: CheckedContinuation<WorkshopQuotaCacheEntry?, Never>?
+    private var started: CheckedContinuation<Void, Never>?
+    func read() async -> WorkshopQuotaCacheEntry? {
+        await withCheckedContinuation { continuation in
+            readContinuation = continuation
+            started?.resume(); started = nil
+        }
+    }
+    func waitForRead() async {
+        if readContinuation != nil { return }
+        await withCheckedContinuation { started = $0 }
+    }
+    func finish(_ entry: WorkshopQuotaCacheEntry) { readContinuation?.resume(returning: entry); readContinuation = nil }
 }

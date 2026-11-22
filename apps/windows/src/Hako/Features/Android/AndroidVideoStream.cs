@@ -185,7 +185,12 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
             }
             throw new IOException("手机视频源已结束，请重新连接。");
         }
-        catch (Exception error) when (!token.IsCancellationRequested)
+        catch (Exception) when (token.IsCancellationRequested)
+        {
+            // Stop can abort a WebSocket write before it observes cancellation.
+            // Complete source disposal and power cleanup without leaking that race.
+        }
+        catch (Exception error)
         {
             try { await Send(1, Encoding.UTF8.GetBytes(error is AgentActionException ? error.Message : "投屏或触控通道中断，请检查 ADB 连接、屏幕捕获及「USB 调试（安全设置）」授权。")); } catch { }
         }

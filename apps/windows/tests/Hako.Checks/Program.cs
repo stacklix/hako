@@ -75,6 +75,7 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "resource-history") { await ResourceHistoryChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "cli") { await CliChecks.RunAsync(); return 0; }
             if (args.Length == 2 && args[0] == "guardian") { await GuardianChecks.RunAsync(args[1]); return 0; }
             if (args.Length == 2 && args[0] == "guardian-refresh") { await GuardianRefreshChecks.RunAsync(args[1]); return 0; }
@@ -253,7 +254,7 @@ internal static class Program
             if (!dispatcher.Capabilities.SequenceEqual(new[] {
                 new AgentCapability(AgentLanEndpoint.Command, 1),
                 new AgentCapability("query.system.metrics", 1), new AgentCapability("query.codex.usage", 1),
-                new AgentCapability("query.network.listeners", 1), new AgentCapability(ProcessMetrics.Command, 1),
+                new AgentCapability("query.network.listeners", 1), new AgentCapability(ResourceHistory.Command, 1), new AgentCapability(ProcessMetrics.Command, 1),
                 new AgentCapability("query.android.devices", 1),
                 new AgentCapability("action.network.http.check", 1),
                 new AgentCapability(HttpProxy.Command, 1),
@@ -285,6 +286,7 @@ internal static class Program
             }
             try { await dispatcher.InvokeAsync("future.unsupported", 1, emptyParams.RootElement, CancellationToken.None); throw new Exception("Unknown action accepted"); }
             catch (AgentActionException e) when (e.Code == "unsupported_method") { }
+            await ResourceHistoryChecks.RunAsync();
             Metrics? observedMetrics = null;
             dispatcher.MetricsReceived += value => observedMetrics = value;
             var metrics = (Metrics)(await dispatcher.InvokeAsync("query.system.metrics", 1, emptyParams.RootElement, CancellationToken.None))!;

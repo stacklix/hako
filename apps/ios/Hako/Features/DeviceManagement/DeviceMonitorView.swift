@@ -572,6 +572,10 @@ struct DeviceMetricsView: View {
                 networkContent(metrics)
             }
             .devicePagePanel()
+            if currentAgent.capabilities?.contains(where: { $0.name == DeviceResourceHistoryCommand.name && $0.version == 1 }) == true {
+                DeviceResourceHistoryView(agent: currentAgent)
+                    .id(client.requestContext + currentAgent.id)
+            }
             VStack(alignment: .leading, spacing: 12) {
                 Text("磁盘监控").font(.subheadline.weight(.semibold))
                 diskContent(metrics)
@@ -847,6 +851,7 @@ private extension ConsoleAgent {
                 && $0.name != DeviceServiceCommand.start
                 && $0.name != DeviceAgentVersions.command
                 && $0.name != AgentLanDescriptor.command
+                && $0.name != DeviceResourceHistoryCommand.name
                 && !KageAndroidCommand.supporting.contains($0.name)
         }
     }

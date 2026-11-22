@@ -13,6 +13,28 @@ private final class Counter: @unchecked Sendable {
     }
 
     static func main() async throws {
+        let referenceScans = Counter()
+        var referenceIndex = WorkshopTaskReferenceIndex { text in
+            referenceScans.increment()
+            return WorkshopTaskReferenceIndex.tokens(text)
+        }
+        var turns = (1...11).flatMap { index in
+            [entry("user-\(index)", "request", role: "user"), entry("answer-\(index)", "task-\(index)")]
+        }
+        let recentReferences = referenceIndex.references(in: turns)
+        precondition(!recentReferences.contains("task-1") && recentReferences.contains("task-2") && recentReferences.contains("task-11"))
+        precondition(referenceScans.value == 20, "Only the most recent ten started turns may be scanned")
+        _ = referenceIndex.references(in: turns)
+        precondition(referenceScans.value == 20, "Unchanged message references must be cached")
+        turns[turns.count - 1].text += " updated-task"
+        precondition(referenceIndex.references(in: turns).contains("updated-task") && referenceScans.value == 21)
+        turns.append(entry("user-12", "next request", role: "user"))
+        precondition(!referenceIndex.references(in: turns).contains("task-2"), "Starting the eleventh newer turn must retire the old build reference")
+        let queuedTurn = entry("queued-turn", "task-queued", kind: "followup", role: "user", state: "queued")
+        let referenceRenderer = WorkshopTranscriptRenderer()
+        let queuedLayout = await referenceRenderer.render(entries: turns + [queuedTurn], followups: [], artifacts: [], projectPath: "/project", revision: 1)
+        precondition(!queuedLayout.recentTaskReferences.contains("task-queued") && queuedLayout.recentTaskReferences.contains("task-3"),
+            "A queued follow-up must not start another turn or evict the current build")
         let question = WorkshopAsyncQuestion(title: "如何更新？", options: ["立即更新"])
         let questionEntry = WorkshopEntry(kind: "item", id: "question", text: "请选择", role: "assistant", state: "",
             truncated: false, questions: [question])
@@ -97,6 +119,26 @@ private final class Counter: @unchecked Sendable {
         }
         await state.flush()
         precondition(failed.value == 1, "Background persistence failures must be reported")
+
+        let stateWrites = Counter(), stateCompletions = Counter()
+        let coalescing = WorkshopPersistence(delay: 60) { data, file in
+            stateWrites.increment()
+            try data.write(to: file, options: .atomic)
+        }
+        for revision in 1...100 {
+            coalescing.schedule(["revision": revision], to: stateFile) { result in
+                if case .success = result { stateCompletions.increment() }
+            }
+        }
+        await coalescing.flush()
+        let latestState = try await coalescing.readAsync([String: Int].self, from: stateFile)
+        precondition(stateWrites.value == 1 && stateCompletions.value == 100 && latestState["revision"] == 100,
+            "Rapid list refreshes must persist only the latest state and complete all waiting callbacks")
+        coalescing.schedule(["revision": 101], to: stateFile) { _ in }
+        try coalescing.write(["revision": 102], to: stateFile)
+        await coalescing.flush()
+        let afterDurableSend = try await coalescing.readAsync([String: Int].self, from: stateFile)
+        precondition(afterDurableSend["revision"] == 102, "A delayed list save must never overwrite a later durable write")
 
         let parses = Counter()
         let renderer = WorkshopTranscriptRenderer { text in parses.increment(); return WorkshopMessage.parts(text) }

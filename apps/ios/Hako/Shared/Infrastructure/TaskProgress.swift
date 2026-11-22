@@ -1,8 +1,22 @@
 import Foundation
 
-struct TaskProgressSnapshot: Decodable {
+struct TaskProgressSnapshot: Decodable, Equatable {
     let tasks: [TaskProgressItem]
     let warning: String?
+
+    var latestTask: TaskProgressItem? {
+        tasks.max {
+            $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id < $1.id
+        }
+    }
+
+    func latestTask(references: Set<String>) -> TaskProgressItem? {
+        tasks.lazy.filter { task in
+            references.contains(task.id) || (task.id.hasPrefix("xkode-") && references.contains(String(task.id.dropFirst(6))))
+        }.max {
+            $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id < $1.id
+        }
+    }
 }
 
 struct TaskProgressItem: Decodable, Identifiable, Equatable {
@@ -44,42 +58,6 @@ struct TaskProgressItem: Decodable, Identifiable, Equatable {
         case "skipped": "已跳过"
         default: "状态待确认"
         }
-    }
-}
-
-/// Task references anchor cards to the originating turn, independent of later
-/// messages and progress updates. Only the latest referenced build turn appears.
-struct TaskProgressPlacement {
-    struct Message {
-        let id: String
-        let text: String
-        let isUser: Bool
-    }
-    private(set) var after: [String: [TaskProgressItem]] = [:]
-
-    init(tasks: [TaskProgressItem], messages: [Message]) {
-        var turnEnds = Array(repeating: max(0, messages.count - 1), count: messages.count)
-        var end = max(0, messages.count - 1)
-        for index in messages.indices.reversed() {
-            if index + 1 < messages.count, messages[index + 1].isUser { end = index }
-            turnEnds[index] = end
-        }
-        var latestTurn: Int?
-        var latestTasks: [TaskProgressItem] = []
-        for task in tasks {
-            let providerID = task.id.hasPrefix("xkode-") ? String(task.id.dropFirst(6)) : task.id
-            let references = Set([task.id, providerID]).filter { !$0.isEmpty }
-            let pattern = "(?<![A-Za-z0-9_-])(?:" + references.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|") + ")(?![A-Za-z0-9_-])"
-            guard !references.isEmpty, let reference = messages.firstIndex(where: { $0.text.range(of: pattern, options: .regularExpression) != nil }) else {
-                continue
-            }
-            let turn = turnEnds[reference]
-            if latestTurn == nil || turn > latestTurn! {
-                latestTurn = turn
-                latestTasks = [task]
-            } else if turn == latestTurn { latestTasks.append(task) }
-        }
-        if let latestTurn { after[messages[latestTurn].id] = latestTasks }
     }
 }
 

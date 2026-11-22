@@ -38,8 +38,56 @@ internal static class AndroidVideoChecks
         await CheckPowerLifecycle(false, false);
         await CheckPowerLifecycle(true, false);
         await CheckPowerLifecycle(false, true);
+        await CheckCancelledWriteRace();
         CheckTouchValidation();
         Console.WriteLine("PASS: video encoder integrity, idempotent session keys, device pinning, source limits and stop without launching ADB.");
+    }
+    private sealed class CancelledWriteSocket(byte[] hello) : WebSocket
+    {
+        internal readonly TaskCompletionSource Writing = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int writes, reads;
+        private WebSocketState state = WebSocketState.Open;
+        public override WebSocketState State => state;
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override string? SubProtocol => null;
+        public override void Abort() => state = WebSocketState.Aborted;
+        public override void Dispose() => Abort();
+        public override Task CloseAsync(WebSocketCloseStatus status, string? description, CancellationToken token) => Task.CompletedTask;
+        public override Task CloseOutputAsync(WebSocketCloseStatus status, string? description, CancellationToken token) => Task.CompletedTask;
+        public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken token)
+        {
+            if (Interlocked.Increment(ref reads) == 1) {
+                hello.CopyTo(buffer.AsSpan());
+                return new(hello.Length, WebSocketMessageType.Binary, true);
+            }
+            await Task.Delay(Timeout.Infinite, token);
+            throw new InvalidOperationException();
+        }
+        public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType type, bool end, CancellationToken token)
+        {
+            if (Interlocked.Increment(ref writes) != 2) return;
+            Writing.TrySetResult();
+            try { await Task.Delay(Timeout.Infinite, token); }
+            catch (OperationCanceledException) { throw new WebSocketException("Fixture: an aborted write raced with stop."); }
+        }
+    }
+    private static async Task CheckCancelledWriteRace()
+    {
+        var source = new Source(); var adb = new PowerAdb(source, false, false);
+        await using var streams = new AndroidVideoStreams(adb, () => null, Path.GetTempPath(), _ => source);
+        var id = Guid.NewGuid().ToString("D");
+        var descriptor = JsonSerializer.SerializeToElement(streams.Create(id, "phone", new("pinned", "7", "usb", "device"), 0), AgentConnection.Json);
+        var key = Convert.FromBase64String(descriptor.GetProperty("key").GetString()!);
+        var hello = JsonSerializer.SerializeToUtf8Bytes(new { sessionId = id, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+        using var socket = new CancelledWriteSocket(AgentLanEndpoint.Seal(key, hello, "video-client:" + id));
+        var worker = streams.AcceptAsync(id, socket, default);
+        await socket.Writing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await streams.StopAsync(id).WaitAsync(TimeSpan.FromSeconds(3));
+        await worker;
+        if (!source.Disposed || adb.Awake || string.Join(",", adb.Keys) != "224,223")
+            throw new Exception("A cancelled WebSocket write skipped source disposal or phone power cleanup");
+        Console.WriteLine("PASS: aborted WebSocket write during stop completes cleanup without leaking a socket exception.");
     }
     private sealed class IdleStream : Stream
     {

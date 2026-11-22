@@ -28,7 +28,38 @@ struct WorkshopTranscriptLayout: Sendable {
     var artifactsByEntry: [String: [WorkshopArtifact]] = [:]
     var messageParts: [String: [WorkshopMessagePart]] = [:]
     var questionReplies: [String: [WorkshopQuestionReply]] = [:]
+    var recentTaskReferences: Set<String> = []
     var isEmpty: Bool { groups.isEmpty && queued.isEmpty }
+}
+
+struct WorkshopTaskReferenceIndex {
+    private struct Cached { let text: String; let references: Set<String> }
+    private var cache: [String: Cached] = [:]
+    private let scan: @Sendable (String) -> Set<String>
+
+    init(scan: @escaping @Sendable (String) -> Set<String> = { Self.tokens($0) }) { self.scan = scan }
+
+    mutating func references(in history: [WorkshopEntry]) -> Set<String> {
+        let starts = history.indices.filter { history[$0].role == "user" }
+        guard let start = starts.suffix(10).first else { cache.removeAll(); return [] }
+        var retained = Set<String>(), references = Set<String>()
+        for entry in history[start...] {
+            retained.insert(entry.id)
+            if cache[entry.id]?.text != entry.text {
+                cache[entry.id] = Cached(text: entry.text, references: scan(entry.text))
+            }
+            references.formUnion(cache[entry.id]?.references ?? [])
+        }
+        cache = cache.filter { retained.contains($0.key) }
+        return references
+    }
+
+    static func tokens(_ text: String) -> Set<String> {
+        let words = text.utf8.split { byte in
+            !((48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte) || byte == 45 || byte == 95)
+        }
+        return Set(words.lazy.filter { $0.count <= 80 }.map { String(decoding: $0, as: UTF8.self) })
+    }
 }
 
 // One renderer per retained conversation. The actor serializes cache mutations;
@@ -41,6 +72,7 @@ actor WorkshopTranscriptRenderer {
     private var patterns: [String: NSRegularExpression] = [:]
     private var artifactPaths: [String: String] = [:]
     private var project = ""
+    private var taskReferences = WorkshopTaskReferenceIndex()
     private let parseMessage: @Sendable (String) -> [WorkshopMessagePart]
 
     init(parseMessage: @escaping @Sendable (String) -> [WorkshopMessagePart] = { WorkshopMessage.parts($0) }) {
@@ -109,7 +141,8 @@ actor WorkshopTranscriptRenderer {
         }
         return WorkshopTranscriptLayout(revision: revision,
             groups: WorkshopEntryGroup.group(presentation.history, artifactsAfter: Set(placement.keys)),
-            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts, questionReplies: questionReplies)
+            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts, questionReplies: questionReplies,
+            recentTaskReferences: taskReferences.references(in: presentation.history))
     }
 
     private static func normalize(_ text: String) -> String {

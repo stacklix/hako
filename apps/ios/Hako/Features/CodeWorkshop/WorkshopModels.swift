@@ -120,8 +120,8 @@ enum WorkshopCacheIdentity {
     }
 }
 
-struct WorkshopAgent: Codable, Identifiable, Sendable {
-    struct LAN: Codable, Sendable {
+struct WorkshopAgent: Codable, Identifiable, Equatable, Sendable {
+    struct LAN: Codable, Equatable, Sendable {
         let addresses: [String]
         let port: Int
     }
@@ -193,16 +193,46 @@ struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     var access: WorkshopThreadAccess? = nil
 
     var inProgress: Bool { ["starting", "running", "waiting", "stopping", "finishing", "queued", "steering"].contains(state) }
+
+    var listTitle: String {
+        let lines = title.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        if lines.first == "# Files mentioned by the user:" {
+            for line in lines where line.hasPrefix("## ") {
+                let heading = String(line.dropFirst(3))
+                if let separator = heading.range(of: ": ") {
+                    let filename = heading[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+                    if !filename.isEmpty { return "附件 · " + filename }
+                }
+            }
+            return "附件会话"
+        }
+        return title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
 }
 
-struct WorkshopCatalog: Codable, Sendable {
+struct WorkshopCatalog: Codable, Equatable, Sendable {
     let applications: [WorkshopApplication]
     let sessions: [WorkshopSession]
     let nextCursor: String?
 
+    static func sameListContent(_ left: [WorkshopSession], _ right: [WorkshopSession]) -> Bool {
+        guard left.count == right.count else { return false }
+        return zip(left, right).allSatisfy { first, second in
+            var comparable = second
+            comparable.access = first.access
+            return first == comparable && first.access?.state == second.access?.state
+        }
+    }
+
+    func hasSameListContent(as other: Self) -> Bool {
+        applications == other.applications && Self.sameListContent(sessions, other.sessions) &&
+            (nextCursor == nil) == (other.nextCursor == nil)
+    }
+
     static func merge(_ page: [WorkshopSession], existing: [WorkshopSession], more: Bool) -> [WorkshopSession] {
-        ordered((page + (more ? existing : [])).reduce(into: [WorkshopSession]()) { values, item in
-            if !values.contains(where: { $0.id == item.id }) { values.append(item) }
+        var seen = Set<String>()
+        return ordered((page + (more ? existing : [])).filter { item in
+            seen.insert(item.id).inserted
         })
     }
 
@@ -220,6 +250,20 @@ struct WorkshopCatalog: Codable, Sendable {
         let read = chronological.filter { !draftIDs.contains($0.id) && !$0.inProgress && !unreadIDs.contains($0.id) }
         return drafts + attention + read
     }
+
+    static func listItems(_ sessions: [WorkshopSession], hasDraft: (WorkshopSession) -> Bool,
+                          isUnread: (WorkshopSession) -> Bool) -> [WorkshopSessionListItem] {
+        let items = ordered(sessions).map { WorkshopSessionListItem(session: $0, hasDraft: hasDraft($0), isUnread: isUnread($0)) }
+        return items.filter(\.hasDraft) + items.filter { !$0.hasDraft && ($0.session.inProgress || $0.isUnread) } +
+            items.filter { !$0.hasDraft && !$0.session.inProgress && !$0.isUnread }
+    }
+}
+
+struct WorkshopSessionListItem: Identifiable {
+    let session: WorkshopSession
+    let hasDraft: Bool
+    let isUnread: Bool
+    var id: String { session.id }
 }
 
 // Detail reads fence older catalog responses. A verified terminal state also
@@ -260,14 +304,20 @@ struct WorkshopArchiveReply: Decodable {
     let archived: Bool
 }
 
-struct WorkshopCachedCatalog: Codable, Sendable {
+struct WorkshopCachedCatalog: Codable, Equatable, Sendable {
     let catalog: WorkshopCatalog
     let savedAt: Date
 }
 
-struct WorkshopListSnapshot: Codable, Sendable {
+struct WorkshopListSnapshot: Codable, Equatable, Sendable {
     let agents: [WorkshopAgent]
     let catalogs: [String: WorkshopCachedCatalog]
+
+    func hasSameListContent(as other: Self) -> Bool {
+        agents == other.agents && catalogs.count == other.catalogs.count && catalogs.allSatisfy { key, value in
+            other.catalogs[key].map { value.catalog.hasSameListContent(as: $0.catalog) } ?? false
+        }
+    }
 }
 
 struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
@@ -656,7 +706,7 @@ struct WorkshopOutbox: Equatable, Sendable {
     }
 }
 
-struct WorkshopPreferences: Codable, Sendable {
+struct WorkshopPreferences: Codable, Equatable, Sendable {
     var agentId = ""
     var applicationId = ""
     var order: [String] = []
@@ -667,13 +717,13 @@ struct WorkshopPreferences: Codable, Sendable {
 
 // Reflect sends immediately, until the catalog acknowledges their operation
 // and activity time. An older catalog response must not undo the local state.
-struct WorkshopLocalSessions {
+struct WorkshopLocalSessions: Equatable {
     struct Verification: Equatable {
         let operationId: String
         let agentId: String
         let revision: Int
     }
-    private struct Activity {
+    private struct Activity: Equatable {
         var receipt: WorkshopReceipt
         let date: Date
         let preview: String

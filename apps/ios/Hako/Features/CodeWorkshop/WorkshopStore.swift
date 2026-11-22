@@ -19,6 +19,9 @@ import CryptoKit
     private var context = ""
     private var preferences = WorkshopPreferences()
     private var cachedCatalogs: [String: WorkshopCachedCatalog] = [:]
+    private var savedListSnapshot: WorkshopListSnapshot?
+    private var savedPreferences: WorkshopPreferences?
+    private let quotaCache = WorkshopQuotaCache()
     @Published private(set) var agents: [WorkshopAgent] = []
     @Published private(set) var applications: [WorkshopApplication] = []
     @Published private(set) var sessions: [WorkshopSession] = []
@@ -38,6 +41,7 @@ import CryptoKit
     @Published private(set) var connections: [String: WorkshopConnectionState] = [:]
     private var cursor: String?
     private var catalogRevision = UUID()
+    private var refreshing = false
     private var catalogChecks: [String: Date] = [:]
     private var sessionUpdates = WorkshopSessionUpdates()
     private var activityChecks: [String: ContinuousClock.Instant] = [:]
@@ -131,6 +135,7 @@ import CryptoKit
         transportRevision = UUID()
         connections.removeAll()
         catalogRevision = UUID()
+        refreshing = false
         loading = false
         localEndpoints = endpoints
         localCandidates = candidates
@@ -206,12 +211,13 @@ import CryptoKit
             + applications.filter { !preferences.order.contains($0.id) }
     }
     var visibleSessions: [WorkshopSession] {
+        sessionListItems(at: .now).map(\.session)
+    }
+
+    func sessionListItems(at date: Date) -> [WorkshopSessionListItem] {
         let visible = localSessions.merging(sessions, agentId: selectedAgentID, applications: applications, archived: showingArchived)
             .filter { $0.applicationId == selectedApplicationID }
-        let now = Date()
-        return WorkshopCatalog.prioritizing(visible,
-            draftIDs: Set(visible.filter { hasDraft($0) }.map(\.id)),
-            unreadIDs: Set(visible.filter { isUnread($0, at: now) }.map(\.id)))
+        return WorkshopCatalog.listItems(visible, hasDraft: { self.hasDraft($0) }, isUnread: { self.isUnread($0, at: date) })
     }
     var hasMore: Bool { cursor != nil }
 
@@ -240,18 +246,21 @@ import CryptoKit
     }
 
     func cachedQuota(for agentID: String, at now: Date = .now) -> WorkshopQuotaCacheEntry? {
-        let file = quotaCacheFile(for: agentID)
-        guard let entry = try? stateDisk.read(WorkshopQuotaCacheEntry.self, from: file) else { return nil }
-        guard entry.snapshot(at: now) != nil else {
-            try? FileManager.default.removeItem(at: file)
-            return nil
+        quotaCache.cached(at: quotaCacheFile(for: agentID), now: now)
+    }
+
+    func loadCachedQuota(for agentID: String) async -> WorkshopQuotaCacheEntry? {
+        let file = quotaCacheFile(for: agentID), disk = stateDisk
+        return await quotaCache.load(file) {
+            try? await disk.readAsync(WorkshopQuotaCacheEntry.self, from: file)
         }
-        return entry
     }
 
     func cacheQuota(_ entry: WorkshopQuotaCacheEntry, for agentID: String) {
         // Quota is disposable metadata; a disk failure must not affect the live result or conversation.
-        try? stateDisk.write(entry, to: quotaCacheFile(for: agentID))
+        let file = quotaCacheFile(for: agentID)
+        quotaCache.store(entry, at: file)
+        stateDisk.schedule(entry, to: file) { _ in }
     }
 
     var settingsAccount: String {
@@ -415,6 +424,9 @@ import CryptoKit
     private func prepareContext() {
         guard context != scope else { return }
         context = scope
+        refreshing = false
+        savedPreferences = nil; savedListSnapshot = nil
+        quotaCache.reset()
         sessionUpdates = WorkshopSessionUpdates()
         activityChecks.removeAll()
         catalogChecks.removeAll(); beginVisit()
@@ -424,6 +436,7 @@ import CryptoKit
         directSockets.values.forEach { $0.close() }; directSockets.removeAll()
         socket.resetIfContextChanged()
         preferences = (try? stateDisk.read(WorkshopPreferences.self, from: cacheFile)) ?? WorkshopPreferences()
+        savedPreferences = preferences
         queuedSends = (try? stateDisk.read([WorkshopQueuedSend].self, from: queueFile)) ?? []
         localSessions = WorkshopLocalSessions()
         for receipt in preferences.receipts where receipt.state == "pending" { localSessions.record(receipt, isNew: true) }
@@ -443,6 +456,7 @@ import CryptoKit
             } catch { systemPromptLoadError = "无法读取已保存的系统提示词，请在代码工坊设置中检查后重新保存。" }
         }
         if let snapshot = try? stateDisk.read(WorkshopListSnapshot.self, from: listCacheFile) {
+            savedListSnapshot = snapshot
             cachedCatalogs = snapshot.catalogs
             // A saved list is available immediately, but cannot establish live connectivity.
             agents = snapshot.agents.map { WorkshopAgent(id: $0.id, name: $0.name, online: false,
@@ -470,20 +484,29 @@ import CryptoKit
 
     private func saveLists(background: Bool = false) throws {
         let values = sessions.filter { UUID(uuidString: $0.id) != nil }
-        cachedCatalogs[catalogKey(selectedAgentID, archived: showingArchived)] = WorkshopCachedCatalog(catalog: WorkshopCatalog(
-            applications: applications, sessions: Array(values), nextCursor: cursor), savedAt: .now)
+        let key = catalogKey(selectedAgentID, archived: showingArchived)
+        let catalog = WorkshopCatalog(applications: applications, sessions: Array(values), nextCursor: cursor)
+        if cachedCatalogs[key]?.catalog != catalog {
+            let previous = cachedCatalogs[key]
+            let savedAt = previous.map { catalog.hasSameListContent(as: $0.catalog) ? $0.savedAt : .now } ?? .now
+            cachedCatalogs[key] = WorkshopCachedCatalog(catalog: catalog, savedAt: savedAt)
+        }
         // A direct connection exposes only its own computer. Its inventory is not
         // evidence that cached catalogs for other computers should be deleted.
         let snapshot = WorkshopListSnapshot(agents: agents, catalogs: cachedCatalogs)
+        guard savedListSnapshot.map({ !snapshot.hasSameListContent(as: $0) }) ?? true else { return }
         if background { scheduleState(snapshot, to: listCacheFile) }
         else { try stateDisk.write(snapshot, to: listCacheFile) }
+        savedListSnapshot = snapshot
     }
 
     private func persist(background: Bool = false) throws {
         preferences.agentId = selectedAgentID
         preferences.applicationId = selectedApplicationID
+        guard preferences != savedPreferences else { return }
         if background { scheduleState(preferences, to: cacheFile) }
         else { try stateDisk.write(preferences, to: cacheFile) }
+        savedPreferences = preferences
     }
 
     private func scheduleState<Value: Encodable & Sendable>(_ value: Value, to file: URL) {
@@ -492,6 +515,7 @@ import CryptoKit
             if case .failure = result {
                 Task { @MainActor [weak self] in
                     guard let self, self.scope == ticket else { return }
+                    self.savedPreferences = nil; self.savedListSnapshot = nil
                     self.error = "无法保存代码工坊状态，请检查设备存储空间。"
                 }
             }
@@ -521,6 +545,7 @@ import CryptoKit
     func selectArchiveMode(_ archived: Bool) async {
         guard archived != showingArchived, !loading, archivingSessionID == nil,
               !archived || selectedAgent?.supportsArchiving == true else { return }
+        catalogRevision = UUID(); refreshing = false
         showingArchived = archived
         showCachedCatalog(keepApplications: true)
         await refresh()
@@ -535,6 +560,7 @@ import CryptoKit
         let ticket = scope
         // A list read started before this mutation must not restore its stale rows.
         catalogRevision = UUID()
+        refreshing = false; loading = false
         archivingSessionID = threadId; error = nil
         defer { if ticket == scope { archivingSessionID = nil } }
         do {
@@ -566,6 +592,7 @@ import CryptoKit
 
     func selectAgent(_ id: String) async {
         guard id != selectedAgentID, agents.contains(where: { $0.id == id }) else { return }
+        catalogRevision = UUID(); refreshing = false; loading = false
         selectedAgentID = id
         showingArchived = false
         showCachedCatalog()
@@ -595,7 +622,7 @@ import CryptoKit
                 selectedApplicationID == applicationID && showingArchived == archived
         }
         // A user request waits for the current poll instead of being dropped.
-        while loading {
+        while refreshing {
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             guard isCurrent() else { return }
         }
@@ -616,15 +643,27 @@ import CryptoKit
     }
 
     func refresh(more: Bool = false, reconcile: Bool = true) async {
+        let waitingScope = scope
+        // An explicit refresh waits for an automatic read rather than vanishing.
+        while reconcile && !more && refreshing {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            guard scope == waitingScope else { return }
+        }
         await prepareNetwork()
-        guard authenticated, !loading, !loadingMore || more, archivingSessionID == nil,
+        guard authenticated, !refreshing, !loadingMore || more, archivingSessionID == nil,
               !more || hasMore else { return }
         let ticket = scope
         let revision = catalogRevision
         let sessionCheckpoint = sessionUpdates.revision
         let archived = showingArchived
-        loading = true
-        defer { if scope == ticket, revision == catalogRevision { loading = false } }
+        refreshing = true
+        if more || reconcile { loading = true }
+        defer {
+            if scope == ticket, revision == catalogRevision {
+                refreshing = false
+                if loading { loading = false }
+            }
+        }
         do {
             guard let agent = selectedAgent, (agent.online || localEndpoint(for: agent.id) != nil), agent.supported else { return }
             var params: [String: Any] = more ? cursor.map { ["cursor": $0] } ?? [:] : [:]
@@ -636,11 +675,12 @@ import CryptoKit
             let page: WorkshopCatalog = try await call(agent, "applications.list", params)
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
             // Publish the newest page before slower reconciliation of older pages.
-            applications = page.applications
-            sessions = WorkshopCatalog.merge(sessionUpdates.merging(page.sessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: true)
+            if applications != page.applications { applications = page.applications }
+            let initialSessions = WorkshopCatalog.merge(sessionUpdates.merging(page.sessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: true)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
+            if !WorkshopCatalog.sameListContent(sessions, initialSessions) { sessions = initialSessions }
             if !archived { confirmSessions(page.sessions, agentId: agent.id) }
-            cachedAt = nil
+            if cachedAt != nil { cachedAt = nil }
             var freshSessions = page.sessions
             var nextCursor = page.nextCursor
             let loadedCount = previousSessions.filter { UUID(uuidString: $0.id) != nil }.count
@@ -657,22 +697,22 @@ import CryptoKit
                 if nextCursor == next { break }
             }
             guard ticket == scope, revision == catalogRevision, selectedAgentID == agent.id, showingArchived == archived else { return }
-            applications = page.applications
-            sessions = WorkshopCatalog.merge(sessionUpdates.merging(freshSessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: more || !reconcilePages)
+            let finalSessions = WorkshopCatalog.merge(sessionUpdates.merging(freshSessions, agentId: agent.id, since: sessionCheckpoint), existing: previousSessions, more: more || !reconcilePages)
                 .filter { session in applications.contains { $0.id == session.applicationId } }
+            if !WorkshopCatalog.sameListContent(sessions, finalSessions) { sessions = finalSessions }
             if !archived { confirmSessions(freshSessions, agentId: agent.id) }
             cursor = !more && !reconcilePages && loadedCount > page.sessions.count ? previousCursor : nextCursor
             if reconcilePages { catalogChecks[refreshKey] = .now }
-            cachedAt = nil
+            if cachedAt != nil { cachedAt = nil }
             let newSessions = page.sessions.filter { !preferences.seenSessions.contains($0.id) }
             if !more && !archived {
                 for session in newSessions.sorted(by: { $0.lastSentAt < $1.lastSentAt }) { promote(session.applicationId) }
             }
-            preferences.seenSessions = Array(Set(preferences.seenSessions + page.sessions.map(\.id)))
+            if !newSessions.isEmpty { preferences.seenSessions = Array(Set(preferences.seenSessions + page.sessions.map(\.id))).sorted() }
             if !applications.contains(where: { $0.id == selectedApplicationID }) { selectedApplicationID = orderedApplications.first?.id ?? "" }
-            try persist()
-            try saveLists()
-            error = nil
+            try persist(background: true)
+            try saveLists(background: true)
+            if error != nil { error = nil }
             if !archived { await verifyLocalActivity(agent: agent, ticket: ticket, revision: revision) }
         } catch is CancellationError { }
         catch { if ticket == scope, revision == catalogRevision { self.error = error.localizedDescription } }
@@ -721,7 +761,9 @@ import CryptoKit
     }
 
     private func confirmSessions(_ sessions: [WorkshopSession], agentId: String) {
-        localSessions.confirm(sessions, agentId: agentId)
+        var confirmed = localSessions
+        confirmed.confirm(sessions, agentId: agentId)
+        if confirmed != localSessions { localSessions = confirmed }
         var changed = false
         for index in preferences.receipts.indices where preferences.receipts[index].agentId == agentId && preferences.receipts[index].state == "pending" {
             guard let session = sessions.first(where: { $0.operationId == preferences.receipts[index].id }),
@@ -942,7 +984,7 @@ import CryptoKit
         guard try JSONSerialization.data(withJSONObject: body).count <= 16 * 1024 else { throw HakoError(message: "消息过长，请分段发送。") }
         // Command and account metadata reads cannot verify the conversation's connection.
         let tracksConversation = !method.hasPrefix("commands.") && !method.hasPrefix("account.")
-        if tracksConversation { connections[agent.id] = (connections[agent.id] ?? .disconnected).beginningRequest }
+        if tracksConversation { setConnection((connections[agent.id] ?? .disconnected).beginningRequest, for: agent.id) }
         do {
             let data = try await requests(for: agent.id).send(method, computerID: agent.id, params: params)
             guard ticket == scope, route == transportRevision else { throw CancellationError() }
@@ -952,15 +994,19 @@ import CryptoKit
                 agents[index] = WorkshopAgent(id: current.id, name: current.name, online: true,
                     protocolVersion: current.protocolVersion, lan: current.lan)
             }
-            if tracksConversation { connections[agent.id] = .connected }
+            if tracksConversation { setConnection(.connected, for: agent.id) }
             if tracksConversation { uploadDiagnostics(to: agent) }
             return result
         } catch {
             if tracksConversation, ticket == scope, route == transportRevision {
-                connections[agent.id] = (connections[agent.id] ?? .disconnected).afterFailure(error)
+                setConnection((connections[agent.id] ?? .disconnected).afterFailure(error), for: agent.id)
             }
             throw error
         }
+    }
+
+    private func setConnection(_ state: WorkshopConnectionState, for agentID: String) {
+        if connections[agentID] != state { connections[agentID] = state }
     }
 
     func artifact(_ artifact: WorkshopArtifact, agent: WorkshopAgent) async throws -> String {

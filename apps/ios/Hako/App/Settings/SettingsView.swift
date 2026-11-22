@@ -204,8 +204,8 @@ struct SettingsView: View {
                 case .languageModel: LanguageModelSettingsSheet()
                 case .cloud: HakoCloudSettingsView()
                 case .dataBackup: HakoDataBackupSettings()
-                case .httpProxy: HTTPProxySettingsSheet()
-                case .agents: AgentSettingsSheet()
+                case .httpProxy: HakoApplications.httpProxySettings()
+                case .agents: HakoApplications.agentSettings()
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in

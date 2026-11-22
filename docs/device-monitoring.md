@@ -44,6 +44,14 @@ iOS「设备监控 → 添加 Agent」和网页登记入口只填写名称及公
 
 `query.codex.usage` v1 返回本机最近 7 天每日用户发送调用数、token 用量和当前处理中会话数、项目名与显示标题，参数 `{}`。该查询包含历史统计，不参加 `query.all`，由页面独立查询；详细口径、隐私边界及缓存策略见 [Codex 用量采集](codex-usage.md)。服务端继续通用转发，无新增业务路由。
 
+## CPU 与内存历史
+
+Kage 主进程运行时独立采集 CPU、物理内存使用率，每 10 秒向当前配置目录的 `resource-history/` 写入一次记录；无需 Console 打开页面或连接服务端。CPU 使用跨处理器组的英文 PDH 计数器，取相邻采样间隔的整机平均值；内存为采样时的物理内存占用。按 UTC 小时分片持久化，启动、每次采集和查询时清理滚动 7 天前的数据，包括边界小时中的过期记录。七天原始数据约 1.4 MiB。退出、关机、休眠或采集失败期间不补造样本。
+
+`query.system.metrics.history` v1 为独立按需查询，不加入 `query.all` 或实时推送；参数 `{ "rangeSeconds": 3600 }` 支持 3600、21600、86400、604800，省略时为 3600。结果包含毫秒 Unix 时间戳 `collectedAt,from,to,lastSampleAt`（最近样本可为空）、`sampleIntervalSeconds:10`、`retentionDays:7`、`bucketSeconds`、可为空的 `samplingError` 及 `points`。每点含 `timestamp,cpuUsagePercent,cpuMaxPercent,memoryUsagePercent,memoryMaxPercent,sampleCount`；两个使用率为桶内平均值，两个 `MaxPercent` 为峰值。最多返回 240 个非空桶，不插值、不补零。服务端沿用通用透传。
+
+iOS 在设备详情的系统指标页显示最近 1 小时、6 小时、24 小时和 7 天的 CPU、内存曲线，可查看平均值、峰值和最近采样时间。前台查看时每 30 秒读取一次历史，采集频率仍为 10 秒；设备离线时提示暂时无法读取本机历史。
+
 ## 进程资源排行
 
 `query.system.processes` v1 参数为 `{}`，由主进程采样，加入 `query.all` 及实时推送。结果包含 `collectedAt`、`sampleWindowMs`、`processCount`、`cpuTop` 和 `memoryTop`；两个榜单各最多 10 个进程。每项含 `processId`、`processName`、`cpuUsagePercent` 和 `memoryBytes`。CPU 使用相邻两次快照的累计 CPU 时间差，除以实际采样时长及逻辑处理器数，范围为 0–100；PID 与启动时间共同识别进程，新增或复用 PID 不伪造 CPU 值。内存为采样时的工作集字节数，包含共享页面，不能直接将各进程相加当作物理内存总占用。系统进程使用原生快照读取，不逐个打开受保护进程，不上传命令行或路径。

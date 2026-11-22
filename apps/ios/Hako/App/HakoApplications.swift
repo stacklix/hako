@@ -1,6 +1,9 @@
 import SwiftUI
 
 enum HakoApplications {
+    @MainActor static func agentSettings() -> some View { AgentSettingsSheet() }
+    @MainActor static func httpProxySettings() -> some View { HTTPProxySettingsSheet() }
+
     enum Category: String, CaseIterable {
         case it = "IT工具", finance = "金融", life = "生活"
 

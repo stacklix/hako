@@ -98,7 +98,8 @@ struct CodeWorkshopView: View {
     }
 
     private func page(at date: Date) -> some View {
-        List {
+        let items = store.sessionListItems(at: date)
+        return List {
             Section {
                 VStack(alignment: .leading, spacing: 16) {
                     heading
@@ -113,6 +114,7 @@ struct CodeWorkshopView: View {
                             VStack(alignment:.leading,spacing:10) {
                                 Text("Codex 额度").font(.subheadline.weight(.semibold))
                                 WorkshopQuotaView(store:store,agent:agent,active:conversation == nil && !creating && !settingsPresented)
+                                    .equatable()
                                     .id(agent.id)
                             }
                             .padding(14).frame(maxWidth:.infinity,alignment:.leading)
@@ -120,7 +122,7 @@ struct CodeWorkshopView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 applicationTabs
                                 HStack {
-                                    sessionFilter
+                                    sessionFilter(count: items.count)
                                     Spacer()
                                     if !store.showingArchived {
                                         Button { creating = true } label: {
@@ -145,7 +147,7 @@ struct CodeWorkshopView: View {
                 .listRowSeparator(.hidden)
             }
             if store.authenticated, let agent = store.selectedAgent, agent.supported {
-                sessionList(agent, at: date)
+                sessionList(agent, items: items)
             }
             Section {
                 VStack(alignment: .leading, spacing: 12) {
@@ -294,7 +296,7 @@ struct CodeWorkshopView: View {
         .frame(height: 44)
     }
 
-    private var sessionFilter: some View {
+    private func sessionFilter(count: Int) -> some View {
         Menu {
             Button { Task { await store.selectArchiveMode(false) } } label: {
                 Label("会话", systemImage: store.showingArchived ? "bubble.left.and.bubble.right" : "checkmark")
@@ -304,12 +306,12 @@ struct CodeWorkshopView: View {
             }.disabled(store.selectedAgent?.supportsArchiving != true)
         } label: {
             HStack(spacing: 4) {
-                Text(store.showingArchived ? "已归档 · \(store.visibleSessions.count) 个会话" : "\(store.visibleSessions.count) 个会话")
+                Text(store.showingArchived ? "已归档 · \(count) 个会话" : "\(count) 个会话")
                 Image(systemName: "chevron.down").font(.caption2)
             }.font(.caption).foregroundStyle(HakoStyle.muted).frame(minHeight: 44)
         }
         .disabled(store.loading || store.archivingSessionID != nil)
-        .accessibilityLabel("当前已加载 \(store.visibleSessions.count) 个\(store.showingArchived ? "已归档" : "")会话，切换列表")
+        .accessibilityLabel("当前已加载 \(count) 个\(store.showingArchived ? "已归档" : "")会话，切换列表")
     }
 
     private func tabLabel(_ name: String, selected: Bool) -> some View {
@@ -319,9 +321,8 @@ struct CodeWorkshopView: View {
             .overlay(alignment: .bottom) { if selected { Rectangle().fill(HakoStyle.text).frame(height: 2) } }
     }
 
-    @ViewBuilder private func sessionList(_ agent: WorkshopAgent, at date: Date) -> some View {
-        let sessions = store.visibleSessions
-        if sessions.isEmpty {
+    @ViewBuilder private func sessionList(_ agent: WorkshopAgent, items: [WorkshopSessionListItem]) -> some View {
+        if items.isEmpty {
             ContentUnavailableView(store.showingArchived ? "暂无已归档会话" : "暂无会话",
                 systemImage: store.showingArchived ? "archivebox" : "bubble.left.and.text.bubble.right",
                 description: Text(store.showingArchived ? "归档后的会话会显示在这里，可随时取消归档。" :
@@ -331,8 +332,9 @@ struct CodeWorkshopView: View {
                 .listRowSeparator(.hidden)
         } else {
             Section {
-                ForEach(sessions) { session in
-                    let hasDraft = store.hasDraft(session)
+                ForEach(items) { item in
+                    let session = item.session
+                    let hasDraft = item.hasDraft
                     let isOccupied = session.access?.state == "occupied"
                     Button {
                         guard let application = store.applications.first(where: { $0.id == session.applicationId }) else { return }
@@ -340,12 +342,13 @@ struct CodeWorkshopView: View {
                             application: application, archived: store.showingArchived)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: isOccupied ? "lock" : hasDraft || session.inProgress || store.isUnread(session, at: date) ? "terminal.fill" : "terminal")
+                            Image(systemName: isOccupied ? "lock" : hasDraft || session.inProgress || item.isUnread ? "terminal.fill" : "terminal")
                                 .symbolRenderingMode(.monochrome)
                                 .font(.subheadline).padding(.top, 3)
-                                .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : store.isUnread(session, at: date) ? Color.blue : HakoStyle.text)
+                                .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : item.isUnread ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
-                                Text(session.title).font(.subheadline.weight(.medium))
+                                Text(session.listTitle).font(.subheadline.weight(.medium))
+                                    .lineLimit(2).truncationMode(.tail)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 WorkshopSessionAccessLabel(access: session.access)
                                 Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
@@ -357,7 +360,7 @@ struct CodeWorkshopView: View {
                         }
                         .padding(16).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                    .accessibilityValue((isOccupied ? "其他客户端占用，" : "") + (hasDraft ? "有未发送的草稿" : session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : store.isUnread(session, at: date) ? "未读" : "已读"))
+                    .accessibilityValue((isOccupied ? "其他客户端占用，" : "") + (hasDraft ? "有未发送的草稿" : session.inProgress ? (session.state == "waiting" ? "等待确认" : "处理中") : item.isUnread ? "未读" : "已读"))
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(HakoStyle.card)
                     .listRowSeparatorTint(HakoStyle.line)

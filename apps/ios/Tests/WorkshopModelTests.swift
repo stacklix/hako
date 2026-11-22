@@ -2,6 +2,30 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let attachmentTitle = "# Files mentioned by the user:\n\n## Photo 1.jpg: C:\\Users\\example\\.codex\\codex-remote-attachments\\long-folder-id"
+        let attachment = WorkshopSession(id: "attachment", title: attachmentTitle, applicationId: "app", cwd: "/app",
+            preview: "latest reply", updatedAt: 1, state: "completed", operationId: nil)
+        precondition(attachment.listTitle == "附件 · Photo 1.jpg")
+        precondition(attachment.title == attachmentTitle, "A concise list title must not rename or discard the original conversation title")
+        let missingFilename = WorkshopSession(id: "empty-attachment", title: "# Files mentioned by the user:", applicationId: "app",
+            cwd: "/app", preview: "", updatedAt: 1, state: "completed", operationId: nil)
+        precondition(missingFilename.listTitle == "附件会话")
+        let multilineTitle = WorkshopSession(id: "ordinary", title: "  Hako\n\n日常优化  ", applicationId: "app",
+            cwd: "/app", preview: "", updatedAt: 1, state: "completed", operationId: nil)
+        precondition(multilineTitle.listTitle == "Hako 日常优化")
+        let sampleRows = (0..<300).map { index in
+            WorkshopSession(id: "list-\(index)", title: "Session", applicationId: "app", cwd: "/app", preview: "",
+                updatedAt: 1, state: index == 1 ? "running" : "completed", operationId: nil, lastSentAt: Int64(index))
+        }
+        var draftReads = 0, unreadReads = 0
+        let listRows = WorkshopCatalog.listItems(sampleRows, hasDraft: { row in
+            draftReads += 1; return row.id == "list-0"
+        }, isUnread: { row in
+            unreadReads += 1; return row.id == "list-2"
+        })
+        precondition(draftReads == 300 && unreadReads == 300, "List counts and rows must share a single evaluation of draft and unread flags")
+        precondition(listRows.prefix(3).map(\.id) == ["list-0", "list-2", "list-1"],
+            "Preparing row flags once must preserve draft, active/unread and chronological priority")
         for state in ["available", "workshop", "occupied", "unknown", "unrecognized"] {
             let access = WorkshopThreadAccess(state: state, checkedAt: 123)
             precondition(access.canSend == ["available", "workshop"].contains(state))
@@ -25,6 +49,22 @@ import Foundation
         precondition(unknownAccess.synchronizationWarning(operation: nil, threadId: "thread") != nil)
         let computer = try JSONDecoder().decode(WorkshopAgent.self, from: Data(#"{"id":"desktop","name":"PC","online":false,"protocolVersion":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}"#.utf8))
         precondition(computer.lan.addresses == ["192.168.0.10"] && computer.lan.port == 8005 && !computer.online)
+        var originalListRow = WorkshopSession(id: "thread", title: "Task", applicationId: "app", cwd: "/app",
+            preview: "working", updatedAt: 1, state: "running", operationId: "operation")
+        originalListRow.access = WorkshopThreadAccess(state: "available", checkedAt: 100)
+        var freshListRow = originalListRow
+        freshListRow.access = WorkshopThreadAccess(state: "available", checkedAt: 200)
+        precondition(originalListRow != freshListRow, "Access timestamps must retain their ordering semantics outside the list")
+        precondition(WorkshopCatalog.sameListContent([originalListRow], [freshListRow]),
+            "A fresh access check without a state change must not redraw the list")
+        let oldList = WorkshopCatalog(applications: [], sessions: [originalListRow], nextCursor: "old-snapshot")
+        let freshList = WorkshopCatalog(applications: [], sessions: [freshListRow], nextCursor: "new-snapshot")
+        precondition(oldList.hasSameListContent(as: freshList), "Pagination token rotation must not force a cache write")
+        precondition(!oldList.hasSameListContent(as: WorkshopCatalog(applications: [], sessions: [freshListRow], nextCursor: nil)),
+            "Changing whether more pages exist must still be saved")
+        freshListRow.access = WorkshopThreadAccess(state: "occupied", checkedAt: 300)
+        precondition(!WorkshopCatalog.sameListContent([originalListRow], [freshListRow]),
+            "Writer conflicts must still update the list immediately")
         precondition(WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_operation_missing", message: "missing")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: WorkshopFailure(code: "codex_workspace_invalid", message: "invalid")))
         precondition(!WorkshopReadIssue.suppressesErrorCard(for: URLError(.timedOut)))
