@@ -231,6 +231,7 @@ struct DeviceMetricsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveContext: String?
     @State private var liveStatus: String?
+    @State private var historyRefreshID = UUID()
     @State private var targetURL = ""
     @State private var codexTab: CodexTab = .sessions
     @State private var listenerTab: ConsoleListenerGroup = .user
@@ -349,6 +350,8 @@ struct DeviceMetricsView: View {
               context == client.requestContext else { return }
         if let refreshed = client.agents.first(where: { $0.id == agent.id }), refreshed.online {
             await client.query(refreshed)
+            guard !Task.isCancelled, context == client.requestContext else { return }
+            historyRefreshID = UUID()
         }
     }
 
@@ -573,7 +576,7 @@ struct DeviceMetricsView: View {
             }
             .devicePagePanel()
             if currentAgent.capabilities?.contains(where: { $0.name == DeviceResourceHistoryCommand.name && $0.version == 1 }) == true {
-                DeviceResourceHistoryView(agent: currentAgent)
+                DeviceResourceHistoryView(agent: currentAgent, liveRefresh: liveTaskContext != nil, refreshID: historyRefreshID)
                     .id(client.requestContext + currentAgent.id)
             }
             VStack(alignment: .leading, spacing: 12) {

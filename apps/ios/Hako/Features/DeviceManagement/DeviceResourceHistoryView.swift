@@ -3,6 +3,8 @@ import Charts
 
 struct DeviceResourceHistoryView: View {
     let agent: ConsoleAgent
+    let liveRefresh: Bool
+    let refreshID: UUID
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var range: DeviceResourceHistoryRange = .hour
@@ -12,7 +14,7 @@ struct DeviceResourceHistoryView: View {
     @State private var selectedDate: Date?
 
     private var taskID: String {
-        "\(client.requestContext)-\(client.authenticated)-\(agent.online)-\(range.rawValue)-\(scenePhase)"
+        "\(client.requestContext)-\(client.authenticated)-\(agent.online)-\(range.rawValue)-\(scenePhase)-\(liveRefresh)-\(refreshID)"
     }
 
     var body: some View {
@@ -46,6 +48,8 @@ struct DeviceResourceHistoryView: View {
                 Text("等待历史数据").font(.footnote).foregroundStyle(.secondary)
             }
             if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
+            Text(liveRefresh ? "实时刷新已开启 · 每 10 秒更新历史曲线" : "开启「实时刷新」后自动更新历史曲线")
+                .font(.caption2).foregroundStyle(.secondary)
             Text("每 10 秒在设备本机记录，自动保留最近 7 天；Kage 停止或电脑休眠期间没有样本。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
@@ -53,12 +57,16 @@ struct DeviceResourceHistoryView: View {
         .task(id: taskID) {
             guard scenePhase == .active, client.authenticated else { return }
             guard agent.online else { error = "设备离线，暂时无法读取本机历史。"; return }
-            history = nil
-            selectedDate = nil
+            if history.map({ $0.to - $0.from != Int64(range.rawValue) * 1000 }) == true {
+                history = nil
+                selectedDate = nil
+            }
+            await load()
+            guard liveRefresh else { return }
             while !Task.isCancelled {
-                await load()
-                do { try await Task.sleep(for: .seconds(30)) }
+                do { try await Task.sleep(for: .seconds(10)) }
                 catch { return }
+                await load()
             }
         }
     }
