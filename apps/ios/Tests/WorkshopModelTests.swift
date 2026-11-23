@@ -2,6 +2,29 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let projects = ["lingrove", "xkode", "S2Arm", "hako", "empty"].map {
+            WorkshopApplication(id: $0, name: $0, path: "/" + $0)
+        }
+        func projectSession(_ id: String, project: String, updated: Int64, sent: Int64) -> WorkshopSession {
+            WorkshopSession(id: id, title: id, applicationId: project, cwd: "/" + project, preview: "Reply",
+                updatedAt: updated, state: "completed", operationId: nil, lastSentAt: sent)
+        }
+        let projectOrder = projects.map(\.id)
+        let olderProjects = [projectSession("l", project: "lingrove", updated: 200, sent: 200),
+                             projectSession("h", project: "hako", updated: 100, sent: 100)]
+        precondition(WorkshopCatalog.orderedApplications(projects, sessions: olderProjects, order: projectOrder).first?.id == "lingrove")
+        let updatedProjects = [olderProjects[0], projectSession("h", project: "hako", updated: 300, sent: 100)]
+        precondition(WorkshopCatalog.orderedApplications(projects, sessions: updatedProjects, order: projectOrder).first?.id == "hako",
+            "A reply in an existing session must move its project ahead of the saved new-session order")
+        let newSend = projectSession("x", project: "xkode", updated: 1, sent: 400)
+        let orderedProjects = WorkshopCatalog.orderedApplications(projects, sessions: updatedProjects + [newSend], order: projectOrder)
+        precondition(orderedProjects.map(\.id) == ["xkode", "hako", "lingrove", "S2Arm", "empty"],
+            "A new send must update project order while keeping projects without conversations")
+        precondition(WorkshopCatalog.orderedApplications(projects.reversed(), sessions: [], order: projectOrder).map(\.id) == projectOrder,
+            "Equal activity dates must preserve saved project order")
+        precondition(WorkshopCatalog.orderedApplications(projects, sessions: [], order: []).map(\.id) == projectOrder)
+        precondition(WorkshopCatalog.orderedApplications(projects, sessions: updatedProjects + [olderProjects[1]], order: projectOrder).first?.id == "hako",
+            "An older session must not overwrite the latest activity for the same project")
         let attachmentTitle = "# Files mentioned by the user:\n\n## Photo 1.jpg: C:\\Users\\example\\.codex\\codex-remote-attachments\\long-folder-id"
         let attachment = WorkshopSession(id: "attachment", title: attachmentTitle, applicationId: "app", cwd: "/app",
             preview: "latest reply", updatedAt: 1, state: "completed", operationId: nil)
@@ -599,6 +622,38 @@ import Foundation
             """.utf8))
         precondition(operation.active, "A finishing worker must keep the composer disabled until the writer has exited")
         precondition(WorkshopChoice().permission == .auto, "New conversations must default to automatic review")
+        var defaults = WorkshopPreferences()
+        let generationDefaults = WorkshopGenerationDefaults(model: "fixture-vision", serviceTier: "priority", reasoningEffort: "high")
+        defaults.defaultGenerations = ["computer-a": generationDefaults]
+        precondition(defaults.choice(agentID: "computer-a", thread: nil, applicationID: "app").model == "fixture-vision")
+        precondition(defaults.choice(agentID: "computer-b", thread: nil, applicationID: "app") == WorkshopChoice())
+        precondition(defaults.choice(agentID: "computer-a", thread: "existing", applicationID: "app") == WorkshopChoice(),
+                     "Computer defaults must not change existing conversations without a saved override")
+        let overridden = WorkshopChoice(model: "override", permission: .ask, serviceTier: nil, reasoningEffort: "low")
+        defaults.recordChoice(overridden, agentID: "computer-a", thread: nil, applicationID: "app")
+        precondition(defaults.choice(agentID: "computer-a", thread: nil, applicationID: "app") == overridden)
+        defaults.recordChoice(overridden, agentID: "computer-a", thread: "created", applicationID: "app", resolvingNew: true)
+        precondition(defaults.choice(agentID: "computer-a", thread: "created", applicationID: "app") == overridden)
+        precondition(defaults.choice(agentID: "computer-a", thread: nil, applicationID: "app") == generationDefaults.choice,
+                     "Promoted new-session settings must not override defaults for the next new session")
+        defaults.defaultGenerations?["computer-a"] = WorkshopGenerationDefaults(model: "new-default")
+        precondition(defaults.choice(agentID: "computer-a", thread: "created", applicationID: "app") == overridden)
+        let restoredDefaults = try JSONDecoder().decode(WorkshopPreferences.self, from: JSONEncoder().encode(defaults))
+        precondition(restoredDefaults == defaults && restoredDefaults.defaultGenerations?["computer-a"]?.model == "new-default")
+        precondition(generationDefaults.choice.permission == .auto, "Generation defaults must not increase permissions")
+        let supportedModels = [WorkshopModel(id: "fixture-vision", name: "Fixture", description: "", isDefault: true, supportsImages: true,
+            serviceTiers: [WorkshopSpeed(id: "priority", name: "Priority", description: "")],
+            reasoningEfforts: [WorkshopReasoningEffort(id: "high", description: "")], defaultReasoningEffort: "high")]
+        precondition(generationDefaults.validationError(models: supportedModels) == nil)
+        precondition(WorkshopGenerationDefaults(model: "missing").validationError(models: supportedModels) != nil)
+        precondition(WorkshopGenerationDefaults(serviceTier: "unavailable").validationError(models: supportedModels) != nil)
+        precondition(WorkshopGenerationDefaults(reasoningEffort: "ultra").validationError(models: supportedModels) != nil)
+        precondition(WorkshopGenerationDefaults().validationError(models: []) == nil)
+        defaults.recordChoice(overridden, agentID: "computer-a", thread: nil, applicationID: "parallel")
+        defaults.recordChoice(generationDefaults.choice, agentID: "computer-a", thread: "another-created", applicationID: "parallel", resolvingNew: true)
+        precondition(defaults.choice(agentID: "computer-a", thread: nil, applicationID: "parallel") == overridden,
+                     "Resolving another conversation must not discard a newer draft override")
+        print("PASS: per-computer defaults, existing-session isolation, explicit overrides, promotion, persistence and supported model options")
         var withImages = original
         withImages.model = "fixture-vision"
         withImages.permission = WorkshopPermission.auto.rawValue

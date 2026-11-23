@@ -4,6 +4,8 @@ import Foundation
 struct InvestmentBookTests {
     static func main() throws {
         try numericStoragePrecision()
+        try fractionalCryptoTradesSurviveStorage()
+        try serializedLedgerValidationBlocksInvalidWrites()
         cumulativePortfolioGainRate()
         try ledgerAndDilutedCost()
         try firstPurchaseRequiresCash()
@@ -111,6 +113,78 @@ struct InvestmentBookTests {
         let encoded = try records.encode(draft, revision: 1)
         precondition(encoded["investment_events"]?.first(where: { $0["effective_date"] == records.day.string(from: date(2)) })?["amount"] == "12.35")
         precondition(encoded["market_daily_fx"]?.last?["rate"] == "7.1235")
+    }
+
+    static func fractionalCryptoTradesSurviveStorage() throws {
+        precondition(InvestmentPrecision.exactInput("000.05800") == Decimal(string: "0.058"))
+        precondition(InvestmentPrecision.exactInput("0.1234567890123456789012345678901234567890123456789") == nil,
+                     "Unsupported input precision must be rejected rather than truncated")
+        let account = InvestmentAccount(name: "加密投机", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let btc = try book.register(.init(name: "Bitcoin", code: "BTC", market: "", kind: .crypto, currency: .usd))
+        let quantity = Decimal(string: "0.058")!
+        let purchase = InvestmentEvent(day: date(1), kind: .buy, assetID: btc, quantity: quantity, price: 71504)
+        try book.post(purchase, accountID: account.id, autoFundCash: true)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        precondition(tables["investment_events"]?.first { $0["event_type"] == "buy" }?["quantity"] == "0.058")
+        precondition(tables["investment_events"]?.first { $0["event_type"] == "deposit" }?["amount"] == "4147.23")
+        let restored = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        let ledger = try restored.ledger(restored.accounts[0])
+        precondition(ledger.cash == 0 && ledger.positions[btc]?.quantity == quantity)
+        precondition(ledger.positions[btc]?.netCost == Decimal(string: "4147.23")!)
+        try records.validateLedgers(tables, comparedTo: try records.encode(InvestmentBook(), revision: 1))
+        var sold = restored
+        try sold.post(.init(day: date(2), kind: .sell, assetID: btc, quantity: quantity, price: 71504), accountID: account.id)
+        let soldLedger = try sold.ledger(sold.accounts[0])
+        precondition(soldLedger.cash == Decimal(string: "4147.23")!)
+        // A historical malformed quantity can be corrected through the normal editor.
+        var broken = restored
+        let offset = broken.accounts[0].events.firstIndex { $0.kind == .buy }!
+        broken.accounts[0].events[offset].quantity = Decimal(string: "0.06")!
+        let displayed = try broken.ledger(broken.accounts[0], includeRows: true)
+        precondition(displayed.cash == Decimal(string: "-143.01")! && displayed.cashRows.count == 2, "Display must not hide an overdrawn account")
+        do { _ = try broken.ledger(broken.accounts[0], validatingBalances: true); preconditionFailure("The stored 0.06 BTC must overdraw cash") }
+        catch InvestmentError.insufficientCash {}
+        var corrected = broken.accounts[0].events[offset]
+        corrected.quantity = quantity
+        try broken.replaceEvent(broken.accounts[0].events[offset], with: corrected, accountID: account.id)
+        let correctedLedger = try broken.ledger(broken.accounts[0])
+        precondition(correctedLedger.cash == 0)
+        // Small token units must survive the same server serialization.
+        for value in ["0.00000001", "0.0012345678", "1.123456789012345678"] {
+            var draft = InvestmentBook(accounts: [account])
+            draft.assets[btc] = book.asset(btc)
+            let units = Decimal(string: value)!
+            try draft.post(.init(day: date(1), kind: .opening, assetID: btc, quantity: units, price: 100), accountID: account.id)
+            let encoded = try records.encode(draft, revision: 1)
+            let reopened = try records.decode(.init(generation: 1, revision: 1, tables: encoded))
+            precondition(reopened.accounts[0].events[0].quantity == units)
+        }
+        var insufficient = InvestmentBook(accounts: [account])
+        insufficient.assets[btc] = book.asset(btc)
+        try insufficient.post(.init(day: date(1), kind: .deposit, amount: 4000), accountID: account.id)
+        do { try insufficient.post(purchase, accountID: account.id); preconditionFailure("An actual cash shortfall must be rejected") }
+        catch InvestmentError.insufficientCash {}
+        precondition(insufficient.accounts[0].events.count == 1)
+    }
+
+    static func serializedLedgerValidationBlocksInvalidWrites() throws {
+        let account = InvestmentAccount(name: "现金校验", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let btc = try book.register(.init(name: "Bitcoin", code: "BTC", market: "", kind: .crypto, currency: .usd))
+        try book.post(.init(day: date(1), kind: .deposit, amount: Decimal(string: "100.5")!), accountID: account.id)
+        let records = InvestmentServerRecords()
+        let previous = try records.encode(book, revision: 1)
+        // The input price is rounded on write: validate the serialized price, not only the form draft.
+        try book.post(.init(day: date(1), kind: .buy, assetID: btc, quantity: 100, price: Decimal(string: "1.005")!), accountID: account.id)
+        do { try records.validateEventInputs(book, comparedTo: try records.decode(.init(generation: 1, revision: 1, tables: previous))); preconditionFailure("User price precision must be rejected without rounding") }
+        catch InvestmentError.invalid {}
+        let next = try records.encode(book, revision: 1)
+        do { try records.validateLedgers(next, comparedTo: previous); preconditionFailure("The normalized price would overdraw cash") }
+        catch InvestmentError.insufficientCash {}
+        // Unrelated writes remain possible while an existing invalid account is being corrected.
+        try records.validateLedgers(next, comparedTo: next)
     }
 
     static func ledgerAndDilutedCost() throws {
@@ -1172,7 +1246,11 @@ struct InvestmentBookTests {
         }
         book.accounts[0].events.append(.init(day: date(4), kind: .withdrawal, amount: -1000))
         let history = book.portfolioHistory(on: days)
-        precondition(history[date(3)] != nil && history[date(4)] == nil && history[date(5)] == nil)
+        precondition(history[date(3)] != nil && history[date(4)] != nil && history[date(5)] != nil,
+                     "Display history should include an overdrawn account instead of hiding its records")
+        for day in [date(4), date(5)] {
+            precondition(history[day]?.value == book.portfolio(on: day)?.value)
+        }
     }
 
     static func dailySnapshotsUseBeijingCloseAndDatedRates() throws {

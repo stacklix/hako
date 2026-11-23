@@ -327,7 +327,10 @@ import Combine
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
     var canRetry: Bool { threadWritable && !isArchived && !restoringCache && uncertain && receipt?.id == operationId && receipt?.state == "pending" && !busy && !synchronizing && operation?.active != true }
     var generation: WorkshopGenerationSettings { .displayed(history: historyGeneration, operation: operation) }
-    var modelLabel: String { models.first { $0.id == generation.model }?.name ?? generation.model ?? "Model pending" }
+    var modelLabel: String {
+        let id = generation.model ?? choice.model
+        return models.first { $0.id == id }?.name ?? id ?? "Model pending"
+    }
     var speedLabel: String {
         let tier = choice.serviceTier ?? WorkshopSpeed.standard.id
         if tier == WorkshopSpeed.standard.id { return WorkshopSpeed.standard.name }
@@ -335,7 +338,11 @@ import Combine
         let selectedModel = models.first { $0.id == modelID } ?? (modelID == nil ? models.first { $0.isDefault } : nil)
         return selectedModel?.serviceTiers.first { $0.id == tier }?.name ?? tier
     }
-    var generationLabel: String { modelLabel + " · " + speedLabel + " · " + generation.effortLabel }
+    var generationLabel: String {
+        let effort = generation.reasoningEffort ?? choice.reasoningEffort
+        let effortLabel = effort.map { WorkshopReasoningEffort(id: $0, description: "").title } ?? generation.effortLabel
+        return modelLabel + " · " + speedLabel + " · " + effortLabel
+    }
 
     var reuseKey: WorkshopConversationReuseKey? {
         guard let sessionId = threadId ?? operationId.map({ "pending-" + $0 }) else { return nil }
@@ -677,7 +684,7 @@ import Combine
         if approvals != result.approvals { approvals = result.approvals }
         for artifact in result.artifacts where !artifacts.contains(where: { $0.id == artifact.id }) { artifacts.append(artifact) }
         if let resolved = result.operation.threadId, resolved != threadId {
-            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application, background: true) }
+            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application, background: true, resolvingNew: true) }
             threadId = resolved
         }
         if var receipt, receipt.id == id {
@@ -874,7 +881,7 @@ import Combine
             operation = result; uncertain = false; error = nil
             clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: receipt.id)
             if let id = result.threadId {
-                if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application) }
+                if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application, resolvingNew: true) }
                 threadId = id
             }
             var confirmed = receipt

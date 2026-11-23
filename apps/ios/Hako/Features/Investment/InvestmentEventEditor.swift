@@ -171,11 +171,12 @@ struct InvestmentEventEditor: View {
 
     private func field(_ label: String, _ key: Field) -> some View {
         InvestmentField(label, text: Binding(get: { values[key, default: ""] }, set: { values[key] = $0 }),
-                        keyboard: .decimalPad)
+                        keyboard: .decimalPad, preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement))
     }
 
     private func number(_ key: Field, _ label: String, allowZero: Bool = false) throws -> Decimal {
-        try investmentDecimal(values[key, default: ""], label, allowZero: allowZero)
+        try investmentDecimal(values[key, default: ""], label, allowZero: allowZero,
+                              preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement))
     }
 
     private func save() async {

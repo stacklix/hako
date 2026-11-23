@@ -14,6 +14,16 @@ struct CryptoClient {
         guard let n, n.isFinite else { throw HakoError(message: "资产接口返回了无效数值。") }
         return n
     }
+    static func diagnosticEndpoint(_ request: URLRequest) -> String {
+        let path = (request.url?.path ?? "").split(separator: "/", omittingEmptySubsequences: false).map { part -> String in
+            let text = String(part)
+            if text.hasPrefix("cosmos1") || (text.hasPrefix("0x") && text.count >= 40)
+                || (text.hasPrefix("T") && text.count == 34) { return ":address" }
+            return text
+        }.joined(separator: "/").replacingOccurrences(of: #"/accounts/[0-9]+/"#, with: "/accounts/:id/", options: .regularExpression)
+        // Query strings and headers contain signatures, keys and wallet addresses.
+        return (request.httpMethod ?? "GET") + " " + (request.url?.host ?? "未知主机") + path
+    }
     func json(_ request: URLRequest, secrets: [String] = [], allowEmptyResponse: Bool = false) async throws -> Any {
         let requestID=String(UUID().uuidString.prefix(8))
         let started=ContinuousClock.now
@@ -21,6 +31,15 @@ struct CryptoClient {
         let endpoint=(request.httpMethod ?? "GET")+" "+(request.url?.host ?? "[未知主机]")+path
         var status:Int?,failure:String?,level=HakoLogLevel.info
         var redactor=HTTPLogRedactor(request:request,secrets:secrets)
+        let sink = HakoExecutionDiagnostics.sink
+        let event = HakoExecutionEvent(stage: HakoExecutionDiagnostics.stageName("资产接口 " + redactor.text(Self.diagnosticEndpoint(request))),
+                                       state: .started, detail: "请求超时设置：\(Int(request.timeoutInterval)) 秒。")
+        if let sink { await sink(event) }
+        func finish(_ state: HakoExecutionEvent.State, _ detail: String) async {
+            if let sink {
+                await sink(HakoExecutionEvent(id: event.id, stage: event.stage, state: state, detail: redactor.text(detail)))
+            }
+        }
         var responseDetail="未收到响应正文"
         logStore.append(source:.crypto,level:.info,message:redactor.text("开始请求 "+endpoint),detail:"请求 ID："+requestID+"\n"+redactor.request(request),fullDetail:true)
         defer {
@@ -33,26 +52,35 @@ struct CryptoClient {
             logStore.append(source:.crypto,level:level,message:redactor.text(result+endpoint),detail:redactor.text(detail),fullDetail:true)
         }
         do {
+            try Task.checkCancellation()
             let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else { throw HakoError(message: "资产接口未返回 HTTP 响应。") }
             status=response.statusCode
             responseDetail=redactor.response(response,data:data)
             guard (200..<300).contains(response.statusCode) else { throw HakoError(message: "资产接口请求失败（HTTP \(response.statusCode)）。") }
-            if allowEmptyResponse && data.isEmpty { return NSNull() }
+            let received = "HTTP \(response.statusCode) · \(data.count) 字节。"
+            if allowEmptyResponse && data.isEmpty {
+                await finish(.succeeded, received + "\n接口返回空响应，业务步骤将判断是否有可用数据。")
+                return NSNull()
+            }
             let value = try JSONSerialization.jsonObject(with: data)
             if let o = value as? [String: Any], o["status"] as? String == "error" {
                 let code = (o["err_code"] as? NSNumber)?.stringValue ?? "未知"
                 throw HakoError(message: "HTX 接口拒绝请求（错误码 \(code)）。")
             }
+            let count = (value as? [Any])?.count
+            await finish(.succeeded, received + (count.map { "\n已解析 \($0) 条顶层记录。" } ?? "\nJSON 已解析，具体资产校验结果见对应业务步骤。"))
             return value
-        } catch is CancellationError {
-            level = .warning;failure="请求已取消";throw CancellationError()
-        } catch let error as HakoError {
-            level = .error;failure=error.localizedDescription;throw error
         } catch {
+            let cancelled = error is CancellationError || Task.isCancelled
             let underlying=error as NSError
-            level = underlying.domain == NSURLErrorDomain && underlying.code == NSURLErrorCancelled ? .warning : .error
-            failure="错误域：\(underlying.domain)，错误码：\(underlying.code)"
+            level = cancelled ? .warning : .error
+            failure = error is HakoError ? error.localizedDescription : "错误域：\(underlying.domain)，错误码：\(underlying.code)"
+            await finish(cancelled ? .cancelled : .failed,
+                         "HTTP 状态：" + (status.map(String.init) ?? "未收到响应") + "\n" + HakoExecutionDiagnostics.failure(error))
+            if cancelled { throw CancellationError() }
+            if let error = error as? HakoError { throw error }
             throw HakoError(message: "资产接口请求失败，请检查配置、网络及设备时间。")
         }
     }

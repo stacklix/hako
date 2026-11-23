@@ -12,7 +12,8 @@ namespace Hako.Core;
 
 public sealed record ResourceSample(long Timestamp, double CpuUsagePercent, double MemoryUsagePercent);
 public sealed record ResourceHistoryPoint(long Timestamp, double CpuUsagePercent, double CpuMaxPercent,
-    double MemoryUsagePercent, double MemoryMaxPercent, int SampleCount);
+    double MemoryUsagePercent, double MemoryMaxPercent, int SampleCount,
+    double CpuSmoothedMaxPercent, double MemorySmoothedMaxPercent);
 public sealed record ResourceHistoryResult(long CollectedAt, long From, long To, int SampleIntervalSeconds,
     int RetentionDays, int BucketSeconds, long? LastSampleAt, string? SamplingError, ResourceHistoryPoint[] Points);
 
@@ -139,12 +140,12 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
         foreach (var property in parameters.EnumerateObject())
         {
             if (property.Name != "rangeSeconds" || property.Value.ValueKind != JsonValueKind.Number || !property.Value.TryGetInt32(out range)
-                || range is not (3600 or 21600 or 86400 or 604800))
-                throw new AgentActionException("invalid_params", "rangeSeconds 必须为 3600、21600、86400 或 604800。");
+                || range is not (900 or 1800 or 3600 or 21600 or 86400 or 604800))
+                throw new AgentActionException("invalid_params", "rangeSeconds 必须为 900、1800、3600、21600、86400 或 604800。");
         }
         var now = Now.ToUnixTimeMilliseconds();
         var from = now - range * 1000L;
-        // At most 240 points, well below the device reply size limit, retaining peaks in every bucket.
+        // Retain raw peaks and the highest trailing five-second mean in each display bucket.
         int bucketSeconds = (int)Math.Ceiling(range / 240.0 / IntervalSeconds) * IntervalSeconds;
         await gate.WaitAsync(token);
         try
@@ -158,7 +159,7 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
                 {
                     if (row.Timestamp > now || row.Timestamp < now - 7 * 86400000L) continue;
                     last = Math.Max(last ?? row.Timestamp, row.Timestamp);
-                    if (row.Timestamp >= from) rows.Add(row);
+                    if (row.Timestamp > from - 5000) rows.Add(row);
                 }
             }
             ResourceSample[] buffered;
@@ -167,13 +168,34 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
             {
                 if (row.Timestamp > now || row.Timestamp < now - 7 * 86400000L) continue;
                 last = Math.Max(last ?? row.Timestamp, row.Timestamp);
-                if (row.Timestamp >= from) rows.Add(row);
+                if (row.Timestamp > from - 5000) rows.Add(row);
             }
-            var points = rows.GroupBy(row => Math.Min(239, (row.Timestamp - from) / (bucketSeconds * 1000L)))
+            rows.Sort((left, right) => left.Timestamp.CompareTo(right.Timestamp));
+            int start = 0;
+            double cpuSum = 0, memorySum = 0;
+            var smoothed = new List<(ResourceSample Sample, double Cpu, double Memory)>();
+            for (int index = 0; index < rows.Count; index++)
+            {
+                token.ThrowIfCancellationRequested();
+                var row = rows[index];
+                cpuSum += row.CpuUsagePercent; memorySum += row.MemoryUsagePercent;
+                // Timestamp-based (t - 5s, t], rather than the last five samples:
+                // slow sampling, sleep and missing samples must not extend the window.
+                while (rows[start].Timestamp <= row.Timestamp - 5000)
+                {
+                    cpuSum -= rows[start].CpuUsagePercent; memorySum -= rows[start].MemoryUsagePercent;
+                    start++;
+                }
+                if (row.Timestamp >= from)
+                    smoothed.Add((row, Math.Clamp(cpuSum / (index - start + 1), 0, 100),
+                        Math.Clamp(memorySum / (index - start + 1), 0, 100)));
+            }
+            var points = smoothed.GroupBy(row => Math.Min(239, (row.Sample.Timestamp - from) / (bucketSeconds * 1000L)))
                 .OrderBy(group => group.Key).Select(group => new ResourceHistoryPoint(
-                    from + group.Key * bucketSeconds * 1000L, group.Average(row => row.CpuUsagePercent),
-                    group.Max(row => row.CpuUsagePercent), group.Average(row => row.MemoryUsagePercent),
-                    group.Max(row => row.MemoryUsagePercent), group.Count())).ToArray();
+                    from + group.Key * bucketSeconds * 1000L, Math.Round(group.Average(row => row.Sample.CpuUsagePercent), 4),
+                    Math.Round(group.Max(row => row.Sample.CpuUsagePercent), 4), Math.Round(group.Average(row => row.Sample.MemoryUsagePercent), 4),
+                    Math.Round(group.Max(row => row.Sample.MemoryUsagePercent), 4), group.Count(),
+                    Math.Round(group.Max(row => row.Cpu), 4), Math.Round(group.Max(row => row.Memory), 4))).ToArray();
             return new ResourceHistoryResult(now, from, now, IntervalSeconds, 7, bucketSeconds, last, SamplingError ?? WriteError, points);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

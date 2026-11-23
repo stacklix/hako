@@ -215,6 +215,21 @@ struct WorkshopCatalog: Codable, Equatable, Sendable {
     let sessions: [WorkshopSession]
     let nextCursor: String?
 
+    static func orderedApplications(_ applications: [WorkshopApplication], sessions: [WorkshopSession],
+                                    order: [String]) -> [WorkshopApplication] {
+        let latest = Dictionary(sessions.map { ($0.applicationId, max($0.updatedAt, $0.lastSentAt)) },
+                                uniquingKeysWith: max)
+        let positions = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+        return applications.enumerated().sorted { left, right in
+            let leftDate = latest[left.element.id] ?? 0
+            let rightDate = latest[right.element.id] ?? 0
+            if leftDate != rightDate { return leftDate > rightDate }
+            let leftPosition = positions[left.element.id] ?? (order.count + left.offset)
+            let rightPosition = positions[right.element.id] ?? (order.count + right.offset)
+            return leftPosition < rightPosition
+        }.map(\.element)
+    }
+
     static func sameListContent(_ left: [WorkshopSession], _ right: [WorkshopSession]) -> Bool {
         guard left.count == right.count else { return false }
         return zip(left, right).allSatisfy { first, second in
@@ -713,6 +728,19 @@ struct WorkshopPreferences: Codable, Equatable, Sendable {
     var seenSessions: [String] = []
     var receipts: [WorkshopReceipt] = []
     var choices: [String: WorkshopChoice]? = nil
+    var defaultGenerations: [String: WorkshopGenerationDefaults]? = nil
+
+    func choice(agentID: String, thread: String?, applicationID: String) -> WorkshopChoice {
+        if let saved = choices?[agentID + ":" + (thread ?? "new-" + applicationID)] { return saved }
+        return thread == nil ? (defaultGenerations?[agentID]?.choice ?? WorkshopChoice()) : WorkshopChoice()
+    }
+
+    mutating func recordChoice(_ choice: WorkshopChoice, agentID: String, thread: String?, applicationID: String, resolvingNew: Bool = false) {
+        if choices == nil { choices = [:] }
+        choices?[agentID + ":" + (thread ?? "new-" + applicationID)] = choice
+        let draftKey = agentID + ":new-" + applicationID
+        if resolvingNew, thread != nil, choices?[draftKey] == choice { choices?[draftKey] = nil }
+    }
 }
 
 // Reflect sends immediately, until the catalog acknowledges their operation
@@ -950,4 +978,27 @@ struct WorkshopChoice: Codable, Equatable, Sendable {
     var permission: WorkshopPermission = .auto
     var serviceTier: String? = nil
     var reasoningEffort: String? = nil
+}
+
+struct WorkshopGenerationDefaults: Codable, Equatable, Sendable {
+    var model: String? = nil
+    var serviceTier: String? = nil
+    var reasoningEffort: String? = nil
+
+    var choice: WorkshopChoice {
+        WorkshopChoice(model: model, serviceTier: serviceTier, reasoningEffort: reasoningEffort)
+    }
+
+    func validationError(models: [WorkshopModel]) -> String? {
+        if model == nil && serviceTier == nil && reasoningEffort == nil { return nil }
+        let selected = model.flatMap { id in models.first { $0.id == id } } ?? (model == nil ? models.first { $0.isDefault } : nil)
+        guard let selected else { return "所选模型不可用，请刷新模型列表后重新选择。" }
+        if let serviceTier, serviceTier != "default", !selected.serviceTiers.contains(where: { $0.id == serviceTier }) {
+            return "所选模型不支持此速度，请重新选择。"
+        }
+        if let reasoningEffort, !selected.reasoningEfforts.contains(where: { $0.id == reasoningEffort }) {
+            return "所选模型不支持此推理强度，请重新选择。"
+        }
+        return nil
+    }
 }

@@ -283,7 +283,8 @@ struct InvestmentAccountView: View {
 
     var body: some View {
         InvestmentScroll {
-            if let ledger = try? book.ledger(account) {
+            let result = Result { try book.ledger(account) }
+            if case .success(let ledger) = result {
                 summary(ledger)
                 HakoUnderlineTabs(title: "账户数据视图", options: AccountTab.allCases, selection: $accountTab) { $0.rawValue }
                     .background(alignment: .bottom) { Divider() }
@@ -294,7 +295,11 @@ struct InvestmentAccountView: View {
                     InvestmentPerformanceChart(book: book, bookVersion: store.bookVersion, accountID: account.id)
                 }
             } else {
-                Text("无法读取该账户的流水。").foregroundStyle(.secondary)
+                if case .failure(let error) = result {
+                    Text(error.localizedDescription).foregroundStyle(.secondary)
+                }
+                Button("查看并修改流水") { sheet = .history }
+                    .buttonStyle(HakoActionButtonStyle(primary: false))
             }
         }
         .onChange(of: account.id) { accountTab = .details }

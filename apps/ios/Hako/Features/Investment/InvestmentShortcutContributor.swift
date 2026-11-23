@@ -1,9 +1,9 @@
 enum InvestmentShortcutContributor {
     @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
-        registry.register(InvestmentBackup.shortcutName) {
+        registry.register(InvestmentBackup.shortcutName, group: "investment", order: 2) {
             try await InvestmentBackup.backupData()
         }
-        registry.register("更新投资账本") {
+        registry.register("更新投资账本", group: "investment", order: 1) {
             let store = InvestmentStore.shared
             if store.loading || store.saving || store.refreshing {
                 try await HakoExecutionDiagnostics.measure("等待当前投资操作结束") {

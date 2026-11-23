@@ -17,6 +17,7 @@ struct InvestmentAgentTests {
         try premiumEditUsesBackfilledSameDayCash()
         try insuranceWithdrawalsUseOptionalCashValue()
         try proposedTransferIncludesBothSidesWithoutChangingBook()
+        try fractionalCryptoQuantityKeepsUserInput()
         try proposalRetainsCashImpactAndAutomaticallyAddedDeposit()
 
         try followUpReplacesUncommittedDraft()
@@ -261,7 +262,7 @@ struct InvestmentAgentTests {
         let proposal = try InvestmentAgentProposal(base: base, actions: actions)
         let receipt = InvestmentAgentConversation.Message.recorded(proposal, at: InvestmentBook.day())
         precondition(receipt.html != nil && receipt.text.contains("已记账：1 笔交易"))
-        for value in ["1153", "0.319505", "HKO", "确认时间"] {
+        for value in ["1153", "0.32", "HKO", "确认时间"] {
             precondition(receipt.text.contains(value) && receipt.html!.fragment.contains(value))
         }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -363,19 +364,41 @@ struct InvestmentAgentTests {
         let day = InvestmentBook.day()
         try book.post(.init(day: day, kind: .deposit, amount: 100), accountID: source.id)
         let date = InvestmentBook.snapshotDateFormatter().string(from: day)
-        let action = InvestmentAgentAction(kind: .transfer, values: [
+        var action = InvestmentAgentAction(kind: .transfer, values: [
             "account_id": source.id.uuidString, "target_id": target.id.uuidString,
             "date": date, "amount": "20.125", "received": "141.25"
         ])
         let base = snapshot(book)
+        do { _ = try InvestmentAgentProposal(base: base, actions: [action]); preconditionFailure("Excess cash precision must require corrected input") }
+        catch InvestmentError.invalid {}
+        action.values["amount"] = "20.12"
         let preview = try InvestmentAgentProposal(base: base, actions: [action])
         precondition(preview.generation == base.generation && preview.session == base.session)
         precondition(preview.changes.count == 2 && preview.changes.allSatisfy { $0.operation == .add })
-        precondition(preview.changes.flatMap(\.fields).contains { $0.id == "cash_change" && $0.after == "USD -20.125" })
+        precondition(preview.changes.flatMap(\.fields).contains { $0.id == "cash_change" && $0.after == "USD -20.12" })
         precondition(preview.changes.flatMap(\.fields).contains { $0.id == "cash_change" && $0.after == "CNY 141.25" })
         precondition(book.account(source.id)?.events.count == 1 && book.account(target.id)?.events.isEmpty == true)
         precondition(preview.book.account(target.id)?.events.first?.transferID == preview.book.account(source.id)?.events.last?.transferID)
         precondition(preview.preview.summary == "1 笔交易" && preview.preview.items[0].sourceIDs.count == 2)
+    }
+
+    private static func fractionalCryptoQuantityKeepsUserInput() throws {
+        let account = InvestmentAccount(name: "Crypto", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let btc = try book.register(.init(name: "Bitcoin", code: "BTC", market: "", kind: .crypto, currency: .usd))
+        let action = InvestmentAgentAction(kind: .addEvent, values: ["account_id": account.id.uuidString,
+            "asset_id": btc.uuidString, "date": InvestmentBook.snapshotDateFormatter().string(from: InvestmentBook.day()),
+            "event_type": "buy", "quantity": "0.058", "price": "71504", "auto_fund": "true"])
+        try action.apply(to: &book)
+        precondition(book.accounts[0].events.last?.quantity == Decimal(string: "0.058"))
+        let ledger = try book.ledger(book.accounts[0], validatingBalances: true)
+        precondition(ledger.cash == 0)
+        var invalid = action
+        invalid.values["price"] = "71504.123"
+        let count = book.accounts[0].events.count
+        do { try invalid.apply(to: &book); preconditionFailure("Excess input precision cannot be silently rounded") }
+        catch InvestmentError.invalid {}
+        precondition(book.accounts[0].events.count == count)
     }
 
     @MainActor
@@ -693,7 +716,7 @@ struct InvestmentAgentTests {
         return (snapshot(book), [
             .init(kind: .addAsset, values: ["name": "示例股票", "symbol": "HKO", "currency": "USD", "asset_type": "stock", "market": "XNAS"]),
             .init(kind: .addEvent, values: ["account_id": account.id.uuidString, "asset_id": "HKO",
-                "date": InvestmentBook.snapshotDateFormatter().string(from: day), "event_type": "buy", "quantity": "1153", "price": "0.319505", "fee": "0"])
+                "date": InvestmentBook.snapshotDateFormatter().string(from: day), "event_type": "buy", "quantity": "1153", "price": "0.32", "fee": "0"])
         ])
     }
 

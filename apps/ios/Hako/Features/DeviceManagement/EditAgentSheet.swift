@@ -15,9 +15,7 @@ struct EditAgentSheet: View {
 
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var hasChanges: Bool {
-        guard let original else { return false }
-        return name.trimmingCharacters(in: .whitespacesAndNewlines) != original.name
-            || publicKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines) != original.publicKeyPEM
+        original?.hasChanges(name: name, publicKeyPEM: publicKeyPEM) ?? false
     }
     private var canSave: Bool {
         original != nil && hasChanges && !client.busy && client.authenticated && !client.logoutPending

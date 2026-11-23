@@ -77,6 +77,7 @@ struct InvestmentCachedRow: Identifiable, Hashable {
                "price", "rate", "value", "contract_multiplier", "total_cny", "total_usd",
                "cumulative_gain_cny", "daily_gain_cny", "cash_native", "holdings_native", "gain_native"].contains(field),
               let value = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")) else { return raw }
+        if field == "quantity" { return NSDecimalNumber(decimal: value).stringValue }
         return InvestmentPrecision.display(value, exchangeRate: field == "rate")
     }
 }

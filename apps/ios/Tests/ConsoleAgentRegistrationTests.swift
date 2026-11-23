@@ -14,6 +14,17 @@ import Foundation
             "publicKeyPem": pem, "revision": "revision-1"])
         let details = try JSONDecoder().decode(ConsoleAgentDetails.self, from: detailsJSON)
         precondition(details.id == "A1B2C" && details.publicKeyPEM == pem)
+        for suffix in ["", "\n", "\r\n", "\n\n"] {
+            let saved = ConsoleAgentDetails(id: "A1B2C", name: "设备", publicKeyPEM: pem + suffix, revision: "revision-1")
+            precondition(!saved.hasChanges(name: saved.name, publicKeyPEM: saved.publicKeyPEM),
+                "Opening an untouched Agent editor must not prompt to save a PEM ending in a newline")
+            precondition(!saved.hasChanges(name: " 设备 ", publicKeyPEM: pem),
+                "Importing the same trimmed public key must not mark the form as changed")
+            precondition(saved.hasChanges(name: "新设备", publicKeyPEM: saved.publicKeyPEM))
+            precondition(saved.hasChanges(name: saved.name, publicKeyPEM: pem.replacingOccurrences(of: "MAA=", with: "MAB=")))
+            precondition(saved.hasChanges(name: "", publicKeyPEM: saved.publicKeyPEM),
+                "An invalid edited draft still requires unsaved-change protection")
+        }
         let update = try details.updateBody(name: " 新名称 ", publicKeyPEM: pem)
         precondition(update["name"] as? String == "新名称" && update["revision"] as? String == "revision-1")
         precondition(update["id"] == nil && update.count == 3, "An edit must preserve the server-assigned ID")

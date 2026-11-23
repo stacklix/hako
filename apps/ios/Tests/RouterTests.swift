@@ -213,6 +213,15 @@ private final class RouterMockProtocol: URLProtocol {
             RouterMockProtocol.handle = { _ in attempts += 1; return (200, Data("{\"error_code\":-40401}".utf8)) }
             do { _ = try await badClient.read(); fatalError("Expected authentication failure") } catch { assert(attempts == 1) }
 
+            let emptySessionClient = try RouterClient(connection: connection, isLocal: { await network.local }, session: session)
+            attempts = 0
+            RouterMockProtocol.handle = { _ in attempts += 1; return (200, Data("{\"error_code\":0}".utf8)) }
+            do { _ = try await emptySessionClient.read(); fatalError("Missing login session accepted") }
+            catch let error as RouterFailure {
+                assert(attempts == 1 && error.message.contains("没有返回可用登录会话"))
+                assert(!error.message.contains("固件"), "A missing session does not prove incompatible firmware")
+            }
+
             // A lost write response must never cause an automatic second write.
             var writes = 0
             RouterMockProtocol.handle = { request in
@@ -269,6 +278,30 @@ private final class RouterMockProtocol: URLProtocol {
             assert(selected == (local ? .direct : .sora))
         }
         assert(logins == 3)
+        // Foreground speed polling reads only WAN state, keeps the existing
+        // session on the same route, and reselects transport after network changes.
+        var speedReads = 0
+        RouterMockProtocol.handle = { request in
+            let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]
+            if body["login"] != nil {
+                logins += 1
+                return (200, Data("{\"error_code\":0,\"stok\":\"switch-token\"}".utf8))
+            }
+            assert(body["method"] as? String == "get" && body.count == 2)
+            assert((body["network"] as? [String: Any])?["name"] as? [String] == ["wan_status", "wanv6_status"],
+                "Speed polling must not repeatedly fetch devices, bindings or configuration")
+            speedReads += 1
+            return (200, try JSONSerialization.data(withJSONObject: ["error_code": 0, "network": [
+                "wan_status": ["link_status": "1", "down_speed": speedReads * 1024, "up_speed": speedReads * 512],
+                "wanv6_status": ["link_status": "1"]]]))
+        }
+        for local in [true, false, false, true] {
+            await switchingNetwork.setLocal(local)
+            RouterMockProtocol.expectedProxy = local ? nil : "192.168.0.1:80"
+            let wan = try await switchingClient.read(.wan)["network"]["wan_status"]
+            assert(wan["down_speed"].text == String(speedReads * 1024) && wan["up_speed"].text == String(speedReads * 512))
+        }
+        assert(speedReads == 4 && logins == 5, "Repeated WAN reads must reuse sessions until the host route changes")
         var wakeRequests = 0, rebootRequests = 0
         RouterMockProtocol.handle = { request in
             let body = try JSONSerialization.jsonObject(with: RouterMockProtocol.body(request)) as! [String: Any]

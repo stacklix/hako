@@ -19,6 +19,26 @@ enum InvestmentPrecision {
         NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate)).stringValue
     }
 
+    static func validateInput(_ value: Decimal, field: String) throws {
+        guard rounded(value) == value else {
+            throw InvestmentError.invalid(field + "超出允许精度：通常最多 2 位小数，绝对值小于 0.01 时最多 4 位。请修改输入，系统不会自动舍入。")
+        }
+    }
+
+    static func exactInput(_ text: String) -> Decimal? {
+        guard let value = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")), !value.isNaN else { return nil }
+        let negative = text.hasPrefix("-")
+        let parts = (negative ? String(text.dropFirst()) : text).split(separator: ".", omittingEmptySubsequences: false)
+        let integer = String(parts[0].drop(while: { $0 == "0" }))
+        let fraction = parts.count > 1 ? String(parts[1].reversed().drop(while: { $0 == "0" }).reversed()) : ""
+        let unsigned = (integer.isEmpty ? "0" : integer) + (fraction.isEmpty ? "" : "." + fraction)
+        let canonical = (negative && unsigned != "0" ? "-" : "") + unsigned
+        // Decimal has finite significant precision. Reject inputs it cannot
+        // represent exactly rather than silently truncating user-entered units.
+        guard NSDecimalNumber(decimal: value).stringValue == canonical else { return nil }
+        return value
+    }
+
     static func display(_ value: Decimal, exchangeRate: Bool = false) -> String {
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -493,7 +513,7 @@ extension InvestmentBook {
         }
         for account in draft.accounts {
             do {
-                _ = try draft.ledger(account, through: today)
+                _ = try draft.ledger(account, through: today, validatingBalances: true)
             }
             catch {
                 throw InvestmentError.invalid("删除后「\(account.name)」的其他流水无法成立：\(error.localizedDescription) 请先处理相关流水。")
@@ -760,15 +780,16 @@ struct InvestmentBook: Codable {
         return hasPremium ? "续期保费" : "首期保费"
     }
 
-    func ledger(_ account: InvestmentAccount, through day: Date = Self.day(), includeRows: Bool = false) throws -> InvestmentLedger {
+    func ledger(_ account: InvestmentAccount, through day: Date = Self.day(), includeRows: Bool = false,
+                validatingBalances: Bool = false) throws -> InvestmentLedger {
         var ledger = InvestmentLedger()
         let events = orderedEvents(account, through: day)
-        try replay(events[...], currency: account.currency, into: &ledger, includeRows: includeRows)
+        try replay(events[...], currency: account.currency, into: &ledger, includeRows: includeRows, validatingBalances: validatingBalances)
         return ledger
     }
 
     private func replay(_ events: ArraySlice<InvestmentEvent>, currency: InvestmentCurrency,
-                        into ledger: inout InvestmentLedger, includeRows: Bool = false) throws {
+                        into ledger: inout InvestmentLedger, includeRows: Bool = false, validatingBalances: Bool = false) throws {
         for event in events {
             let before = ledger.cash
             switch event.kind {
@@ -878,7 +899,7 @@ struct InvestmentBook: Codable {
                             position.margin -= releasedMargin
                             position.contractEntry -= releasedEntry
                         }
-                        proceeds -= event.fee ?? 0
+                        proceeds = InvestmentPrecision.rounded(proceeds - (event.fee ?? 0))
                         ledger.cash += proceeds
                         position.netCost -= proceeds
                         position.quantity -= event.quantity
@@ -909,7 +930,7 @@ struct InvestmentBook: Codable {
                     ledger.positions[id] = position
                 }
             }
-            guard ledger.cash >= 0 else { throw InvestmentError.insufficientCash }
+            guard !validatingBalances || ledger.cash >= 0 else { throw InvestmentError.insufficientCash }
             if includeRows, event.kind != .opening {
                 ledger.cashRows.append(InvestmentCashRow(event: event, change: ledger.cash - before, balance: ledger.cash))
             }
@@ -929,7 +950,7 @@ struct InvestmentBook: Codable {
     private func cashPurchase(_ event: InvestmentEvent, asset: InvestmentAsset) throws -> (value: Decimal, margin: Decimal, debit: Decimal) {
         let value = try cashTradeValue(event, asset: asset)
         let margin = event.margin * event.quantity
-        let debit = (asset.kind.usesMargin ? margin : value) + (event.fee ?? 0)
+        let debit = InvestmentPrecision.rounded((asset.kind.usesMargin ? margin : value) + (event.fee ?? 0))
         return (value, margin, debit)
     }
 
@@ -1056,7 +1077,7 @@ struct InvestmentBook: Codable {
             event.version = 1
             draft.events.append(event)
         }
-        _ = try ledger(draft, through: today)
+        _ = try ledger(draft, through: today, validatingBalances: true)
         accounts[index] = draft
         invalidateDailySnapshots(from: changedDay)
     }
@@ -1117,7 +1138,7 @@ struct InvestmentBook: Codable {
             try draft.requireActive(accountID: id)
             guard let index = draft.accounts.firstIndex(where: { $0.id == id }) else { continue }
             draft.accounts[index].events.removeAll { $0.id == entry.id }
-            _ = try draft.ledger(draft.accounts[index], through: today)
+            _ = try draft.ledger(draft.accounts[index], through: today, validatingBalances: true)
             draft.invalidateDailySnapshots(from: entry.day)
         }
         self = draft
@@ -1582,7 +1603,7 @@ extension InvestmentBook {
                         cursors[index] += 1
                         var candidate = ledgers[index]
                         do {
-                            try replay([event][...], currency: account.currency, into: &candidate)
+                            try replay([event][...], currency: account.currency, into: &candidate, validatingBalances: true)
                             ledgers[index] = candidate
                         } catch {
                             blocked.insert(index)

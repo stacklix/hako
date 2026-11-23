@@ -18,7 +18,7 @@ struct InvestmentPerformanceTests {
         try accountAndHoldingHistory()
         try transfersAndCurrencyChanges()
         try serverSnapshotGapsStayMissing()
-        try invalidLedgerLeavesMissingDates()
+        try overdrawnLedgerRemainsVisible()
         benchmarkSharesThePortfolioBaseline()
         benchmarkClosesUseBeijingDates()
         treemapPreservesAreaAndSign()
@@ -109,14 +109,15 @@ struct InvestmentPerformanceTests {
         equal(result[day(1)], 0); equal(result[day(2)], 0); equal(result[day(3)], Decimal(string: "0.1")!)
         precondition(InvestmentBenchmark.sp500.returns(quotes: Array(quotes.dropFirst()), samples: samples).isEmpty)
     }
-    static func invalidLedgerLeavesMissingDates() throws {
+    static func overdrawnLedgerRemainsVisible() throws {
         let account = InvestmentAccount(name: "错误记录", currency: .cny, type: .securities)
         var book = InvestmentBook(accounts: [account])
         try book.post(.init(day: day(1), kind: .deposit, amount: 100), accountID: account.id)
         book.accounts[0].events.append(.init(day: day(2), kind: .withdrawal, amount: -1000))
         let history = book.performanceHistory(from: day(1), through: day(4))
-        precondition(history.samples.count == 4 && history.samples.last?.value == nil && history.samples.last?.rate == nil)
-        precondition(history.categories[0].detail(on: day(4))?.periodGain == nil)
+        precondition(history.samples.count == 4 && history.samples.last?.value == -900)
+        precondition(history.categories[0].detail(on: day(4))?.periodGain == 0,
+                     "A negative cash balance should remain visible, without being treated as a trading loss")
     }
     static func benchmarkClosesUseBeijingDates() {
         let session = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 17))!

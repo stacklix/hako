@@ -23,7 +23,12 @@ enum HTTPTransport {
         var logRequest = request
         if !logBody { logRequest.httpBody = nil }
         return try await perform(logRequest, source: source, secrets: secrets, body: { logBody ? $0 : nil }) {
-            try await session.data(for: request)
+            #if os(iOS)
+            if HakoProxyURLProtocol.canInit(with: request) {
+                return try await HakoProxyURLProtocol.forward(request)
+            }
+            #endif
+            return try await session.data(for: request)
         }
     }
 

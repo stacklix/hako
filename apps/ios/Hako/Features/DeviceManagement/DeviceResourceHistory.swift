@@ -5,10 +5,12 @@ enum DeviceResourceHistoryCommand {
 }
 
 enum DeviceResourceHistoryRange: Int, CaseIterable, Identifiable {
-    case hour = 3600, sixHours = 21600, day = 86400, week = 604800
+    case fifteenMinutes = 900, thirtyMinutes = 1800, hour = 3600, sixHours = 21600, day = 86400, week = 604800
     var id: Int { rawValue }
     var title: String {
         switch self {
+        case .fifteenMinutes: "15 分钟"
+        case .thirtyMinutes: "30 分钟"
         case .hour: "1 小时"
         case .sixHours: "6 小时"
         case .day: "24 小时"
@@ -37,6 +39,14 @@ struct DeviceResourceHistory: Decodable {
             && zip(points, points.dropFirst()).allSatisfy { $0.timestamp < $1.timestamp }
     }
     var sampleCount: Int { points.reduce(0) { $0 + $1.sampleCount } }
+    var bucketDurationText: String {
+        let minutes = bucketSeconds / 60, seconds = bucketSeconds % 60
+        if minutes == 0 { return "\(seconds) 秒" }
+        return seconds == 0 ? "\(minutes) 分钟" : "\(minutes) 分 \(seconds) 秒"
+    }
+    func interval(for point: DeviceResourceHistoryPoint) -> DateInterval {
+        DateInterval(start: point.date, end: Self.date(min(to, point.timestamp + Int64(bucketSeconds) * 1000)))
+    }
     var cpuAverage: Double {
         guard sampleCount > 0 else { return 0 }
         return points.reduce(0) { $0 + $1.cpuUsagePercent * Double($1.sampleCount) } / Double(sampleCount)
@@ -55,10 +65,13 @@ struct DeviceResourceHistoryPoint: Decodable, Identifiable {
     let memoryUsagePercent: Double
     let memoryMaxPercent: Double
     let sampleCount: Int
+    let cpuSmoothedMaxPercent: Double
+    let memorySmoothedMaxPercent: Double
     var id: Int64 { timestamp }
     var date: Date { DeviceResourceHistory.date(timestamp) }
     var isValid: Bool {
-        sampleCount > 0 && sampleCount <= 604_801 && [cpuUsagePercent, cpuMaxPercent, memoryUsagePercent, memoryMaxPercent]
+        sampleCount > 0 && sampleCount <= 604_801
+            && [cpuUsagePercent, cpuMaxPercent, memoryUsagePercent, memoryMaxPercent, cpuSmoothedMaxPercent, memorySmoothedMaxPercent]
             .allSatisfy { $0.isFinite && (0...100).contains($0) }
             && cpuMaxPercent + 0.000001 >= cpuUsagePercent && memoryMaxPercent + 0.000001 >= memoryUsagePercent
     }

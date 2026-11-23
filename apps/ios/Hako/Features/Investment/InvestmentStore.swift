@@ -355,8 +355,10 @@ final class InvestmentStore: ObservableObject {
         try checkWritable()
         guard var state = serverState else { return }
         let context = authentication.requestContext
+        if includeInputs { try records.validateEventInputs(draft, comparedTo: book) }
         let old = try records.encode(book, revision: state.revision)
         let next = try records.encode(draft, revision: state.revision)
+        if includeInputs { try records.validateLedgers(next, comparedTo: old) }
         var changes: InvestmentServerTables = [:]
         for name in InvestmentServerRecords.names {
             let output = InvestmentServerRecords.snapshotTables.contains(name)
@@ -798,8 +800,11 @@ final class InvestmentStore: ObservableObject {
                 for request in requests {
                     try checkRefresh()
                     do {
-                        let result = try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
-                            cached: snapshotRefresh ? nil : book.quote(asset.id)?.day, keys: keys)
+                        let result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
+                            success: InvestmentQuoteProvider.quoteSummary) {
+                            try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
+                                cached: snapshotRefresh ? nil : book.quote(asset.id)?.day, keys: keys)
+                        }
                         prices[asset.id, default: []].append(contentsOf: result)
                         if !snapshotRefresh, !publicIDs.contains(asset.id), let last = result.last,
                            last.day < InvestmentBook.addDays(-7, to: today) {
@@ -813,12 +818,16 @@ final class InvestmentStore: ObservableObject {
             }
             let publicAssets = publicIDs.compactMap { book.asset($0) }
             let tokens = Set(publicAssets.map(\.id))
-            let usdtUSD = tokens.isEmpty ? nil : try? await provider.coinbaseSpotUSDQuote(code: "USDT")
+            let usdtUSD = tokens.isEmpty ? nil : try? await HakoExecutionDiagnostics.measure("读取现货美元报价 · USDT",
+                success: { InvestmentQuoteProvider.quoteSummary([$0]) }) { try await provider.coinbaseSpotUSDQuote(code: "USDT") }
             for id in tokens {
                 guard let token = book.asset(id) else { continue }
                 try checkRefresh()
                 do {
-                    let quote = try await provider.publicSpotUSDQuote(for: token, usdtUSD: usdtUSD)
+                    let quote = try await HakoExecutionDiagnostics.measure("读取现货美元报价 · " + token.code,
+                        success: { InvestmentQuoteProvider.quoteSummary([$0]) }) {
+                        try await provider.publicSpotUSDQuote(for: token, usdtUSD: usdtUSD)
+                    }
                     prices[id, default: []].append(quote)
                 } catch {
                     try checkRefresh()
@@ -844,21 +853,28 @@ final class InvestmentStore: ObservableObject {
                 for window in windows {
                     try checkRefresh()
                     if let key = keys[.twelveData],
-                       let result = try? await provider.twelve(symbol: currency.rawValue + "/CNY", market: "",
-                            currency: nil, start: window.lowerBound, end: window.upperBound, key: key) {
+                       let result = try? await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
+                            success: InvestmentQuoteProvider.quoteSummary, operation: {
+                            try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "",
+                                currency: nil, start: window.lowerBound, end: window.upperBound, key: key)
+                       }) {
                         rates[currency, default: []].append(contentsOf: result)
                         let cutoff = snapshotRefresh ? window.upperBound :
                             max(book.fx[currency]?.last?.day ?? start, InvestmentBook.addDays(-7, to: today))
                         if let last = result.last, last.day >= cutoff { continue }
                     }
+                    try checkRefresh()
                     fallbackRequests[window, default: []].insert(currency)
                 }
             }
             for (window, fallbackCurrencies) in fallbackRequests.sorted(by: { $0.key.lowerBound < $1.key.lowerBound }) {
                 try checkRefresh()
                 do {
-                    let fallback = try await provider.ecbRates(for: fallbackCurrencies,
-                        start: window.lowerBound, end: window.upperBound)
+                    let codes = fallbackCurrencies.map(\.rawValue).sorted().joined(separator: "、")
+                    let fallback = try await HakoExecutionDiagnostics.measure("读取汇率 · 欧洲央行 · " + codes,
+                        success: { InvestmentQuoteProvider.quoteSummary($0.values.flatMap { $0 }) }) {
+                        try await provider.ecbRates(for: fallbackCurrencies, start: window.lowerBound, end: window.upperBound)
+                    }
                     for (currency, values) in fallback {
                         if snapshotRefresh {
                             rates[currency] = InvestmentBook.merge(values, rates[currency] ?? [])
@@ -939,7 +955,11 @@ final class InvestmentStore: ObservableObject {
         var usdtUSD: [Date: Decimal] = [:]
         for range in spotRanges {
             try Task.checkCancellation()
-            let quotes = try? await provider.coinbaseUSDDailyQuotes(for: "USDT", from: range.lowerBound, through: range.upperBound)
+            let quotes = try? await HakoExecutionDiagnostics.measure("读取历史美元报价 · USDT",
+                success: InvestmentQuoteProvider.quoteSummary) {
+                try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: range.lowerBound, through: range.upperBound)
+            }
+            try Task.checkCancellation()
             for quote in quotes ?? [] { usdtUSD[quote.day] = quote.price }
         }
         var result: [UUID: [InvestmentQuote]] = [:]
@@ -947,13 +967,21 @@ final class InvestmentStore: ObservableObject {
             try Task.checkCancellation()
             let (start, end) = (range.lowerBound, range.upperBound)
             if asset.kind == .crypto {
-                let prices = try? await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end, usdtUSD: usdtUSD)
+                let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Binance · " + asset.code,
+                    success: InvestmentQuoteProvider.quoteSummary) {
+                    try await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end, usdtUSD: usdtUSD)
+                }
+                try Task.checkCancellation()
                 if let prices, !prices.isEmpty {
                     result[asset.id, default: []].append(contentsOf: prices)
-                } else if let prices = try? await provider.coinbaseUSDDailyQuotes(for: asset.code, from: start, through: end) {
+                } else if let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Coinbase · " + asset.code,
+                    success: InvestmentQuoteProvider.quoteSummary, operation: {
+                    try await provider.coinbaseUSDDailyQuotes(for: asset.code, from: start, through: end)
+                }) {
                     result[asset.id, default: []].append(contentsOf: prices)
                 }
             }
+            try Task.checkCancellation()
         }
         return result
     }

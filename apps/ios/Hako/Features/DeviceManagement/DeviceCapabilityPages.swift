@@ -271,7 +271,7 @@ private extension DeviceCardOrder {
 
 private extension ConsoleAgentCapability {
     var hasTelephonyHeading: Bool {
-        version == 1 && [KageAndroidCommand.list, AndroidDeviceCommand.messages, AndroidDeviceCommand.send,
+        version == 1 && [DeviceFilesCommand.list, KageAndroidCommand.list, AndroidDeviceCommand.messages, AndroidDeviceCommand.send,
             AndroidDeviceCommand.calls, AndroidDeviceCommand.call].contains(name)
     }
     var pageTitle: String {
@@ -292,6 +292,7 @@ private extension ConsoleAgentCapability {
         case (DeviceServiceCommand.status, 1): "服务监控"
         case ("action.network.http.check", 1): "URL 连通性检测"
         case (DeviceGitCommand.list, 1): "Git 仓库"
+        case (DeviceFilesCommand.list, 1): "文件管理"
         case (KageAndroidCommand.list, 1): "Android 设备"
         default: name + " · v\(version)"
         }

@@ -205,6 +205,46 @@ struct InvestmentServerRecords {
         return result.mapValues(Self.ordered)
     }
 
+    func validateEventInputs(_ book: InvestmentBook, comparedTo previous: InvestmentBook) throws {
+        let old = Dictionary(uniqueKeysWithValues: previous.accounts.flatMap(\.events).map { ($0.id, $0) })
+        for event in book.accounts.flatMap(\.events) {
+            let before = old[event.id]
+            let fields: [(String, Decimal?, Decimal?)] = [
+                ("金额", event.amount, before?.amount), ("成交价格", event.price, before?.price),
+                ("交易费用", event.fee, before?.fee), ("清算金额或余额", event.settledAmount, before?.settledAmount),
+                ("保证金", event.margin, before?.margin)
+            ]
+            for (field, value, oldValue) in fields {
+                if let value, value != oldValue { try InvestmentPrecision.validateInput(value, field: field) }
+            }
+        }
+    }
+
+    // Replay the serialized values before sending: field normalization must not
+    // turn a valid draft into an invalid persisted ledger. Unchanged accounts
+    // do not prevent another account's records from being corrected.
+    func validateLedgers(_ tables: InvestmentServerTables, comparedTo previous: InvestmentServerTables) throws {
+        let book = try decode(.init(generation: 0, revision: 0, tables: tables))
+        let oldBook = try decode(.init(generation: 0, revision: 0, tables: previous))
+        let oldEvents = Dictionary(grouping: previous["investment_events"] ?? []) { $0["account_id"] ?? "" }
+        let newEvents = Dictionary(grouping: tables["investment_events"] ?? []) { $0["account_id"] ?? "" }
+        let oldDetails = previous["investment_derivative_event_details"] ?? []
+        let newDetails = tables["investment_derivative_event_details"] ?? []
+        let changedAssets = Set(book.assets.values.filter { oldBook.asset($0.id) != $0 }.map { $0.id.uuidString })
+        for account in book.accounts {
+            let id = account.id.uuidString
+            let events = newEvents[id] ?? []
+            let eventIDs = Set(events.compactMap { $0["id"] })
+            let detailsChanged = oldDetails.filter { eventIDs.contains($0["event_id"] ?? "") }
+                != newDetails.filter { eventIDs.contains($0["event_id"] ?? "") }
+            let accountChanged = (tables["investment_accounts"] ?? []).first { $0["id"] == id }
+                != (previous["investment_accounts"] ?? []).first { $0["id"] == id }
+            guard accountChanged || events != (oldEvents[id] ?? []) || detailsChanged
+                || events.contains(where: { changedAssets.contains($0["asset_id"] ?? "") }) else { continue }
+            _ = try book.ledger(account, validatingBalances: true)
+        }
+    }
+
     static func ordered(_ rows: [InvestmentServerRow]) -> [InvestmentServerRow] {
         rows.sorted { first, second in
             let lhs = first.sorted { $0.key < $1.key }.map { $0.key + "\0" + $0.value }
@@ -222,7 +262,8 @@ struct InvestmentServerRecords {
                    "event_type": trade ? "derivative_trade" : Self.eventTypes[event.kind]!]
         row["asset_id"] = event.assetID?.uuidString
         row["amount"] = string(event.amount)
-        row["quantity"] = string(event.quantity)
+        // Units are source data, not currency amounts: 0.058 BTC must stay 0.058.
+        row["quantity"] = NSDecimalNumber(decimal: event.quantity).stringValue
         row["unit_price"] = string(event.price)
         row["fee"] = string(event.fee)
         row["settled_amount"] = string(event.settledAmount)

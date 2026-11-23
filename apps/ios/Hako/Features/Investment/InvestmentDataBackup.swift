@@ -22,7 +22,7 @@ extension InvestmentBackup {
     }
 
     @MainActor static func backupData(at date: Date = Date()) async throws -> String {
-        guard HakoShortcutExecution.isManual || InvestmentBackupSchedule.isDue(at: date) else {
+        guard (HakoShortcutExecution.isManual && HakoShortcutExecution.ignoresSchedule) || InvestmentBackupSchedule.isDue(at: date) else {
             throw HakoShortcutSkip(reason: "当前不是北京时间周日，不执行记账投资数据备份。")
         }
         let destination = backupFile()

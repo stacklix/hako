@@ -100,6 +100,7 @@ class SubappBoundariesTests(unittest.TestCase):
         self.assertNotRegex(host, r"\b(UsageShortcutContributor|CryptoShortcutContributor|Recorder|CryptoStore)\b")
         registry = (APP / "App/HakoShortcutRegistry.swift").read_text(encoding="utf-8")
         self.assertIn("HakoApplications.registerShortcuts(in: registry)", registry)
+        self.assertNotRegex(registry, r"\b(InvestmentStore|CryptoStore|Recorder|InvestmentBackup)\b")
         self.assertNotIn("import ObjectiveC", host)
         self.assertIn("Category.allCases.flatMap(\\.applications)", catalog)
         for folder in ("Usage", "Crypto", "Investment"):
@@ -108,6 +109,7 @@ class SubappBoundariesTests(unittest.TestCase):
             self.assertNotIn("import AppIntents", sources)
             self.assertIn(f"enum {folder}ShortcutContributor", sources)
             self.assertIn("registry.register(", sources)
+            self.assertRegex(sources, r'group: "' + folder.lower() + r'", order: [12]')
 
     def test_investment_data_backup_uses_only_the_host_contract(self):
         sources = "\n".join(path.read_text(encoding="utf-8") for path in (FEATURES / "Investment").glob("*.swift"))

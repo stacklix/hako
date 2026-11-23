@@ -44,6 +44,7 @@ jobs:
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- binary-uploads
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- command-tasks
       - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- android
+      - run: dotnet run --project tests/Hako.Checks/Hako.Checks.csproj -c Release -- user-files
       - uses: actions/setup-go@v6
         with:
           go-version-file: apps/server/go.mod

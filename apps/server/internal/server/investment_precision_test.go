@@ -22,7 +22,7 @@ func TestInvestmentWriteStoresAndReturnsRoundedNumbers(t *testing.T) {
 		t.Fatalf("write = %d %s %v", status, body, err)
 	}
 	trade := saved.Tables["investment_events"][0]
-	if trade["quantity"] != "0.0012" || trade["unit_price"] != "12.35" || trade["fee"] != "0.0057" || trade["amount"] != "100.12" || trade["settled_amount"] != "100.12" || trade["sequence"] != "7" || saved.Tables["market_daily_fx"][0]["rate"] != "7.1235" {
+	if trade["quantity"] != "0.00123456" || trade["unit_price"] != "12.35" || trade["fee"] != "0.0057" || trade["amount"] != "100.12" || trade["settled_amount"] != "100.12" || trade["sequence"] != "7" || saved.Tables["market_daily_fx"][0]["rate"] != "7.1235" {
 		t.Fatalf("response was not normalized: %+v", saved)
 	}
 	var quantity, price, rate string
@@ -63,6 +63,47 @@ func TestInvestmentDecimalPrecision(t *testing.T) {
 			}
 			if got := investmentRoundedDecimal(test.want, test.fx); got != test.want {
 				t.Fatalf("rounding is not idempotent: %s", got)
+			}
+		})
+	}
+}
+
+func TestInvestmentCryptoQuantitySurvivesWriteAndRead(t *testing.T) {
+	for _, units := range []string{"0.058", "0.00000001", "1.123456789012345678"} {
+		t.Run(units, func(t *testing.T) {
+			f := newFixture(t, true)
+			input := investmentWrite{Tables: investmentRows{
+				"investment_accounts": {{"id": "account", "name": "Crypto", "currency": "USD", "account_type": "crypto", "sort_order": "0"}},
+				"investment_assets":   {{"id": "btc", "name": "Bitcoin", "asset_type": "crypto", "symbol": "BTC", "quote_currency": "USD", "settlement_unit": "USD"}},
+				"investment_events":   {{"id": "trade", "account_id": "account", "asset_id": "btc", "event_type": "opening", "effective_date": "2026-11-23", "sequence": "0", "amount": "0", "quantity": units, "unit_price": "71504"}},
+			}}
+			status, body := f.call(http.MethodPut, "/api/v1/investment/book", input, f.tokens.AccessToken)
+			if status != http.StatusOK {
+				t.Fatalf("write = %d %s", status, body)
+			}
+			var saved investmentState
+			if err := json.Unmarshal(body, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if saved.Tables["investment_events"][0]["quantity"] != units {
+				t.Fatalf("write changed quantity: %s", body)
+			}
+			status, body = f.call(http.MethodGet, "/api/v1/investment/book", nil, f.tokens.AccessToken)
+			if status != http.StatusOK {
+				t.Fatalf("read = %d %s", status, body)
+			}
+			if err := json.Unmarshal(body, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if saved.Tables["investment_events"][0]["quantity"] != units {
+				t.Fatalf("read changed quantity: %s", body)
+			}
+			var stored string
+			if err := f.s.investment.QueryRow("SELECT quantity FROM investment_events WHERE id='trade'").Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored != units {
+				t.Fatalf("stored quantity = %s, want %s", stored, units)
 			}
 		})
 	}

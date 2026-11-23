@@ -102,8 +102,13 @@ import SwiftUI
 
     private func row(_ bucket: WorkshopQuotaBucket, window: WorkshopQuotaWindow, primary: Bool) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(bucket.title + " · " + window.periodLabel(primary: primary))
-                .lineLimit(1).minimumScaleFactor(0.85)
+            if bucket.title != "Codex" {
+                Text(bucket.title + (window.windowDurationMins == 10080 ? "" : " · " + window.periodLabel(primary: primary)))
+                    .lineLimit(1).minimumScaleFactor(0.85)
+            } else if window.windowDurationMins != 10080 {
+                Text(window.periodLabel(primary: primary))
+                    .lineLimit(1).minimumScaleFactor(0.85)
+            }
             HStack(spacing: 8) {
                 Text(window.remaining(at: state.displayedAt).map { "剩余 " + $0.formatted(.number.precision(.fractionLength(0...1))) + "%" } ?? "剩余 —")
                     .fontWeight(.medium)

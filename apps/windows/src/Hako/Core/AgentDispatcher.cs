@@ -46,8 +46,10 @@ public sealed class AgentDispatcher : IAgentDispatcher
         new(ProcessMetrics.Command, 1), new(AndroidManager.ListCommand, 1),
         new("action.network.http.check", 1), new("action.git.commit", 1), new("action.git.push", 1), new("action.git.pull", 1),
         .. AndroidManager.ActionCommands.Select(name => new AgentCapability(name, 1)),
+        .. UserFiles.ActionCommands.Select(name => new AgentCapability(name, 1)),
         new("query.git.repositories", 1), new("query.git.repository", 1), new("query.git.operation", 1), new("query.git.remote", 1),
-        .. AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand).Select(name => new AgentCapability(name, 1))
+        .. AndroidManager.QueryCommands.Where(name => name != AndroidManager.ListCommand).Select(name => new AgentCapability(name, 1)),
+        .. UserFiles.QueryCommands.Select(name => new AgentCapability(name, 1))
     ];
     public IReadOnlyList<AgentCapability> Capabilities => queries.Concat(actions).Concat(onDemandQueries)
         .Select(entry => new AgentCapability(entry.Key, entry.Value.Version)).ToArray();
@@ -124,6 +126,11 @@ public sealed class AgentDispatcher : IAgentDispatcher
             onDemandQueries[name] = new(1, (p, t) => Android.QueryAsync(name, p, t));
         foreach (var name in AndroidManager.ActionCommands)
             actions[name] = new(1, (p, t) => Android.ActionAsync(name, p, t));
+        var files = new UserFiles(dataDirectory ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kage"));
+        foreach (var name in UserFiles.QueryCommands)
+            onDemandQueries[name] = new(1, (p, t) => files.CallAsync(name, p, t));
+        foreach (var name in UserFiles.ActionCommands)
+            actions[name] = new(1, (p, t) => files.CallAsync(name, p, t));
     }
 
     public async ValueTask DisposeAsync()

@@ -65,6 +65,14 @@ struct RouterView: View {
             store.load()
             guard scenePhase == .active, screen == nil else { return }
             await store.refresh(page.resources)
+            guard page == .overview || page == .devices, store.connection != nil else { return }
+            let includeDevices = page == .devices
+            while !Task.isCancelled {
+                let error = includeDevices ? store.deviceSpeedError : store.errors[.wan]
+                do { try await Task.sleep(for: .seconds(error == nil ? 1 : 5)) }
+                catch { return }
+                await store.refreshSpeeds(includeDevices: includeDevices)
+            }
         }
         .sheet(item: $screen) { selection in
             switch selection {
@@ -110,6 +118,10 @@ struct RouterView: View {
                         speedFact("当前下载", speed: wan["down_speed"].text)
                         Spacer()
                         speedFact("当前上传", speed: wan["up_speed"].text)
+                    }
+                    if let date = store.resourceDates[.wan] {
+                        Text("速率约每秒刷新 · \(date.formatted(date: .omitted, time: .standard)) 更新")
+                            .font(.caption2).foregroundStyle(RouterStyle.muted)
                     }
                     if let error = store.errors[.wan] { Text(error).font(.caption).foregroundStyle(.orange) }
                 }.padding(20)

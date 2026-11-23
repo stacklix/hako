@@ -10,6 +10,10 @@ struct HakoExecutionEvent: Codable, Identifiable, Sendable {
     let stage: String
     let state: State
     let detail: String
+
+    var stageTitle: String {
+        HakoExecutionLogRow(id: id, stage: stage, state: state, startedAt: nil, finishedAt: nil, detail: detail).stageTitle
+    }
 }
 
 final class HakoExecutionCancellation: @unchecked Sendable {
@@ -17,8 +21,7 @@ final class HakoExecutionCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var value: String?
     private var executionRunID: UUID?
-    private var executionStep: String?
-    private var executionAttemptID: UUID?
+    private var executionAttempts: [String: UUID] = [:]
 
     func bind(to runID: UUID) {
         lock.lock(); defer { lock.unlock() }
@@ -32,14 +35,17 @@ final class HakoExecutionCancellation: @unchecked Sendable {
 
     func bind(step: String, attemptID: UUID) {
         lock.lock(); defer { lock.unlock() }
-        executionStep = step
-        executionAttemptID = attemptID
+        executionAttempts[step] = attemptID
     }
 
-    var attempt: (step: String, id: UUID)? {
+    func finish(step: String, attemptID: UUID, keepForCancellation: Bool) {
         lock.lock(); defer { lock.unlock() }
-        guard let executionStep, let executionAttemptID else { return nil }
-        return (executionStep, executionAttemptID)
+        if !keepForCancellation, executionAttempts[step] == attemptID { executionAttempts[step] = nil }
+    }
+
+    var attempts: [String: UUID] {
+        lock.lock(); defer { lock.unlock() }
+        return executionAttempts
     }
 
     func record(_ reason: String) {
@@ -61,13 +67,33 @@ struct HakoExecutionLogRow: Identifiable {
     var finishedAt: Date?
     var detail: String
 
+    private var annotations: (title: String, values: [String: String]) {
+        var title = stage, values: [String: String] = [:]
+        while title.hasPrefix("["), let end = title.range(of: "] ") {
+            let marker = title[title.index(after: title.startIndex)..<end.lowerBound].components(separatedBy: " · ")
+            guard marker.count == 2, ["并行", "组", "分组"].contains(marker[0]) else { break }
+            values[marker[0]] = marker[1]
+            title = String(title[end.upperBound...])
+        }
+        return (title, values)
+    }
+
+    var parallelBranch: String? { annotations.values["并行"] }
+    var parentGroupID: UUID? { annotations.values["组"].flatMap(UUID.init(uuidString:)) }
+    var plannedBranches: Int? { annotations.values["分组"].flatMap(Int.init) }
+    var stageTitle: String { annotations.title }
+
+    var isAssetRequest: Bool { stageTitle.hasPrefix("资产接口 ") }
+
     var isDiagnostic: Bool {
+        let stage = stageTitle
+        return isAssetRequest ||
         ["开始执行子任务", "执行子任务", "重试子任务", "子任务结束", "子任务跳过",
          "执行环境", "取消时执行环境", "失败时执行环境", "快捷指令取消原因",
          "读取设备身份记录", "读取 Secure Enclave 公钥", "保存服务端登录会话",
          "恢复服务端登录会话", "读取服务端登录会话", "刷新服务端登录会话",
          "生成设备请求签名（Secure Enclave）", "服务端响应"].contains(stage)
-        || stage.hasPrefix("发送请求 ")
+        || stage.hasPrefix("发送请求 ") || stage.hasPrefix("行情请求 ")
     }
 
     func elapsed(at now: Date) -> String {
@@ -118,16 +144,49 @@ struct HakoExecutionLogRow: Identifiable {
     }
 }
 
+struct HakoExecutionLogItem: Identifiable {
+    let row: HakoExecutionLogRow
+    var children: [Self] = []
+    var id: UUID { row.id }
+
+    var completedBranches: Int {
+        Set(children.filter { $0.row.startedAt != nil && $0.row.finishedAt != nil && $0.row.state != .info }
+            .map { $0.row.parallelBranch ?? $0.id.uuidString }).count
+    }
+
+    static func grouping(_ rows: [HakoExecutionLogRow]) -> [Self] {
+        let business = rows.filter { !$0.isDiagnostic }
+        let groups = Set(business.filter { $0.plannedBranches != nil }.map(\.id))
+        func items(parent: UUID?) -> [Self] {
+            business.filter { row in
+                let owner = row.parentGroupID.flatMap { groups.contains($0) ? $0 : nil }
+                return owner == parent
+            }.map { row in
+                Self(row: row, children: row.plannedBranches == nil ? [] : items(parent: row.id))
+            }
+        }
+        return items(parent: nil)
+    }
+}
+
 // The caller owns the sink. Child services can report progress without depending on
 // shortcut history, and unrelated tasks do not share a global active-run identifier.
 enum HakoExecutionDiagnostics {
     typealias Sink = @MainActor @Sendable (HakoExecutionEvent) -> Void
     static let context = TaskLocal<Sink?>(wrappedValue: nil)
     static let cancellation = TaskLocal<HakoExecutionCancellation?>(wrappedValue: nil)
+    // Runtime-only branch marker; the stored event format remains unchanged.
+    static let parallel = TaskLocal<String?>(wrappedValue: nil)
+    static let group = TaskLocal<UUID?>(wrappedValue: nil)
     static var sink: Sink? { context.get() }
 
+    static func stageName(_ stage: String) -> String {
+        let branch = parallel.get().map { "[并行 · \($0)] " + stage } ?? stage
+        return group.get().map { "[组 · \($0.uuidString)] " + branch } ?? branch
+    }
+
     @MainActor static func record(_ stage: String, state: HakoExecutionEvent.State = .info, detail: String = "") {
-        sink?(HakoExecutionEvent(stage: stage, state: state, detail: detail))
+        sink?(HakoExecutionEvent(stage: stageName(stage), state: state, detail: detail))
     }
 
     @MainActor static func environment(_ stage: String = "执行环境") {
@@ -165,6 +224,7 @@ enum HakoExecutionDiagnostics {
 
     @MainActor static func measure<T>(_ stage: String, success: (T) -> String = { _ in "执行成功。" }, operation: () throws -> T) rethrows -> T {
         guard sink != nil else { return try operation() }
+        let stage = stageName(stage)
         let event = HakoExecutionEvent(stage: stage, state: .started, detail: "")
         sink?(event)
         do {
@@ -180,6 +240,7 @@ enum HakoExecutionDiagnostics {
 
     @MainActor static func measure<T>(_ stage: String, success: (T) -> String = { _ in "执行成功。" }, operation: () async throws -> T) async rethrows -> T {
         guard sink != nil else { return try await operation() }
+        let stage = stageName(stage)
         let event = HakoExecutionEvent(stage: stage, state: .started, detail: "")
         sink?(event)
         do {
@@ -189,6 +250,24 @@ enum HakoExecutionDiagnostics {
         } catch {
             sink?(HakoExecutionEvent(id: event.id, stage: stage, state: error is CancellationError || Task.isCancelled ? .cancelled : .failed,
                                      detail: failure(error)))
+            throw error
+        }
+    }
+
+    @MainActor static func measureGroup<T>(_ stage: String, branches: Int, detail: String,
+                                           resultState: (T) -> HakoExecutionEvent.State = { _ in .succeeded },
+                                           operation: () async throws -> T) async rethrows -> T {
+        guard let sink else { return try await operation() }
+        let event = HakoExecutionEvent(stage: stageName("[分组 · \(branches)] " + stage), state: .started, detail: detail)
+        sink(event)
+        do {
+            let result = try await group.withValue(event.id) { try await operation() }
+            sink(HakoExecutionEvent(id: event.id, stage: event.stage, state: resultState(result), detail: HakoLog.sanitize(detail)))
+            return result
+        } catch {
+            sink(HakoExecutionEvent(id: event.id, stage: event.stage,
+                                    state: error is CancellationError || Task.isCancelled ? .cancelled : .failed,
+                                    detail: HakoLog.sanitize(detail + "\n" + failure(error))))
             throw error
         }
     }

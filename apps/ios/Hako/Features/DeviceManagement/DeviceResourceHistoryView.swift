@@ -7,7 +7,8 @@ struct DeviceResourceHistoryView: View {
     let refreshID: UUID
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var range: DeviceResourceHistoryRange = .hour
+    @State private var range: DeviceResourceHistoryRange = .fifteenMinutes
+    @State private var showsRanges = false
     @State private var history: DeviceResourceHistory?
     @State private var error: String?
     @State private var loading = false
@@ -23,18 +24,17 @@ struct DeviceResourceHistoryView: View {
                 Text("历史利用率").font(.subheadline.weight(.semibold))
                 Spacer()
                 if loading { ProgressView().controlSize(.small) }
-            }
-            Picker("历史时间范围", selection: $range) {
-                ForEach(DeviceResourceHistoryRange.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
+                rangeSelector
+            }.zIndex(40)
             if let history {
                 if history.points.isEmpty {
                     Text("此时间范围暂无历史记录。Kage 运行后每秒采样一次。").font(.footnote).foregroundStyle(.secondary)
                 } else {
                     resourceChart(history, cpu: true)
                     resourceChart(history, cpu: false)
-                    Text("共 \(history.sampleCount) 次采样 · 实线为平均值，虚线为峰值；按住曲线查看数值。")
+                    Text("每个点代表 \(history.bucketDurationText)内有效采样的平均值，末段按实际时长统计。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("共 \(history.sampleCount) 次采样 · 按住曲线查看该点的起止时间和数值。")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let samplingError = history.samplingError {
@@ -54,6 +54,8 @@ struct DeviceResourceHistoryView: View {
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .devicePagePanel()
+        .onDisappear { showsRanges = false }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { showsRanges = false } }
         .task(id: taskID) {
             guard scenePhase == .active, client.authenticated else { return }
             guard agent.online else { error = "设备离线，暂时无法读取本机历史。"; return }
@@ -69,6 +71,41 @@ struct DeviceResourceHistoryView: View {
                 await load()
             }
         }
+    }
+
+    private var rangeSelector: some View {
+        let accent = HakoStyle.adaptive(0x514298, 0xc5b7ff)
+        let selectedFill = HakoStyle.adaptive(0xf0eef8, 0x2b2936)
+        return Button { showsRanges.toggle() } label: {
+            HStack(spacing: 5) { Text(range.title); Image(systemName: "chevron.down").font(.caption2) }
+                .font(.caption.weight(.medium)).foregroundStyle(accent).frame(minHeight: 38)
+        }
+        .buttonStyle(.plain).accessibilityLabel("历史时间范围")
+        .accessibilityValue(range.title + (showsRanges ? "，已展开" : "，已收起"))
+        .overlay(alignment: .topTrailing) {
+            if showsRanges {
+                VStack(spacing: 2) {
+                    ForEach(DeviceResourceHistoryRange.allCases) { option in
+                        Button { range = option; selectedDate = nil; showsRanges = false } label: {
+                            HStack(spacing: 12) {
+                                Text(option.title); Spacer(minLength: 4)
+                                if range == option { Image(systemName: "checkmark").font(.caption) }
+                            }
+                            .font(.subheadline).foregroundStyle(range == option ? accent : Color.primary)
+                            .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .background(range == option ? selectedFill : .clear, in: RoundedRectangle(cornerRadius: 7))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityAddTraits(range == option ? .isSelected : [])
+                    }
+                }
+                .padding(5).frame(width: 174)
+                .background(HakoStyle.adaptive(0xffffff, 0x323237), in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(HakoStyle.line, lineWidth: 1).allowsHitTesting(false) }
+                .shadow(color: .black.opacity(0.16), radius: 12, y: 6).offset(y: 43)
+                .accessibilityElement(children: .contain).accessibilityLabel("历史时间范围选项")
+                .accessibilityAction(.escape) { showsRanges = false }.zIndex(20)
+            }
+        }.zIndex(showsRanges ? 20 : 0)
     }
 
     private func load() async {
@@ -91,10 +128,9 @@ struct DeviceResourceHistoryView: View {
         let color: Color = cpu ? .blue : .purple
         let selected = selectedDate.flatMap { date in history.points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
         let average = cpu ? history.cpuAverage : history.memoryAverage
-        let peak = history.points.map { cpu ? $0.cpuMaxPercent : $0.memoryMaxPercent }.max() ?? 0
         return VStack(alignment: .leading, spacing: 8) {
             Text(cpu ? "CPU" : "内存").font(.subheadline.weight(.medium))
-            Text(String(format: "平均 %.1f%% · 峰值 %.1f%%", average, peak))
+            Text(String(format: "平均 %.1f%%", average))
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             Chart {
                 ForEach(Array(history.points.enumerated()), id: \.element.id) { index, point in
@@ -103,9 +139,6 @@ struct DeviceResourceHistoryView: View {
                     LineMark(x: .value("时间", point.date), y: .value("平均使用率", cpu ? point.cpuUsagePercent : point.memoryUsagePercent),
                              series: .value("平均", "average-\(segment)"))
                         .foregroundStyle(color)
-                    LineMark(x: .value("时间", point.date), y: .value("峰值使用率", cpu ? point.cpuMaxPercent : point.memoryMaxPercent),
-                             series: .value("峰值", "peak-\(segment)"))
-                        .foregroundStyle(color.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     if history.points.count == 1 {
                         PointMark(x: .value("时间", point.date), y: .value("使用率", cpu ? point.cpuUsagePercent : point.memoryUsagePercent))
                             .foregroundStyle(color)
@@ -125,12 +158,22 @@ struct DeviceResourceHistoryView: View {
             .frame(height: 150)
             .accessibilityLabel(cpu ? "CPU 历史使用率" : "内存历史使用率")
             if let selected {
-                Text(selected.date.formatted(date: range == .week ? .numeric : .omitted, time: .shortened)
-                     + String(format: " · 平均 %.1f%% · 峰值 %.1f%%", cpu ? selected.cpuUsagePercent : selected.memoryUsagePercent,
-                              cpu ? selected.cpuMaxPercent : selected.memoryMaxPercent))
+                Text(intervalLabel(history.interval(for: selected))
+                     + String(format: " · 分段平均 %.1f%%", cpu ? selected.cpuUsagePercent : selected.memoryUsagePercent))
                     .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                Text("该时段共 \(selected.sampleCount) 次有效采样")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func intervalLabel(_ interval: DateInterval) -> String {
+        let includesDate = [.day, .week].contains(range)
+            || !Calendar.current.isDate(interval.start, inSameDayAs: interval.end)
+        let dateStyle: Date.FormatStyle.DateStyle = includesDate ? .numeric : .omitted
+        let start = interval.start.formatted(date: dateStyle, time: .standard)
+        if interval.duration == 0 { return start + "（当前采样）" }
+        return start + " – " + interval.end.formatted(date: dateStyle, time: .standard)
     }
 
     private func segmentID(_ history: DeviceResourceHistory, index: Int) -> Int64 {

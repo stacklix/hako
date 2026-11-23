@@ -34,7 +34,7 @@ struct HakoShortcutsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         LabeledContent(name, value: step?.status.rawValue ?? (displayedRun == nil ? "待执行" : "本次未执行"))
                         if step?.status == .running, let event = step?.events?.last {
-                            Text(event.stage + " · " + event.state.rawValue)
+                            Text(event.stageTitle + " · " + event.state.rawValue)
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -46,7 +46,7 @@ struct HakoShortcutsView: View {
             Section {
                 HakoShortcutRunControl()
             } header: { Text("同步 Hako 数据") } footer: {
-                Text("执行全部同步子任务，结果保存在执行历史中。App 内手动执行投资备份不受星期限制。")
+                Text("按各子任务的执行计划同步，结果保存在执行历史中。需要立即备份时，请在投资备份设置中单独执行。")
             }
             if let issue = history.storageIssue {
                 Section { Text(issue).font(.footnote).foregroundStyle(.secondary) }
@@ -75,7 +75,7 @@ private struct HakoShortcutProgressView: View {
 
     var body: some View {
         let completed = run.steps.filter { $0.status != .running && $0.status != .pending }.count
-        let active = run.steps.first { $0.status == .running }
+        let active = run.steps.filter { $0.status == .running }
         VStack(alignment: .leading, spacing: 12) {
             LabeledContent(run.name, value: run.status.rawValue)
             if !run.steps.isEmpty {
@@ -85,10 +85,15 @@ private struct HakoShortcutProgressView: View {
                 }
             }
             if run.status == .running {
-                Text(active?.name ?? "正在准备子任务…").font(.subheadline.weight(.medium))
-                if let event = active?.events?.last {
-                    Text(event.stage + " · " + event.state.rawValue)
-                        .font(.caption).foregroundStyle(.secondary)
+                if active.isEmpty { Text("正在准备子任务…").font(.subheadline.weight(.medium)) }
+                ForEach(active) { step in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(step.name).font(.subheadline.weight(.medium))
+                        if let event = step.events?.last {
+                            Text(event.stageTitle + " · " + event.state.rawValue)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
         }
@@ -168,7 +173,7 @@ private struct HakoShortcutRunView: View {
                     Section {
                         HakoShortcutRetryButton(history: history, runID: runID)
                     } footer: {
-                        Text("仅重新执行失败、取消或中断的子任务；成功和按计划跳过的子任务不重试。手动重试不受自动执行日期限制。")
+                        Text("仅重新执行失败、取消或中断的子任务；成功和按计划跳过的子任务不重试。重试仍遵守各子任务的执行计划。")
                     }
                 }
                 if !run.steps.isEmpty {
@@ -208,7 +213,7 @@ private struct HakoShortcutStepView: View {
         List {
             if let step {
                 let rows = HakoExecutionLogRow.merging(step.events ?? [])
-                let keySteps = rows.filter { !$0.isDiagnostic }
+                let keySteps = HakoExecutionLogItem.grouping(rows)
                 let diagnostics = rows.filter(\.isDiagnostic)
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
@@ -221,6 +226,15 @@ private struct HakoShortcutStepView: View {
                         if let start = step.startedAt {
                             Text(start, format: .dateTime.month().day().hour().minute().second())
                                 .font(.caption).foregroundStyle(.secondary)
+                            if step.status == .running {
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    Text(totalDuration(step, at: context.date))
+                                }
+                                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            } else {
+                                Text(totalDuration(step, at: .now))
+                                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -228,8 +242,8 @@ private struct HakoShortcutStepView: View {
                 }
                 Section("关键步骤") {
                     if !keySteps.isEmpty {
-                        ForEach(keySteps) { row in
-                            HakoShortcutEventRow(row: row, running: step.status == .running)
+                        ForEach(keySteps) { item in
+                            HakoShortcutEventRow(row: item.row, running: step.status == .running, children: item.children)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -277,6 +291,15 @@ private struct HakoShortcutStepView: View {
         }
     }
 
+    // Use the whole child's wall time; its nested operations may overlap.
+    // startedAt/finishedAt belong to the current attempt, excluding time waiting for a retry.
+    private func totalDuration(_ step: HakoShortcutRun.Step, at now: Date) -> String {
+        guard let start = step.startedAt,
+              let end = step.finishedAt ?? (step.status == .running ? now : nil) else { return "总耗时：未记录" }
+        return (step.status == .running ? "已耗时：" : "总耗时：")
+            + String(format: "%.2f 秒", max(0, end.timeIntervalSince(start)))
+    }
+
     private func statusSymbol(_ status: HakoShortcutRun.Status) -> String {
         switch status {
         case .succeeded: "checkmark.circle.fill"
@@ -294,10 +317,16 @@ private struct HakoShortcutStepView: View {
             let end = row.finishedAt?.formatted(date: .numeric, time: .standard) ?? "未记录"
             let result = row.state == .started && step.status == .running ? "执行中" : row.state.rawValue
             let duration = row.finishedAt == nil && step.status != .running ? "—" : row.elapsed(at: .now)
-            return "\(row.stage)\n结果：\(result)\n开始时间：\(start)\n结束时间：\(end)\n耗时：\(duration)\n\(row.detail)"
+            let branch = row.parallelBranch.map { "\n并行分支：" + $0 } ?? ""
+            return "\(row.stageTitle)\(branch)\n结果：\(result)\n开始时间：\(start)\n结束时间：\(end)\n耗时：\(duration)\n\(row.detail)"
         }
-        return (["\(name)：\(step.status.rawValue)", step.message ?? "", "关键步骤"]
-            + rows.filter { !$0.isDiagnostic }.map(format)
+        func formatItem(_ item: HakoExecutionLogItem, depth: Int = 0) -> String {
+            let prefix = String(repeating: "  ", count: depth)
+            let text = format(item.row).components(separatedBy: "\n").map { prefix + $0 }.joined(separator: "\n")
+            return ([text] + item.children.map { formatItem($0, depth: depth + 1) }).joined(separator: "\n")
+        }
+        return (["\(name)：\(step.status.rawValue)", step.message ?? "", totalDuration(step, at: .now), "关键步骤"]
+            + HakoExecutionLogItem.grouping(rows).map { formatItem($0) }
             + ["诊断信息"] + rows.filter(\.isDiagnostic).map(format)).joined(separator: "\n")
     }
 }
@@ -305,13 +334,36 @@ private struct HakoShortcutStepView: View {
 private struct HakoShortcutEventRow: View {
     let row: HakoExecutionLogRow
     let running: Bool
+    var children: [HakoExecutionLogItem] = []
+    var showsParallelBadge = true
+    var expansion: Binding<Bool>?
+    @State private var expanded = false
+    @State private var expandedChildID: UUID?
 
     var body: some View {
-        DisclosureGroup {
+        DisclosureGroup(isExpanded: expansion ?? $expanded) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("开始：" + (row.startedAt?.formatted(date: .abbreviated, time: .standard) ?? "未记录"))
                 Text("结束：" + (row.finishedAt?.formatted(date: .abbreviated, time: .standard) ?? "未记录"))
-                if !row.detail.isEmpty { Text(row.detail).textSelection(.enabled) }
+                if row.plannedBranches == nil {
+                    if let branch = row.parallelBranch { Text("并行分支：" + branch) }
+                    if !row.detail.isEmpty { Text(row.detail).textSelection(.enabled) }
+                } else if [.failed, .cancelled].contains(row.state), !row.detail.isEmpty {
+                    Text(row.detail).textSelection(.enabled)
+                }
+                if row.plannedBranches != nil {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
+                            if index > 0 { Divider() }
+                            AnyView(HakoShortcutEventRow(row: child.row, running: running, children: child.children,
+                                                        showsParallelBadge: false, expansion: childExpansion(child.id)))
+                        }
+                    }
+                    .padding(.leading, 12)
+                    .overlay(alignment: .leading) { Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1) }
+                    .padding(.vertical, 8)
+                    Text("计划耗时按整体起止时间计算，各分支耗时不相加。")
+                }
             }
             .font(.caption).monospacedDigit().foregroundStyle(.secondary)
         } label: {
@@ -319,8 +371,20 @@ private struct HakoShortcutEventRow: View {
                 Image(systemName: symbol).foregroundStyle(tint).font(.subheadline)
                     .frame(width: 18).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(row.stage).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                    if !row.detail.isEmpty && row.detail != "执行成功。" {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(row.stageTitle).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                        if showsParallelBadge && (row.parallelBranch != nil || (row.plannedBranches ?? 0) > 1) {
+                            Text("并行").font(.caption2.weight(.medium))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                .background(Color.accentColor.opacity(0.1), in: Capsule())
+                        }
+                    }
+                    if let planned = row.plannedBranches {
+                        let completed = HakoExecutionLogItem(row: row, children: children).completedBranches
+                        Text("\(completed) / \(planned) 个分支已完成" + (row.detail.components(separatedBy: "\n").first.map { " · " + $0 } ?? ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if !row.detail.isEmpty && row.detail != "执行成功。" {
                         Text(row.detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     }
                     if row.state != .info {
@@ -333,6 +397,19 @@ private struct HakoShortcutEventRow: View {
                 }
             }
             .padding(.vertical, 3)
+        }
+        .disclosureGroupStyle(HakoShortcutLogDisclosureStyle())
+    }
+
+    private func childExpansion(_ id: UUID) -> Binding<Bool> {
+        Binding {
+            expandedChildID == id
+        } set: { isExpanded in
+            if isExpanded {
+                expandedChildID = id
+            } else if expandedChildID == id {
+                expandedChildID = nil
+            }
         }
     }
 
@@ -353,6 +430,40 @@ private struct HakoShortcutEventRow: View {
         let duration = row.finishedAt == nil && !running ? "—" : row.elapsed(at: now)
         return Text(result + (duration == "—" ? "" : " · " + duration))
         .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+    }
+}
+
+// Keep nested log details in a top-aligned layout instead of List's native
+// disclosure transition, which can reposition the containing plan row.
+private struct HakoShortcutLogDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { configuration.isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 12) {
+                    configuration.label.frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "已展开" : "已收起")
+            if configuration.isExpanded {
+                configuration.content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .transaction { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
     }
 }
 

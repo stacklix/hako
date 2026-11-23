@@ -48,7 +48,8 @@ func investmentRoundedDecimal(value string, exchangeRate bool) string {
 
 func normalizeInvestmentNumbers(row investmentRow) {
 	for column, value := range row {
-		if strings.Contains(investmentNumberFields, " "+column+" ") {
+		// Preserve traded units exactly; currency rounding changes the trade itself.
+		if column != "quantity" && strings.Contains(investmentNumberFields, " "+column+" ") {
 			row[column] = investmentRoundedDecimal(value, column == "rate")
 		}
 	}

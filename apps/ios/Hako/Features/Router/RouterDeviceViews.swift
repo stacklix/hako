@@ -54,6 +54,9 @@ struct RouterDevicesContent: View {
                 Text("禁用 \(store.snapshot?.blockedDevices.count ?? 0)").tag(2)
             }.pickerStyle(.segmented)
             HStack { Text("接入设备").font(.headline); Spacer(); Button("绑定管理") { open(.bindings) }.font(.footnote) }
+            if let error = store.deviceSpeedError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
             RouterPanel {
                 ForEach(devices) { device in
                     RouterDeviceRow(device: device, bound: store.snapshot?.bindings.contains { $0.mac == device.mac } == true) { open(.device(device.mac)) }

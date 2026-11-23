@@ -70,7 +70,7 @@ struct InvestmentDataBackupSettings: View {
     private func execute() async {
         running = true
         defer { running = false; report = AppServices.dataBackup().latestReport(applicationID: InvestmentBackup.applicationID) }
-        do { message = try await HakoShortcutRegistry.run(InvestmentBackup.shortcutName, names: [InvestmentBackup.shortcutName], manual: true) }
+        do { message = try await HakoShortcutRegistry.run(InvestmentBackup.shortcutName, names: [InvestmentBackup.shortcutName], manual: true, ignoresSchedule: true) }
         catch { message = error.localizedDescription }
     }
 }

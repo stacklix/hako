@@ -6,11 +6,16 @@ enum AppServices {
 }
 
 private final class AssetMockProtocol: URLProtocol, @unchecked Sendable {
+    struct Response { let status: Int; let body: Any }
     static let lock=NSLock()
     static var handler: ((URLRequest) throws -> Any)!
     static var requests:[URLRequest]=[]
+    static var holding = false
+    static var held: [AssetMockProtocol] = []
+    static var peakHeld = 0
+    private var stopped = false
     static func configure(_ handler:@escaping (URLRequest) throws -> Any) {
-        lock.lock();defer { lock.unlock() };Self.handler=handler;requests=[]
+        lock.lock();defer { lock.unlock() };Self.handler=handler;requests=[];holding=false;held=[];peakHeld=0
     }
     static func paths(_ path:String) -> [URLRequest] {
         lock.lock();defer { lock.unlock() };return requests.filter { $0.url!.path == path }
@@ -18,15 +23,38 @@ private final class AssetMockProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        Self.lock.lock();let handler=Self.handler!;Self.requests.append(request);Self.lock.unlock()
+        Self.lock.lock(); Self.requests.append(request)
+        if Self.holding {
+            Self.held.append(self); Self.peakHeld = max(Self.peakHeld, Self.held.count)
+            Self.lock.unlock(); return
+        }
+        Self.lock.unlock()
+        respond()
+    }
+    private func respond() {
+        Self.lock.lock(); let handler = Self.handler!; let stopped = stopped; Self.lock.unlock()
+        guard !stopped else { return }
         do {
             let object=try handler(request)
-            client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
-            client?.urlProtocol(self,didLoad:try (object as? Data) ?? JSONSerialization.data(withJSONObject:object))
+            let response = object as? Response
+            let body = response?.body ?? object
+            client?.urlProtocol(self,didReceive:HTTPURLResponse(url:request.url!,statusCode:response?.status ?? 200,httpVersion:nil,headerFields:nil)!,cacheStoragePolicy:.notAllowed)
+            client?.urlProtocol(self,didLoad:try (body as? Data) ?? JSONSerialization.data(withJSONObject:body))
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self,didFailWithError:error) }
     }
-    override func stopLoading() {}
+    override func stopLoading() {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        stopped = true; Self.held.removeAll { $0 === self }
+    }
+    static func holdResponses() { lock.lock(); holding = true; lock.unlock() }
+    static var heldPaths: [String] {
+        lock.lock(); defer { lock.unlock() }; return held.map { $0.request.url!.path }
+    }
+    static func releaseOne() {
+        lock.lock(); let next = held.isEmpty ? nil : held.removeFirst(); lock.unlock()
+        next?.respond()
+    }
 }
 
 private final class AssetRepository: GitHubRepositoryAccess {
@@ -166,8 +194,8 @@ private final class AssetRepository: GitHubRepositoryAccess {
             await store.collect(force:true)
         }
         let collectionRows = HakoExecutionLogRow.merging(collectionEvents)
-        precondition(collectionRows.contains { $0.stage == "读取 HTX 总资产" && $0.state == .succeeded })
-        precondition(collectionRows.contains { $0.stage == "读取 Binance 资产" && $0.detail.contains("1 个账户") })
+        precondition(collectionRows.contains { $0.stageTitle == "读取 HTX 总资产" && $0.state == .succeeded && $0.parallelBranch == "HTX 总资产" })
+        precondition(collectionRows.contains { $0.stageTitle == "读取 Binance 资产" && $0.detail.contains("1 个账户") && $0.parallelBranch == "Binance 资产" })
         precondition(collectionRows.contains { $0.stage == "保存当日资产快照" && $0.state == .succeeded })
         precondition(!collectionEvents.contains { $0.detail.contains(htx.key) || $0.detail.contains(htx.secret) })
         let htxDetails = store.htxSnapshot!
@@ -638,10 +666,28 @@ private final class AssetRepository: GitHubRepositoryAccess {
         precondition(shortcutPaths.contains("data/crypto/portfolio/2026.csv") && shortcutPaths.contains("data/crypto/htx-trx/2026.csv"),
                      "The shortcut did not upload both portfolio and contract records")
         let shortcutRows = HakoExecutionLogRow.merging(shortcutEvents)
-        precondition(shortcutRows.contains { $0.stage == "采集交易所与链上资产" && $0.state == .succeeded })
-        precondition(shortcutRows.firstIndex { $0.stage == "读取 HTX 总资产" }! < shortcutRows.firstIndex { $0.stage == "同步最新资产记录" }!)
+        let interfaceRows = shortcutRows.filter(\.isAssetRequest)
+        precondition(interfaceRows.count == AssetMockProtocol.requests.count, "An actual HTTP call is absent from shortcut history")
+        precondition(interfaceRows.allSatisfy { $0.startedAt != nil && $0.finishedAt != nil && $0.state == .succeeded })
+        precondition(interfaceRows.contains { $0.stageTitle.contains("GET api.huobi.pro/v2/account/valuation") })
+        precondition(interfaceRows.contains { $0.stageTitle.contains("/accounts/:id/balance") })
+        precondition(!interfaceRows.contains { ($0.stage + $0.detail).contains(wallet.address) })
+        precondition(!interfaceRows.contains { ($0.stage + $0.detail).contains("Signature=") || ($0.stage + $0.detail).contains(htx.key) })
+        precondition(shortcutRows.contains { $0.stageTitle == "资产采集计划" && $0.state == .succeeded })
+        for label in ["合约", "总资产"] {
+            precondition(shortcutRows.contains { $0.stage == "读取 GitHub \(label)目录" && $0.state == .succeeded },
+                         "Archive directory reads did not report real operation progress")
+        }
+        precondition(shortcutRows.firstIndex { $0.stageTitle == "读取 HTX 总资产" }! < shortcutRows.firstIndex { $0.stage == "同步最新资产记录" }!)
         configure(total:901)
-        _ = try await shortcutStore.collectAndSynchronize()
+        var secondSyncEvents: [HakoExecutionEvent] = []
+        _ = try await HakoExecutionDiagnostics.context.withValue({ secondSyncEvents.append($0) }) {
+            try await shortcutStore.collectAndSynchronize()
+        }
+        for label in ["合约", "总资产"] {
+            precondition(secondSyncEvents.contains { $0.stage == "读取 GitHub \(label)年度文件 · 2026.csv" && $0.state == .succeeded },
+                         "Annual archive reads did not report real operation progress")
+        }
         precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1 && shortcutStore.portfolio.last?.values["total"] == 952,
                      "A fresh balance cache incorrectly prevented shortcut collection")
 
@@ -664,6 +710,66 @@ private final class AssetRepository: GitHubRepositoryAccess {
         configure(total:1200)
         _ = try await shortcutStore.collectAndSynchronize()
         precondition(shortcutStore.pendingCount == 0 && shortcutStore.portfolio.last?.values["total"] == 1251)
+
+        // Withhold responses rather than using timing assumptions: four independent
+        // branches must reach HTTP before any response is released. The fifth waits.
+        for cancelBatch in [false, true] {
+            configure(total:1200)
+            let parallelRepository = AssetRepository()
+            let parallelFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(parallelRepository.storageScope) + ".json")
+            try JSONEncoder().encode(shortcutStore.cache).write(to:parallelFile)
+            let parallelStore = CryptoStore(repositoryProvider:{parallelRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+                loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[wallet]},cacheDirectory:directory,nowProvider:{now})
+            AssetMockProtocol.holdResponses()
+            var events: [HakoExecutionEvent] = []
+            var ended = false
+            let batch = Task { @MainActor in
+                defer { ended = true }
+                return try await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
+                    try await parallelStore.collectAndSynchronize()
+                }
+            }
+            let deadline = ContinuousClock.now.advanced(by:.seconds(15))
+            while AssetMockProtocol.heldPaths.count < 4 {
+                precondition(ContinuousClock.now < deadline, "Independent asset sources did not start concurrently")
+                await Task.yield()
+            }
+            precondition(AssetMockProtocol.heldPaths.count == 4 && !ended)
+            let activePlan = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(events)).first { $0.row.plannedBranches != nil }!
+            precondition(activePlan.row.state == .started && activePlan.row.plannedBranches == 5 && activePlan.completedBranches == 0)
+            precondition(activePlan.children.count == 4 && !activePlan.children.contains { $0.row.isDiagnostic })
+            precondition(!AssetMockProtocol.heldPaths.contains { $0.contains(wallet.address) }, "A fifth branch bypassed the concurrency bound")
+            if cancelBatch {
+                batch.cancel()
+                do { _ = try await batch.value; preconditionFailure("Cancelled HTTP collection succeeded") }
+                catch is CancellationError {}
+                precondition(AssetMockProtocol.heldPaths.isEmpty && parallelRepository.commits.isEmpty && !parallelStore.busy)
+                let cancelledRows = HakoExecutionLogRow.merging(events).filter(\.isAssetRequest)
+                precondition(cancelledRows.count == 4 && cancelledRows.allSatisfy { $0.state == .cancelled })
+                let plan = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(events)).first { $0.row.plannedBranches != nil }!
+                precondition(plan.row.state == .cancelled && plan.completedBranches == 4)
+            } else {
+                while !ended {
+                    precondition(ContinuousClock.now < deadline, "Parallel collection stopped making progress")
+                    AssetMockProtocol.releaseOne()
+                    await Task.yield()
+                }
+                _ = try await batch.value
+                precondition(AssetMockProtocol.peakHeld == 4, "Collection exceeded its concurrency bound")
+                precondition(parallelStore.portfolio.last?.values["total"] == 1251 && parallelStore.walletSnapshot(wallet)?.total == 1,
+                             "Concurrent cache writes lost one source's result")
+                let rows = HakoExecutionLogRow.merging(events)
+                let branches = Set(rows.filter(\.isAssetRequest).compactMap(\.parallelBranch))
+                precondition(branches == ["HTX 总资产", "TRX 合约", "HTX 分账户", "Binance 资产", "链上钱包 1"])
+                precondition(rows.filter(\.isAssetRequest).count == AssetMockProtocol.requests.count)
+                let items = HakoExecutionLogItem.grouping(rows)
+                let plan = items.first { $0.row.plannedBranches != nil }!
+                precondition(plan.row.state == .succeeded && plan.completedBranches == 5 && plan.children.count == 5)
+                precondition(!items.contains { $0.row.parallelBranch != nil }, "Collection branches are duplicated outside their plan")
+                precondition(plan.children.allSatisfy { !$0.row.isAssetRequest && $0.row.finishedAt != nil })
+            }
+        }
+        try await checkRequestDiagnostics(client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)))
 
         let emptyRepository = AssetRepository()
         let emptyFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(emptyRepository.storageScope) + ".json")
@@ -688,5 +794,43 @@ private final class AssetRepository: GitHubRepositoryAccess {
         catch is CancellationError { }
         precondition(AssetMockProtocol.requests.isEmpty && cancelledRepository.commits.isEmpty && !cancelledStore.busy)
         print("Crypto store: fresh shortcut collection, both archives, cache-only manual sync, partial failures, upload recovery and cancellation passed")
+    }
+
+    @MainActor private static func checkRequestDiagnostics(client: CryptoClient) async throws {
+        let address = "0x" + String(repeating:"a",count:40)
+        var request = URLRequest(url:URL(string:"https://example.test/api/wallets/\(address)/tokens?signature=private-signature&address=\(address)")!)
+        request.setValue("private-api-key",forHTTPHeaderField:"X-API-Key")
+        for mode in 0..<7 {
+            AssetMockProtocol.configure { _ in
+                switch mode {
+                case 0: return ["balance":"do-not-print-balances"]
+                case 1: return AssetMockProtocol.Response(status:503,body:["error":"private-api-key"])
+                case 2: throw URLError(.timedOut)
+                case 3: throw URLError(.cancelled)
+                case 4: return Data("invalid-json".utf8)
+                case 5: throw HakoError(message:"private-api-key private-signature")
+                default: return Data()
+                }
+            }
+            var events: [HakoExecutionEvent] = []
+            do {
+                _ = try await HakoExecutionDiagnostics.parallel.withValue("测试分支") {
+                    try await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
+                        try await client.json(request,secrets:["private-api-key","private-signature"],allowEmptyResponse:mode == 6)
+                    }
+                }
+                precondition(mode == 0 || mode == 6)
+            } catch { precondition((1...5).contains(mode)) }
+            precondition(events.count == 2 && events[0].id == events[1].id && AssetMockProtocol.requests.count == 1)
+            let row = HakoExecutionLogRow.merging(events).first!
+            precondition(row.isAssetRequest && row.isDiagnostic && row.parallelBranch == "测试分支")
+            precondition(row.stageTitle == "资产接口 GET example.test/api/wallets/:address/tokens")
+            precondition(row.state == (mode == 0 || mode == 6 ? .succeeded : .failed), "A cancelled transport was confused with whole-task cancellation")
+            let text = row.stage + row.detail
+            precondition(![address,"private-api-key","private-signature","do-not-print-balances"].contains { text.contains($0) })
+            if mode == 1 { precondition(row.detail.contains("503")) }
+            if mode == 2 { precondition(row.detail.contains("-1001")) }
+            precondition(row.startedAt != nil && row.finishedAt != nil && !Task.isCancelled)
+        }
     }
 }

@@ -505,8 +505,12 @@ struct InvestmentAgentAction: Codable {
     private func number(_ key: String) throws -> Decimal? {
         guard let value = text(key) else { return nil }
         guard value.range(of: #"^-?[0-9]{1,18}(\.[0-9]{1,18})?$"#, options: .regularExpression) != nil,
-              let number = Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")), !number.isNaN else {
+              let number = InvestmentPrecision.exactInput(value) else {
             throw missing(fields.first { $0.key == key }?.label ?? key)
+        }
+        if ["amount", "price", "fee", "margin", "settled_amount", "counterpart_amount", "received"].contains(key),
+           !(kind == .spotBalance && key == "amount") {
+            try InvestmentPrecision.validateInput(number, field: fields.first { $0.key == key }?.label ?? key)
         }
         return number
     }

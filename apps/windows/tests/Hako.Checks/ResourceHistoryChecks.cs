@@ -58,7 +58,7 @@ internal static class ResourceHistoryChecks
             var restored = (ResourceHistoryResult)(await restarted.QueryAsync(JsonSerializer.SerializeToElement(new { }), default))!;
             if (restored.Points.Sum(point => point.SampleCount) != 3 || new FileInfo(active).Length % 24 != 0)
                 throw new Exception("Restart or partial-record recovery failed");
-            foreach (var json in new[] { "{\"rangeSeconds\":1}", "{\"rangeSeconds\":\"x\"}", "{\"unknown\":1}" })
+            foreach (var json in new[] { "{\"rangeSeconds\":1}", "{\"rangeSeconds\":1801}", "{\"rangeSeconds\":\"x\"}", "{\"unknown\":1}" })
             {
                 try { await history.QueryAsync(JsonDocument.Parse(json).RootElement, default); throw new Exception("Invalid history params accepted"); }
                 catch (AgentActionException error) when (error.Code == "invalid_params") { }
@@ -92,6 +92,8 @@ internal static class ResourceHistoryChecks
                 throw new Exception("Retry did not persist the retained sample exactly once");
 
             await SharedSamplingAsync(Path.Combine(directory, "shared"), now);
+            await FiveSecondAveragesAsync(Path.Combine(directory, "rolling"), now);
+            await ShortRangesAsync(Path.Combine(directory, "short"), now);
 
             // Real background sampling runs once per second independently of queries or a server connection.
             var live = new ResourceHistory(Path.Combine(directory, "live"));
@@ -111,6 +113,69 @@ internal static class ResourceHistoryChecks
             Console.WriteLine("PASS: one-second shared sampling, memory/disk merge, batched writes, failed-flush retry, shutdown, retention, peaks and cancellation");
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
+    private static async Task ShortRangesAsync(string directory, DateTimeOffset now)
+    {
+        var history = new ResourceHistory(directory, () => now);
+        foreach (var offset in new long[] { -1800001, -1800000, -900001, -900000, -1, 0, 1000 })
+            await history.AppendAsync(new(now.ToUnixTimeMilliseconds() + offset, 50, 60), default);
+        foreach (var (range, bucket, samples) in new[] { (900, 4, 3), (1800, 8, 5) })
+        {
+            var result = (ResourceHistoryResult)(await history.QueryAsync(JsonSerializer.SerializeToElement(new { rangeSeconds = range }), default))!;
+            if (result.To - result.From != range * 1000L || result.BucketSeconds != bucket
+                || result.Points.Sum(point => point.SampleCount) != samples || result.Points.Length > 240
+                || result.Points.Any(point => point.Timestamp < result.From || point.Timestamp > result.To))
+                throw new Exception("Short history range boundaries, warmup exclusion or bucket resolution are incorrect");
+        }
+    }
+
+    private static async Task FiveSecondAveragesAsync(string directory, DateTimeOffset now)
+    {
+        async Task<ResourceHistoryResult> Read(ResourceHistory history) => (ResourceHistoryResult)(await history.QueryAsync(
+            JsonSerializer.SerializeToElement(new { rangeSeconds = 3600 }), default))!;
+        var start = now.AddSeconds(-300).ToUnixTimeMilliseconds();
+        var spike = new ResourceHistory(Path.Combine(directory, "spike"), () => now);
+        for (int second = -4; second < 15; second++)
+        {
+            await spike.AppendAsync(new(start + second * 1000, second == 5 ? 100 : 0, second == 5 ? 90 : 40), default);
+            if (second == 2) await spike.FlushAsync(default);
+        }
+        var spikePoint = (await Read(spike)).Points.Single(point => point.Timestamp == start);
+        if (spikePoint.SampleCount != 15 || Math.Abs(spikePoint.CpuUsagePercent - 100.0 / 15) > 0.0001
+            || spikePoint.CpuMaxPercent != 100 || spikePoint.CpuSmoothedMaxPercent != 20 || spikePoint.MemorySmoothedMaxPercent != 50)
+            throw new Exception("A one-second spike was not averaged over five seconds across disk and memory samples");
+
+        var sustained = new ResourceHistory(Path.Combine(directory, "sustained"), () => now);
+        // Reverse insertion must not alter time-based sliding windows.
+        for (int second = 14; second >= -4; second--)
+            await sustained.AppendAsync(new(start + second * 1000, second is >= 5 and <= 9 ? 100 : 0, 50), default);
+        if ((await Read(sustained)).Points.Single(point => point.Timestamp == start).CpuSmoothedMaxPercent != 100)
+            throw new Exception("Five seconds of sustained load was incorrectly suppressed");
+
+        var boundary = new ResourceHistory(Path.Combine(directory, "boundary"), () => now);
+        var from = now.AddHours(-1).ToUnixTimeMilliseconds();
+        for (int second = -5; second < 0; second++)
+            await boundary.AppendAsync(new(from + second * 1000, 100, 50), default);
+        await boundary.AppendAsync(new(from, 0, 0), default);
+        var boundaryPoint = (await Read(boundary)).Points.Single();
+        if (boundaryPoint.SampleCount != 1 || boundaryPoint.CpuUsagePercent != 0 || boundaryPoint.CpuMaxPercent != 0
+            || boundaryPoint.CpuSmoothedMaxPercent != 80 || boundaryPoint.MemorySmoothedMaxPercent != 40)
+            throw new Exception("A window at the query boundary lost its lookback or counted warmup samples in the displayed averages");
+
+        var gap = new ResourceHistory(Path.Combine(directory, "gap"), () => now);
+        await gap.AppendAsync(new(start - 6000, 100, 100), default);
+        await gap.AppendAsync(new(start, 0, 0), default);
+        var gapPoint = (await Read(gap)).Points.Single(point => point.Timestamp == start);
+        if (gapPoint.CpuSmoothedMaxPercent != 0 || gapPoint.MemorySmoothedMaxPercent != 0)
+            throw new Exception("A five-second window included stale samples across a sampling gap");
+
+        var full = new ResourceHistory(Path.Combine(directory, "full"), () => now);
+        for (int bucket = 0; bucket < 240; bucket++)
+            await full.AppendAsync(new(from + bucket * 15000 + 100, Math.PI * 10, Math.E * 10), default);
+        var fullResult = await Read(full);
+        if (fullResult.Points.Length != 240 || JsonSerializer.SerializeToUtf8Bytes(fullResult, AgentConnection.Json).Length > 60000)
+            throw new Exception("Full-precision rolling history exceeded the device message budget");
     }
 
     private static async Task SharedSamplingAsync(string directory, DateTimeOffset now)

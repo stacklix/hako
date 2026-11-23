@@ -30,6 +30,8 @@ struct InvestmentMarketDataTests {
         try await cryptoChartHistoryUsesDirectDollarPricesWhenUnavailable()
 
         try await referenceRates()
+        try await quoteRequestDiagnostics()
+        try await paginatedQuoteProgress()
         print("Investment market data checks passed")
     }
 
@@ -314,5 +316,78 @@ struct InvestmentMarketDataTests {
 
     static func response(_ request: URLRequest, _ text: String) -> (Data, URLResponse) {
         (Data(text.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+extension InvestmentMarketDataTests {
+    @MainActor static func quoteRequestDiagnostics() async throws {
+        var events: [HakoExecutionEvent] = []
+        var calls = 0
+        let credential = "fixture-secret-quote"
+        let provider = InvestmentQuoteProvider { request, _ in
+            calls += 1
+            switch request.url!.path {
+            case "/timeout": throw URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: credential])
+            case "/transport-cancel": throw URLError(.cancelled)
+            case "/cancel": throw CancellationError()
+            case "/parent-cancel":
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw URLError(.cancelled)
+            default:
+                return (Data("ok".utf8), HTTPURLResponse(url: request.url!, statusCode: request.url!.path == "/busy" ? 503 : 200,
+                                                        httpVersion: nil, headerFields: nil)!)
+            }
+        }
+        await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
+            for path in ["/ok", "/busy", "/timeout", "/transport-cancel", "/cancel"] {
+                var request = URLRequest(url: URL(string: "https://api.example.test" + path + "?apikey=" + credential)!, timeoutInterval: 15)
+                request.httpBody = Data(credential.utf8)
+                request.setValue(credential, forHTTPHeaderField: "Authorization")
+                do { _ = try await provider.send(request, [credential]) }
+                catch {
+                    precondition(path != "/ok" && path != "/busy", "Unexpected transport error")
+                    if path == "/timeout" { precondition((error as? URLError)?.code == .timedOut) }
+                    if path == "/transport-cancel" { precondition((error as? URLError)?.code == .cancelled) }
+                    if path == "/cancel" { precondition(error is CancellationError) }
+                }
+            }
+            let cancelled = Task { @MainActor in
+                try await provider.send(URLRequest(url: URL(string: "https://api.example.test/parent-cancel")!), [])
+            }
+            do { _ = try await cancelled.value; preconditionFailure("Parent cancellation lost") }
+            catch { precondition((error as? URLError)?.code == .cancelled) }
+        }
+        precondition(calls == 6, "Diagnostics must never repeat a request")
+        let rows = HakoExecutionLogRow.merging(events)
+        precondition(rows.count == 6 && rows.allSatisfy { $0.startedAt != nil && $0.finishedAt != nil && $0.isDiagnostic })
+        precondition(rows.map(\.state) == [.succeeded, .failed, .failed, .failed, .cancelled, .cancelled])
+        precondition(rows[1].detail.contains("HTTP 503") && rows[2].detail.contains("网络请求超时"))
+        precondition(rows[0].detail.contains("请求时限：15 秒"))
+        precondition(!events.contains { ($0.stage + $0.detail).contains(credential) || $0.stage.contains("?") })
+        let quote = InvestmentQuote(day: day(1), price: 10, source: "fixture")
+        let summary = InvestmentQuoteProvider.quoteSummary([quote])
+        precondition(summary.contains("1 条报价") && summary.contains("fixture"))
+        precondition(InvestmentQuoteProvider.quoteSummary([]).contains("未取得"))
+    }
+
+    @MainActor static func paginatedQuoteProgress() async throws {
+        var events: [HakoExecutionEvent] = []
+        var calls = 0
+        let provider = InvestmentQuoteProvider { request, _ in
+            calls += 1
+            // A previous page must report completion before the next one starts.
+            precondition(events.filter { $0.stage.hasPrefix("行情请求 ") && $0.state == .succeeded }.count == calls - 1)
+            return (Data(#"{"candles":[]}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        try await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
+            _ = try await HakoExecutionDiagnostics.measure("历史行情分页") {
+                try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: day(1), through: InvestmentBook.addDays(109, to: day(1)))
+            }
+        }
+        precondition(calls == 3)
+        precondition(events.first?.state == .started && events.last?.state == .succeeded)
+        let rows = HakoExecutionLogRow.merging(events)
+        precondition(rows.count == 4 && rows.allSatisfy { $0.finishedAt != nil })
+        precondition(rows.dropFirst().allSatisfy { $0.stage.contains("api.coinbase.com") })
     }
 }

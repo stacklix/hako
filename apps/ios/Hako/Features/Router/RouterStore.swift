@@ -26,11 +26,17 @@ enum RouterCredentials {
     @Published private(set) var errors: [RouterResource: String] = [:]
     @Published private(set) var resourceDates: [RouterResource: Date] = [:]
     @Published private(set) var freshResources = Set<RouterResource>()
+    @Published private(set) var deviceSpeedError: String?
     @Published private(set) var revision = UUID()
     @Published var message: String?
     private var client: (any RouterAccess)?
     private var loaded = false
     private var pendingResource: RouterResource?
+    private var readingSpeeds = false
+    private enum SpeedResult {
+        case wan(RouterJSON)
+        case devices(RouterSnapshot)
+    }
 
     init(client: (any RouterAccess)? = nil) { self.client = client; loaded = client != nil }
     private static func makeClient(_ connection: RouterConnection) throws -> RouterClient {
@@ -68,6 +74,7 @@ enum RouterCredentials {
         route = await next.currentRoute()
         client = next; connection = value; self.snapshot = snapshot
         resources = [:]; errors = [:]; resourceDates = [:]; freshResources = []
+        deviceSpeedError = nil
         updated = .now; fresh = true; message = nil; revision = UUID()
     }
 
@@ -77,14 +84,18 @@ enum RouterCredentials {
         route = nil
         client = nil; connection = nil; snapshot = nil; updated = nil; fresh = false; message = nil
         resources = [:]; errors = [:]; resourceDates = [:]; freshResources = []; revision = UUID()
+        deviceSpeedError = nil
     }
 
     func refresh(_ requested: [RouterResource] = []) async {
         guard let client, !busy else { return }
         busy = true; defer { busy = false }
         do {
-            snapshot = try await client.read(); updated = .now; fresh = true
+            let value = try await client.read()
+            try Task.checkCancellation()
+            snapshot = value; updated = .now; fresh = true; deviceSpeedError = nil
         } catch {
+            guard !Task.isCancelled else { return }
             route = await client.currentRoute()
             fresh = false
             message = error.localizedDescription
@@ -96,16 +107,58 @@ enum RouterCredentials {
         for resource in targets {
             if Task.isCancelled { break }
             do {
-                resources[resource] = try await client.read(resource)
+                let value = try await client.read(resource)
+                try Task.checkCancellation()
+                resources[resource] = value
                 errors[resource] = nil; resourceDates[resource] = .now; freshResources.insert(resource)
                 if pendingResource == resource { pendingResource = nil }
             } catch {
+                guard !Task.isCancelled else { return }
                 errors[resource] = error.localizedDescription; freshResources.remove(resource)
             }
         }
         if pendingResource == nil {
             message = pending ? "已读取最新状态，请核对上次操作结果后继续。" : nil
             pending = false
+        }
+    }
+
+    // Lightweight foreground polling must not toggle the full-page busy state
+    // or resolve an outstanding mutation that still needs an explicit refresh.
+    func refreshSpeeds(includeDevices: Bool) async {
+        guard let client, fresh, !busy, !pending, !readingSpeeds, !Task.isCancelled else { return }
+        readingSpeeds = true
+        defer { readingSpeeds = false }
+        let ticket = revision
+        let previousDate = includeDevices ? updated : resourceDates[.wan]
+        do {
+            let result: SpeedResult
+            if includeDevices { result = .devices(try await client.read()) }
+            else { result = .wan(try await client.read(.wan)) }
+            let currentRoute = await client.currentRoute()
+            try Task.checkCancellation()
+            guard ticket == revision, !busy, !pending,
+                  (includeDevices ? updated : resourceDates[.wan]) == previousDate else { return }
+            route = currentRoute
+            switch result {
+            case .wan(let value):
+                resources[.wan] = value
+                resourceDates[.wan] = .now
+                errors[.wan] = nil
+                freshResources.insert(.wan)
+            case .devices(let value):
+                snapshot = value
+                updated = .now
+                deviceSpeedError = nil
+            }
+        } catch {
+            guard !Task.isCancelled, ticket == revision, !busy, !pending,
+                  (includeDevices ? updated : resourceDates[.wan]) == previousDate else { return }
+            if includeDevices { deviceSpeedError = error.localizedDescription }
+            else {
+                errors[.wan] = error.localizedDescription
+                freshResources.remove(.wan)
+            }
         }
     }
 

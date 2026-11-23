@@ -22,7 +22,7 @@ import Foundation
         precondition(whole.value == "330000.00")
         precondition(snapshot.fields["total_cny"] == "461884.88406188735462735462735462735462", "Viewing cached data must not rewrite it")
         let small = InvestmentCachedRow(table: "investment_events", fields: ["quantity": "0.00123456", "name": "保留名称"], group: "账本")
-        precondition(small.displayValue(for: "quantity") == "0.0012")
+        precondition(small.displayValue(for: "quantity") == "0.00123456")
         precondition(small.displayValue(for: "name") == "保留名称")
         let day = InvestmentBook.day(Date(timeIntervalSince1970: 1_700_000_000))
         let asset = InvestmentAsset(name: "测试", code: "TEST", market: "", kind: .stock, currency: .cny)

@@ -333,7 +333,6 @@ struct CodeWorkshopView: View {
                                 Text(session.listTitle).font(.subheadline.weight(.medium))
                                     .lineLimit(2).truncationMode(.tail)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                WorkshopSessionAccessLabel(access: session.access)
                                 Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -430,6 +429,7 @@ private struct WorkshopApplicationTabs: View {
 
 private struct WorkshopSettingsView: View {
     @ObservedObject var store: WorkshopStore
+    @State private var showingGenerationDefaults = false
     @State private var editingSystemPrompt = false
     var body: some View {
         SettingsSheet(title: "代码工坊设置") {
@@ -442,6 +442,21 @@ private struct WorkshopSettingsView: View {
                     if store.agents.isEmpty { Text("启动并连接电脑端 Agent 后，执行电脑将自动显示。").foregroundStyle(.secondary) }
                 }
                 Section("Codex") {
+                    if let agent = store.selectedAgent {
+                        Button { showingGenerationDefaults = true } label: {
+                            HStack {
+                                Text("默认生成设置")
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                        .sheet(isPresented: $showingGenerationDefaults) {
+                            WorkshopDefaultGenerationSettings(store: store, agent: agent)
+                        }
+                    }
                     Button { editingSystemPrompt = true } label: {
                         HStack {
                             Text("系统提示词").foregroundStyle(.primary)
@@ -453,7 +468,6 @@ private struct WorkshopSettingsView: View {
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                     }
-                    LabeledContent("模型与权限", value: "在会话的更多页面设置")
                     Text("使用电脑上已登录的 Codex。默认自动审批，也可在会话中选择请求确认、完全访问或跟随电脑配置。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -492,16 +506,6 @@ private struct WorkshopNewSessionView: View {
                     }
                 }
             }
-        }
-    }
-}
-
-private struct WorkshopSessionAccessLabel: View {
-    let access: WorkshopThreadAccess?
-    var body: some View {
-        if let access, access.state != "occupied", let reason = access.unavailableReason {
-            Label("可写状态待确认", systemImage: "lock")
-                .font(.caption).foregroundStyle(.secondary).accessibilityLabel(reason)
         }
     }
 }

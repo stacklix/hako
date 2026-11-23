@@ -46,6 +46,13 @@ struct ConsoleAgentDetails: Decodable {
         case publicKeyPEM = "publicKeyPem"
     }
 
+    func hasChanges(name: String, publicKeyPEM: String) -> Bool {
+        // PEM returned by the server can end with a newline. Apply the same
+        // submission trimming to both the draft and its original baseline.
+        name.trimmingCharacters(in: .whitespacesAndNewlines) != self.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            || publicKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines) != self.publicKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func updateBody(name: String, publicKeyPEM: String) throws -> [String: Any] {
         var body = try ConsoleAgentRegistration(name: name, publicKeyPEM: publicKeyPEM).body
         body["revision"] = revision

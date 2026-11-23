@@ -126,14 +126,19 @@ struct HakoShortcutRun: Codable, Identifiable {
     }
 
     func recordCancellation(_ context: HakoExecutionCancellation) {
-        guard let id = context.runID, let attempt = context.attempt, let reason = context.reason,
-              let index = runs.firstIndex(where: { $0.id == id }),
-              let step = runs[index].steps.firstIndex(where: { $0.name == attempt.step && $0.attemptID == attempt.id }),
-              !(runs[index].steps[step].events ?? []).contains(where: { $0.id == context.id }) else { return }
-        var events = runs[index].steps[step].events ?? []
-        events.append(HakoExecutionEvent(id: context.id, stage: "快捷指令取消原因", state: .info, detail: HakoLog.sanitize(reason)))
-        runs[index].steps[step].events = Array(events.suffix(Self.eventCapacity))
-        if runs[index].steps[step].status == .cancelled { runs[index].steps[step].message = HakoLog.sanitize(reason) }
+        guard let id = context.runID, let reason = context.reason,
+              let index = runs.firstIndex(where: { $0.id == id }) else { return }
+        let attempts = context.attempts
+        for step in runs[index].steps.indices {
+            let value = runs[index].steps[step]
+            guard let attemptID = attempts[value.name], value.attemptID == attemptID else { continue }
+            var events = value.events ?? []
+            let event = HakoExecutionEvent(id: context.id, stage: "快捷指令取消原因", state: .info, detail: HakoLog.sanitize(reason))
+            if let position = events.firstIndex(where: { $0.id == context.id }) { events[position] = event }
+            else { events.append(event) }
+            runs[index].steps[step].events = Array(events.suffix(Self.eventCapacity))
+            if value.status == .cancelled { runs[index].steps[step].message = HakoLog.sanitize(reason) }
+        }
         save()
     }
 

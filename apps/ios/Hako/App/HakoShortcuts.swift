@@ -33,24 +33,31 @@ protocol HakoDataSyncIntent: LongRunningIntent, CancellableIntent {
 extension HakoDataSyncIntent {
     @MainActor func synchronizeData() async throws -> String {
         let cancellation = HakoExecutionCancellation()
+        let started = ContinuousClock.now
         do {
             let result = try await performBackgroundTask {
-                try await HakoExecutionDiagnostics.cancellation.withValue(cancellation) {
+                progress.totalUnitCount = 1
+                progress.completedUnitCount = 0
+                progress.localizedDescription = "同步 Hako 数据"
+                progress.localizedAdditionalDescription = "准备执行"
+                return try await HakoExecutionDiagnostics.cancellation.withValue(cancellation) {
                     try await HakoShortcutRegistry.run("同步 Hako 数据", manual: Self.manualExecution(), progress: { task, stage, completed, total in
                         progress.totalUnitCount = Int64(total)
                         progress.completedUnitCount = Int64(completed)
                         progress.localizedDescription = "同步 Hako 数据"
-                        progress.localizedAdditionalDescription = "\(task) · \(stage)（\(completed)/\(total)）"
+                        progress.localizedAdditionalDescription = "\(task) · \(stage)（已处理 \(completed)/\(total) 个步骤）"
                     })
                 }
             } onCancel: { reason in
                 let detail: String
                 switch reason {
-                case .timeout: detail = "系统结束后台执行：超过允许的执行时间或未及时报告进度。"
+                case .timeout: detail = "系统结束后台执行（超时）；具体时限及触发原因由系统决定。"
                 case .userCancelled: detail = "用户取消了快捷指令。"
                 default: detail = "系统取消了快捷指令（\(reason.debugDescription)）。"
                 }
-                cancellation.record(detail)
+                let elapsed = started.duration(to: .now).components
+                let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+                cancellation.record(detail + String(format: "\n本次后台执行已运行 %.2f 秒（包含本轮各子任务）。", seconds))
             }
             return result
         } catch {

@@ -66,7 +66,7 @@ import SwiftData
 
 enum UsageShortcutContributor {
     @MainActor static func registerShortcuts(in registry: HakoShortcutRegistry) {
-        registry.register("使用时间") {
+        registry.register("使用时间", group: "usage", order: 1) {
             try await Recorder.shared.run(collect: true)
         }
     }

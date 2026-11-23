@@ -225,8 +225,10 @@ import CryptoKit
     var selectedAgent: WorkshopAgent? { agents.first { $0.id == selectedAgentID } }
     var selectedApplication: WorkshopApplication? { applications.first { $0.id == selectedApplicationID } }
     var orderedApplications: [WorkshopApplication] {
-        preferences.order.compactMap { id in applications.first { $0.id == id } }
-            + applications.filter { !preferences.order.contains($0.id) }
+        // Browsing archived conversations must not change the active project order.
+        let active = showingArchived ? (cachedCatalogs[catalogKey(selectedAgentID, archived: false)]?.catalog.sessions ?? []) : sessions
+        let visible = localSessions.merging(active, agentId: selectedAgentID, applications: applications, archived: false)
+        return WorkshopCatalog.orderedApplications(applications, sessions: visible, order: preferences.order)
     }
     var visibleSessions: [WorkshopSession] {
         sessionListItems(at: .now).map(\.session)
@@ -844,14 +846,28 @@ import CryptoKit
     }
 
     func choice(agent: WorkshopAgent, thread: String?, application: WorkshopApplication) -> WorkshopChoice {
-        preferences.choices?[agent.id + ":" + (thread ?? "new-" + application.id)] ?? WorkshopChoice()
+        preferences.choice(agentID: agent.id, thread: thread, applicationID: application.id)
     }
 
-    func saveChoice(_ choice: WorkshopChoice, agent: WorkshopAgent, thread: String?, application: WorkshopApplication, background: Bool = false) throws {
+    func saveChoice(_ choice: WorkshopChoice, agent: WorkshopAgent, thread: String?, application: WorkshopApplication, background: Bool = false, resolvingNew: Bool = false) throws {
         guard context == scope else { throw CancellationError() }
-        if preferences.choices == nil { preferences.choices = [:] }
-        preferences.choices?[agent.id + ":" + (thread ?? "new-" + application.id)] = choice
+        preferences.recordChoice(choice, agentID: agent.id, thread: thread, applicationID: application.id, resolvingNew: resolvingNew)
         try persist(background: background)
+    }
+
+    func generationDefaults(for agentID: String) -> WorkshopGenerationDefaults {
+        preferences.defaultGenerations?[agentID] ?? WorkshopGenerationDefaults()
+    }
+
+    func saveGenerationDefaults(_ value: WorkshopGenerationDefaults, agent: WorkshopAgent, models: [WorkshopModel], expectedScope: String) throws {
+        guard expectedScope == scope, context == scope else { throw CancellationError() }
+        if let error = value.validationError(models: models) { throw HakoError(message: error) }
+        let previous = preferences
+        if preferences.defaultGenerations == nil { preferences.defaultGenerations = [:] }
+        preferences.defaultGenerations?[agent.id] = value
+        do { try persist() }
+        catch { preferences = previous; throw error }
+        objectWillChange.send()
     }
 
     private func imageFile(_ id: String) throws -> URL {

@@ -134,7 +134,39 @@ struct InvestmentQuoteProvider {
     let send: Transport
 
     init(send: @escaping Transport = { request, secrets in try await HTTPTransport.data(for: request, secrets: secrets) }) {
-        self.send = send
+        self.send = { request, secrets in
+            guard let sink = HakoExecutionDiagnostics.sink else { return try await send(request, secrets) }
+            // Keep headers, query values and bodies out of shortcut history.
+            let endpoint = HakoLog.sanitize((request.url?.host ?? "未知来源") + (request.url?.path ?? ""), secrets: secrets)
+            let stage = "行情请求 " + (request.httpMethod ?? "GET") + " " + endpoint
+            let context = "请求时限：" + String(format: "%.0f 秒", request.timeoutInterval)
+            let event = HakoExecutionEvent(stage: stage, state: .started, detail: context)
+            await sink(event)
+            do {
+                try Task.checkCancellation()
+                let result = try await send(request, secrets)
+                try Task.checkCancellation()
+                let status = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+                await sink(HakoExecutionEvent(id: event.id, stage: stage, state: status == 200 ? .succeeded : .failed,
+                    detail: context + "\nHTTP \(status)；接收 \(result.0.count) 字节。HTTP 响应不代表行情数据已通过校验。"))
+                return result
+            } catch {
+                let cancelled = HTTPTransport.isTaskCancellation(error)
+                let cause = (error as? URLError)?.code == .timedOut ? "\n网络请求超时，区别于系统结束整次后台执行。" : ""
+                let detail = HakoLog.sanitize(context + "\n" + HakoExecutionDiagnostics.failure(error) + cause, secrets: secrets)
+                await sink(HakoExecutionEvent(id: event.id, stage: stage, state: cancelled ? .cancelled : .failed, detail: detail))
+                throw error
+            }
+        }
+    }
+
+    static func quoteSummary(_ values: [InvestmentQuote]) -> String {
+        guard let first = values.min(by: { $0.day < $1.day }), let last = values.max(by: { $0.day < $1.day }) else {
+            return "未取得有效行情记录。"
+        }
+        let format = dateFormat("yyyy-MM-dd")
+        let sources = Set(values.compactMap(\.source)).sorted().joined(separator: " / ")
+        return "已校验 \(values.count) 条报价；\(format.string(from: first.day)) 至 \(format.string(from: last.day))。\n来源：\(sources.isEmpty ? "未标记" : sources)"
     }
 
     static func order(for currency: InvestmentCurrency) -> [InvestmentQuoteSource] {

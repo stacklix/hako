@@ -7,6 +7,7 @@ import Foundation
 
 @main struct ExecutionDiagnosticsTests {
     @MainActor static func main() async throws {
+        try await checkGroups()
         let outer = Events(), inner = Events()
         try await HakoExecutionDiagnostics.context.withValue({ outer.append($0) }) {
             let result = HakoExecutionDiagnostics.measure("读取设备身份记录") { 42 }
@@ -108,6 +109,74 @@ import Foundation
         let restored = try JSONDecoder().decode([HakoExecutionEvent].self, from: data)
         precondition(restored.map(\.id) == outer.values.map(\.id))
         print("PASS: correlated and saved legacy stages, concurrent names, retry boundaries, pending/truncated timing, cancellation sources, transport errors, redaction and persistence")
+    }
+
+    @MainActor private static func checkGroups() async throws {
+        let events = Events()
+        await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
+            let result = await HakoExecutionDiagnostics.measureGroup("采集计划", branches: 2, detail: "最多同时运行 2 个", resultState: { $0 ? .succeeded : .failed }) {
+                await HakoExecutionDiagnostics.parallel.withValue("A") {
+                    await HakoExecutionDiagnostics.measure("读取 A") {
+                        await Task.yield()
+                        HakoExecutionDiagnostics.record("资产接口 GET api.test/balance")
+                    }
+                }
+                let partial = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(events.values)).first!
+                precondition(partial.row.state == .started && partial.row.plannedBranches == 2 && partial.completedBranches == 1)
+                precondition(partial.children.count == 1 && !partial.children[0].row.isAssetRequest)
+                do {
+                    try HakoExecutionDiagnostics.parallel.withValue("B") {
+                        try HakoExecutionDiagnostics.measure("读取 B") { throw NSError(domain:"test", code:1) }
+                    }
+                } catch {}
+                return false
+            }
+            precondition(!result)
+            // Same-named groups and branches from a retry have distinct ownership.
+            _ = await HakoExecutionDiagnostics.measureGroup("采集计划", branches: 1, detail: "最多同时运行 1 个") {
+                HakoExecutionDiagnostics.measure("读取 A") { 42 }
+            }
+        }
+        let rows = HakoExecutionLogRow.merging(events.values)
+        let items = HakoExecutionLogItem.grouping(rows)
+        precondition(items.count == 2 && items[0].row.state == .failed && items[1].row.state == .succeeded)
+        precondition(items[0].completedBranches == 2 && items[1].completedBranches == 1)
+        precondition(items[0].children.map { $0.row.stageTitle } == ["读取 A", "读取 B"])
+        precondition(items[1].children.count == 1 && items[1].children[0].row.parentGroupID == items[1].id)
+        precondition(items[0].children.allSatisfy { $0.row.parentGroupID == items[0].id })
+        let request = rows.first { $0.isAssetRequest }!
+        precondition(request.isDiagnostic && request.parallelBranch == "A" && request.parentGroupID == items[0].id)
+        precondition(events.values.first { $0.stage.contains("资产接口") }?.stageTitle == "资产接口 GET api.test/balance")
+        precondition(HakoExecutionDiagnostics.group.get() == nil && HakoExecutionDiagnostics.parallel.get() == nil)
+
+        let cancelled = Events()
+        do {
+            try await HakoExecutionDiagnostics.context.withValue({ cancelled.append($0) }) {
+                try await HakoExecutionDiagnostics.measureGroup("采集计划", branches: 2, detail: "最多同时运行 2 个") {
+                    try await HakoExecutionDiagnostics.parallel.withValue("A") {
+                        try await HakoExecutionDiagnostics.measure("读取 A") {
+                            await Task.yield()
+                            throw CancellationError()
+                        }
+                    }
+                }
+            }
+            preconditionFailure("Group swallowed cancellation")
+        } catch is CancellationError {}
+        let cancelledGroup = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(cancelled.values)).first!
+        precondition(cancelledGroup.row.state == .cancelled && cancelledGroup.row.plannedBranches == 2)
+        precondition(cancelledGroup.completedBranches == 1 && cancelledGroup.children[0].row.state == .cancelled)
+
+        let base = Date(timeIntervalSince1970:1000), id = UUID()
+        let timeline = HakoExecutionLogRow.merging([
+            HakoExecutionEvent(id:id,time:base,stage:"[分组 · 2] 采集计划",state:.started,detail:""),
+            HakoExecutionEvent(time:base,stage:"[组 · \(id.uuidString)] [并行 · A] A",state:.started,detail:""),
+            HakoExecutionEvent(id:id,time:base.addingTimeInterval(7),stage:"[分组 · 2] 采集计划",state:.succeeded,detail:"")
+        ])
+        let group = HakoExecutionLogItem.grouping(timeline).first!
+        precondition(group.row.elapsed(at:base.addingTimeInterval(99)) == "7.00 秒", "Plan time was derived from branch durations")
+        precondition(group.children.count == 1 && group.completedBranches == 0)
+        precondition(HakoExecutionLogItem.grouping(Array(timeline.dropFirst())).count == 1, "Truncated parent discarded branch logs")
     }
 
     private static func checkSavedStageMerging() throws {

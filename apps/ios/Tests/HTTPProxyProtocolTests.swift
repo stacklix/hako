@@ -3,7 +3,17 @@ import Foundation
 import FoundationNetworking
 #endif
 
-enum HakoLogSource { case hako }
+private final class ProxyProbeClient: NSObject, URLProtocolClient, @unchecked Sendable {
+    func urlProtocol(_ protocolObject: URLProtocol, wasRedirectedTo request: URLRequest, redirectResponse: URLResponse) { }
+    func urlProtocol(_ protocolObject: URLProtocol, cachedResponseIsValid cachedResponse: CachedURLResponse) { }
+    func urlProtocol(_ protocolObject: URLProtocol, didReceive response: URLResponse, cacheStoragePolicy policy: URLCache.StoragePolicy) { }
+    func urlProtocol(_ protocolObject: URLProtocol, didLoad data: Data) { }
+    func urlProtocolDidFinishLoading(_ protocolObject: URLProtocol) { }
+    func urlProtocol(_ protocolObject: URLProtocol, didFailWithError error: Error) { }
+    func urlProtocol(_ protocolObject: URLProtocol, didReceive challenge: URLAuthenticationChallenge) { }
+    func urlProtocol(_ protocolObject: URLProtocol, didCancel challenge: URLAuthenticationChallenge) { }
+}
+
 @MainActor enum AuthenticatedServerService { static let shared = ProxyTestAccess() }
 @MainActor enum HakoHTTPProxyClient {
     static func send(agentID: String, parameters: [String: Any]) async throws -> Data {
@@ -22,6 +32,7 @@ enum HakoLogSource { case hako }
     var invalidate = false
     var stall = false
     var requests = 0
+    var expectedBody = "AP-A"
     func send(_ path: String, method: String, body: [String: Any]?, logSource: HakoLogSource) async throws -> Data {
         if path == "/api/v1/version" { return try JSONSerialization.data(withJSONObject: ["serverVersion": version]) }
         precondition(path == "/ws/proxy/client/fixture" && method == "WS")
@@ -29,7 +40,7 @@ enum HakoLogSource { case hako }
         let parameters = body?["request"] as! [String: Any]
         precondition(parameters["target"] as? String == "127.0.0.1:8080")
         precondition(parameters["url"] as? String == "http://unreachable.invalid/a%2Fb?q=1")
-        precondition(parameters["body"] as? String == "AP-A")
+        precondition(parameters["body"] as? String == expectedBody)
         let headers = parameters["headers"] as! [String: String]
         precondition(!headers.keys.contains { $0.lowercased() == "x-proxy" })
         precondition(headers["Authorization"] == "Bearer target-secret")
@@ -75,6 +86,49 @@ enum HakoLogSource { case hako }
         while access.requests < 3 { await Task.yield() }
         pending.cancel()
         do { _ = try await pending.value; preconditionFailure("Cancellation ignored") } catch { }
+
+        access.stall = false
+        // Capture a URLSession-owned, single-use stream synchronously, before
+        // main-actor authentication can suspend its consumption.
+        var streamed = request
+        streamed.httpBody = nil
+        let stream = InputStream(data: Data([0, 255, 128]))
+        streamed.httpBodyStream = stream
+        let probeClient = ProxyProbeClient()
+        let intercepted = HakoProxyURLProtocol(request: streamed, cachedResponse: nil, client: probeClient)
+        let beforeStream = access.requests
+        intercepted.startLoading()
+        // Simulate URLSession consuming/closing its stream after the hand-off.
+        // The eventual forwarded body must still contain all original bytes.
+        stream.open()
+        var drained = [UInt8](repeating: 0, count: 16)
+        while stream.read(&drained, maxLength: drained.count) > 0 { }
+        stream.close()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while access.requests == beforeStream && ContinuousClock.now < deadline { await Task.yield() }
+        precondition(access.requests == beforeStream + 1, "Captured body was not forwarded exactly once")
+        intercepted.stopLoading()
+        await Task.yield()
+
+        // The shared transport can bypass URLSession body normalization entirely.
+        // Keep login JSON, Unicode and binary bytes intact across authentication.
+        let loginBody = Data(#"{"method":"do","login":{"password":"fixture-only-%2B"},"label":"路由器"}"#.utf8)
+        var login = request
+        login.httpBody = loginBody
+        access.expectedBody = HakoHTTPProxy.encodeBody(loginBody)
+        let beforeLogin = access.requests
+        _ = try await HakoProxyURLProtocol.forward(login)
+        precondition(access.requests == beforeLogin + 1, "Forwarding repeated the login request")
+        #if os(iOS)
+        let beforeTransport = access.requests
+        _ = try await HTTPTransport.data(for: login, using: session, logBody: false)
+        precondition(access.requests == beforeTransport + 1, "Shared transport did not preserve the original login body")
+        precondition(!HakoLogStore.shared.snapshot().entries.map(\.text).joined().contains("fixture-only-%2B"),
+                     "Hidden login body leaked through proxy diagnostics")
+        #endif
+        access.invalidate = true
+        do { _ = try await HakoProxyURLProtocol.forward(login); preconditionFailure("Account switch accepted an old response") }
+        catch is CancellationError { }
         print("PASS: real URLSession proxy interception, authenticated proxy WebSocket envelope, status/binary response, missing settings, relay version, Agent error and cancellation")
     }
 }

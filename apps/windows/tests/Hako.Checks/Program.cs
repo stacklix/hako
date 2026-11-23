@@ -105,6 +105,8 @@ internal static class Program
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-files") { await WorkshopProjectFileChecks.RunAsync(); return 0; }
+            if (args.Length == 1 && args[0] == "user-files") { await UserFileChecks.RunAsync(); return 0; }
+            if (args.Length == 2 && args[0] == "user-files-live") { await UserFileChecks.ReadInstalledAsync(args[1]); return 0; }
             if (args.Length == 1 && args[0] == "binary-uploads") { await BinaryUploadChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "agent-direct") { await AgentDirectChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "agent-lan") { await AgentLanChecks.RunAsync(); return 0; }
@@ -260,16 +262,20 @@ internal static class Program
                 new AgentCapability("action.git.commit", 1), new AgentCapability("action.git.push", 1),
                 new AgentCapability("action.git.pull", 1),
                 new AgentCapability("action.android.execute", 1), new AgentCapability("action.android.upload", 1), new AgentCapability("action.android.stream", 1),
+                new AgentCapability("action.files.mutate", 1), new AgentCapability("action.files.write.begin", 1),
+                new AgentCapability("action.files.write.chunk", 1), new AgentCapability("action.files.write.commit", 1),
                 new AgentCapability("query.git.repositories", 1), new AgentCapability("query.git.repository", 1),
                 new AgentCapability("query.git.operation", 1), new AgentCapability("query.git.remote", 1),
                 new AgentCapability("query.android.device", 1), new AgentCapability("query.android.operations", 1),
                 new AgentCapability("query.android.operation", 1), new AgentCapability("query.android.logs", 1),
                 new AgentCapability("query.android.artifact", 1),
                 new AgentCapability("query.android.preview", 1),
+                new AgentCapability("query.files.list", 1), new AgentCapability("query.files.read", 1), new AgentCapability("query.files.operation", 1),
             }))
                 throw new Exception("Agent capabilities do not match registered actions");
             if (!dispatcher.Capabilities.SequenceEqual(AgentDispatcher.MainCapabilities))
                 throw new Exception("Guardian's forwarding manifest differs from the main dispatcher");
+            await UserFileChecks.RunAsync();
             foreach (var method in new[] { RegisteredServices.Command, RegisteredServices.StartCommand })
             {
                 try { await dispatcher.InvokeAsync(method, 1, JsonSerializer.SerializeToElement(new { }), default); throw new Exception("Main process accepted admin"); }

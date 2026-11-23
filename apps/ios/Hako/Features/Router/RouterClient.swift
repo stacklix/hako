@@ -53,7 +53,10 @@ actor RouterClient: RouterAccess {
             guard let raw = response["stok"] as? String, let token = raw.removingPercentEncoding,
                   !token.isEmpty, token.count <= 512,
                   token.utf8.allSatisfy({ (33...126).contains($0) }) else {
-                throw RouterFailure(message: "路由器登录响应没有可用会话，请核对固件登录协议。")
+                let field = response["stok"] == nil ? "缺失" : (response["stok"] as? String)?.isEmpty == true ? "为空" : "格式无效"
+                HakoLog.record(.hako, .error, "路由器登录未返回有效会话",
+                    detail: "响应码：0\n会话字段：\(field)\n传输：\(route?.title ?? "未选择")")
+                throw RouterFailure(message: "路由器已响应，但没有返回可用登录会话。请刷新重试。")
             }
             return token
         }
@@ -108,6 +111,7 @@ actor RouterClient: RouterAccess {
     }
 
     func read(_ resource: RouterResource) async throws -> RouterJSON {
+        try await selectRoute()
         var body = resource.query; body["method"] = resource.method
         do { return try await resourceData(resource, body: body) }
         catch let error as RouterFailure where error.message == Self.expired {

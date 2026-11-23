@@ -44,13 +44,11 @@ import Combine
         return result.failure ?? result.summary
     }
     func collectAndSynchronize() async throws -> String {
-        try await HakoExecutionDiagnostics.measure("采集交易所与链上资产", success: { _ in "最新资产已采集并保存到本机。" }) {
-            let result = await run(sync:false,force:true)
-            try Task.checkCancellation()
-            if let failure = result.failure { throw HakoError(message: failure) }
-            guard result.sourceCount > 0 else {
-                throw HakoError(message:"尚未配置资产来源，请先设置交易所 API 或观察地址。")
-            }
+        let result = await run(sync:false,force:true)
+        try Task.checkCancellation()
+        if let failure = result.failure { throw HakoError(message: failure) }
+        guard result.sourceCount > 0 else {
+            throw HakoError(message:"尚未配置资产来源，请先设置交易所 API 或观察地址。")
         }
         let summary = try await HakoExecutionDiagnostics.measure("同步最新资产记录", success: { $0 }) {
             let result = await run(sync:true)
@@ -237,65 +235,11 @@ import Combine
                     let fields=existing?.missingContractFields ?? CryptoRecord.contractFields
                     return fields.isEmpty ? nil : (day,fields)
                 } : []
-            var totals:[String:Double]=[:]
-            var currentResult:Result<CryptoCurrentContract,Error>?
-            if htx.configured {
-                do {
-                    totals["htx"]=try await HakoExecutionDiagnostics.measure("读取 HTX 总资产", success: { _ in "交易所总资产校验通过。" }) { try await client.htxTotal(htx) }
-                } catch { errors.append("HTX 总资产："+error.localizedDescription) }
-                do {
-                    let current=try await HakoExecutionDiagnostics.measure("读取今日 TRX 合约", success: { _ in "当前合约数据已读取。" }) {
-                        try await client.currentContract(htx,scope:contractScope,now:now,cached:cache.currentContract)
-                    }
-                    currentResult = .success(current)
-                    var value=cache;value.currentContract=current
-                    try persist(value)
-                } catch { currentResult = .failure(error);errors.append("今日 TRX 合约："+error.localizedDescription) }
-                try await refreshHTXDetails(htx,now:now,force:force)
-            } else { HakoExecutionDiagnostics.record("HTX 资产来源", detail: "未配置，未请求交易所。") }
-            try Task.checkCancellation()
-            if binance.configured {
-                binanceError=nil
-                do {
-                    let snapshot=try await HakoExecutionDiagnostics.measure("读取 Binance 资产", success: {
-                        "已读取 \($0.accounts.count) 个账户；" + ($0.quoteError == nil ? "资产报价已完成。" : "部分报价未完成。")
-                    }) { try await client.binanceSnapshot(binance) }
-                    var value=cache;value.binanceSnapshot=snapshot
-                    try persist(value)
-                    totals["binance"]=snapshot.total
-                    binanceError=snapshot.quoteError
-                    if let error=snapshot.quoteError {
-                        errors.append("Binance 报价："+error)
-                        HakoExecutionDiagnostics.record("Binance 资产报价", state: .failed, detail: error)
-                    }
-                } catch {
-                    binanceError=error.localizedDescription
-                    errors.append("Binance："+error.localizedDescription)
-                }
-            } else { HakoExecutionDiagnostics.record("Binance 资产来源", detail: "未配置，未请求交易所。") }
-            var chain=0.0,chainComplete=true
-            walletErrors=[:]
-            if wallets.isEmpty { HakoExecutionDiagnostics.record("链上资产来源", detail: "未配置观察地址，未请求链上资产。") }
-            for (index, wallet) in wallets.enumerated() {
-                try Task.checkCancellation()
-                do {
-                    let snapshot=try await HakoExecutionDiagnostics.measure("读取链上钱包 \(index + 1)", success: {
-                        "已读取 \($0.assets.count) 项链上资产。"
-                    }) { try await client.walletSnapshot(wallet) }
-                    var value=cache
-                    if value.walletSnapshots == nil { value.walletSnapshots=[:] }
-                    if value.walletBalances == nil { value.walletBalances=[:] }
-                    value.walletSnapshots?[wallet.identity]=snapshot
-                    value.walletBalances?[wallet.identity]=snapshot.total
-                    try persist(value)
-                    walletValues[wallet.id]=snapshot.total;chain+=snapshot.total
-                }
-                catch {
-                    chainComplete=false;walletErrors[wallet.id]=error.localizedDescription
-                    errors.append(wallet.name+"："+error.localizedDescription)
-                }
-            }
-            if !wallets.isEmpty && chainComplete { totals["chain"]=chain }
+            let collected = try await collectSources(htx: htx, binance: binance, now: now, force: force)
+            var totals = collected.totals
+            let currentResult = collected.current
+            let chainComplete = collected.chainComplete
+            errors += collected.errors
             try Task.checkCancellation()
             let complete=(!htx.configured || totals["htx"] != nil) && (!binance.configured || totals["binance"] != nil) && chainComplete
             if complete && !totals.isEmpty {
@@ -328,6 +272,125 @@ import Combine
             message=errors.isEmpty ? nil : errors.joined(separator:"\n")
         } catch { message=error.localizedDescription }
     }
+    @MainActor private final class AcquisitionState {
+        var totals: [String: Double] = [:]
+        var current: Result<CryptoCurrentContract, Error>?
+        var chain = 0.0
+        var chainComplete = true
+        var errors: [String] = []
+    }
+
+    private struct AcquisitionJob: Sendable {
+        let name: String
+        let operation: @MainActor @Sendable () async throws -> Void
+    }
+
+    private func collectSources(htx: CryptoCredential, binance: CryptoCredential, now: Date, force: Bool) async throws -> AcquisitionState {
+        let state = AcquisitionState()
+        var jobs: [AcquisitionJob] = []
+        if htx.configured {
+            jobs.append(AcquisitionJob(name: "HTX 总资产", operation: { [self] in
+                do {
+                    let total = try await HakoExecutionDiagnostics.measure("读取 HTX 总资产", success: { _ in "交易所总资产校验通过。" }) {
+                        try await client.htxTotal(htx)
+                    }
+                    state.totals["htx"] = total
+                } catch { try Task.checkCancellation(); state.errors.append("HTX 总资产：" + error.localizedDescription) }
+            }))
+            jobs.append(AcquisitionJob(name: "TRX 合约", operation: { [self] in
+                do {
+                    let current = try await HakoExecutionDiagnostics.measure("读取今日 TRX 合约", success: { _ in "当前合约数据已读取。" }) {
+                        try await client.currentContract(htx, scope: contractScope, now: now, cached: cache.currentContract)
+                    }
+                    state.current = .success(current)
+                    var value = cache; value.currentContract = current
+                    try persist(value)
+                } catch {
+                    try Task.checkCancellation()
+                    state.current = .failure(error); state.errors.append("今日 TRX 合约：" + error.localizedDescription)
+                }
+            }))
+            jobs.append(AcquisitionJob(name: "HTX 分账户", operation: { [self] in
+                do { try await refreshHTXDetails(htx, now: now, force: force) }
+                catch { try Task.checkCancellation(); state.errors.append("HTX 分账户：" + error.localizedDescription) }
+            }))
+        } else { HakoExecutionDiagnostics.record("HTX 资产来源", detail: "未配置，未请求交易所。") }
+        if binance.configured {
+            binanceError = nil
+            jobs.append(AcquisitionJob(name: "Binance 资产", operation: { [self] in
+                do {
+                    let snapshot = try await HakoExecutionDiagnostics.measure("读取 Binance 资产", success: {
+                        "已读取 \($0.accounts.count) 个账户；" + ($0.quoteError == nil ? "资产报价已完成。" : "部分报价未完成。")
+                    }) { try await client.binanceSnapshot(binance) }
+                    var value = cache; value.binanceSnapshot = snapshot
+                    try persist(value)
+                    state.totals["binance"] = snapshot.total
+                    binanceError = snapshot.quoteError
+                    if let error = snapshot.quoteError {
+                        state.errors.append("Binance 报价：" + error)
+                        HakoExecutionDiagnostics.record("Binance 资产报价", state: .failed, detail: error)
+                    }
+                } catch {
+                    try Task.checkCancellation()
+                    binanceError = error.localizedDescription; state.errors.append("Binance：" + error.localizedDescription)
+                }
+            }))
+        } else { HakoExecutionDiagnostics.record("Binance 资产来源", detail: "未配置，未请求交易所。") }
+        walletErrors = [:]
+        if wallets.isEmpty { HakoExecutionDiagnostics.record("链上资产来源", detail: "未配置观察地址，未请求链上资产。") }
+        for (index, wallet) in wallets.enumerated() {
+            jobs.append(AcquisitionJob(name: "链上钱包 \(index + 1)", operation: { [self] in
+                do {
+                    let snapshot = try await HakoExecutionDiagnostics.measure("读取链上钱包 \(index + 1)", success: {
+                        "已读取 \($0.assets.count) 项链上资产。"
+                    }) { try await client.walletSnapshot(wallet) }
+                    var value = cache
+                    if value.walletSnapshots == nil { value.walletSnapshots = [:] }
+                    if value.walletBalances == nil { value.walletBalances = [:] }
+                    value.walletSnapshots?[wallet.identity] = snapshot
+                    value.walletBalances?[wallet.identity] = snapshot.total
+                    try persist(value)
+                    walletValues[wallet.id] = snapshot.total; state.chain += snapshot.total
+                } catch {
+                    try Task.checkCancellation()
+                    state.chainComplete = false; walletErrors[wallet.id] = error.localizedDescription
+                    state.errors.append(wallet.name + "：" + error.localizedDescription)
+                }
+            }))
+        }
+        guard !jobs.isEmpty else { return state }
+        let limit = min(4, jobs.count)
+        let detail = "最多同时运行 \(limit) 个\n" + jobs.map(\.name).joined(separator: "、")
+        return try await HakoExecutionDiagnostics.measureGroup("资产采集计划", branches: jobs.count, detail: detail,
+            resultState: { (result: AcquisitionState) in result.errors.isEmpty && !self.htxDetailsNeedRetry ? .succeeded : .failed }) {
+            let parallel = jobs.count > 1
+            try await withThrowingTaskGroup(of: Void.self) { tasks in
+                var next = 0
+                for job in jobs.prefix(limit) {
+                    tasks.addTask { try await self.performAcquisition(job, parallel: parallel) }
+                    next += 1
+                }
+                while try await tasks.next() != nil {
+                    try Task.checkCancellation()
+                    if next < jobs.count {
+                        let job = jobs[next]; next += 1
+                        tasks.addTask { try await self.performAcquisition(job, parallel: parallel) }
+                    }
+                }
+            }
+            try Task.checkCancellation()
+            if !wallets.isEmpty && state.chainComplete { state.totals["chain"] = state.chain }
+            return state
+        }
+    }
+
+    private func performAcquisition(_ job: AcquisitionJob, parallel: Bool) async throws {
+        try Task.checkCancellation()
+        try await HakoExecutionDiagnostics.parallel.withValue(parallel ? job.name : nil) {
+            try await job.operation()
+        }
+    }
+
     private func refreshHTXDetails(_ credential: CryptoCredential, now: Date, force: Bool) async throws {
         guard credential.configured else { return }
         let previous = htxSnapshot
@@ -388,11 +451,18 @@ import Combine
     private func readArchive(_ repository: any GitHubRepositoryAccess) async throws -> (records:[CryptoRecord],head:String) {
         var remote:[CryptoRecord]=[], head:String?
         for kind in ["htx-trx","portfolio"] {
-            let directory=try await repository.listFiles(in:"data/crypto/"+kind)
+            try Task.checkCancellation()
+            let label = kind == "htx-trx" ? "合约" : "总资产"
+            let directory=try await HakoExecutionDiagnostics.measure("读取 GitHub \(label)目录", success: {
+                "已读取 \($0.entries.count) 个目录条目。"
+            }) { try await repository.listFiles(in:"data/crypto/"+kind) }
             if let head, head != directory.head { throw HakoError(message:"资产仓库正在更新，请重试同步。") }
             head=directory.head
             for entry in directory.entries where entry.kind == "blob" && entry.name.range(of:"^[0-9]{4}\\.csv$",options:.regularExpression) != nil {
-                let snapshot=try await repository.readFile(at:"data/crypto/"+kind+"/"+entry.name,revision:head)
+                try Task.checkCancellation()
+                let snapshot=try await HakoExecutionDiagnostics.measure("读取 GitHub \(label)年度文件 · \(entry.name)", success: { _ in
+                    "年度文件已读取。"
+                }) { try await repository.readFile(at:"data/crypto/"+kind+"/"+entry.name,revision:head) }
                 guard let text=snapshot.text else { throw HakoError(message:"资产年度文件不可读取。") }
                 let year=String(entry.name.prefix(4))
                 remote += try CryptoRecord.decode(text,kind:kind,year:year)
