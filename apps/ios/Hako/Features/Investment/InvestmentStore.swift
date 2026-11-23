@@ -55,17 +55,9 @@ final class InvestmentStore: ObservableObject {
     private var cryptoCatalog: (loadedAt: Date, entries: [InvestmentAsset])?
     private var cryptoCatalogRequest: Task<[InvestmentAsset], Error>?
     private var selectedInstruments: [String: InvestmentAsset] = [:]
-    private struct HoldingPriceCache {
-        let session: UUID
-        let asset: InvestmentAsset
-        let window: ClosedRange<Date>
-        let checkedDay: Date
-        let quotes: [InvestmentQuote]
-    }
-    private var holdingPriceCache: HoldingPriceCache?
     var hasLoaded: Bool { loaded }
     var configured: Bool { !configuredSources.isEmpty }
-    var marketQuoteIDs: Set<UUID> { Set(book.assets.values.filter(\.usesEastmoneyMarketData).map(\.id)) }
+    var marketQuoteIDs: Set<UUID> { Set(book.assets.values.filter { $0.usesEastmoneyMarketData || $0.usesUSEquityClose }.map(\.id)) }
     var canRefresh: Bool { configured || !marketQuoteIDs.isEmpty || !rateCurrencies.isEmpty || !publicQuoteIDs.isEmpty }
     func entryEditorStore(book: InvestmentBook) -> InvestmentStore {
         let preview = InvestmentStore(authentication: authentication)
@@ -97,7 +89,6 @@ final class InvestmentStore: ObservableObject {
         serverState = nil
         loaded = false
         book = InvestmentBook()
-        holdingPriceCache = nil
         lastAutomaticRefresh = nil
         lastAutomaticCurrencies = []
         lastAutomaticMarketQuotes = []
@@ -118,13 +109,12 @@ final class InvestmentStore: ObservableObject {
             }
             let context = authentication.requestContext
             let scope = dataCacheScope
-            if !force, !cacheWasCleared,
+            if (!loaded || !force), !cacheWasCleared,
                let cached = try? await diskCache.load(scope: scope),
                let restored = try? records.decode(cached), context == authentication.requestContext {
-                book = restored; serverState = cached; serverContext = context
+                book = try await restoringMarketQuotes(in: restored, scope: scope); serverState = cached; serverContext = context
                 loaded = true; loadError = nil; configuredSources = Set(keys().keys)
-                scheduleDailySnapshots()
-                return
+                if !force { scheduleDailySnapshots(); return }
             }
             lastServerReadSucceeded = false
             let data = try await authentication.send(Self.bookPath, method: "GET", body: nil, logSource: .hako)
@@ -132,8 +122,7 @@ final class InvestmentStore: ObservableObject {
             guard context == authentication.requestContext else { throw CancellationError() }
             let state = try JSONDecoder().decode(InvestmentServerState.self, from: data)
             if !loaded || serverState?.generation != state.generation {
-                holdingPriceCache = nil
-                book = try records.decode(state)
+                book = try await restoringMarketQuotes(in: records.decode(state), scope: scope)
             }
             serverContext = context
             serverState = state
@@ -200,7 +189,7 @@ final class InvestmentStore: ObservableObject {
         try Task.checkCancellation()
         guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
         var dirty = serverState?.dirtyFrom
-        if let first = draft.snapshotInputChange(comparedTo: book) {
+        if let first = draft.snapshotInputChange(comparedTo: try serverState.map(records.decode) ?? book) {
             draft.invalidateDailySnapshots(from: first)
             let day = records.day.string(from: first)
             dirty = min(day, dirty ?? day)
@@ -356,9 +345,8 @@ final class InvestmentStore: ObservableObject {
         guard var state = serverState else { return }
         let context = authentication.requestContext
         if includeInputs { try records.validateEventInputs(draft, comparedTo: book) }
-        let old = try records.encode(book, revision: state.revision)
+        let old = try records.encode(records.decode(state), revision: state.revision)
         let next = try records.encode(draft, revision: state.revision)
-        if includeInputs { try records.validateLedgers(next, comparedTo: old) }
         var changes: InvestmentServerTables = [:]
         for name in InvestmentServerRecords.names {
             let output = InvestmentServerRecords.snapshotTables.contains(name)
@@ -371,6 +359,9 @@ final class InvestmentStore: ObservableObject {
         }
         let through = includeSnapshots ? draft.dailySnapshots.map { records.day.string(from: $0.through) } : state.through
         guard !changes.isEmpty || dirtyFrom != state.dirtyFrom || through != state.through else { return }
+        try InvestmentWriteValidation.validate(generation: state.generation, revision: state.revision,
+            dirtyFrom: dirtyFrom, through: through, changes: changes, current: state.tables)
+        if includeInputs { try records.validateLedgers(next, comparedTo: old) }
         var body: [String: Any] = ["generation": state.generation, "tables": changes]
         body["dirtyFrom"] = dirtyFrom.map { $0 as Any } ?? NSNull()
         body["through"] = through.map { $0 as Any } ?? NSNull()
@@ -387,8 +378,7 @@ final class InvestmentStore: ObservableObject {
             state.tables.merge(confirmed.tables) { _, incoming in incoming }
             book = try records.decode(state)
             serverState = state
-            holdingPriceCache = nil
-            await persistCache(state, scope: dataCacheScope)
+                await persistCache(state, scope: dataCacheScope)
         } catch let error as ServerHTTPError where error.status == 409 {
             saving = false
             await load(force: true)
@@ -664,36 +654,46 @@ final class InvestmentStore: ObservableObject {
         guard first <= end else { return InvestmentPriceHistoryResult(quotes: [], warning: nil) }
         let scope = dataCacheScope, today = InvestmentBook.day()
         if let cached = try? await diskCache.history(scope: scope, asset: asset, start: first, end: end, today: today) {
-            return InvestmentPriceHistoryResult(quotes: cached, warning: nil)
+            let quotes = InvestmentBook.merge(cached, book.quotes[assetID] ?? []).filter { $0.day >= first && $0.day <= end }
+            return InvestmentPriceHistoryResult(quotes: quotes, warning: nil)
         }
-        let localQuotes = (book.quotes[assetID] ?? []).filter { $0.isDailyClose == true && $0.source != "手动录入" }
-        if InvestmentHistoryRange.uncoveredWindows(from: first, through: end, cached: localQuotes).isEmpty {
-            try? await diskCache.saveHistory(scope: scope, asset: asset, start: first, end: end, today: today, quotes: localQuotes)
+        let key = InvestmentDiskCache.historyKey(asset)
+        let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+        let localQuotes = InvestmentBook.merge(saved, book.quotes[assetID] ?? []).filter {
+            $0.isDailyClose == true && $0.source != "手动录入"
+        }
+        if try await diskCache.missingWindows(scope: scope, key: key, start: first, end: end,
+            today: today, observations: localQuotes).isEmpty {
             return InvestmentPriceHistoryResult(quotes: localQuotes, warning: nil)
-        }
-        if let cache = holdingPriceCache, cache.session == revision, cache.asset == asset,
-           cache.checkedDay == InvestmentBook.day(), cache.window.contains(first), cache.window.contains(end) {
-            return InvestmentPriceHistoryResult(quotes: cache.quotes, warning: nil)
         }
         // A disk miss must consult the server before making a provider request.
         await load(force: true)
         guard loaded, scope == dataCacheScope, ledgerRevision == revision else { throw CancellationError() }
         guard lastServerReadSucceeded else { throw InvestmentError.invalid("无法确认服务端历史数据，请恢复连接后重试。") }
         let provider = InvestmentQuoteProvider()
-        var result = (book.quotes[assetID] ?? []).filter { $0.isDailyClose == true && $0.source != "手动录入" }
-        var fetched: [InvestmentQuote] = []
+        var result = InvestmentBook.merge(saved, book.quotes[assetID] ?? []).filter {
+            $0.isDailyClose == true && $0.source != "手动录入"
+        }
+        var fetched = saved
         var firstFailure: String?
-        let missing = InvestmentHistoryRange.uncoveredWindows(from: first, through: end, cached: result)
+        let missing = try await diskCache.missingWindows(scope: scope, key: key, start: first, end: end,
+            today: today, observations: result)
         for window in missing.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }).reversed() {
             try Task.checkCancellation()
             do {
                 let values: [InvestmentQuote]
-                if asset.kind == .crypto {
-                    values = try await provider.cryptoPriceHistory(code: asset.code, from: window.lowerBound, through: window.upperBound)
-                } else {
-                    values = try await provider.history(asset: asset, start: window.lowerBound, through: window.upperBound,
-                                                        cached: nil, keys: credentials)
-                }
+                do {
+                    if asset.kind == .crypto {
+                        values = try await provider.cryptoPriceHistory(code: asset.code, from: window.lowerBound, through: window.upperBound)
+                    } else {
+                        values = try await provider.history(asset: asset, start: window.lowerBound, through: window.upperBound,
+                            cached: nil, keys: credentials)
+                    }
+                } catch InvestmentError.noMarketData(_) { values = [] }
+                try Task.checkCancellation()
+                guard ledgerRevision == revision, scope == dataCacheScope else { throw CancellationError() }
+                try await diskCache.saveHistory(scope: scope, asset: asset, start: window.lowerBound,
+                    end: window.upperBound, today: today, quotes: values)
                 result = InvestmentBook.merge(result, values)
                 fetched = InvestmentBook.merge(fetched, values)
             } catch {
@@ -703,14 +703,33 @@ final class InvestmentStore: ObservableObject {
             try Task.checkCancellation()
             guard ledgerRevision == revision, book.asset(assetID) == asset, keys() == credentials else { throw CancellationError() }
         }
-        if firstFailure == nil {
-            if !fetched.isEmpty { try await update { $0.addQuotes(fetched, assetID: assetID) } }
-            do { try await diskCache.saveHistory(scope: scope, asset: asset, start: first, end: end, today: today, quotes: result) }
-            catch { cacheError = "本机缓存写入失败，请检查可用存储空间。" }
-            holdingPriceCache = HoldingPriceCache(session: revision, asset: asset, window: first...end,
-                                                  checkedDay: InvestmentBook.day(), quotes: result)
+        if !fetched.isEmpty {
+            do { try await update { $0.addQuotes(fetched, assetID: assetID) } }
+            catch {
+                try Task.checkCancellation()
+                var local = book
+                local.addQuotes(fetched, assetID: assetID)
+                book = local
+                firstFailure = firstFailure ?? "行情已保存到本机，服务端同步失败：" + error.localizedDescription
+            }
         }
         return InvestmentPriceHistoryResult(quotes: result, warning: firstFailure.map { "部分历史行情查询失败：" + $0 })
+    }
+
+    private func restoringMarketQuotes(in source: InvestmentBook, scope: String) async throws -> InvestmentBook {
+        var restored = source
+        for asset in source.assets.values where !asset.kind.isManual {
+            let saved = try await diskCache.marketQuotes(scope: scope, key: InvestmentDiskCache.historyKey(asset))
+            let known = Set((source.quotes[asset.id] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+            restored.addQuotes(saved.filter { !known.contains($0.day) }, assetID: asset.id)
+        }
+        for currency in InvestmentCurrency.allCases where currency != .cny {
+            let saved = try await diskCache.marketQuotes(scope: scope, key: InvestmentDiskCache.rateKey(currency))
+            let known = Set((source.fx[currency] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+            restored.addExchangeRates(saved.filter { !known.contains($0.day) }, for: currency)
+        }
+        guard scope == dataCacheScope else { throw CancellationError() }
+        return restored
     }
 
     private func persistCache(_ state: InvestmentServerState, scope: String) async {
@@ -732,7 +751,7 @@ final class InvestmentStore: ObservableObject {
 
     func deleteLocalData(category: InvestmentDataCategory? = nil, rows: [InvestmentCachedRow]? = nil) async throws {
         try await diskCache.remove(scope: dataCacheScope, category: category, rows: rows)
-        holdingPriceCache = nil; cacheWasCleared = true
+        cacheWasCleared = true
     }
 
     func refresh(publicQuotesOnly: Bool = false) async {
@@ -747,10 +766,14 @@ final class InvestmentStore: ObservableObject {
     private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil,
                                preview: ((InvestmentBook) -> Void)? = nil) async throws {
         guard loaded, !refreshing else { return }
+        guard lastServerReadSucceeded else {
+            throw InvestmentError.invalid("服务端暂不可用，继续使用本地行情与汇率；确认服务端缺失后才会查询行情接口。")
+        }
+        let scope = dataCacheScope
         let revision = ledgerRevision
         func checkRefresh() throws {
             try Task.checkCancellation()
-            guard ledgerRevision == revision else { throw CancellationError() }
+            guard ledgerRevision == revision, scope == dataCacheScope else { throw CancellationError() }
         }
         refreshing = true
         defer {
@@ -793,26 +816,38 @@ final class InvestmentStore: ObservableObject {
             var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
             var failures: [String] = []
             for asset in ids.compactMap({ book.assets[$0] }).sorted(by: { $0.code < $1.code })
-                where !publicQuotesOnly && (asset.usesEastmoneyMarketData || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
+                where !publicQuotesOnly && (asset.usesEastmoneyMarketData || asset.usesUSEquityClose || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
                     (!snapshotRefresh || asset.kind != .crypto) {
-                let requests = snapshotRequests?.assets[asset.id] ?? InvestmentHistoryRange.uncoveredWindows(
-                    from: start, through: today, cached: book.quotes[asset.id] ?? [])
-                for request in requests {
-                    try checkRefresh()
-                    do {
-                        let result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
-                            success: InvestmentQuoteProvider.quoteSummary) {
-                            try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
-                                cached: snapshotRefresh ? nil : book.quote(asset.id)?.day, keys: keys)
-                        }
-                        prices[asset.id, default: []].append(contentsOf: result)
-                        if !snapshotRefresh, !publicIDs.contains(asset.id), let last = result.last,
-                           last.day < InvestmentBook.addDays(-7, to: today) {
-                            failures.append(asset.displayCode + "（报价未更新）")
-                        }
-                    } catch {
+                let key = InvestmentDiskCache.historyKey(asset)
+                let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                let existing = book.quotes[asset.id] ?? []
+                let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+                prices[asset.id] = saved.filter { !known.contains($0.day) }
+                let observations = InvestmentBook.merge(saved, existing)
+                let requested = snapshotRequests?.assets[asset.id] ?? [start...today]
+                for range in requested {
+                    let requests = try await diskCache.missingWindows(scope: scope, key: key,
+                        start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
+                    for request in requests.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }) {
                         try checkRefresh()
-                        if !publicIDs.contains(asset.id) { failures.append(asset.displayCode + "（" + error.localizedDescription + "）") }
+                        do {
+                            let result: [InvestmentQuote]
+                            do {
+                                result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
+                                    success: InvestmentQuoteProvider.quoteSummary) {
+                                    try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
+                                        cached: nil, keys: keys)
+                                }
+                            } catch InvestmentError.noMarketData(_) { result = [] }
+                            try checkRefresh()
+                            // Persist downloaded data before attempting any server write.
+                            try await diskCache.saveHistory(scope: scope, asset: asset, start: request.lowerBound,
+                                end: request.upperBound, today: today, quotes: result)
+                            prices[asset.id] = InvestmentBook.merge(prices[asset.id] ?? [], result)
+                        } catch {
+                            try checkRefresh()
+                            if !publicIDs.contains(asset.id) { failures.append(asset.displayCode + "（" + error.localizedDescription + "）") }
+                        }
                     }
                 }
             }
@@ -842,51 +877,47 @@ final class InvestmentStore: ObservableObject {
                 try checkRefresh()
                 for (id, quotes) in history { prices[id, default: []].append(contentsOf: quotes) }
             }
-            let rateWindows = snapshotRequests?.rates ?? Dictionary(uniqueKeysWithValues: currencies.map { currency in
-                let finalRates = (book.fx[currency] ?? []).filter { $0.isDailyClose != false }.map {
-                    InvestmentQuote(day: $0.day, price: $0.price, source: $0.source, isDailyClose: true)
-                }
-                return (currency, InvestmentHistoryRange.uncoveredWindows(from: start, through: today, cached: finalRates))
-            })
-            var fallbackRequests: [ClosedRange<Date>: Set<InvestmentCurrency>] = [:]
-            for (currency, windows) in rateWindows.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
-                for window in windows {
-                    try checkRefresh()
-                    if let key = keys[.twelveData],
-                       let result = try? await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
-                            success: InvestmentQuoteProvider.quoteSummary, operation: {
-                            try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "",
-                                currency: nil, start: window.lowerBound, end: window.upperBound, key: key)
-                       }) {
-                        rates[currency, default: []].append(contentsOf: result)
-                        let cutoff = snapshotRefresh ? window.upperBound :
-                            max(book.fx[currency]?.last?.day ?? start, InvestmentBook.addDays(-7, to: today))
-                        if let last = result.last, last.day >= cutoff { continue }
-                    }
-                    try checkRefresh()
-                    fallbackRequests[window, default: []].insert(currency)
-                }
-            }
-            for (window, fallbackCurrencies) in fallbackRequests.sorted(by: { $0.key.lowerBound < $1.key.lowerBound }) {
-                try checkRefresh()
-                do {
-                    let codes = fallbackCurrencies.map(\.rawValue).sorted().joined(separator: "、")
-                    let fallback = try await HakoExecutionDiagnostics.measure("读取汇率 · 欧洲央行 · " + codes,
-                        success: { InvestmentQuoteProvider.quoteSummary($0.values.flatMap { $0 }) }) {
-                        try await provider.ecbRates(for: fallbackCurrencies, start: window.lowerBound, end: window.upperBound)
-                    }
-                    for (currency, values) in fallback {
-                        if snapshotRefresh {
-                            rates[currency] = InvestmentBook.merge(values, rates[currency] ?? [])
-                        } else if let last = values.last, rates[currency]?.last.map({ $0.day < last.day }) ?? true {
-                            rates[currency] = values
+            let rateCurrenciesToCheck = Set(snapshotRequests?.rates.keys.map { $0 } ?? Array(currencies))
+            for currency in rateCurrenciesToCheck.sorted(by: { $0.rawValue < $1.rawValue }) {
+                let key = InvestmentDiskCache.rateKey(currency)
+                let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                let existing = book.fx[currency] ?? []
+                let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+                rates[currency] = saved.filter { !known.contains($0.day) }
+                let observations = InvestmentBook.merge(saved, existing)
+                for range in snapshotRequests?.rates[currency] ?? [start...today] {
+                    let missing = try await diskCache.missingWindows(scope: scope, key: key,
+                        start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
+                    for window in missing.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }) {
+                        try checkRefresh()
+                        do {
+                            let values: [InvestmentQuote]
+                            if let credential = keys[.twelveData] {
+                                do {
+                                    values = try await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
+                                        success: InvestmentQuoteProvider.quoteSummary) {
+                                        try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
+                                            start: window.lowerBound, end: window.upperBound, key: credential)
+                                    }
+                                } catch InvestmentError.noMarketData(_) { values = [] }
+                                catch {
+                                    try checkRefresh()
+                                    values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                                }
+                            } else {
+                                values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                            }
+                            try checkRefresh()
+                            try await diskCache.saveMarketHistory(scope: scope, key: key, start: window.lowerBound,
+                                end: window.upperBound, today: today, quotes: values)
+                            rates[currency] = InvestmentBook.merge(rates[currency] ?? [], values)
+                        } catch {
+                            try checkRefresh()
+                            failures.append(currency.rawValue + "/CNY（" + error.localizedDescription + "）")
                         }
                     }
-                } catch {
-                    try checkRefresh()
                 }
             }
-            for currency in Set(rateWindows.filter { !$0.value.isEmpty }.keys).subtracting(rates.keys) { failures.append(currency.rawValue + "/CNY") }
             try checkRefresh()
             guard publicQuotesOnly || self.keys() == keys else { return }
             let apply: (inout InvestmentBook) -> Void = { draft in
@@ -900,7 +931,13 @@ final class InvestmentStore: ObservableObject {
                 preview(draft)
                 return
             }
-            try await update(scheduleSnapshots: !snapshotRefresh, apply)
+            do { try await update(scheduleSnapshots: !snapshotRefresh, apply) }
+            catch {
+                try Task.checkCancellation()
+                guard scope == dataCacheScope else { throw CancellationError() }
+                book = try await restoringMarketQuotes(in: book, scope: scope)
+                throw InvestmentError.invalid("行情与汇率已保存本机，服务端同步失败：" + error.localizedDescription)
+            }
             if refreshPublicHistory, !snapshotRefresh { lastPublicHistoryDay = today }
             if !publicIDs.isEmpty {
                 lastPublicQuoteRefresh = .now

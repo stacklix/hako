@@ -436,7 +436,7 @@ struct CryptoView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if accounts.contains(where: \.isStock) {
-                    Text("Funding 中 EQ 开头的股票单独列为 Stock，不重复计入 Funding。股票单价采用买卖报价中间值；USD 与 USDT 按 1:1 计算折值。")
+                    Text("Funding 中 EQ 开头的股票单独列为 Stock，不重复计入 Funding。股票单价使用 Twelve Data 最新报价，API Key 在投资记账设置中配置；USD 与 USDT 按 1:1 计算折值。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {

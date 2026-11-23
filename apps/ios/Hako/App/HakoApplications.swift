@@ -5,11 +5,15 @@ enum HakoApplications {
     @MainActor static func httpProxySettings() -> some View { HTTPProxySettingsSheet() }
 
     enum Category: String, CaseIterable {
-        case it = "IT工具", finance = "金融", life = "生活"
+        // Raw values identify saved application orders; titles are the visible category names.
+        case development = "开发工具", management = "IT工具", finance = "金融", life = "生活"
+
+        var title: String { self == .management ? "管理面板" : rawValue }
 
         var applications: [Application] {
             switch self {
-            case .it: [.headplane, .router, .qinglong, .cloudServers, .containers, .devices, .codeWorkshop]
+            case .development: [.codeWorkshop, .swissArmyKnife]
+            case .management: [.headplane, .router, .qinglong, .cloudServers, .containers, .devices]
             case .finance: [.investment, .crypto]
             case .life: [.sports, .usage]
             }
@@ -22,6 +26,7 @@ enum HakoApplications {
         case investment = "投资记账", crypto = "加密资产"
         case codeWorkshop = "代码工坊"
         case router = "路由器"
+        case swissArmyKnife = "瑞士军刀"
 
         var id: Self { self }
         var subtitle: String {
@@ -33,6 +38,7 @@ enum HakoApplications {
             case .containers: "Arcane · 容器状态 · 日志与更新"
             case .devices: "设备在线状态 · 能力调用"
             case .codeWorkshop: "Codex 会话 · 编程任务 · 原型预览"
+            case .swissArmyKnife: "实用小工具 · 二维码扫描与文本复制"
             case .sports: "运动趋势 · 每次记录 · GitHub 归档"
             case .usage: "每日概览 · Top 5 · GitHub 归档"
             case .investment: "账户 · 持仓 · 定投"
@@ -48,6 +54,7 @@ enum HakoApplications {
             case .containers: "shippingbox"
             case .devices: "desktopcomputer"
             case .codeWorkshop: "terminal"
+            case .swissArmyKnife: "wrench.and.screwdriver"
             case .sports: "figure.run"
             case .usage: "chart.bar.xaxis"
             case .investment: "chart.line.uptrend.xyaxis"
@@ -63,6 +70,7 @@ enum HakoApplications {
             case .containers: ContainersView()
             case .devices: DeviceMonitorView()
             case .codeWorkshop: CodeWorkshopView()
+            case .swissArmyKnife: SwissArmyKnifeView()
             case .sports: SportsView()
             case .usage: UsageEntry()
             case .investment: InvestmentView()

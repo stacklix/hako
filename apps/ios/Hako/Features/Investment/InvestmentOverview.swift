@@ -119,7 +119,7 @@ struct InvestmentOverview: View {
             VStack(spacing: 2) {
                 Text(String(label))
                 if let gain, gain != 0 {
-                    Text((gain > 0 ? "+" : "") + gain.formatted(.number.notation(.compactName).precision(.fractionLength(0...1))))
+                    Text(calendarGain(gain))
                         .lineLimit(1).minimumScaleFactor(0.65)
                 } else if gain == nil, date <= today, let earliest = book.earliest, date >= earliest {
                     Text("—").foregroundStyle(.secondary)
@@ -132,6 +132,17 @@ struct InvestmentOverview: View {
         }.buttonStyle(.plain).disabled(date > today)
             .accessibilityLabel(InvestmentText.date(date) + "，盈亏 " + InvestmentText.money(gain, .cny, signed: true))
             .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private func calendarGain(_ gain: Decimal) -> String {
+        let sign = gain > 0 ? "+" : ""
+        if abs(gain) >= 1_000 {
+            return sign + (gain / 1_000).formatted(
+                .number.locale(Locale(identifier: "en_US_POSIX"))
+                    .grouping(.never).precision(.fractionLength(1))
+            ) + "k"
+        }
+        return sign + gain.formatted(.number.precision(.fractionLength(0...1)))
     }
 
     private func moveMonth(_ offset: Int) {

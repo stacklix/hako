@@ -65,8 +65,8 @@ struct InvestmentServerRecords {
     private func decimal(_ value: String?) -> Decimal? {
         value.flatMap { Decimal(string: $0, locale: Locale(identifier: "en_US_POSIX")) }
     }
-    private func string(_ value: Decimal?, exchangeRate: Bool = false) -> String? {
-        value.map { InvestmentPrecision.string($0, exchangeRate: exchangeRate) }
+    private func string(_ value: Decimal?, exchangeRate: Bool = false, unitPrice: Bool = false) -> String? {
+        value.map { InvestmentPrecision.string($0, exchangeRate: exchangeRate, unitPrice: unitPrice) }
     }
     private func currency(_ row: InvestmentServerRow, _ key: String) throws -> InvestmentCurrency {
         guard let value = InvestmentCurrency(rawValue: try required(row, key)) else { throw invalid(key) }
@@ -132,7 +132,7 @@ struct InvestmentServerRecords {
                     let priceType = priceTypes[asset.id] ?? "close"
                     let key = [instrument, date, priceType, source].joined(separator: "|")
                     var price = ["instrument_id": instrument, "session_date": date, "source": source,
-                                 "price_type": priceType, "price": string(quote.price)!]
+                                 "price_type": priceType, "price": string(quote.price, unitPrice: true)!]
                     let close = asset.usesUSEquityClose ? InvestmentBook.usEquityClose(on: quote.day) : quote.day
                     price["valuation_date"] = day.string(from: close)
                     if asset.usesUSEquityClose { price["closed_at_utc"] = timestamp.string(from: close) }
@@ -215,7 +215,10 @@ struct InvestmentServerRecords {
                 ("保证金", event.margin, before?.margin)
             ]
             for (field, value, oldValue) in fields {
-                if let value, value != oldValue { try InvestmentPrecision.validateInput(value, field: field) }
+                if let value, value != oldValue {
+                    try InvestmentPrecision.validateInput(value, field: field,
+                        unitPrice: field == "成交价格" && book.asset(event.assetID)?.kind.usesUnitPrice == true)
+                }
             }
         }
     }
@@ -264,7 +267,7 @@ struct InvestmentServerRecords {
         row["amount"] = string(event.amount)
         // Units are source data, not currency amounts: 0.058 BTC must stay 0.058.
         row["quantity"] = NSDecimalNumber(decimal: event.quantity).stringValue
-        row["unit_price"] = string(event.price)
+        row["unit_price"] = string(event.price, unitPrice: asset?.kind.usesUnitPrice == true)
         row["fee"] = string(event.fee)
         row["settled_amount"] = string(event.settledAmount)
         row["transfer_id"] = event.transferID?.uuidString
@@ -293,8 +296,8 @@ struct InvestmentServerRecords {
             row["total_cny"] = string(value?.value)
             row["total_usd"] = string(value?.valueUSD)
             row["cumulative_gain_cny"] = string(value?.gain)
-            if let current = value?.gain,
-               let previous = snapshots.values[InvestmentBook.addDays(-1, to: date)]?.gain {
+            let previous: Decimal? = date == first ? 0 : snapshots.values[InvestmentBook.addDays(-1, to: date)]?.gain
+            if let current = value?.gain, let previous {
                 row["daily_gain_cny"] = string(current - previous)
             }
             result["investment_daily_snapshots", default: []].append(row)

@@ -23,7 +23,7 @@ struct HakoApplicationOrderView: View {
                         orderData = order.data
                     }
                 } header: {
-                    Text(category.rawValue)
+                    Text(category.title)
                 } footer: {
                     Text("拖动右侧把手调整本分类的子应用顺序，修改自动保存。")
                 }

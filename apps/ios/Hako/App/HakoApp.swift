@@ -44,7 +44,7 @@ struct HomeView: View {
     @State private var workshopPreview: WorkshopPushNotice?
     @State private var workshopSwitch: WorkshopPushNotice?
     @AppStorage(HakoApplicationOrder.storageKey) private var applicationOrderData = Data()
-    @State private var category = Category.it
+    @State private var category = Category.development
     @State private var versionWarning: String?
     @State private var lastVersionWarning: String?
     private struct HakoLoginLink: Identifiable { let id = UUID(); let payload: String }
@@ -201,7 +201,7 @@ struct HomeView: View {
         HStack(spacing: 25) {
             ForEach(Category.allCases, id: \.self) { option in
                 Button { category = option } label: {
-                    Text(option.rawValue)
+                    Text(option.title)
                         .font(.system(size: 14, weight: category == option ? .semibold : .regular))
                         .foregroundStyle(category == option ? HakoStyle.text : HakoStyle.muted)
                         .padding(.horizontal, 1).frame(minHeight: 44)
@@ -227,7 +227,7 @@ struct HomeView: View {
     private var applications: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
-                Text(category.rawValue).font(.system(size: 13, weight: .medium)).foregroundStyle(HakoStyle.text)
+                Text(category.title).font(.system(size: 13, weight: .medium)).foregroundStyle(HakoStyle.text)
                 Spacer()
                 Text("\(category.applications.count) 个应用").font(.system(size: 12))
             }

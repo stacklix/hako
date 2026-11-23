@@ -572,17 +572,16 @@ private struct InvestmentLifecycleActions: View {
             if let account = store.book.account(accountID) {
                 let blocker = store.book.archiveBlocker(accountID: accountID)
                 VStack(alignment: .leading, spacing: 9) {
-                    InvestmentAccountManagementCard {
-                        Button {
-                            archivesAccount = !account.isArchived
-                            confirmsArchival = true
-                        } label: {
-                            InvestmentAccountManagementRow(title: account.isArchived ? "恢复账户" : "归档账户",
-                                                           detail: account.isArchived ? nil : "可恢复")
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(working || store.saving || (!account.isArchived && blocker != nil))
+                    Button {
+                        archivesAccount = !account.isArchived
+                        confirmsArchival = true
+                    } label: {
+                        Text(account.isArchived ? "恢复账户" : "归档账户")
+                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(.white)
                     }
+                    .buttonStyle(HakoActionButtonStyle(backgroundColor: .orange))
+                    .disabled(working || store.saving || (!account.isArchived && blocker != nil))
                     Text(account.isArchived ? "账户已隐藏，交易记录和历史盈亏完整保留。恢复后可重新使用，定投需手动启用。"
                          : blocker ?? "保留全部数据，暂停定投并隐藏账户。可在设置中显示归档账户，随时恢复。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -618,15 +617,13 @@ private struct InvestmentLifecycleActions: View {
 
 private struct InvestmentSettings: View {
     private enum Sheet: Hashable, Identifiable {
-        case addAccount, account(UUID), credential(InvestmentQuoteSource), dataBackup
+        case credential(InvestmentQuoteSource), dataBackup
         var id: Self { self }
     }
 
     @ObservedObject var store: InvestmentStore
     @State private var error: String?
     @State private var sheet: Sheet?
-    @State private var recalculatingSnapshots = false
-    @State private var snapshotReport: InvestmentDailySnapshotReport?
     @State private var preparingExport = false
     @State private var showingExporter = false
     @State private var exportDocument: InvestmentExportDocument?
@@ -637,52 +634,34 @@ private struct InvestmentSettings: View {
 
     private var settings: some View {
         Form {
+            Section {
+                NavigationLink {
+                    InvestmentAccountSettings(store: store)
+                } label: {
+                    HStack {
+                        Text("账户管理")
+                        Spacer()
+                        Text("\(store.visibleAccounts.count)个账户")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity)
+                }.investmentListRow()
+            }
             Section("显示选项") {
                 Toggle("显示归档账户", isOn: $store.showsArchived)
                 Toggle("显示零余额持仓", isOn: $store.showsZeroPositions)
                 Text("隐藏只影响列表显示，历史流水和统计仍保留。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("账户管理") {
-                ForEach(store.visibleAccounts) { account in
-                    let subtitle = account.currency.rawValue + " · " + account.type.rawValue + (account.isArchived ? " · 已归档" : "")
-                    Button { sheet = .account(account.id) } label: {
-                        HStack {
-                            InvestmentTitle(account.name, subtitle: subtitle)
-                            Spacer()
-                            InvestmentChevron()
-                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
-                    }.buttonStyle(.plain).investmentListRow().hakoReorderRow()
-                }
-                .onMove { offsets, destination in
-                    var reordered = store.visibleAccounts.map(\.id)
-                    reordered.move(fromOffsets: offsets, toOffset: destination)
-                    Task { await perform { try await store.update { book in
-                        let ids = Set(reordered)
-                        var ordered = reordered.compactMap { book.account($0) }.makeIterator()
-                        for i in book.accounts.indices where ids.contains(book.accounts[i].id) {
-                            if let account = ordered.next() { book.accounts[i] = account }
-                        }
-                    } } }
-                }
-                Button { sheet = .addAccount } label: {
-                    Label("添加账户", systemImage: "plus")
-                }
-                .investmentListRow()
-            }
-            Section("行情与汇率") {
-                Text("股票、ETF、场外基金和国内期货期权使用东方财富，无需配置密钥；场外基金使用天天基金公布的单位净值。货币基金的每万份收益不作为净值。加密现货使用公开行情，汇率由欧洲央行补充。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Button(store.refreshing ? "正在刷新…" : "刷新行情与汇率") { Task { await store.refresh() } }
-                    .disabled(!store.canRefresh || store.refreshing)
-                if !store.quoteStatus.isEmpty { Text(store.quoteStatus).font(.footnote).foregroundStyle(.secondary) }
-            }
             Section {
-                ForEach(InvestmentQuoteSource.allCases) { source in credentialLink(source) }
+                InvestmentQuoteChannels()
+                ForEach(InvestmentQuoteSource.allCases) { source in
+                    credentialLink(source)
+                }
             } header: {
-                Text("补充行情接口（可选）")
+                Text("行情接口")
             } footer: {
-                Text("东方财富缺少期货期权历史时，可使用已配置的行情源补查；Twelve Data 也可补充汇率。到期合约仍可能缺少历史数据。")
+                Text("进入各接口页面配置密钥，查看最近24小时的成功与失败调用量。")
+                if !store.quoteStatus.isEmpty { Text(store.quoteStatus) }
             }
             Section {
                 NavigationLink {
@@ -697,29 +676,12 @@ private struct InvestmentSettings: View {
                     Label("数据检验", systemImage: "checkmark.shield")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.investmentListRow()
-            } header: {
-                Text("数据检查")
-            } footer: {
-                Text("检查交易记录、估值、汇率和历史快照，列出具体问题及受影响日期。")
-            }
-            Section {
-                Button(recalculatingSnapshots ? "正在查询并重算…" : "重新计算历史快照") {
-                    Task { await rebuildSnapshots() }
-                }
-                .disabled(recalculatingSnapshots || store.book.earliest == nil)
-                if let snapshotReport {
-                    Text(snapshotReport.message).font(.footnote).foregroundStyle(.secondary)
-                    SectionReportTotals(report: snapshotReport)
-                }
-                if let snapshotSaveError = store.snapshotSaveError {
-                    Text(snapshotSaveError).font(.footnote).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("日终快照")
-            } footer: {
-                Text("按北京时间截日，快照保存到服务端。重算复用已保存的历史行情和汇率，仅补查缺失数据。自动化可使用「同步 Hako 数据」快捷指令。")
-            }
-            Section {
+                NavigationLink {
+                    InvestmentSnapshotSettings(store: store)
+                } label: {
+                    Label("重新计算历史快照", systemImage: "clock.arrow.circlepath")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }.investmentListRow()
                 Button { preparingExport = true } label: {
                     Label(preparingExport ? "正在准备导出…" : "导出账本", systemImage: "square.and.arrow.up")
                 }
@@ -729,16 +691,12 @@ private struct InvestmentSettings: View {
                     Label("数据备份", systemImage: "externaldrive.badge.icloud")
                 }.investmentListRow()
             } header: {
-                Text("数据导出")
-            } footer: {
-                Text("将服务端已保存的全部记账数据导出为 CSV 压缩包，内含 SQLite 建表语句。")
+                Text("数据")
             }
         }
         .navigationTitle("投资记账设置")
         .sheet(item: $sheet) { item in
             switch item {
-            case .addAccount: InvestmentAccountEditor(store: store)
-            case .account(let id): InvestmentAccountManagement(store: store, accountID: id)
             case .credential(let source): InvestmentQuoteCredentialEditor(store: store, source: source)
             case .dataBackup: InvestmentDataBackupSettings()
             }
@@ -777,10 +735,6 @@ private struct InvestmentSettings: View {
         .accessibilityValue(configured ? "已配置" : "未配置")
     }
 
-    private func perform(_ action: () async throws -> Void) async {
-        do { try await action() } catch { self.error = error.localizedDescription }
-    }
-
     private func prepareExport() async {
         defer { preparingExport = false }
         do {
@@ -794,18 +748,136 @@ private struct InvestmentSettings: View {
         }
     }
 
-    private func rebuildSnapshots() async {
-        guard !recalculatingSnapshots else { return }
-        recalculatingSnapshots = true
-        snapshotReport = nil
-        defer { recalculatingSnapshots = false }
+}
+
+private struct InvestmentSnapshotSettings: View {
+    @ObservedObject var store: InvestmentStore
+    @State private var recalculating = false
+    @State private var report: InvestmentDailySnapshotReport?
+    @State private var error: String?
+
+    private var end: Date { InvestmentBook.addDays(-1, to: InvestmentBook.day()) }
+    private var hasHistory: Bool { store.book.earliest.map { $0 <= end } ?? false }
+
+    var body: some View {
+        Form {
+            Section("这个操作做什么") {
+                Text("根据现有交易流水、估值和汇率，重新计算每天收盘后的账户余额、持仓市值、总资产和盈亏，用于历史趋势与盈亏日历。")
+                Text("重算会更新服务端的日终快照，不修改原始交易流水。")
+            }
+            Section("何时使用") {
+                Text("修改历史交易、补齐历史行情或汇率后，或数据检验提示快照缺失、与账本不一致时，可以重新计算。")
+            }
+            Section("计算范围") {
+                if let first = store.book.earliest, hasHistory {
+                    LabeledContent("日期", value: InvestmentText.date(first) + " 至 " + InvestmentText.date(end))
+                } else {
+                    Text("暂无已结束的记账日。").foregroundStyle(.secondary)
+                }
+                Text("按北京时间截日，覆盖全部账户，包括已归档账户；今天尚未结束，不生成今天的日终快照。")
+                Text("复用本机与服务端已有的历史行情和汇率，仅补查两处都缺少的数据。未能补齐的数据会保留为缺失，不用零值替代。")
+            }
+            Section {
+                Button { recalculating = true } label: {
+                    HStack(spacing: 8) {
+                        if recalculating { ProgressView() }
+                        Text(recalculating ? "正在查询并重算…" : "开始重新计算")
+                    }
+                }
+                .buttonStyle(HakoActionButtonStyle())
+                .disabled(recalculating || !hasHistory)
+            } footer: {
+                Text("自动化可使用「同步 Hako 数据」快捷指令。")
+            }
+            if let report {
+                Section("重算结果") {
+                    Text(report.message)
+                    SectionReportTotals(report: report)
+                }
+            }
+            if let failure = error ?? store.snapshotSaveError {
+                Section("未能完成") {
+                    Text(failure).foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle("重新计算历史快照")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: recalculating) {
+            if recalculating { await rebuild() }
+        }
+    }
+
+    private func rebuild() async {
+        report = nil
+        error = nil
+        defer { recalculating = false }
         do {
             try await store.refreshSnapshotHistory()
-            snapshotReport = try await store.saveDailySnapshots(rebuild: true)
+            report = try await store.saveDailySnapshots(rebuild: true)
         } catch is CancellationError {
             return
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct InvestmentAccountSettings: View {
+    private enum Sheet: Hashable, Identifiable {
+        case addAccount, account(UUID)
+        var id: Self { self }
+    }
+
+    @ObservedObject var store: InvestmentStore
+    @State private var sheet: Sheet?
+    @State private var error: String?
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(store.visibleAccounts) { account in
+                    let subtitle = account.currency.rawValue + " · " + account.type.rawValue + (account.isArchived ? " · 已归档" : "")
+                    Button { sheet = .account(account.id) } label: {
+                        HStack {
+                            InvestmentTitle(account.name, subtitle: subtitle)
+                            Spacer()
+                            InvestmentChevron()
+                        }.frame(maxWidth: .infinity).contentShape(Rectangle())
+                    }.buttonStyle(.plain).investmentListRow().hakoReorderRow()
+                }
+                .onMove(perform: moveAccounts)
+                Button { sheet = .addAccount } label: {
+                    Label("添加账户", systemImage: "plus")
+                }.investmentListRow()
+            }
+        }
+        .navigationTitle("账户管理")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $sheet) { item in
+            switch item {
+            case .addAccount: InvestmentAccountEditor(store: store)
+            case .account(let id): InvestmentAccountManagement(store: store, accountID: id)
+            }
+        }
+        .alert("操作失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("好", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+
+    private func moveAccounts(from offsets: IndexSet, to destination: Int) {
+        var reordered = store.visibleAccounts.map(\.id)
+        reordered.move(fromOffsets: offsets, toOffset: destination)
+        Task {
+            do {
+                try await store.update { book in
+                    let ids = Set(reordered)
+                    var ordered = reordered.compactMap { book.account($0) }.makeIterator()
+                    for i in book.accounts.indices where ids.contains(book.accounts[i].id) {
+                        if let account = ordered.next() { book.accounts[i] = account }
+                    }
+                }
+            } catch { self.error = error.localizedDescription }
         }
     }
 }
@@ -974,6 +1046,11 @@ private struct InvestmentQuoteCredentialEditor: View {
                         }
                         .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
                         .disabled(testing || savedKey == nil || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if source == .tushare {
+                            Text("通过读取交易日历测试，需要该接口的访问权限。测试失败不一定表示 Token 无效。")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if let testMessage { connectionResult(testMessage) }
                     }
                     .listRowBackground(Color.clear)
@@ -983,6 +1060,7 @@ private struct InvestmentQuoteCredentialEditor: View {
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 if savedKey == nil { Button("重试读取", action: load) }
+                InvestmentAPIUsageChart(source: source)
             }
         }
         .task { load() }
@@ -1029,7 +1107,9 @@ private struct InvestmentQuoteCredentialEditor: View {
             try await InvestmentQuoteProvider().testCredential(value, for: source)
             guard !Task.isCancelled, key == value else { return }
             testSucceeded = true
-            testMessage = "凭据可用，行情接口响应正常。"
+            testMessage = source == .tushare
+                ? "Token 可用，交易日历读取正常。其他行情接口仍受各自权限与频率限制。"
+                : "凭据可用，行情接口响应正常。"
         } catch {
             guard !Task.isCancelled, key == value else { return }
             testSucceeded = false

@@ -6,8 +6,9 @@ import (
 )
 
 // Round decimal text directly: ledger values must never pass through float64.
-// Values below 0.01 in absolute magnitude keep four places; others keep two.
-func investmentRoundedDecimal(value string, exchangeRate bool) string {
+// Rates and unit prices keep four places. Amounts below 0.01 also keep four;
+// other amounts keep two.
+func investmentRoundedDecimal(value string, fourPlaces bool) string {
 	number, ok := new(big.Rat).SetString(value)
 	if !ok {
 		return value
@@ -25,7 +26,7 @@ func investmentRoundedDecimal(value string, exchangeRate bool) string {
 	}
 	digits := 2
 	hundredths := new(big.Int).Quo(new(big.Int).Mul(number.Num(), big.NewInt(100)), number.Denom())
-	if exchangeRate || hundredths.Sign() == 0 {
+	if fourPlaces || hundredths.Sign() == 0 {
 		digits = 4
 	}
 	units := round(100)
@@ -50,7 +51,7 @@ func normalizeInvestmentNumbers(row investmentRow) {
 	for column, value := range row {
 		// Preserve traded units exactly; currency rounding changes the trade itself.
 		if column != "quantity" && strings.Contains(investmentNumberFields, " "+column+" ") {
-			row[column] = investmentRoundedDecimal(value, column == "rate")
+			row[column] = investmentRoundedDecimal(value, column == "rate" || column == "unit_price" || column == "price")
 		}
 	}
 }

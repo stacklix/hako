@@ -58,7 +58,8 @@ internal static class ResourceHistoryChecks
             var restored = (ResourceHistoryResult)(await restarted.QueryAsync(JsonSerializer.SerializeToElement(new { }), default))!;
             if (restored.Points.Sum(point => point.SampleCount) != 3 || new FileInfo(active).Length % 24 != 0)
                 throw new Exception("Restart or partial-record recovery failed");
-            foreach (var json in new[] { "{\"rangeSeconds\":1}", "{\"rangeSeconds\":1801}", "{\"rangeSeconds\":\"x\"}", "{\"unknown\":1}" })
+            foreach (var json in new[] { "{\"rangeSeconds\":1}", "{\"rangeSeconds\":300}", "{\"rangeSeconds\":1801}", "{\"rangeSeconds\":\"x\"}", "{\"unknown\":1}",
+                "{\"latestPoints\":239}", "{\"latestPoints\":\"240\"}", "{\"latestPoints\":240,\"rangeSeconds\":900}", "{\"rangeSeconds\":900,\"latestPoints\":240}" })
             {
                 try { await history.QueryAsync(JsonDocument.Parse(json).RootElement, default); throw new Exception("Invalid history params accepted"); }
                 catch (AgentActionException error) when (error.Code == "invalid_params") { }
@@ -94,6 +95,7 @@ internal static class ResourceHistoryChecks
             await SharedSamplingAsync(Path.Combine(directory, "shared"), now);
             await FiveSecondAveragesAsync(Path.Combine(directory, "rolling"), now);
             await ShortRangesAsync(Path.Combine(directory, "short"), now);
+            await RecentPointsAsync(Path.Combine(directory, "recent"), now);
 
             // Real background sampling runs once per second independently of queries or a server connection.
             var live = new ResourceHistory(Path.Combine(directory, "live"));
@@ -128,6 +130,34 @@ internal static class ResourceHistoryChecks
                 || result.Points.Any(point => point.Timestamp < result.From || point.Timestamp > result.To))
                 throw new Exception("Short history range boundaries, warmup exclusion or bucket resolution are incorrect");
         }
+    }
+
+    private static async Task RecentPointsAsync(string directory, DateTimeOffset now)
+    {
+        var history = new ResourceHistory(directory, () => now);
+        var parameters = JsonSerializer.SerializeToElement(new { latestPoints = 240 });
+        var empty = (ResourceHistoryResult)(await history.QueryAsync(parameters, default))!;
+        if (empty.Points.Length != 0 || empty.From != empty.To || empty.BucketSeconds != 1)
+            throw new Exception("Empty recent history has invalid bounds");
+        for (int i = 0; i < 300; i++)
+        {
+            await history.AppendAsync(new(now.AddSeconds(-600 + i).ToUnixTimeMilliseconds(), i % 100, 50), default);
+            if (i == 259) await history.FlushAsync(default);
+        }
+        await history.AppendAsync(new(now.ToUnixTimeMilliseconds(), 17.125, 60), default);
+        await history.AppendAsync(new(now.AddSeconds(1).ToUnixTimeMilliseconds(), 99, 99), default);
+        var result = (ResourceHistoryResult)(await history.QueryAsync(parameters, default))!;
+        if (result.Points.Length != 240 || result.Points.Any(point => point.SampleCount != 1)
+            || result.BucketSeconds != 1 || result.From != now.AddSeconds(-539).ToUnixTimeMilliseconds()
+            || result.Points[0].CpuUsagePercent != 61 || result.Points[0].CpuSmoothedMaxPercent != 59
+            || result.Points[^1].CpuUsagePercent != 17.125 || result.Points[^1].Timestamp != now.ToUnixTimeMilliseconds()
+            || JsonSerializer.SerializeToUtf8Bytes(result, AgentConnection.Json).Length > 60000)
+            throw new Exception("Recent history must retain the latest 240 individual samples, gaps and warmup without aggregation");
+        await history.FlushAsync(default);
+        var restarted = new ResourceHistory(directory, () => now);
+        var restored = (ResourceHistoryResult)(await restarted.QueryAsync(parameters, default))!;
+        if (!restored.Points.SequenceEqual(result.Points))
+            throw new Exception("Recent history changed after the buffered samples were written to disk");
     }
 
     private static async Task FiveSecondAveragesAsync(string directory, DateTimeOffset now)

@@ -123,13 +123,6 @@ struct InvestmentPerformanceAllocation: View {
                     .accessibilityValue(InvestmentText.money(detail.value, currency))
             }
         }.chartLegend(.hidden).frame(width: 136, height: 136)
-            .overlay {
-                VStack(spacing: 2) {
-                    Text(overview ? "投资总额" : "账户总额").font(.caption2).foregroundStyle(.secondary)
-                    Text(InvestmentText.money(total, currency)).font(.caption.weight(.medium)).monospacedDigit()
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                }.frame(width: 91).allowsHitTesting(false)
-            }
     }
 
     private var legend: some View {

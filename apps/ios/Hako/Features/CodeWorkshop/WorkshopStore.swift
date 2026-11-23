@@ -893,9 +893,11 @@ import CryptoKit
         WorkshopPhoto(id: id, data: try Data(contentsOf: imageFile(id)))
     }
 
-    func messagePhotos(_ messageID: String) -> [WorkshopPhoto] {
-        let ids = preferences.receipts.first(where: { $0.id == messageID })?.imageIds ??
-            (queuedSends.first(where: { $0.id == messageID })?.imageIds ?? [])
+    func messagePhotos(_ messageID: String, imageIDs: [String] = []) -> [WorkshopPhoto] {
+        let ids = imageIDs.isEmpty
+            ? (preferences.receipts.first(where: { $0.id == messageID })?.imageIds ??
+                queuedSends.first(where: { $0.id == messageID })?.imageIds ?? [])
+            : imageIDs
         var photos: [WorkshopPhoto] = []
         for id in ids {
             guard let photo = try? savedPhoto(id) else { break }

@@ -179,7 +179,8 @@ import Foundation
                 "A consumed message must display its acknowledged state: " + state)
         }
         let ordinaryUser = entry("ordinary-user", "Already sent", role: "user", state: "queued")
-        let steerAcknowledgement = WorkshopFollowupState(id: queuedFirst.id, state: "steered", revision: 1, imageIds: [])
+        let localImageIDs = [UUID().uuidString, UUID().uuidString]
+        let steerAcknowledgement = WorkshopFollowupState(id: queuedFirst.id, state: "steered", revision: 1, imageIds: localImageIDs)
         let staleQueueSnapshot = WorkshopFollowupState(id: queuedFirst.id, state: "queued", revision: 0, imageIds: [])
         let acknowledged = WorkshopFollowupState.merging([staleQueueSnapshot], into: [steerAcknowledgement])
         let afterSteer = WorkshopTranscriptPresentation(entries: mixed, followups: acknowledged)
@@ -196,6 +197,8 @@ import Foundation
             resolved.questionId == linkedFollowup.questionId && resolved.replacesId == linkedFollowup.replacesId && resolved.questions == linkedFollowup.questions,
             "Resolving the visible state must preserve the message identity, content and question metadata")
         let cachedStatuses = try JSONDecoder().decode([WorkshopFollowupState].self, from: JSONEncoder().encode(acknowledged))
+        precondition(cachedStatuses.first(where: { $0.id == queuedFirst.id })?.imageIds == localImageIDs,
+            "Accepted follow-ups must retain ordered local attachment IDs after the pending send is removed and history is restored")
         precondition(WorkshopFollowupState.merging([staleQueueSnapshot], into: cachedStatuses) == [steerAcknowledgement],
             "Restoring a conversation must preserve acknowledgement against a stale snapshot")
         precondition(WorkshopTranscriptPresentation(entries: [ordinaryUser], followups: []).queued.isEmpty,
@@ -302,7 +305,7 @@ import Foundation
         WorkshopTranscriptMerge.apply(entry("answer", "!", kind: "delta"), entries: &entries, streamText: &stream)
         precondition(entries[0].text == "Hello!")
         let key = WorkshopTranscriptKey(agentId: "computer", applicationId: "app", threadId: "thread")
-        var snapshot = WorkshopTranscript(key: key, entries: entries, artifacts: [], followups: [], historyCursor: "24",
+        var snapshot = WorkshopTranscript(key: key, entries: entries, artifacts: [], followups: acknowledged, historyCursor: "24",
             operationId: "operation", eventCursor: 300, streamText: stream, savedAt: .now)
         let restored = try JSONDecoder().decode(WorkshopTranscript.self, from: JSONEncoder().encode(snapshot))
         var restoredEntries = restored.entries, restoredStream = restored.streamText
@@ -319,6 +322,8 @@ import Foundation
         snapshot.entries = older
         let bounded = try JSONDecoder().decode(WorkshopTranscript.self, from: snapshot.encodedForCache(maxEntries: 2)!)
         precondition(bounded.entries.map(\.id) == ["c", "d"] && bounded.historyCursor == nil)
+        precondition(bounded.followups.first(where: { $0.id == queuedFirst.id })?.imageIds == localImageIDs,
+            "Trimming cached transcript entries must preserve the local image association for accepted follow-ups")
         snapshot.streamText = ["large": String(repeating: "x", count: 8000)]
         let reset = try JSONDecoder().decode(WorkshopTranscript.self, from: snapshot.encodedForCache(maxBytes: 2000)!)
         precondition(reset.eventCursor == 0 && reset.streamText.isEmpty, "Dropping a replay accumulator must also reset its cursor")

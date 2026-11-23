@@ -137,11 +137,16 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
     public async Task<object?> QueryAsync(JsonElement parameters, CancellationToken token)
     {
         int range = 3600;
+        bool recent = false, hasRange = false;
         foreach (var property in parameters.EnumerateObject())
         {
-            if (property.Name != "rangeSeconds" || property.Value.ValueKind != JsonValueKind.Number || !property.Value.TryGetInt32(out range)
-                || range is not (900 or 1800 or 3600 or 21600 or 86400 or 604800))
-                throw new AgentActionException("invalid_params", "rangeSeconds 必须为 900、1800、3600、21600、86400 或 604800。");
+            if (property.Name == "latestPoints" && !recent && !hasRange && property.Value.ValueKind == JsonValueKind.Number
+                && property.Value.TryGetInt32(out int count) && count == 240)
+                recent = true;
+            else if (property.Name == "rangeSeconds" && !recent && !hasRange && property.Value.ValueKind == JsonValueKind.Number
+                && property.Value.TryGetInt32(out range) && range is (900 or 1800 or 3600 or 21600 or 86400 or 604800))
+                hasRange = true;
+            else throw new AgentActionException("invalid_params", "请指定 latestPoints:240，或 rangeSeconds 为 900、1800、3600、21600、86400、604800；两者不能同时使用。");
         }
         var now = Now.ToUnixTimeMilliseconds();
         var from = now - range * 1000L;
@@ -151,6 +156,23 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
         try
         {
             var rows = new List<ResourceSample>();
+            var recentRows = new SortedDictionary<long, ResourceSample>();
+            var recentTimes = new PriorityQueue<long, long>();
+            void Keep(ResourceSample row)
+            {
+                if (!recent) { if (row.Timestamp > from - 5000) rows.Add(row); return; }
+                // Bound retained memory to the newest samples plus their five-second warmup,
+                // even when daily files are enumerated out of chronological order.
+                if (recentTimes.Count == 240 && row.Timestamp <= recentTimes.Peek() - 5000) return;
+                if (recentRows.ContainsKey(row.Timestamp)) { recentRows[row.Timestamp] = row; return; }
+                recentRows[row.Timestamp] = row;
+                if (recentTimes.Count < 240) recentTimes.Enqueue(row.Timestamp, row.Timestamp);
+                else if (row.Timestamp > recentTimes.Peek())
+                { recentTimes.Dequeue(); recentTimes.Enqueue(row.Timestamp, row.Timestamp); }
+                if (recentTimes.Count == 240)
+                    while (recentRows.Count > 0 && recentRows.First().Key <= recentTimes.Peek() - 5000)
+                        recentRows.Remove(recentRows.First().Key);
+            }
             long? last = null;
             if (Directory.Exists(directory)) foreach (var path in Directory.EnumerateFiles(directory, "*.bin"))
             {
@@ -159,7 +181,7 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
                 {
                     if (row.Timestamp > now || row.Timestamp < now - 7 * 86400000L) continue;
                     last = Math.Max(last ?? row.Timestamp, row.Timestamp);
-                    if (row.Timestamp > from - 5000) rows.Add(row);
+                    Keep(row);
                 }
             }
             ResourceSample[] buffered;
@@ -168,7 +190,13 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
             {
                 if (row.Timestamp > now || row.Timestamp < now - 7 * 86400000L) continue;
                 last = Math.Max(last ?? row.Timestamp, row.Timestamp);
-                if (row.Timestamp > from - 5000) rows.Add(row);
+                Keep(row);
+            }
+            if (recent)
+            {
+                rows = recentRows.Values.ToList();
+                from = rows.Count == 0 ? now : rows[Math.Max(0, rows.Count - 240)].Timestamp;
+                bucketSeconds = 1;
             }
             rows.Sort((left, right) => left.Timestamp.CompareTo(right.Timestamp));
             int start = 0;
@@ -190,7 +218,11 @@ public sealed class ResourceHistory(string directory, Func<DateTimeOffset>? cloc
                     smoothed.Add((row, Math.Clamp(cpuSum / (index - start + 1), 0, 100),
                         Math.Clamp(memorySum / (index - start + 1), 0, 100)));
             }
-            var points = smoothed.GroupBy(row => Math.Min(239, (row.Sample.Timestamp - from) / (bucketSeconds * 1000L)))
+            var points = recent ? smoothed.Select(row => new ResourceHistoryPoint(
+                    row.Sample.Timestamp, Math.Round(row.Sample.CpuUsagePercent, 4), Math.Round(row.Sample.CpuUsagePercent, 4),
+                    Math.Round(row.Sample.MemoryUsagePercent, 4), Math.Round(row.Sample.MemoryUsagePercent, 4), 1,
+                    Math.Round(row.Cpu, 4), Math.Round(row.Memory, 4))).ToArray()
+                : smoothed.GroupBy(row => Math.Min(239, (row.Sample.Timestamp - from) / (bucketSeconds * 1000L)))
                 .OrderBy(group => group.Key).Select(group => new ResourceHistoryPoint(
                     from + group.Key * bucketSeconds * 1000L, Math.Round(group.Average(row => row.Sample.CpuUsagePercent), 4),
                     Math.Round(group.Max(row => row.Sample.CpuUsagePercent), 4), Math.Round(group.Average(row => row.Sample.MemoryUsagePercent), 4),

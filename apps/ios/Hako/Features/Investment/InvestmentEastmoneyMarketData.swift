@@ -6,7 +6,7 @@ import FoundationNetworking
 extension InvestmentAsset {
     var usesEastmoneyMarketData: Bool {
         if isStockConnect { return kind == .stock || kind == .etf }
-        if currency == .usd { return kind == .stock || kind == .etf }
+        if currency == .usd { return false }
         return currency == .cny && [.stock, .etf, .fund, .future, .option].contains(kind)
     }
 }
@@ -264,7 +264,8 @@ extension InvestmentQuoteProvider {
                   Self.normalizedEastmoneyCode(table.code) == Self.normalizedEastmoneyCode(parts[1]) else {
                 throw InvestmentError.invalid("东方财富没有该标的的历史日线（\(result.rc)），到期合约可能已无数据")
             }
-            let bars = table.klines ?? []
+            guard let bars = table.klines else { throw InvestmentError.invalid("东方财富历史行情缺少日线字段") }
+            if bars.isEmpty, quotes.isEmpty { throw InvestmentError.noMarketData("该区间没有已发布行情") }
             var first: Date?
             for bar in bars {
                 let fields = bar.split(separator: ",", omittingEmptySubsequences: false)
@@ -344,11 +345,12 @@ extension InvestmentQuoteProvider {
             guard table.FundType != "005", table.SYType?.contains("万份") != true else {
                 throw InvestmentError.invalid("该货币基金返回的是每万份收益，不能作为单位净值；暂时无法提供此基金的单位净值行情。")
             }
-            let rows = table.LSJZList ?? []
+            guard let rows = table.LSJZList else { throw InvestmentError.invalid("天天基金历史行情缺少净值字段") }
             guard !rows.isEmpty else {
                 if let total = result.TotalCount, received < total {
                     throw InvestmentError.invalid("天天基金历史净值分页数据不完整")
                 }
+                if received == 0 { throw InvestmentError.noMarketData("该区间没有已发布基金净值") }
                 break
             }
             guard result.PageIndex == nil || result.PageIndex == page, rows.first?.FSRQ != previousFirst else {

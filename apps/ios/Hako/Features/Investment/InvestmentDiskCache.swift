@@ -78,11 +78,12 @@ struct InvestmentCachedRow: Identifiable, Hashable {
                "cumulative_gain_cny", "daily_gain_cny", "cash_native", "holdings_native", "gain_native"].contains(field),
               let value = Decimal(string: raw, locale: Locale(identifier: "en_US_POSIX")) else { return raw }
         if field == "quantity" { return NSDecimalNumber(decimal: value).stringValue }
-        return InvestmentPrecision.display(value, exchangeRate: field == "rate")
+        return InvestmentPrecision.display(value, exchangeRate: field == "rate", unitPrice: field == "unit_price" || field == "price")
     }
 }
 
-// All files contain confirmed server data only; no credentials or pending edits.
+// Ledger state is server-confirmed. Market histories also retain downloaded
+// observations until server synchronization succeeds; no credentials or pending edits.
 // The caller supplies a digest of server URL + account, never a raw path or username.
 actor InvestmentDiskCache {
     static let shared = InvestmentDiskCache()
@@ -136,9 +137,6 @@ actor InvestmentDiskCache {
     }
     func save(_ state: InvestmentServerState, scope: String) throws {
         var entry = (try? entry(scope)) ?? Entry()
-        if entry.state?.tables["market_daily_prices"] != state.tables["market_daily_prices"] {
-            entry.histories = []
-        }
         entry.state = state; entry.incomplete = false
         try persist(entry, scope: scope)
     }
@@ -163,25 +161,38 @@ actor InvestmentDiskCache {
     static func historyKey(_ asset: InvestmentAsset) -> String {
         [asset.id.uuidString, asset.code, asset.market, asset.currency.rawValue, asset.kind.rawValue].joined(separator: "|")
     }
+    static func rateKey(_ currency: InvestmentCurrency) -> String { "fx|" + currency.rawValue + "|CNY" }
+    private func coverage(_ histories: [History], key: String, today: Date) -> [ClosedRange<Date>] {
+        histories.filter { $0.key == key }.compactMap { range in
+            // An unfinished query day must be checked again on the next day.
+            let end = range.checkedDay < today && range.end >= range.checkedDay
+                ? InvestmentBook.addDays(-1, to: range.checkedDay) : range.end
+            return range.start <= end ? range.start...end : nil
+        }
+    }
+    func marketQuotes(scope: String, key: String) throws -> [InvestmentQuote] {
+        InvestmentBook.merge([], try entry(scope).histories.filter { $0.key == key }.flatMap(\.quotes))
+    }
+    func missingWindows(scope: String, key: String, start: Date, end: Date, today: Date,
+                        observations: [InvestmentQuote]) throws -> [ClosedRange<Date>] {
+        let entry = try entry(scope)
+        return InvestmentHistoryRange.missingWindows(from: start, through: end, observations: observations,
+            covered: entry.incomplete ? [] : coverage(entry.histories, key: key, today: today))
+    }
     func history(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date) throws -> [InvestmentQuote]? {
         let entry = try entry(scope)
         guard !entry.incomplete else { return nil }
-        let matches = entry.histories.filter {
-            $0.key == Self.historyKey(asset) && ($0.end < today || $0.checkedDay >= today)
-        }.sorted { $0.start < $1.start }
-        var next = start
-        for range in matches where range.end >= next {
-            guard range.start <= next else { break }
-            next = max(next, InvestmentBook.addDays(1, to: range.end))
-            if next > end {
-                return InvestmentBook.merge([], matches.flatMap(\.quotes)).filter { $0.day >= start && $0.day <= end }
-            }
-        }
-        return nil
+        let key = Self.historyKey(asset)
+        let quotes = InvestmentBook.merge([], entry.histories.filter { $0.key == key }.flatMap(\.quotes))
+        guard InvestmentHistoryRange.missingWindows(from: start, through: end, observations: quotes,
+            covered: coverage(entry.histories, key: key, today: today)).isEmpty else { return nil }
+        return quotes.filter { $0.day >= start && $0.day <= end }
     }
     func saveHistory(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
+        try saveMarketHistory(scope: scope, key: Self.historyKey(asset), start: start, end: end, today: today, quotes: quotes)
+    }
+    func saveMarketHistory(scope: String, key: String, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
         var entry = try entry(scope)
-        let key = Self.historyKey(asset)
         entry.histories.removeAll { $0.key == key && $0.start >= start && $0.end <= end }
         entry.histories.append(.init(key: key, start: start, end: end, checkedDay: today, quotes: quotes))
         try persist(entry, scope: scope)

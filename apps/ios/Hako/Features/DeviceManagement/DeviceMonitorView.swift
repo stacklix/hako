@@ -581,7 +581,9 @@ struct DeviceMetricsView: View {
             }
             .devicePagePanel()
             if currentAgent.capabilities?.contains(where: { $0.name == DeviceResourceHistoryCommand.name && $0.version == 1 }) == true {
-                DeviceResourceHistoryView(agent: currentAgent, liveRefresh: liveTaskContext != nil, refreshID: historyRefreshID)
+                DeviceResourceHistoryView(agent: currentAgent, liveRefresh: liveTaskContext != nil, refreshID: historyRefreshID,
+                    liveSample: metrics.flatMap { DeviceResourceHistorySample(sampledAt: $0.sampledAt,
+                        cpu: $0.cpuUsagePercent, memory: $0.memoryUsagePercent) })
                     .id(client.requestContext + currentAgent.id)
             }
             VStack(alignment: .leading, spacing: 12) {

@@ -179,6 +179,17 @@ struct InvestmentQuoteProvider {
         let plan_limit: Int?
     }
 
+    private static func twelveRequest(_ url: URL, key: String) throws -> URLRequest {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw InvestmentError.invalid("行情接口地址无效")
+        }
+        // Use the vendor's query authentication rather than URLSession's reserved Authorization header.
+        components.queryItems = (components.queryItems ?? []) + [.init(name: "apikey", value: key)]
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        guard let authenticatedURL = components.url else { throw InvestmentError.invalid("行情接口地址无效") }
+        return URLRequest(url: authenticatedURL, timeoutInterval: 15)
+    }
+
     func testCredential(_ value: String, for source: InvestmentQuoteSource) async throws {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw InvestmentError.invalid("请先输入行情凭据。") }
@@ -196,8 +207,7 @@ struct InvestmentQuoteProvider {
                 throw InvestmentError.invalid("行情接口未返回有效的交易日历。")
             }
         case .twelveData:
-            var request = URLRequest(url: URL(string: "https://api.twelvedata.com/api_usage")!, timeoutInterval: 15)
-            request.setValue("apikey " + key, forHTTPHeaderField: "Authorization")
+            let request = try Self.twelveRequest(URL(string: "https://api.twelvedata.com/api_usage")!, key: key)
             let (data, response) = try await send(request, [key])
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             let result = try? JSONDecoder().decode(TwelveCredentialResponse.self, from: data)
@@ -294,6 +304,10 @@ struct InvestmentQuoteProvider {
         try Task.checkCancellation()
         let asset = search.exactAsset
         let symbol = InvestmentQuoteSymbol(asset)
+        if asset.usesUSEquityClose {
+            let key = try Self.usEquityKey(keys)
+            return try await twelveInstruments(search, symbol: symbol, key: key).filter(search.permits)
+        }
         if search.kind != .crypto {
             return try await eastmoneyInstruments(search)
         }
@@ -352,8 +366,7 @@ struct InvestmentQuoteProvider {
         let query = search.kind == .crypto ? search.query : symbol.twelveSymbol ?? search.query
         url.queryItems = [.init(name: "symbol", value: query), .init(name: "outputsize", value: "120")]
         guard let url = url.url else { return [] }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue("apikey " + key, forHTTPHeaderField: "Authorization")
+        let request = try Self.twelveRequest(url, key: key)
         let (data, response) = try await send(request, [key])
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let result = try? JSONDecoder().decode(TwelveInstrumentSearch.self, from: data)
@@ -417,6 +430,13 @@ struct InvestmentQuoteProvider {
     func history(asset: InvestmentAsset, start: Date, through today: Date, cached: Date?,
                  keys: [InvestmentQuoteSource: String], now: Date = .now) async throws -> [InvestmentQuote] {
         let symbol = InvestmentQuoteSymbol(asset)
+        if asset.usesUSEquityClose {
+            let key = try Self.usEquityKey(keys)
+            guard let code = symbol.twelveSymbol else { throw InvestmentError.invalid("美股标的代码或交易所无效") }
+            let quotes = try await twelve(symbol: code, market: symbol.twelveMIC, currency: asset.currency,
+                                          kind: asset.kind, start: start, end: today, key: key)
+            return markDailyCloses(quotes, asset: asset, now: now)
+        }
         let cutoff = max(cached ?? start, InvestmentBook.addDays(-7, to: today))
         var best: [InvestmentQuote] = []
         var failures: [String] = []
@@ -428,6 +448,7 @@ struct InvestmentQuoteProvider {
                 best = result
             } catch {
                 try Task.checkCancellation()
+                if !asset.kind.derivative, let empty = error as? InvestmentError, case .noMarketData = empty { throw empty }
                 failures.append(Self.eastmoneyTitle + "：" + error.localizedDescription)
             }
             // Optional credentials supplement missing or expired derivative contracts.
@@ -463,6 +484,13 @@ struct InvestmentQuoteProvider {
         throw InvestmentError.invalid(failures.isEmpty ? "没有适用的已配置行情源" : failures.joined(separator: "；"))
     }
 
+    private static func usEquityKey(_ keys: [InvestmentQuoteSource: String]) throws -> String {
+        guard let key = keys[.twelveData]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw InvestmentError.invalid("请在投资记账设置中配置 Twelve Data API Key，以查询美股和美股 ETF。")
+        }
+        return key
+    }
+
     private func markDailyCloses(_ quotes: [InvestmentQuote], asset: InvestmentAsset, now: Date) -> [InvestmentQuote] {
         guard asset.kind != .crypto else { return quotes }
         return quotes.map { quote in
@@ -479,12 +507,14 @@ struct InvestmentQuoteProvider {
             var currency: String?
             var type: String?
             var symbol: String?
+            var mic_code: String?
             var currency_quote: String?
         }
         struct Bar: Decodable { var datetime: String; var close: String? }
         var meta: Meta?
         var values: [Bar]?
         var code: Int?
+        var message: String?
     }
 
     func twelve(symbol: String, market: String, currency: InvestmentCurrency?, kind: InvestmentKind? = nil,
@@ -501,15 +531,23 @@ struct InvestmentQuoteProvider {
             .init(name: "outputsize", value: "5000")
         ]
         if kind != .crypto { url.queryItems?.append(.init(name: "adjust", value: "none")) }
+        if currency == .usd, kind == .stock || kind == .etf {
+            url.queryItems?.append(.init(name: "country", value: "United States"))
+        }
         if !market.isEmpty { url.queryItems?.append(.init(name: "mic_code", value: market)) }
         if kind == .etf { url.queryItems?.append(.init(name: "type", value: "ETF")) }
         if kind == .fund { url.queryItems?.append(.init(name: "type", value: "Mutual Fund")) }
         guard let url = url.url else { throw InvestmentError.invalid("标的代码无效") }
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.setValue("apikey " + key, forHTTPHeaderField: "Authorization")
+        let request = try Self.twelveRequest(url, key: key)
         let (data, response) = try await send(request, [key])
         let payload = try? JSONDecoder().decode(TwelveResponse.self, from: data)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // Twelve Data explicitly reports an empty date range as HTTP 400.
+        // Other 400 responses, missing symbols and auth/quota failures remain errors.
+        if [200, 400].contains(status), payload?.code == 400, payload?.meta?.symbol?.uppercased() == symbol.uppercased(),
+           payload?.message?.hasPrefix("No data is available on the specified dates.") == true {
+            throw InvestmentError.noMarketData("该区间没有已发布行情")
+        }
         guard status == 200, let bars = payload?.values else { throw Self.failure(payload?.code ?? status) }
         if kind == .crypto {
             guard payload?.meta?.symbol?.uppercased() == symbol,
@@ -519,9 +557,19 @@ struct InvestmentQuoteProvider {
         } else if let currency, payload?.meta?.currency?.uppercased() != currency.rawValue {
             throw InvestmentError.invalid("返回的报价币种不匹配")
         }
+        if currency == .usd, kind == .stock || kind == .etf {
+            guard payload?.meta?.symbol?.uppercased() == symbol.uppercased(),
+                  market.isEmpty || payload?.meta?.mic_code?.uppercased() == market.uppercased() else {
+                throw InvestmentError.invalid("Twelve Data 返回的美股代码或交易所不匹配")
+            }
+            if kind == .etf, payload?.meta?.type?.lowercased() != "etf" {
+                throw InvestmentError.invalid("Twelve Data 返回的标的不是 ETF")
+            }
+        }
         if kind == .fund, payload?.meta?.type?.lowercased() != "mutual fund" {
             throw InvestmentError.invalid("没有核实到该基金的净值序列")
         }
+        guard !bars.isEmpty else { throw InvestmentError.noMarketData("该区间没有已发布行情") }
         let ledgerDay = InvestmentBook.day()
         let quotes: [InvestmentQuote] = bars.compactMap { bar in
             guard let day = format.date(from: bar.datetime), let close = bar.close,
@@ -560,6 +608,7 @@ struct InvestmentQuoteProvider {
             }
         }
         var code: Int
+        var msg: String?
         var data: Table?
     }
 
@@ -599,6 +648,12 @@ struct InvestmentQuoteProvider {
         let (data, response) = try await send(request, [key])
         let payload = try? JSONDecoder().decode(TushareResponse.self, from: data)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let payload, payload.code != 0 {
+            let message = payload.msg?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reason = message.flatMap { $0.isEmpty ? nil : $0 } ?? Self.failure(payload.code).localizedDescription
+            throw InvestmentError.invalid("Tushare Pro · \(api)（\(payload.code)）\n"
+                + HakoLog.sanitize(reason, secrets: [key]))
+        }
         guard status == 200, let payload, payload.code == 0, let table = payload.data else {
             throw Self.failure(payload?.code ?? status)
         }

@@ -27,9 +27,10 @@ struct InvestmentField: View {
     let help: String?
     let focusesOnRowTap: Bool
     let preservesPrecision: Bool
+    let unitPrice: Bool
 
     init(_ title: String, text: Binding<String>, axis: Axis = .horizontal, keyboard: UIKeyboardType = .default,
-         help: String? = nil, focusesOnRowTap: Bool = false, preservesPrecision: Bool = false) {
+         help: String? = nil, focusesOnRowTap: Bool = false, preservesPrecision: Bool = false, unitPrice: Bool = false) {
         self.title = title
         _text = text
         self.axis = axis
@@ -37,6 +38,7 @@ struct InvestmentField: View {
         self.help = help
         self.focusesOnRowTap = focusesOnRowTap
         self.preservesPrecision = preservesPrecision
+        self.unitPrice = unitPrice
     }
 
     var body: some View {
@@ -65,8 +67,8 @@ struct InvestmentField: View {
                 .focused($focused)
             if keyboard == .decimalPad, !preservesPrecision,
                let value = Decimal(string: text.replacingOccurrences(of: Locale.current.decimalSeparator ?? ".", with: ".")),
-               InvestmentPrecision.rounded(value) != value {
-                Text("通常最多 2 位小数；绝对值小于 0.01 时最多 4 位，请修改输入。")
+               InvestmentPrecision.rounded(value, unitPrice: unitPrice) != value {
+                Text(unitPrice ? "单价最多保留 4 位小数，请修改输入。" : "通常最多 2 位小数；绝对值小于 0.01 时最多 4 位，请修改输入。")
                     .font(.caption).foregroundStyle(.red)
             }
         }.investmentListRow()
@@ -203,7 +205,7 @@ private func investmentTrim(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-func investmentDecimal(_ input: String, _ field: String, allowZero: Bool = false, preservesPrecision: Bool = false) throws -> Decimal {
+func investmentDecimal(_ input: String, _ field: String, allowZero: Bool = false, preservesPrecision: Bool = false, unitPrice: Bool = false) throws -> Decimal {
     let separator = Locale.current.decimalSeparator ?? "."
     let value = investmentTrim(input).replacingOccurrences(of: separator, with: ".")
     guard value.range(of: #"^(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)$"#, options: .regularExpression) != nil,
@@ -211,7 +213,7 @@ func investmentDecimal(_ input: String, _ field: String, allowZero: Bool = false
           decimal <= 1_000_000_000_000, allowZero ? decimal >= 0 : decimal > 0 else {
         throw InvestmentError.invalid("请输入有效的" + field + "。")
     }
-    if !preservesPrecision { try InvestmentPrecision.validateInput(decimal, field: field) }
+    if !preservesPrecision { try InvestmentPrecision.validateInput(decimal, field: field, unitPrice: unitPrice) }
     return decimal
 }
 
@@ -461,7 +463,7 @@ struct InvestmentFuturesSettlementEditor: View {
                          saveEnabled: !price.isEmpty && !amount.isEmpty) {
             Section(asset.displayName) {
                 InvestmentDatePicker("结算日期", selection: $date, latest: InvestmentBook.day())
-                InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad)
+                InvestmentField("结算价（CNY）", text: $price, keyboard: .decimalPad, unitPrice: true)
                 Picker("资金方向", selection: $isLoss) {
                     Text("入账").tag(false)
                     Text("扣款").tag(true)
@@ -470,7 +472,7 @@ struct InvestmentFuturesSettlementEditor: View {
             }
         } save: {
             let value = try investmentDecimal(amount, "实际结算金额", allowZero: true)
-            let price = try investmentDecimal(price, "结算价")
+            let price = try investmentDecimal(price, "结算价", unitPrice: true)
             if let editorDraft {
                 try await editorDraft.submit(["date": InvestmentEditorDraft.day.string(from: date), "price": InvestmentEditorDraft.text(price),
                     "amount": InvestmentEditorDraft.text(value), "direction": isLoss ? "decrease" : "increase"])
@@ -930,7 +932,7 @@ private struct InvestmentTradeFields: View {
             InvestmentField("实收收益（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
         } else {
             InvestmentField("数量（" + kind.unit + "）", text: $quantity, keyboard: .decimalPad, preservesPrecision: true)
-            InvestmentField((stockConnect ? (event == .sell ? "卖出单价" : "买入单价") : "成交价") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad)
+            InvestmentField((stockConnect ? (event == .sell ? "卖出单价" : "买入单价") : "成交价") + "（" + currency.rawValue + "）", text: $price, keyboard: .decimalPad, unitPrice: true)
         }
         if stockConnect {
             InvestmentField("清算金额（CNY）", text: $settlement, keyboard: .decimalPad)
@@ -968,7 +970,7 @@ private struct InvestmentTradeFields: View {
             throw InvestmentError.invalid("该类型的数量必须是整数。")
         }
         return InvestmentEvent(day: day, kind: event, assetID: assetID,
-            quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell),
+            quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell, unitPrice: kind.usesUnitPrice),
             margin: kind.usesMargin && event != .sell ? try investmentDecimal(margin, "保证金") : 0,
             settledAmount: stockConnect ? try investmentDecimal(settlement, "清算金额") : nil,
             fee: showsFee && !investmentTrim(fee).isEmpty ? try investmentDecimal(fee, "交易费用", allowZero: true) : nil)

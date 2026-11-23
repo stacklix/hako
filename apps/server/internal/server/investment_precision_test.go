@@ -13,7 +13,7 @@ func TestInvestmentWriteStoresAndReturnsRoundedNumbers(t *testing.T) {
 		"investment_accounts": {{"id": "account", "name": "精度测试", "currency": "CNY", "account_type": "securities", "sort_order": "0"}},
 		"investment_assets":   {{"id": "asset", "name": "股票", "asset_type": "stock", "symbol": "600000", "quote_currency": "CNY", "settlement_unit": "CNY"}},
 		"investment_events": {{"id": "trade", "account_id": "account", "asset_id": "asset", "event_type": "buy", "effective_date": day,
-			"sequence": "7", "amount": "100.12345", "quantity": "0.00123456", "unit_price": "12.345", "fee": "0.00567", "settled_amount": "100.12345"}},
+			"sequence": "7", "amount": "100.12345", "quantity": "0.00123456", "unit_price": "12.3456", "fee": "0.00567", "settled_amount": "100.12345"}},
 		"market_daily_fx": {{"rate_date": day, "base_currency": "USD", "quote_currency": "CNY", "source": "test", "rate": "7.1234567"}},
 	}}
 	status, body := f.call(http.MethodPut, "/api/v1/investment/book", input, f.tokens.AccessToken)
@@ -22,7 +22,7 @@ func TestInvestmentWriteStoresAndReturnsRoundedNumbers(t *testing.T) {
 		t.Fatalf("write = %d %s %v", status, body, err)
 	}
 	trade := saved.Tables["investment_events"][0]
-	if trade["quantity"] != "0.00123456" || trade["unit_price"] != "12.35" || trade["fee"] != "0.0057" || trade["amount"] != "100.12" || trade["settled_amount"] != "100.12" || trade["sequence"] != "7" || saved.Tables["market_daily_fx"][0]["rate"] != "7.1235" {
+	if trade["quantity"] != "0.00123456" || trade["unit_price"] != "12.3456" || trade["fee"] != "0.0057" || trade["amount"] != "100.12" || trade["settled_amount"] != "100.12" || trade["sequence"] != "7" || saved.Tables["market_daily_fx"][0]["rate"] != "7.1235" {
 		t.Fatalf("response was not normalized: %+v", saved)
 	}
 	var quantity, price, rate string
@@ -106,5 +106,23 @@ func TestInvestmentCryptoQuantitySurvivesWriteAndRead(t *testing.T) {
 				t.Fatalf("stored quantity = %s, want %s", stored, units)
 			}
 		})
+	}
+}
+
+func TestInvestmentPricePrecision(t *testing.T) {
+	for _, value := range []string{"12.3456", "1.005", "0.0123", "0.0001", "71504.1234"} {
+		row := investmentRow{"unit_price": value, "price": value, "amount": value}
+		normalizeInvestmentNumbers(row)
+		if row["unit_price"] != value || row["price"] != value {
+			t.Fatalf("price lost precision: %+v", row)
+		}
+		if row["amount"] != investmentRoundedDecimal(value, false) {
+			t.Fatalf("amount precision changed: %+v", row)
+		}
+	}
+	row := investmentRow{"unit_price": "12.34565", "price": "0.99999"}
+	normalizeInvestmentNumbers(row)
+	if row["unit_price"] != "12.3457" || row["price"] != "1" {
+		t.Fatalf("prices must round to four places: %+v", row)
 	}
 }

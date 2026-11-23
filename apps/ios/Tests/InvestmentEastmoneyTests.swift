@@ -4,6 +4,27 @@ import FoundationNetworking
 #endif
 
 extension InvestmentMarketDataTests {
+    static func twelveEmptyDatesRemainDistinctFromAPIFailures() async throws {
+        let empty = InvestmentQuoteProvider { request, _ in
+            (Data(#"{"code":400,"message":"No data is available on the specified dates. Try setting different start/end dates.","status":"error","meta":{"symbol":"AAPL","interval":"1day","exchange":""}}"#.utf8),
+             HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!)
+        }
+        do {
+            _ = try await empty.history(asset: asset("AAPL", .stock, .usd), start: day(1), through: day(2), cached: nil, keys: [.twelveData: "fixture"])
+            preconditionFailure("Explicit no-data response lost")
+        } catch InvestmentError.noMarketData(_) { }
+        for code in [400, 401, 403, 429, 500] {
+            let failure = InvestmentQuoteProvider { request, _ in
+                response(request, "{\"code\":\(code),\"message\":\"Invalid request\",\"status\":\"error\"}")
+            }
+            do {
+                _ = try await failure.history(asset: asset("AAPL", .stock, .usd), start: day(1), through: day(2), cached: nil, keys: [.twelveData: "fixture"])
+                preconditionFailure("Failed request accepted as data")
+            } catch InvestmentError.noMarketData(_) { preconditionFailure("API errors must never become holiday coverage") }
+            catch is InvestmentError { }
+        }
+    }
+
     static func eastmoneyBenchmarkIdentitiesAndClosingDates() async throws {
         let calendar = InvestmentBook.calendar
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 18))!
@@ -73,20 +94,67 @@ extension InvestmentMarketDataTests {
         }
     }
 
-    static func eastmoneyUSCatalogSeparatesStocksAndETFs() async throws {
+    static func twelveUSCatalogSeparatesStocksAndETFs() async throws {
         let provider = InvestmentQuoteProvider { request, secrets in
-            precondition(request.url?.host == "searchapi.eastmoney.com" && secrets.isEmpty)
-            return try eastmoneySearch(request, [
-                ["Code": "AAPL", "Name": "苹果", "Classify": "UsStock", "MktNum": "105", "SecurityType": "20", "TypeUS": "1"],
-                ["Code": "AAPL22", "Name": "Apple Notes", "Classify": "UsStock", "MktNum": "105", "SecurityType": "7", "TypeUS": "6"],
-                ["Code": "VOO", "Name": "标普500ETF-Vanguard", "Classify": "UsStock", "MktNum": "107", "SecurityType": "7", "TypeUS": "5"]])
+            let query = eastmoneyQuery(request)
+            precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/symbol_search")
+            precondition(query["apikey"] == "fixture" && secrets == ["fixture"])
+            return response(request, #"""
+                {"data":[
+                {"symbol":"AAPL","instrument_name":"Apple Inc","instrument_type":"Common Stock","mic_code":"XNAS","currency":"USD","country":"United States"},
+                {"symbol":"AAPL22","instrument_name":"Apple Notes","instrument_type":"Bond","mic_code":"XNAS","currency":"USD","country":"United States"},
+                {"symbol":"VOO","instrument_name":"Vanguard S&P 500 ETF","instrument_type":"ETF","mic_code":"ARCX","currency":"USD","country":"United States"},
+                {"symbol":"AAPL","instrument_name":"Wrong country","instrument_type":"Common Stock","mic_code":"XTSE","currency":"USD","country":"Canada"},
+                {"symbol":"AAPL","instrument_name":"Wrong currency","instrument_type":"Common Stock","mic_code":"XNAS","currency":"CAD","country":"United States"}]}
+                """#)
         }
-        let stocks = try await provider.searchInstruments(.init(query: "AAPL.US", kind: .stock, currency: .usd), keys: [:])
+        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture", .tushare: "must-not-use"]
+        let stocks = try await provider.searchInstruments(.init(query: "AAPL.US", kind: .stock, currency: .usd), keys: keys)
         precondition(stocks.map(\.code) == ["AAPL"] && stocks.first?.market == "XNAS")
-        let etfs = try await provider.searchInstruments(.init(query: "VOO", kind: .etf, currency: .usd), keys: [:])
-        precondition(etfs.map(\.code) == ["VOO"] && etfs.first?.market == "US")
-        let wrong = try await provider.searchInstruments(.init(query: "VOO", kind: .stock, currency: .usd), keys: [:])
+        let etfs = try await provider.searchInstruments(.init(query: "VOO", kind: .etf, currency: .usd), keys: keys)
+        precondition(etfs.map(\.code) == ["VOO"] && etfs.first?.market == "ARCX")
+        let byName = try await provider.searchInstruments(.init(query: "Apple", kind: .stock, currency: .usd), keys: keys)
+        precondition(byName.map(\.code) == ["AAPL"])
+        let wrong = try await provider.searchInstruments(.init(query: "VOO", kind: .stock, currency: .usd), keys: keys)
         precondition(wrong.isEmpty)
+    }
+
+    static func twelveUSEquitiesRequireKeysAndPreserveErrors() async throws {
+        let unused = InvestmentQuoteProvider { _, _ in preconditionFailure("No other provider may be queried") }
+        for keys: [InvestmentQuoteSource: String] in [[:], [.tushare: "fixture"], [.twelveData: "  "]] {
+            do {
+                _ = try await unused.searchInstruments(.init(query: "AAPL", kind: .stock, currency: .usd), keys: keys)
+                preconditionFailure("Missing Twelve Data Key must be explicit")
+            } catch { precondition(error.localizedDescription.contains("Twelve Data API Key")) }
+            do {
+                _ = try await unused.history(asset: asset("VOO", .etf, .usd), start: day(1), through: day(30), cached: nil, keys: keys)
+                preconditionFailure("US history needs Twelve Data Key")
+            } catch { precondition(error.localizedDescription.contains("Twelve Data API Key")) }
+        }
+        for code in [401, 429] {
+            let rejected = InvestmentQuoteProvider { request, _ in
+                precondition(request.url?.host == "api.twelvedata.com")
+                return response(request, "{\"status\":\"error\",\"code\":\(code)}")
+            }
+            do {
+                _ = try await rejected.history(asset: asset("AAPL", .stock, .usd), start: day(1), through: day(30), cached: nil,
+                                               keys: [.twelveData: "fixture", .tushare: "must-not-use"])
+                preconditionFailure("API rejection must not fall back")
+            } catch is InvestmentError { }
+        }
+        for meta in [
+            #"{"symbol":"OTHER","currency":"USD","mic_code":"XNAS"}"#,
+            #"{"symbol":"AAPL","currency":"CNY","mic_code":"XNAS"}"#,
+            #"{"symbol":"AAPL","currency":"USD","mic_code":"XNYS"}"#] {
+            let wrong = InvestmentQuoteProvider { request, _ in
+                response(request, "{\"meta\":\(meta),\"values\":[{\"datetime\":\"2026-10-30\",\"close\":\"20\"}]}")
+            }
+            do {
+                _ = try await wrong.history(asset: asset("AAPL", .stock, .usd, market: "XNAS"), start: day(1), through: day(30),
+                                            cached: nil, keys: [.twelveData: "fixture"])
+                preconditionFailure("Wrong US identity must never be accepted")
+            } catch is InvestmentError { }
+        }
     }
 
     static func eastmoneyStockConnectCatalogNormalizesCodes() async throws {
@@ -211,24 +279,30 @@ extension InvestmentMarketDataTests {
         } catch let error as InvestmentError { precondition(error.localizedDescription.contains("每万份收益")) }
     }
 
-    static func eastmoneyCloseTimesAndWatchFreshness() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
+    static func twelveUSCloseTimesAndWatchFreshness() async throws {
+        let provider = InvestmentQuoteProvider { request, secrets in
             let query = eastmoneyQuery(request)
-            if request.url?.host == "searchapi.eastmoney.com" {
-                return try eastmoneySearch(request, [["Code": query["input"]!, "Name": "ETF", "Classify": "UsStock", "MktNum": "107", "TypeUS": "5"]])
-            }
-            let code = query["secid"] == "107.OLD" ? "OLD" : "VOO"
-            return try eastmoneyBars(request, code: code, market: 107, bars: [code == "OLD" ? "2026-10-01,10,10.25,11,9,1" : "2026-10-30,500,500.20,501,499,1"])
+            precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/time_series")
+            precondition(query["apikey"] == "fixture" && secrets == ["fixture"])
+            precondition(query["interval"] == "1day" && query["adjust"] == "none" && query["type"] == "ETF")
+            precondition(query["country"] == "United States")
+            let code = query["symbol"]!
+            if code == "VOO" { precondition(query["mic_code"] == "ARCX") }
+            let date = code == "OLD" ? "2026-10-01" : "2026-10-30"
+            return response(request, "{\"meta\":{\"symbol\":\"\(code)\",\"currency\":\"USD\",\"mic_code\":\"ARCX\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"\(date)\",\"close\":\"500.20\"}]}")
         }
+        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
         let close = InvestmentBook.usEquityClose(on: day(30))
         let symbol = asset("VOO", .etf, .usd, market: "ARCX")
-        let early = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: [:], now: close.addingTimeInterval(-60))
-        let done = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: [:], now: close)
+        precondition(!symbol.usesEastmoneyMarketData)
+        let early = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close.addingTimeInterval(-60))
+        let done = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close)
         precondition(early.last?.isDailyClose == false && done.last?.isDailyClose == true)
-        let watch = try await provider.watchQuotes(for: symbol, keys: [:], through: day(30))
+        precondition(done.last?.source == "Twelve Data" && done.last?.price == Decimal(string: "500.20"))
+        let watch = try await provider.watchQuotes(for: symbol, keys: keys, through: day(30))
         precondition(watch.last?.price == Decimal(string: "500.20"))
         do {
-            _ = try await provider.watchQuotes(for: asset("OLD", .etf, .usd), keys: [:], through: day(30))
+            _ = try await provider.watchQuotes(for: asset("OLD", .etf, .usd), keys: keys, through: day(30))
             preconditionFailure("Stale prices must not pass watch validation")
         } catch is InvestmentError { }
         let hk = InvestmentQuoteProvider { request, _ in

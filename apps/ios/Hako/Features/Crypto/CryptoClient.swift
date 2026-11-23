@@ -5,8 +5,13 @@ import CryptoKit
 struct CryptoClient {
     let session: URLSession
     let logStore: HakoLogStore
-    init(session: URLSession = HTTPTransport.shared, logStore: HakoLogStore = .shared) {
-        self.session=session;self.logStore=logStore
+    let loadEquityAPIKey: () throws -> String
+    private let marketUsage: MarketAPIUsage?
+    init(session: URLSession = HTTPTransport.shared, logStore: HakoLogStore = .shared,
+         marketUsage: MarketAPIUsage? = .shared,
+         loadEquityAPIKey: @escaping () throws -> String = CryptoCredential.twelveDataKey) {
+        self.session=session;self.logStore=logStore;self.loadEquityAPIKey=loadEquityAPIKey
+        self.marketUsage = marketUsage
     }
     static func number(_ value: Any?) throws -> Double {
         let n: Double?
@@ -30,6 +35,7 @@ struct CryptoClient {
         let path=request.url?.path ?? "[未知接口]"
         let endpoint=(request.httpMethod ?? "GET")+" "+(request.url?.host ?? "[未知主机]")+path
         var status:Int?,failure:String?,level=HakoLogLevel.info
+        var marketStarted:Date?,marketRecorded=false
         var redactor=HTTPLogRedactor(request:request,secrets:secrets)
         let sink = HakoExecutionDiagnostics.sink
         let event = HakoExecutionEvent(stage: HakoExecutionDiagnostics.stageName("资产接口 " + redactor.text(Self.diagnosticEndpoint(request))),
@@ -53,7 +59,13 @@ struct CryptoClient {
         }
         do {
             try Task.checkCancellation()
+            marketStarted = .now
             let (data, response) = try await session.data(for: request)
+            if marketUsage != nil, MarketAPIProvider.matching(request.url?.host) != nil {
+                let outcome=MarketAPIUsage.outcome(for:request,response:response,data:data)
+                await marketUsage?.record(request,outcome:outcome,at:marketStarted!)
+                marketRecorded=true
+            }
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else { throw HakoError(message: "资产接口未返回 HTTP 响应。") }
             status=response.statusCode
@@ -66,6 +78,10 @@ struct CryptoClient {
             }
             let value = try JSONSerialization.jsonObject(with: data)
             if let o = value as? [String: Any], o["status"] as? String == "error" {
+                if request.url?.host == "api.twelvedata.com" {
+                    let code = (o["code"] as? NSNumber)?.stringValue ?? "未知"
+                    throw HakoError(message: "Twelve Data 接口拒绝请求（错误码 \(code)），请检查 API Key、接口权限或请求额度。")
+                }
                 let code = (o["err_code"] as? NSNumber)?.stringValue ?? "未知"
                 throw HakoError(message: "HTX 接口拒绝请求（错误码 \(code)）。")
             }
@@ -73,6 +89,7 @@ struct CryptoClient {
             await finish(.succeeded, received + (count.map { "\n已解析 \($0) 条顶层记录。" } ?? "\nJSON 已解析，具体资产校验结果见对应业务步骤。"))
             return value
         } catch {
+            if let marketStarted,!marketRecorded { await marketUsage?.record(request,outcome:.failed,at:marketStarted) }
             let cancelled = error is CancellationError || Task.isCancelled
             let underlying=error as NSError
             level = cancelled ? .warning : .error
@@ -130,23 +147,25 @@ struct CryptoClient {
         var r = URLRequest(url: URL(string:"https://api.binance.com/sapi/v1/asset/wallet/balance?" + Self.query(q))!)
         r.setValue(c.key, forHTTPHeaderField:"X-MBX-APIKEY")
         guard let data = try await json(r,secrets:[c.key,c.secret]) as? [[String: Any]] else { throw HakoError(message:"Binance 总资产格式无效。") }
-        return try await binancePrices(Self.binanceSnapshot(data,scope:CryptoDay.hash(c.key)),credential:c)
+        return try await binancePrices(Self.binanceSnapshot(data,scope:CryptoDay.hash(c.key)))
     }
     // Refresh quotes independently so cached holdings never require a balance request.
-    func binancePrices(_ cached:CryptoBinanceSnapshot,credential c:CryptoCredential) async throws -> CryptoBinanceSnapshot {
+    func binancePrices(_ cached:CryptoBinanceSnapshot) async throws -> CryptoBinanceSnapshot {
         var snapshot=cached,prices=[String:Double]()
         var missing=Set<String>()
+        var equityErrors=Set<String>()
         let assets=snapshot.accounts.flatMap { $0.assets ?? [] }
         let equities=Set(assets.compactMap(\.equitySymbol))
         var equityPrices=[String:Double]()
         for symbol in equities.sorted() {
             do {
-                if let price=try await binanceEquityPrice(symbol,credential:c) { equityPrices[symbol]=price }
+                if let price=try await twelveDataEquityPrice(symbol) { equityPrices[symbol]=price }
                 else { missing.insert(symbol) }
             } catch {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
                 missing.insert(symbol)
+                equityErrors.insert(error.localizedDescription)
             }
         }
         if assets.contains(where: { $0.equitySymbol == nil && !["USDT","USD"].contains($0.symbol) }) {
@@ -183,23 +202,21 @@ struct CryptoClient {
             }
         }
         snapshot.quoteError=missing.isEmpty ? nil : "报价暂不可用，保留上次报价；无历史报价时显示未提供："+missing.sorted().joined(separator:"、")
+        if !equityErrors.isEmpty { snapshot.quoteError = (snapshot.quoteError ?? "") + "\n" + equityErrors.sorted().joined(separator:"；") }
         return snapshot
     }
-    func binanceEquityPrice(_ symbol:String,credential:CryptoCredential) async throws -> Double? {
-        var request=URLRequest(url:URL(string:"https://api.binance.com/sapi/v1/equity/market/quote?"+Self.query(["symbol":symbol]))!)
-        request.setValue(credential.key,forHTTPHeaderField:"X-MBX-APIKEY")
-        let value=try await json(request,secrets:[credential.key,credential.secret],allowEmptyResponse:true)
-        if value is NSNull { return nil }
-        guard let quote=value as? [String:Any],quote["symbol"] as? String == symbol else {
-            throw HakoError(message:"Binance 股票报价代码不匹配。")
+    func twelveDataEquityPrice(_ symbol:String) async throws -> Double? {
+        let key=try loadEquityAPIKey().trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !key.isEmpty else { throw HakoError(message:"请在投资记账设置中配置 Twelve Data API Key，以查询 Binance Stock 报价。") }
+        let query=Self.query(["symbol":symbol,"country":"United States","apikey":key])
+        let request=URLRequest(url:URL(string:"https://api.twelvedata.com/quote?"+query)!,timeoutInterval:15)
+        let value=try await json(request,secrets:[key])
+        guard let quote=value as? [String:Any],(quote["symbol"] as? String)?.uppercased() == symbol.uppercased(),
+              (quote["currency"] as? String)?.uppercased() == "USD" else {
+            throw HakoError(message:"Twelve Data 股票报价代码或币种不匹配。")
         }
-        return try Self.binanceEquityMidpoint(quote)
-    }
-    static func binanceEquityMidpoint(_ quote:[String:Any]) throws -> Double? {
-        let bid=try number(quote["bidPrice"]),ask=try number(quote["askPrice"])
-        guard bid > 0,ask > 0,bid <= ask else { return nil }
-        let midpoint=bid + (ask-bid)/2
-        return midpoint.isFinite ? midpoint : nil
+        let price=try Self.number(quote["close"])
+        return price > 0 ? price : nil
     }
     func binanceSpotPrices(pairs: [String]? = nil) async throws -> [String:Double] {
         var url = URLComponents(string:"https://data-api.binance.vision/api/v3/ticker/price")!

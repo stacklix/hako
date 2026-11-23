@@ -337,8 +337,10 @@ struct WorkshopUserMessage: View {
     let threadId: String?
     let store: WorkshopStore
     let agent: WorkshopAgent
+    var imageIDs: [String] = []
     var replies: [WorkshopQuestionReply] = []
     @State private var photos: [WorkshopPhoto] = []
+    @State private var loadedImageIDs: [String] = []
     @State private var selected: WorkshopPhoto?
     @State private var failure: String?
     @State private var loading = false
@@ -374,20 +376,25 @@ struct WorkshopUserMessage: View {
                 Button("重新加载图片") { photoRetry += 1 }.font(.caption).disabled(loading)
             }
         }
-        .task(id: "\(threadId ?? ""):\(entry.id):\(caption.count):\(photoRetry)") { await loadPhotos() }
+        .task(id: "\(threadId ?? ""):\(entry.id):\(caption.count):\(imageIDs.joined(separator: ",")):\(photoRetry)") { await loadPhotos() }
         .sheet(item: $selected) { photo in WorkshopPhotoPreview(photo: photo) }
     }
 
     @MainActor private func loadPhotos() async {
         let count = WorkshopImageCaption(entry.text).count
-        guard count > 0, !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
         // SwiftUI can start the replacement task before a cancelled image read
         // unwinds. Let the new task take ownership instead of skipping it.
         let load = UUID()
         photoLoad = load
         loading = true; failure = nil
         defer { if photoLoad == load { loading = false } }
-        if photos.isEmpty { photos = store.messagePhotos(entry.id) }
+        if loadedImageIDs != imageIDs || count == 0 {
+            photos = []; selected = nil
+            loadedImageIDs = imageIDs
+        }
+        guard count > 0 else { return }
+        if photos.isEmpty { photos = store.messagePhotos(entry.id, imageIDs: imageIDs) }
         do {
             guard photos.count < count else { return }
             guard let threadId else { return }

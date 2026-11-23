@@ -71,14 +71,24 @@ struct InvestmentEventEditor: View {
                 } header: {
                     Text(account?.name ?? "流水")
                 }
-                if let error {
-                    Section { Text(error).font(.footnote).foregroundStyle(.red) }
-                }
                 if editorDraft == nil { Section {
                     HakoDeleteButton(title: "删除交易记录") { confirmsDeletion = true }
                         .disabled(saving || store.saving).investmentListRow()
                         .listRowBackground(Color.clear)
                 } }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let error {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(.bar)
+                        .accessibilityElement(children: .combine)
+                }
             }
             .hakoDeleteConfirmation(Text("删除这笔交易记录？"), isPresented: $confirmsDeletion,
                                     message: Text(counterpart == nil ? InvestmentText.date(event.day) + " · " + recordTitle + "。删除后将重新计算持仓、盈亏和相关历史快照，此操作无法撤销。" :
@@ -171,12 +181,14 @@ struct InvestmentEventEditor: View {
 
     private func field(_ label: String, _ key: Field) -> some View {
         InvestmentField(label, text: Binding(get: { values[key, default: ""] }, set: { values[key] = $0 }),
-                        keyboard: .decimalPad, preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement))
+                        keyboard: .decimalPad, preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement),
+                        unitPrice: key == .price && asset?.kind.usesUnitPrice == true)
     }
 
     private func number(_ key: Field, _ label: String, allowZero: Bool = false) throws -> Decimal {
         try investmentDecimal(values[key, default: ""], label, allowZero: allowZero,
-                              preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement))
+                              preservesPrecision: key == .quantity || (editsSpotBalance && key == .settlement),
+                              unitPrice: key == .price && asset?.kind.usesUnitPrice == true)
     }
 
     private func save() async {

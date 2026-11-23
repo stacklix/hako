@@ -5,6 +5,11 @@ struct CryptoCredential: Codable {
     var key = ""
     var secret = ""
     var configured: Bool { !key.isEmpty && !secret.isEmpty }
+    static func twelveDataKey() throws -> String {
+        guard let data = try SecureStorage.namespace("me.stackli.hako.investment").read(account: "twelve-data") else { return "" }
+        guard let key = String(data: data, encoding: .utf8) else { throw HakoError(message: "无法读取已保存的 Twelve Data API Key。") }
+        return key
+    }
     static func load(_ exchange: String) throws -> Self {
         guard let data = try SecureStorage.namespace("me.stackli.hako.crypto").read(account: exchange) else { return Self() }
         return try JSONDecoder().decode(Self.self, from: data)

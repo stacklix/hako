@@ -9,7 +9,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\Kage.ico</ApplicationIcon>
     <AssemblyName>Kage</AssemblyName>
-    <Version>1.5.4</Version>
+    <Version>1.5.5</Version>
     <Product>Kage</Product>
     <Title>Kage</Title>
     <Description>Kage Windows Agent for Hako</Description>

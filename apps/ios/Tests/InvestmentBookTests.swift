@@ -4,6 +4,7 @@ import Foundation
 struct InvestmentBookTests {
     static func main() throws {
         try numericStoragePrecision()
+        try fourPlacePricesSurviveStorage()
         try fractionalCryptoTradesSurviveStorage()
         try serializedLedgerValidationBlocksInvalidWrites()
         cumulativePortfolioGainRate()
@@ -47,6 +48,7 @@ struct InvestmentBookTests {
         try manualQuotesAreLimitedToInsurance()
         try holdingHistoryTracksQuantitiesAndAmounts()
         try dailyGainsCarryForwardMarketPrices()
+        try firstServerSnapshotUsesZeroOpeningGain()
         try allAssetPricesCarryAcrossConsecutiveGaps()
         try portfolioHistoryMatchesIndividualValuations()
         try dailySnapshotsUseBeijingCloseAndDatedRates()
@@ -115,6 +117,32 @@ struct InvestmentBookTests {
         precondition(encoded["market_daily_fx"]?.last?["rate"] == "7.1235")
     }
 
+    static func fourPlacePricesSurviveStorage() throws {
+        let records = InvestmentServerRecords()
+        for kind in [InvestmentKind.stock, .etf, .fund, .crypto, .future] {
+            for text in ["12.3456", "1.005", "0.0123", "0.0001", "71504.1234"] {
+                let price = Decimal(string: text)!
+                try InvestmentPrecision.validateInput(price, field: "单价", unitPrice: true)
+                let asset = InvestmentAsset(name: "精度测试", code: "TEST", market: "", kind: kind, currency: .usd)
+                let event = InvestmentEvent(day: date(1), kind: .opening, assetID: asset.id, quantity: 1, price: price)
+                let account = InvestmentAccount(name: "精度测试", currency: .usd, events: [event], type: .securities)
+                var book = InvestmentBook(accounts: [account])
+                book.assets[asset.id] = asset
+                book.quotes[asset.id] = [.init(day: date(1), price: price, isDailyClose: true)]
+                try records.validateEventInputs(book, comparedTo: InvestmentBook())
+                let encoded = try records.encode(book, revision: 1)
+                precondition(encoded["investment_events"]?.first?["unit_price"] == text)
+                precondition(encoded["market_daily_prices"]?.first?["price"] == text)
+                let restored = try records.decode(.init(generation: 1, revision: 1, tables: encoded))
+                precondition(restored.accounts[0].events[0].price == price)
+            }
+        }
+        do { try InvestmentPrecision.validateInput(Decimal(string: "12.34567")!, field: "单价", unitPrice: true); preconditionFailure("Reject fifth decimal") }
+        catch InvestmentError.invalid {}
+        do { try InvestmentPrecision.validateInput(Decimal(string: "12.3456")!, field: "金额"); preconditionFailure("Amounts still use amount precision") }
+        catch InvestmentError.invalid {}
+    }
+
     static func fractionalCryptoTradesSurviveStorage() throws {
         precondition(InvestmentPrecision.exactInput("000.05800") == Decimal(string: "0.058"))
         precondition(InvestmentPrecision.exactInput("0.1234567890123456789012345678901234567890123456789") == nil,
@@ -173,11 +201,11 @@ struct InvestmentBookTests {
         let account = InvestmentAccount(name: "现金校验", currency: .usd, type: .crypto)
         var book = InvestmentBook(accounts: [account])
         let btc = try book.register(.init(name: "Bitcoin", code: "BTC", market: "", kind: .crypto, currency: .usd))
-        try book.post(.init(day: date(1), kind: .deposit, amount: Decimal(string: "100.5")!), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .deposit, amount: Decimal(string: "1000.05")!), accountID: account.id)
         let records = InvestmentServerRecords()
         let previous = try records.encode(book, revision: 1)
         // The input price is rounded on write: validate the serialized price, not only the form draft.
-        try book.post(.init(day: date(1), kind: .buy, assetID: btc, quantity: 100, price: Decimal(string: "1.005")!), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: btc, quantity: 1000, price: Decimal(string: "1.00005")!), accountID: account.id)
         do { try records.validateEventInputs(book, comparedTo: try records.decode(.init(generation: 1, revision: 1, tables: previous))); preconditionFailure("User price precision must be rejected without rounding") }
         catch InvestmentError.invalid {}
         let next = try records.encode(book, revision: 1)
@@ -1155,6 +1183,34 @@ struct InvestmentBookTests {
         try reloaded.replaceEvent(original, with: edited, accountID: account.id)
         precondition(reloaded.portfolio(on: adjustment)?.gain == 2)
         precondition(reloaded.portfolio(on: maturity)?.gain == 6)
+    }
+
+    static func firstServerSnapshotUsesZeroOpeningGain() throws {
+        let account = InvestmentAccount(name: "首日", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let stock = try book.register(.init(name: "首日持仓", code: "600000", market: "", kind: .stock, currency: .cny))
+        try book.post(.init(day: date(1), kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: date(1), kind: .buy, assetID: stock, quantity: 10, price: 2), accountID: account.id)
+        book.addQuotes([.init(day: date(1), price: 3)], assetID: stock)
+        book.fx[.usd] = [.init(day: date(1), price: 7)]
+        book.dailySnapshots = book.makeDailySnapshots(through: date(3), rebuild: true)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let firstRow = tables["investment_daily_snapshots"]!.first { $0["snapshot_date"] == InvestmentBook.snapshotDateFormatter().string(from: date(1)) }!
+        precondition(firstRow["daily_gain_cny"] == "10", "First saved day uses zero cumulative gain before the ledger started")
+        var restored = try records.decode(.init(generation: 1, revision: 1, through: records.day.string(from: date(3)), tables: tables))
+        let gains = restored.dailyGains(from: date(1), through: date(3))
+        precondition(gains[date(1)] == 10 && gains[date(2)] == 0 && gains[date(3)] == 0,
+                     "Server snapshot mode must show the first day's actual gain without a nonexistent prior snapshot")
+        precondition(restored.inspectData(through: date(3)).issues.isEmpty)
+        restored.dailySnapshots?.values.removeValue(forKey: date(2))
+        let gap = restored.dailyGains(from: date(1), through: date(3))
+        precondition(gap[date(1)] == 10 && gap[date(2)] == nil && gap[date(3)] == nil,
+                     "Real gaps and the day following a gap cannot be filled with zero")
+        precondition(restored.inspectData(through: date(3)).issues.contains { $0.title == "缺少日终快照" && $0.dates.contains(date(2)) })
+        restored.dailySnapshots?.values.removeValue(forKey: date(1))
+        precondition(restored.dailyGains(from: date(1), through: date(1))[date(1)] == nil,
+                     "A missing first snapshot must remain missing")
     }
 
     static func dailyGainsCarryForwardMarketPrices() throws {

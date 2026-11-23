@@ -402,6 +402,7 @@ struct WorkshopConversationView: View {
     private func userMessage(_ entry: WorkshopEntry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent,
+                imageIDs: conversation.followups.first(where: { $0.id == entry.id })?.imageIds ?? [],
                 replies: conversation.presentation.questionReplies[entry.id] ?? [])
             if let delivery = conversation.outbox.states[entry.id] {
                 WorkshopMessageDeliveryView(state: delivery, canRetry: conversation.canRetryDelivery(entry.id),

@@ -117,7 +117,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         try FileManager.default.createDirectory(at:cacheFile.deletingLastPathComponent(),withIntermediateDirectories:true)
         try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:cacheFile)
         func makeStore()->CryptoStore {
-            CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+            CryptoStore(repositoryProvider:{repository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
         func configure(total:Double=100, failDay:String?=nil, failBinance:Bool=false, incompleteHTX:Bool=false, failRates:Bool=false, currentTRX:Double=2000, failCurrent:Bool=false, currentLiquidation:Double?=0.4, failSpotDetails:Bool=false, hasCrossMargin:Bool=true, failCrossMarginDetails:Bool=false) {
             AssetMockProtocol.configure { request in
@@ -289,7 +289,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         ] {
             AssetMockProtocol.configure { _ in response }
             do {
-                _ = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).htxTotal(htx)
+                _ = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}).htxTotal(htx)
                 preconditionFailure("incomplete HTX response must report an error")
             } catch {
                 precondition(error.localizedDescription.contains(reason) && error.localizedDescription.contains("今日总资产未更新"))
@@ -329,7 +329,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         completeDays[6].values["funding_trx"]=0;completeDays[6].values["funding_rate"]=0
         let fieldsFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(fieldsRepository.storageScope)+".json")
         try JSONEncoder().encode(CryptoStore.Cache(records:completeDays+[ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:fieldsFile)
-        let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+        let fieldsStore=CryptoStore(repositoryProvider:{fieldsRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure(failRates:true)
         await fieldsStore.collect(force:true)
         precondition(fieldsStore.contracts.first{$0.day==completeDays[1].day}?.values["funding_rate"] == nil,"failed field remains missing")
@@ -388,21 +388,21 @@ private final class AssetRepository: GitHubRepositoryAccess {
                 ["asset":"USDT","free":"1","locked":"0","freeze":"0","withdrawing":"0"]
             ]]]
         }
-        let priced=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        let priced=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}).binanceSnapshot(binance)
         precondition(priced.accounts[0].visibleAssets!.map(\.symbol) == ["FOO","USDT"],"filter dust by converted value rather than token quantity")
         precondition(priced.accounts[0].visibleAssets![0].price == 2 && priced.accounts[0].visibleAssets![0].usdtValue == 2,"convert BTC quoted holdings to USDT")
         precondition(priced.total == 3.9,"dust filtering preserves the exchange reported total")
         AssetMockProtocol.configure { request in
             switch request.url!.path {
-            case "/sapi/v1/equity/market/quote":
-                precondition(request.value(forHTTPHeaderField:"X-MBX-APIKEY") == binance.key)
+            case "/quote":
+                precondition(request.url?.host == "api.twelvedata.com" && request.value(forHTTPHeaderField:"X-MBX-APIKEY") == nil)
                 let query=URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
-                precondition(!query.contains { $0.name == "signature" },"stock market data needs the API key but no signature")
+                precondition(query.contains(.init(name:"apikey",value:"fixture-twelve-key")) && !query.contains { $0.name == "signature" },"stock quotes use only the Twelve Data key")
                 let ticker=query.first { $0.name == "symbol" }!.value!
-                if ticker == "EMPTY" { return Data() }
+                if ticker == "EMPTY" { return ["symbol":"EMPTY","currency":"USD","close":"0"] }
                 if ticker == "FAIL" { throw HakoError(message:"test quote unavailable") }
                 precondition(ticker == "AAPL","strip only EQ_ before requesting stock quotes")
-                return ["symbol":"AAPL","bidPrice":"180","askPrice":"182"]
+                return ["symbol":"AAPL","currency":"USD","close":"181"]
             case "/api/v3/ticker/price": return [["symbol":"USDCUSDT","price":"0.99"],["symbol":"EQ_AAPLUSDT","price":"9999"]]
             default: return [["walletName":"Stock","balance":"1000","assetBalances":[
                 ["asset":"EQ_AAPL","free":"2","locked":"0","freeze":"0","withdrawing":"0"],
@@ -411,29 +411,53 @@ private final class AssetRepository: GitHubRepositoryAccess {
             ]]]
             }
         }
-        let stocks=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        let stocks=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}).binanceSnapshot(binance)
         let apple=stocks.accounts[0].assets!.first { $0.symbol == "EQ_AAPL" }!
-        precondition(apple.equityUSDPrice == 181 && apple.usdtValue == 362,"stock USD midpoint equals USDT under the selected one-to-one convention")
+        precondition(apple.equityUSDPrice == 181 && apple.usdtValue == 362,"Twelve Data stock USD quote equals USDT under the selected one-to-one convention")
         precondition(stocks.accounts[0].visibleAssets!.count == 3 && stocks.total == 1000,"empty or failed stock quotes never hide holdings or change exchange totals")
         precondition(stocks.accounts[0].assets!.filter { $0.symbol != "EQ_AAPL" }.allSatisfy { $0.price == nil && $0.equityUSDPrice == nil })
-        let crossed=try CryptoClient.binanceEquityMidpoint(["bidPrice":"182","askPrice":"180"])
-        let zero=try CryptoClient.binanceEquityMidpoint(["bidPrice":"0","askPrice":"180"])
-        precondition(crossed == nil && zero == nil,"invalid or one-sided quotes do not invent a stock price")
+        let stockUsage=MarketAPIUsage(file:directory.appendingPathComponent("stock-usage.json"))
+        let metered=CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:stockUsage,loadEquityAPIKey:{"fixture-twelve-key"})
+        _ = try await metered.binancePrices(stocks)
+        let stockCalls=try await stockUsage.snapshot(for:.twelveData)
+        precondition(stockCalls.total == 3,"Binance Stock quote attempts count once each, including empty and failed results")
+        precondition(stockCalls.succeeded == 1 && stockCalls.failed == 2,"Successful quotes, unusable prices and transport failures remain separate")
+        let stockRequests=AssetMockProtocol.requests.count
+        let missingKey=CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{""})
+        let missingKeySnapshot=try await missingKey.binancePrices(stocks)
+        precondition(AssetMockProtocol.requests.count == stockRequests && missingKeySnapshot.quoteError?.contains("Twelve Data API Key") == true)
+        precondition(missingKeySnapshot.accounts[0].assets!.first { $0.symbol == "EQ_AAPL" }!.price == 181,
+                     "missing key keeps previous stock valuations and never requests Binance quotes")
         let stockHandler=AssetMockProtocol.handler!
         AssetMockProtocol.configure { request in
             if request.url!.path == "/api/v3/ticker/price" { throw HakoError(message:"test conversion unavailable") }
             return try stockHandler(request)
         }
-        let unconverted=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)).binanceSnapshot(binance)
+        let unconverted=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}).binanceSnapshot(binance)
         let usdOnly=unconverted.accounts[0].assets!.first { $0.equitySymbol == "AAPL" }!
         precondition(usdOnly.equityUSDPrice == 181 && usdOnly.price == 181 && usdOnly.isVisible,"stock valuations never require a USD conversion ticker")
+        for quote: [String:Any] in [
+            ["symbol":"OTHER","currency":"USD","close":"181"],
+            ["symbol":"AAPL","currency":"EUR","close":"181"],
+            ["symbol":"AAPL","currency":"USD","close":"-1"],
+            ["symbol":"AAPL","currency":"USD","close":"nan"],
+            ["status":"error","code":401], ["status":"error","code":429]] {
+            AssetMockProtocol.configure { request in
+                precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/quote")
+                return quote
+            }
+            do {
+                let invalid=try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}).twelveDataEquityPrice("AAPL")
+                precondition(invalid == nil,"invalid stock prices must not be accepted")
+            } catch is HakoError { }
+        }
         // A cold entry reads the archive without posting or querying asset APIs.
         let coldRepository=AssetRepository()
         let archived=CryptoRecord(kind:"htx-trx",day:"2026-09-26",sampledAt:0,scope:"",values:["funding_rate":0.022])
         coldRepository.files[archived.path]=try CryptoRecord.encode([archived],kind:"htx-trx")
         let coldFile=directory.appendingPathComponent("crypto/"+CryptoDay.hash(coldRepository.storageScope)+".json")
         func coldStore()->CryptoStore {
-            CryptoStore(repositoryProvider:{coldRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{_ in CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+            CryptoStore(repositoryProvider:{coldRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),loadCredential:{_ in CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
         AssetMockProtocol.configure { _ in fatalError("Archive-only entry must not query asset APIs") }
         let cold=coldStore()
@@ -478,7 +502,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         // Older caches lack the remote-day index and must read GitHub once to populate it.
         try JSONEncoder().encode(CryptoStore.Cache(archiveLoaded:true)).write(to:reminderFile)
         func reminderStore()->CryptoStore {
-            CryptoStore(repositoryProvider:{reminderRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "binance" ? binance : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
+            CryptoStore(repositoryProvider:{reminderRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),loadCredential:{$0 == "binance" ? binance : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         }
         configure()
         let reminder=reminderStore()
@@ -505,7 +529,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         var ttlNow=now
         var ttlCredential=binance
         func ttlStore()->CryptoStore {
-            CryptoStore(repositoryProvider:{ttlRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),loadCredential:{$0 == "binance" ? ttlCredential : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{ttlNow})
+            CryptoStore(repositoryProvider:{ttlRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),loadCredential:{$0 == "binance" ? ttlCredential : CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{ttlNow})
         }
         configure()
         let ttl=ttlStore()
@@ -560,9 +584,9 @@ private final class AssetRepository: GitHubRepositoryAccess {
             case "/api/v3/ticker/price":
                 if quoteFails { throw HakoError(message:"test price unavailable") }
                 return [["symbol":"BTCUSDT","price":String(btcQuote)]]
-            case "/sapi/v1/equity/market/quote":
+            case "/quote":
                 if quoteFails { throw HakoError(message:"test stock unavailable") }
-                return ["symbol":"AAPL","bidPrice":String(stockQuote),"askPrice":String(stockQuote)]
+                return ["symbol":"AAPL","currency":"USD","close":String(stockQuote)]
             default: preconditionFailure("Quote-only entry must never query balances: \(request.url!.path)")
             }
         }
@@ -591,12 +615,12 @@ private final class AssetRepository: GitHubRepositoryAccess {
         legacyHTX.balanceVersion = nil
         let previousLinear = legacyHTX.holdings.removeValue(forKey:.linearSwap)
         legacyHTX.holdings[.isolatedSwap] = previousLinear
-        let partial = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
+        let partial = try await CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"})
             .htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:legacyHTX)
         precondition(partial.rows(in:.spot) == htxDetails.rows(in:.spot) && partial.errors.count == 1,"a source failure preserves its previous holdings")
         precondition(partial.holdings[.isolatedSwap] == nil && partial.holdings[.linearSwap]?.count == 1,
                      "successful V5 refresh replaces legacy U-margined rows")
-        let htxClient = CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil))
+        let htxClient = CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"})
         configure(hasCrossMargin:false)
         let unopened = try await htxClient.htxAssetDetails(htx,scope:htxDetails.scope,now:now,previous:htxDetails)
         precondition(unopened.rows(in:.margin).isEmpty && unopened.errors.isEmpty &&
@@ -645,7 +669,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         wallet.address = "cosmos1y8nyfvmqh50p6ldpzljk3yrglppdv3t8h938ez"
         let shortcutFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(shortcutRepository.storageScope) + ".json")
         try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:shortcutFile)
-        let shortcutStore = CryptoStore(repositoryProvider:{shortcutRepository}, client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+        let shortcutStore = CryptoStore(repositoryProvider:{shortcutRepository}, client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
             loadCredential:{$0 == "htx" ? htx : binance}, loadWallets:{[wallet]}, cacheDirectory:directory, nowProvider:{now})
         configure(total:900)
         shortcutRepository.beforeCommit = {
@@ -718,7 +742,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
             let parallelRepository = AssetRepository()
             let parallelFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(parallelRepository.storageScope) + ".json")
             try JSONEncoder().encode(shortcutStore.cache).write(to:parallelFile)
-            let parallelStore = CryptoStore(repositoryProvider:{parallelRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+            let parallelStore = CryptoStore(repositoryProvider:{parallelRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
                 loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[wallet]},cacheDirectory:directory,nowProvider:{now})
             AssetMockProtocol.holdResponses()
             var events: [HakoExecutionEvent] = []
@@ -769,12 +793,12 @@ private final class AssetRepository: GitHubRepositoryAccess {
                 precondition(plan.children.allSatisfy { !$0.row.isAssetRequest && $0.row.finishedAt != nil })
             }
         }
-        try await checkRequestDiagnostics(client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)))
+        try await checkRequestDiagnostics(client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}))
 
         let emptyRepository = AssetRepository()
         let emptyFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(emptyRepository.storageScope) + ".json")
         try JSONEncoder().encode(CryptoStore.Cache(records:shortcutStore.cache.records,archiveLoaded:true,archivedPortfolioDays:[])).write(to:emptyFile)
-        let unconfigured = CryptoStore(repositoryProvider:{emptyRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+        let unconfigured = CryptoStore(repositoryProvider:{emptyRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
             loadCredential:{_ in CryptoCredential()},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure()
         do { _ = try await unconfigured.collectAndSynchronize(); preconditionFailure("Old cached records disguised missing asset sources") }
@@ -783,7 +807,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
 
         let cancelledRepository = AssetRepository()
         cancelledRepository.pauseNextRead = true
-        let cancelledStore = CryptoStore(repositoryProvider:{cancelledRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil)),
+        let cancelledStore = CryptoStore(repositoryProvider:{cancelledRepository},client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
             loadCredential:{$0 == "htx" ? htx : binance},loadWallets:{[]},cacheDirectory:directory,nowProvider:{now})
         configure()
         let cancelled = Task { try await cancelledStore.collectAndSynchronize() }

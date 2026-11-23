@@ -12,15 +12,18 @@ struct InvestmentMarketDataTests {
         try catalogValidationIncludesNewUsesOfExistingAssets()
         try await credentialTestsUseAuthenticatedEndpoints()
         try await credentialTestsRejectInvalidResponses()
+        try await tushareErrorsPreserveTheServerReason()
         try await eastmoneyCatalogFindsNamesCodesAndMarkets()
-        try await eastmoneyUSCatalogSeparatesStocksAndETFs()
+        try await twelveUSCatalogSeparatesStocksAndETFs()
+        try await twelveUSEquitiesRequireKeysAndPreserveErrors()
+        try await twelveEmptyDatesRemainDistinctFromAPIFailures()
         try await eastmoneyStockConnectCatalogNormalizesCodes()
         try await eastmoneyHistoryUsesUnadjustedClosesWithoutKeys()
         try await eastmoneyBenchmarkIdentitiesAndClosingDates()
         try await eastmoneyDerivativeMarketsAndContractFormats()
         try await eastmoneyExpiredContractsCanUseTushare()
         try await eastmoneyFundNAVPaginatesAndRejectsMoneyYields()
-        try await eastmoneyCloseTimesAndWatchFreshness()
+        try await twelveUSCloseTimesAndWatchFreshness()
         try await eastmoneyFailuresAndRetryAreExplicit()
         try await cryptocurrencyUsesUSDPair()
         try await binanceSpotCatalogFindsTRX()
@@ -85,8 +88,8 @@ struct InvestmentMarketDataTests {
         let provider = InvestmentQuoteProvider { request, secrets in
             requests += 1
             precondition(secrets == ["fixture"])
-            precondition(request.url?.query == nil)
             if request.url?.host == "api.tushare.pro" {
+                precondition(request.url?.query == nil)
                 let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
                 precondition(request.httpMethod == "POST" && body["api_name"] as? String == "trade_cal")
                 precondition(body["token"] as? String == "fixture")
@@ -96,7 +99,12 @@ struct InvestmentMarketDataTests {
                 return response(request, "{\"code\":0,\"data\":{\"fields\":[\"cal_date\"],\"items\":[[\"" + date + "\"]]}}")
             }
             precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/api_usage")
-            precondition(request.value(forHTTPHeaderField: "Authorization") == "apikey fixture")
+            precondition(request.value(forHTTPHeaderField: "Authorization") == nil)
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            precondition(query == [.init(name: "apikey", value: "fixture")])
+            var redactor = HTTPLogRedactor(request: request, secrets: secrets)
+            let log = redactor.request(request)
+            precondition(!log.contains("fixture") && log.contains("[已隐藏]"))
             return response(request, #"{"timestamp":"2026-11-12 13:00:00","current_usage":0,"plan_limit":8,"plan_category":"Basic"}"#)
         }
         for source in InvestmentQuoteSource.allCases {
@@ -127,11 +135,44 @@ struct InvestmentMarketDataTests {
                 preconditionFailure("A failed or incomplete response must not pass the connection test")
             } catch InvestmentError.invalid {}
         }
+        var rejectedRequests = 0
+        let unauthorized = InvestmentQuoteProvider { request, _ in
+            rejectedRequests += 1
+            return (Data(#"{"status":"error","code":401,"message":"Invalid apikey"}"#.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!)
+        }
+        do {
+            try await unauthorized.testCredential("fixture", for: .twelveData)
+            preconditionFailure("A real HTTP 401 must still reject the credential")
+        } catch InvestmentError.invalid {}
+        precondition(rejectedRequests == 1, "Do not retry authentication or treat a rejected key as valid")
         let offline = InvestmentQuoteProvider { _, _ in throw URLError(.notConnectedToInternet) }
         do {
             try await offline.testCredential("fixture", for: .twelveData)
             preconditionFailure("Network failure must not pass the connection test")
         } catch let error as URLError { precondition(error.code == .notConnectedToInternet) }
+    }
+
+    static func tushareErrorsPreserveTheServerReason() async throws {
+        let reasons = ["抱歉，您没有访问该接口的权限。", "每分钟最多访问此接口1次。", "Token fixture 不正确。"]
+        for reason in reasons {
+            var requests = 0
+            let payload = try JSONSerialization.data(withJSONObject: ["code": 40203, "msg": reason])
+            let provider = InvestmentQuoteProvider { request, _ in
+                requests += 1
+                return (payload, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+            do {
+                try await provider.testCredential("fixture", for: .tushare)
+                preconditionFailure("A rejected Tushare request must not pass the connection test")
+            } catch InvestmentError.invalid(let message) {
+                precondition(message.contains("Tushare Pro · trade_cal（40203）"))
+                precondition(!message.contains("fixture"))
+                if !reason.contains("fixture") { precondition(message.contains(reason)) }
+                else { precondition(message.contains("不正确") && message.contains("[已隐藏]")) }
+            }
+            precondition(requests == 1, "Do not retry a denied or rate-limited credential test")
+        }
     }
 
     static func mapping() {
@@ -156,7 +197,15 @@ struct InvestmentMarketDataTests {
     }
 
     static func cryptocurrencyUsesUSDPair() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
+        let key = "fixture+/=&?%"
+        let provider = InvestmentQuoteProvider { request, secrets in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            precondition(query.filter { $0.name == "apikey" } == [.init(name: "apikey", value: key)])
+            precondition(request.url!.absoluteString.contains("%2B") && !request.url!.absoluteString.contains("+"))
+            precondition(request.value(forHTTPHeaderField: "Authorization") == nil && secrets == [key])
+            var redactor = HTTPLogRedactor(request: request, secrets: secrets)
+            let log = redactor.request(request)
+            precondition(!log.contains(key) && log.contains("[已隐藏]"))
             if request.url?.path == "/symbol_search" {
                 return response(request, #"""
                     {"data":[
@@ -164,11 +213,10 @@ struct InvestmentMarketDataTests {
                     {"symbol":"BTC/USDT","instrument_name":"Bitcoin in Tether","instrument_type":"Digital Currency"}]}
                     """#)
             }
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            precondition(query?.contains(.init(name: "symbol", value: "BTC/USD")) == true)
+            precondition(query.contains(.init(name: "symbol", value: "BTC/USD")))
             return response(request, #"{"meta":{"symbol":"BTC/USD","currency_quote":"US Dollar"},"values":[{"datetime":"2026-10-30","close":"10000.25"}]}"#)
         }
-        let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
+        let keys: [InvestmentQuoteSource: String] = [.twelveData: key]
         let choices = try await provider.searchInstruments(.init(query: "BTC", kind: .crypto, currency: .usd, accountType: .crypto), keys: keys)
         precondition(choices.map(\.code) == ["BTC"])
         let rows = try await provider.history(asset: choices[0], start: day(1), through: day(30), cached: nil, keys: keys)

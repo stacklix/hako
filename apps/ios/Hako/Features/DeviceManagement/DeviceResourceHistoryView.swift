@@ -5,17 +5,19 @@ struct DeviceResourceHistoryView: View {
     let agent: ConsoleAgent
     let liveRefresh: Bool
     let refreshID: UUID
+    let liveSample: DeviceResourceHistorySample?
     @ObservedObject private var client = DeviceMonitorClient.shared
     @Environment(\.scenePhase) private var scenePhase
-    @State private var range: DeviceResourceHistoryRange = .fifteenMinutes
+    @State private var range: DeviceResourceHistoryRange = .recent
     @State private var showsRanges = false
-    @State private var history: DeviceResourceHistory?
+    @State private var series = DeviceResourceHistoryLiveSeries()
     @State private var error: String?
     @State private var loading = false
+    @State private var loadID = UUID()
     @State private var selectedDate: Date?
 
     private var taskID: String {
-        "\(client.requestContext)-\(client.authenticated)-\(agent.online)-\(range.rawValue)-\(scenePhase)-\(liveRefresh)-\(refreshID)"
+        "\(client.requestContext)-\(client.authenticated)-\(agent.online)-\(range.rawValue)-\(scenePhase)-\(refreshID)"
     }
 
     var body: some View {
@@ -26,15 +28,16 @@ struct DeviceResourceHistoryView: View {
                 if loading { ProgressView().controlSize(.small) }
                 rangeSelector
             }.zIndex(40)
-            if let history {
+            if let history = series.history {
                 if history.points.isEmpty {
                     Text("此时间范围暂无历史记录。Kage 运行后每秒采样一次。").font(.footnote).foregroundStyle(.secondary)
                 } else {
                     resourceChart(history, cpu: true)
                     resourceChart(history, cpu: false)
-                    Text("每个点代表 \(history.bucketDurationText)内有效采样的平均值，末段按实际时长统计。")
+                    Text(range == .recent ? "每个点对应一次采样，约每秒一次，不做聚合。"
+                         : "每个点代表 \(history.bucketDurationText)内采样的平均值，末段按实际时长统计。")
                         .font(.caption2).foregroundStyle(.secondary)
-                    Text("共 \(history.sampleCount) 次采样 · 按住曲线查看该点的起止时间和数值。")
+                    Text("共 \(history.sampleCount) 次采样 · 按住曲线查看\(range == .recent ? "采样时间" : "该点的起止时间")和数值。")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 if let samplingError = history.samplingError {
@@ -48,7 +51,7 @@ struct DeviceResourceHistoryView: View {
                 Text("等待历史数据").font(.footnote).foregroundStyle(.secondary)
             }
             if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
-            Text(liveRefresh ? "实时刷新已开启 · 每 10 秒更新历史曲线" : "开启「实时刷新」后自动更新历史曲线")
+            Text(liveRefresh ? "实时刷新已开启 · 随实时采样更新曲线" : "开启「实时刷新」后自动更新历史曲线")
                 .font(.caption2).foregroundStyle(.secondary)
             Text("与实时指标共用每秒采样，每 5 分钟批量写盘，保留最近 7 天；未写盘数据也可查看。Kage 正常退出时保存，异常退出可能丢失最近 5 分钟的数据。")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -56,20 +59,16 @@ struct DeviceResourceHistoryView: View {
         .devicePagePanel()
         .onDisappear { showsRanges = false }
         .onChange(of: scenePhase) { _, phase in if phase != .active { showsRanges = false } }
+        .onChange(of: liveSample, initial: true) { _, _ in appendLiveSample() }
+        .onChange(of: liveRefresh) { _, enabled in if enabled { appendLiveSample() } }
         .task(id: taskID) {
             guard scenePhase == .active, client.authenticated else { return }
             guard agent.online else { error = "设备离线，暂时无法读取本机历史。"; return }
-            if history.map({ $0.to - $0.from != Int64(range.rawValue) * 1000 }) == true {
-                history = nil
+            if series.range != range {
+                series = DeviceResourceHistoryLiveSeries(range: range)
                 selectedDate = nil
             }
             await load()
-            guard liveRefresh else { return }
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(10)) }
-                catch { return }
-                await load()
-            }
         }
     }
 
@@ -109,38 +108,45 @@ struct DeviceResourceHistoryView: View {
     }
 
     private func load() async {
+        let requestedRange = range
+        let requestID = UUID()
+        loadID = requestID
         loading = true
-        defer { loading = false }
+        defer { if loadID == requestID { loading = false } }
         do {
             let result = try await client.invokeAgent(agent, method: DeviceResourceHistoryCommand.name, version: 1,
-                params: ["rangeSeconds": range.rawValue], as: DeviceResourceHistory.self)
+                params: requestedRange.parameters, as: DeviceResourceHistory.self)
             try Task.checkCancellation()
-            guard result.isValid, result.to - result.from == Int64(range.rawValue) * 1000 else {
+            guard requestedRange == range, series.range == requestedRange else { return }
+            guard requestedRange.accepts(result) else {
                 throw HakoError(message: "设备返回的历史数据格式无效。")
             }
-            history = result
+            series.seed(result)
             error = nil
         } catch is CancellationError { }
         catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
+    private func appendLiveSample() {
+        guard liveRefresh, scenePhase == .active, agent.online, client.authenticated, let liveSample else { return }
+        if series.range != range { series = DeviceResourceHistoryLiveSeries(range: range) }
+        series.append(liveSample)
+    }
+
     private func resourceChart(_ history: DeviceResourceHistory, cpu: Bool) -> some View {
         let color: Color = cpu ? .blue : .purple
-        let selected = selectedDate.flatMap { date in history.points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) } }
+        let selected = selectedDate.flatMap { history.displayPoint(at: $0, for: range) }
         let average = cpu ? history.cpuAverage : history.memoryAverage
         return VStack(alignment: .leading, spacing: 8) {
             Text(cpu ? "CPU" : "内存").font(.subheadline.weight(.medium))
             Text(String(format: "平均 %.1f%%", average))
                 .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             Chart {
-                ForEach(Array(history.points.enumerated()), id: \.element.id) { index, point in
-                    // A missing bucket splits the series instead of inventing a continuous history.
-                    let segment = segmentID(history, index: index)
-                    LineMark(x: .value("时间", point.date), y: .value("平均使用率", cpu ? point.cpuUsagePercent : point.memoryUsagePercent),
-                             series: .value("平均", "average-\(segment)"))
+                ForEach(history.displayPoints(for: range)) { point in
+                    LineMark(x: .value("时间", point.date), y: .value("使用率", cpu ? point.source.cpuUsagePercent : point.source.memoryUsagePercent))
                         .foregroundStyle(color)
-                    if history.points.count == 1 {
-                        PointMark(x: .value("时间", point.date), y: .value("使用率", cpu ? point.cpuUsagePercent : point.memoryUsagePercent))
+                    if history.points.count == 1 && !point.carried {
+                        PointMark(x: .value("时间", point.date), y: .value("使用率", cpu ? point.source.cpuUsagePercent : point.source.memoryUsagePercent))
                             .foregroundStyle(color)
                     }
                 }
@@ -149,7 +155,7 @@ struct DeviceResourceHistoryView: View {
                 }
             }
             .chartYScale(domain: 0...100)
-            .chartXScale(domain: DeviceResourceHistory.date(history.from)...DeviceResourceHistory.date(history.to))
+            .chartXScale(domain: DeviceResourceHistory.date(history.from < history.to ? history.from : history.from - 1000)...DeviceResourceHistory.date(history.to))
             .chartYAxis { AxisMarks(values: [0, 50, 100]) { value in
                 AxisGridLine()
                 AxisValueLabel { if let percent = value.as(Int.self) { Text("\(percent)%") } }
@@ -158,11 +164,15 @@ struct DeviceResourceHistoryView: View {
             .frame(height: 150)
             .accessibilityLabel(cpu ? "CPU 历史使用率" : "内存历史使用率")
             if let selected {
-                Text(intervalLabel(history.interval(for: selected))
-                     + String(format: " · 分段平均 %.1f%%", cpu ? selected.cpuUsagePercent : selected.memoryUsagePercent))
+                Text((range == .recent ? selected.date.formatted(date: .numeric, time: .standard)
+                      : intervalLabel(DateInterval(start: selected.date,
+                          end: DeviceResourceHistory.date(min(history.to, selected.timestamp + Int64(history.bucketSeconds) * 1000)))))
+                     + String(format: range == .recent ? " · 使用率 %.1f%%" : " · 分段平均 %.1f%%", cpu ? selected.source.cpuUsagePercent : selected.source.memoryUsagePercent))
                     .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
-                Text("该时段共 \(selected.sampleCount) 次有效采样")
-                    .font(.caption2).foregroundStyle(.secondary)
+                if range != .recent && !selected.carried {
+                    Text("该时段共 \(selected.source.sampleCount) 次有效采样")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -176,9 +186,4 @@ struct DeviceResourceHistoryView: View {
         return start + " – " + interval.end.formatted(date: dateStyle, time: .standard)
     }
 
-    private func segmentID(_ history: DeviceResourceHistory, index: Int) -> Int64 {
-        var start = index
-        while start > 0 && history.points[start].timestamp - history.points[start - 1].timestamp <= Int64(history.bucketSeconds) * 1000 { start -= 1 }
-        return history.points[start].timestamp
-    }
 }

@@ -411,7 +411,7 @@ import Combine
         var errors:[String]=[]
         if binance.configured,let snapshot=binanceSnapshot {
             do {
-                let quoted=try await client.binancePrices(snapshot,credential:binance)
+                let quoted=try await client.binancePrices(snapshot)
                 var value=cache;value.binanceSnapshot=quoted
                 try persist(value);binanceError=quoted.quoteError
                 if let error=quoted.quoteError { errors.append("Binance 报价："+error) }

@@ -1,26 +1,27 @@
 import Foundation
 
 enum InvestmentPrecision {
-    static func scale(for value: Decimal, exchangeRate: Bool = false) -> Int {
-        guard !exchangeRate else { return 4 }
+    static func scale(for value: Decimal, exchangeRate: Bool = false, unitPrice: Bool = false) -> Int {
+        guard !exchangeRate && !unitPrice else { return 4 }
         var input = value < 0 ? -value : value, twoPlaces = Decimal(), integer = Decimal()
         NSDecimalRound(&twoPlaces, &input, 2, .down)
         NSDecimalRound(&integer, &input, 0, .down)
         return integer == 0 && twoPlaces == 0 ? 4 : 2
     }
 
-    static func rounded(_ value: Decimal, exchangeRate: Bool = false) -> Decimal {
+    static func rounded(_ value: Decimal, exchangeRate: Bool = false, unitPrice: Bool = false) -> Decimal {
         var input = value, result = Decimal()
-        NSDecimalRound(&result, &input, scale(for: value, exchangeRate: exchangeRate), .plain)
+        NSDecimalRound(&result, &input, scale(for: value, exchangeRate: exchangeRate, unitPrice: unitPrice), .plain)
         return result
     }
 
-    static func string(_ value: Decimal, exchangeRate: Bool = false) -> String {
-        NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate)).stringValue
+    static func string(_ value: Decimal, exchangeRate: Bool = false, unitPrice: Bool = false) -> String {
+        NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate, unitPrice: unitPrice)).stringValue
     }
 
-    static func validateInput(_ value: Decimal, field: String) throws {
-        guard rounded(value) == value else {
+    static func validateInput(_ value: Decimal, field: String, unitPrice: Bool = false) throws {
+        guard rounded(value, unitPrice: unitPrice) == value else {
+            if unitPrice { throw InvestmentError.invalid(field + "最多保留 4 位小数。请修改输入，系统不会自动舍入。") }
             throw InvestmentError.invalid(field + "超出允许精度：通常最多 2 位小数，绝对值小于 0.01 时最多 4 位。请修改输入，系统不会自动舍入。")
         }
     }
@@ -39,15 +40,16 @@ enum InvestmentPrecision {
         return value
     }
 
-    static func display(_ value: Decimal, exchangeRate: Bool = false) -> String {
+    static func display(_ value: Decimal, exchangeRate: Bool = false, unitPrice: Bool = false) -> String {
         let formatter = NumberFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.numberStyle = .decimal
         formatter.usesGroupingSeparator = false
-        let scale = scale(for: rounded(value, exchangeRate: exchangeRate), exchangeRate: exchangeRate)
+        let roundedValue = rounded(value, exchangeRate: exchangeRate, unitPrice: unitPrice)
+        let scale = scale(for: roundedValue, exchangeRate: exchangeRate, unitPrice: unitPrice)
         formatter.minimumFractionDigits = scale
         formatter.maximumFractionDigits = scale
-        return formatter.string(from: NSDecimalNumber(decimal: rounded(value, exchangeRate: exchangeRate))) ?? string(value, exchangeRate: exchangeRate)
+        return formatter.string(from: NSDecimalNumber(decimal: roundedValue)) ?? string(value, exchangeRate: exchangeRate, unitPrice: unitPrice)
     }
 }
 
@@ -89,6 +91,7 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
     var isTermDeposit: Bool { self == .deposit || self == .certificate }
     var usesBalance: Bool { isTermDeposit || self == .generic || self == .wealth }
     var isManual: Bool { self == .insurance || self == .wealth || usesBalance }
+    var usesUnitPrice: Bool { !isManual }
     var supportsManualQuote: Bool { self == .insurance }
 
     static func watchKinds(in currency: InvestmentCurrency) -> [Self] {
@@ -696,12 +699,13 @@ struct InvestmentValuation: Codable {
 
 enum InvestmentError: LocalizedError {
     case invalid(String)
+    case noMarketData(String)
     case insufficientCash
     case insufficientPosition
 
     var errorDescription: String? {
         switch self {
-        case .invalid(let message): message
+        case .invalid(let message), .noMarketData(let message): message
         case .insufficientCash: "该笔记录会使账户现金余额为负。"
         case .insufficientPosition: "卖出数量超过成交日可用持仓。"
         }
@@ -1390,7 +1394,8 @@ struct InvestmentBook: Codable {
         let history = dailyPortfolio(on: days)
         var gains: [Date: Decimal] = [:]
         for (previous, current) in zip(days, days.dropFirst()) {
-            if let previousGain = history[previous]?.gain, let currentGain = history[current]?.gain {
+            let previousGain: Decimal? = previous < earliest ? 0 : history[previous]?.gain
+            if let previousGain, let currentGain = history[current]?.gain {
                 gains[current] = currentGain - previousGain
             }
         }

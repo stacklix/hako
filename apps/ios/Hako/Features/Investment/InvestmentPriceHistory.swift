@@ -32,6 +32,25 @@ enum InvestmentHistoryRange: String, CaseIterable, Identifiable, Sendable {
         return result
     }
 
+    // Subtract each persisted observation and completed query, including internal gaps.
+    static func missingWindows(from start: Date, through end: Date, observations: [InvestmentQuote],
+                               covered: [ClosedRange<Date>]) -> [ClosedRange<Date>] {
+        guard start <= end else { return [] }
+        let days = observations.filter { $0.price > 0 && $0.isDailyClose != false }.map { $0.day...$0.day }
+        let ranges = (covered + days).sorted { $0.lowerBound < $1.lowerBound }
+        var cursor = start
+        var missing: [ClosedRange<Date>] = []
+        for range in ranges where range.upperBound >= cursor && range.lowerBound <= end {
+            if range.lowerBound > cursor {
+                missing.append(cursor...min(end, InvestmentBook.addDays(-1, to: range.lowerBound)))
+            }
+            cursor = max(cursor, InvestmentBook.addDays(1, to: range.upperBound))
+            if cursor > end { return missing }
+        }
+        if cursor <= end { missing.append(cursor...end) }
+        return missing
+    }
+
     static func quoteWindows(from start: Date, through end: Date) -> [ClosedRange<Date>] {
         var first = InvestmentBook.day(start)
         let end = InvestmentBook.day(end)
