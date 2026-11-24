@@ -10,12 +10,14 @@ struct InvestmentMarketDataTests {
         try catalogIdentityCannotBeHandEdited()
 
         try catalogValidationIncludesNewUsesOfExistingAssets()
+        try balanceAdjustmentsReuseCatalogIdentity()
         try await credentialTestsUseAuthenticatedEndpoints()
         try await credentialTestsRejectInvalidResponses()
         try await tushareErrorsPreserveTheServerReason()
         try await eastmoneyCatalogFindsNamesCodesAndMarkets()
         try await twelveUSCatalogSeparatesStocksAndETFs()
         try await twelveUSEquitiesRequireKeysAndPreserveErrors()
+        try await twelveNasdaqOperatingMarketIncludesSegments()
         try await twelveEmptyDatesRemainDistinctFromAPIFailures()
         try await eastmoneyStockConnectCatalogNormalizesCodes()
         try await eastmoneyHistoryUsesUnadjustedClosesWithoutKeys()
@@ -81,6 +83,38 @@ struct InvestmentMarketDataTests {
         var planned = original
         planned.plans = [.init(accountID: account.id, assetID: listed.id, amount: 10, schedule: try .init(frequency: .monthly, day: 1), nextDay: day(1))]
         precondition(planned.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [listed.id])
+    }
+
+    static func balanceAdjustmentsReuseCatalogIdentity() throws {
+        let token = asset("TRX", .crypto, .usd, market: "BINANCE")
+        let account = InvestmentAccount(name: "现货", currency: .usd, type: .crypto)
+        var original = InvestmentBook(accounts: [account], assets: [token.id: token])
+        original.assets[token.id]!.name = "TRON"
+        try original.post(.init(day: day(1), kind: .opening, assetID: token.id,
+                                quantity: Decimal(string: "51786.75")!, price: 1), accountID: account.id)
+        for total in ["51803.8", "51700"] {
+            var adjusted = original
+            try adjusted.adjustSpotBalance(assetID: token.id, accountID: account.id,
+                                           balance: Decimal(string: total)!, on: day(2))
+            precondition(adjusted.catalogAssetsRequiringValidation(comparedTo: original).isEmpty,
+                         "Existing TRON balances must save without requesting a renamed TRX catalog entry")
+            let ledger = try adjusted.ledger(adjusted.accounts[0], through: day(2))
+            precondition(ledger.positions[token.id]?.quantity == Decimal(string: total)!)
+            adjusted.assets[token.id]!.name = "手填名称"
+            precondition(adjusted.catalogAssetsRequiringValidation(comparedTo: original).map(\.id) == [token.id],
+                         "Balance adjustments must not bypass checks for changed instrument metadata")
+        }
+        var watched = original
+        watched.watched = [token.id]
+        precondition(watched.catalogAssetsRequiringValidation(comparedTo: original).isEmpty)
+        var planned = original
+        planned.plans = [.init(accountID: account.id, assetID: token.id, amount: 10,
+                              schedule: try .init(frequency: .monthly, day: 1), nextDay: day(2))]
+        precondition(planned.catalogAssetsRequiringValidation(comparedTo: original).isEmpty)
+        var traded = original
+        try traded.post(.init(day: day(2), kind: .buy, assetID: token.id, quantity: 1, price: 1),
+                        accountID: account.id, autoFundCash: true)
+        precondition(traded.catalogAssetsRequiringValidation(comparedTo: original).isEmpty)
     }
 
     static func credentialTestsUseAuthenticatedEndpoints() async throws {

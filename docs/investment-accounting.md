@@ -88,7 +88,9 @@ schema 6→7 的临时数值整理、启动调用及迁移专项测试已移除�
 
 ## 行情与标的搜索
 
-美股和美股 ETF 使用 Twelve Data，需在投资记账设置中配置 API Key。搜索使用 `api.twelvedata.com/symbol_search`，按资产类型、USD 币种、美国市场及交易所 MIC 筛选；历史行情使用 `/time_series` 的未复权日线收盘价，核对代码、币种及已指定的交易所。缺少 Key 或接口失败时明确报错。Binance Stock 最新报价也共用此 Key。已有本机与服务端历史缓存继续按原缓存规则使用，缺失区间向 Twelve Data 查询。
+美股和美股 ETF 使用 Twelve Data，需在投资记账设置中配置 API Key。搜索使用 `api.twelvedata.com/symbol_search`，按资产类型、USD 币种、美国市场及交易所 MIC 筛选；历史行情使用 `/time_series` 的未复权日线收盘价，核对代码、币种及已指定的交易所。Nasdaq 总市场 `XNAS` 使用 `exchange=NASDAQ` 筛选，返回 MIC 仅接受 `XNAS`、`XNMS`、`XNGS`、`XNCM`；明确指定细分市场时仍按 MIC 精确筛选与校验，不因接口错误改查其他市场。错误详情包含实际请求的交易所参数。缺少 Key 或接口失败时明确报错。Binance Stock 最新报价也共用此 Key。已有本机与服务端历史缓存继续按原缓存规则使用，缺失区间向 Twelve Data 查询。
+
+新增标的、已有未使用标的首次用于记账／关注／启用定投，以及修改标的身份信息时，需要校验市场目录。已有交易、关注或启用定投的标的继续记账时复用已保存身份；单纯调整余额、记分红或买卖不重新比对实时目录名称，以免目录改名或暂时缺少名称阻止保存。实际修改名称、代码、市场等身份字段仍须校验。
 
 A 股、境内 ETF、场外基金、港股通及国内期货期权使用东方财富查询，无需配置 API Key。搜索通过 `searchapi.eastmoney.com/api/suggest/get` 取得目录代码和名称，按资产类型、市场和币种筛选；保留去重、精确代码和名称／部分代码匹配。
 

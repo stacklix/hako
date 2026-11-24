@@ -126,9 +126,10 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         let body = try JSONSerialization.data(withJSONObject: ["status": "error", "code": 429,
             "message": "Quota exceeded for \(key); API Key: unexpected-credential"])
         let detail = MarketAPIUsage.failureDetail(for: query, response: response, data: body)
-        let traced = request("api.twelvedata.com", "/time_series?symbol=AAPL&start_date=2026-11-10&end_date=2026-11-24&apikey=" + key)
+        let traced = request("api.twelvedata.com", "/time_series?symbol=AAPL&mic_code=XNMS&exchange=NASDAQ&start_date=2026-11-10&end_date=2026-11-24&apikey=" + key)
         let trace = MarketAPIUsage.failureDetail(for: traced, response: response, data: body, reason: "新增关注报价校验")
         precondition(trace.message.contains("请求标的：AAPL") && trace.message.contains("2026-11-10 至 2026-11-24")
+            && trace.message.contains("交易所 MIC：XNMS") && trace.message.contains("交易所：NASDAQ")
             && trace.message.contains("新增关注报价校验") && !trace.message.contains(key))
         await usage.record(query, outcome: .failed, failure: detail, at: now)
         var tushare = request("api.tushare.pro")

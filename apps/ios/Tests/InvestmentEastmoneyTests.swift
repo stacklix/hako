@@ -157,6 +157,54 @@ extension InvestmentMarketDataTests {
         }
     }
 
+    static func twelveNasdaqOperatingMarketIncludesSegments() async throws {
+        for mic in ["XNAS", "XNMS", "XNGS", "XNCM"] {
+            let provider = InvestmentQuoteProvider { request, _ in
+                let query = eastmoneyQuery(request)
+                precondition(query["symbol"] == "QQQM" && query["interval"] == "1day")
+                precondition(query["exchange"] == "NASDAQ" && query["mic_code"] == nil)
+                precondition(query["country"] == "United States" && query["type"] == "ETF" && query["adjust"] == "none")
+                return response(request, "{\"meta\":{\"symbol\":\"QQQM\",\"currency\":\"USD\",\"mic_code\":\"\(mic)\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"2026-10-30\",\"close\":\"250\"}]}")
+            }
+            let values = try await provider.history(asset: asset("QQQM", .etf, .usd, market: "XNAS"),
+                start: day(1), through: day(30), cached: nil, keys: [.twelveData: "fixture"])
+            precondition(values.count == 1 && values[0].price == 250)
+        }
+        let exact = InvestmentQuoteProvider { request, _ in
+            let query = eastmoneyQuery(request)
+            precondition(query["mic_code"] == "XNMS" && query["exchange"] == nil)
+            return response(request, #"{"meta":{"symbol":"QQQM","currency":"USD","mic_code":"XNGS","type":"ETF"},"values":[{"datetime":"2026-10-30","close":"250"}]}"#)
+        }
+        do {
+            _ = try await exact.history(asset: asset("QQQM", .etf, .usd, market: "XNMS"),
+                start: day(1), through: day(30), cached: nil, keys: [.twelveData: "fixture"])
+            preconditionFailure("Explicit Nasdaq segments must not be widened to other segments")
+        } catch is InvestmentError { }
+        for mic in ["XNYS", "IEXG", "XMEX", ""] {
+            let wrong = InvestmentQuoteProvider { request, _ in
+                response(request, "{\"meta\":{\"symbol\":\"QQQM\",\"currency\":\"USD\",\"mic_code\":\"\(mic)\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"2026-10-30\",\"close\":\"250\"}]}")
+            }
+            do {
+                _ = try await wrong.history(asset: asset("QQQM", .etf, .usd, market: "XNAS"),
+                    start: day(1), through: day(30), cached: nil, keys: [.twelveData: "fixture"])
+                preconditionFailure("Nasdaq scope must reject other exchanges and missing MICs")
+            } catch is InvestmentError { }
+        }
+        for code in [404, 429] {
+            var calls = 0
+            let rejected = InvestmentQuoteProvider { request, _ in
+                calls += 1
+                return response(request, "{\"status\":\"error\",\"code\":\(code)}")
+            }
+            do {
+                _ = try await rejected.history(asset: asset("QQQM", .etf, .usd, market: "XNAS"),
+                    start: day(1), through: day(30), cached: nil, keys: [.twelveData: "fixture"])
+                preconditionFailure("Failed requests must remain errors")
+            } catch is InvestmentError { }
+            precondition(calls == 1, "Market selection must not introduce error-driven retry requests")
+        }
+    }
+
     static func eastmoneyStockConnectCatalogNormalizesCodes() async throws {
         let provider = InvestmentQuoteProvider { request, _ in
             if request.url?.host == "push2.eastmoney.com" {

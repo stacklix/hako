@@ -292,6 +292,8 @@ actor MarketAPIUsage {
         func parameter(_ name: String) -> String? { query.first { $0.name == name }?.value ?? params[name] as? String }
         var context: [String] = []
         if let symbol = parameter("symbol") ?? parameter("ts_code") { context.append("请求标的：" + symbol) }
+        if let mic = parameter("mic_code") { context.append("交易所 MIC：" + mic) }
+        if let exchange = parameter("exchange") { context.append("交易所：" + exchange) }
         if let start = parameter("start_date"), let end = parameter("end_date") { context.append("查询区间：" + start + " 至 " + end) }
         let cause = reason ?? ["/symbol_search": "标的搜索", "/api_usage": "连接测试", "/quote": "最新股票报价"][request.url?.path ?? ""]
         if let cause { context.append("触发原因：" + cause) }

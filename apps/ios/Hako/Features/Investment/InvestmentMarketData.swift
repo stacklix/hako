@@ -18,15 +18,14 @@ extension InvestmentAsset {
 
 extension InvestmentBook {
     func catalogAssetsRequiringValidation(comparedTo previous: InvestmentBook) -> [InvestmentAsset] {
-        var used = Set(watched).subtracting(previous.watched)
-        let oldEvents = Dictionary(previous.accounts.flatMap(\.events).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for event in accounts.flatMap(\.events) where oldEvents[event.id]?.assetID != event.assetID {
-            if let id = event.assetID { used.insert(id) }
+        func usedAssets(in book: InvestmentBook) -> Set<UUID> {
+            Set(book.watched)
+                .union(book.accounts.flatMap(\.events).compactMap(\.assetID))
+                .union(book.plans.filter(\.enabled).compactMap(\.assetID))
         }
-        for plan in plans where plan.enabled {
-            let old = previous.plans.first { $0.id == plan.id }
-            if let id = plan.assetID, old?.assetID != id || old?.enabled != true { used.insert(id) }
-        }
+        // New ledger entries reuse the established identity. Rechecking the live
+        // catalog here would reject balance changes when the vendor renames an asset.
+        let used = usedAssets(in: self).subtracting(usedAssets(in: previous))
         return assets.values.filter { asset in
             guard asset.kind.requiresCatalog else { return false }
             guard let original = previous.asset(asset.id) else { return true }
@@ -534,7 +533,15 @@ struct InvestmentQuoteProvider {
         if currency == .usd, kind == .stock || kind == .etf {
             url.queryItems?.append(.init(name: "country", value: "United States"))
         }
-        if !market.isEmpty { url.queryItems?.append(.init(name: "mic_code", value: market)) }
+        // XNAS denotes Nasdaq's operating market, while Twelve Data lists some
+        // equities under a segment MIC (XNMS/XNGS/XNCM). Use the documented exchange
+        // filter for this scope; explicit segment MICs must still match exactly.
+        let nasdaqOperatingMarket = currency == .usd && (kind == .stock || kind == .etf) && market.uppercased() == "XNAS"
+        if nasdaqOperatingMarket {
+            url.queryItems?.append(.init(name: "exchange", value: "NASDAQ"))
+        } else if !market.isEmpty {
+            url.queryItems?.append(.init(name: "mic_code", value: market))
+        }
         if kind == .etf { url.queryItems?.append(.init(name: "type", value: "ETF")) }
         if kind == .fund { url.queryItems?.append(.init(name: "type", value: "Mutual Fund")) }
         guard let url = url.url else { throw InvestmentError.invalid("标的代码无效") }
@@ -558,8 +565,12 @@ struct InvestmentQuoteProvider {
             throw InvestmentError.invalid("返回的报价币种不匹配")
         }
         if currency == .usd, kind == .stock || kind == .etf {
+            let returnedMIC = payload?.meta?.mic_code?.uppercased() ?? ""
+            let marketMatches = nasdaqOperatingMarket
+                ? ["XNAS", "XNMS", "XNGS", "XNCM"].contains(returnedMIC)
+                : market.isEmpty || returnedMIC == market.uppercased()
             guard payload?.meta?.symbol?.uppercased() == symbol.uppercased(),
-                  market.isEmpty || payload?.meta?.mic_code?.uppercased() == market.uppercased() else {
+                  marketMatches else {
                 throw InvestmentError.invalid("Twelve Data 返回的美股代码或交易所不匹配")
             }
             if kind == .etf, payload?.meta?.type?.lowercased() != "etf" {
