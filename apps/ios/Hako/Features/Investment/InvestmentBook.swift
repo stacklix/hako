@@ -94,6 +94,22 @@ enum InvestmentKind: String, Codable, CaseIterable, Identifiable {
     var usesUnitPrice: Bool { !isManual }
     var supportsManualQuote: Bool { self == .insurance }
 
+    func quantityInputScale(in currency: InvestmentCurrency) -> Int? {
+        if [.etf, .fund, .crypto].contains(self) || (self == .stock && currency == .usd) { return 3 }
+        return [.stock, .option, .future].contains(self) ? 0 : nil
+    }
+
+    func validateTradeQuantity(_ value: Decimal, currency: InvestmentCurrency) throws {
+        guard let scale = quantityInputScale(in: currency) else { return }
+        var input = value, rounded = Decimal()
+        NSDecimalRound(&rounded, &input, scale, .plain)
+        guard rounded == value else {
+            throw InvestmentError.invalid(scale == 3
+                ? "数量最多支持 3 位小数。请修改输入，系统不会自动舍入。"
+                : "该类型的数量必须是整数。")
+        }
+    }
+
     static func watchKinds(in currency: InvestmentCurrency) -> [Self] {
         switch currency {
         case .cny: [.stock, .etf, .fund, .future]
@@ -413,6 +429,18 @@ struct InvestmentAccount: Codable, Identifiable {
 extension InvestmentBook {
     func visibleAccounts(showArchived: Bool) -> [InvestmentAccount] {
         accounts.filter { showArchived || !$0.isArchived }
+    }
+
+    mutating func reorderAccounts(_ orderedIDs: [UUID]) throws {
+        let ids = Set(orderedIDs)
+        let ordered = orderedIDs.compactMap { account($0) }
+        guard ids.count == orderedIDs.count, ordered.count == orderedIDs.count else {
+            throw InvestmentError.invalid("账户列表已变更，请重新调整顺序。")
+        }
+        var next = ordered.makeIterator()
+        for index in accounts.indices where ids.contains(accounts[index].id) {
+            if let account = next.next() { accounts[index] = account }
+        }
     }
 
     func requireActive(accountID: UUID) throws {
@@ -1017,8 +1045,9 @@ struct InvestmentBook: Codable {
                 guard event.amount > 0 else { throw InvestmentError.invalid("请输入实际到账的分红金额。") }
             } else {
                 guard asset.kind == .stock else { throw InvestmentError.invalid("只有股票可以录入送股。") }
-                guard event.quantity > 0, event.quantity == Decimal(NSDecimalNumber(decimal: event.quantity).int64Value) else {
-                    throw InvestmentError.invalid("送股数量必须为正整数。")
+                guard event.quantity > 0 else { throw InvestmentError.invalid("送股数量必须为正数。") }
+                if !replacing || event.quantity != draft.events.first(where: { $0.id == event.id })?.quantity {
+                    try asset.kind.validateTradeQuantity(event.quantity, currency: asset.currency)
                 }
             }
             try asset.validateEntry(in: accounts[index])
@@ -1048,6 +1077,10 @@ struct InvestmentBook: Codable {
                 throw InvestmentError.invalid("请输入有效的数量、价格和保证金。")
             }
             try asset.validateEntry(in: accounts[index])
+            if asset.kind.quantityInputScale(in: asset.currency) == 3,
+               !replacing || event.quantity != draft.events.first(where: { $0.id == event.id })?.quantity {
+                try asset.kind.validateTradeQuantity(event.quantity, currency: asset.currency)
+            }
             if event.kind != .sell, asset.kind == .crypto, InvestmentStablecoin.isCashCode(asset.code) {
                 throw InvestmentError.invalid("USD、USDC 和 USDT 统一计入 USD 现金余额，请在现金管理中记账。")
             }
@@ -1058,9 +1091,8 @@ struct InvestmentBook: Codable {
             }
             if autoFundCash, event.kind == .buy {
                 let purchase = try cashPurchase(event, asset: asset)
-                let cash = try ledger(draft, through: event.day).cash
-                if purchase.debit > cash {
-                    draft.events.append(.init(day: event.day, kind: .deposit, amount: purchase.debit - cash,
+                if purchase.debit > 0 {
+                    draft.events.append(.init(day: event.day, kind: .deposit, amount: purchase.debit,
                                               version: 1, createdAt: now, updatedAt: now))
                 }
             }
@@ -1169,6 +1201,7 @@ struct InvestmentBook: Codable {
               let position = try ledger(account, through: day).positions[assetID] else {
             throw InvestmentError.invalid("请选择已有现货持仓并填写调整后余额。")
         }
+        try InvestmentKind.crypto.validateTradeQuantity(balance, currency: .usd)
         let change = balance - position.quantity
         guard change != 0 else { throw InvestmentError.invalid("调整后余额与账面数量相同。") }
         let kind: InvestmentEventKind = change > 0 ? .stakingReward : .spotAdjustment
@@ -1535,7 +1568,7 @@ struct InvestmentBook: Codable {
             due.message = due.waiting ? "等待可用报价。" : "当期缺少报价，已跳过。"
             return due
         }
-        let scale = asset.kind == .fund ? 4 : 0
+        let scale = asset.kind.quantityInputScale(in: asset.currency) ?? 0
         var exact = plan.amount / quote.price
         var quantity = Decimal()
         NSDecimalRound(&quantity, &exact, scale, .down)
@@ -1715,6 +1748,7 @@ extension InvestmentBook {
               let before = positionBefore(event, accountID: accountID, on: date) else {
             throw InvestmentError.invalid("该日期没有可调整的现货持仓，请核对调整日期和余额。")
         }
+        try InvestmentKind.crypto.validateTradeQuantity(balance, currency: .usd)
         let change = balance - before.quantity
         guard change != 0 else { throw InvestmentError.invalid("调整后余额与调整前相同。") }
         var edited = event

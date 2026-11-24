@@ -7,7 +7,6 @@ import Combine
     @Published var progress: CGFloat = 0
     @Published var dragging = false
     @Published var settling = false
-    var editing = false
 
     init(width: CGFloat) { self.width = width }
 }
@@ -70,6 +69,7 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
         }
         if gestureRecognizer === drawerPan, let pan = drawerPan, let motion,
            !motion.dragging, !motion.settling {
+            guard drawer?.presentedViewController == nil else { return false }
             let velocity = pan.velocity(in: drawerWindow)
             return velocity.x > 0 && abs(velocity.x) > abs(velocity.y) * 1.2
         }
@@ -82,13 +82,6 @@ struct HakoPinGestureHost: UIViewControllerRepresentable {
             let point = touch.location(in: window)
             return HakoPinDrag.acceptsStart(x: Double(point.x - window.bounds.minX),
                 y: Double(point.y - window.bounds.minY), width: Double(window.bounds.width), height: Double(window.bounds.height))
-        }
-        guard gestureRecognizer === drawerPan, motion?.editing == true else { return true }
-        // Keep native row editing intact; the header and backdrop still support folding.
-        var view = touch.view
-        while let current = view {
-            if current is UIScrollView { return false }
-            view = current.superview
         }
         return true
     }
@@ -273,7 +266,8 @@ private struct HakoPinDrawer: View {
     let close: () -> Void
     let select: (HakoPinnedPage) -> Void
     @ObservedObject private var store = HakoPinStore.shared
-    @State private var editing = EditMode.inactive
+    @ObservedObject private var presenter = HakoPinPresenter.shared
+    @State private var showingSettings = false
     private var pages: [HakoPinnedPage] { store.pages.filter { HakoApplications.pins.contains($0) } }
 
     var body: some View {
@@ -309,10 +303,10 @@ private struct HakoPinDrawer: View {
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
                                         Spacer(minLength: 0)
-                                        if !editing.isEditing { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary) }
+                                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                                     }.frame(minHeight: 60).frame(maxWidth: .infinity, alignment: .leading)
                                         .contentShape(Rectangle())
-                                }.buttonStyle(.plain).disabled(editing.isEditing)
+                                }.buttonStyle(.plain)
                                     .listRowBackground(HakoStyle.card)
                                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                                     .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
@@ -320,14 +314,15 @@ private struct HakoPinDrawer: View {
                             .onDelete { offsets in store.remove(Set(offsets.map { pages[$0].id })) }
                             .onMove { store.move(from: $0, to: $1, among: Set(pages.map(\.id))) }
                         }.listStyle(.insetGrouped).scrollContentBackground(.hidden)
-                            .environment(\.editMode, $editing)
                     }
                     if let error = store.error { Text(error).font(.footnote).foregroundStyle(.red).padding(.horizontal, 20) }
                     HStack {
                         Text("点选页面，快速查看").font(.caption).foregroundStyle(.secondary)
                         Spacer()
-                        Button(editing.isEditing ? "完成" : "管理") { editing = editing.isEditing ? .inactive : .active }
-                            .frame(minWidth: 44, minHeight: 44).disabled(pages.isEmpty)
+                        Button { showingSettings = true } label: {
+                            Image(systemName: "gearshape").frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("主应用设置")
                     }.padding(.horizontal, 20).padding(.bottom, geometry.safeAreaInsets.bottom + 8)
                 }
                 .frame(width: motion.width)
@@ -340,7 +335,13 @@ private struct HakoPinDrawer: View {
             .foregroundStyle(HakoStyle.text).tint(.primary)
             .accessibilityAddTraits(.isModal)
             .accessibilityAction(.escape, close)
-            .onChange(of: editing) { _, value in motion.editing = value.isEditing }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsSheet(title: "设置") {
+                SettingsView()
+            }
+            .environment(\.scenePhase, presenter.scenePhase)
+            .tint(.primary)
         }
     }
 }

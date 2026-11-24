@@ -26,6 +26,11 @@ struct SwissArmyKnifeRandomStringView: View {
                         .focused($editingLength)
                         .accessibilityLabel("字符串长度")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .contentShape(Rectangle())
+                .onTapGesture { editingLength = true }
+                .listRowInsets(EdgeInsets())
                 Toggle("数字（0–9）", isOn: $options.includesDigits)
                 Toggle("小写字母（a–z）", isOn: $options.includesLowercase)
                 Toggle("大写字母（A–Z）", isOn: $options.includesUppercase)

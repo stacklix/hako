@@ -67,6 +67,29 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 
 Console 的会话列表新增 `type=application`，含 `application,origin,browser,createdAt,lastUsedAt` 和独立会话管理 ID，不返回 sessionToken。使用现有 `DELETE /api/v1/web-sessions/{id}` 可单独撤销，手机也提供移除操作。应用自行签发本地 Cookie，必须将其有效性与该授权关联；iLinker 至多缓存成功校验 60 秒，密码登录独立保留。配置示例和密钥生成步骤见 iLinker README 的 Hako 接入说明。
 
+## 原生子应用自动鉴权
+
+原生子应用使用已登录 Console 的 DPoP 会话申请短期授权码，应用后端使用已有应用 ID/Secret 和 PKCE 兑换同一 `(issuer,subject)` 身份。此接口只负责通用认证；Cerno 等业务 API 由 iOS 直接连接独立 HTTPS 后端，不经 Sora 聚合、代理或 Agent 转发。网页 v2 扫码请求与确认流程不变，原生请求不能进入网页批准路径，网页请求也不能通过原生接口自动批准。
+
+手机先生成随机 PKCE verifier，只把其 SHA-256 Base64url challenge 发送到目标应用后端。后端建立自身登录上下文、保存 challenge，再创建以下请求；`redeemToken` 必须仅保存在后端，不能返回手机、写入日志或进入 URL。原生子应用不能持有应用 Secret、Hako 应用 sessionToken 或 Console 私钥/令牌的副本；Console 身份继续由主应用安全存储管理。
+
+| 接口 | 认证、请求与响应 |
+| --- | --- |
+| `POST /api/v1/app-login/native/requests` | 应用后端使用 `Authorization: Bearer <clientSecret>`、`X-Hako-Client`；正文 `codeChallenge,codeChallengeMethod:"S256"`，可选 `userAgent,clientIP`。201 返回 `id,redeemToken,issuer,clientId,application,applicationOrigin,nonce,codeChallenge,codeChallengeMethod,expiresAt`，请求有效 90 秒 |
+| `GET /api/v1/auth/native-app/requests/{id}` | 可信 Console DPoP；返回相同公开绑定字段，不含 `redeemToken` |
+| `POST /api/v1/auth/native-app/requests/{id}/authorize` | 可信 Console DPoP；正文 `nonce,consent`。默认 `consent:false`，没有有效原生授权时返回 409 `native_consent_required`。首次明确同意后才发 `consent:true`。成功返回 `code,expiresAt`，码最多有效 60 秒且不超过原请求期限 |
+| `POST /api/v1/app-login/native/requests/{id}/complete` | 应用后端认证加 `X-Hako-Request: <redeemToken>`；正文 `code,codeVerifier`。一次兑换返回 `issuer,subject,username,clientId,purpose:"login",sessionToken,expiresAt` |
+
+应用后端给手机的 native/start 响应只包含自身 `loginId` 及 Hako 公开绑定字段，不能包含 `redeemToken`。后续完成请求必须验证该 `loginId` 对应的 challenge、原始上下文与有效期，再向 Hako 兑换；不能将任意手机提供的请求 ID 或地址直接当作可信兑换目标。手机共享授权服务独立向当前 Hako 服务器获取真实详情，核对预期应用 ID、当前 issuer、配置的 HTTPS 后端 origin、nonce、有效期和自身 PKCE challenge，绑定不符立即拒绝。
+
+iOS 的 `NativeApplicationAuthorization` 注入 `AuthenticatedServerAccess`，签名、登录态和密钥仍由主应用管理。遇到 `consent_required` 向调用方返回经过核验的 `NativeApplicationConsent`，调用方呈现通用 `NativeApplicationConsentSheet`；只有用户明确确认时调用 `confirm`，不能自动重试为 `consent:true`。前后台账号、服务器或会话变化后，未完成请求及旧确认内容被丢弃。授权响应正文不进入 Console HTTP 日志；应用后端自身的兑换请求/响应及原生会话也必须脱敏。
+
+兑换出的 Hako 应用授权只在后端保存；后端签发自己的原生设备会话，并通过已有 `GET /api/v1/app-login/session` 校验其有效性，退出用同路径 DELETE。Hako 授权最长 12 小时、闲置 30 分钟，原生设备会话不能绕过该授权独立长期有效。网络故障不等于撤销，但后台无法确认授权时应拒绝受保护操作。
+
+原生静默同意绑定批准它的 Console 会话、设备和应用密钥版本，与网页授权分开。自然过期后可以在有效原生同意下重新换取授权；「已登录设备」单独显示 `type=application`、`browser=Hako iOS 自动登录授权` 的授权组，即使授权码未兑换或后端会话已过期，该组仍可见并可撤销，组内原生会话不重复展示。移除该授权组（`DELETE /api/v1/web-sessions/{consentId}`），或后端 DELETE 其中一个原生会话时，同时撤销该 Console 对该应用的静默同意、待兑换授权码和同组原生兄弟会话，不能静默重新建立。该操作不会清除同应用独立的网页扫码会话，也不会影响其他 Console 的原生授权。Console 退出/失去信任、应用停用/移除/换钥及 Hako 重启使相关原生授权失效；重启后首次登录需要重新明确同意。
+
+其他错误：400 `invalid_native_request`、`invalid_native_nonce` 或 `invalid_native_grant`；401 认证失效；404 `native_request_not_found`（包括跨应用或缺少后台私有凭据）；409 `native_request_finished`；410 `native_request_expired`；429 限流或容量上限。授权码、verifier、兑换和原生会话均不能作为 Hako 管理后台或其他应用凭据使用。
+
 ## iOS Console 第三方应用管理
 
 原生入口为「设置 → Hako 服务 → 第三方应用」。与 Web 管理页共用应用记录、Secret 哈希及 OIDC 配置；不会在手机建立另一份独立登记表。登记默认支持自定义扫码登录，OIDC 仍须明确开启。

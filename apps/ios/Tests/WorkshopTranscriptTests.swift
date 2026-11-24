@@ -6,6 +6,14 @@ import Foundation
     }
 
     static func main() async throws {
+        let context = WorkshopContextUsage(usedTokens: 67200, modelContextWindow: 160000, updatedAt: 1800000000000)
+        var contextSnapshot = WorkshopTranscript(key: WorkshopTranscriptKey(agentId: "agent", applicationId: "app", threadId: "thread"),
+            entries: [], artifacts: [], followups: [], historyCursor: nil, operationId: nil, eventCursor: 0, streamText: [:], savedAt: .now)
+        let previousContextSnapshot = contextSnapshot
+        contextSnapshot.contextUsage = context
+        precondition(!contextSnapshot.hasSameContent(as: previousContextSnapshot), "Context-only updates must be saved")
+        let contextCache = try JSONDecoder().decode(WorkshopTranscript.self, from: contextSnapshot.encodedForCache()!)
+        precondition(contextCache.contextUsage == context, "Offline transcript lost the latest context statistics")
         let pendingRequest = WorkshopReceipt(id: "local-first", agentId: "agent", applicationId: "app", originalThreadId: "thread",
             threadId: "thread", title: "Session", message: "立即显示", createdAt: .now, state: "pending", imageIds: ["photo"])
         var optimisticEntries = [pendingRequest.entry]
@@ -127,6 +135,28 @@ import Foundation
         precondition(layoutFollowing.observe(layout(2400, 600, 600)),
             "Opening cached history must correct the initial measured position without a new message revision")
         precondition(!layoutFollowing.observe(layout(2400, 600, 2400)), "Reaching the bottom must not trigger a scroll loop")
+        var sendingScroll = ConversationScrollFollowing()
+        _ = sendingScroll.observe(layout(9000, 600, 9000))
+        sendingScroll.messageAppended("new-message")
+        precondition(!sendingScroll.presentationUpdated { $0 == "old-message" },
+            "A send must wait for its own rendered message before scrolling")
+        precondition(!sendingScroll.observe(layout(8500, 900, 9000)),
+            "Keyboard dismissal and footer removal must not scroll the stale layout while rendering")
+        precondition(sendingScroll.presentationUpdated { $0 == "new-message" },
+            "Render completion must release the pending send scroll")
+        precondition(sendingScroll.observe(layout(8500, 900, 9500)),
+            "Recover a viewport past the content even when only the offset changed")
+        precondition(!sendingScroll.observe(layout(8500, 900, 8500)), "Correction must stop at the content edge")
+        precondition(!sendingScroll.observe(layout(8500, 900, 8530)), "Ignore a small native scroll bounce")
+        precondition(sendingScroll.observe(layout(5000, 900, 8500)),
+            "Shrinking content after send must correct an old bottom offset")
+        var shortScroll = ConversationScrollFollowing()
+        precondition(!shortScroll.observe(layout(100, 900, 900)),
+            "Short conversations must not repeatedly scroll to fill an empty viewport")
+        sendingScroll.messageAppended("queued-message")
+        sendingScroll.interacting(true)
+        precondition(!sendingScroll.presentationUpdated { $0 == "queued-message" },
+            "A rendered send must not interrupt a new user scroll gesture")
         precondition(layoutFollowing.observe(layout(2800, 600, 2400)),
             "A late image or Markdown layout must move the bottom target even when message data is unchanged")
         precondition(!layoutFollowing.observe(layout(2800, 600, 2800)))

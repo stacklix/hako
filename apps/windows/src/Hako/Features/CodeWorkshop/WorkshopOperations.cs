@@ -42,6 +42,7 @@ internal sealed class WorkshopJob
     public string ReasoningEffort { get; set; } = "";
     public string? EffectiveModel { get; set; }
     public string? EffectiveReasoningEffort { get; set; }
+    public WorkshopContextUsage? ContextUsage { get; set; }
     public int Revision { get; set; }
     public long QueueOrder { get; set; }
     public string? NotificationScope { get; set; }
@@ -362,11 +363,22 @@ internal sealed partial class CodeWorkshop
     {
         lock (gate)
         {
-            if (!job.Active || job.State == "finishing") return;
+            if (!job.Active) return;
             var method = CodexJson.Text(message, "method");
             var parameters = CodexJson.Field(message, "params");
             if (method == "hako/connectionClosed")
             { job.Completed.TrySetException(new IOException("Codex 连接中断。")); return; }
+            // Restored usage may arrive during resume, before this job submits
+            // its input. It is thread metadata, not a replayed task completion.
+            if (method == "thread/tokenUsage/updated" && CodexJson.Text(parameters, "threadId") == job.ThreadId &&
+                (!job.Submitted || job.TurnId is not null && CodexJson.Text(parameters, "turnId") == job.TurnId))
+            {
+                job.ContextUsage = WorkshopContextUsage.FromUsage(CodexJson.Field(parameters, "tokenUsage"),
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                Persist(job);
+                return;
+            }
+            if (job.State == "finishing") return;
             // thread/resume can replay events from the previous turn. They do
             // not belong to this request, including old approvals/completions.
             if (!job.Submitted) return;
@@ -417,6 +429,11 @@ internal sealed partial class CodeWorkshop
             }
             switch (method)
             {
+                case "thread/tokenUsage/updated":
+                    job.ContextUsage = WorkshopContextUsage.FromUsage(CodexJson.Field(parameters, "tokenUsage"),
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    Persist(job);
+                    break;
                 case "item/agentMessage/delta":
                     var delta = CodexJson.Text(parameters, "delta");
                     for (var offset = 0; offset < delta.Length;)
@@ -428,6 +445,11 @@ internal sealed partial class CodeWorkshop
                     break;
                 case "item/started":
                 case "item/completed":
+                    if (method == "item/started" && CodexJson.Text(CodexJson.Field(parameters, "item"), "type") == "contextCompaction")
+                    {
+                        job.ContextUsage = new(null, null, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                        Persist(job);
+                    }
                     if (job.ThreadId is not null) DiscoverItemArtifacts(job.ThreadId, job.Cwd, CodexJson.Field(parameters, "item"));
                     if (Item(CodexJson.Field(parameters, "item")) is { } entry && entry.Role != "user")
                     {

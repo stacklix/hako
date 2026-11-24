@@ -3,6 +3,7 @@ import SwiftUI
 enum HakoApplications {
     @MainActor static func agentSettings() -> some View { AgentSettingsSheet() }
     @MainActor static func httpProxySettings() -> some View { HTTPProxySettingsSheet() }
+    @MainActor static func webhookSettings() -> some View { NotificationManagementView() }
 
     enum Category: String, CaseIterable {
         // Raw values identify saved application orders; titles are the visible category names.
@@ -14,7 +15,7 @@ enum HakoApplications {
             switch self {
             case .development: [.codeWorkshop, .swissArmyKnife]
             case .management: [.headplane, .router, .qinglong, .cloudServers, .containers, .devices]
-            case .finance: [.investment, .crypto]
+            case .finance: [.investment, .crypto, .stockTrade]
             case .life: [.sports, .usage]
             }
         }
@@ -23,7 +24,7 @@ enum HakoApplications {
     enum Application: String, Identifiable {
         case headplane = "组网管理", qinglong = "青龙面板", cloudServers = "云服务器"
         case containers = "容器管理", devices = "设备管理", sports = "运动记录", usage = "使用时间"
-        case investment = "投资记账", crypto = "加密资产"
+        case investment = "投资记账", crypto = "加密资产", stockTrade = "A 股选股"
         case codeWorkshop = "代码工坊"
         case router = "路由器"
         case swissArmyKnife = "瑞士军刀"
@@ -43,6 +44,7 @@ enum HakoApplications {
             case .usage: "每日概览 · Top 5 · GitHub 归档"
             case .investment: "账户 · 持仓 · 定投"
             case .crypto: "HTX · Binance · 链上资产与私有归档"
+            case .stockTrade: "Cerno · 每日推荐 · 日周 K 线与规则监控"
             }
         }
         var symbol: String {
@@ -59,6 +61,7 @@ enum HakoApplications {
             case .usage: "chart.bar.xaxis"
             case .investment: "chart.line.uptrend.xyaxis"
             case .crypto: "bitcoinsign.circle"
+            case .stockTrade: "chart.xyaxis.line"
             }
         }
         @MainActor @ViewBuilder var destination: some View {
@@ -75,6 +78,7 @@ enum HakoApplications {
             case .usage: UsageEntry()
             case .investment: InvestmentView()
             case .crypto: CryptoView()
+            case .stockTrade: StockTradeView()
             }
         }
 

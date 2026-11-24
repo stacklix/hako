@@ -84,17 +84,17 @@ struct InvestmentTrendMenu<Option: Hashable>: View {
     }
 }
 
-struct InvestmentPerformanceAllocation: View {
-    let details: [InvestmentPerformanceDetail]
+struct InvestmentCurrentAllocation: View {
+    let details: [InvestmentAllocationItem]
     let currency: InvestmentCurrency
     let day: Date
     let overview: Bool
-    private var positive: [InvestmentPerformanceDetail] { details.filter { ($0.value ?? 0) > 0 } }
+    @State private var selectedID: String?
+    private var positive: [InvestmentAllocationItem] { details.filter { ($0.value ?? 0) > 0 } }
     private var total: Decimal { positive.reduce(0) { $0 + ($1.value ?? 0) } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Divider()
             HStack {
                 Text(overview ? "账户资产占比" : "投资总额占比").font(.headline)
                 Spacer(minLength: 6)
@@ -111,15 +111,20 @@ struct InvestmentPerformanceAllocation: View {
                     Text("负值未计入资产占比。").font(.caption2).foregroundStyle(.secondary)
                 }
             } else { Text("暂无正值资产可展示占比。").font(.caption).foregroundStyle(.secondary) }
-        }.padding(.top, 5)
+        }
+        .onChange(of: positive.map(\.id)) { _, ids in
+            if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        }
     }
 
     private var pie: some View {
         Chart {
             ForEach(Array(positive.enumerated()), id: \.element.id) { index, detail in
                 SectorMark(angle: .value("资产", NSDecimalNumber(decimal: detail.value ?? 0).doubleValue),
-                           innerRadius: .ratio(0.65))
+                           innerRadius: .ratio(0.65),
+                           outerRadius: .ratio(selectedID == nil || selectedID == detail.id ? 1 : 0.92))
                     .foregroundStyle(InvestmentTrendStyle.category(index))
+                    .opacity(selectedID == nil || selectedID == detail.id ? 1 : 0.3)
                     .accessibilityLabel(detail.name)
                     .accessibilityValue(InvestmentText.money(detail.value, currency))
             }
@@ -129,16 +134,28 @@ struct InvestmentPerformanceAllocation: View {
     private var legend: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(positive.enumerated()), id: \.element.id) { index, detail in
-                HStack(alignment: .top, spacing: 7) {
-                    RoundedRectangle(cornerRadius: 2).fill(InvestmentTrendStyle.category(index))
-                        .frame(width: 7, height: 7).padding(.top, 4)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(detail.name).font(.caption)
-                        Text(InvestmentText.money(detail.value, currency) + " · " +
-                             ((detail.value ?? 0) / total).formatted(.percent.precision(.fractionLength(1))))
-                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedID = selectedID == detail.id ? nil : detail.id
                     }
+                } label: {
+                    HStack(alignment: .top, spacing: 7) {
+                        RoundedRectangle(cornerRadius: 2).fill(InvestmentTrendStyle.category(index))
+                            .frame(width: 7, height: 7).padding(.top, 4)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(detail.name).font(.caption.weight(selectedID == detail.id ? .semibold : .regular))
+                            Text(InvestmentText.money(detail.value, currency) + " · " +
+                                 ((detail.value ?? 0) / total).formatted(.percent.precision(.fractionLength(1))))
+                                .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(selectedID == detail.id ? .isSelected : [])
+                .accessibilityHint(selectedID == detail.id ? "再次点击取消高亮" : "高亮饼图中的对应扇区")
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

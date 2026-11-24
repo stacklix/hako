@@ -73,6 +73,20 @@ enum InvestmentHistoryRange: String, CaseIterable, Identifiable, Sendable {
         }
         return merged.flatMap { quoteWindows(from: $0.lowerBound, through: $0.upperBound) }
     }
+
+    // FX uses the previous available working-day observation on weekends. Never
+    // send an isolated Saturday/Sunday gap back to the provider as missing data.
+    static func forexQuoteWindows(for missing: [ClosedRange<Date>]) -> [ClosedRange<Date>] {
+        func weekdays(_ range: ClosedRange<Date>) -> ClosedRange<Date>? {
+            var first = range.lowerBound
+            while [1, 7].contains(InvestmentBook.calendar.component(.weekday, from: first)) {
+                first = InvestmentBook.addDays(1, to: first)
+            }
+            let last = InvestmentBook.weekdayMarketDate(on: range.upperBound)
+            return first <= last ? first...last : nil
+        }
+        return quoteWindows(for: missing.compactMap(weekdays)).compactMap(weekdays)
+    }
 }
 
 struct InvestmentPricePoint: Identifiable, Sendable {

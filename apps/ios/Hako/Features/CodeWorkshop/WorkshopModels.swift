@@ -434,7 +434,39 @@ struct WorkshopHistory: Decodable {
     var model: String? = nil
     var reasoningEffort: String? = nil
     var access: WorkshopThreadAccess? = nil
+    var contextUsage: WorkshopContextUsage? = nil
     var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
+}
+
+struct WorkshopContextUsage: Codable, Equatable, Sendable {
+    let usedTokens: Int64?
+    let modelContextWindow: Int64?
+    let updatedAt: Int64
+
+    var usedFraction: Double? {
+        guard let usedTokens, usedTokens >= 0, let modelContextWindow, modelContextWindow > 0 else { return nil }
+        return Double(usedTokens) / Double(modelContextWindow)
+    }
+    var remainingFraction: Double? { usedFraction.map { max(0, min(1, 1 - $0)) } }
+    var usedPercentText: String? { usedFraction.map { ($0 * 100).formatted(.number.precision(.fractionLength(0))) + "%" } }
+    var remainingPercentText: String? { remainingFraction.map { ($0 * 100).formatted(.number.precision(.fractionLength(0))) + "%" } }
+    var usedText: String? {
+        guard usedFraction != nil, let usedTokens, let modelContextWindow else { return nil }
+        return "已用 \(Self.tokens(usedTokens)) / \(Self.tokens(modelContextWindow)) tokens"
+    }
+    var remainingText: String? {
+        guard usedFraction != nil, let usedTokens, let modelContextWindow else { return nil }
+        return "剩余 \(Self.tokens(max(0, modelContextWindow - usedTokens))) tokens"
+    }
+    var date: Date { Date(timeIntervalSince1970: Double(updatedAt) / 1000) }
+    private static func tokens(_ count: Int64) -> String {
+        count >= 1000 ? (Double(count) / 1000).formatted(.number.grouping(.never).precision(.fractionLength(0...1))) + "k" : String(count)
+    }
+    static func newest(_ current: Self?, _ incoming: Self?) -> Self? {
+        guard let incoming else { return current }
+        guard let current else { return incoming }
+        return incoming.updatedAt >= current.updatedAt ? incoming : current
+    }
 }
 
 struct WorkshopGenerationSettings: Equatable {
@@ -486,6 +518,7 @@ struct WorkshopOperation: Codable, Equatable, Sendable {
     var finishedAt: Int64? = nil
     var model: String? = nil
     var reasoningEffort: String? = nil
+    var contextUsage: WorkshopContextUsage? = nil
     var generation: WorkshopGenerationSettings { .init(model: model, reasoningEffort: reasoningEffort) }
     var active: Bool { ["starting", "running", "waiting", "stopping", "finishing"].contains(state) }
     var resultUnconfirmed: Bool { state == "unknown" }

@@ -150,12 +150,16 @@ private struct InvestmentEditor<Content: View>: View {
         Group {
             if inSheet || editingDraft {
                 SettingsSheet(title: title, hasChanges: hasChanges, isBusy: saving, saveEnabled: saveEnabled ?? hasChanges, onSave: commit,
+                              saveInProgress: saving,
                               saveAccessibilityLabel: editingDraft ? "完成修改并更新预览" : "保存") { form }
             } else {
                 form.navigationTitle(title)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
-                            Button(action: commit) { Image(systemName: "checkmark") }
+                            Button(action: commit) {
+                                if saving { ProgressView().controlSize(.small) }
+                                else { Image(systemName: "checkmark") }
+                            }
                                 .accessibilityLabel("保存")
                                 .disabled(saving || !(saveEnabled ?? hasChanges))
                         }
@@ -966,9 +970,7 @@ private struct InvestmentTradeFields: View {
                                    price: change, settledAmount: balance)
         }
         let quantity = kind == .insurance ? 1 : try investmentDecimal(self.quantity, "数量", preservesPrecision: true)
-        if ![.fund, .etf, .wealth, .crypto].contains(kind), quantity != Decimal(NSDecimalNumber(decimal: quantity).int64Value) {
-            throw InvestmentError.invalid("该类型的数量必须是整数。")
-        }
+        try kind.validateTradeQuantity(quantity, currency: currency)
         return InvestmentEvent(day: day, kind: event, assetID: assetID,
             quantity: quantity, price: try investmentDecimal(price, "成交金额或价格", allowZero: kind == .insurance && event == .sell, unitPrice: kind.usesUnitPrice),
             margin: kind.usesMargin && event != .sell ? try investmentDecimal(margin, "保证金") : 0,
@@ -985,6 +987,20 @@ private struct InvestmentTradeFields: View {
         let event = try record(assetID: assetID, book: book)
         try book.post(event, accountID: accountID, autoFundCash: autoFundCash)
         return event
+    }
+}
+
+private struct InvestmentAutomaticCashFunding: View {
+    @Binding var enabled: Bool
+
+    var body: some View {
+        Group {
+            Toggle("自动转入本次所需现金", isOn: $enabled)
+            if enabled {
+                Text("按成交日期转入本次实际扣款金额（含费用），再扣款记账，原有现金余额不变。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -1024,7 +1040,7 @@ struct InvestmentAssetEditor: View {
                 account.events.contains { $0.assetID == known.id }
             }) { known } else { nil }
         let existing = watchOnlyDerivative == nil ? known : nil
-        let hasPriorPosition = existing.flatMap { asset in
+        let hasPriorPosition = draft.kind == .generic && existing.flatMap { asset in
             account.flatMap { try? store.book.ledger($0, through: InvestmentBook.day(date)).positions[asset.id] }
         } != nil
         let watchAsset = watchOnly && draft.selected ? try? draft.asset(currency: currency, reusing: existing) : nil
@@ -1037,7 +1053,7 @@ struct InvestmentAssetEditor: View {
         let initialKind = kinds.first ?? .stock
         let hasChanges = draft.code != "" || draft.name != "" || draft.market != "" || draft.kind != initialKind || draft.stockConnect
             || !quantity.isEmpty || !price.isEmpty || !fee.isEmpty || !margin.isEmpty || !manualValue.isEmpty || !draft.multiplier.isEmpty
-            || !settlement.isEmpty || !annualRate.isEmpty || InvestmentBook.day(date) != InvestmentBook.day()
+            || !settlement.isEmpty || !annualRate.isEmpty || autoFundCash || InvestmentBook.day(date) != InvestmentBook.day()
         return InvestmentEditor(title: watchOnly ? "添加关注" : "录入资产", inSheet: true,
                                 hasChanges: hasChanges, saveEnabled: watchOnly ? watchResult?.quotes.last != nil : nil,
                                 inlineError: watchOnly ? nil : $saveError) {
@@ -1073,14 +1089,8 @@ struct InvestmentAssetEditor: View {
                             .id(saveError.id)
                     }
                 }
-                Section("从现金余额扣款") {
-                    Group {
-                        Toggle("现金不足时自动补足", isOn: $autoFundCash)
-                        if autoFundCash {
-                            Text("按成交日期记入一笔现金转入，补足本次扣款的差额。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
+                Section("交易信息") {
+                    if entryKind == .buy { InvestmentAutomaticCashFunding(enabled: $autoFundCash) }
                     trade
                     if draft.kind.isTermDeposit {
                         InvestmentField("年利率（%）", text: $annualRate, keyboard: .decimalPad)
@@ -1127,8 +1137,11 @@ struct InvestmentAssetEditor: View {
                 try await editorDraft.submit(values, asset: asset, quote: quote)
                 return
             }
+            let preparedAsset = try draft.asset(currency: currency, reusing: existing)
+            _ = try trade.entryValues(assetID: preparedAsset.id, book: store.book)
+            let market = try await store.prepareEntryValuation(for: preparedAsset, account: account)
             try await store.update { book in
-                var asset = try draft.asset(currency: currency, reusing: existing)
+                var asset = preparedAsset
                 if var tracked = watchOnlyDerivative {
                     tracked.multiplier = asset.multiplier
                     tracked.name = asset.name
@@ -1145,6 +1158,8 @@ struct InvestmentAssetEditor: View {
                     asset.depositTerms = .init(annualRate: rate, maturity: InvestmentBook.day(maturity))
                 }
                 let id = try book.register(asset)
+                if !market.quotes.isEmpty { book.addQuotes(market.quotes, assetID: id) }
+                for (currency, quotes) in market.rates { book.addExchangeRates(quotes, for: currency) }
                 try trade.post(assetID: id, accountID: account.id, to: &book, autoFundCash: autoFundCash)
                 if asset.kind == .insurance, !investmentTrim(manualValue).isEmpty {
                     let value = try investmentDecimal(manualValue, "估值", allowZero: asset.kind == .insurance)
@@ -1194,6 +1209,7 @@ struct InvestmentTradeEditor: View {
     @State private var fee = ""
     @State private var margin = ""
     @State private var settlement = ""
+    @State private var autoFundCash = false
 
     var body: some View {
         let trade = InvestmentTradeFields(kind: asset.kind, currency: asset.currency, event: kind,
@@ -1201,18 +1217,25 @@ struct InvestmentTradeEditor: View {
             date: $date, quantity: $quantity, price: $price, fee: $fee, margin: $margin,
             settlement: $settlement)
         let title = asset.kind.usesBalance || kind == .insuranceWithdrawal ? asset.transactionTitle(kind) : "记" + asset.transactionTitle(kind)
-        let hasChanges = !price.isEmpty || !settlement.isEmpty || date != InvestmentBook.day()
+        let hasChanges = !price.isEmpty || !settlement.isEmpty || autoFundCash || date != InvestmentBook.day()
         return InvestmentEditor(title: title, inSheet: asset.kind.usesBalance || kind == .insuranceWithdrawal, hasChanges: hasChanges) {
             Section(asset.displayName + " · " + account.name) {
+                if kind == .buy { InvestmentAutomaticCashFunding(enabled: $autoFundCash) }
                 trade
             }
         } save: {
             if let editorDraft {
-                try await editorDraft.submit(trade.entryValues(assetID: asset.id, book: store.book))
+                var values = try trade.entryValues(assetID: asset.id, book: store.book)
+                values["auto_fund"] = autoFundCash ? "true" : "false"
+                try await editorDraft.submit(values)
                 return
             }
+            _ = try trade.entryValues(assetID: asset.id, book: store.book)
+            let market = try await store.prepareEntryValuation(for: asset, account: account)
             try await store.update { book in
-                _ = try trade.post(assetID: asset.id, accountID: account.id, to: &book)
+                if !market.quotes.isEmpty { book.addQuotes(market.quotes, assetID: asset.id) }
+                for (currency, quotes) in market.rates { book.addExchangeRates(quotes, for: currency) }
+                _ = try trade.post(assetID: asset.id, accountID: account.id, to: &book, autoFundCash: autoFundCash)
             }
         }
         .environment(\.investmentFieldPlaceholders, false)
@@ -1666,6 +1689,7 @@ extension InvestmentTradeEditor {
         _price = State(initialValue: kind == .income || kind == .insuranceWithdrawal ? editing.value("amount") : editing.value("price"))
         _fee = State(initialValue: editing.value("fee")); _margin = State(initialValue: editing.value("margin"))
         _settlement = State(initialValue: editing.value("settled_amount"))
+        _autoFundCash = State(initialValue: editing.value("auto_fund") == "true")
     }
 }
 

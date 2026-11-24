@@ -16,6 +16,8 @@ struct InvestmentMarketDataTests {
         try await tushareErrorsPreserveTheServerReason()
         try await eastmoneyCatalogFindsNamesCodesAndMarkets()
         try await twelveUSCatalogSeparatesStocksAndETFs()
+        try await twelveUSCatalogConsolidatesMatchingVenueRecords()
+        try await latestQuotesDoNotFetchChartHistory()
         try await twelveUSEquitiesRequireKeysAndPreserveErrors()
         try await twelveNasdaqOperatingMarketIncludesSegments()
         try await twelveEmptyDatesRemainDistinctFromAPIFailures()

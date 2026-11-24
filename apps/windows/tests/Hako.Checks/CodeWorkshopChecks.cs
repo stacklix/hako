@@ -24,6 +24,7 @@ internal static class CodeWorkshopChecks
         WorkshopTaskProgressChecks.Run();
         WorkshopQuotaChecks.Run();
         await WorkshopReadChecks.RunAsync();
+        await WorkshopContextChecks.RunAsync();
         await WorkshopProjectFileChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
         WorkshopCatalogChecks.Run();

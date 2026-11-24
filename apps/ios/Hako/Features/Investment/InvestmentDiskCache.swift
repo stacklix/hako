@@ -88,6 +88,7 @@ struct InvestmentCachedRow: Identifiable, Hashable {
 actor InvestmentDiskCache {
     static let shared = InvestmentDiskCache()
     private let directory: URL
+    private let readFile: @Sendable (URL) throws -> Data
     private struct History: Codable {
         let key: String
         let start: Date
@@ -100,7 +101,8 @@ actor InvestmentDiskCache {
         var incomplete = false
         var histories: [History] = []
     }
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+        self.readFile = readFile
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Hako/InvestmentCache", isDirectory: true)
     }
@@ -113,7 +115,7 @@ actor InvestmentDiskCache {
     private func entry(_ scope: String) throws -> Entry {
         let file = try url(scope)
         guard FileManager.default.fileExists(atPath: file.path) else { return Entry() }
-        return try JSONDecoder().decode(Entry.self, from: Data(contentsOf: file))
+        return try JSONDecoder().decode(Entry.self, from: readFile(file))
     }
     private func persist(_ entry: Entry, scope: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -128,6 +130,29 @@ actor InvestmentDiskCache {
     func load(scope: String) throws -> InvestmentServerState? {
         let entry = try entry(scope)
         return entry.incomplete ? nil : entry.state
+    }
+    func restoredBook(scope: String) throws -> (state: InvestmentServerState, book: InvestmentBook)? {
+        let cached = try entry(scope)
+        guard !cached.incomplete, let state = cached.state else { return nil }
+        return (state, restoreMarketQuotes(in: try InvestmentServerRecords().decode(state), cached: cached))
+    }
+    func restoringMarketQuotes(in book: InvestmentBook, scope: String) throws -> InvestmentBook {
+        restoreMarketQuotes(in: book, cached: try entry(scope))
+    }
+    private func restoreMarketQuotes(in source: InvestmentBook, cached: Entry) -> InvestmentBook {
+        let histories = Dictionary(grouping: cached.histories, by: \.key)
+        var restored = source
+        for asset in source.assets.values where !asset.kind.isManual {
+            let saved = histories[Self.historyKey(asset), default: []].flatMap(\.quotes)
+            let known = Set((source.quotes[asset.id] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+            if !saved.isEmpty { restored.addQuotes(saved.filter { !known.contains($0.day) }, assetID: asset.id) }
+        }
+        for currency in InvestmentCurrency.allCases where currency != .cny {
+            let saved = histories[Self.rateKey(currency), default: []].flatMap(\.quotes)
+            let known = Set((source.fx[currency] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+            if !saved.isEmpty { restored.addExchangeRates(saved.filter { !known.contains($0.day) }, for: currency) }
+        }
+        return restored
     }
     func snapshot(scope: String) throws -> InvestmentServerState? { try entry(scope).state }
     func byteCount(scope: String) throws -> Int64 {

@@ -19,6 +19,7 @@ var adminFiles embed.FS
 type adminSession struct {
 	ClientID, ClientName, ClientOrigin string
 	ClientKeyHash                      string
+	NativeConsentID                    string
 	ID, Browser                        string
 	CSRF                               string
 	Created, LastUsed                  time.Time

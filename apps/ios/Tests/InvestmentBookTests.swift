@@ -5,13 +5,17 @@ struct InvestmentBookTests {
     static func main() throws {
         try numericStoragePrecision()
         holdingsSortByMarketValue()
+        try accountOrderSurvivesSaving()
         try fourPlacePricesSurviveStorage()
         try fractionalCryptoTradesSurviveStorage()
+        try threePlaceQuantitiesSurviveStorage()
+        try threePlaceSpotBalancesPreserveHistoricalPrecision()
         try serializedLedgerValidationBlocksInvalidWrites()
         cumulativePortfolioGainRate()
         try ledgerAndDilutedCost()
         try firstPurchaseRequiresCash()
-        try purchasesCanAutomaticallyFundCashShortfalls()
+        try purchasesCanAutomaticallyFundFullCashAmount()
+        try insurancePurchasesPreserveExistingCashWhenAutomaticallyFunded()
         try tradingFeesAffectCashAndDilutedCost()
         try futuresFeesStaySeparateFromMargin()
 
@@ -210,15 +214,23 @@ struct InvestmentBookTests {
         try broken.replaceEvent(broken.accounts[0].events[offset], with: corrected, accountID: account.id)
         let correctedLedger = try broken.ledger(broken.accounts[0])
         precondition(correctedLedger.cash == 0)
-        // Small token units must survive the same server serialization.
+        // Historical token quantities must retain their original precision on serialization.
         for value in ["0.00000001", "0.0012345678", "1.123456789012345678"] {
             var draft = InvestmentBook(accounts: [account])
             draft.assets[btc] = book.asset(btc)
             let units = Decimal(string: value)!
-            try draft.post(.init(day: date(1), kind: .opening, assetID: btc, quantity: units, price: 100), accountID: account.id)
+            draft.accounts[0].events = [.init(day: date(1), kind: .opening, assetID: btc, quantity: units, price: 100)]
             let encoded = try records.encode(draft, revision: 1)
             let reopened = try records.decode(.init(generation: 1, revision: 1, tables: encoded))
             precondition(reopened.accounts[0].events[0].quantity == units)
+            var editedHistory = reopened
+            let original = reopened.accounts[0].events[0]
+            var updated = original
+            updated.price = 101
+            try editedHistory.replaceEvent(original, with: updated, accountID: account.id)
+            try records.validateEventInputs(editedHistory, comparedTo: reopened)
+            precondition(editedHistory.accounts[0].events[0].quantity == units,
+                         "Editing another field must preserve an unchanged historical quantity")
         }
         var insufficient = InvestmentBook(accounts: [account])
         insufficient.assets[btc] = book.asset(btc)
@@ -226,6 +238,128 @@ struct InvestmentBookTests {
         do { try insufficient.post(purchase, accountID: account.id); preconditionFailure("An actual cash shortfall must be rejected") }
         catch InvestmentError.insufficientCash {}
         precondition(insufficient.accounts[0].events.count == 1)
+    }
+
+    static func threePlaceQuantitiesSurviveStorage() throws {
+        let records = InvestmentServerRecords()
+        for (kind, currency, code, market) in [
+            (InvestmentKind.stock, InvestmentCurrency.usd, "SPCX", "XNMS"),
+            (.etf, .usd, "SPYM", "ARCX"),
+            (.etf, .cny, "159941.SZ", "XSHE"),
+            (.fund, .cny, "110022.OF", "OF"),
+            (.crypto, .usd, "BTC", "BINANCE")
+        ] {
+            let account = InvestmentAccount(name: "小数股数", currency: currency, type: kind == .crypto ? .crypto : kind == .fund ? .fundWealth : .securities)
+            var book = InvestmentBook(accounts: [account])
+            let id = try book.register(.init(name: code, code: code, market: market, kind: kind, currency: currency))
+            let price = Decimal(string: "137.36")!
+            try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: Decimal(string: "5.711")!, price: price),
+                          accountID: account.id, autoFundCash: true)
+            let bought = try book.ledger(book.accounts[0], validatingBalances: true)
+            precondition(bought.cash == 0 && bought.positions[id]?.quantity == Decimal(string: "5.711"))
+            precondition(bought.positions[id]?.netCost == Decimal(string: "784.46"))
+            let sale = InvestmentEvent(day: date(2), kind: .sell, assetID: id, quantity: Decimal(string: "0.711")!, price: price)
+            try book.post(sale, accountID: account.id)
+            let recordedSale = book.accounts[0].events.last!
+            var edited = recordedSale
+            edited.quantity = Decimal(string: "0.712")!
+            try book.replaceEvent(recordedSale, with: edited, accountID: account.id)
+            let confirmedEdit = book.accounts[0].events.last!
+            let ledger = try book.ledger(book.accounts[0], validatingBalances: true)
+            precondition(ledger.positions[id]?.quantity == Decimal(string: "4.999") && ledger.cash == Decimal(string: "97.80"))
+
+            let encoded = try records.encode(book, revision: 1)
+            let saved = try records.decode(.init(generation: 1, revision: 1, tables: encoded))
+            precondition(saved.accounts[0].events.first(where: { $0.kind == .buy })?.quantity == Decimal(string: "5.711"))
+            precondition(saved.accounts[0].events.last?.quantity == Decimal(string: "0.712"))
+            let savedLedger = try saved.ledger(saved.accounts[0])
+            precondition(savedLedger.positions[id]?.quantity == Decimal(string: "4.999"))
+
+            for input in ["5.7111", "0.0001"] {
+                let invalid = Decimal(string: input)!
+                for eventKind in [InvestmentEventKind.opening, .buy, .sell] {
+                    let before = book.accounts[0].events
+                    do {
+                        try book.post(.init(day: date(3), kind: eventKind, assetID: id, quantity: invalid, price: price),
+                                      accountID: account.id, autoFundCash: true)
+                        preconditionFailure("Excess quantity precision must not be rounded or posted")
+                    } catch InvestmentError.invalid(let message) { precondition(message.contains("3 位小数")) }
+                    precondition(book.accounts[0].events == before, "Invalid trades must not add an automatic cash top-up")
+                }
+                var invalidEdit = confirmedEdit
+                invalidEdit.quantity = invalid
+                do {
+                    try book.replaceEvent(confirmedEdit, with: invalidEdit, accountID: account.id)
+                    preconditionFailure("Editing must enforce the same quantity precision")
+                } catch InvestmentError.invalid(let message) { precondition(message.contains("3 位小数")) }
+                var direct = book
+                direct.accounts[0].events[1].quantity = invalid
+                do {
+                    try records.validateEventInputs(direct, comparedTo: book)
+                    preconditionFailure("Server-bound input validation must reject excess quantity precision")
+                } catch InvestmentError.invalid { }
+            }
+            var opening = InvestmentBook(accounts: [account], assets: book.assets)
+            try opening.post(.init(day: date(1), kind: .opening, assetID: id, quantity: Decimal(string: "0.001")!, price: price),
+                             accountID: account.id)
+            let openingLedger = try opening.ledger(opening.accounts[0])
+            precondition(openingLedger.positions[id]?.quantity == Decimal(string: "0.001"))
+        }
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            do {
+                try InvestmentKind.stock.validateTradeQuantity(Decimal(string: "5.711")!, currency: currency)
+                preconditionFailure("Non-US stocks must still require integer quantities")
+            } catch InvestmentError.invalid { }
+        }
+        try InvestmentKind.fund.validateTradeQuantity(Decimal(string: "5.711")!, currency: .cny)
+        try InvestmentKind.crypto.validateTradeQuantity(Decimal(string: "0.001")!, currency: .usd)
+
+        let account = InvestmentAccount(name: "美股定投", currency: .usd, type: .securities)
+        var planned = InvestmentBook(accounts: [account])
+        let id = try planned.register(.init(name: "SPCX", code: "SPCX", market: "XNMS", kind: .stock, currency: .usd))
+        let amount: Decimal = 100
+        try planned.post(.init(day: date(1), kind: .deposit, amount: amount), accountID: account.id)
+        planned.addQuotes([.init(day: date(1), price: 3)], assetID: id)
+        planned.plans = [.init(accountID: account.id, assetID: id, amount: amount,
+                               schedule: try .init(frequency: .monthly, day: 1), nextDay: date(1))]
+        planned.runPlans(through: date(1))
+        let plannedLedger = try planned.ledger(planned.accounts[0], validatingBalances: true)
+        precondition(plannedLedger.positions[id]?.quantity == Decimal(string: "33.333") && plannedLedger.cash == 0,
+                     "US stock plans must round quantity down to thousandths without overdrawing cash")
+    }
+
+    static func threePlaceSpotBalancesPreserveHistoricalPrecision() throws {
+        let account = InvestmentAccount(name: "历史现货", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let id = try book.register(.init(name: "Bitcoin", code: "BTC", market: "BINANCE", kind: .crypto, currency: .usd))
+        let original = InvestmentEvent(day: date(1), kind: .opening, assetID: id,
+                                       quantity: Decimal(string: "0.12345678")!, price: 1)
+        book.accounts[0].events = [original]
+        try book.adjustSpotBalance(assetID: id, accountID: account.id, balance: Decimal(string: "0.125")!, on: date(2))
+        let reward = book.accounts[0].events.last!
+        precondition(reward.quantity == Decimal(string: "0.00154322"), "A computed balance delta must remain exact")
+        let replacement = try book.spotBalanceReplacement(reward, accountID: account.id,
+                                                          balance: Decimal(string: "0.126")!, on: date(2))
+        try book.replaceEvent(reward, with: replacement, accountID: account.id)
+        let ledger = try book.ledger(book.accounts[0])
+        precondition(ledger.positions[id]?.quantity == Decimal(string: "0.126"))
+        for input in ["0.1261", "0.0001"] {
+            let before = book.accounts[0].events
+            do {
+                try book.adjustSpotBalance(assetID: id, accountID: account.id, balance: Decimal(string: input)!, on: date(3))
+                preconditionFailure("Balance input must reject more than three places")
+            } catch InvestmentError.invalid(let message) { precondition(message.contains("3 位小数")) }
+            precondition(book.accounts[0].events == before)
+            do {
+                _ = try book.spotBalanceReplacement(book.accounts[0].events.last!, accountID: account.id,
+                                                    balance: Decimal(string: input)!, on: date(2))
+                preconditionFailure("Balance editing must reject more than three places")
+            } catch InvestmentError.invalid(let message) { precondition(message.contains("3 位小数")) }
+        }
+        let records = InvestmentServerRecords()
+        let saved = try records.decode(.init(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
+        let savedLedger = try saved.ledger(saved.accounts[0])
+        precondition(saved.accounts[0].events[0].quantity == original.quantity && savedLedger.positions[id]?.quantity == Decimal(string: "0.126"))
     }
 
     static func serializedLedgerValidationBlocksInvalidWrites() throws {
@@ -289,7 +423,7 @@ struct InvestmentBookTests {
         precondition(ledger.positions[id]?.netCost == 100 && ledger.positions[id]?.lastEntry == 10)
     }
 
-    static func purchasesCanAutomaticallyFundCashShortfalls() throws {
+    static func purchasesCanAutomaticallyFundFullCashAmount() throws {
         let account = InvestmentAccount(name: "证券账户", currency: .cny, type: .securities)
         var book = InvestmentBook(accounts: [account])
         let id = try book.register(.init(name: "测试", code: "600000", market: "", kind: .stock, currency: .cny))
@@ -303,17 +437,51 @@ struct InvestmentBookTests {
         try book.post(.init(day: day, kind: .buy, assetID: id, quantity: 4, price: 10, fee: 5),
                       accountID: account.id, autoFundCash: true)
         let ledger = try book.ledger(book.accounts[0], through: day, includeRows: true)
-        precondition(ledger.cashRows.map(\.change) == [105, 30, 15, 100, -105, -45, -45])
-        precondition(ledger.cash == 55 && ledger.flows == 250 && ledger.positions[id]?.netCost == 195)
+        precondition(ledger.cashRows.map(\.change) == [105, 30, 45, 100, 45, -105, -45, -45])
+        precondition(ledger.cash == 130 && ledger.flows == 325 && ledger.positions[id]?.netCost == 195,
+                     "Fully fund first and additional purchases, including fees, without using any existing cash")
 
-        try book.post(.init(day: date(2), kind: .withdrawal, amount: -55), accountID: account.id)
+        try book.post(.init(day: date(2), kind: .withdrawal, amount: -130), accountID: account.id)
+        try book.post(.init(day: day, kind: .buy, assetID: id, quantity: 6, price: 10),
+                      accountID: account.id, autoFundCash: true)
+        let backdated = try book.ledger(book.accounts[0], through: date(2))
+        precondition(backdated.cash == 0 && backdated.positions[id]?.netCost == 255,
+                     "A backdated funded purchase must leave cash available for later recorded withdrawals")
+        let records = InvestmentServerRecords()
+        let restored = try records.decode(.init(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
+        let restoredLedger = try restored.ledger(restored.accounts[0], through: date(2))
+        precondition(restoredLedger.cash == 0)
+
+        // Even when the input book is invalid, a failed write cannot retain the new deposit.
+        book.accounts[0].events.append(.init(day: date(3), kind: .withdrawal, amount: -1))
         let previousEvents = book.accounts[0].events.map(\.id)
         do {
             try book.post(.init(day: day, kind: .buy, assetID: id, quantity: 6, price: 10),
                           accountID: account.id, autoFundCash: true)
-            preconditionFailure("A purchase and its top-up must both roll back if a later event would overdraw")
+            preconditionFailure("A purchase and its automatic deposit must both roll back if ledger validation fails")
         } catch InvestmentError.insufficientCash {}
         precondition(book.accounts[0].events.map(\.id) == previousEvents)
+    }
+
+    static func insurancePurchasesPreserveExistingCashWhenAutomaticallyFunded() throws {
+        for currency in [InvestmentCurrency.cny, .hkd] {
+            let owner = InvestmentAccount(name: "保险", currency: currency, type: .insurance)
+            var book = InvestmentBook(accounts: [owner])
+            let id = try book.register(.init(name: "保单", code: "POLICY", market: "", kind: .insurance, currency: currency))
+            try book.post(.init(day: date(1), kind: .deposit, amount: 5_000), accountID: owner.id)
+            for premium in [Decimal(1_000), Decimal(2_000)] {
+                try book.post(.init(day: date(1), kind: .buy, assetID: id, quantity: 1, price: premium),
+                              accountID: owner.id, autoFundCash: true)
+                let ledger = try book.ledger(book.accounts[0], through: date(1))
+                precondition(ledger.cash == 5_000, "Initial and renewal premiums must preserve existing cash")
+            }
+            let deposits = book.accounts[0].events.filter { $0.kind == .deposit }.map(\.amount)
+            precondition(deposits == [5_000, 1_000, 2_000])
+            try book.post(.init(day: date(2), kind: .buy, assetID: id, quantity: 1, price: 3_000), accountID: owner.id)
+            let ordinary = try book.ledger(book.accounts[0], through: date(2))
+            precondition(ordinary.cash == 2_000 && ordinary.positions[id]?.netCost == 6_000,
+                         "When automatic funding is off, purchases still use existing cash")
+        }
     }
 
     static func tradingFeesAffectCashAndDilutedCost() throws {
@@ -452,7 +620,7 @@ struct InvestmentBookTests {
         book.runPlans(through: third)
         book.runPlans(through: third)
         let ledger = try book.ledger(book.accounts[0], through: third)
-        precondition(ledger.cash == 9 && ledger.positions[asset]?.quantity == 16)
+        precondition(ledger.cash == 5 && ledger.positions[asset]?.quantity == Decimal(string: "16.666"))
         precondition(book.accounts[0].events.map(\.kind) == [.deposit, .buy])
         precondition(book.plans.allSatisfy { $0.nextDay > third })
         let report = book.planReport(since: priorRuns)
@@ -1924,6 +2092,43 @@ struct InvestmentBookTests {
             book.addQuotes([.init(day: date(1), price: 10, source: "东方财富", isDailyClose: true)], assetID: id)
             book.addQuotes([.init(day: date(1), price: 99, source: "手动录入")], assetID: id)
             precondition(book.quote(id, on: date(1))?.price == 10 && book.quote(id, on: date(1))?.source == "东方财富")
+        }
+    }
+
+    static func accountOrderSurvivesSaving() throws {
+        var accounts = (0..<4).map { InvestmentAccount(name: "账户\($0)", currency: .cny, type: .securities) }
+        accounts[1].archivedAt = date(1)
+        for index in accounts.indices {
+            accounts[index].events = [.init(day: date(1), kind: .deposit, amount: Decimal(index + 1))]
+        }
+        let records = InvestmentServerRecords()
+        let original = try records.decode(.init(generation: 1, revision: 1,
+            tables: records.encode(InvestmentBook(accounts: accounts), revision: 1)))
+        var book = original
+        let orders = [[0, 3, 2], [2, 0, 3], [3, 2, 0]]
+        for order in orders {
+            let visible = order.map { accounts[$0].id }
+            try book.reorderAccounts(visible)
+            precondition(book.visibleAccounts(showArchived: false).map(\.id) == visible)
+            precondition(book.accounts[1].id == accounts[1].id, "A hidden archived account must retain its slot")
+            precondition(book.snapshotInputChange(comparedTo: original) == nil, "Reordering cannot dirty financial snapshots")
+            var tables = try records.encode(book, revision: 1)
+            if let rows = tables["investment_accounts"] { tables["investment_accounts"] = Array(rows.reversed()) }
+            let restored = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+            precondition(restored.accounts.map(\.id) == book.accounts.map(\.id),
+                         "Saving and decoding unordered server rows must keep the requested account order")
+            for account in restored.accounts {
+                precondition(account.events == original.account(account.id)?.events, "Account ordering must not move another account's events")
+            }
+            book = restored
+        }
+        let all = accounts.reversed().map(\.id)
+        try book.reorderAccounts(all)
+        precondition(book.accounts.map(\.id) == all, "Archived accounts can move when included in the displayed list")
+        for invalid in [[accounts[0].id, accounts[0].id], [UUID()]] {
+            do { try book.reorderAccounts(invalid); preconditionFailure("Invalid account order must be rejected") }
+            catch InvestmentError.invalid { }
+            precondition(book.accounts.map(\.id) == all, "Rejected ordering must leave every account intact")
         }
     }
 

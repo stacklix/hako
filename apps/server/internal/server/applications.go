@@ -121,6 +121,18 @@ func (s *Server) invalidateApplication(id string) {
 	if s.oidc != nil {
 		s.invalidateOIDCLocked(id)
 	}
+	if s.nativeApps != nil {
+		for key, req := range s.nativeApps.requests {
+			if req.ClientID == id {
+				delete(s.nativeApps.requests, key)
+			}
+		}
+		for key, consent := range s.nativeApps.consents {
+			if consent.ClientID == id {
+				s.revokeNativeConsent(key)
+			}
+		}
+	}
 	for key, req := range s.adminLogins {
 		if req.ClientID == id {
 			delete(s.adminLogins, key)

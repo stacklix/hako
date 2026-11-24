@@ -7,7 +7,7 @@ struct ConsoleSessionsView: View {
             ForEach(client.remoteSessions) { session in
                 VStack(alignment: .leading, spacing: 8) {
                     Label(session.type == .application ? "\(session.application ?? "应用") · \(session.browser ?? "网页浏览器")" : session.type == .web ? "网页管理端 · \(session.browser ?? "网页浏览器")" : session.current ? "当前 iPhone" : "管理客户端",
-                          systemImage: session.type == .console ? "iphone" : "globe")
+                          systemImage: session.type == .application ? "app" : session.type == .console ? "iphone" : "globe")
                     if let origin = session.origin { Text(origin).font(.caption).foregroundStyle(.secondary) }
                     if let deviceId = session.deviceId {
                         Text(deviceId).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -17,7 +17,7 @@ struct ConsoleSessionsView: View {
                         Text("最近活动：\(sessionTime(lastUsedAt))").font(.caption).foregroundStyle(.secondary)
                     }
                     if session.type != .console {
-                        Button("移除网页登录", role: .destructive) {
+                        Button(session.type == .application ? "移除应用授权" : "移除网页登录", role: .destructive) {
                             Task { await client.revokeWebSession(session) }
                         }.disabled(client.busy)
                     }

@@ -298,14 +298,16 @@ struct InvestmentQuoteProvider {
         return InvestmentQuote(day: InvestmentBook.day(), price: price * usdtUSD, source: "Binance 现货")
     }
 
-    func searchInstruments(_ search: InvestmentInstrumentSearch, keys: [InvestmentQuoteSource: String]) async throws -> [InvestmentAsset] {
+    func searchInstruments(_ search: InvestmentInstrumentSearch, keys: [InvestmentQuoteSource: String],
+                           consolidateUSListings: Bool = true) async throws -> [InvestmentAsset] {
         guard !search.query.isEmpty, !search.kind.isManual else { return [] }
         try Task.checkCancellation()
         let asset = search.exactAsset
         let symbol = InvestmentQuoteSymbol(asset)
         if asset.usesUSEquityClose {
             let key = try Self.usEquityKey(keys)
-            return try await twelveInstruments(search, symbol: symbol, key: key).filter(search.permits)
+            return try await twelveInstruments(search, symbol: symbol, key: key,
+                                               consolidateUSListings: consolidateUSListings).filter(search.permits)
         }
         if search.kind != .crypto {
             return try await eastmoneyInstruments(search)
@@ -347,7 +349,8 @@ struct InvestmentQuoteProvider {
         var code: Int?
     }
 
-    private func twelveInstruments(_ search: InvestmentInstrumentSearch, symbol: InvestmentQuoteSymbol, key: String) async throws -> [InvestmentAsset] {
+    private func twelveInstruments(_ search: InvestmentInstrumentSearch, symbol: InvestmentQuoteSymbol, key: String,
+                                   consolidateUSListings: Bool = true) async throws -> [InvestmentAsset] {
         let acceptedTypes: Set<String>
         switch search.kind {
         case .stock:
@@ -371,7 +374,7 @@ struct InvestmentQuoteProvider {
         let result = try? JSONDecoder().decode(TwelveInstrumentSearch.self, from: data)
         guard status == 200, let instruments = result?.data else { throw Self.failure(result?.code ?? status) }
 
-        return instruments.compactMap { entry in
+        let matches: [(asset: InvestmentAsset, identity: [String])] = instruments.compactMap { entry in
             guard let ticker = entry.symbol?.uppercased(), !ticker.isEmpty,
                   let name = entry.instrument_name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
                   search.kind == .crypto || entry.currency?.uppercased() == search.currency.rawValue,
@@ -402,8 +405,73 @@ struct InvestmentQuoteProvider {
             }
             let asset = InvestmentAsset(name: name, code: code, market: market, kind: search.kind, currency: search.currency)
             guard (try? asset.validateMarket(settlingIn: asset.settlementCurrency)) != nil else { return nil }
-            return asset
+            // Keep the full security name and subtype: a matching ticker alone is
+            // insufficient evidence for collapsing different venue records.
+            let normalizedName = name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+            return (asset, [code, normalizedName, type, search.currency.rawValue, search.kind.rawValue])
         }
+        guard consolidateUSListings, search.currency == .usd,
+              search.kind == .stock || search.kind == .etf else { return matches.map(\.asset) }
+
+        let primaryMarkets: Set<String> = ["XNAS", "XNMS", "XNGS", "XNCM", "XNYS", "ARCX", "XASE", "BATS"]
+        let groups = Dictionary(grouping: matches, by: { $0.identity })
+        var emitted: Set<[String]> = []
+        return matches.compactMap { match in
+            let group = groups[match.identity]!
+            let primary = group.filter { primaryMarkets.contains($0.asset.market) }
+            // Only replace an IEX trading-venue duplicate when there is exactly
+            // one unambiguous primary venue. Unknown or conflicting venues stay visible.
+            guard group.contains(where: { $0.asset.market == "IEXG" }),
+                  group.allSatisfy({ $0.asset.market == "IEXG" || primaryMarkets.contains($0.asset.market) }),
+                  Set(primary.map { $0.asset.market }).count == 1,
+                  let preferred = primary.first else { return match.asset }
+            guard emitted.insert(match.identity).inserted else { return nil }
+            return preferred.asset
+        }
+    }
+
+    func latestQuote(for asset: InvestmentAsset, keys: [InvestmentQuoteSource: String], now: Date = .now) async throws -> InvestmentQuote {
+        let today = InvestmentBook.day(now)
+        if asset.kind == .crypto {
+            let usdt = try? await coinbaseSpotUSDQuote(code: "USDT")
+            return try await publicSpotUSDQuote(for: asset, usdtUSD: usdt)
+        }
+        if asset.usesEastmoneyMarketData {
+            let values = try await eastmoneyHistory(asset: asset, start: InvestmentBook.addDays(-30, to: today),
+                                                    through: today, latestOnly: true)
+            guard let quote = markDailyCloses(values, asset: asset, now: now).last else {
+                throw InvestmentError.invalid("未取得最新报价。")
+            }
+            return quote
+        }
+        guard asset.usesUSEquityClose, let symbol = InvestmentQuoteSymbol(asset).twelveSymbol else {
+            throw InvestmentError.invalid("该标的不支持最新报价。")
+        }
+        struct Quote: Decodable {
+            var symbol, currency, mic_code, datetime, close: String?
+            var code: Int?
+        }
+        let key = try Self.usEquityKey(keys)
+        var url = URLComponents(string: "https://api.twelvedata.com/quote")!
+        url.queryItems = [.init(name: "symbol", value: symbol), .init(name: "country", value: "United States")]
+        let market = InvestmentQuoteSymbol(asset).twelveMIC
+        if market == "XNAS" { url.queryItems?.append(.init(name: "exchange", value: "NASDAQ")) }
+        else if !market.isEmpty { url.queryItems?.append(.init(name: "mic_code", value: market)) }
+        if asset.kind == .etf { url.queryItems?.append(.init(name: "type", value: "ETF")) }
+        let (data, response) = try await send(Self.twelveRequest(url.url!, key: key), [key])
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let result = try? JSONDecoder().decode(Quote.self, from: data)
+        guard status == 200, result?.code == nil else { throw Self.failure(result?.code ?? status) }
+        let matchesMarket = market == "XNAS"
+            ? ["XNAS", "XNMS", "XNGS", "XNCM"].contains(result?.mic_code?.uppercased() ?? "")
+            : market.isEmpty || result?.mic_code?.uppercased() == market
+        guard result?.symbol?.uppercased() == symbol, result?.currency?.uppercased() == asset.currency.rawValue,
+              matchesMarket, let text = result?.close, let price = Decimal(string: text), !price.isNaN, price > 0,
+              let rawDay = result?.datetime, let day = Self.dateFormat("yyyy-MM-dd").date(from: String(rawDay.prefix(10))),
+              day <= today, day >= InvestmentBook.addDays(-30, to: today) else {
+            throw InvestmentError.invalid("最新报价的代码、市场、币种、日期或价格不匹配。")
+        }
+        return markDailyCloses([.init(day: day, price: price, source: "Twelve Data")], asset: asset, now: now)[0]
     }
 
     func watchQuotes(for asset: InvestmentAsset, keys: [InvestmentQuoteSource: String],

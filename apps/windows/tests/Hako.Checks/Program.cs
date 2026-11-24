@@ -75,6 +75,7 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 1 && args[0] == "workshop-context") { await WorkshopContextChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "resource-history") { await ResourceHistoryChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "cli") { await CliChecks.RunAsync(); return 0; }
             if (args.Length == 2 && args[0] == "guardian") { await GuardianChecks.RunAsync(args[1]); return 0; }

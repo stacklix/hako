@@ -7,6 +7,7 @@ struct SettingsSheet<Content: View>: View {
     var isBusy = false
     var saveEnabled = true
     var onSave: (() -> Void)? = nil
+    var saveInProgress = false
     private let detents: Set<PresentationDetent>
     private let saveAccessibilityLabel: String
     private let cancelTitle: String?
@@ -18,6 +19,7 @@ struct SettingsSheet<Content: View>: View {
 
     init(title: String, hasChanges: Bool = false, isBusy: Bool = false,
          saveEnabled: Bool = true, onSave: (() -> Void)? = nil,
+         saveInProgress: Bool = false,
          detents: Set<PresentationDetent> = [.large], saveAccessibilityLabel: String = "保存配置",
          cancelTitle: String? = nil, saveTitle: String? = nil,
          closePlacement: ToolbarItemPlacement = .topBarLeading,
@@ -27,6 +29,7 @@ struct SettingsSheet<Content: View>: View {
         self.isBusy = isBusy
         self.saveEnabled = saveEnabled
         self.onSave = onSave
+        self.saveInProgress = saveInProgress
         self.detents = detents
         self.saveAccessibilityLabel = saveAccessibilityLabel
         self.cancelTitle = cancelTitle
@@ -52,7 +55,8 @@ struct SettingsSheet<Content: View>: View {
                     if let onSave {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button(action: onSave) {
-                                if let saveTitle { Text(saveTitle) }
+                                if saveInProgress { ProgressView().controlSize(.small) }
+                                else if let saveTitle { Text(saveTitle) }
                                 else { Image(systemName: "checkmark") }
                             }
                                 .accessibilityLabel(Text(saveAccessibilityLabel))

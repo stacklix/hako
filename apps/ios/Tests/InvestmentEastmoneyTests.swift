@@ -119,6 +119,112 @@ extension InvestmentMarketDataTests {
         precondition(wrong.isEmpty)
     }
 
+    static func twelveUSCatalogConsolidatesMatchingVenueRecords() async throws {
+        func row(_ code: String, _ market: String, _ name: String = "Space Exploration Technologies Corp. Class A Common Stock",
+                 _ type: String = "Common Stock", country: String = "United States", currency: String = "USD") -> [String: String] {
+            ["symbol": code, "mic_code": market, "instrument_name": name, "instrument_type": type,
+             "currency": currency, "country": country]
+        }
+        func search(_ rows: [[String: String]], query: String = "SPCX", kind: InvestmentKind = .stock,
+                    consolidate: Bool = true) async throws -> [InvestmentAsset] {
+            let body = String(data: try JSONSerialization.data(withJSONObject: ["data": rows]), encoding: .utf8)!
+            var requests = 0
+            let provider = InvestmentQuoteProvider { request, _ in
+                requests += 1
+                precondition(request.url?.path == "/symbol_search", "Consolidation must not make extra API requests")
+                return response(request, body)
+            }
+            let result = try await provider.searchInstruments(.init(query: query, kind: kind, currency: .usd),
+                keys: [.twelveData: "fixture"], consolidateUSListings: consolidate)
+            precondition(requests == 1)
+            return result
+        }
+        let spcx = [row("SPCX", "IEXG"), row("SPCX", "XNMS")]
+        for rows in [spcx, Array(spcx.reversed())] {
+            let result = try await search(rows)
+            precondition(result.count == 1 && result[0].market == "XNMS")
+            precondition(InvestmentQuoteSymbol(result[0]).twelveMIC == "XNMS", "Chosen venue must remain in quote routing")
+        }
+        for market in ["XNAS", "XNGS", "XNCM", "XNYS", "ARCX", "XASE", "BATS"] {
+            let result = try await search([row("SPCX", "IEXG"), row("SPCX", market)])
+            precondition(result.map(\.market) == [market])
+        }
+        let etfs = try await search([row("SPYM", "IEXG", "State Street SPDR Portfolio S&P 500 ETF", "ETF"),
+                                    row("SPYM", "XNMS", "State Street SPDR Portfolio S&P 500 ETF", "ETF")], query: "SPYM", kind: .etf)
+        precondition(etfs.count == 1 && etfs[0].market == "XNMS")
+        let normalized = try await search([row("SPCX", "IEXG", "Example  Class A"), row("SPCX", "XNMS", "example Class A")])
+        precondition(normalized.count == 1 && normalized[0].name == "example Class A")
+
+        // Do not collapse merely similar names, share classes, subtypes, or ambiguous markets.
+        for rows in [
+            [row("SPCX", "IEXG"), row("SPCX", "XNMS", "Different Company Class A")],
+            [row("SPCX", "IEXG"), row("SPCX", "XNMS", "Space Exploration Technologies Corp. Class B Common Stock")],
+            [row("SPCX", "IEXG"), row("SPCX", "XNMS", "Space Exploration Technologies Corp. Class A Common Stock", "Preferred Stock")],
+            [row("SPCX", "IEXG"), row("SPCX", "OTCM")],
+            [row("SPCX", "IEXG"), row("SPCX", "XNMS"), row("SPCX", "XNYS")],
+            [row("SPCX", "IEXG"), row("SPCX", "XNMS"), row("SPCX", "OTCM")],
+            [row("SPCX", "XNMS"), row("SPCX", "XNYS")],
+            [row("SPCX.A", "IEXG"), row("SPCX.B", "XNMS")]
+        ] {
+            let result = try await search(rows)
+            precondition(result.count == rows.count, "Uncertain securities must remain separate")
+        }
+        let onlyIEX = try await search([spcx[0]])
+        precondition(onlyIEX.count == 1 && onlyIEX[0].market == "IEXG")
+        let foreign = try await search([spcx[0], row("SPCX", "XNMS", country: "Canada"), row("SPCX", "XNMS", currency: "CAD")])
+        precondition(foreign.map(\.market) == ["IEXG"], "Country and currency filtering must precede consolidation")
+        let raw = try await search(spcx, consolidate: false)
+        precondition(raw.map(\.market) == ["IEXG", "XNMS"], "Saved-asset validation needs the uncollapsed catalog")
+        try spcxAsset().validateCatalogIdentity(raw[0])
+        precondition(InvestmentQuoteSymbol(raw[0]).twelveMIC == "IEXG")
+    }
+
+    private static func spcxAsset() -> InvestmentAsset {
+        InvestmentAsset(name: "Space Exploration Technologies Corp. Class A Common Stock", code: "SPCX",
+                        market: "IEXG", kind: .stock, currency: .usd)
+    }
+
+    static func latestQuotesDoNotFetchChartHistory() async throws {
+        let now = ISO8601DateFormatter().date(from: "2026-10-31T02:00:00Z")!
+        let provider = InvestmentQuoteProvider { request, secrets in
+            let query = eastmoneyQuery(request)
+            precondition(request.url?.path == "/quote" && query["symbol"] == "SPCX")
+            precondition(query["mic_code"] == "XNMS" && query["apikey"] == "fixture" && secrets == ["fixture"])
+            precondition(query["start_date"] == nil && query["end_date"] == nil && query["outputsize"] == nil)
+            return response(request, #"{"symbol":"SPCX","currency":"USD","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#)
+        }
+        let quote = try await provider.latestQuote(for: asset("SPCX", .stock, .usd, market: "XNMS"), keys: [.twelveData: "fixture"], now: now)
+        precondition(quote.price == Decimal(string: "137.36") && quote.isDailyClose == true)
+        for payload in [
+            #"{"symbol":"OTHER","currency":"USD","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#,
+            #"{"symbol":"SPCX","currency":"CNY","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#,
+            #"{"symbol":"SPCX","currency":"USD","mic_code":"IEXG","datetime":"2026-10-30","close":"137.36"}"#,
+            #"{"symbol":"SPCX","currency":"USD","mic_code":"XNMS","datetime":"2027-10-30","close":"137.36"}"#,
+            #"{"code":429,"status":"error"}"#
+        ] {
+            let invalid = InvestmentQuoteProvider { request, _ in response(request, payload) }
+            do {
+                _ = try await invalid.latestQuote(for: asset("SPCX", .stock, .usd, market: "XNMS"), keys: [.twelveData: "fixture"], now: now)
+                preconditionFailure("Invalid latest quotes must never be saved")
+            } catch is InvestmentError { }
+        }
+        let etf = InvestmentQuoteProvider { request, _ in
+            precondition(eastmoneyQuery(request)["lmt"] == "1")
+            return try eastmoneyBars(request, code: "159941", market: 0, bars: ["2026-10-30,1,2.3456,3,1,100"])
+        }
+        let etfQuote = try await etf.latestQuote(for: asset("159941.SZ", .etf, .cny), keys: [:], now: now)
+        precondition(etfQuote.price == Decimal(string: "2.3456"))
+        var calls = 0
+        let fund = InvestmentQuoteProvider { request, _ in
+            calls += 1
+            precondition(request.url?.path == "/f10/lsjz" && eastmoneyQuery(request)["pageSize"] == "1")
+            return response(request, #"{"ErrCode":0,"TotalCount":100,"PageIndex":1,"Data":{"FundType":"001","LSJZList":[{"FSRQ":"2026-10-30","DWJZ":"1.2345"}]}}"#)
+        }
+        let fundQuote = try await fund.latestQuote(for: asset("110022.OF", .fund, .cny), keys: [:], now: now)
+        precondition(fundQuote.price == Decimal(string: "1.2345") && calls == 1,
+                     "Fetching one valuation must not paginate through fund history")
+    }
+
     static func twelveUSEquitiesRequireKeysAndPreserveErrors() async throws {
         let unused = InvestmentQuoteProvider { _, _ in preconditionFailure("No other provider may be queried") }
         for keys: [InvestmentQuoteSource: String] in [[:], [.tushare: "fixture"], [.twelveData: "  "]] {

@@ -42,6 +42,9 @@ import Combine
     @Published private(set) var modelError: String?
     @Published private(set) var choice = WorkshopChoice()
     @Published private(set) var historyGeneration = WorkshopGenerationSettings()
+    @Published private(set) var contextUsage: WorkshopContextUsage?
+    @Published private(set) var refreshingContextUsage = false
+    @Published private(set) var contextUsageError: String?
     @Published private(set) var followups: [WorkshopFollowupState] = [] { didSet { schedulePresentation() } }
     @Published private(set) var editingMessageID: String? { didSet { persistDraft() } }
     @Published private(set) var appendedMessageID: String?
@@ -175,6 +178,7 @@ import Combine
             for entry in pending where !entries.contains(where: { $0.id == entry.id }) { entries.append(entry) }
             artifacts = snapshot.artifacts; followups = snapshot.followups
             historyCursor = snapshot.historyCursor; cachedAt = snapshot.savedAt
+            contextUsage = .newest(contextUsage, snapshot.contextUsage)
             if operationId == nil { operationId = snapshot.operationId }
             if operationId == snapshot.operationId { eventCursor = snapshot.eventCursor; streamText = snapshot.streamText }
             savedTranscript = snapshot
@@ -464,6 +468,26 @@ import Combine
         } else { error = store.error ?? "暂时无法取消归档，请稍后重试。" }
     }
 
+    func refreshContextUsage() async {
+        guard let threadId, scope == store.scope, !refreshingContextUsage else { return }
+        refreshingContextUsage = true
+        contextUsageError = nil
+        defer { refreshingContextUsage = false }
+        do {
+            // Only the head page is requested. Do not merge transcript entries,
+            // follow older cursors, or disturb the current scroll position.
+            let result: WorkshopHistory = try await store.call(agent, "history.read", ["threadId": threadId])
+            try Task.checkCancellation()
+            guard scope == store.scope, self.threadId == threadId, result.threadId == threadId else { return }
+            let latest = WorkshopContextUsage.newest(contextUsage, result.contextUsage)
+            if contextUsage != latest { contextUsage = latest; saveTranscript() }
+        } catch is CancellationError { }
+        catch {
+            guard scope == store.scope, self.threadId == threadId else { return }
+            contextUsageError = "读取失败，请收起后重新展开重试。"
+        }
+    }
+
     @discardableResult func loadHistory(more: Bool = false) async -> Bool {
         await restoreTranscript()
         guard !Task.isCancelled, let threadId, !loadingHistory, scope == store.scope else { return false }
@@ -477,7 +501,10 @@ import Combine
             if more { params["cursor"] = historyCursor }
             var result: WorkshopHistory = try await store.call(agent, "history.read", params)
             guard scope == store.scope, result.threadId == threadId else { return false }
-            if !more { historyGeneration = result.generation; observeAccess(result.access) }
+            if !more {
+                historyGeneration = result.generation; observeAccess(result.access)
+                contextUsage = .newest(contextUsage, result.contextUsage)
+            }
             let newestOperation = result.operationId
             let newestCompletion = result.completionId
             var newestArtifacts = result.artifacts
@@ -638,7 +665,7 @@ import Combine
         guard !restoringCache, let threadId, scope == store.scope else { return }
         let snapshot = WorkshopTranscript(key: WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId),
             entries: entries, artifacts: artifacts, followups: followups, historyCursor: historyCursor, operationId: operationId,
-            eventCursor: eventCursor, streamText: streamText, savedAt: .now)
+            eventCursor: eventCursor, streamText: streamText, savedAt: .now, contextUsage: contextUsage)
         guard savedTranscript.map({ !snapshot.hasSameContent(as: $0) }) ?? true else { return }
         savedTranscript = snapshot
         store.saveTranscript(snapshot, scope: scope)
@@ -655,6 +682,7 @@ import Combine
     private func accept(_ result: WorkshopOperationPage, id: String) async throws {
         guard scope == store.scope, operationId == id, result.operation.id == id, result.cursor >= eventCursor else { throw CancellationError() }
         if operation != result.operation { operation = result.operation }
+        contextUsage = .newest(contextUsage, result.operation.contextUsage)
         if result.operation.active, error != nil { error = nil }
         if connectionIssue != nil { clearConnectionIssue() }
         if uncertain { uncertain = false }

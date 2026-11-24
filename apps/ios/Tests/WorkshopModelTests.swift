@@ -2,6 +2,28 @@ import Foundation
 
 @main struct WorkshopModelTests {
     static func main() throws {
+        let context = WorkshopContextUsage(usedTokens: 67_200, modelContextWindow: 160_000, updatedAt: 1_800_000_000_000)
+        precondition(abs((context.usedFraction ?? -1) - 0.42) < 0.000001 && abs((context.remainingFraction ?? -1) - 0.58) < 0.000001)
+        precondition(context.usedText == "已用 67.2k / 160k tokens" && context.remainingText == "剩余 92.8k tokens")
+        precondition(context.usedPercentText == "42%" && context.remainingPercentText == "58%")
+        let decodedContext = try JSONDecoder().decode(WorkshopContextUsage.self, from: JSONEncoder().encode(context))
+        precondition(decodedContext == context)
+        let compactedContext = WorkshopContextUsage(usedTokens: nil, modelContextWindow: nil, updatedAt: context.updatedAt + 1)
+        precondition(WorkshopContextUsage.newest(context, compactedContext) == compactedContext)
+        precondition(WorkshopContextUsage.newest(compactedContext, context) == compactedContext,
+            "An older history response must not restore pre-compaction occupancy")
+        for invalid in [WorkshopContextUsage(usedTokens: -1, modelContextWindow: 160000, updatedAt: 1),
+                        WorkshopContextUsage(usedTokens: 100, modelContextWindow: nil, updatedAt: 1),
+                        WorkshopContextUsage(usedTokens: 100, modelContextWindow: 0, updatedAt: 1)] {
+            precondition(invalid.remainingFraction == nil && invalid.usedText == nil)
+        }
+        let overfull = WorkshopContextUsage(usedTokens: 200000, modelContextWindow: 160000, updatedAt: 2)
+        precondition(overfull.remainingFraction == 0 && overfull.usedPercentText == "125%" && overfull.remainingText == "剩余 0 tokens",
+            "Clamp only the drawing, retaining the actual reported usage")
+        let historyWithContext = try JSONDecoder().decode(WorkshopHistory.self, from: Data(#"{"threadId":"t","cwd":"/app","entries":[],"artifacts":[],"contextUsage":{"usedTokens":67200,"modelContextWindow":160000,"updatedAt":1800000000000}}"#.utf8))
+        precondition(historyWithContext.contextUsage == context)
+        let operationWithContext = try JSONDecoder().decode(WorkshopOperation.self, from: Data(#"{"id":"o","applicationId":"a","threadId":"t","state":"running","startedAt":1,"contextUsage":{"usedTokens":67200,"modelContextWindow":160000,"updatedAt":1800000000000}}"#.utf8))
+        precondition(operationWithContext.contextUsage == context)
         let projects = ["lingrove", "xkode", "S2Arm", "hako", "empty"].map {
             WorkshopApplication(id: $0, name: $0, path: "/" + $0)
         }

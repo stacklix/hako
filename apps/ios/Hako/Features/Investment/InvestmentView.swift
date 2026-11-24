@@ -48,7 +48,8 @@ struct InvestmentView: View {
             } else {
                 switch tab {
                 case .overview:
-                    InvestmentOverview(book: store.book, bookVersion: store.bookVersion, showsArchived: store.showsArchived) { id in
+                    InvestmentOverview(book: store.book, bookVersion: store.bookVersion, presentation: store.presentation,
+                                       showsArchived: store.showsArchived, insuranceGainBasis: store.insuranceGainBasis) { id in
                         selectedAccount = id
                         tab = .accounts
                     }
@@ -273,9 +274,9 @@ struct InvestmentAccountView: View {
 
     var body: some View {
         InvestmentScroll {
-            let result = Result { try book.ledger(account) }
-            if case .success(let ledger) = result {
-                summary(ledger)
+            let prepared = store.presentation.accounts[account.id]
+            if let ledger = prepared?.ledger {
+                summary(ledger, valuation: prepared?.value)
                 HakoUnderlineTabs(title: "账户数据视图", options: AccountTab.allCases, selection: $accountTab) { $0.rawValue }
                     .background(alignment: .bottom) { Divider() }
                 if accountTab == .details {
@@ -283,11 +284,13 @@ struct InvestmentAccountView: View {
                     holdings(ledger)
                 } else {
                     InvestmentPerformanceChart(book: book, bookVersion: store.bookVersion, accountID: account.id)
+                    InvestmentCard {
+                        InvestmentCurrentAllocation(details: prepared?.allocation ?? [], currency: account.currency,
+                                                    day: store.presentation.day, overview: false)
+                    }
                 }
             } else {
-                if case .failure(let error) = result {
-                    Text(error.localizedDescription).foregroundStyle(.secondary)
-                }
+                if let error = prepared?.error { Text(error).foregroundStyle(.secondary) }
                 Button("查看并修改流水") { sheet = .history }
                     .buttonStyle(HakoActionButtonStyle(primary: false))
             }
@@ -304,8 +307,7 @@ struct InvestmentAccountView: View {
         }
     }
 
-    private func summary(_ ledger: InvestmentLedger) -> some View {
-        let valuation = book.value(account)
+    private func summary(_ ledger: InvestmentLedger, valuation: InvestmentValuation?) -> some View {
         let currencies: [InvestmentCurrency] = switch account.currency {
         case .cny: [.usd]
         case .usd: [.cny]
@@ -399,7 +401,9 @@ struct InvestmentAccountView: View {
     }
 
     private func holdings(_ ledger: InvestmentLedger) -> some View {
-        let assets = book.sortedHoldingAssets(in: ledger, showsZeroPositions: store.showsZeroPositions)
+        let assets = (store.presentation.accounts[account.id]?.holdings ?? []).filter { asset in
+            store.showsZeroPositions || ledger.positions[asset.id].map { !book.positionIsEmpty($0, assetID: asset.id) } == true
+        }
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("持仓").font(Self.sectionTitleFont)

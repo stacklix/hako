@@ -330,12 +330,15 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             operationId = latest?.RootId ?? latest?.Id;
         }
         var completionId = SummarizeTurn(turn).CompletionId;
+        var nativeUsage = cursor.Length == 0 ? await ReadContextUsageAsync(id, CodexJson.Text(thread, "path"), token) : null;
+        WorkshopContextUsage? contextUsage;
+        lock (gate) contextUsage = ContextUsage(id, nativeUsage);
         var older = CodexJson.Text(upstream, "nextCursor");
         var nextCursor = offset < items.Length ? new HistoryPosition(id, nativeCursor, offset, currentTurn, used.ToArray(), HistoryAnchor(items[0])).Encode() :
             older.Length > 0 ? new HistoryPosition(id, older, 0, currentTurn, used.ToArray(), "").Encode() : null;
         if (nextCursor == cursor) throw new WorkshopException("codex_history_cursor", "会话历史游标未前进，请重新刷新。");
         object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor, operationId, completionId,
-            model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort"), access = ThreadAccess(id) };
+            model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort"), access = ThreadAccess(id), contextUsage };
         while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];
         return Page();

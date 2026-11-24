@@ -347,8 +347,10 @@ struct ConsoleRemoteSession: Decodable, Identifiable {
         HakoExecutionDiagnostics.record("服务端响应", state: (200..<300).contains(http.statusCode) ? .info : .failed,
                                         detail: "\(method) \(url.path)；HTTP \(http.statusCode)")
         guard (200..<300).contains(http.statusCode) else {
-            struct Failure: Decodable { let error: String }
-            throw ServerHTTPError(status: http.statusCode, code: (try? JSONDecoder().decode(Failure.self, from: data).error) ?? "invalid_response")
+            struct Failure: Decodable { let error: String?; let code: String?; let message: String? }
+            let failure = try? JSONDecoder().decode(Failure.self, from: data)
+            throw ServerHTTPError(status: http.statusCode, code: failure?.error ?? failure?.code ?? "invalid_response",
+                                  serverMessage: path.hasPrefix("/api/v1/notifications/manage/") ? failure?.message : nil)
         }
         logLevel = .info
         return data

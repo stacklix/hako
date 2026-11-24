@@ -30,8 +30,11 @@ extension URLSessionWebSocketTask {
 struct ServerHTTPError: Error, LocalizedError {
     let status: Int
     let code: String
+    var serverMessage: String? = nil
     var errorDescription: String? {
+        if let serverMessage { return serverMessage }
         switch code {
+        case "notifications_unavailable": return "Sora 通知服务尚未启用，请检查服务端配置。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests": return "请求过于频繁或设备繁忙，请稍后重试。"

@@ -12,11 +12,12 @@ struct WorkshopConversationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.hakoPinPreview) private var pinPreview
     @Environment(\.hakoPinEnter) private var enterPinnedPage
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var detail: WorkshopEntry?
     @State private var artifact: WorkshopArtifact?
     @State private var browserLink: WorkshopBrowserLink?
     @State private var showingInfo = false
+    @State private var showingContextUsage = false
+    @ScaledMetric(relativeTo: .caption) private var contextIconSize = 12
     @State private var showingFiles = false
     @State private var confirmsCompact = false
     @State private var showingCommandTask = false
@@ -121,7 +122,6 @@ struct WorkshopConversationView: View {
         }
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(scrollFollowing.shouldFollowUpdates ? .bottom : nil, for: .sizeChanges)
         .onAppear {
             WorkshopRuntime.shared.enter(synchronizationOwner, conversation: conversation, preview: onSwitch != nil || pinPreview)
             scrollFollowing = ConversationScrollFollowing()
@@ -134,7 +134,7 @@ struct WorkshopConversationView: View {
             ConversationScrollFollowing.Layout(contentHeight: geometry.contentSize.height,
                 viewportHeight: geometry.visibleRect.height, visibleBottom: geometry.visibleRect.maxY)
         } action: { _, layout in
-            if scrollFollowing.observe(layout) { scrollPosition.scrollTo(edge: .bottom) }
+            if scrollFollowing.observe(layout) { alignLatestMessage() }
             updateReadingLatest(layout.nearBottom && scenePhase == .active && transcriptVisible)
         }
         .onDisappear {
@@ -157,13 +157,14 @@ struct WorkshopConversationView: View {
             else if phase == .idle { scrollFollowing.interacting(false) }
         }
         .onChange(of: conversation.presentation.revision) { _, _ in
-            if scrollFollowing.shouldFollowUpdates { scrollPosition.scrollTo(edge: .bottom) }
+            followRenderedMessages()
         }
         .onChange(of: conversation.appendedMessageID) { _, id in
-            if id != nil {
-                scrollFollowing = ConversationScrollFollowing()
-                if reduceMotion { scrollPosition.scrollTo(edge: .bottom) }
-                else { withAnimation { scrollPosition.scrollTo(edge: .bottom) } }
+            if let id {
+                // Sending precedes the asynchronous renderer. Do not scroll the
+                // old lazy layout while the keyboard and operation footer change.
+                scrollFollowing.messageAppended(id)
+                followRenderedMessages()
             }
         }
         .scrollDismissesKeyboard(.interactively)
@@ -186,6 +187,24 @@ struct WorkshopConversationView: View {
                     }.buttonStyle(.plain).background(HakoStyle.card)
                 }
             }
+            .overlay(alignment: .topLeading) {
+                GeometryReader { header in
+                    if showingContextUsage {
+                        contextUsageDetails
+                            .font(.caption).foregroundStyle(HakoStyle.muted)
+                            .padding(.horizontal, 20).padding(.vertical, 12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(HakoStyle.background)
+                            .overlay(alignment: .bottom) { Divider() }
+                            .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
+                            .fixedSize(horizontal: false, vertical: true)
+                            // Place the panel's top below the actual header,
+                            // independently of its own height or alignment guides.
+                            .offset(y: header.size.height)
+                    }
+                }
+            }
+            .zIndex(1)
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
@@ -310,6 +329,19 @@ struct WorkshopConversationView: View {
         conversation.setReadingLatest(visible && WorkshopRuntime.shared.isForegroundConversation(conversation.id))
     }
 
+    private func followRenderedMessages() {
+        let transcript = conversation.presentation
+        if scrollFollowing.presentationUpdated(containsMessage: transcript.containsMessage) { alignLatestMessage() }
+    }
+
+    private func alignLatestMessage() {
+        // Avoid overlapping scroll animations while lazy row heights settle or
+        // the keyboard closes; geometry observation corrects the measured edge.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { scrollPosition.scrollTo(edge: .bottom) }
+    }
+
     @ViewBuilder private func entryView(_ entry: WorkshopEntry) -> some View {
         if entry.kind == "followup" {
             followupView(entry)
@@ -414,23 +446,92 @@ struct WorkshopConversationView: View {
     }
 
     private var projectInfo: some View {
-        HStack {
-            WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
-                agentID: conversation.agent.id, scope: conversation.scope,
-                verified: conversation.connectionVerified,
-                needsRecovery: conversation.needsConnectionRecovery)
-            Spacer()
-            if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
-                    .layoutPriority(1)
-                    .accessibilityLabel("Model: \(conversation.modelLabel), Speed: \(conversation.speedLabel), Reasoning: \(conversation.generation.effortLabel)")
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                WorkshopProjectConnectionLabel(store: conversation.store, name: conversation.application.name,
+                    agentID: conversation.agent.id, scope: conversation.scope,
+                    verified: conversation.connectionVerified,
+                    needsRecovery: conversation.needsConnectionRecovery)
+                Spacer(minLength: 8)
+                HStack(spacing: 8) {
+                    if let model = conversation.generation.model, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(conversation.generationLabel).lineLimit(2).multilineTextAlignment(.trailing)
+                            .accessibilityLabel("Model: \(conversation.modelLabel), Speed: \(conversation.speedLabel), Reasoning: \(conversation.generation.effortLabel)")
+                    }
+                    Button {
+                        showingContextUsage.toggle()
+                        if showingContextUsage { Task { await conversation.refreshContextUsage() } }
+                    } label: {
+                        contextUsageRing.frame(width: 44, height: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).padding(.leading, contextIconSize - 44)
+                    .accessibilityLabel(conversation.contextUsage?.remainingPercentText.map { "上下文剩余 \($0)" } ?? "上下文暂无统计")
+                    .accessibilityValue(showingContextUsage ? "已展开" : "已收起")
+                    .accessibilityHint(showingContextUsage ? "收起上下文详情" : "展开上下文详情")
+                }
+                .layoutPriority(1)
             }
+            .padding(.horizontal, 20)
         }
         .font(.caption).foregroundStyle(HakoStyle.muted)
-        .padding(.horizontal, 20).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(HakoStyle.background)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    private var contextUsageRing: some View {
+        let usage = conversation.contextUsage
+        let remaining = usage?.remainingFraction ?? 0
+        return Circle().strokeBorder(HakoStyle.muted.opacity(0.25), lineWidth: 1.5)
+            .overlay {
+                Circle().inset(by: 0.75).trim(from: 0, to: remaining)
+                    .stroke((usage?.usedFraction ?? 0) >= 0.85 ? Color.orange : HakoStyle.muted, lineWidth: 1.5)
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: contextIconSize, height: contextIconSize)
+            .accessibilityHidden(true)
+    }
+
+    private var contextUsageDetails: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let usage = conversation.contextUsage, let usedText = usage.usedText, let fraction = usage.usedFraction {
+                HStack {
+                    Text(usedText)
+                    Spacer(minLength: 8)
+                    Text(usage.usedPercentText ?? "")
+                }
+                .foregroundStyle(.primary)
+                GeometryReader { geometry in
+                    Capsule().fill(HakoStyle.muted.opacity(0.2))
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(HakoStyle.muted).frame(width: geometry.size.width * min(1, max(0, fraction)))
+                        }
+                }
+                .frame(height: 3).accessibilityHidden(true)
+                HStack {
+                    Text(usage.remainingText ?? "")
+                    Spacer(minLength: 8)
+                    if conversation.refreshingContextUsage {
+                        Text("正在更新…")
+                    } else {
+                        Text("最近统计 \(usage.date.formatted(date: .omitted, time: .shortened))")
+                    }
+                }
+                .font(.caption2)
+            } else if conversation.refreshingContextUsage {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text("正在读取上下文统计…")
+                }
+            } else {
+                Text("尚未收到上下文统计")
+            }
+            if let error = conversation.contextUsageError {
+                Text(error).font(.caption2).foregroundStyle(.orange)
+            }
+        }
+        .monospacedDigit()
     }
 
     private func capturePage() async {

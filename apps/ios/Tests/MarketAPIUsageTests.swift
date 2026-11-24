@@ -3,10 +3,33 @@ import Foundation
 import FoundationNetworking
 #endif
 
+private actor UsageSignal {
+    private var signalled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func signal() {
+        signalled = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
+    }
+    func wait() async {
+        if signalled { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
+    static let pendingStarted = UsageSignal()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if request.url?.path == "/pending-search" {
+            Task { await Self.pendingStarted.signal() }
+            return
+        }
+        if request.url?.path == "/transport-cancel" {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            return
+        }
         if request.url?.path == "/offline" {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
         } else {
@@ -32,6 +55,7 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         URLRequest(url: URL(string: "https://" + host + path)!)
     }
     static func main() async throws {
+        await requestReasonsStayTaskLocal()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("usage.json")
@@ -96,6 +120,25 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(calls.failures.contains { $0.httpStatus == 429 }, "Retain real HTTP status")
         precondition(calls.failures.contains { $0.httpStatus == nil && $0.code == "NSURLErrorDomain -1009" }, "Retain transport domain and error code without inventing HTTP status")
         precondition(calls.failures.contains { $0.message.contains("not JSON") }, "Malformed text responses remain diagnosable")
+        let search = Task {
+            try await HTTPTransport.data(for: request("api.twelvedata.com", "/pending-search"),
+                                         using: session, marketUsage: network, marketGate: nil)
+        }
+        await UsageMockProtocol.pendingStarted.wait()
+        search.cancel()
+        do { _ = try await search.value; preconditionFailure("Cancelled search must not finish") }
+        catch { precondition(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        let afterSearch = try await network.snapshot(for: .twelveData)
+        precondition(afterSearch.total == calls.total && afterSearch.failures.count == calls.failures.count,
+                     "Cancelling an in-flight search must not inflate failed calls or create network errors")
+        do {
+            _ = try await HTTPTransport.data(for: request("api.twelvedata.com", "/transport-cancel"),
+                                             using: session, marketUsage: network, marketGate: nil)
+            preconditionFailure("Unexplained transport cancellation must propagate")
+        } catch { precondition((error as? URLError)?.code == .cancelled) }
+        let transportFailure = try await network.snapshot(for: .twelveData)
+        precondition(transportFailure.failed == calls.failed + 1 && transportFailure.failures.contains { $0.code == "NSURLErrorDomain -999" },
+                     "Transport cancellation without a cancelled caller must remain diagnosable")
         for path in ["/tushare-ok", "/tushare-error"] {
             _ = try await HTTPTransport.data(for: request("api.tushare.pro", path), using: session, marketUsage: network, marketGate: nil)
         }
@@ -154,6 +197,26 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         }
         let expired = try await reopened.snapshot(for: .tushare, at: now.addingTimeInterval(24 * 3600))
         precondition(expired.failures.isEmpty, "Expired failure details are removed after restart too")
+    }
+
+    static func requestReasonsStayTaskLocal() async {
+        precondition(MarketAPIRequestContext.reason == nil)
+        await withTaskGroup(of: Bool.self) { group in
+            for reason in ["持仓价格走势图", "历史汇率补数"] {
+                group.addTask {
+                    await MarketAPIRequestContext.$reason.withValue(reason) {
+                        await Task.yield()
+                        let inherited = await Task { MarketAPIRequestContext.reason }.value
+                        let detached = await Task.detached { MarketAPIRequestContext.reason }.value
+                        return inherited == reason && detached == nil && MarketAPIRequestContext.reason == reason
+                    }
+                }
+            }
+            for await isolated in group {
+                precondition(isolated, "Concurrent requests isolate their diagnostic reasons; child tasks inherit them")
+            }
+        }
+        precondition(MarketAPIRequestContext.reason == nil, "Request context must not leak after its scope ends")
     }
 
     static func failureRetentionIsIndependent(directory: URL, now: Date) async throws {

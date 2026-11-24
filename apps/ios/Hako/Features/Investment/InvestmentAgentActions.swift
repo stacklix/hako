@@ -117,7 +117,7 @@ struct InvestmentAgentAction: Codable {
         case .addEvent:
             return [account, day, .init(key: "event_type", label: "流水类型（通用标的投入用 buy、取出用 sell；opening 是期初资产首次录入。现金转入和提取填正数）", required: true,
                                        choices: eventKinds.keys.sorted()), optional(asset)] + eventValues +
-                [.init(key: "auto_fund", label: "允许自动补入现金，仅在用户要求时启用", choices: ["true", "false"])]
+                [.init(key: "auto_fund", label: "按本次买入扣款全额自动转入现金，不使用原现金余额，仅在用户要求时启用", choices: ["true", "false"])]
         case .editEvent: return [account, event, optional(day)] + eventValues + [.init(key: "counterpart_amount", label: "跨币种对方金额（正数，沿用原流水方向）")]
         case .deleteEvent: return [account, event]
         case .transfer: return [account, .init(key: "target_id", label: "目标账户 ID", required: true), day, amount,
@@ -385,6 +385,10 @@ struct InvestmentAgentAction: Codable {
             } else { event.amount = type == .withdrawal || type == .transferOut ? -abs(amount) : amount }
         } else if let direction = text("direction") { event.amount = abs(event.amount) * (direction == "decrease" ? -1 : 1) }
         event.quantity = try decimal("quantity", fallback: event.quantity)
+        if [.stakingReward, .spotAdjustment, .bonusShares].contains(type), event.quantity != original?.quantity,
+           let target = book.asset(event.assetID) {
+            try target.kind.validateTradeQuantity(event.quantity, currency: target.currency)
+        }
         if type == .spotAdjustment, let quantity = try number("quantity") {
             guard quantity > 0 else { throw missing("减少数量（正数）") }
             event.quantity = -quantity

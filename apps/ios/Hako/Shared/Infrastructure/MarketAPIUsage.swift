@@ -165,7 +165,7 @@ struct MarketAPIHourUsage: Identifiable, Equatable, Sendable {
     var id: Date { hour }
 }
 
-struct MarketAPIUsageSnapshot: Sendable {
+struct MarketAPIUsageSnapshot: Equatable, Sendable {
     let hours: [MarketAPIHourUsage]
     let failures: [MarketAPIFailure]
     let persistenceFailed: Bool

@@ -29,6 +29,11 @@ struct WorkshopTranscriptLayout: Sendable {
     var messageParts: [String: [WorkshopMessagePart]] = [:]
     var questionReplies: [String: [WorkshopQuestionReply]] = [:]
     var isEmpty: Bool { groups.isEmpty && queued.isEmpty }
+
+    func containsMessage(_ id: String) -> Bool {
+        let matches: (WorkshopEntry) -> Bool = { $0.id == id || $0.replacesId == id }
+        return queued.contains(where: matches) || groups.contains { $0.entries.contains(where: matches) }
+    }
 }
 
 // One renderer per retained conversation. The actor serializes cache mutations;

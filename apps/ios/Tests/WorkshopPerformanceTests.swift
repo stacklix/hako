@@ -22,6 +22,16 @@ private final class Counter: @unchecked Sendable {
         let questionRenderer = WorkshopTranscriptRenderer()
         let queuedReply = await questionRenderer.render(entries: [questionEntry, answerEntry], followups: [],
             artifacts: [], projectPath: "/project", revision: 1)
+        precondition(queuedReply.containsMessage(answerEntry.id) && !queuedReply.containsMessage("not-rendered"),
+            "Pending send scrolling must distinguish rendered queued messages from missing messages")
+        let canonical = WorkshopEntry(kind: "item", id: "confirmed-user", text: answerText, role: "user", state: "sent",
+            truncated: false, replacesId: answerEntry.id)
+        let replacedReply = await questionRenderer.render(entries: [questionEntry, canonical], followups: [],
+            artifacts: [], projectPath: "/project", revision: 2)
+        precondition(replacedReply.containsMessage(answerEntry.id) && replacedReply.containsMessage(canonical.id),
+            "A fast acknowledgement replacing an optimistic row must release the pending scroll")
+        precondition(replacedReply.groups.flatMap(\.entries).map(\.id) == [questionEntry.id, canonical.id],
+            "Send acknowledgement must retain prior conversation rows")
         let expectedReply = [WorkshopQuestionReply(question: question.title, answer: "立即更新\n保留我的设置")]
         precondition(queuedReply.questionReplies[answerEntry.id] == expectedReply && queuedReply.queued.count == 1)
         let acceptedReply = await questionRenderer.render(entries: [questionEntry, answerEntry],

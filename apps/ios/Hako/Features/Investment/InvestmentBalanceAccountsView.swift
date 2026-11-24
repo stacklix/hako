@@ -246,8 +246,7 @@ struct InvestmentBalanceAccountEditor: View {
         self.hidesAmounts = hidesAmounts
         self.onSaved = onSaved
         editorDraft = editing
-        let previous = account?.records.last?.amount
-        let initial = hidesAmounts ? "" : previous?.formatted(.number.grouping(.never)) ?? ""
+        let initial = ""
         initialAmount = initial
         _amount = State(initialValue: editing?.action.text("amount") ?? initial)
         _name = State(initialValue: editing?.value("name") ?? "")
@@ -263,16 +262,17 @@ struct InvestmentBalanceAccountEditor: View {
         let hasChanges = !name.isEmpty || amount != initialAmount || recordDay != initialDay
         SettingsSheet(title: title, hasChanges: hasChanges,
                       isBusy: saving || store.saving, saveEnabled: !amount.isEmpty && (editing || hasName), onSave: { Task { await save() } },
+                      saveInProgress: saving,
                       detents: [.medium, .large], saveAccessibilityLabel: editorDraft != nil ? "完成修改并更新预览" : editing ? "保存余额" : "添加账户") {
             Form {
                 Section {
                     if !editing {
                         InvestmentField("账户名称", text: $name, focusesOnRowTap: true)
                             .listRowBackground(HakoStyle.card)
+                        InvestmentField("初始余额（元）", text: $amount,
+                                        keyboard: .decimalPad, focusesOnRowTap: true)
+                            .listRowBackground(HakoStyle.card)
                     }
-                    InvestmentField(editing ? "更新后余额（元）" : "初始余额（元）", text: $amount,
-                                    keyboard: .decimalPad, focusesOnRowTap: true)
-                        .listRowBackground(HakoStyle.card)
                     InvestmentDatePicker("记账日期", selection: $recordDay, latest: InvestmentBook.day())
                         .listRowBackground(HakoStyle.card)
                     if editing {
@@ -287,6 +287,9 @@ struct InvestmentBalanceAccountEditor: View {
                                 .monospacedDigit()
                                 .foregroundStyle(InvestmentBalanceStyle.changeColor(change, liability: category == .liabilities, hidden: hidesAmounts))
                         }.investmentListRow()
+                            .listRowBackground(HakoStyle.card)
+                        InvestmentField("更新后余额（元）", text: $amount,
+                                        keyboard: .decimalPad, focusesOnRowTap: true)
                             .listRowBackground(HakoStyle.card)
                     }
                 } header: {

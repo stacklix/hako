@@ -48,8 +48,13 @@ enum HTTPTransport {
                     }
                     return result
                 } catch {
-                    await marketUsage?.record(request, outcome: .failed,
-                        failure: MarketAPIUsage.failureDetail(for: request, error: error, secrets: secrets, reason: marketReason), at: started)
+                    // Search changes and dismissed views cancel their obsolete requests.
+                    // A cancelled caller is not a failed provider response. Keep unexplained
+                    // transport cancellation visible when the Swift task is still active.
+                    if !isTaskCancellation(error) {
+                        await marketUsage?.record(request, outcome: .failed,
+                            failure: MarketAPIUsage.failureDetail(for: request, error: error, secrets: secrets, reason: marketReason), at: started)
+                    }
                     throw error
                 }
             }

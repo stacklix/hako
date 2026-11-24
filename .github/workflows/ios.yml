@@ -55,6 +55,10 @@ jobs:
         run: |
           swiftc Hako/Features/SwissArmyKnife/RandomStringGenerator.swift Tests/RandomStringGeneratorTests.swift -o /tmp/hako-random-string-tests
           /tmp/hako-random-string-tests
+      - name: Test notification management models and validation
+        run: |
+          swiftc Hako/Features/NotificationManagement/NotificationModels.swift Tests/NotificationManagementTests.swift -o /tmp/hako-notification-management-tests
+          /tmp/hako-notification-management-tests
       - name: Test persisted market API request usage
         run: |
           swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Tests/MarketAPIUsageTests.swift -o /tmp/hako-market-api-usage-tests
@@ -65,6 +69,8 @@ jobs:
         run: |
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests
           /tmp/hako-investment-book-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentWriteValidation.swift Hako/Features/Investment/InvestmentPresentation.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentDiskCache.swift Tests/InvestmentPresentationTests.swift -o /tmp/hako-investment-presentation-tests
+          /tmp/hako-investment-presentation-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentProfitCalendarData.swift Tests/InvestmentProfitCalendarTests.swift -o /tmp/hako-investment-profit-calendar-tests
           /tmp/hako-investment-profit-calendar-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentPerformance.swift Hako/Features/Investment/InvestmentBenchmark.swift Tests/InvestmentPerformanceTests.swift -o /tmp/hako-investment-performance-tests
@@ -115,6 +121,16 @@ jobs:
           /tmp/hako-workshop-socket-tests
           swiftc -D AGENT_SOCKET_TESTS Hako/Shared/HakoServer/ServerJSON.swift Hako/Shared/HakoServer/AgentRequestSocket.swift Tests/AgentRequestSocketTests.swift -o /tmp/hako-agent-socket-tests
           /tmp/hako-agent-socket-tests
+      - name: Test native application authorization
+        run: |
+          swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/AuthenticatedServerAccess.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Shared/HakoServer/ConsoleSessionRestoration.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/ConsoleClient.swift Hako/Shared/HakoServer/NativeApplicationAuthorization.swift Tests/NativeApplicationAuthorizationTests.swift -o /tmp/hako-native-application-auth-tests
+          /tmp/hako-native-application-auth-tests
+      - name: Test StockTrade snapshot contracts and native sessions
+        run: |
+          swiftc Hako/Features/StockTrade/StockTradeModels.swift Tests/StockTradeModelsTests.swift -o /tmp/hako-stocktrade-model-tests
+          /tmp/hako-stocktrade-model-tests
+          swiftc -target arm64-apple-macos14.0 Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/SecureStorage.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/HakoError.swift Hako/Shared/HakoServer/AuthenticatedServerAccess.swift Hako/Shared/HakoServer/ConsoleSecurity.swift Hako/Shared/HakoServer/ConsoleWebLoginProtocol.swift Hako/Shared/HakoServer/ConsoleLoginPromptProtocol.swift Hako/Shared/HakoServer/ConsoleSessionRestoration.swift Hako/Shared/HakoServer/HakoServerCompatibility.swift Hako/Shared/HakoServer/ConsoleClient.swift Hako/Shared/HakoServer/NativeApplicationAuthorization.swift Hako/Features/StockTrade/StockTradeModels.swift Hako/Features/StockTrade/StockTradeClient.swift Hako/Features/StockTrade/StockTradeStore.swift Tests/StockTradeSessionTests.swift -o /tmp/hako-stocktrade-session-tests
+          /tmp/hako-stocktrade-session-tests
       - name: Typecheck Console client without signing
         run: |
           swiftc Hako/Features/DeviceManagement/DeviceAndroidProtocol.swift Tests/DeviceAndroidTests.swift -o /tmp/hako-android-device-tests

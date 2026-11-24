@@ -236,10 +236,10 @@ extension InvestmentQuoteProvider {
         var data: Table?
     }
 
-    func eastmoneyHistory(asset: InvestmentAsset, start: Date, through end: Date) async throws -> [InvestmentQuote] {
+    func eastmoneyHistory(asset: InvestmentAsset, start: Date, through end: Date, latestOnly: Bool = false) async throws -> [InvestmentQuote] {
         try asset.validateMarket(settlingIn: asset.settlementCurrency)
         if asset.kind == .fund, asset.mainlandSymbol?.venue == "OF" {
-            return try await eastmoneyFundNAV(code: asset.mainlandSymbol!.base, start: start, end: end)
+            return try await eastmoneyFundNAV(code: asset.mainlandSymbol!.base, start: start, end: end, latestOnly: latestOnly)
         }
         let quoteID = try await eastmoneyQuoteID(for: asset)
         let parts = quoteID.split(separator: ".", maxSplits: 1).map(String.init)
@@ -251,7 +251,7 @@ extension InvestmentQuoteProvider {
             try Task.checkCancellation()
             var url = URLComponents(string: "https://push2his.eastmoney.com/api/qt/stock/kline/get")!
             url.queryItems = [.init(name: "secid", value: quoteID), .init(name: "klt", value: "101"),
-                              .init(name: "fqt", value: "0"), .init(name: "lmt", value: "10000"),
+                              .init(name: "fqt", value: "0"), .init(name: "lmt", value: latestOnly ? "1" : "10000"),
                               .init(name: "end", value: format.string(from: cursor)),
                               .init(name: "fields1", value: "f1,f2,f3,f4,f5,f6,f7,f8"),
                               .init(name: "fields2", value: "f51,f52,f53,f54,f55,f56")]
@@ -275,7 +275,7 @@ extension InvestmentQuoteProvider {
                       let price = Decimal(string: String(fields[2]), locale: Locale(identifier: "en_US_POSIX")), price > 0 else { continue }
                 quotes.append(.init(day: day, price: price, source: Self.eastmoneyTitle))
             }
-            guard bars.count >= 10000, let first, first > start else { break }
+            guard !latestOnly, bars.count >= 10000, let first, first > start else { break }
             let next = InvestmentBook.addDays(-1, to: first)
             guard next < cursor else { throw InvestmentError.invalid("东方财富历史日线分页没有前进") }
             cursor = next
@@ -327,7 +327,7 @@ extension InvestmentQuoteProvider {
         var PageIndex: Int?
     }
 
-    private func eastmoneyFundNAV(code: String, start: Date, end: Date) async throws -> [InvestmentQuote] {
+    private func eastmoneyFundNAV(code: String, start: Date, end: Date, latestOnly: Bool) async throws -> [InvestmentQuote] {
         let format = Self.eastmoneyDateFormat("yyyy-MM-dd")
         var page = 1
         var quotes: [InvestmentQuote] = []
@@ -337,7 +337,7 @@ extension InvestmentQuoteProvider {
             try Task.checkCancellation()
             var url = URLComponents(string: "https://api.fund.eastmoney.com/f10/lsjz")!
             url.queryItems = [.init(name: "fundCode", value: code), .init(name: "pageIndex", value: String(page)),
-                              .init(name: "pageSize", value: "100"), .init(name: "startDate", value: format.string(from: start)),
+                              .init(name: "pageSize", value: latestOnly ? "1" : "100"), .init(name: "startDate", value: format.string(from: start)),
                               .init(name: "endDate", value: format.string(from: end))]
             let data = try await eastmoneyData(url.url!, referer: "https://fundf10.eastmoney.com/")
             let result = try JSONDecoder().decode(EastmoneyFundHistory.self, from: data)
@@ -363,6 +363,7 @@ extension InvestmentQuoteProvider {
                       let value = row.DWJZ, let price = Decimal(string: value, locale: Locale(identifier: "en_US_POSIX")), price > 0 else { continue }
                 quotes.append(.init(day: day, price: price, source: Self.eastmoneyTitle + " · 天天基金", isDailyClose: true))
             }
+            if latestOnly { break }
             if let total = result.TotalCount {
                 if received >= total { break }
             } else if rows.count < 100 { break }

@@ -653,6 +653,17 @@ private struct InvestmentSettings: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
             Section {
+                Picker("计算方式", selection: $store.insuranceGainBasis) {
+                    ForEach(InvestmentInsuranceGainBasis.allCases) { basis in
+                        Text(basis.rawValue).tag(basis)
+                    }
+                }
+            } header: {
+                Text("保险盈亏口径")
+            } footer: {
+                Text("仅影响总览卡片的历史总盈亏。按已交保费时，在保保单以已交保费替代现金价值，已退保的实际盈亏仍保留。")
+            }
+            Section {
                 InvestmentQuoteChannels()
                 ForEach(InvestmentQuoteSource.allCases) { source in
                     credentialLink(source)
@@ -832,11 +843,20 @@ private struct InvestmentAccountSettings: View {
     @ObservedObject var store: InvestmentStore
     @State private var sheet: Sheet?
     @State private var error: String?
+    @State private var pendingOrder: [UUID]?
+
+    private var displayedAccounts: [InvestmentAccount] {
+        let visible = store.visibleAccounts
+        guard let pendingOrder else { return visible }
+        let accounts = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
+        let pending = Set(pendingOrder)
+        return pendingOrder.compactMap { accounts[$0] } + visible.filter { !pending.contains($0.id) }
+    }
 
     var body: some View {
         Form {
             Section {
-                ForEach(store.visibleAccounts) { account in
+                ForEach(displayedAccounts) { account in
                     let subtitle = account.currency.rawValue + " · " + account.type.rawValue + (account.isArchived ? " · 已归档" : "")
                     Button { sheet = .account(account.id) } label: {
                         HStack {
@@ -845,6 +865,7 @@ private struct InvestmentAccountSettings: View {
                             InvestmentChevron()
                         }.frame(maxWidth: .infinity).contentShape(Rectangle())
                     }.buttonStyle(.plain).investmentListRow().hakoReorderRow()
+                        .moveDisabled(pendingOrder != nil || store.saving)
                 }
                 .onMove(perform: moveAccounts)
                 Button { sheet = .addAccount } label: {
@@ -852,8 +873,16 @@ private struct InvestmentAccountSettings: View {
                 }.investmentListRow()
             }
         }
+        .disabled(pendingOrder != nil || store.saving)
         .navigationTitle("账户管理")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if pendingOrder != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ProgressView().accessibilityLabel("正在保存账户顺序")
+                }
+            }
+        }
         .sheet(item: $sheet) { item in
             switch item {
             case .addAccount: InvestmentAccountEditor(store: store)
@@ -866,16 +895,17 @@ private struct InvestmentAccountSettings: View {
     }
 
     private func moveAccounts(from offsets: IndexSet, to destination: Int) {
-        var reordered = store.visibleAccounts.map(\.id)
+        guard pendingOrder == nil, !store.saving else { return }
+        var reordered = displayedAccounts.map(\.id)
         reordered.move(fromOffsets: offsets, toOffset: destination)
+        guard reordered != displayedAccounts.map(\.id) else { return }
+        // Native onMove requires its displayed data source to change synchronously.
+        pendingOrder = reordered
         Task {
+            defer { pendingOrder = nil }
             do {
-                try await store.update { book in
-                    let ids = Set(reordered)
-                    var ordered = reordered.compactMap { book.account($0) }.makeIterator()
-                    for i in book.accounts.indices where ids.contains(book.accounts[i].id) {
-                        if let account = ordered.next() { book.accounts[i] = account }
-                    }
+                try await store.update(scheduleSnapshots: false) { book in
+                    try book.reorderAccounts(reordered)
                 }
             } catch { self.error = error.localizedDescription }
         }
@@ -997,6 +1027,7 @@ private struct InvestmentQuoteCredentialEditor: View {
     @State private var testMessage: String?
     @State private var testSucceeded = false
     @State private var showsKey = false
+    @StateObject private var usage = InvestmentAPIUsageState()
 
     private var hasChanges: Bool { savedKey.map { key != $0 } ?? false }
 
@@ -1060,10 +1091,11 @@ private struct InvestmentQuoteCredentialEditor: View {
                 }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
                 if savedKey == nil { Button("重试读取", action: load) }
-                InvestmentAPIUsageChart(source: source)
+                InvestmentAPIUsageChart(source: source, usage: usage)
             }
         }
         .task { load() }
+        .task(id: source) { await usage.observe(source) }
         .task(id: testing) {
             if testing { await testConnection() }
         }

@@ -1,19 +1,57 @@
 import SwiftUI
 import Charts
 
+@MainActor
+final class InvestmentAPIUsageState: ObservableObject {
+    @Published private(set) var snapshot: MarketAPIUsageSnapshot?
+    @Published private(set) var error: String?
+    @Published var selectedHour: Double?
+    @Published var showsFailures = true
+    @Published var expandedFailureID: UUID?
+    private var provider: MarketAPIProvider?
+
+    // Owned by the credential page, not a Form row that disappears offscreen.
+    func observe(_ source: InvestmentQuoteSource) async {
+        let provider: MarketAPIProvider = source == .tushare ? .tushare : .twelveData
+        if self.provider != provider {
+            self.provider = provider
+            snapshot = nil; error = nil; selectedHour = nil
+            expandedFailureID = nil; showsFailures = true
+        }
+        while !Task.isCancelled {
+            do {
+                let updated = try await MarketAPIUsage.shared.snapshot(for: provider)
+                guard !Task.isCancelled else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    if snapshot?.hours.first?.hour != updated.hours.first?.hour { selectedHour = 23 }
+                    if snapshot == nil { expandedFailureID = updated.failures.first?.id }
+                    else if let expandedFailureID, !updated.failures.contains(where: { $0.id == expandedFailureID }) {
+                        self.expandedFailureID = nil
+                    }
+                    if snapshot != updated { snapshot = updated }
+                    if error != nil { error = nil }
+                }
+            } catch is CancellationError { return }
+            catch {
+                guard !Task.isCancelled else { return }
+                if self.error == nil { self.error = "暂时无法读取本机调用记录。" }
+            }
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+        }
+    }
+}
+
 struct InvestmentAPIUsageChart: View {
     let source: InvestmentQuoteSource
-    @State private var snapshot: MarketAPIUsageSnapshot?
-    @State private var selectedHour: Double?
-    @State private var error: String?
-    @State private var showsFailures = true
-    @State private var expandedFailureID: UUID?
+    @ObservedObject var usage: InvestmentAPIUsageState
 
-    private var provider: MarketAPIProvider { source == .tushare ? .tushare : .twelveData }
+    private var snapshot: MarketAPIUsageSnapshot? { usage.snapshot }
     private var hours: [MarketAPIHourUsage] { snapshot?.hours ?? [] }
     private var step: Int { max(1, Int(ceil(Double(hours.map { max($0.succeeded, $0.failed) }.max() ?? 0) / 3))) }
     private var selection: MarketAPIHourUsage? {
-        guard let selectedHour else { return nil }
+        guard let selectedHour = usage.selectedHour else { return nil }
         let index = Int(selectedHour.rounded())
         return hours.indices.contains(index) ? hours[index] : nil
     }
@@ -30,7 +68,7 @@ struct InvestmentAPIUsageChart: View {
             }
             if let snapshot, snapshot.failed > 0 {
                 Section {
-                    failureDetails(snapshot).investmentListRow()
+                    failureDetails(snapshot)
                 } footer: {
                     Text("HTTP 200 也可能包含接口业务错误。每个行情源独立保存最近24小时内最多200条失败详情。")
                 }
@@ -45,9 +83,10 @@ struct InvestmentAPIUsageChart: View {
                 Spacer()
                 if let snapshot { Text("共 \(snapshot.total) 次").font(.subheadline.weight(.medium)).monospacedDigit() }
             }
-            if let error {
+            if let error = usage.error {
                 Text(error).font(.caption).foregroundStyle(.secondary)
-            } else if snapshot != nil {
+            }
+            if snapshot != nil {
                 if let snapshot {
                     HStack(spacing: 18) {
                         legend("成功", count: snapshot.succeeded, color: .green)
@@ -75,91 +114,112 @@ struct InvestmentAPIUsageChart: View {
         }
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: source) {
-            snapshot = nil; expandedFailureID = nil; showsFailures = true
-            while !Task.isCancelled {
-                do {
-                    let updated = try await MarketAPIUsage.shared.snapshot(for: provider)
-                    if snapshot?.hours.first?.hour != updated.hours.first?.hour { selectedHour = 23 }
-                    if snapshot == nil { expandedFailureID = updated.failures.first?.id }
-                    else if let expandedFailureID, !updated.failures.contains(where: { $0.id == expandedFailureID }) {
-                        self.expandedFailureID = nil
+    }
+
+    @ViewBuilder
+    private func failureDetails(_ snapshot: MarketAPIUsageSnapshot) -> some View {
+        // Keep headers and details as separate Form rows. A single expanding row
+        // containing all failures makes the list remeasure and reposition it.
+        Button {
+            updateExpansion { usage.showsFailures.toggle() }
+        } label: {
+            HStack {
+                Text("失败详情（\(snapshot.failures.count)条）").font(.subheadline)
+                Spacer(minLength: 8)
+                expansionIndicator(usage.showsFailures)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(usage.showsFailures ? "已展开" : "已收起")
+        .padding(.vertical, 8)
+        .investmentListRow()
+        if usage.showsFailures {
+            if snapshot.failures.isEmpty {
+                Text("此前只记录了失败次数。更新后的新请求会保存具体原因。")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6)
+                    .investmentListRow()
+            } else {
+                ForEach(snapshot.failures) { failure in
+                    failureRow(failure)
+                    if usage.expandedFailureID == failure.id {
+                        failureContent(failure).investmentListRow()
                     }
-                    snapshot = updated; error = nil
-                } catch { self.error = "暂时无法读取本机调用记录。" }
-                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                }
+                Text("按时间倒序显示，API Key、Token 等凭据已隐藏；更新前的记录无法补回错误详情。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+                    .investmentListRow()
             }
         }
     }
 
-    private func failureDetails(_ snapshot: MarketAPIUsageSnapshot) -> some View {
-        DisclosureGroup(isExpanded: $showsFailures) {
-            if snapshot.failures.isEmpty {
-                Text("此前只记录了失败次数。更新后的新请求会保存具体原因。")
-                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6)
-            } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(snapshot.failures) { failure in
-                        failureRow(failure)
-                        if failure.id != snapshot.failures.last?.id { Divider() }
-                    }
-                    Text("按时间倒序显示，API Key、Token 等凭据已隐藏；更新前的记录无法补回错误详情。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .padding(.top, 8)
-                }
+    private func failureContent(_ failure: MarketAPIFailure) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            LabeledContent("请求时间", value: failure.time.formatted(.dateTime.year().month().day().hour().minute().second()))
+            LabeledContent("接口", value: failure.endpoint)
+            LabeledContent("HTTP 状态", value: failure.httpStatus.map(String.init) ?? "未收到响应")
+            if let code = failure.code { LabeledContent("错误码", value: code) }
+            Text("错误信息").foregroundStyle(.secondary)
+            Text(failure.message)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            Button {
+                UIPasteboard.general.setItems([["public.utf8-plain-text": failure.diagnosticText]],
+                                              options: [.localOnly: true])
+            } label: {
+                Label("复制错误信息", systemImage: "doc.on.doc")
             }
-        } label: {
-            Text("失败详情（\(snapshot.failures.count)条）").font(.subheadline)
+            .buttonStyle(.borderless)
+            .accessibilityLabel("复制这条失败记录的脱敏错误信息")
         }
+        .font(.caption)
         .padding(.vertical, 8)
     }
 
     private func failureRow(_ failure: MarketAPIFailure) -> some View {
-        DisclosureGroup(isExpanded: Binding(
-            get: { expandedFailureID == failure.id },
-            set: { expanded in
-                if expanded { expandedFailureID = failure.id }
-                else if expandedFailureID == failure.id { expandedFailureID = nil }
-            })) {
-            VStack(alignment: .leading, spacing: 10) {
-                LabeledContent("请求时间", value: failure.time.formatted(.dateTime.year().month().day().hour().minute().second()))
-                LabeledContent("接口", value: failure.endpoint)
-                LabeledContent("HTTP 状态", value: failure.httpStatus.map(String.init) ?? "未收到响应")
-                if let code = failure.code { LabeledContent("错误码", value: code) }
-                Text("错误信息").foregroundStyle(.secondary)
-                Text(failure.message)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                Button {
-                    UIPasteboard.general.setItems([["public.utf8-plain-text": failure.diagnosticText]],
-                                                  options: [.localOnly: true])
-                } label: {
-                    Label("复制错误信息", systemImage: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("复制这条失败记录的脱敏错误信息")
+        Button {
+            updateExpansion {
+                usage.expandedFailureID = usage.expandedFailureID == failure.id ? nil : failure.id
             }
-            .font(.caption)
-            .padding(.vertical, 8)
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Label(failure.title, systemImage: "exclamationmark.circle")
-                        .lineLimit(2)
-                    Spacer(minLength: 8)
-                    Text(failure.time, format: .dateTime.hour().minute().second())
-                        .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(failure.title, systemImage: "exclamationmark.circle")
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        Text(failure.time, format: .dateTime.hour().minute().second())
+                            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    Text(failure.endpoint + " · " + (failure.httpStatus.map { "HTTP \($0)" } ?? "未收到响应")
+                        + (failure.code.map { " · 错误码 " + $0 } ?? ""))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(failure.endpoint + " · " + (failure.httpStatus.map { "HTTP \($0)" } ?? "未收到响应")
-                    + (failure.code.map { " · 错误码 " + $0 } ?? ""))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                expansionIndicator(usage.expandedFailureID == failure.id)
             }
-            .font(.caption)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityValue(usage.expandedFailureID == failure.id ? "已展开" : "已收起")
         .padding(.vertical, 8)
+        .investmentListRow()
+    }
+
+    private func expansionIndicator(_ expanded: Bool) -> some View {
+        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.caption.weight(.semibold)).frame(width: 14)
+            .accessibilityHidden(true)
+    }
+
+    private func updateExpansion(_ change: () -> Void) {
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction, change)
     }
 
     private func legend(_ title: String, count: Int, color: Color) -> some View {
@@ -210,7 +270,7 @@ struct InvestmentAPIUsageChart: View {
         }
         .chartXAxisLabel("小时", alignment: .trailing)
         .chartYAxisLabel("次数")
-        .chartXSelection(value: $selectedHour)
+        .chartXSelection(value: $usage.selectedHour)
         .frame(height: 180)
         .accessibilityLabel(source.title + "最近24小时成功与失败调用次数")
     }

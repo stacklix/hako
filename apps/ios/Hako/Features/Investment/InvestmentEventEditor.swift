@@ -60,7 +60,8 @@ struct InvestmentEventEditor: View {
     var body: some View {
         SettingsSheet(title: editorDraft?.action.kind == .addEvent ? "记录交易" : "修改" + recordTitle, hasChanges: hasChanges,
                       isBusy: saving || store.saving, saveEnabled: hasChanges,
-                      onSave: { Task { await save() } }, saveAccessibilityLabel: editorDraft == nil ? "保存交易记录" : "完成修改并更新预览") {
+                      onSave: { Task { await save() } }, saveInProgress: saving,
+                      saveAccessibilityLabel: editorDraft == nil ? "保存交易记录" : "完成修改并更新预览") {
             Form {
                 Section {
                     LabeledContent("记录类型", value: event.kind == .marginTransfer ? "保证金划转" : recordTitle)
@@ -217,9 +218,8 @@ struct InvestmentEventEditor: View {
                     break
                 }
                 if asset.kind != .insurance { edited.quantity = try number(.quantity, "数量") }
-                if [.stock, .option, .future].contains(asset.kind),
-                          edited.quantity != Decimal(NSDecimalNumber(decimal: edited.quantity).int64Value) {
-                    throw InvestmentError.invalid("该类型的数量必须是整数。")
+                if edited.quantity != event.quantity {
+                    try asset.kind.validateTradeQuantity(edited.quantity, currency: asset.currency)
                 }
                 edited.price = try number(.price, "成交金额或价格", allowZero: asset.kind == .insurance && event.kind == .sell)
                 if asset.kind.usesMargin && event.kind != .sell { edited.margin = try number(.margin, "保证金") }
@@ -239,6 +239,9 @@ struct InvestmentEventEditor: View {
                         balance: number(.settlement, "调整后余额", allowZero: true), on: date)
                 } else {
                     edited.quantity = try number(.quantity, "变动数量") * (event.kind == .spotAdjustment ? -1 : 1)
+                    if let asset, edited.quantity != event.quantity {
+                        try asset.kind.validateTradeQuantity(edited.quantity, currency: asset.currency)
+                    }
                 }
             default:
                 edited.amount = try number(.amount, "金额", allowZero: event.kind == .derivativeSettlement) * (decreases ? -1 : 1)

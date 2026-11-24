@@ -78,6 +78,7 @@ type Server struct {
 	adminMu             sync.Mutex
 	adminSessions       map[string]adminSession
 	adminLogins         map[string]*adminLoginRequest
+	nativeApps          *nativeApplicationAuth
 	accessLogs          *accesslog.Service
 	notifications       *notify.Service
 	workshopPushMu      sync.Mutex
@@ -170,6 +171,7 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	s.appLoginRoutes()
+	s.nativeAppLoginRoutes()
 	s.systemRoutes()
 	s.consoleRoutes()
 	s.accessLogRoutes()
@@ -211,7 +213,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		limit = 32 * 1024 * 1024
 	}
 	if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/webhook/notifications/") ||
-		strings.HasPrefix(r.URL.Path, "/consilium/api/notifications/webhooks/")) {
+		strings.HasPrefix(r.URL.Path, "/consilium/api/notifications/webhooks/") ||
+		strings.HasPrefix(r.URL.Path, "/api/v1/notifications/manage/webhooks/")) {
 		limit = notificationBodyLimit
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
@@ -491,7 +494,21 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 			}
 			kind = "application"
 		}
+		// A native authorization is listed once as its revocable consent group,
+		// including when no exchanged backend session exists or survives expiry.
+		if ss.NativeConsentID != "" {
+			continue
+		}
 		items = append(items, sessionSummary{ID: ss.ID, Type: kind, Application: ss.ClientName, Origin: ss.ClientOrigin, Browser: ss.Browser, CreatedAt: ss.Created.UTC().Format(time.RFC3339), LastUsedAt: ss.LastUsed.UTC().Format(time.RFC3339)})
+	}
+	if s.nativeApps != nil {
+		s.cleanupNativeAppLogins(time.Now())
+		for _, consent := range s.nativeApps.consents {
+			client, _ := s.authClient(consent.ClientID)
+			items = append(items, sessionSummary{ID: consent.ID, Type: "application", Application: client.Name,
+				Origin: client.Origin, Browser: "Hako iOS 自动登录授权", CreatedAt: consent.Created.UTC().Format(time.RFC3339),
+				LastUsedAt: consent.LastUsed.UTC().Format(time.RFC3339)})
+		}
 	}
 	if s.oidc != nil {
 		s.cleanupOIDCLocked(time.Now())
@@ -526,6 +543,7 @@ func (s *Server) revokeWebSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminMu.Lock()
+	s.revokeNativeConsent(r.PathValue("id"))
 	if s.oidc != nil {
 		for key, g := range s.oidc.access {
 			if g.ID == r.PathValue("id") {
@@ -540,6 +558,7 @@ func (s *Server) revokeWebSession(w http.ResponseWriter, r *http.Request) {
 	}
 	for key, ss := range s.adminSessions {
 		if ss.ID == r.PathValue("id") {
+			s.revokeNativeConsent(ss.NativeConsentID)
 			delete(s.adminSessions, key)
 			break
 		}

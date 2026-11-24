@@ -8,6 +8,7 @@ import Foundation
         everyHoldingHasProfitAndSharedRanges()
         queryWindowsCoverEveryDayOnce()
         holidayGapsShareRequests()
+        forexWeekendsUseWorkingDayRates()
         automaticHistoryUsesEachAssetsOwnStart()
         marketClosesExcludeEstimatesAndFutureDates()
         usClosesUseBeijingDates()
@@ -62,6 +63,37 @@ import Foundation
         let distant = InvestmentBook.addDays(900, to: first)
         precondition(InvestmentHistoryRange.quoteWindows(for: [first...first, distant...distant]).count == 2,
                      "Widely separated gaps do not force downloads of all intervening years")
+    }
+
+    static func forexWeekendsUseWorkingDayRates() {
+        let thursday = day("2025-07-10"), friday = day("2025-07-11")
+        let saturday = day("2025-07-12"), sunday = day("2025-07-13"), monday = day("2025-07-14")
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: [saturday...sunday]).isEmpty)
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: [sunday...sunday]).isEmpty)
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: [friday...sunday]) == [friday...friday])
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: [saturday...monday]) == [monday...monday])
+        let normalized = InvestmentBook.weekdayMarketDate(on: sunday)
+        precondition(normalized == friday)
+        let rate = InvestmentQuote(day: friday, price: 7, isDailyClose: true)
+        let known = InvestmentHistoryRange.missingWindows(from: normalized, through: normalized, observations: [rate], covered: [])
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: known).isEmpty,
+                     "A cached Friday rate must not trigger any Sunday request")
+        let missing = InvestmentHistoryRange.missingWindows(from: normalized, through: normalized, observations: [], covered: [])
+        precondition(InvestmentHistoryRange.forexQuoteWindows(for: missing) == [friday...friday],
+                     "Without a cached rate, query the previous working day rather than Sunday")
+        var book = InvestmentBook()
+        book.fx[.usd] = [rate]
+        precondition(book.rateToCNY(.usd, on: saturday, requiresDailyPrice: true) == 7)
+        precondition(book.rateToCNY(.usd, on: sunday, requiresDailyPrice: true) == 7)
+        book.fx[.usd] = [.init(day: thursday, price: 6, isDailyClose: true)]
+        precondition(book.rateToCNY(.usd, on: sunday, requiresDailyPrice: true) == 6,
+                     "When Friday has no published observation, retain the most recent earlier valid rate")
+        precondition(book.fx[.usd]?.count == 1, "Weekend valuation must not invent a dated FX observation")
+        let yearly = InvestmentHistoryRange.forexQuoteWindows(for: [day("2024-01-01")...sunday])
+        precondition(yearly.allSatisfy {
+            ![1, 7].contains(InvestmentBook.calendar.component(.weekday, from: $0.lowerBound)) &&
+            ![1, 7].contains(InvestmentBook.calendar.component(.weekday, from: $0.upperBound))
+        })
     }
 
     static func automaticHistoryUsesEachAssetsOwnStart() {

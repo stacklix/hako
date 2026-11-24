@@ -6,6 +6,7 @@ final class InvestmentStore: ObservableObject {
     static let shared = InvestmentStore()
 
     private(set) var bookVersion = UUID()
+    private(set) var presentation = InvestmentPresentation(book: InvestmentBook())
     @Published private(set) var book = InvestmentBook() {
         didSet { bookVersion = UUID() }
     }
@@ -21,11 +22,16 @@ final class InvestmentStore: ObservableObject {
     @Published var showsZeroPositions = UserDefaults.standard.bool(forKey: "investment.showZeroPositions") {
         didSet { UserDefaults.standard.set(showsZeroPositions, forKey: "investment.showZeroPositions") }
     }
+    @Published var insuranceGainBasis = InvestmentInsuranceGainBasis(rawValue:
+        UserDefaults.standard.string(forKey: "investment.insuranceGainBasis") ?? "") ?? .cashValue {
+        didSet { UserDefaults.standard.set(insuranceGainBasis.rawValue, forKey: "investment.insuranceGainBasis") }
+    }
 
     private let authentication: any AuthenticatedServerAccess
     private let records = InvestmentServerRecords()
     private var serverState: InvestmentServerState?
     private var serverContext: String?
+    private var loadedScope: String?
     @Published private(set) var cacheError: String?
     private var cacheWasCleared = false
     private var lastServerReadSucceeded = false
@@ -82,12 +88,18 @@ final class InvestmentStore: ObservableObject {
     private static let bookPath = "/api/v1/investment/book"
 
     private func discardExpiredSession() {
-        guard let serverContext, serverContext != authentication.requestContext else { return }
+        let scopeChanged = loadedScope.map { $0 != dataCacheScope } ?? false
+        let sessionChanged = serverContext.map { $0 != authentication.requestContext } ?? false
+        let signedOut = loadedScope != nil && (authentication.logoutPending || (!authentication.authenticated && !authentication.hasSavedSession))
+        guard scopeChanged || sessionChanged || signedOut else { return }
         dailySnapshotTask?.cancel()
         ledgerRevision = UUID()
         self.serverContext = nil
+        loadedScope = nil
         serverState = nil
+        lastServerReadSucceeded = false
         loaded = false
+        presentation = InvestmentPresentation(book: InvestmentBook())
         book = InvestmentBook()
         lastAutomaticRefresh = nil
         lastAutomaticCurrencies = []
@@ -103,28 +115,40 @@ final class InvestmentStore: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            await authentication.restore()
+            let scope = dataCacheScope
+            let restoration = Task { await authentication.restore() }
+            if !loaded, !cacheWasCleared, let cached = try? await diskCache.restoredBook(scope: scope) {
+                // A local saved session is required before exposing account data.
+                if !authentication.authenticated && !authentication.hasSavedSession { await restoration.value }
+                if scope == dataCacheScope, !authentication.logoutPending,
+                   authentication.authenticated || authentication.hasSavedSession {
+                    try await publish(cached.book, scope: scope)
+                    serverState = cached.state; loadedScope = scope
+                    loaded = true; loadError = nil
+                }
+            }
+            await restoration.value
             guard authentication.authenticated else {
                 throw InvestmentError.invalid("请先在 Hako 设置中登录服务端。")
             }
             let context = authentication.requestContext
-            let scope = dataCacheScope
-            if (!loaded || !force), !cacheWasCleared,
-               let cached = try? await diskCache.load(scope: scope),
-               let restored = try? records.decode(cached), context == authentication.requestContext {
-                book = try await restoringMarketQuotes(in: restored, scope: scope); serverState = cached; serverContext = context
-                loaded = true; loadError = nil; configuredSources = Set(keys().keys)
-                if !force { scheduleDailySnapshots(); return }
-            }
+            guard scope == dataCacheScope else { throw CancellationError() }
+            if loaded { serverContext = context }
+            configuredSources = Set(keys().keys)
+            if loaded, !force { scheduleDailySnapshots(); return }
             lastServerReadSucceeded = false
             let data = try await authentication.send(Self.bookPath, method: "GET", body: nil, logSource: .hako)
             try Task.checkCancellation()
             guard context == authentication.requestContext else { throw CancellationError() }
-            let state = try JSONDecoder().decode(InvestmentServerState.self, from: data)
+            let state = try await Task.detached { try JSONDecoder().decode(InvestmentServerState.self, from: data) }.value
             if !loaded || serverState?.generation != state.generation {
-                book = try await restoringMarketQuotes(in: records.decode(state), scope: scope)
+                let decoded = try await Task.detached { try InvestmentServerRecords().decode(state) }.value
+                try await publish(try await restoringMarketQuotes(in: decoded, scope: scope), context: context)
+            } else if presentation.day != InvestmentBook.day() {
+                try await publish(book, context: context)
             }
             serverContext = context
+            loadedScope = scope
             serverState = state
             loaded = true
             lastServerReadSucceeded = true
@@ -141,6 +165,17 @@ final class InvestmentStore: ObservableObject {
             if loaded { quoteStatus = error.localizedDescription }
             else { loadError = error.localizedDescription }
         }
+    }
+
+    private func publish(_ source: InvestmentBook, context: String? = nil, scope: String? = nil) async throws {
+        let prepared = await Task.detached(priority: .userInitiated) { InvestmentPresentation(book: source) }.value
+        if let context, context != authentication.requestContext { throw CancellationError() }
+        if let scope {
+            guard scope == dataCacheScope, !authentication.logoutPending,
+                  authentication.authenticated || authentication.hasSavedSession else { throw CancellationError() }
+        }
+        presentation = prepared
+        book = source
     }
 
     func loadForSynchronization() async throws {
@@ -189,7 +224,12 @@ final class InvestmentStore: ObservableObject {
         try Task.checkCancellation()
         guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
         var dirty = serverState?.dirtyFrom
-        if let first = draft.snapshotInputChange(comparedTo: try serverState.map(records.decode) ?? book) {
+        let snapshotSource = draft, priorState = serverState, priorBook = book
+        let firstChanged = try await Task.detached {
+            snapshotSource.snapshotInputChange(comparedTo: try priorState.map { try InvestmentServerRecords().decode($0) } ?? priorBook)
+        }.value
+        guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
+        if let first = firstChanged {
             draft.invalidateDailySnapshots(from: first)
             let day = records.day.string(from: first)
             dirty = min(day, dirty ?? day)
@@ -302,7 +342,7 @@ final class InvestmentStore: ObservableObject {
                 else {
                     let query = InvestmentInstrumentSearch(query: asset.code, kind: asset.kind, currency: asset.currency,
                                                            stockConnect: asset.isStockConnect)
-                    let entries = try await searchInstruments(query)
+                    let entries = try await searchInstruments(query, consolidateUSListings: false)
                     let matches = entries.filter { $0.catalogKey == asset.catalogKey }
                     guard matches.count == 1, let selected = matches.first else {
                         throw InvestmentError.invalid("未找到唯一匹配的市场标的。请搜索并选择对应市场的真实代码，不能手工创建。")
@@ -344,39 +384,31 @@ final class InvestmentStore: ObservableObject {
         try checkWritable()
         guard var state = serverState else { return }
         let context = authentication.requestContext
-        if includeInputs { try records.validateEventInputs(draft, comparedTo: book) }
-        let old = try records.encode(records.decode(state), revision: state.revision)
-        let next = try records.encode(draft, revision: state.revision)
-        var changes: InvestmentServerTables = [:]
-        for name in InvestmentServerRecords.names {
-            let output = InvestmentServerRecords.snapshotTables.contains(name)
-            guard output ? includeSnapshots : includeInputs else { continue }
-            let replacement = next[name] ?? []
-            let previous = output ? InvestmentServerRecords.ordered(state.tables[name] ?? []) : old[name] ?? []
-            if replacement != previous || (output && dirtyFrom != state.dirtyFrom) {
-                changes[name] = replacement
-            }
-        }
-        let through = includeSnapshots ? draft.dailySnapshots.map { records.day.string(from: $0.through) } : state.through
+        saving = true
+        defer { saving = false }
+        let current = book, originalState = state
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try InvestmentPreparedWrite(draft: draft, current: current, state: originalState,
+                dirtyFrom: dirtyFrom, includeInputs: includeInputs, includeSnapshots: includeSnapshots)
+        }.value
+        guard context == authentication.requestContext else { throw CancellationError() }
+        let changes = prepared.changes, through = prepared.through
         guard !changes.isEmpty || dirtyFrom != state.dirtyFrom || through != state.through else { return }
-        try InvestmentWriteValidation.validate(generation: state.generation, revision: state.revision,
-            dirtyFrom: dirtyFrom, through: through, changes: changes, current: state.tables)
-        if includeInputs { try records.validateLedgers(next, comparedTo: old) }
         var body: [String: Any] = ["generation": state.generation, "tables": changes]
         body["dirtyFrom"] = dirtyFrom.map { $0 as Any } ?? NSNull()
         body["through"] = through.map { $0 as Any } ?? NSNull()
-        saving = true
-        defer { saving = false }
         do {
             let data = try await authentication.send(Self.bookPath, method: "PUT", body: body, logSource: .hako)
             guard context == authentication.requestContext else { throw CancellationError() }
-            let confirmed = try JSONDecoder().decode(InvestmentServerState.self, from: data)
+            let confirmed = try await Task.detached { try JSONDecoder().decode(InvestmentServerState.self, from: data) }.value
             state.generation = confirmed.generation
             state.revision = confirmed.revision
             state.dirtyFrom = confirmed.dirtyFrom
             state.through = confirmed.through
             state.tables.merge(confirmed.tables) { _, incoming in incoming }
-            book = try records.decode(state)
+            let confirmedState = state
+            let decoded = try await Task.detached { try InvestmentServerRecords().decode(confirmedState) }.value
+            try await publish(decoded, context: context)
             serverState = state
                 await persistCache(state, scope: dataCacheScope)
         } catch let error as ServerHTTPError where error.status == 409 {
@@ -512,14 +544,15 @@ final class InvestmentStore: ObservableObject {
         return result
     }
 
-    func searchInstruments(_ search: InvestmentInstrumentSearch) async throws -> [InvestmentAsset] {
+    func searchInstruments(_ search: InvestmentInstrumentSearch, consolidateUSListings: Bool = true) async throws -> [InvestmentAsset] {
         if search.kind.requiresCatalog {
             let entries: [InvestmentAsset]
             if search.kind == .crypto {
                 guard search.currency == .usd else { return [] }
                 entries = try await loadCryptoCatalog().filter(search.includes)
             } else {
-                entries = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys())
+                entries = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys(),
+                                                                              consolidateUSListings: consolidateUSListings)
             }
             for asset in entries { selectedInstruments[asset.catalogKey] = asset }
             return entries.sorted { lhs, rhs in
@@ -564,6 +597,53 @@ final class InvestmentStore: ObservableObject {
             try await diskCache.saveHistory(scope: scope, asset: target, start: start, end: today, today: today, quotes: quotes)
         }
         return quotes
+    }
+
+    func prepareEntryValuation(for asset: InvestmentAsset, account: InvestmentAccount) async throws
+        -> (quotes: [InvestmentQuote], rates: [InvestmentCurrency: [InvestmentQuote]]) {
+        while loading { try await Task.sleep(for: .milliseconds(50)) }
+        try Task.checkCancellation()
+        let scope = dataCacheScope, context = authentication.requestContext
+        let target = book.assets.values.first { $0.matches(asset) } ?? asset
+        let needsQuote = !target.kind.isManual && book.quote(target.id) == nil
+        let currencies = Set([account.currency] + (asset.isStockConnect ? [.hkd] : [])).subtracting([.cny])
+            .filter { book.rateToCNY($0, on: InvestmentBook.day()) == nil }
+        guard needsQuote || !currencies.isEmpty else { return ([], [:]) }
+        guard lastServerReadSucceeded else { throw InvestmentError.invalid("请先恢复服务端连接，再保存新持仓。") }
+        var quotes: [InvestmentQuote] = []
+        var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
+        let today = InvestmentBook.day(), provider = InvestmentQuoteProvider()
+        if needsQuote {
+            let key = "latest|" + target.catalogKey
+            if let saved = try await diskCache.marketQuotes(scope: scope, key: key).last(where: { $0.day <= today && $0.price > 0 }) {
+                quotes = [saved]
+            } else {
+                let quote = try await MarketAPIRequestContext.$reason.withValue("保存持仓补查最新报价") {
+                    try await provider.latestQuote(for: target, keys: keys())
+                }
+                quotes = [quote]
+                // A latest-price lookup is not evidence of historical coverage.
+                try await diskCache.saveMarketHistory(scope: scope, key: key, start: quote.day, end: quote.day, today: today, quotes: quotes)
+            }
+        }
+        var missing = Set<InvestmentCurrency>()
+        for currency in currencies {
+            if let saved = try await diskCache.marketQuotes(scope: scope, key: InvestmentDiskCache.rateKey(currency))
+                .last(where: { $0.day <= today && $0.price > 0 }) { rates[currency] = [saved] }
+            else { missing.insert(currency) }
+        }
+        if !missing.isEmpty {
+            let fetched = try await provider.ecbRates(for: missing, start: InvestmentBook.addDays(-14, to: today), end: today)
+            for currency in missing {
+                guard let quote = fetched[currency]?.last else { throw InvestmentError.invalid("暂未取得估值所需汇率，请稍后重试保存。") }
+                rates[currency] = [quote]
+                try await diskCache.saveMarketHistory(scope: scope, key: InvestmentDiskCache.rateKey(currency),
+                    start: quote.day, end: quote.day, today: today, quotes: [quote])
+            }
+        }
+        try Task.checkCancellation()
+        guard scope == dataCacheScope, context == authentication.requestContext else { throw CancellationError() }
+        return (quotes, rates)
     }
 
     private func loadCryptoCatalog() async throws -> [InvestmentAsset] {
@@ -725,7 +805,7 @@ final class InvestmentStore: ObservableObject {
                 try Task.checkCancellation()
                 var local = book
                 local.addQuotes(fetched, assetID: assetID)
-                book = local
+                try await publish(local, context: authentication.requestContext)
                 firstFailure = firstFailure ?? "行情已保存到本机，服务端同步失败：" + error.localizedDescription
             }
         }
@@ -733,17 +813,7 @@ final class InvestmentStore: ObservableObject {
     }
 
     private func restoringMarketQuotes(in source: InvestmentBook, scope: String) async throws -> InvestmentBook {
-        var restored = source
-        for asset in source.assets.values where !asset.kind.isManual {
-            let saved = try await diskCache.marketQuotes(scope: scope, key: InvestmentDiskCache.historyKey(asset))
-            let known = Set((source.quotes[asset.id] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
-            restored.addQuotes(saved.filter { !known.contains($0.day) }, assetID: asset.id)
-        }
-        for currency in InvestmentCurrency.allCases where currency != .cny {
-            let saved = try await diskCache.marketQuotes(scope: scope, key: InvestmentDiskCache.rateKey(currency))
-            let known = Set((source.fx[currency] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
-            restored.addExchangeRates(saved.filter { !known.contains($0.day) }, for: currency)
-        }
+        let restored = try await diskCache.restoringMarketQuotes(in: source, scope: scope)
         guard scope == dataCacheScope else { throw CancellationError() }
         return restored
     }
@@ -905,9 +975,11 @@ final class InvestmentStore: ObservableObject {
                 rates[currency] = saved.filter { !known.contains($0.day) }
                 let observations = InvestmentBook.merge(saved, existing)
                 for range in snapshotRequests?.rates[currency] ?? [start...today] {
+                    let first = InvestmentBook.weekdayMarketDate(on: range.lowerBound)
+                    let last = InvestmentBook.weekdayMarketDate(on: range.upperBound)
                     let missing = try await diskCache.missingWindows(scope: scope, key: key,
-                        start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
-                    for window in InvestmentHistoryRange.quoteWindows(for: missing) {
+                        start: first, end: last, today: today, observations: observations)
+                    for window in InvestmentHistoryRange.forexQuoteWindows(for: missing) {
                         try checkRefresh()
                         do {
                             let values: [InvestmentQuote]
@@ -956,7 +1028,7 @@ final class InvestmentStore: ObservableObject {
             catch {
                 try Task.checkCancellation()
                 guard scope == dataCacheScope else { throw CancellationError() }
-                book = try await restoringMarketQuotes(in: book, scope: scope)
+                try await publish(try await restoringMarketQuotes(in: book, scope: scope), context: authentication.requestContext)
                 throw InvestmentError.invalid("行情与汇率已保存本机，服务端同步失败：" + error.localizedDescription)
             }
             if refreshPublicHistory, !snapshotRefresh { lastPublicHistoryDay = today }

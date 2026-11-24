@@ -209,6 +209,10 @@ struct InvestmentServerRecords {
         let old = Dictionary(uniqueKeysWithValues: previous.accounts.flatMap(\.events).map { ($0.id, $0) })
         for event in book.accounts.flatMap(\.events) {
             let before = old[event.id]
+            if event.quantity != before?.quantity, [.opening, .buy, .sell].contains(event.kind),
+               let asset = book.asset(event.assetID), asset.kind.quantityInputScale(in: asset.currency) == 3 {
+                try asset.kind.validateTradeQuantity(event.quantity, currency: asset.currency)
+            }
             let fields: [(String, Decimal?, Decimal?)] = [
                 ("金额", event.amount, before?.amount), ("成交价格", event.price, before?.price),
                 ("交易费用", event.fee, before?.fee), ("清算金额或余额", event.settledAmount, before?.settledAmount),

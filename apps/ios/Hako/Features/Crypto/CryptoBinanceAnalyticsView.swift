@@ -132,7 +132,7 @@ struct CryptoBinanceAnalyticsView: View {
                     Text(chosen?.value.map { CryptoBinanceDisplay.amount($0)+" USDT" } ?? "—")
                 }.font(.caption).monospacedDigit()
             }
-            Text("每日资产记录；缺失日期不连线。当天快照更新今日估值。")
+            Text("每日资产记录；缺失日期沿用前次金额显示。当天快照更新今日估值。")
                 .font(.caption2).foregroundStyle(.secondary)
         }.accessibilityElement(children:.contain).accessibilityLabel("Binance 资产总额趋势")
     }

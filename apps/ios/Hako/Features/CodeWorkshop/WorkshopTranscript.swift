@@ -16,10 +16,11 @@ struct WorkshopTranscript: Codable, Equatable, Sendable {
     var eventCursor: Int64
     var streamText: [String: String]
     var savedAt: Date
+    var contextUsage: WorkshopContextUsage? = nil
 
     func hasSameContent(as other: Self) -> Bool {
         eventCursor == other.eventCursor && operationId == other.operationId && historyCursor == other.historyCursor &&
-            key == other.key && entries == other.entries && artifacts == other.artifacts && followups == other.followups && streamText == other.streamText
+            key == other.key && entries == other.entries && artifacts == other.artifacts && followups == other.followups && streamText == other.streamText && contextUsage == other.contextUsage
     }
 
     func encodedForCache(maxEntries: Int = 300, maxBytes: Int = 2 * 1024 * 1024) throws -> Data? {

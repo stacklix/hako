@@ -391,6 +391,15 @@ struct InvestmentAgentTests {
             "event_type": "buy", "quantity": "0.058", "price": "71504", "auto_fund": "true"])
         try action.apply(to: &book)
         precondition(book.accounts[0].events.last?.quantity == Decimal(string: "0.058"))
+        for eventType in ["buy", "staking_reward", "spot_adjustment"] {
+            var excess = action
+            excess.values["event_type"] = eventType
+            excess.values["quantity"] = "0.0581"
+            let previous = book.accounts[0].events
+            do { try excess.apply(to: &book); preconditionFailure("Assistant quantity input must reject a fourth decimal") }
+            catch InvestmentError.invalid(let message) { precondition(message.contains("3 位小数")) }
+            precondition(book.accounts[0].events == previous)
+        }
         let ledger = try book.ledger(book.accounts[0], validatingBalances: true)
         precondition(ledger.cash == 0)
         var invalid = action
@@ -583,6 +592,11 @@ struct InvestmentAgentTests {
         precondition(Set(preview.changes.flatMap(\.fields).filter { $0.id == "cash_change" }.compactMap(\.after)) == ["USD 1103.75", "USD -1103.75"])
         precondition(preview.preview.summary == "1 笔交易")
         precondition(preview.preview.items[0].groups.contains { $0.title.hasPrefix("同时记入") })
+        try book.post(.init(day: InvestmentBook.day(), kind: .deposit, amount: 2_000), accountID: account.id)
+        let funded = try InvestmentAgentProposal(base: snapshot(book), actions: [action])
+        let ledger = try funded.book.ledger(funded.book.accounts[0])
+        precondition(ledger.cash == 2_000 && funded.changes.count == 2,
+                     "Assistant preview must add the full purchase debit even when existing cash covers it")
     }
 
     private static func rejectsMalformedModelArguments() throws {

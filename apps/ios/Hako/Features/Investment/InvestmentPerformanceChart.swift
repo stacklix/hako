@@ -107,9 +107,7 @@ struct InvestmentPerformanceChart: View {
                 } else {
                     holdingDetails(details, start: firstDay, end: detailDay, currency: history.currency)
                 }
-                if metric == .value {
-                    InvestmentPerformanceAllocation(details: details, currency: history.currency, day: detailDay, overview: accountID == nil)
-                } else if metric == .gain {
+                if metric == .gain {
                     InvestmentPerformanceTreemap(details: history.categories.compactMap { $0.detail(on: last.day) },
                         currency: history.currency, start: firstDay, end: last.day, overview: accountID == nil)
                 }
@@ -263,16 +261,16 @@ struct InvestmentPerformanceChart: View {
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 12) {
                     GridRow {
                         Text("账户").frame(maxWidth: .infinity, alignment: .leading)
-                        Text(metric == .value ? "期末总额" : "区间盈亏").gridColumnAlignment(.trailing)
-                        Text(metric == .value ? "区间变动" : "累计盈亏").gridColumnAlignment(.trailing)
+                        Text(metric == .value ? "区间变动" : "区间盈亏").gridColumnAlignment(.trailing)
+                        Text(metric == .value ? "期末总额" : "累计盈亏").gridColumnAlignment(.trailing)
                     }.font(.caption2).foregroundStyle(.secondary)
                     ForEach(details) { detail in
                         GridRow {
                             Text(detail.name).lineLimit(2)
-                            detailNumber(metric == .value ? detail.value : detail.periodGain,
-                                         currency: currency, signed: metric != .value)
-                            detailNumber(metric == .value ? detail.change : detail.gain,
+                            detailNumber(metric == .value ? detail.change : detail.periodGain,
                                          currency: currency, signed: true)
+                            detailNumber(metric == .value ? detail.value : detail.gain,
+                                         currency: currency, signed: metric != .value)
                         }.font(.caption)
                     }
                 }.monospacedDigit()
@@ -289,16 +287,16 @@ struct InvestmentPerformanceChart: View {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 12) {
                 GridRow {
                     Text("标的").frame(maxWidth: .infinity, alignment: .leading)
-                    Text(metric == .value ? "期末总额" : metric == .gain ? "区间盈亏" : "区间收益率").gridColumnAlignment(.trailing)
-                    Text(metric == .value ? "区间变动" : metric == .gain ? "累计盈亏" : "累计盈亏率").gridColumnAlignment(.trailing)
+                    Text(metric == .value ? "区间变动" : metric == .gain ? "区间盈亏" : "区间收益率").gridColumnAlignment(.trailing)
+                    Text(metric == .value ? "期末总额" : metric == .gain ? "累计盈亏" : "累计盈亏率").gridColumnAlignment(.trailing)
                 }.font(.caption2).foregroundStyle(.secondary)
                 ForEach(details) { detail in
                     GridRow {
                         Text(detail.name).lineLimit(2)
-                        detailNumber(metric == .value ? detail.value : metric == .gain ? detail.periodGain : detail.rate,
-                                     currency: currency, signed: metric != .value)
-                        detailNumber(metric == .value ? detail.change : metric == .gain ? detail.gain : detail.cumulativeRate,
+                        detailNumber(metric == .value ? detail.change : metric == .gain ? detail.periodGain : detail.rate,
                                      currency: currency, signed: true)
+                        detailNumber(metric == .value ? detail.value : metric == .gain ? detail.gain : detail.cumulativeRate,
+                                     currency: currency, signed: metric != .value)
                     }.font(.caption)
                 }
             }.monospacedDigit()

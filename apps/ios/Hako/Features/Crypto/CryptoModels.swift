@@ -142,12 +142,14 @@ enum CryptoBinanceHistory {
         if let snapshot, CryptoDay.key(snapshot.sampledAt) == CryptoDay.key(now), snapshot.total.isFinite {
             amounts[calendar.startOfDay(for:now)]=snapshot.total
         }
-        var day=calendar.startOfDay(for:start),result=[Sample](),segment=0
+        var day=calendar.startOfDay(for:start),result=[Sample]()
+        // Display-only carry forward, including the latest record before the visible range.
+        // Never invent a balance before the first known record or write filled days to storage.
+        var previous=amounts.keys.filter { $0 < day }.max().flatMap { amounts[$0] }
         let last=calendar.startOfDay(for:end)
         while day <= last {
-            let amount=amounts[day]
-            if amount == nil { segment += 1 }
-            result.append(Sample(date:day,value:amount,segment:segment))
+            if let amount=amounts[day] { previous=amount }
+            result.append(Sample(date:day,value:previous,segment:0))
             guard let next=calendar.date(byAdding:.day,value:1,to:day) else { break }
             day=next
         }

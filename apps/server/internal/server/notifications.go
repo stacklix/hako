@@ -49,6 +49,7 @@ func (s *Server) notificationRoutes() {
 	s.mux.HandleFunc("POST /api/v1/agents/update-notifications", s.agentUpdateNotification)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		s.mux.HandleFunc(method+" /consilium/api/notifications/{resource...}", s.admin(s.adminNotifications))
+		s.mux.HandleFunc(method+" /api/v1/notifications/manage/{resource...}", s.consoleNotifications)
 	}
 	s.mux.HandleFunc("GET /consilium/notifications-ui/{asset...}", s.admin(s.notificationUI))
 	s.mux.HandleFunc("POST /webhook/notifications/{token}", s.notificationWebhook)
@@ -56,6 +57,31 @@ func (s *Server) notificationRoutes() {
 	s.mux.HandleFunc("PUT /api/v1/notifications/device", s.registerNotificationDevice)
 	s.mux.HandleFunc("GET /api/v1/notifications/workshop", s.workshopPushSettings)
 	s.mux.HandleFunc("PUT /api/v1/notifications/workshop", s.workshopPushSettings)
+}
+
+// Native Hako uses the same trusted Console authority as the approver of a web
+// administrator session. Keep the notification business logic in notify.Service.
+func (s *Server) consoleNotifications(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorized(w, r); !ok {
+		return
+	}
+	parts := strings.Split(r.PathValue("resource"), "/")
+	allowed := false
+	switch {
+	case len(parts) == 1 && parts[0] == "webhooks":
+		allowed = r.Method == http.MethodGet || r.Method == http.MethodPost
+	case len(parts) == 2 && parts[0] == "webhooks" && parts[1] != "":
+		allowed = r.Method == http.MethodGet || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+	case len(parts) == 3 && parts[0] == "webhooks" && parts[1] != "" && parts[2] == "rotate-token":
+		allowed = r.Method == http.MethodPost
+	case r.PathValue("resource") == "channels/wechat":
+		allowed = r.Method == http.MethodGet
+	}
+	if !allowed {
+		http.NotFound(w, r)
+		return
+	}
+	s.adminNotifications(w, r)
 }
 
 func (s *Server) adminNotifications(w http.ResponseWriter, r *http.Request) {

@@ -90,7 +90,7 @@ private struct SwissArmyKnifeQRScannerView: View {
                             } label: {
                                 Label("在浏览器中打开", systemImage: "safari")
                             }
-                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                            .buttonStyle(HakoActionButtonStyle(primary: false, outlined: true, backgroundColor: .clear))
                         }
                         Button("重新扫描", action: scanAgain)
                             .buttonStyle(HakoActionButtonStyle(primary: false))

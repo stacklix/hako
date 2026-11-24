@@ -33,7 +33,7 @@ struct SettingsView: View {
         }
     }
     private enum SheetRoute: String, Identifiable {
-        case server, scanner, applications, github, languageModel, cloud, dataBackup, httpProxy, agents
+        case server, scanner, applications, github, languageModel, cloud, dataBackup, httpProxy, agents, webhooks
         var id: String { rawValue }
     }
     @Environment(\.openURL) private var openURL
@@ -100,6 +100,11 @@ struct SettingsView: View {
                     settingsEntry("第三方应用", systemImage: "square.stack.3d.up")
                 }
                 .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                Button { sheet = .webhooks } label: {
+                    settingsEntry("Webhook 管理", systemImage: "link")
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
             }
             Section("服务配置") {
                 Button { sheet = .dataBackup } label: {
@@ -206,6 +211,8 @@ struct SettingsView: View {
                 case .dataBackup: HakoDataBackupSettings()
                 case .httpProxy: HakoApplications.httpProxySettings()
                 case .agents: HakoApplications.agentSettings()
+                case .webhooks:
+                    SettingsSheet(title: "Webhook 管理") { HakoApplications.webhookSettings() }
                 }
             }
             .task(id: updateTaskID) { [updateTaskID] in

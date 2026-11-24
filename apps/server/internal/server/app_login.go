@@ -260,6 +260,7 @@ func (s *Server) appSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "DELETE" {
+		s.revokeNativeConsent(ss.NativeConsentID)
 		delete(s.adminSessions, key)
 		respond(w, 200, map[string]bool{"ok": true})
 		return
@@ -271,6 +272,12 @@ func (s *Server) appSession(w http.ResponseWriter, r *http.Request) {
 	}
 	ss.LastUsed = time.Now()
 	s.adminSessions[key] = ss
+	if ss.NativeConsentID != "" && s.nativeApps != nil {
+		if consent, exists := s.nativeApps.consents[ss.NativeConsentID]; exists {
+			consent.LastUsed = ss.LastUsed
+			s.nativeApps.consents[ss.NativeConsentID] = consent
+		}
+	}
 	subject := ""
 	s.store.inspect(func(st state) { subject = st.Subject })
 	respond(w, 200, map[string]any{"active": true, "issuer": s.config.PublicURL, "subject": subject, "clientId": c.ID})

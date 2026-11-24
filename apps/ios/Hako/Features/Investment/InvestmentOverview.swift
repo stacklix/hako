@@ -24,7 +24,9 @@ enum InvestmentRange: String, CaseIterable, Identifiable, Sendable {
 struct InvestmentOverview: View {
     let book: InvestmentBook
     let bookVersion: UUID
+    let presentation: InvestmentPresentation
     var showsArchived = false
+    var insuranceGainBasis: InvestmentInsuranceGainBasis = .cashValue
     let openAccount: (UUID) -> Void
     @State private var accountsExpanded = false
 
@@ -34,14 +36,18 @@ struct InvestmentOverview: View {
         InvestmentScroll {
             summary
             InvestmentPerformanceChart(book: book, bookVersion: bookVersion)
+            InvestmentCard {
+                InvestmentCurrentAllocation(details: presentation.allocation, currency: .cny, day: presentation.day, overview: true)
+            }
             InvestmentProfitCalendar(book: book, bookVersion: bookVersion)
         }
     }
 
     private var summary: some View {
-        let current = book.portfolio(on: today)
-        let dayGain = book.dailyGains(from: today, through: today)[today]
-        let dollars = book.portfolio(on: today, currency: .usd)?.value
+        let current = presentation.total
+        let dayGain = presentation.dailyGain
+        let dollars = presentation.dollars
+        let historicalGain = presentation.historicalGain(insuranceBasis: insuranceGainBasis)
         return InvestmentCard {
             VStack(alignment: .leading, spacing: 4) {
                 InvestmentMetric(title: "总资产 · CNY", value: InvestmentText.money(current?.value, .cny), prominent: true)
@@ -52,8 +58,8 @@ struct InvestmentOverview: View {
                 InvestmentMetric(title: "当日盈亏（暂估）", value: InvestmentText.money(dayGain, .cny, signed: true),
                                  color: InvestmentTrendStyle.tint(dayGain))
                 Spacer(minLength: 10)
-                InvestmentMetric(title: "历史总盈亏", value: InvestmentText.money(current?.gain, .cny, signed: true),
-                                 color: InvestmentTrendStyle.tint(current?.gain))
+                InvestmentMetric(title: "历史总盈亏", value: InvestmentText.money(historicalGain, .cny, signed: true),
+                                 color: InvestmentTrendStyle.tint(historicalGain))
             }
             if !book.accounts.isEmpty {
                 Divider()
@@ -76,11 +82,8 @@ struct InvestmentOverview: View {
     private var accounts: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(book.visibleAccounts(showArchived: showsArchived)) { account in
-                let current = book.value(account)
-                let previous = book.value(account, on: InvestmentBook.addDays(-1, to: today), requiresDailyPrices: true)
-                let change = book.value(account, on: today, requiresDailyPrices: true).flatMap { now in
-                    previous.map { now.gain - $0.gain }
-                }
+                let current = presentation.accounts[account.id]?.value
+                let change = presentation.accounts[account.id]?.dailyGain
                 Button { openAccount(account.id) } label: {
                     HStack {
                         InvestmentTitle(account.name + (account.isArchived ? " · 已归档" : ""), subtitle: "总资产 " + InvestmentText.money(current?.value, account.currency))

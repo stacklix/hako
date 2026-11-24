@@ -266,7 +266,7 @@ extension InvestmentAgentAction {
                         inputs.append(field("margin", "每手初始保证金" + "（\(settlement)）", required: true, value: decimal(original?.margin)))
                     }
                 }
-                if kind == .addEvent { inputs.append(field("auto_fund", "现金不足时自动补足")) }
+                if kind == .addEvent { inputs.append(field("auto_fund", "自动转入本次所需现金")) }
             } else if let eventKind {
                 if eventKind == .insuranceWithdrawal {
                     inputs.append(field("amount", "提取金额（\(currency)）", required: true, value: decimal(original?.amount)))

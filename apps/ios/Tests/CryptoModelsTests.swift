@@ -36,7 +36,15 @@ import Foundation
         let history=[CryptoRecord(kind:"portfolio",day:CryptoDay.key(day),sampledAt:0,scope:"scope",values:["binance":0]),
                      CryptoRecord(kind:"portfolio",day:CryptoDay.key(offset(2)),sampledAt:0,scope:"scope",values:["binance":100])]
         let points=CryptoBinanceHistory.samples(history,snapshot:nil,from:day,through:offset(2),now:offset(2))
-        precondition(points.map(\.value) == [0,nil,100] && points[0].segment != points[2].segment,"zero is real, missing days break the curve")
+        precondition(points.map(\.value) == [0,0,100] && Set(points.map(\.segment)).count == 1,"missing days carry forward even a zero balance in a continuous curve")
+        let sparse=history + [CryptoRecord(kind:"portfolio",day:CryptoDay.key(offset(3)),sampledAt:0,scope:"scope",values:["total":200]),
+                              CryptoRecord(kind:"portfolio",day:CryptoDay.key(offset(4)),sampledAt:0,scope:"scope",values:["binance":Double.nan])]
+        let filled=CryptoBinanceHistory.samples(Array(sparse.reversed()),snapshot:nil,from:offset(-1),through:offset(5),now:offset(5))
+        precondition(filled.map(\.value) == [nil,0,0,100,100,100,100],"do not backfill leading dates; missing fields, invalid values and trailing dates retain the last real balance")
+        let clipped=CryptoBinanceHistory.samples(history,snapshot:nil,from:offset(3),through:offset(5),now:offset(5))
+        precondition(clipped.map(\.value) == [100,100,100],"range boundaries reuse the latest earlier record")
+        precondition(CryptoBinanceHistory.samples([],snapshot:nil,from:day,through:offset(1)).allSatisfy { $0.value == nil },"no history must remain empty")
+        precondition(history.count == 2 && history[0].values == ["binance":0] && history[1].values == ["binance":100],"display filling never adds or changes archive records")
         var current=snapshot;current.sampledAt=offset(2)
         precondition(CryptoBinanceHistory.samples(history,snapshot:current,from:day,through:offset(2),now:offset(2)).last?.value == 35)
         current.sampledAt=offset(1)
