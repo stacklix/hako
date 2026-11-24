@@ -26,8 +26,6 @@ struct InvestmentOverview: View {
     let bookVersion: UUID
     var showsArchived = false
     let openAccount: (UUID) -> Void
-    @State private var month = InvestmentBook.day()
-    @State private var selectedDay = InvestmentBook.day()
     @State private var accountsExpanded = false
 
     private var today: Date { InvestmentBook.day() }
@@ -36,7 +34,7 @@ struct InvestmentOverview: View {
         InvestmentScroll {
             summary
             InvestmentPerformanceChart(book: book, bookVersion: bookVersion)
-            calendar
+            InvestmentProfitCalendar(book: book, bookVersion: bookVersion)
         }
     }
 
@@ -73,82 +71,6 @@ struct InvestmentOverview: View {
                 Text("部分持仓缺少报价或外币汇率，暂无法汇总。").font(.caption).foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var calendar: some View {
-        let cal = InvestmentBook.calendar
-        let first = cal.dateInterval(of: .month, for: month)?.start ?? month
-        let offset = (cal.component(.weekday, from: first) + 5) % 7
-        let days = cal.range(of: .day, in: .month, for: first)?.count ?? 0
-        let gains = book.dailyGains(from: first, through: min(today, InvestmentBook.addDays(days - 1, to: first)))
-        return InvestmentCard {
-            HStack {
-                Text("盈亏日历").font(.headline)
-                Spacer()
-                Button { moveMonth(-1) } label: {
-                    Image(systemName: "chevron.left").frame(width: 34, height: 36)
-                }.accessibilityLabel("上个月")
-                Text("\(cal.component(.year, from: first))年\(cal.component(.month, from: first))月")
-                    .font(.caption).monospacedDigit()
-                Button { moveMonth(1) } label: {
-                    Image(systemName: "chevron.right").frame(width: 34, height: 36)
-                }.accessibilityLabel("下个月").disabled(cal.isDate(month, equalTo: today, toGranularity: .month))
-            }.buttonStyle(.plain)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 7), spacing: 3) {
-                ForEach(Array("一二三四五六日"), id: \.self) {
-                    Text(String($0)).font(.caption2).foregroundStyle(.secondary)
-                }
-                ForEach(0..<offset, id: \.self) { _ in Color.clear.frame(height: 36) }
-                ForEach(0..<days, id: \.self) { index in
-                    let date = InvestmentBook.addDays(index, to: first)
-                    calendarDay(date, index + 1, gain: gains[date])
-                }
-            }
-            let selectedGain = gains[selectedDay]
-            let amount = selectedGain.map { InvestmentText.money($0, .cny, signed: true) }
-            let detail = amount.map { (selectedDay == today ? "暂估盈亏 " : "盈亏 ") + $0 }
-                ?? "缺少日行情、汇率或账本记录"
-            Text(InvestmentText.date(selectedDay) + " · " + detail).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func calendarDay(_ date: Date, _ label: Int, gain: Decimal?) -> some View {
-        let color = InvestmentText.tint(gain)
-        let active = date == selectedDay
-        return Button { selectedDay = date } label: {
-            VStack(spacing: 2) {
-                Text(String(label))
-                if let gain, gain != 0 {
-                    Text(calendarGain(gain))
-                        .lineLimit(1).minimumScaleFactor(0.65)
-                } else if gain == nil, date <= today, let earliest = book.earliest, date >= earliest {
-                    Text("—").foregroundStyle(.secondary)
-                }
-            }.font(.caption2).monospacedDigit()
-                .foregroundStyle(date > today ? Color.secondary : color)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .background(color.opacity(gain == nil || gain == 0 ? 0 : 0.1), in: RoundedRectangle(cornerRadius: 6))
-                .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(active ? Color.primary : .clear) }
-        }.buttonStyle(.plain).disabled(date > today)
-            .accessibilityLabel(InvestmentText.date(date) + "，盈亏 " + InvestmentText.money(gain, .cny, signed: true))
-            .accessibilityAddTraits(active ? .isSelected : [])
-    }
-
-    private func calendarGain(_ gain: Decimal) -> String {
-        let sign = gain > 0 ? "+" : ""
-        if abs(gain) >= 1_000 {
-            return sign + (gain / 1_000).formatted(
-                .number.locale(Locale(identifier: "en_US_POSIX"))
-                    .grouping(.never).precision(.fractionLength(1))
-            ) + "k"
-        }
-        return sign + gain.formatted(.number.precision(.fractionLength(0...1)))
-    }
-
-    private func moveMonth(_ offset: Int) {
-        guard let next = InvestmentBook.calendar.date(byAdding: .month, value: offset, to: month) else { return }
-        month = next
-        selectedDay = min(next, today)
     }
 
     private var accounts: some View {

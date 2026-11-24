@@ -65,6 +65,8 @@ jobs:
         run: |
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests
           /tmp/hako-investment-book-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentProfitCalendarData.swift Tests/InvestmentProfitCalendarTests.swift -o /tmp/hako-investment-profit-calendar-tests
+          /tmp/hako-investment-profit-calendar-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentPerformance.swift Hako/Features/Investment/InvestmentBenchmark.swift Tests/InvestmentPerformanceTests.swift -o /tmp/hako-investment-performance-tests
           /tmp/hako-investment-performance-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentDiskCache.swift Tests/InvestmentDiskCacheTests.swift -o /tmp/hako-investment-cache-tests
