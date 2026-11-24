@@ -44,11 +44,16 @@ import Combine
         return result.failure ?? result.summary
     }
     func collectAndSynchronize() async throws -> String {
-        let result = await run(sync:false,force:true)
+        let result = await run(sync:false)
         try Task.checkCancellation()
         if let failure = result.failure { throw HakoError(message: failure) }
         guard result.sourceCount > 0 else {
             throw HakoError(message:"尚未配置资产来源，请先设置交易所 API 或观察地址。")
+        }
+        if cache.archiveLoaded, cache.syncedAt != nil, cache.pending.isEmpty {
+            let summary = "资产缓存有效，相关记录已同步，无需重复同步。"
+            HakoExecutionDiagnostics.record("跳过资产同步", detail: summary)
+            return summary
         }
         let summary = try await HakoExecutionDiagnostics.measure("同步最新资产记录", success: { $0 }) {
             let result = await run(sync:true)
@@ -56,7 +61,7 @@ import Combine
             if let failure = result.failure { throw HakoError(message: failure) }
             return result.summary
         }
-        return "最新资产已采集并保存到本机。\n" + summary
+        return "资产数据已就绪并保存到本机。\n" + summary
     }
     private func run(sync: Bool, force: Bool = false) async -> RefreshOutcome {
         if let running {

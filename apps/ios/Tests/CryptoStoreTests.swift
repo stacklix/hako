@@ -669,8 +669,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
         wallet.address = "cosmos1y8nyfvmqh50p6ldpzljk3yrglppdv3t8h938ez"
         let shortcutFile = directory.appendingPathComponent("crypto/" + CryptoDay.hash(shortcutRepository.storageScope) + ".json")
         try JSONEncoder().encode(CryptoStore.Cache(records:[existing,ancient],archiveLoaded:true,archivedPortfolioDays:[])).write(to:shortcutFile)
-        let shortcutStore = CryptoStore(repositoryProvider:{shortcutRepository}, client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
-            loadCredential:{$0 == "htx" ? htx : binance}, loadWallets:{[wallet]}, cacheDirectory:directory, nowProvider:{now})
+        var shortcutNow = now
+        var shortcutHTX = htx
+        func makeShortcutStore() -> CryptoStore {
+            CryptoStore(repositoryProvider:{shortcutRepository}, client:CryptoClient(session:session,logStore:HakoLogStore(fileURL:nil),marketUsage:nil,loadEquityAPIKey:{"fixture-twelve-key"}),
+                loadCredential:{$0 == "htx" ? shortcutHTX : binance}, loadWallets:{[wallet]}, cacheDirectory:directory, nowProvider:{shortcutNow})
+        }
+        let shortcutStore = makeShortcutStore()
         configure(total:900)
         shortcutRepository.beforeCommit = {
             let saved = try JSONDecoder().decode(CryptoStore.Cache.self, from:Data(contentsOf:shortcutFile))
@@ -683,7 +688,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
             try await shortcutStore.collectAndSynchronize()
         }
         shortcutRepository.beforeCommit = nil
-        precondition(shortcutSummary.contains("最新资产已采集") && shortcutStore.pendingCount == 0)
+        precondition(shortcutSummary.contains("资产数据已就绪") && shortcutStore.pendingCount == 0)
         precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1 && AssetMockProtocol.paths("/sapi/v1/asset/wallet/balance").count == 1)
         precondition(shortcutStore.walletSnapshot(wallet)?.total == 1)
         let shortcutPaths = Set(shortcutRepository.files.keys)
@@ -704,24 +709,28 @@ private final class AssetRepository: GitHubRepositoryAccess {
         }
         precondition(shortcutRows.firstIndex { $0.stageTitle == "读取 HTX 总资产" }! < shortcutRows.firstIndex { $0.stage == "同步最新资产记录" }!)
         configure(total:901)
+        let syncedReads = shortcutRepository.reads
+        let syncedCommits = shortcutRepository.commits.count
         var secondSyncEvents: [HakoExecutionEvent] = []
-        _ = try await HakoExecutionDiagnostics.context.withValue({ secondSyncEvents.append($0) }) {
-            try await shortcutStore.collectAndSynchronize()
+        let reusedSummary = try await HakoExecutionDiagnostics.context.withValue({ secondSyncEvents.append($0) }) {
+            try await makeShortcutStore().collectAndSynchronize()
         }
-        for label in ["合约", "总资产"] {
-            precondition(secondSyncEvents.contains { $0.stage == "读取 GitHub \(label)年度文件 · 2026.csv" && $0.state == .succeeded },
-                         "Annual archive reads did not report real operation progress")
-        }
-        precondition(AssetMockProtocol.paths("/v2/account/valuation").count == 1 && shortcutStore.portfolio.last?.values["total"] == 952,
-                     "A fresh balance cache incorrectly prevented shortcut collection")
+        precondition(shortcutRepository.reads == syncedReads && shortcutRepository.commits.count == syncedCommits,
+                     "Confirmed synced caches must skip GitHub reads and commits")
+        precondition(reusedSummary.contains("无需重复同步") && secondSyncEvents.contains { $0.stageTitle == "跳过资产同步" })
+        precondition(AssetMockProtocol.requests.isEmpty && shortcutStore.portfolio.last?.values["total"] == 951,
+                     "A shortcut must reuse valid disk snapshots without asset API calls")
+        precondition(secondSyncEvents.contains { $0.stageTitle == "复用有效资产缓存" }, "Cache reuse must appear in shortcut diagnostics")
 
         let archivedBeforeFailure = shortcutRepository.files
+        shortcutNow = now.addingTimeInterval(6*60*60)
         configure(total:1000,failBinance:true)
         do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Partial collection was reported as success") }
         catch let error as HakoError { precondition(error.message.contains("Binance")) }
-        precondition(shortcutRepository.files == archivedBeforeFailure && shortcutStore.portfolio.last?.values["total"] == 952,
+        precondition(shortcutRepository.files == archivedBeforeFailure && shortcutStore.portfolio.last?.values["total"] == 951,
                      "Partial collection overwrote the last complete snapshot or uploaded stale totals")
         configure(total:1010,failSpotDetails:true)
+        shortcutHTX.secret = "changed-shortcut-secret"
         do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Incomplete HTX accounts were reported as a complete collection") }
         catch let error as HakoError { precondition(error.message.contains("HTX 分账户资产未读取完整")) }
         precondition(shortcutRepository.files == archivedBeforeFailure, "Incomplete HTX detail collection still uploaded an archive")
@@ -730,10 +739,13 @@ private final class AssetRepository: GitHubRepositoryAccess {
         do { _ = try await shortcutStore.collectAndSynchronize(); preconditionFailure("Upload failure was reported as success") }
         catch let error as HakoError { precondition(error.message.contains("test upload failure")) }
         precondition(shortcutStore.pendingCount > 0 && shortcutRepository.files == archivedBeforeFailure)
+        let uploadRetrySnapshot = shortcutStore.portfolio.last
         shortcutRepository.failWrites = false
         configure(total:1200)
         _ = try await shortcutStore.collectAndSynchronize()
-        precondition(shortcutStore.pendingCount == 0 && shortcutStore.portfolio.last?.values["total"] == 1251)
+        precondition(shortcutStore.pendingCount == 0 && shortcutStore.portfolio.last == uploadRetrySnapshot,
+                     "Upload retry must preserve the already acquired snapshot")
+        precondition(AssetMockProtocol.requests.isEmpty, "An upload retry must reuse fresh pending data without collecting again: \(AssetMockProtocol.requests.map { $0.url!.path })")
 
         // Withhold responses rather than using timing assumptions: four independent
         // branches must reach HTTP before any response is released. The fifth waits.
@@ -817,7 +829,7 @@ private final class AssetRepository: GitHubRepositoryAccess {
         do { _ = try await cancelled.value; preconditionFailure("Cancelled collection continued to upload") }
         catch is CancellationError { }
         precondition(AssetMockProtocol.requests.isEmpty && cancelledRepository.commits.isEmpty && !cancelledStore.busy)
-        print("Crypto store: fresh shortcut collection, both archives, cache-only manual sync, partial failures, upload recovery and cancellation passed")
+        print("Crypto store: shortcut disk-cache reuse, synced shortcut skips, expired/config-changed collection, both archives, cache-only manual sync, partial failures, upload recovery and cancellation passed")
     }
 
     @MainActor private static func checkRequestDiagnostics(client: CryptoClient) async throws {

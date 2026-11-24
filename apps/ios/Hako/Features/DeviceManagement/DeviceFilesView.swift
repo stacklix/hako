@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private enum DeviceFileSheet: Identifiable {
     case search(String), editor(DeviceFileEntry), mutation(String, DeviceFileEntry?)
@@ -47,10 +48,15 @@ struct DeviceFilesView: View {
                             Button { open(entry) } label: { DeviceFileRow(entry: entry) }
                                 .buttonStyle(.plain).disabled(entry.link)
                             Menu {
+                                Button("复制路径", systemImage: "doc.on.doc") {
+                                    UIPasteboard.general.string = DeviceFilePath.fullPath(root: store.root, path: entry.path)
+                                    store.notice = "路径已复制"
+                                }
                                 Button("重命名", systemImage: "pencil") { sheet = .mutation("rename", entry) }
+                                    .disabled(!store.canWrite || entry.link)
                                 Button("删除", systemImage: "trash", role: .destructive) { sheet = .mutation("delete", entry) }
+                                    .disabled(!store.canWrite || entry.link)
                             } label: { Image(systemName: "ellipsis").fileToolbarIcon().foregroundStyle(.secondary) }
-                                .disabled(!store.canWrite || entry.link)
                                 .accessibilityLabel("\(entry.name) 的操作")
                         }
                     }

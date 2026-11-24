@@ -3,6 +3,9 @@ import Foundation
 @main enum DeviceFilesTests {
     static func main() throws {
         func check(_ condition: Bool, _ message: String) { if !condition { fatalError(message) } }
+        check(DeviceFilePath.fullPath(root: "C:\\Users\\test", path: "Magnus/key.properties") == "C:\\Users\\test\\Magnus\\key.properties", "Copy must include the complete Windows path")
+        check(DeviceFilePath.fullPath(root: "C:\\", path: "工作 文件/笔记.md") == "C:\\工作 文件\\笔记.md", "Copy must preserve Unicode and avoid duplicate separators")
+        check(DeviceFilePath.fullPath(root: "\\\\server\\share", path: "folder") == "\\\\server\\share\\folder", "Copy must preserve UNC roots")
         for path in ["", "Documents", "Documents/工作笔记.md", ".config/settings.json"] { check(DeviceFilePath.valid(path), "Rejected valid path: \(path)") }
         for path in ["../outside", "/Windows", "C:/Windows", "a//b", "a/./b", "notes.md:stream", "folder\\file", "CON", "nul.txt", "COM¹.log", "CONIN$", "trailing."] {
             check(!DeviceFilePath.valid(path), "Accepted invalid path: \(path)")

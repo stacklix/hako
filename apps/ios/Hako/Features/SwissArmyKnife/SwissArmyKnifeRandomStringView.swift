@@ -55,6 +55,9 @@ struct SwissArmyKnifeRandomStringView: View {
                 }
                 .buttonStyle(HakoActionButtonStyle())
                 .disabled(configuration.validationMessage != nil)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
 
             if !result.isEmpty {

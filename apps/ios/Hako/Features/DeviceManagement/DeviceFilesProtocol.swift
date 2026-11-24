@@ -12,6 +12,10 @@ enum DeviceFilesCommand {
 }
 
 enum DeviceFilePath {
+    static func fullPath(root: String, path: String) -> String {
+        guard !path.isEmpty else { return root }
+        return root + (root.hasSuffix("\\") ? "" : "\\") + path.replacingOccurrences(of: "/", with: "\\")
+    }
     static func valid(_ path: String) -> Bool {
         path.isEmpty || (path.count <= 2048 && path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { validName(String($0)) })
     }

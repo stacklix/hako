@@ -84,6 +84,14 @@ private struct SwissArmyKnifeQRScannerView: View {
                             Label(copied ? "已复制" : "复制文本", systemImage: copied ? "checkmark" : "doc.on.doc")
                         }
                         .buttonStyle(HakoActionButtonStyle())
+                        if let url = webURL(in: text) {
+                            Button {
+                                openURL(url)
+                            } label: {
+                                Label("在浏览器中打开", systemImage: "safari")
+                            }
+                            .buttonStyle(HakoActionButtonStyle(primary: false))
+                        }
                         Button("重新扫描", action: scanAgain)
                             .buttonStyle(HakoActionButtonStyle(primary: false))
                     }
@@ -128,6 +136,14 @@ private struct SwissArmyKnifeQRScannerView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { visible = true }
         .onDisappear { visible = false }
+    }
+
+    private func webURL(in text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: value, encodingInvalidCharacters: false),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
     }
 
     private func scanAgain() {
