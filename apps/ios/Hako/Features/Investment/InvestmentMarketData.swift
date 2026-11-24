@@ -414,7 +414,7 @@ struct InvestmentQuoteProvider {
         }
         try asset.validateMarket(settlingIn: asset.settlementCurrency)
         do {
-            let quotes = try await history(asset: asset, start: InvestmentBook.addDays(-375, to: today),
+            let quotes = try await history(asset: asset, start: InvestmentBook.addDays(-14, to: today),
                                            through: today, cached: nil, keys: keys)
             if let latest = quotes.last, latest.day >= InvestmentBook.addDays(-14, to: today) { return quotes }
             throw InvestmentError.invalid("没有获取到近 14 天的报价。")

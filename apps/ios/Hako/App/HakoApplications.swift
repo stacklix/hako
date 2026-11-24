@@ -38,7 +38,7 @@ enum HakoApplications {
             case .containers: "Arcane · 容器状态 · 日志与更新"
             case .devices: "设备在线状态 · 能力调用"
             case .codeWorkshop: "Codex 会话 · 编程任务 · 原型预览"
-            case .swissArmyKnife: "实用小工具 · 二维码扫描与文本复制"
+            case .swissArmyKnife: "实用小工具 · 随机字符串与二维码扫描"
             case .sports: "运动趋势 · 每次记录 · GitHub 归档"
             case .usage: "每日概览 · Top 5 · GitHub 归档"
             case .investment: "账户 · 持仓 · 定投"

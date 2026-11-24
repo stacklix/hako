@@ -7,6 +7,8 @@ import Foundation
         rangesKeepMarketHistoryBeforeThePosition()
         everyHoldingHasProfitAndSharedRanges()
         queryWindowsCoverEveryDayOnce()
+        holidayGapsShareRequests()
+        automaticHistoryUsesEachAssetsOwnStart()
         marketClosesExcludeEstimatesAndFutureDates()
         usClosesUseBeijingDates()
         tradesStayInTheirAccountAndKeepExecutionPrices()
@@ -46,6 +48,37 @@ import Foundation
         }
         precondition(InvestmentHistoryRange.quoteWindows(from: end, through: end) == [end...end])
         precondition(InvestmentHistoryRange.quoteWindows(from: end, through: first).isEmpty)
+    }
+
+    static func holidayGapsShareRequests() {
+        let first = day("2025-01-01")
+        let weekends = stride(from: 3, to: 360, by: 7).map { offset in
+            InvestmentBook.addDays(offset, to: first)...InvestmentBook.addDays(offset + 1, to: first)
+        }
+        let windows = InvestmentHistoryRange.quoteWindows(for: weekends)
+        precondition(windows.count == 1 && windows[0].lowerBound == weekends[0].lowerBound && windows[0].upperBound == weekends.last!.upperBound,
+                     "A year's scattered weekends must use one complete range request")
+        precondition(InvestmentHistoryRange.quoteWindows(for: []).isEmpty)
+        let distant = InvestmentBook.addDays(900, to: first)
+        precondition(InvestmentHistoryRange.quoteWindows(for: [first...first, distant...distant]).count == 2,
+                     "Widely separated gaps do not force downloads of all intervening years")
+    }
+
+    static func automaticHistoryUsesEachAssetsOwnStart() {
+        let today = day("2026-11-24")
+        let recent = InvestmentAsset(name: "新持仓", code: "AAPL", market: "XNAS", kind: .stock, currency: .usd)
+        let old = InvestmentAsset(name: "旧持仓", code: "MSFT", market: "XNAS", kind: .stock, currency: .usd)
+        let watch = InvestmentAsset(name: "只关注", code: "SPYM", market: "ARCX", kind: .etf, currency: .usd)
+        let account = InvestmentAccount(name: "测试", currency: .usd, events: [
+            .init(day: day("2015-01-01"), kind: .deposit, amount: 1000),
+            .init(day: day("2025-01-01"), kind: .opening, assetID: old.id, quantity: 1, price: 10),
+            .init(day: today, kind: .buy, assetID: recent.id, quantity: 1, price: 10)
+        ], type: .securities)
+        let book = InvestmentBook(accounts: [account])
+        precondition(book.automaticQuoteWindow(for: recent.id, through: today) == day("2026-11-10")...today,
+                     "A new holding must not inherit another account's ten-year history")
+        precondition(book.automaticQuoteWindow(for: old.id, through: today) == day("2024-12-31")...today)
+        precondition(book.automaticQuoteWindow(for: watch.id, through: today) == day("2026-11-10")...today)
     }
 
     static func marketClosesExcludeEstimatesAndFutureDates() {

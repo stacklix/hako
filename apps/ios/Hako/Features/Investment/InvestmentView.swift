@@ -399,12 +399,7 @@ struct InvestmentAccountView: View {
     }
 
     private func holdings(_ ledger: InvestmentLedger) -> some View {
-        let assets = ledger.positions.keys.filter { id in
-            store.showsZeroPositions || ledger.positions[id].map {
-                !book.positionIsEmpty($0, assetID: id)
-            } == true
-        }
-            .compactMap { book.asset($0) }.sorted { $0.code < $1.code }
+        let assets = book.sortedHoldingAssets(in: ledger, showsZeroPositions: store.showsZeroPositions)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("持仓").font(Self.sectionTitleFont)

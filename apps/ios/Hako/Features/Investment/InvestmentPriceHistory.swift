@@ -62,6 +62,17 @@ enum InvestmentHistoryRange: String, CaseIterable, Identifiable, Sendable {
         }
         return result
     }
+
+    // Nearby gaps share a range request; weekends must not cost one API call each.
+    static func quoteWindows(for missing: [ClosedRange<Date>]) -> [ClosedRange<Date>] {
+        var merged: [ClosedRange<Date>] = []
+        for range in missing.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let previous = merged.last, range.lowerBound <= InvestmentBook.addDays(364, to: previous.lowerBound) {
+                merged[merged.count - 1] = previous.lowerBound...max(previous.upperBound, range.upperBound)
+            } else { merged.append(range) }
+        }
+        return merged.flatMap { quoteWindows(from: $0.lowerBound, through: $0.upperBound) }
+    }
 }
 
 struct InvestmentPricePoint: Identifiable, Sendable {
@@ -94,6 +105,13 @@ extension InvestmentAsset {
 }
 
 extension InvestmentBook {
+    func automaticQuoteWindow(for assetID: UUID, through today: Date) -> ClosedRange<Date> {
+        let recent = Self.addDays(-14, to: today)
+        let first = accounts.flatMap(\.events).filter { $0.assetID == assetID }.map(\.day).min()
+        let start = min(first.map { Self.addDays(-1, to: $0) } ?? recent, recent)
+        return start...today
+    }
+
     func firstPositionDay(accountID: UUID, assetID: UUID) -> Date? {
         account(accountID)?.events.filter {
             $0.assetID == assetID && ($0.kind == .buy || $0.kind == .opening) && $0.quantity > 0

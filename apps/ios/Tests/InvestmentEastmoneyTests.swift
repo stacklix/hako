@@ -286,6 +286,10 @@ extension InvestmentMarketDataTests {
             precondition(query["apikey"] == "fixture" && secrets == ["fixture"])
             precondition(query["interval"] == "1day" && query["adjust"] == "none" && query["type"] == "ETF")
             precondition(query["country"] == "United States")
+            if query["start_date"] != "2026-10-01" {
+                precondition(query["start_date"] == "2026-10-16" && query["end_date"] == "2026-10-30",
+                             "Watch validation must only request the most recent 14 days")
+            }
             let code = query["symbol"]!
             if code == "VOO" { precondition(query["mic_code"] == "ARCX") }
             let date = code == "OLD" ? "2026-10-01" : "2026-10-30"

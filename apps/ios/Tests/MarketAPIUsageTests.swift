@@ -80,12 +80,12 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         for path in ["/time_series", "/limited", "/offline", "/vendor-error", "/malformed"] {
-            do { _ = try await HTTPTransport.data(for: request("api.twelvedata.com", path), using: session, marketUsage: network) }
+            do { _ = try await HTTPTransport.data(for: request("api.twelvedata.com", path), using: session, marketUsage: network, marketGate: nil) }
             catch { precondition(path == "/offline") }
         }
         let cancelled = Task {
             withUnsafeCurrentTask { $0?.cancel() }
-            return try await HTTPTransport.data(for: request("api.twelvedata.com"), using: session, marketUsage: network)
+            return try await HTTPTransport.data(for: request("api.twelvedata.com"), using: session, marketUsage: network, marketGate: nil)
         }
         do { _ = try await cancelled.value; preconditionFailure("Pre-cancelled request must not be sent") }
         catch is CancellationError { }
@@ -97,7 +97,7 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         precondition(calls.failures.contains { $0.httpStatus == nil && $0.code == "NSURLErrorDomain -1009" }, "Retain transport domain and error code without inventing HTTP status")
         precondition(calls.failures.contains { $0.message.contains("not JSON") }, "Malformed text responses remain diagnosable")
         for path in ["/tushare-ok", "/tushare-error"] {
-            _ = try await HTTPTransport.data(for: request("api.tushare.pro", path), using: session, marketUsage: network)
+            _ = try await HTTPTransport.data(for: request("api.tushare.pro", path), using: session, marketUsage: network, marketGate: nil)
         }
         let tushare = try await network.snapshot(for: .tushare)
         precondition(tushare.total == 2 && tushare.succeeded == 1 && tushare.failed == 1)
@@ -126,6 +126,10 @@ private final class UsageMockProtocol: URLProtocol, @unchecked Sendable {
         let body = try JSONSerialization.data(withJSONObject: ["status": "error", "code": 429,
             "message": "Quota exceeded for \(key); API Key: unexpected-credential"])
         let detail = MarketAPIUsage.failureDetail(for: query, response: response, data: body)
+        let traced = request("api.twelvedata.com", "/time_series?symbol=AAPL&start_date=2026-11-10&end_date=2026-11-24&apikey=" + key)
+        let trace = MarketAPIUsage.failureDetail(for: traced, response: response, data: body, reason: "新增关注报价校验")
+        precondition(trace.message.contains("请求标的：AAPL") && trace.message.contains("2026-11-10 至 2026-11-24")
+            && trace.message.contains("新增关注报价校验") && !trace.message.contains(key))
         await usage.record(query, outcome: .failed, failure: detail, at: now)
         var tushare = request("api.tushare.pro")
         tushare.httpMethod = "POST"

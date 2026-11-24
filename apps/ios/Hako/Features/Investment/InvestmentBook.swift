@@ -1272,6 +1272,23 @@ struct InvestmentBook: Codable {
         return InvestmentValuation(value: equity, gain: equity - ledger.flows)
     }
 
+    func sortedHoldingAssets(in ledger: InvestmentLedger, showsZeroPositions: Bool, on day: Date = Self.day()) -> [InvestmentAsset] {
+        let holdings = ledger.positions.compactMap { id, position -> (asset: InvestmentAsset, value: Decimal?)? in
+            guard showsZeroPositions || !positionIsEmpty(position, assetID: id), let asset = asset(id) else { return nil }
+            return (asset, positionValue(position, asset: asset, on: day))
+        }
+        return holdings.sorted { lhs, rhs in
+            switch (lhs.value, rhs.value) {
+            case let (left?, right?) where left != right: return left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default:
+                if lhs.asset.code != rhs.asset.code { return lhs.asset.code < rhs.asset.code }
+                return lhs.asset.id.uuidString < rhs.asset.id.uuidString
+            }
+        }.map(\.asset)
+    }
+
     func positionValue(_ position: InvestmentPosition, asset: InvestmentAsset, on day: Date = Self.day(),
                        requiresDailyPrices: Bool = false) -> Decimal? {
         if position.quantity == 0 { return 0 }

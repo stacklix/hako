@@ -3,6 +3,144 @@ import Foundation
 import FoundationNetworking
 #endif
 
+enum MarketAPIRequestContext {
+    @TaskLocal static var reason: String?
+}
+
+// All market callers share one queue per credential. Credentials stay in memory only.
+actor MarketAPIRequestGate {
+    static let shared = MarketAPIRequestGate()
+    typealias Response = (Data, URLResponse)
+    private struct Scope: Hashable { let provider: MarketAPIProvider; let credential: String }
+    private struct RequestKey: Hashable { let request: URLRequest; let session: ObjectIdentifier }
+    private final class Flight {
+        let id = UUID()
+        var task: Task<Void, Never>?
+        var waiters: [UUID: CheckedContinuation<Response, Error>] = [:]
+    }
+    private struct Tail { let id: UUID; let task: Task<Void, Never> }
+    private struct Budget {
+        var starts: [Date] = []
+        var blockedUntil = Date.distantPast
+        var limit: Int
+    }
+    private var flights: [RequestKey: Flight] = [:]
+    private var tails: [Scope: Tail] = [:]
+    private var budgets: [Scope: Budget] = [:]
+    private let now: @Sendable () -> Date
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private let cooldown: TimeInterval
+    private let window: TimeInterval
+    private let defaultLimit: Int
+
+    init(cooldown: TimeInterval = 60, window: TimeInterval = 60, defaultLimit: Int = 8,
+         now: @escaping @Sendable () -> Date = { .now },
+         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
+        self.cooldown = cooldown; self.window = window; self.defaultLimit = defaultLimit
+        self.now = now; self.sleep = sleep
+    }
+
+    func data(for request: URLRequest, session: URLSession,
+              send: @escaping @Sendable () async throws -> Response) async throws -> Response {
+        guard let provider = MarketAPIProvider.matching(request.url?.host) else { return try await send() }
+        let key = RequestKey(request: request, session: ObjectIdentifier(session))
+        let waiter = UUID()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                if let flight = flights[key] {
+                    flight.waiters[waiter] = continuation
+                    return
+                }
+                let scope = Scope(provider: provider, credential: Self.credential(request))
+                let flight = Flight()
+                flight.waiters[waiter] = continuation
+                flights[key] = flight
+                let previous = tails[scope]?.task
+                let token = flight.id
+                let task = Task {
+                    // Even a cancelled job keeps the chain intact until its predecessor finishes.
+                    if let previous { await previous.value }
+                    do {
+                        try Task.checkCancellation()
+                        try await self.reserve(scope)
+                        let result = try await send()
+                        self.observe(result, request: request, scope: scope)
+                        self.complete(key, token: token, result: .success(result))
+                    } catch {
+                        self.complete(key, token: token, result: .failure(error))
+                    }
+                    if self.tails[scope]?.id == token { self.tails.removeValue(forKey: scope) }
+                }
+                flight.task = task
+                tails[scope] = Tail(id: token, task: task)
+            }
+        } onCancel: {
+            Task { await self.cancel(key, waiter: waiter) }
+        }
+    }
+
+    private static func credential(_ request: URLRequest) -> String {
+        let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+        if let key = query.first(where: { ["apikey", "token"].contains($0.name.lowercased()) })?.value { return key }
+        if let data = request.httpBody, let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let token = body["token"] as? String { return token }
+        let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+        let parts = authorization.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        if parts.count == 2, ["apikey", "bearer"].contains(parts[0].lowercased()) { return String(parts[1]) }
+        return authorization
+    }
+
+    private func reserve(_ scope: Scope) async throws {
+        while true {
+            try Task.checkCancellation()
+            let date = now()
+            var budget = budgets[scope] ?? Budget(limit: scope.provider == .twelveData ? defaultLimit : Int.max)
+            budget.starts.removeAll { date.timeIntervalSince($0) >= window }
+            var until = budget.blockedUntil
+            if budget.starts.count >= budget.limit, let first = budget.starts.first { until = max(until, first.addingTimeInterval(window)) }
+            if until <= date {
+                budget.starts.append(date)
+                budgets[scope] = budget
+                return
+            }
+            budgets[scope] = budget
+            try await sleep(until.timeIntervalSince(date))
+        }
+    }
+
+    private func observe(_ result: Response, request: URLRequest, scope: Scope) {
+        let http = result.1 as? HTTPURLResponse
+        let object = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any]
+        let limited = http?.statusCode == 429 || (object?["code"] as? NSNumber)?.intValue == 429
+        var budget = budgets[scope] ?? Budget(limit: scope.provider == .twelveData ? defaultLimit : Int.max)
+        if limited { budget.blockedUntil = max(budget.blockedUntil, now().addingTimeInterval(cooldown)) }
+        if scope.provider == .twelveData {
+            if let used = http?.value(forHTTPHeaderField: "api-credits-used").flatMap(Int.init),
+               let left = http?.value(forHTTPHeaderField: "api-credits-left").flatMap(Int.init), used >= 0, left >= 0, used + left > 0 {
+                budget.limit = used + left
+                if left == 0 && !limited { budget.blockedUntil = max(budget.blockedUntil, now().addingTimeInterval(window)) }
+            }
+            if request.url?.path == "/api_usage", let limit = (object?["plan_limit"] as? NSNumber)?.intValue, limit > 0 {
+                budget.limit = limit
+            }
+        }
+        budgets[scope] = budget
+    }
+
+    private func complete(_ key: RequestKey, token: UUID, result: Result<Response, Error>) {
+        guard let flight = flights[key], flight.id == token else { return }
+        flights.removeValue(forKey: key)
+        for continuation in flight.waiters.values { continuation.resume(with: result) }
+    }
+
+    private func cancel(_ key: RequestKey, waiter: UUID) {
+        guard let flight = flights[key], let continuation = flight.waiters.removeValue(forKey: waiter) else { return }
+        continuation.resume(throwing: CancellationError())
+        if flight.waiters.isEmpty { flight.task?.cancel(); flights.removeValue(forKey: key) }
+    }
+}
+
 enum MarketAPIProvider: String, Codable, CaseIterable, Sendable {
     case tushare, twelveData
 
@@ -123,7 +261,7 @@ actor MarketAPIUsage {
     }
 
     nonisolated static func failureDetail(for request: URLRequest, response: URLResponse? = nil,
-                                         data: Data? = nil, error: Error? = nil, secrets: [String] = []) -> MarketAPIFailureDetail {
+                                         data: Data? = nil, error: Error? = nil, secrets: [String] = [], reason: String? = nil) -> MarketAPIFailureDetail {
         let http = response as? HTTPURLResponse
         let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
         let redactor = HTTPLogRedactor(request: request, secrets: secrets)
@@ -148,9 +286,19 @@ actor MarketAPIUsage {
         } else {
             message = "接口返回的数据不完整或格式不符合要求。"
         }
+        let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+        let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+        let params = body?["params"] as? [String: Any] ?? [:]
+        func parameter(_ name: String) -> String? { query.first { $0.name == name }?.value ?? params[name] as? String }
+        var context: [String] = []
+        if let symbol = parameter("symbol") ?? parameter("ts_code") { context.append("请求标的：" + symbol) }
+        if let start = parameter("start_date"), let end = parameter("end_date") { context.append("查询区间：" + start + " 至 " + end) }
+        let cause = reason ?? ["/symbol_search": "标的搜索", "/api_usage": "连接测试", "/quote": "最新股票报价"][request.url?.path ?? ""]
+        if let cause { context.append("触发原因：" + cause) }
+        let diagnostic = redactor.diagnosticText(message, limit: 1400) + (context.isEmpty ? "" : "\n\n" + context.joined(separator: "\n"))
         return MarketAPIFailureDetail(httpStatus: http?.statusCode,
             code: code.map { redactor.diagnosticText($0, limit: 128) },
-            message: redactor.diagnosticText(message))
+            message: redactor.diagnosticText(diagnostic))
     }
 
     private static func endpoint(for request: URLRequest) -> String {

@@ -549,7 +549,21 @@ final class InvestmentStore: ObservableObject {
     }
 
     func watchQuotes(for asset: InvestmentAsset) async throws -> [InvestmentQuote] {
-        try await InvestmentQuoteProvider().watchQuotes(for: asset, keys: keys())
+        let target = book.assets.values.first(where: { $0.matches(asset) }) ?? asset
+        let today = InvestmentBook.day(), start = InvestmentBook.addDays(-14, to: InvestmentBook.day())
+        let scope = dataCacheScope, credentials = keys()
+        if let cached = try await diskCache.history(scope: scope, asset: target, start: start, end: today, today: today),
+           let latest = cached.last, latest.day >= start { return cached }
+        let quotes = try await MarketAPIRequestContext.$reason.withValue("新增关注报价校验") {
+            try await InvestmentQuoteProvider().watchQuotes(for: target, keys: credentials, through: today)
+        }
+        try Task.checkCancellation()
+        guard scope == dataCacheScope, credentials == keys() else { throw CancellationError() }
+        // Public spot fallback is not proof that the historical range was queried successfully.
+        if quotes.contains(where: { $0.isDailyClose == true }) {
+            try await diskCache.saveHistory(scope: scope, asset: target, start: start, end: today, today: today, quotes: quotes)
+        }
+        return quotes
     }
 
     private func loadCryptoCatalog() async throws -> [InvestmentAsset] {
@@ -678,7 +692,7 @@ final class InvestmentStore: ObservableObject {
         var firstFailure: String?
         let missing = try await diskCache.missingWindows(scope: scope, key: key, start: first, end: end,
             today: today, observations: result)
-        for window in missing.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }).reversed() {
+        for window in InvestmentHistoryRange.quoteWindows(for: missing).reversed() {
             try Task.checkCancellation()
             do {
                 let values: [InvestmentQuote]
@@ -686,8 +700,10 @@ final class InvestmentStore: ObservableObject {
                     if asset.kind == .crypto {
                         values = try await provider.cryptoPriceHistory(code: asset.code, from: window.lowerBound, through: window.upperBound)
                     } else {
-                        values = try await provider.history(asset: asset, start: window.lowerBound, through: window.upperBound,
-                            cached: nil, keys: credentials)
+                        values = try await MarketAPIRequestContext.$reason.withValue("持仓价格走势图") {
+                            try await provider.history(asset: asset, start: window.lowerBound, through: window.upperBound,
+                                cached: nil, keys: credentials)
+                        }
                     }
                 } catch InvestmentError.noMarketData(_) { values = [] }
                 try Task.checkCancellation()
@@ -824,19 +840,22 @@ final class InvestmentStore: ObservableObject {
                 let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
                 prices[asset.id] = saved.filter { !known.contains($0.day) }
                 let observations = InvestmentBook.merge(saved, existing)
-                let requested = snapshotRequests?.assets[asset.id] ?? [start...today]
+                // Account history starts at this asset's first trade. Watch-only assets need a recent quote.
+                let requested = snapshotRequests?.assets[asset.id] ?? [book.automaticQuoteWindow(for: asset.id, through: today)]
                 for range in requested {
                     let requests = try await diskCache.missingWindows(scope: scope, key: key,
                         start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
-                    for request in requests.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }) {
+                    for request in InvestmentHistoryRange.quoteWindows(for: requests) {
                         try checkRefresh()
                         do {
                             let result: [InvestmentQuote]
                             do {
                                 result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
                                     success: InvestmentQuoteProvider.quoteSummary) {
-                                    try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
-                                        cached: nil, keys: keys)
+                                    try await MarketAPIRequestContext.$reason.withValue(snapshotRefresh ? "历史资产快照补数" : "持仓与关注行情刷新") {
+                                        try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
+                                            cached: nil, keys: keys)
+                                    }
                                 }
                             } catch InvestmentError.noMarketData(_) { result = [] }
                             try checkRefresh()
@@ -888,7 +907,7 @@ final class InvestmentStore: ObservableObject {
                 for range in snapshotRequests?.rates[currency] ?? [start...today] {
                     let missing = try await diskCache.missingWindows(scope: scope, key: key,
                         start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
-                    for window in missing.flatMap({ InvestmentHistoryRange.quoteWindows(from: $0.lowerBound, through: $0.upperBound) }) {
+                    for window in InvestmentHistoryRange.quoteWindows(for: missing) {
                         try checkRefresh()
                         do {
                             let values: [InvestmentQuote]
@@ -896,8 +915,10 @@ final class InvestmentStore: ObservableObject {
                                 do {
                                     values = try await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
                                         success: InvestmentQuoteProvider.quoteSummary) {
-                                        try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
-                                            start: window.lowerBound, end: window.upperBound, key: credential)
+                                        try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
+                                            try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
+                                                start: window.lowerBound, end: window.upperBound, key: credential)
+                                        }
                                     }
                                 } catch InvestmentError.noMarketData(_) { values = [] }
                                 catch {

@@ -6,6 +6,22 @@ struct SwissArmyKnifeView: View {
         List {
             Section("实用工具") {
                 NavigationLink {
+                    SwissArmyKnifeRandomStringView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("随机字符串")
+                            Text("自定义长度与字符类型，一键生成并复制")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "shuffle")
+                    }
+                    .padding(.vertical, 6)
+                }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                NavigationLink {
                     SwissArmyKnifeQRScannerView()
                 } label: {
                     Label {

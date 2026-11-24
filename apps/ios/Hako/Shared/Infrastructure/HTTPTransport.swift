@@ -19,36 +19,45 @@ enum HTTPTransport {
 
     static func data(for request: URLRequest, using session: URLSession = shared,
                      source: HakoLogSource = .hako, secrets: [String] = [],
-                     logBody: Bool = true, marketUsage: MarketAPIUsage? = .shared) async throws -> (Data, URLResponse) {
-        var logRequest = request
-        if !logBody { logRequest.httpBody = nil }
-        return try await perform(logRequest, source: source, secrets: secrets, body: { logBody ? $0 : nil }) {
-            try Task.checkCancellation()
-            let started = Date.now
-            do {
-                let result: (Data, URLResponse)
-                #if os(iOS)
-                if HakoProxyURLProtocol.canInit(with: request) {
-                    result = try await HakoProxyURLProtocol.forward(request)
-                } else {
+                     logBody: Bool = true, marketUsage: MarketAPIUsage? = .shared,
+                     marketGate: MarketAPIRequestGate? = .shared) async throws -> (Data, URLResponse) {
+        var preparedLogRequest = request
+        if !logBody { preparedLogRequest.httpBody = nil }
+        let logRequest = preparedLogRequest
+        let marketReason = MarketAPIRequestContext.reason
+        let send: @Sendable () async throws -> (Data, URLResponse) = {
+            try await perform(logRequest, source: source, secrets: secrets, body: { logBody ? $0 : nil }) {
+                try Task.checkCancellation()
+                let started = Date.now
+                do {
+                    let result: (Data, URLResponse)
+                    #if os(iOS)
+                    if HakoProxyURLProtocol.canInit(with: request) {
+                        result = try await HakoProxyURLProtocol.forward(request)
+                    } else {
+                        result = try await session.data(for: request)
+                    }
+                    #else
                     result = try await session.data(for: request)
+                    #endif
+                    if marketUsage != nil, MarketAPIProvider.matching(request.url?.host) != nil {
+                        let outcome = MarketAPIUsage.outcome(for: request, response: result.1, data: result.0)
+                        let failure = outcome == .failed ? MarketAPIUsage.failureDetail(for: request,
+                            response: result.1, data: result.0, secrets: secrets, reason: marketReason) : nil
+                        await marketUsage?.record(request, outcome: outcome, failure: failure, at: started)
+                    }
+                    return result
+                } catch {
+                    await marketUsage?.record(request, outcome: .failed,
+                        failure: MarketAPIUsage.failureDetail(for: request, error: error, secrets: secrets, reason: marketReason), at: started)
+                    throw error
                 }
-                #else
-                result = try await session.data(for: request)
-                #endif
-                if marketUsage != nil, MarketAPIProvider.matching(request.url?.host) != nil {
-                    let outcome = MarketAPIUsage.outcome(for: request, response: result.1, data: result.0)
-                    let failure = outcome == .failed ? MarketAPIUsage.failureDetail(for: request,
-                        response: result.1, data: result.0, secrets: secrets) : nil
-                    await marketUsage?.record(request, outcome: outcome, failure: failure, at: started)
-                }
-                return result
-            } catch {
-                await marketUsage?.record(request, outcome: .failed,
-                    failure: MarketAPIUsage.failureDetail(for: request, error: error, secrets: secrets), at: started)
-                throw error
             }
         }
+        if let marketGate, MarketAPIProvider.matching(request.url?.host) != nil {
+            return try await marketGate.data(for: request, session: session, send: send)
+        }
+        return try await send()
     }
 
     static func download(for request: URLRequest, using session: URLSession,

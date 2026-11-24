@@ -51,10 +51,16 @@ jobs:
         run: |
           swiftc Hako/Shared/UI/HakoSecureTextBuffer.swift Tests/HakoSecureTextBufferTests.swift -o /tmp/hako-secure-text-tests
           /tmp/hako-secure-text-tests
+      - name: Test random string generation
+        run: |
+          swiftc Hako/Features/SwissArmyKnife/RandomStringGenerator.swift Tests/RandomStringGeneratorTests.swift -o /tmp/hako-random-string-tests
+          /tmp/hako-random-string-tests
       - name: Test persisted market API request usage
         run: |
           swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Tests/MarketAPIUsageTests.swift -o /tmp/hako-market-api-usage-tests
           /tmp/hako-market-api-usage-tests
+          swiftc Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/Logging/HakoLog.swift Tests/MarketAPIRequestGateTests.swift -o /tmp/hako-market-api-gate-tests
+          /tmp/hako-market-api-gate-tests
       - name: Test investment assistant proposals and model protocols
         run: |
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Tests/InvestmentBookTests.swift -o /tmp/hako-investment-book-tests

@@ -4,6 +4,7 @@ import Foundation
 struct InvestmentBookTests {
     static func main() throws {
         try numericStoragePrecision()
+        holdingsSortByMarketValue()
         try fourPlacePricesSurviveStorage()
         try fractionalCryptoTradesSurviveStorage()
         try serializedLedgerValidationBlocksInvalidWrites()
@@ -65,6 +66,36 @@ struct InvestmentBookTests {
         try deletesUnreferencedRegistrationsAndTheirQuotes()
         try deletionPreservesPlanReferences()
         print("Investment ledger checks passed")
+    }
+
+    static func holdingsSortByMarketValue() {
+        var book = InvestmentBook()
+        var ledger = InvestmentLedger()
+        func holding(_ code: String, quantity: Decimal, price: Decimal?, market: String = "", currency: InvestmentCurrency = .cny) -> UUID {
+            let asset = InvestmentAsset(name: code, code: code, market: market, kind: .stock, currency: currency)
+            book.assets[asset.id] = asset
+            ledger.positions[asset.id] = InvestmentPosition(quantity: quantity)
+            if let price { book.addQuotes([.init(day: date(1), price: price)], assetID: asset.id) }
+            return asset.id
+        }
+        let low = holding("159525.SZ", quantity: 100, price: 161)
+        let medium = holding("159941.SZ", quantity: 100, price: 238)
+        let high = holding("513500.SH", quantity: 100, price: 292)
+        let connect = holding("00700.HK", quantity: 100, price: 320,
+                              market: InvestmentAsset.stockConnectMarket, currency: .hkd)
+        let missing = holding("000001.SZ", quantity: 100, price: nil)
+        let zero = holding("000002.SZ", quantity: 0, price: nil)
+        book.addExchangeRates([.init(day: date(1), price: Decimal(string: "0.9")!)], for: .hkd)
+        precondition(book.sortedHoldingAssets(in: ledger, showsZeroPositions: false, on: date(1)).map(\.id)
+            == [high, connect, medium, low, missing], "Sort by displayed value, including Stock Connect FX conversion; unknown values last")
+        precondition(book.sortedHoldingAssets(in: ledger, showsZeroPositions: true, on: date(1)).map(\.id)
+            == [high, connect, medium, low, zero, missing], "Known zero values precede missing values")
+        book.addQuotes([.init(day: date(2), price: 400)], assetID: low)
+        precondition(book.sortedHoldingAssets(in: ledger, showsZeroPositions: false, on: date(2)).first?.id == low,
+                     "New quotes must update the ordering")
+        let tied = holding("159524.SZ", quantity: 100, price: 238)
+        precondition(book.sortedHoldingAssets(in: ledger, showsZeroPositions: false, on: date(1)).map(\.id)
+            == [high, connect, tied, medium, low, missing], "Equal values have a stable code order")
     }
 
     static func cumulativePortfolioGainRate() {
