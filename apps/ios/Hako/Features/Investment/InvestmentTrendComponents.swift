@@ -46,6 +46,7 @@ struct InvestmentTrendMenu<Option: Hashable>: View {
     let options: [Option]
     @Binding var selection: Option
     @Binding var isExpanded: Bool
+    var menuAlignment: Alignment = .topTrailing
     let label: (Option) -> String
 
     var body: some View {
@@ -55,7 +56,7 @@ struct InvestmentTrendMenu<Option: Hashable>: View {
         }
         .buttonStyle(.plain).accessibilityLabel(title)
         .accessibilityValue(label(selection) + (isExpanded ? "，已展开" : "，已收起"))
-        .overlay(alignment: .topTrailing) {
+        .overlay(alignment: menuAlignment) {
             if isExpanded {
                 VStack(spacing: 2) {
                     ForEach(options, id: \.self) { option in

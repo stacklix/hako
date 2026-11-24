@@ -16,6 +16,7 @@ struct InvestmentProfitCalendar: View {
     @AppStorage("investment.overview.profitCalendar.monthly") private var showsMonths = false
     @State private var period = InvestmentBook.day()
     @State private var selectedDay = InvestmentBook.day()
+    @State private var showsViews = false
     @State private var loaded: Loaded?
 
     private var today: Date { InvestmentBook.day() }
@@ -29,7 +30,7 @@ struct InvestmentProfitCalendar: View {
         let data = loaded?.request == request ? loaded?.data : nil
         let selected = data?.months.first { $0.start == month }
         return InvestmentCard {
-            header
+            header.zIndex(40)
             if let data, let selected {
                 let summary = showsMonths ? data.summary : selected.summary
                 periodSummary(summary)
@@ -45,7 +46,12 @@ struct InvestmentProfitCalendar: View {
             Text("按人民币汇总每日盈亏，资金进出不计入收益。当前月份含今日暂估；缺少完整估值时显示「—」。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
+        .zIndex(showsViews ? 30 : 0)
         .task(id: request) { await load(request) }
+        .onChange(of: showsMonths) { showsViews = false }
+        .onChange(of: period) { showsViews = false }
+        .onChange(of: selectedDay) { showsViews = false }
+        .onDisappear { showsViews = false }
         .onChange(of: book.earliest) {
             let first = calendar.dateInterval(of: .month, for: book.earliest ?? today)!.start
             if month < first { period = min(book.earliest ?? today, today); selectedDay = period }
@@ -67,19 +73,10 @@ struct InvestmentProfitCalendar: View {
     }
 
     private var viewMenu: some View {
-        Menu {
-            Picker("盈亏查看方式", selection: $showsMonths) {
-                Text("盈亏日历").tag(false)
-                Text("盈亏月历").tag(true)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(showsMonths ? "盈亏月历" : "盈亏日历").font(.headline)
-                Image(systemName: "chevron.down").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            }.frame(minHeight: 44).contentShape(Rectangle())
+        InvestmentTrendMenu(title: "切换盈亏日历或月历", options: [false, true],
+                            selection: $showsMonths, isExpanded: $showsViews, menuAlignment: .topLeading) {
+            $0 ? "盈亏月历" : "盈亏日历"
         }
-        .buttonStyle(.plain).tint(.primary)
-        .accessibilityLabel("切换盈亏日历或月历，当前为" + (showsMonths ? "月历" : "日历"))
     }
 
     private var navigation: some View {

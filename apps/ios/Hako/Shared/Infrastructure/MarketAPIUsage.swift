@@ -45,7 +45,7 @@ actor MarketAPIRequestGate {
         guard let provider = MarketAPIProvider.matching(request.url?.host) else { return try await send() }
         let key = RequestKey(request: request, session: ObjectIdentifier(session))
         let waiter = UUID()
-        return try await withTaskCancellationHandler {
+        let response = try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 if let flight = flights[key] {
@@ -78,6 +78,10 @@ actor MarketAPIRequestGate {
         } onCancel: {
             Task { await self.cancel(key, waiter: waiter) }
         }
+        // A response can be resumed just before the actor handles cancellation.
+        // Never deliver that response to a caller which has already cancelled.
+        try Task.checkCancellation()
+        return response
     }
 
     private static func credential(_ request: URLRequest) -> String {

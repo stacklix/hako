@@ -17,6 +17,28 @@ private actor GateCalls {
     func sent() { count += 1 }
 }
 
+private actor GateResponseLatch {
+    private var started = false
+    private var released = false
+    private var starts: [CheckedContinuation<Void, Never>] = []
+    private var responses: [CheckedContinuation<Void, Never>] = []
+    private(set) var timedOut = false
+
+    func block() async {
+        started = true
+        starts.forEach { $0.resume() }; starts.removeAll()
+        if !released { await withCheckedContinuation { responses.append($0) } }
+    }
+    func waitForStart() async {
+        if !started { await withCheckedContinuation { starts.append($0) } }
+    }
+    func release(timedOut: Bool = false) {
+        self.timedOut = self.timedOut || timedOut
+        released = true
+        responses.forEach { $0.resume() }; responses.removeAll()
+    }
+}
+
 private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -142,30 +164,51 @@ private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
         do {
             let gate = MarketAPIRequestGate()
             let calls = GateCalls(), query = request("cancel-key", path: "time_series")
+            let latch = GateResponseLatch()
             let operation: @Sendable () async throws -> MarketAPIRequestGate.Response = {
                 await calls.sent()
-                try await Task.sleep(for: .milliseconds(100))
+                await latch.block()
+                try Task.checkCancellation()
                 return reply(query)
             }
             let first = Task { try await gate.data(for: query, session: session, send: operation) }
             let second = Task { try await gate.data(for: query, session: session, send: operation) }
-            try await Task.sleep(for: .milliseconds(20))
+            await latch.waitForStart()
+            // Keep the physical response blocked until the cancelled caller has
+            // returned. Runner scheduling cannot make a response win a sleep race.
+            let watchdog = Task {
+                try? await Task.sleep(for: .seconds(2))
+                if !Task.isCancelled { await latch.release(timedOut: true) }
+            }
             first.cancel()
             do { _ = try await first.value; preconditionFailure("Cancelled waiter must return promptly") }
             catch is CancellationError { }
+            watchdog.cancel()
+            let timedOut = await latch.timedOut
+            precondition(!timedOut, "Cancelled waiter must return before releasing the physical response")
+            await latch.release()
             _ = try await second.value
             let count = await calls.count
             precondition(count == 1, "Cancelling one consumer does not cancel another consumer's shared request")
         }
         do {
-            let gate = MarketAPIRequestGate()
+            let latch = GateResponseLatch()
+            let gate = MarketAPIRequestGate(sleep: { _ in await latch.block(); try Task.checkCancellation() })
             let first = request("paused-key", path: "time_series"), next = request("paused-key", path: "quote")
             _ = try await gate.data(for: first, session: session) { reply(first, status: 429) }
             let queued = Task { try await gate.data(for: next, session: session) { preconditionFailure("Cancelled queued request must never be sent") } }
-            try await Task.sleep(for: .milliseconds(20))
+            await latch.waitForStart()
+            let watchdog = Task {
+                try? await Task.sleep(for: .seconds(2))
+                if !Task.isCancelled { await latch.release(timedOut: true) }
+            }
             queued.cancel()
             do { _ = try await queued.value; preconditionFailure("Cancelled queue waiter must not wait for the minute") }
             catch is CancellationError { }
+            watchdog.cancel()
+            let timedOut = await latch.timedOut
+            precondition(!timedOut, "Cancelled cooldown waiter must return while the shared cooldown is still blocked")
+            await latch.release()
         }
         print("Market request gate: exact 60-second HTTP/business-429 cooldown, key isolation, repeated cooldowns, shared endpoint budget, Tushare, coalescing and cancellation passed")
     }
