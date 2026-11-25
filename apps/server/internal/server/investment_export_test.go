@@ -21,6 +21,7 @@ func TestInvestmentExportIncludesCSVAndExecutableSchema(t *testing.T) {
 		t.Fatalf("unauthenticated export = %d", status)
 	}
 	write := investmentWrite{Tables: investmentRows{
+		"market_daily_fx":     {{"rate_date": "2026-11-09", "base_currency": "USD", "quote_currency": "CNY", "rate": "7.1", "source": "欧洲央行", "is_final": "1"}},
 		"investment_accounts": {{"id": "account", "name": "测试,\"账户\"", "currency": "CNY", "account_type": "securities", "sort_order": "0"}},
 		"investment_events":   {{"id": "event", "account_id": "account", "event_type": "deposit", "effective_date": "2026-11-09", "sequence": "0", "amount": "9007199254740993.0001"}},
 	}}
@@ -79,6 +80,13 @@ func TestInvestmentExportIncludesCSVAndExecutableSchema(t *testing.T) {
 	}
 	for _, table := range investmentTables {
 		readCSV(table.name)
+	}
+	fx := readCSV("market_daily_fx")
+	if len(fx) != 1 || fx[0]["rate"] != "7.1" {
+		t.Fatal("shared FX missing from export", fx)
+	}
+	if _, present := fx[0]["book_id"]; present {
+		t.Fatal("shared FX export still has book_id", fx)
 	}
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

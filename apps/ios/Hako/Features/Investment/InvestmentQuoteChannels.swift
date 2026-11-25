@@ -18,19 +18,16 @@ struct InvestmentQuoteChannels: View {
               coverage: "场外基金公布的历史单位净值；货币基金的每万份收益不作为净值。",
               credential: "通过东方财富基金接口，无需密钥"),
         .init(title: "Twelve Data",
-              coverage: "美股、美股 ETF 的搜索与历史行情，以及 Binance Stock 持仓报价；也可补充外币兑人民币汇率。",
+              coverage: "美股、美股 ETF 的搜索与历史行情，以及 Binance Stock 持仓报价。",
               credential: "需配置 API Key"),
         .init(title: "Tushare Pro",
               coverage: "东方财富缺少国内期货、期权历史时补查；连接测试使用交易日历。到期合约仍可能缺少历史数据。",
               credential: "需配置 API Token，并具备相应接口权限"),
         .init(title: "Binance",
-              coverage: "加密现货的币种目录、公开报价和支持交易对的历史 K 线。",
+              coverage: "加密现货的币种目录、公开报价和支持交易对的历史 K 线；按 1 USDT≈1 USD 估值。",
               credential: "公开行情，无需交易所密钥"),
-        .init(title: "Coinbase",
-              coverage: "补充加密现货的美元报价、历史 K 线，以及 USDT/USD 换算价格。",
-              credential: "公开行情，无需密钥"),
         .init(title: "欧洲央行（ECB）",
-              coverage: "补充外币兑人民币的历史汇率。",
+              coverage: "外币兑人民币汇率的固定来源；已确认的每日汇率直接复用，前一日未确认的汇率会重新获取。",
               credential: "公开数据，无需密钥")
     ]
 

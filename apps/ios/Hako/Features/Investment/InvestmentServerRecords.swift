@@ -21,6 +21,7 @@ struct InvestmentServerRecords {
     static let snapshotTables: Set<String> = [
         "investment_daily_snapshots", "investment_account_daily_snapshots"
     ]
+    static let sharedTables: Set<String> = ["market_instruments", "market_derivative_specs", "market_daily_prices", "market_daily_fx"]
     static let names = [
         "market_instruments", "market_derivative_specs", "investment_accounts", "investment_assets",
         "investment_events", "investment_derivative_event_details", "investment_plans", "investment_plan_runs",
@@ -80,38 +81,29 @@ struct InvestmentServerRecords {
         return try InvestmentPlanSchedule(frequency: frequency, day: day)
     }
 
-    private struct InstrumentKey: Hashable {
-        let kind: InvestmentKind
-        let currency: InvestmentCurrency
-        let code, market: String
-        let multiplier: Decimal
-    }
-
     func encode(_ book: InvestmentBook, revision: Int64) throws -> InvestmentServerTables {
         var result = Dictionary(uniqueKeysWithValues: Self.names.map { ($0, [InvestmentServerRow]()) })
         let assets = book.assets.values.sorted { $0.id.uuidString < $1.id.uuidString }
         let quotedAssets = assets.filter { ![.insurance, .wealth, .deposit, .certificate, .generic].contains($0.kind) }
-        let byInstrument = Dictionary(grouping: quotedAssets) { asset in
-            InstrumentKey(kind: asset.kind, currency: asset.currency, code: asset.code, market: asset.market,
-                          multiplier: asset.multiplier)
-        }
+        let byInstrument = Dictionary(grouping: quotedAssets) { $0.marketInstrument.id }
         var instrumentIDs: [UUID: String] = [:]
         var priceTypes: [UUID: String] = [:]
-        for (key, group) in byInstrument {
-            guard let asset = group.first, let kind = Self.kinds[key.kind] else { throw invalid("asset_type") }
-            let id = (group.compactMap(\.instrumentID).first ?? asset.id).uuidString
+        for (id, group) in byInstrument {
+            guard let asset = group.first, let kind = Self.kinds[asset.kind] else { throw invalid("asset_type") }
+            guard group.allSatisfy({ $0.multiplier == asset.multiplier }) else { throw invalid("contract_multiplier") }
+            let identity = asset.marketInstrument
             let priceType = asset.kind == .fund ? "nav" : "close"
             for item in group {
                 instrumentIDs[item.id] = id
                 priceTypes[item.id] = priceType
             }
             result["market_instruments", default: []].append([
-                "id": id, "asset_type": kind, "symbol": key.code, "exchange": key.market, "name": asset.name,
-                "quote_currency": key.currency.rawValue, "price_type": priceType
+                "id": id, "asset_type": kind, "symbol": identity.symbol, "exchange": identity.exchange, "name": asset.name,
+                "quote_currency": asset.currency.rawValue, "price_type": priceType
             ])
             if asset.kind.usesMargin {
                 result["market_derivative_specs", default: []].append([
-                    "instrument_id": id, "contract_multiplier": string(key.multiplier)!
+                    "instrument_id": id, "contract_multiplier": string(asset.multiplier)!
                 ])
             }
         }
@@ -121,6 +113,7 @@ struct InvestmentServerRecords {
             var row = ["id": asset.id.uuidString, "asset_type": kind, "name": asset.name, "symbol": asset.code,
                        "quote_currency": asset.currency.rawValue, "settlement_unit": book.settlementUnit(for: asset)]
             row["instrument_id"] = instrumentIDs[asset.id]
+            row["exchange"] = asset.market
             row["position_side"] = asset.contractSide.map { $0 == .short ? "short" : "long" }
             row["annual_rate"] = string(asset.depositTerms?.annualRate)
             row["maturity_date"] = asset.depositTerms.map { day.string(from: $0.maturity) }
@@ -130,14 +123,14 @@ struct InvestmentServerRecords {
                 let source = quote.source ?? ""
                 if let instrument = instrumentIDs[asset.id], source != "手动录入" {
                     let priceType = priceTypes[asset.id] ?? "close"
-                    let key = [instrument, date, priceType, source].joined(separator: "|")
+                    let key = [instrument, date, priceType].joined(separator: "|")
                     var price = ["instrument_id": instrument, "session_date": date, "source": source,
                                  "price_type": priceType, "price": string(quote.price, unitPrice: true)!]
                     let close = asset.usesUSEquityClose ? InvestmentBook.usEquityClose(on: quote.day) : quote.day
                     price["valuation_date"] = day.string(from: close)
                     if asset.usesUSEquityClose { price["closed_at_utc"] = timestamp.string(from: close) }
                     price["is_final"] = quote.isDailyClose.map { $0 ? "1" : "0" }
-                    publicPrices[key] = price
+                    if publicPrices[key]?["is_final"] != "1" || price["is_final"] == "1" { publicPrices[key] = price }
                 } else {
                     var manual = ["asset_id": asset.id.uuidString, "valuation_date": date,
                                   "value": string(quote.price)!, "source": source]
@@ -333,16 +326,18 @@ struct InvestmentServerRecords {
             let instrument = row["instrument_id"].flatMap { instruments[$0]?.first }
             let spec = row["instrument_id"].flatMap { specs[$0]?.first }
             var asset = try InvestmentAsset(id: id, name: required(row, "name"),
-                code: row["symbol"] ?? instrument?["symbol"] ?? "", market: instrument?["exchange"] ?? "",
+                code: row["symbol"] ?? instrument?["symbol"] ?? "", market: row["exchange"] ?? instrument?["exchange"] ?? "",
                 kind: kind, currency: currency(row, "quote_currency"), multiplier: decimal(spec?["contract_multiplier"]) ?? 1,
                 contractSide: row["position_side"].map { $0 == "short" ? .short : .long })
-            asset.instrumentID = row["instrument_id"].flatMap(UUID.init(uuidString:))
+            asset.instrumentID = row["instrument_id"]
 
             if let rate = decimal(row["annual_rate"]), let maturity = row["maturity_date"].flatMap(day.date(from:)) {
                 asset.depositTerms = InvestmentDepositTerms(annualRate: rate, maturity: maturity)
             }
             book.assets[id] = asset
-            let quoted = try Self.marketOrder(prices[row["instrument_id"] ?? ""] ?? []).map { try quote($0, day: "session_date", value: "price") }
+            let priceType = kind == .fund ? "nav" : "close"
+            let quoted = try Self.marketOrder((prices[row["instrument_id"] ?? ""] ?? []).filter { $0["price_type"] == priceType })
+                .map { try quote($0, day: "session_date", value: "price") }
             let edited = try (manual[id.uuidString] ?? []).map { try quote($0, day: "valuation_date", value: "value") }
             if !quoted.isEmpty || !edited.isEmpty {
                 book.quotes[id] = InvestmentBook.merge(quoted, edited, allowZero: kind == .insurance)
@@ -417,6 +412,14 @@ struct InvestmentServerRecords {
         let value = try required(row, field)
         guard let key = map.first(where: { $0.value == value })?.key else { throw invalid(field) }
         return key
+    }
+
+    func sharedQuotes(for asset: InvestmentAsset, in state: InvestmentServerState) throws -> [InvestmentQuote] {
+        let priceType = asset.kind == .fund ? "nav" : "close"
+        let rows = (state.tables["market_daily_prices"] ?? []).filter {
+            $0["instrument_id"] == asset.marketInstrument.id && $0["price_type"] == priceType
+        }
+        return InvestmentBook.merge([], try Self.marketOrder(rows).map { try quote($0, day: "session_date", value: "price") })
     }
 
     private static func marketOrder(_ rows: [InvestmentServerRow]) -> [InvestmentServerRow] {

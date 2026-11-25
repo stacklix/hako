@@ -28,6 +28,7 @@ struct WorkshopTranscriptLayout: Sendable {
     var artifactsByEntry: [String: [WorkshopArtifact]] = [:]
     var messageParts: [String: [WorkshopMessagePart]] = [:]
     var questionReplies: [String: [WorkshopQuestionReply]] = [:]
+    var turnFooters: [String: WorkshopTurn] = [:]
     var isEmpty: Bool { groups.isEmpty && queued.isEmpty }
 
     // Local history is visible before Markdown and artifact parsing finishes.
@@ -36,7 +37,7 @@ struct WorkshopTranscriptLayout: Sendable {
         let text = Dictionary(transcript.history.filter { $0.role == "assistant" && $0.kind != "imageGeneration" }
             .map { ($0.id, [WorkshopMessagePart.text($0.text)]) }, uniquingKeysWith: { _, latest in latest })
         return Self(revision: revision, groups: WorkshopEntryGroup.group(transcript.history, artifactsAfter: []),
-            queued: transcript.queued, messageParts: text)
+            queued: transcript.queued, messageParts: text, turnFooters: WorkshopTurn.footers(in: entries))
     }
 
     func canReplace(_ current: Self, latestRevision: Int) -> Bool {
@@ -127,7 +128,8 @@ actor WorkshopTranscriptRenderer {
         }
         return WorkshopTranscriptLayout(revision: revision,
             groups: WorkshopEntryGroup.group(presentation.history, artifactsAfter: Set(placement.keys)),
-            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts, questionReplies: questionReplies)
+            queued: presentation.queued, artifactsByEntry: placement, messageParts: parts, questionReplies: questionReplies,
+            turnFooters: WorkshopTurn.footers(in: entries))
     }
 
     private static func normalize(_ text: String) -> String {

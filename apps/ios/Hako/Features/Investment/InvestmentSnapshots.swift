@@ -54,6 +54,19 @@ struct InvestmentSnapshotQuoteRequests {
 
 extension InvestmentAsset {
     var usesUSEquityClose: Bool { currency == .usd && (kind == .stock || kind == .etf) }
+
+    func marketClose(on sessionDay: Date) -> Date {
+        if usesUSEquityClose { return InvestmentBook.usEquityClose(on: sessionDay) }
+        let hour = kind == .crypto ? 24 : (isHongKongEquity || isStockConnect ? 16 : 15)
+        return InvestmentBook.calendar.date(byAdding: .hour, value: hour, to: InvestmentBook.day(sessionDay))!
+    }
+
+    func lastClosedMarketDay(at now: Date) -> Date {
+        var day = InvestmentBook.day(now)
+        if usesUSEquityClose || kind == .crypto { day = InvestmentBook.addDays(-1, to: day) }
+        if marketClose(on: day) > now { day = InvestmentBook.addDays(-1, to: day) }
+        return kind == .crypto ? day : InvestmentBook.weekdayMarketDate(on: day)
+    }
 }
 
 struct InvestmentDailySnapshotReport {
@@ -195,6 +208,104 @@ extension InvestmentBook {
         }?.lowerBound
         let start = min(next, firstGap ?? next)
         return start <= end ? start...end : nil
+    }
+
+    func historicalMarketDataRequests(through end: Date, fullHistory: Bool,
+                                      includePlans: Bool = false, notBefore first: Date? = nil,
+                                      closedMarketsAt now: Date? = nil) -> InvestmentSnapshotQuoteRequests {
+        let window = dailyQuoteWindow(through: end, fullHistory: fullHistory).flatMap { range -> ClosedRange<Date>? in
+            let start = max(first ?? range.lowerBound, range.lowerBound)
+            return start <= range.upperBound ? start...range.upperBound : nil
+        }
+        var requests = window.map { missingDailyMarketData(in: $0) } ?? InvestmentSnapshotQuoteRequests()
+        // Snapshot completeness is independent of whether yesterday's FX was
+        // finalized. Both app entry and Shortcuts must check this even with no gaps.
+        if let earliest, earliest <= end {
+            let last = Self.weekdayMarketDate(on: end)
+            var currencies = Set(accounts.map(\.currency)).union([.usd])
+            if assets.values.contains(where: \.isStockConnect) { currencies.insert(.hkd) }
+            for currency in currencies where currency != .cny {
+                var pending = (fx[currency] ?? []).filter {
+                    $0.day >= earliest && $0.day <= last && $0.isDailyClose != true
+                }.map { $0.day...$0.day }
+                if last >= earliest, !(fx[currency] ?? []).contains(where: {
+                    $0.day == last && $0.price > 0 && $0.isDailyClose == true
+                }) { pending.append(last...last) }
+                let ranges = requests.rates[currency, default: []] + pending
+                requests.rates[currency] = []
+                for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                    Self.addQuoteWindow(range, to: &requests.rates[currency, default: []])
+                }
+                if requests.rates[currency]?.isEmpty == true { requests.rates.removeValue(forKey: currency) }
+            }
+        }
+        if includePlans {
+            for plan in plans.sorted(by: { $0.nextDay < $1.nextDay }) {
+                guard plan.enabled, plan.nextDay <= end,
+                      let account = account(plan.accountID), !account.isArchived else { continue }
+                // New deposits and first purchases can introduce valuation needs before any ledger exists.
+                let first = Self.weekdayMarketDate(on: plan.nextDay)
+                for currency in Set([account.currency, .usd]) where currency != .cny {
+                    let ranges = requests.rates[currency, default: []] + [first...end]
+                    requests.rates[currency] = []
+                    for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                        Self.addQuoteWindow(range, to: &requests.rates[currency, default: []])
+                    }
+                }
+                if let id = plan.assetID, let asset = assets[id], asset.supportsPlan {
+                    let session = asset.usesUSEquityClose ? Self.addDays(-1, to: plan.nextDay) : plan.nextDay
+                    let ranges = requests.assets[id, default: []] + [Self.weekdayMarketDate(on: session)...end]
+                    requests.assets[id] = []
+                    for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                        Self.addQuoteWindow(range, to: &requests.assets[id, default: []])
+                    }
+                }
+            }
+        }
+        if let first {
+            func bounded(_ ranges: [ClosedRange<Date>], weekdaysOnly: Bool = false) -> [ClosedRange<Date>]? {
+                let result = ranges.compactMap { range -> ClosedRange<Date>? in
+                    var start = max(first, range.lowerBound)
+                    let last = min(end, range.upperBound)
+                    if weekdaysOnly {
+                        while [1, 7].contains(Self.calendar.component(.weekday, from: start)) {
+                            start = Self.addDays(1, to: start)
+                        }
+                    }
+                    return start <= last ? start...last : nil
+                }
+                return result.isEmpty ? nil : result
+            }
+            requests.assets = requests.assets.compactMapValues { bounded($0) }
+            requests.rates = requests.rates.compactMapValues { bounded($0, weekdaysOnly: true) }
+        }
+        if let now {
+            let today = Self.day(now)
+            var ids = Set<UUID>()
+            visitDailyLedgers(on: [today]) { _, ledgers in
+                for (account, ledger) in zip(accounts, ledgers) where !account.isArchived {
+                    for (id, position) in ledger.positions where position.quantity != 0 { ids.insert(id) }
+                }
+            }
+            if includePlans {
+                for plan in plans where plan.enabled && plan.nextDay <= today {
+                    if let id = plan.assetID, let account = account(plan.accountID), !account.isArchived { ids.insert(id) }
+                }
+            }
+            for id in ids {
+                guard let asset = assets[id], !asset.kind.isManual else { continue }
+                let session = asset.lastClosedMarketDay(at: now)
+                guard first.map({ session >= $0 }) ?? true,
+                      !(quotes[id] ?? []).contains(where: { $0.day == session && $0.price > 0 && $0.isDailyClose == true }) else { continue }
+                // Valuation may carry an earlier price, but that does not fill the latest session's quote.
+                let ranges = requests.assets[id, default: []] + [session...session]
+                requests.assets[id] = []
+                for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                    Self.addQuoteWindow(range, to: &requests.assets[id, default: []])
+                }
+            }
+        }
+        return requests
     }
 
     func missingDailyMarketData(in window: ClosedRange<Date>) -> InvestmentSnapshotQuoteRequests {

@@ -12,8 +12,11 @@ private final class ReadCounter: @unchecked Sendable {
 
 @main struct InvestmentPresentationTests {
     static func main() async throws {
+        sharedMarketRemovalDoesNotDeletePublicRecords()
         try insuranceGainBasisOnlyChangesOverviewGain()
         try allocationUsesCurrentValues()
+        try dailyAccountGainRanking()
+        try accountAnalysisUsesCurrentValuations()
         let today = InvestmentBook.day()
         let yesterday = InvestmentBook.addDays(-1, to: today)
         var book = InvestmentBook()
@@ -111,6 +114,105 @@ private final class ReadCounter: @unchecked Sendable {
                      "The prepared account must reflect the confirmed write before the editor is dismissed")
         print(String(format: "Presentation: 1,206 events, 10 repeated renders %.3fs; one background preparation %.3fs", repeated, preparation))
         print("Presentation/cache/write: valuation parity, holdings order, one cache read, scope isolation, invalidation and prepared save data passed")
+    }
+
+    static func dailyAccountGainRanking() throws {
+        let today = InvestmentBook.day()
+        let yesterday = InvestmentBook.addDays(-1, to: today)
+        var book = InvestmentBook()
+        func add(_ name: String, currency: InvestmentCurrency = .cny, gain: Decimal?, deposit: Decimal = 0) throws -> UUID {
+            let type: InvestmentAccountType = currency == .cny ? .fundWealth : currency == .usd ? .crypto : .insurance
+            let kind: InvestmentKind = currency == .cny ? .fund : currency == .usd ? .crypto : .insurance
+            let code = currency == .cny ? String(format: "%06d.OF", book.accounts.count + 1) : "ASSET\(book.accounts.count)"
+            let account = InvestmentAccount(name: name, currency: currency, type: type)
+            book.accounts.append(account)
+            let id = try book.register(.init(name: name, code: code, market: "", kind: kind, currency: currency))
+            try book.post(.init(day: yesterday, kind: .opening, assetID: id, quantity: 1, price: 100), accountID: account.id)
+            if deposit > 0 { try book.post(.init(day: today, kind: .deposit, amount: deposit), accountID: account.id) }
+            if let gain {
+                book.addQuotes([.init(day: yesterday, price: 100, isDailyClose: true),
+                                .init(day: today, price: 100 + gain, isDailyClose: true)], assetID: id)
+            }
+            return account.id
+        }
+        let local = try add("本币盈利", gain: 10, deposit: 50)
+        let foreign = try add("外币盈利", currency: .usd, gain: 3)
+        let loss = try add("亏损", gain: -5)
+        let tie = try add("同额盈利", gain: 10)
+        let missing = try add("缺少报价", gain: nil)
+        let missingFX = try add("缺少汇率", currency: .hkd, gain: 99)
+        let empty = InvestmentAccount(name: "空账户", currency: .cny, type: .securities)
+        book.accounts.append(empty)
+        book.fx[.usd] = [.init(day: yesterday, price: 7, isDailyClose: true)]
+        let prepared = InvestmentPresentation(book: book, day: today)
+        let rows = prepared.dailyAccountGains
+        precondition(rows.map(\.id) == [foreign, local, tie, empty.id, loss, missing, missingFX],
+                     "Rank converted signed gains, keep ties and unavailable values in account order")
+        let localRow = rows.first { $0.id == local }!
+        precondition(localRow.gain == 10 && localRow.rate == Decimal(10) / 150,
+                     "Today's deposit changes the return basis, never the gain")
+        let foreignRow = rows.first { $0.id == foreign }!
+        precondition(foreignRow.gain == 3 && foreignRow.gainCNY == 21 && foreignRow.rate == Decimal(3) / 100)
+        precondition(rows.first { $0.id == loss }?.rate == Decimal(-5) / 100)
+        precondition(rows.first { $0.id == empty.id }?.gain == 0 && rows.first { $0.id == empty.id }?.rate == nil)
+        precondition(rows.first { $0.id == missing }?.gain == nil && rows.first { $0.id == missing }?.rate == nil)
+        precondition(rows.first { $0.id == missingFX }?.gain == 99 && rows.first { $0.id == missingFX }?.gainCNY == nil)
+        for row in rows { precondition(row.gain == prepared.accounts[row.id]?.dailyGain) }
+    }
+
+    static func accountAnalysisUsesCurrentValuations() throws {
+        let today = InvestmentBook.day()
+        let yesterday = InvestmentBook.addDays(-1, to: today)
+        var book = InvestmentBook()
+        func add(_ name: String, currency: InvestmentCurrency, price: Decimal) throws -> UUID {
+            let account = InvestmentAccount(name: name, currency: currency, type: .securities)
+            book.accounts.append(account)
+            let code = currency == .usd ? "TEST" : "000001.SZ"
+            let asset = try book.register(.init(name: name, code: code, market: currency == .usd ? "XNAS" : "XSHE",
+                                                kind: .stock, currency: currency))
+            try book.post(.init(day: yesterday, kind: .opening, assetID: asset, quantity: 10, price: 10), accountID: account.id)
+            book.addQuotes([.init(day: today, price: price, isDailyClose: false)], assetID: asset)
+            return account.id
+        }
+        let profit = try add("美元盈利", currency: .usd, price: 12)
+        let loss = try add("人民币亏损", currency: .cny, price: 8)
+        let empty = InvestmentAccount(name: "空账户", currency: .cny, type: .securities)
+        book.accounts.append(empty)
+        book.accounts[1].archivedAt = today
+        book.fx[.usd] = [.init(day: today, price: 7, isDailyClose: false)]
+        let original = try InvestmentServerRecords().encode(book, revision: 1)
+        let view = InvestmentPresentation(book: book, day: today)
+        let rows = view.accountAnalysis
+        precondition(rows.map(\.id) == [profit, loss, empty.id], "Keep account order and color identity")
+        precondition(rows.map(\.colorIndex) == [0, 1, 2] && rows[1].isArchived)
+        precondition(rows[0].valueCNY == 840 && rows[0].gainCNY == 140 && rows[0].gainRate == Decimal(20) / 100)
+        precondition(rows[1].valueCNY == 80 && rows[1].gainCNY == -20 && rows[1].gainRate == Decimal(-20) / 100)
+        precondition(rows[0].gainWeight(losses: false) == 140 && rows[0].gainWeight(losses: true) == 0)
+        precondition(rows[1].gainWeight(losses: false) == 0 && rows[1].gainWeight(losses: true) == 20)
+        precondition(rows[2].valueCNY == 0 && rows[2].gainCNY == 0 && rows[2].gainRate == nil)
+        precondition(rows[2].gainWeight(losses: true) == 0 && rows[2].gainWeight(losses: false) == 0)
+        for row in rows {
+            precondition(row.valueCNY == view.allocation.first { $0.id == row.id.uuidString }?.value)
+        }
+        let after = try InvestmentServerRecords().encode(book, revision: 1)
+        precondition(after == original, "Analysis must not alter saved data")
+        book.fx = [:]
+        let missing = InvestmentPresentation(book: book, day: today).accountAnalysis[0]
+        precondition(missing.valueCNY == nil && missing.gainCNY == nil && missing.gainWeight(losses: false) == nil,
+                     "Missing FX must remain unknown, never become zero or part of a pie")
+        precondition(missing.gainRate == Decimal(20) / 100, "Native return rate does not depend on conversion availability")
+    }
+
+    static func sharedMarketRemovalDoesNotDeletePublicRecords() {
+        let quote: InvestmentServerRow = ["instrument_id": "ETF:US:QQQM:USD", "session_date": "2026-11-20", "price_type": "close", "source": "one", "price": "100"]
+        let delta = InvestmentRecordChange.difference(changes: ["market_daily_prices": [], "investment_assets": []],
+            current: ["market_daily_prices": [quote], "investment_assets": [["id": "position"]]])
+        precondition(delta["market_daily_prices"] == nil && delta["investment_assets"]?.deletes == [["id": "position"]],
+            "Removing a private position must keep the public history available to other ledgers")
+        var updated = quote; updated["source"] = "two"; updated["price"] = "101"
+        let changed = InvestmentRecordChange.difference(changes: ["market_daily_prices": [updated]], current: ["market_daily_prices": [quote]])
+        precondition(changed["market_daily_prices"]?.upserts == [updated] && changed["market_daily_prices"]?.deletes.isEmpty == true,
+            "Changing provider is an update to the same observation")
     }
 
     static func insuranceGainBasisOnlyChangesOverviewGain() throws {

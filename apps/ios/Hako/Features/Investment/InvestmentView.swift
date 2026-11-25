@@ -89,13 +89,13 @@ struct InvestmentView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await store.load(force: true)
-            await store.refreshIfNeeded()
+            await store.refreshIfNeeded(checkUnconfirmedRates: true)
             await store.settleDuePlans()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(300)) }
                 catch { return }
                 await store.load(force: true)
-                await store.refreshIfNeeded()
+                await store.refreshIfNeeded(checkUnconfirmedRates: true)
                 await store.settleDuePlans()
             }
         }

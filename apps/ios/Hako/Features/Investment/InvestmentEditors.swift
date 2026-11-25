@@ -650,7 +650,7 @@ private struct InvestmentAssetDraft: Equatable {
                                market: selectedAsset?.market ?? venue, kind: kind, currency: currency, multiplier: multiplier,
                                contractSide: assetSide)
         result.id = positionID
-        result.instrumentID = existing?.instrumentID ?? selectedAsset?.instrumentID ?? selectedAsset?.id
+        result.instrumentID = result.marketInstrument.id
         if let existing {
             guard !kind.usesMargin || existing.multiplier == result.multiplier else {
                 throw InvestmentError.invalid("目录中的合约规格与已有持仓不同，请先核对合约乘数和数量口径。")
@@ -1475,6 +1475,7 @@ struct InvestmentPlanEditor: View {
                 }
                 Toggle("启用任务", isOn: $enabled)
             } footer: {
+                Text("计划日结束后次日补记，按北京时间计算，流水保留对应的历史日期。")
                 if frequency == .biweekly { Text("从首次计划日起，每隔 14 天执行一次。") }
                 if frequency == .monthly && day > 28 { Text("当月没有该日期时，按月末执行。") }
                 if buy { Text("定期买入从该账户的现金余额扣款，按可用报价补记。港股通按交割单手动记账。") }

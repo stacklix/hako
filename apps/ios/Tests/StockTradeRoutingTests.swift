@@ -3,8 +3,44 @@ import Foundation
 import FoundationNetworking
 #endif
 
+private actor StockTradeRequestSignal {
+    private var started = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func signal() {
+        started = true
+        for waiter in waiters { waiter.resume() }
+        waiters.removeAll()
+    }
+    func wait() async {
+        if started { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
+private final class StockTradeRequestProtocol: URLProtocol {
+    static let pending = StockTradeRequestSignal()
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        switch request.url!.lastPathComponent {
+        case "pending": Task { await Self.pending.signal() }; return
+        case "transport-cancel": client?.urlProtocol(self, didFailWithError: URLError(.cancelled)); return
+        case "offline": client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
+        case "timeout": client?.urlProtocol(self, didFailWithError: URLError(.timedOut)); return
+        default: break
+        }
+        let failed = request.url!.lastPathComponent == "unavailable"
+        let response = HTTPURLResponse(url: request.url!, statusCode: failed ? 503 : 200, httpVersion: nil, headerFields: nil)!
+        let body = failed ? #"{"code":"monitor_unavailable","message":"private upstream detail","requestId":"test","retryable":true}"# : #"{"items":[]}"#
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() { }
+}
+
 @main struct StockTradeRoutingTests {
-    static func main() throws {
+    static func main() async throws {
         let roots = ["https://example.com", "https://example.com/"]
         let bases = roots + ["https://example.com/cerno", "https://example.com/cerno/", "https://example.com/apps/cerno/"]
         let endpoints = [["meta"], ["auth", "native", "start"], ["auth", "native", "complete"], ["auth", "session"], ["selection", "latest"], ["stocks", "600519.SH", "bars"], ["alerts"]]
@@ -39,6 +75,35 @@ import FoundationNetworking
                     "https://example.com/cerno/%252e%252e", "https://example.com/cerno//other", "https://example.com/cerno/%00", "https://example.com/cerno/%7f", "https://example.com/cerno/%3Ftoken", "https://example.com/cerno\\other"] {
             precondition(StockTradeConnection.httpsBaseURL(bad) == nil, "Ambiguous or unsafe base address accepted: \(bad)")
         }
-        print("Cerno routing: root and nested bases, authorization origin, canonical encoding, headers and path confinement passed")
+        try await cancelledRequestsDoNotBecomeViewErrors()
+        print("Cerno routing, caller cancellation, visible transport interruptions and unchanged network/API failures passed")
+    }
+
+    static func cancelledRequestsDoNotBecomeViewErrors() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StockTradeRequestProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let client = try StockTradeClient(connection: .init(origin: "https://cerno.test", clientID: "test"), session: session)
+        let pending = Task { try await client.data(["pending"]) }
+        await StockTradeRequestProtocol.pending.wait()
+        pending.cancel()
+        do { _ = try await pending.value; preconditionFailure("Cancelled request returned data") }
+        catch is CancellationError { }
+
+        do { _ = try await client.data(["transport-cancel"]); preconditionFailure("Unexplained interruption was hidden") }
+        catch StockTradeFailure.requestInterrupted {
+            precondition(StockTradeFailure.requestInterrupted.localizedDescription.contains("请求意外中断"))
+        }
+        for (path, code) in [("offline", URLError.Code.notConnectedToInternet), ("timeout", .timedOut)] {
+            do { _ = try await client.data([path]); preconditionFailure("Network failure was hidden") }
+            catch let error as URLError { precondition(error.code == code) }
+        }
+        do { _ = try await client.data(["unavailable"]); preconditionFailure("API failure was hidden") }
+        catch StockTradeFailure.api(let status, let code, _, _) {
+            precondition(status == 503 && code == "monitor_unavailable")
+        }
+        let data = try await client.data(["ok"])
+        precondition(String(decoding: data, as: UTF8.self) == #"{"items":[]}"#, "Cancellation prevented a later refresh")
     }
 }

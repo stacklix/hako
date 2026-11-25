@@ -81,6 +81,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
                 let right = next[key]
                 guard left != right else { continue }
                 let op: Change.Operation = left == nil ? .add : right == nil ? .remove : .edit
+                if op == .remove, InvestmentServerRecords.sharedTables.contains(section.name) { continue }
                 let beforeRow = before.fields(left, section: section.name)
                 let afterRow = after.fields(right, section: section.name)
                 let touched = Set(beforeRow.keys).union(afterRow.keys).filter { beforeRow[$0] != afterRow[$0] }
@@ -101,8 +102,8 @@ struct InvestmentAgentProposal: Identifiable, Codable {
                 var assetID = row["asset_id"].flatMap(UUID.init(uuidString:))
                 if section.name == "investment_assets" { assetID = row["id"].flatMap(UUID.init(uuidString:)) }
                 if op == .remove, ["market_instruments", "market_derivative_specs", "market_daily_prices"].contains(section.name),
-                   let instrument = (row["instrument_id"] ?? row["id"]).flatMap(UUID.init(uuidString:)) {
-                    assetID = base.book.assets.values.filter { ($0.instrumentID ?? $0.id) == instrument && candidate.assets[$0.id] == nil }
+                   let instrument = row["instrument_id"] ?? row["id"] {
+                    assetID = base.book.assets.values.filter { $0.marketInstrument.id == instrument && candidate.assets[$0.id] == nil }
                         .map(\.id).sorted { $0.uuidString < $1.uuidString }.first
                 }
                 result.append(.init(id: section.name + ":" + key, operation: op, title: context.title(row, section: section), fields: fields,
@@ -142,8 +143,8 @@ struct InvestmentAgentProposal: Identifiable, Codable {
         .init(name: "investment_balance_accounts", title: "资产负债账户", keys: ["id"]),
         .init(name: "investment_balance_records", title: "资产负债记录", keys: ["id"]),
         .init(name: "investment_manual_prices", title: "手工报价", keys: ["asset_id", "valuation_date"]),
-        .init(name: "market_daily_prices", title: "行情报价", keys: ["instrument_id", "session_date", "price_type", "source"]),
-        .init(name: "market_daily_fx", title: "汇率", keys: ["rate_date", "base_currency", "quote_currency", "source"]),
+        .init(name: "market_daily_prices", title: "行情报价", keys: ["instrument_id", "session_date", "price_type"]),
+        .init(name: "market_daily_fx", title: "汇率", keys: ["rate_date", "base_currency", "quote_currency"]),
         .init(name: "investment_daily_snapshots", title: "投资日终快照", keys: ["snapshot_date"]),
         .init(name: "investment_account_daily_snapshots", title: "账户日终快照", keys: ["account_id", "snapshot_date"]),
     ]
@@ -181,7 +182,7 @@ struct InvestmentAgentProposal: Identifiable, Codable {
             balances = Dictionary((book.balanceSheet?.accounts ?? []).map { ($0.id.uuidString, $0.name) }, uniquingKeysWith: { first, _ in first })
             let entries = book.assets.values.sorted { $0.id.uuidString < $1.id.uuidString }
             assets = Dictionary(entries.map { ($0.id.uuidString, $0.kind.usesBalance ? $0.name : "\($0.displayName) · \($0.displayCode)") }, uniquingKeysWith: { first, _ in first })
-            instruments = Dictionary(entries.map { (($0.instrumentID ?? $0.id).uuidString, "\($0.displayCode) · \($0.currency.rawValue)") }, uniquingKeysWith: { first, _ in first })
+            instruments = Dictionary(entries.map { ($0.marketInstrument.id, "\($0.displayCode) · \($0.currency.rawValue)") }, uniquingKeysWith: { first, _ in first })
             events = Dictionary(book.accounts.flatMap(\.events).map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
             var cash: [String: String] = [:]
             for account in book.accounts {
@@ -570,12 +571,12 @@ extension InvestmentAgentProposal {
         func assetChanges(_ asset: InvestmentAsset) -> [Change] {
             let instrument = changes.first {
                 $0.id.hasPrefix("market_instruments:") && $0.operation == .add &&
-                    $0.value("symbol") == asset.code && $0.value("exchange") == asset.market
+                    $0.recordKey == asset.marketInstrument.id
             }
             let ids = ["investment_assets:" + asset.id.uuidString, instrument?.id ?? "",
                        instrument.map { "market_derivative_specs:" + $0.recordKey } ?? ""]
             let quotePrefixes = ["investment_manual_prices:" + asset.id.uuidString + "\u{1F}",
-                                 "market_daily_prices:" + (instrument?.recordKey ?? (asset.instrumentID ?? asset.id).uuidString) + "\u{1F}"]
+                                 "market_daily_prices:" + (instrument?.recordKey ?? asset.marketInstrument.id) + "\u{1F}"]
             let quotes = changes.filter { change in quotePrefixes.contains { change.id.hasPrefix($0) } }
             return (ids.compactMap { byID[$0] } + quotes).filter { $0.operation == .add }
         }

@@ -58,9 +58,13 @@ func investmentArchive(ctx context.Context, db *sql.DB, owner string) ([]byte, e
 		return nil, err
 	}
 	for _, table := range investmentTables {
-		columns := append([]string{"book_id"}, table.columns()...)
+		columns := table.storageColumns()
 		order := strings.Join(strings.Fields(table.keys), ",")
-		if err := writeInvestmentCSV(ctx, tx, archive, table.name, columns, "book_id", bookID, order); err != nil {
+		scope, id := "book_id", any(bookID)
+		if table.shared() {
+			scope, id = "1", 1
+		}
+		if err := writeInvestmentCSV(ctx, tx, archive, table.name, columns, scope, id, order); err != nil {
 			return nil, err
 		}
 	}

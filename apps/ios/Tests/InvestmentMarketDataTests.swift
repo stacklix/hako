@@ -28,13 +28,14 @@ struct InvestmentMarketDataTests {
         try await eastmoneyExpiredContractsCanUseTushare()
         try await eastmoneyFundNAVPaginatesAndRejectsMoneyYields()
         try await twelveUSCloseTimesAndWatchFreshness()
+        try await localMarketsBecomeFinalAtClose()
         try await eastmoneyFailuresAndRetryAreExplicit()
-        try await cryptocurrencyUsesUSDPair()
+        try await cryptocurrencyUsesBinanceWithoutCredentials()
         try await binanceSpotCatalogFindsTRX()
-        try await publicSpotPricesAreConvertedToDollars()
+        try await publicSpotPricesUseUSDTParity()
         try await cryptoDailyClosesUseTheLedgerDay()
         try await cryptoChartHistoryUsesPublicDailyCloses()
-        try await cryptoChartHistoryUsesDirectDollarPricesWhenUnavailable()
+        try await cryptoChartHistoryPreservesBinanceFailures()
 
         try await referenceRates()
         try await quoteRequestDiagnostics()
@@ -232,32 +233,26 @@ struct InvestmentMarketDataTests {
         precondition(InvestmentQuoteSymbol(asset("600519.SH", .stock, .cny, market: "XSHE")).tushareSymbol == nil)
     }
 
-    static func cryptocurrencyUsesUSDPair() async throws {
-        let key = "fixture+/=&?%"
+    static func cryptocurrencyUsesBinanceWithoutCredentials() async throws {
         let provider = InvestmentQuoteProvider { request, secrets in
-            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
-            precondition(query.filter { $0.name == "apikey" } == [.init(name: "apikey", value: key)])
-            precondition(request.url!.absoluteString.contains("%2B") && !request.url!.absoluteString.contains("+"))
-            precondition(request.value(forHTTPHeaderField: "Authorization") == nil && secrets == [key])
-            var redactor = HTTPLogRedactor(request: request, secrets: secrets)
-            let log = redactor.request(request)
-            precondition(!log.contains(key) && log.contains("[已隐藏]"))
-            if request.url?.path == "/symbol_search" {
-                return response(request, #"""
-                    {"data":[
-                    {"symbol":"BTC/USD","instrument_name":"Bitcoin","instrument_type":"Digital Currency"},
-                    {"symbol":"BTC/USDT","instrument_name":"Bitcoin in Tether","instrument_type":"Digital Currency"}]}
-                    """#)
+            precondition(secrets.isEmpty && request.value(forHTTPHeaderField: "Authorization") == nil)
+            precondition(request.url?.host == "data-api.binance.vision" || request.url?.host == "www.binance.com")
+            if request.url?.path == "/api/v3/exchangeInfo" {
+                return response(request, #"{"symbols":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","status":"TRADING","isSpotTradingAllowed":true}]}"#)
             }
-            precondition(query.contains(.init(name: "symbol", value: "BTC/USD")))
-            return response(request, #"{"meta":{"symbol":"BTC/USD","currency_quote":"US Dollar"},"values":[{"datetime":"2026-10-30","close":"10000.25"}]}"#)
+            if request.url?.path == "/bapi/asset/v2/public/asset/asset/get-all-asset" {
+                return response(request, #"{"data":[{"assetCode":"BTC","assetName":"Bitcoin"}]}"#)
+            }
+            precondition(request.url?.path == "/api/v3/klines")
+            let end = Int64(InvestmentBook.addDays(1, to: day(29)).timeIntervalSince1970 * 1000) - 1
+            return response(request, #"[[0,"1","1","1","10000.25","1",\#(end)]]"#)
         }
-        let keys: [InvestmentQuoteSource: String] = [.twelveData: key]
-        let choices = try await provider.searchInstruments(.init(query: "BTC", kind: .crypto, currency: .usd, accountType: .crypto), keys: keys)
-        precondition(choices.map(\.code) == ["BTC"])
-        let rows = try await provider.history(asset: choices[0], start: day(1), through: day(30), cached: nil, keys: keys)
+        let choices = try await provider.searchInstruments(.init(query: "BTC", kind: .crypto, currency: .usd, accountType: .crypto), keys: [:])
+        precondition(choices.map(\.code) == ["BTC"] && choices[0].market == "BINANCE")
+        let rows = try await provider.history(asset: choices[0], start: day(1), through: day(30), cached: nil, keys: [:])
         precondition(rows.first?.price == Decimal(string: "10000.25"))
     }
+
 
     static func binanceSpotCatalogFindsTRX() async throws {
         let pairs = #"""
@@ -292,36 +287,29 @@ struct InvestmentMarketDataTests {
         precondition(fallback.filter(query.includes).map(\.name) == ["TRX"])
     }
 
-    static func publicSpotPricesAreConvertedToDollars() async throws {
+    static func publicSpotPricesUseUSDTParity() async throws {
+        var calls = 0
         let provider = InvestmentQuoteProvider { request, secrets in
+            calls += 1
             precondition(secrets.isEmpty)
-            switch request.url?.path {
-            case "/v2/prices/USDT-USD/spot":
-                return response(request, #"{"data":{"amount":"0.998635","base":"USDT","currency":"USD"}}"#)
-            case "/api/v3/ticker/price":
-                precondition(request.url?.host == "data-api.binance.vision" && request.url?.query == "symbol=TRXUSDT")
-                return response(request, #"{"symbol":"TRXUSDT","price":"0.32060000"}"#)
-            case "/v2/prices/TRX-USD/spot":
-                return response(request, #"{"data":{"amount":"0.319985","base":"TRX","currency":"USD"}}"#)
-            default:
-                throw URLError(.unsupportedURL)
-            }
+            if request.url?.path == "/api/v3/klines" { return response(request, "[]") }
+            precondition(request.url?.host == "data-api.binance.vision" && request.url?.path == "/api/v3/ticker/price")
+            precondition(request.url?.query == "symbol=TRXUSDT")
+            return response(request, #"{"symbol":"TRXUSDT","price":"0.32060000"}"#)
         }
         let trx = asset("TRX", .crypto, .usd)
-        let rate = try await provider.coinbaseSpotUSDQuote(code: "USDT")
-        let quote = try await provider.publicSpotUSDQuote(for: trx, usdtUSD: rate)
-        precondition(quote.price == Decimal(string: "0.320162381") && quote.source == "Binance 现货")
-        let direct = try await provider.publicSpotUSDQuote(for: trx, usdtUSD: nil)
-        precondition(direct.price == Decimal(string: "0.319985") && direct.source == "Coinbase 现货")
+        let quote = try await provider.publicSpotUSDQuote(for: trx)
+        precondition(quote.price == Decimal(string: "0.3206") && quote.source == "Binance 现货")
+        let stable = try await provider.publicSpotUSDQuote(for: asset("USDT", .crypto, .usd))
+        precondition(stable.price == 1 && calls == 1, "USDT parity must not make a network request")
+        let latest = try await provider.latestQuote(for: trx, keys: [:])
+        precondition(latest.price == quote.price)
         let watched = try await provider.watchQuotes(for: trx, keys: [:])
         precondition(watched.last?.price == quote.price && watched.last?.source == quote.source)
+        let failing = InvestmentQuoteProvider { _, _ in throw URLError(.cannotConnectToHost) }
+        do { _ = try await failing.publicSpotUSDQuote(for: trx); preconditionFailure("Binance failure was swallowed") }
+        catch { precondition((error as? URLError)?.code == .cannotConnectToHost) }
     }
-
-
-
-
-
-
 
     static func cryptoDailyClosesUseTheLedgerDay() async throws {
         let first = day(29), next = day(30)
@@ -332,9 +320,6 @@ struct InvestmentMarketDataTests {
             let url = request.url!
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
             switch url.path {
-            case "/api/v3/brokerage/market/products/USDT-USD/candles":
-                precondition(query.contains(.init(name: "granularity", value: "FOUR_HOUR")))
-                return response(request, #"{"candles":[{"start":"\#(start)","close":"0.8"},{"start":"\#(end - 14_400)","close":"0.99"}]}"#)
             case "/api/v3/klines":
                 precondition(query.contains(.init(name: "timeZone", value: "8")))
                 return response(request, #"[[\#(start * 1000),"1","1","1","0.32","1",\#(end * 1000 - 1)]]"#)
@@ -342,10 +327,8 @@ struct InvestmentMarketDataTests {
                 throw URLError(.unsupportedURL)
             }
         }
-        let rates = try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: first, through: first)
-        precondition(rates.count == 1 && rates[0].day == first && rates[0].price == Decimal(string: "0.99"))
-        let spot = try await provider.binanceSpotDailyQuotes(for: "TRX", from: first, through: first, usdtUSD: [first: rates[0].price])
-        precondition(spot.count == 1 && spot[0].price == Decimal(string: "0.3168") && spot[0].isDailyClose == true)
+        let spot = try await provider.binanceSpotDailyQuotes(for: "TRX", from: first, through: first)
+        precondition(spot.count == 1 && spot[0].price == Decimal(string: "0.32") && spot[0].isDailyClose == true)
     }
 
     static func cryptoChartHistoryUsesPublicDailyCloses() async throws {
@@ -354,41 +337,41 @@ struct InvestmentMarketDataTests {
         let provider = InvestmentQuoteProvider { request, secrets in
             precondition(secrets.isEmpty)
             switch request.url!.path {
-            case "/api/v3/brokerage/market/products/USDT-USD/candles":
-                return response(request, #"{"candles":[{"start":"\#(end - 14_400)","close":"0.99"}]}"#)
             case "/api/v3/klines":
                 return response(request, #"[[\#(start * 1000),"1","1","1","0.32","1",\#(end * 1000 - 1)]]"#)
             default: preconditionFailure("Unexpected public price request")
             }
         }
         let values = try await provider.cryptoPriceHistory(code: "TRX", from: first, through: first)
-        precondition(values.count == 1 && values[0].day == first && values[0].price == Decimal(string: "0.3168"))
+        precondition(values.count == 1 && values[0].day == first && values[0].price == Decimal(string: "0.32"))
         precondition(values[0].isDailyClose == true)
         let stable = try await provider.cryptoPriceHistory(code: "USDT", from: first, through: first)
-        precondition(stable.count == 1 && stable[0].price == Decimal(string: "0.99"))
+        precondition(stable.count == 1 && stable[0].price == 1)
         let today = InvestmentBook.day()
         let incomplete = try await provider.cryptoPriceHistory(code: "TRX", from: today, through: today)
         precondition(incomplete.isEmpty)
     }
 
-    static func cryptoChartHistoryUsesDirectDollarPricesWhenUnavailable() async throws {
-        let first = day(29), end = Int64(day(30).timeIntervalSince1970)
+    static func cryptoChartHistoryPreservesBinanceFailures() async throws {
+        let first = day(29)
+        var calls = 0
         let provider = InvestmentQuoteProvider { request, secrets in
-            precondition(secrets.isEmpty)
-            guard request.url!.path == "/api/v3/brokerage/market/products/BTC-USD/candles" else {
-                throw URLError(.cannotConnectToHost)
-            }
-            return response(request, #"{"candles":[{"start":"\#(end - 14_400)","close":"98000"}]}"#)
+            calls += 1
+            precondition(secrets.isEmpty && request.url?.host == "data-api.binance.vision")
+            throw URLError(.cannotConnectToHost)
         }
-        let values = try await provider.cryptoPriceHistory(code: "BTC", from: first, through: first)
-        precondition(values.count == 1 && values[0].day == first && values[0].price == 98000)
-        precondition(values[0].isDailyClose == true)
-        let empty = InvestmentQuoteProvider { request, _ in response(request, #"{"candles":[]}"#) }
+        do {
+            _ = try await provider.cryptoPriceHistory(code: "BTC", from: first, through: first)
+            preconditionFailure("Binance errors must be reported without another provider")
+        } catch { precondition((error as? URLError)?.code == .cannotConnectToHost) }
+        precondition(calls == 1)
+        let empty = InvestmentQuoteProvider { request, _ in response(request, "[]") }
         do {
             _ = try await empty.cryptoPriceHistory(code: "BTC", from: first, through: first)
             preconditionFailure("Missing prices must report a query failure")
         } catch is InvestmentError { }
     }
+
 
     static func asset(_ code: String, _ kind: InvestmentKind, _ currency: InvestmentCurrency, market: String = "") -> InvestmentAsset {
         InvestmentAsset(name: code, code: code, market: market, kind: kind, currency: currency)
@@ -461,17 +444,17 @@ extension InvestmentMarketDataTests {
             calls += 1
             // A previous page must report completion before the next one starts.
             precondition(events.filter { $0.stage.hasPrefix("行情请求 ") && $0.state == .succeeded }.count == calls - 1)
-            return (Data(#"{"candles":[]}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            return (Data("[]".utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         try await HakoExecutionDiagnostics.context.withValue({ events.append($0) }) {
             _ = try await HakoExecutionDiagnostics.measure("历史行情分页") {
-                try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: day(1), through: InvestmentBook.addDays(109, to: day(1)))
+                try await provider.binanceSpotDailyQuotes(for: "BTC", from: day(1), through: InvestmentBook.addDays(369, to: day(1)))
             }
         }
         precondition(calls == 3)
         precondition(events.first?.state == .started && events.last?.state == .succeeded)
         let rows = HakoExecutionLogRow.merging(events)
         precondition(rows.count == 4 && rows.allSatisfy { $0.finishedAt != nil })
-        precondition(rows.dropFirst().allSatisfy { $0.stage.contains("api.coinbase.com") })
+        precondition(rows.dropFirst().allSatisfy { $0.stage.contains("data-api.binance.vision") })
     }
 }

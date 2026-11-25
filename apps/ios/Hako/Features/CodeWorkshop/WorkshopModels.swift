@@ -356,6 +356,41 @@ struct WorkshopListSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+struct WorkshopTurn: Codable, Equatable, Sendable {
+    let id: String
+    let state: String
+    let startedAt: Int64?
+    let completedAt: Int64?
+    let durationMs: Int64?
+
+    var elapsedText: String? {
+        guard state == "completed" else { return nil }
+        let milliseconds: Int64
+        if let durationMs, durationMs >= 0 { milliseconds = durationMs }
+        else if let startedAt, let completedAt, startedAt > 0, completedAt >= startedAt,
+                completedAt - startedAt <= Int64.max / 1000 { milliseconds = (completedAt - startedAt) * 1000 }
+        else { return nil }
+        let seconds = milliseconds / 1000
+        if seconds >= 3600 { return "\(seconds / 3600) 小时 \(seconds / 60 % 60) 分 \(seconds % 60) 秒" }
+        if seconds >= 60 { return "\(seconds / 60) 分 \(seconds % 60) 秒" }
+        return "\(seconds) 秒"
+    }
+
+    static func footers(in entries: [WorkshopEntry]) -> [String: Self] {
+        var turns: [String: Self] = [:]
+        var replies: [String: String] = [:]
+        for entry in entries {
+            if let turn = entry.turn, turn.id == entry.turnId,
+               turns[turn.id]?.state != "completed" || turn.state == "completed" { turns[turn.id] = turn }
+            if entry.role == "assistant", entry.kind != "imageGeneration", let id = entry.turnId,
+               !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { replies[id] = entry.id }
+        }
+        var result: [String: Self] = [:]
+        for (id, reply) in replies where turns[id]?.state == "completed" { result[reply] = turns[id] }
+        return result
+    }
+}
+
 struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     let kind: String
     let id: String
@@ -366,6 +401,45 @@ struct WorkshopEntry: Codable, Identifiable, Equatable, Sendable {
     var replacesId: String? = nil
     var questions: [WorkshopAsyncQuestion]? = nil
     var questionId: String? = nil
+    var turnId: String? = nil
+    var startedAtMs: Int64? = nil
+    var completedAtMs: Int64? = nil
+    var turn: WorkshopTurn? = nil
+
+    var messageDate: Date? {
+        guard let value = startedAtMs ?? completedAtMs, (1...253_402_300_799_999).contains(value) else { return nil }
+        return Date(timeIntervalSince1970: Double(value) / 1000)
+    }
+
+    func elapsedText(at now: Date, running: Bool) -> String? {
+        guard let start = startedAtMs, start > 0 else { return nil }
+        let end: Double
+        if let completedAtMs { end = Double(completedAtMs) }
+        else if running { end = now.timeIntervalSince1970 * 1000 }
+        else { return nil }
+        let elapsed = (end - Double(start)) / 1000
+        guard elapsed.isFinite, elapsed >= 0, elapsed < Double(Int.max) else { return nil }
+        let seconds = Int(elapsed)
+        if seconds >= 3600 { return "\(seconds / 3600) 小时 \(seconds / 60 % 60) 分 \(seconds % 60) 秒" }
+        if seconds >= 60 { return "\(seconds / 60) 分 \(seconds % 60) 秒" }
+        return "\(seconds) 秒"
+    }
+
+    func isTimingActive(operation: WorkshopOperation?) -> Bool {
+        completedAtMs == nil && startedAtMs != nil && turnId != nil && turnId == operation?.turnId && operation?.active == true
+    }
+
+    // Item-start, delta and item-complete events carry different portions of the
+    // same native metadata. Replayed fragments must not erase known boundaries.
+    func preservingTiming(from previous: Self) -> Self {
+        guard id == previous.id, turnId == nil || previous.turnId == nil || turnId == previous.turnId else { return self }
+        var result = self
+        result.turnId = turnId ?? previous.turnId
+        result.startedAtMs = startedAtMs ?? previous.startedAtMs
+        result.completedAtMs = completedAtMs ?? previous.completedAtMs
+        result.turn = previous.turn?.state == "completed" && turn?.state != "completed" ? previous.turn : (turn ?? previous.turn)
+        return result
+    }
 
     var recordTitle: String {
         switch kind {

@@ -218,7 +218,7 @@ struct QinglongAgentSheet: View {
         let proposal = operation.proposal
         let pending = operation.state == .pending && agent.proposal?.id == proposal.id
         return VStack(alignment: .leading, spacing: 12) {
-            Text("操作预览 · " + operation.state.title).font(.caption).foregroundStyle(.secondary)
+            QinglongOperationStatus(state: operation.state)
             Text(proposal.title).font(.headline)
             Text(operation.panelName).font(.caption).foregroundStyle(.secondary)
             if let item = proposal.item {
@@ -261,7 +261,17 @@ struct QinglongAgentSheet: View {
             }
             if operation.state == .submitting { ProgressView("正在提交操作…").font(.footnote) }
             if let result = operation.result {
-                Text(result).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(alignment: .top, spacing: 7) {
+                    if operation.state == .accepted {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
+                    Text(result).foregroundStyle(operation.state == .accepted ? Color.green : .secondary)
+                        .textSelection(.enabled)
+                }.font(.footnote)
+                if operation.state == .accepted && proposal.action.resource == .tasks {
+                    Text("后续运行情况可在「任务状态」中查看。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             if pending {
                 if proposal.action.editable {
@@ -341,7 +351,6 @@ struct QinglongAgentSheet: View {
 
     private func send() {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count <= 12_000 else { agent.error = "消息太长，请分段发送。"; return }
         if agent.send(text, images: attachments.map(\.data)) {
             message = ""
             attachments = []
@@ -362,3 +371,65 @@ struct QinglongAgentSheet: View {
 
 
 extension QinglongAgentSession: AssistantToolSource {}
+
+private struct QinglongOperationStatus: View {
+    let state: QinglongAgentConversation.Operation.State
+    @State private var expanded = false
+
+    private var color: Color {
+        switch state {
+        case .accepted: .green
+        case .pending, .unverified: .orange
+        case .submitting: .blue
+        case .failed: .red
+        case .discarded, .expired, .superseded: .secondary
+        }
+    }
+    private var symbol: String {
+        switch state {
+        case .accepted: "checkmark.circle.fill"
+        case .pending: "clock"
+        case .submitting: "arrow.triangle.2.circlepath"
+        case .failed: "xmark.circle.fill"
+        case .unverified: "exclamationmark.circle.fill"
+        case .discarded, .expired, .superseded: "minus.circle"
+        }
+    }
+    private var badge: some View {
+        Label(state.title, systemImage: symbol)
+            .font(.caption.weight(.medium)).foregroundStyle(color)
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Text("操作预览").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    status
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("操作预览").font(.caption).foregroundStyle(.secondary)
+                    status
+                }
+            }
+            if state == .accepted && expanded {
+                Text("仅表示面板已接收本次操作请求，不代表任务执行成功。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: state) { _, _ in expanded = false }
+    }
+    @ViewBuilder private var status: some View {
+        if state == .accepted {
+            Button { expanded.toggle() } label: { badge.frame(minHeight: 44) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("请求已接受")
+                .accessibilityValue(expanded ? "说明已展开" : "说明已收起")
+                .accessibilityHint("点击查看请求接受与任务执行结果的区别")
+        } else {
+            badge
+        }
+    }
+}

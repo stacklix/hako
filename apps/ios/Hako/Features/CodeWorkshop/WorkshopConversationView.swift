@@ -112,7 +112,8 @@ struct WorkshopConversationView: View {
                 ForEach(conversation.approvals) { approval in
                     WorkshopApprovalView(approval: approval, conversation: conversation)
                 }
-                if let operation = conversation.operation, !operation.resultUnconfirmed {
+                if let operation = conversation.operation, !operation.resultUnconfirmed,
+                   !transcript.turnFooters.values.contains(where: { $0.id == operation.turnId }) {
                     WorkshopOperationStatus(operation: operation)
                 }
                 if let error = conversation.presentedError {
@@ -406,10 +407,14 @@ struct WorkshopConversationView: View {
         } else if entry.role == "user" {
             HStack {
                 Spacer(minLength: 30)
-                userMessage(entry).padding(14)
-                    .background(HakoStyle.line, in: RoundedRectangle(cornerRadius: 16))
+                VStack(alignment: .trailing, spacing: 5) {
+                    userMessage(entry).padding(14)
+                        .background(HakoStyle.line, in: RoundedRectangle(cornerRadius: 16))
+                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: false)
+                }
             }
         } else if entry.role == "assistant" {
+            let completedTurn = conversation.presentation.turnFooters[entry.id]
             VStack(alignment: .leading, spacing: 10) {
                 Label("Codex", systemImage: "terminal").font(.caption.weight(.medium))
                 if entry.kind == "imageGeneration" {
@@ -421,21 +426,28 @@ struct WorkshopConversationView: View {
                 if entry.truncated {
                     Button("查看内容说明") { detail = entry }.font(.caption)
                 }
-                if let returnSidechat {
-                    Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
-                        .font(.caption).buttonStyle(.bordered)
-                } else if activeSidechatParent != nil {
-                    Button { standaloneSidechatTransfer = .init(text: entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
-                        .font(.caption).buttonStyle(.bordered)
+                HStack(spacing: 8) {
+                    if let returnSidechat, completedTurn != nil {
+                        Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                            .frame(minHeight: 44)
+                    } else if activeSidechatParent != nil, completedTurn != nil {
+                        Button { standaloneSidechatTransfer = .init(text: entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                            .frame(minHeight: 44)
+                    } else if conversation.parentThreadId == nil, conversation.threadId != nil, completedTurn != nil {
+                        Button {
+                            sidechats.create(quote: entry.text)
+                            showingSidechats = true
+                        } label: {
+                            Image(systemName: "bubble.left.and.bubble.right")
+                                .frame(width: 44, height: 44)
+                        }
+                        .accessibilityLabel("引用这条回复进入侧聊")
+                        .disabled(entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    Spacer(minLength: 0)
+                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: completedTurn != nil, completedTurn: completedTurn)
                 }
-            }
-            .contextMenu {
-                if conversation.parentThreadId == nil, conversation.threadId != nil {
-                    Button {
-                        sidechats.create(quote: entry.text)
-                        showingSidechats = true
-                    } label: { Label("在侧聊中提问", systemImage: "bubble.left.and.bubble.right") }
-                }
+                .font(.caption).foregroundStyle(HakoStyle.muted).buttonStyle(.plain)
             }
         } else if entry.kind == "notice" {
             Text(entry.text).font(.footnote).foregroundStyle(HakoStyle.muted).textSelection(.enabled)
@@ -681,6 +693,53 @@ struct WorkshopConversationView: View {
         return nil
     }
 
+}
+
+private struct WorkshopMessageMetadata: View {
+    let entry: WorkshopEntry
+    let running: Bool
+    var showsElapsed = true
+    var completedTurn: WorkshopTurn? = nil
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Group {
+            if showsElapsed && running && scenePhase == .active {
+                // Only this message's footer ticks; the transcript and Markdown stay unchanged.
+                TimelineView(.periodic(from: .now, by: 1)) { context in metadata(at: context.date) }
+            } else { metadata(at: .now) }
+        }
+        .font(.caption).foregroundStyle(HakoStyle.muted).monospacedDigit()
+    }
+
+    private func metadata(at now: Date) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                timestamp
+                if let elapsed = showsElapsed ? completedTurn?.elapsedText : nil {
+                    if entry.messageDate != nil { Text("·").accessibilityHidden(true) }
+                    Text((running ? "已耗时 " : "耗时 ") + elapsed)
+                }
+            }.fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .trailing, spacing: 3) {
+                timestamp
+                if let elapsed = showsElapsed ? completedTurn?.elapsedText : nil {
+                    Text((running ? "已耗时 " : "耗时 ") + elapsed)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var timestamp: some View {
+        if let date = completedTurn?.completedAt.flatMap({ (1...253_402_300_799).contains($0) ? Date(timeIntervalSince1970: Double($0)) : nil }) ?? entry.messageDate {
+            if Calendar.current.isDateInToday(date) {
+                Text(date, format: .dateTime.hour().minute().second())
+                    .accessibilityLabel(date.formatted(date: .complete, time: .complete))
+            } else {
+                Text(date, format: .dateTime.year().month(.twoDigits).day(.twoDigits).hour().minute().second())
+            }
+        }
+    }
 }
 
 private struct WorkshopOperationStatus: View {

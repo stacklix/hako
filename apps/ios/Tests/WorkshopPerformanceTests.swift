@@ -13,6 +13,19 @@ private final class Counter: @unchecked Sendable {
     }
 
     static func main() async throws {
+        let completedTurn = WorkshopTurn(id: "round", state: "completed", startedAt: 1000, completedAt: 1383, durationMs: 383000)
+        let progressReply = WorkshopEntry(kind: "item", id: "progress", text: "Checking", role: "assistant", state: "", truncated: false, turnId: "round")
+        let finalReply = WorkshopEntry(kind: "item", id: "final", text: "Done", role: "assistant", state: "", truncated: false, turnId: "round")
+        let turnEvent = WorkshopEntry(kind: "turn", id: "turn-round", text: "", role: "", state: "", truncated: false,
+            turnId: "round", turn: completedTurn)
+        let turnRenderer = WorkshopTranscriptRenderer()
+        let runningTurn = await turnRenderer.render(entries: [progressReply, finalReply], followups: [], artifacts: [], projectPath: "/project", revision: 1)
+        precondition(runningTurn.turnFooters.isEmpty)
+        let finishedTurn = await turnRenderer.render(entries: [progressReply, finalReply, turnEvent], followups: [], artifacts: [], projectPath: "/project", revision: 2)
+        precondition(finishedTurn.turnFooters == ["final": completedTurn] && finishedTurn.groups.flatMap(\.entries).count == 2,
+                     "A turn event reveals exactly one footer without becoming a visible tool record")
+        let cachedTurn = WorkshopTranscriptLayout.initial(entries: [progressReply, finalReply, turnEvent], followups: [], revision: 3)
+        precondition(cachedTurn.turnFooters == finishedTurn.turnFooters)
         let question = WorkshopAsyncQuestion(title: "如何更新？", options: ["立即更新"])
         let questionEntry = WorkshopEntry(kind: "item", id: "question", text: "请选择", role: "assistant", state: "",
             truncated: false, questions: [question])

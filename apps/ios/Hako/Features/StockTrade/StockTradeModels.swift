@@ -163,6 +163,24 @@ enum StockTradePool: String, CaseIterable, Identifiable {
         case .excluded_details: "排除明细"
         }
     }
+    var explanation: String {
+        switch self {
+        case .recommendations:
+            "通过本轮评分、排序、市场与风险门槛后，按后台排名和推荐名额选出的股票。没有符合条件的股票时可以为空，不会为凑名额而放宽条件。"
+        case .candidates:
+            "本轮初选命中的全部候选股票。进入候选只代表符合初选条件，不代表已通过复评或正式推荐门槛。"
+        case .near_miss:
+            "已通过复评、达到近门槛观察的评分与排序要求，但未进入正式推荐的股票。仍可能受到市场或风险条件限制，需结合排除原因查看。"
+        case .strong_watchlist:
+            "未进入正式推荐，但满足强势观察池评分、排序、市场与风险要求的股票，用于继续观察后续表现。进入此范围不等于正式推荐。"
+        case .aggressive_watchlist:
+            "不在正式推荐和强势观察池中，按进取观察规则保留的股票，包括接近推荐门槛或符合特定形态观察条件的情况。需继续核对风险和确认条件。"
+        case .above_threshold:
+            "满足正式推荐入池条件的全部股票，尚未按推荐名额截取，因此可能比正式推荐更多。虽然名称是「达到分数门槛」，实际也包含排序、市场与风险等要求。"
+        case .excluded_details:
+            "已完成复评但未进入本轮正式推荐的股票，附有未达标或排除原因。可能是分数、市场、风险条件不满足，也可能只是未排进推荐名额，并非全部存在硬性风险。"
+        }
+    }
 }
 
 struct StockTradeUser: Codable, Equatable, Sendable { let id, issuer, subject, username: String }
@@ -243,7 +261,7 @@ enum StockTradeTime {
 }
 
 enum StockTradeFailure: Error, LocalizedError {
-    case configuration, invalidResponse, sessionRequired, changedContext
+    case configuration, invalidResponse, sessionRequired, changedContext, requestInterrupted
     case api(status: Int, code: String, requestID: String, retryable: Bool)
     var errorDescription: String? {
         switch self {
@@ -251,6 +269,7 @@ enum StockTradeFailure: Error, LocalizedError {
         case .invalidResponse: "Cerno 响应与接口契约不符，已停止使用这份数据。"
         case .sessionRequired: "Cerno 会话已失效，请重新使用 Hako 登录。"
         case .changedContext: "账号或连接已切换，请重新进入。"
+        case .requestInterrupted: "请求意外中断，请刷新状态后重试。"
         case .api(let status, let code, let id, _):
             switch code {
             case "login_finished": "登录兑换已结束或结果不确定，请重新登录。"

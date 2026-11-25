@@ -70,6 +70,22 @@ internal static class CodeWorkshopChecks
         };
         var usedMessages = new HashSet<string>();
         var firstUser = CodeWorkshop.HistoryItem(userItem, "turn-one", userJobs, usedMessages)!;
+        var timedUser = CodeWorkshop.WithItemTiming(firstUser, Json(new { startedAtMs = 1_800_000_000_125L, completedAtMs = 1_800_000_028_875L }), "turn-one");
+        var wholeTurn = CodeWorkshop.TurnSummary(Json(new { id = "turn-one", status = "completed", startedAt = 1_800_000_000L, completedAt = 1_800_000_383L, durationMs = 383_250L }));
+        Check(wholeTurn.Id == "turn-one" && wholeTurn.State == "completed" && wholeTurn.DurationMs == 383_250L &&
+            wholeTurn.StartedAt == 1_800_000_000L && wholeTurn.CompletedAt == 1_800_000_383L,
+            "Native turn duration must not be replaced by final-message emission duration");
+        Check(timedUser.StartedAtMs == 1_800_000_000_125L && timedUser.CompletedAtMs == 1_800_000_028_875L &&
+            timedUser.TurnId == "turn-one" && timedUser.Id == firstUser.Id && timedUser.ReplacesId == firstUser.ReplacesId,
+            "Native timing must survive durable receipt identity reconciliation");
+        var startedMessage = CodeWorkshop.WithItemTiming(new("item", "reply", "", "assistant"), Json(new { startedAtMs = 1_800_000_000_125L }), "turn-one");
+        var completedMessage = CodeWorkshop.WithItemTiming(new("item", "reply", "Reply", "assistant"), Json(new { completedAtMs = 1_800_000_028_875L }), "turn-one");
+        Check(startedMessage.StartedAtMs is not null && startedMessage.CompletedAtMs is null &&
+            completedMessage.StartedAtMs is null && completedMessage.CompletedAtMs is not null,
+            "Live item notifications must carry only producer-recorded boundaries");
+        Check(CodeWorkshop.WithItemTiming(firstUser, Json(new { startedAtMs = -1, completedAtMs = 0 }), "").StartedAtMs is null &&
+            CodeWorkshop.WithItemTiming(firstUser, Json(new { }), "").CompletedAtMs is null,
+            "Unknown/invalid producer timestamps must never become the Agent's current clock");
         var secondUser = CodeWorkshop.HistoryItem(userItem, "turn-one", userJobs, usedMessages)!;
         Check(firstUser.Id == "request-one" && firstUser.ReplacesId == "canonical" && firstUser.Text == "Same\n[图片 × 1]",
             "Canonical user message did not reconcile with its durable receipt");
@@ -352,10 +368,18 @@ internal static class CodeWorkshopChecks
                     (string)CodeWorkshop.ThreadOptions("ask")["approvalsReviewer"] == "user" && CodeWorkshop.ThreadOptions("custom").Count == 0,
                     "Permission presets do not map to App Server policies");
                 var history = Result(await service.HistoryAsync(Json(new { threadId = FixtureThread }), default));
+                Check(history.GetProperty("entries").EnumerateArray().All(entry =>
+                    entry.GetProperty("startedAtMs").GetInt64() == 1_800_000_000_125L &&
+                    entry.GetProperty("completedAtMs").GetInt64() == 1_800_000_028_875L &&
+                    CodexJson.Text(entry, "turnId").Length > 0), "History discarded native message timing");
                 Check(CodexJson.Text(history, "model") == "fixture-session" && CodexJson.Text(history, "reasoningEffort") == "max",
                     "History did not expose the session's actual model and reasoning effort");
                 Check(history.GetProperty("entries").EnumerateArray().Any(entry => CodexJson.Text(entry, "kind") == "imageGeneration" && CodexJson.Text(entry, "id") == "generated-fixture"),
                     "Completed image generation disappeared when reopening the thread history");
+                Check(history.GetProperty("entries").EnumerateArray().Any(entry =>
+                    CodexJson.Text(CodexJson.Field(entry, "turn"), "state") == "completed" &&
+                    CodexJson.Field(CodexJson.Field(entry, "turn"), "durationMs").GetInt64() == 383000),
+                    "History items must include their completed native turn's whole duration");
                 using (var imageData = new MemoryStream())
                 {
                     string? imageRevision = null;
@@ -510,6 +534,11 @@ internal static class CodeWorkshopChecks
                 File.Delete(summaryStatus);
                 await service.AnswerAsync(Json(new { operationId = requestId, approvalId = approval, decision = "accept" }), default);
                 Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "text") == "Fixture completed"), "Streamed answer was lost");
+                Check(completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "id") == "answer" &&
+                    CodexJson.Field(value, "startedAtMs").TryGetPositiveInt64() == 1_800_000_000_125L) &&
+                    completed.GetProperty("events").EnumerateArray().Any(value => CodexJson.Text(value, "id") == "answer" &&
+                    CodexJson.Field(value, "completedAtMs").TryGetPositiveInt64() == 1_800_000_028_875L),
+                    "Live message start/completion timestamps did not reach the durable operation stream");
                 Check(completed.GetProperty("followups").GetArrayLength() == 3, "Follow-up ledger did not survive turn handoff");
                 var cursor = completed.GetProperty("cursor").GetInt64();
                 Check(Result(await service.OperationAsync(Json(new { operationId = requestId, cursor }), default)).GetProperty("events").GetArrayLength() == 0, "Cursor replay duplicated events");
@@ -812,8 +841,9 @@ internal static class CodeWorkshopChecks
                     continue;
                 }
                 Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "commentary", type = "agentMessage", text = "Earlier progress update" } } });
+                Write(new { method = "item/started", @params = new { threadId = FixtureThread, turnId, startedAtMs = 1_800_000_000_125L, item = new { id = "answer", type = "agentMessage", text = "" } } });
                 Write(new { method = "item/agentMessage/delta", @params = new { threadId = FixtureThread, turnId, itemId = "answer", delta = "Fixture " } });
-                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "answer", type = "agentMessage", text = "Fixture completed" } } });
+                Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, completedAtMs = 1_800_000_028_875L, item = new { id = "answer", type = "agentMessage", text = "Fixture completed" } } });
                 Write(new { method = "item/completed", @params = new { threadId = FixtureThread, turnId, item = new { id = "tool-log", type = "commandExecution", command = "fixture", aggregatedOutput = "Tool output must not replace the reply" } } });
                 Write(new { method = "turn/completed", @params = new { threadId = FixtureThread, turn = new { id = turnId, status = "completed" } } });
                 continue;
@@ -1003,6 +1033,7 @@ internal static class CodeWorkshopChecks
             object[] turnRows = [new { id = turnId,
                 status = File.Exists(Path.Combine(project, ".summary-status")) ? File.ReadAllText(Path.Combine(project, ".summary-status")) : "completed",
                 completedAt = 1001,
+                startedAt = 618, durationMs = 383000,
                 items = CodexJson.Text(CodexJson.Field(input, "params"), "itemsView") == "full" ? historyItems.ToArray() : new object[] { new { id = "latest", type = "agentMessage", text = "Earlier summarized reply" } } }];
             string? nextTurnCursor = null;
             if (method == "thread/turns/list" && scenario == "recovery-older" && CodexJson.Text(itemOptions, "cursor").Length == 0)
@@ -1021,7 +1052,7 @@ internal static class CodeWorkshopChecks
                 "thread/turns/list" => new { data = turnRows, nextCursor = nextTurnCursor },
                 "thread/read" => new { thread },
                 "thread/items/list" => new { data = historyItems.AsEnumerable().Reverse().Skip(itemOffset).Take(64)
-                    .Select(item => new { turnId, item }).ToArray(), nextCursor = itemOffset + 64 < historyItems.Count ? (itemOffset + 64).ToString() : null },
+                    .Select(item => new { turnId, item, startedAtMs = 1_800_000_000_125L, completedAtMs = 1_800_000_028_875L }).ToArray(), nextCursor = itemOffset + 64 < historyItems.Count ? (itemOffset + 64).ToString() : null },
                 "thread/resume" or "thread/start" => new { thread, model = "fixture-resolved", reasoningEffort = "medium" },
                 "turn/start" => new { turn = new { id = turnId, status = "inProgress" } },
                 "turn/steer" => new { turnId },

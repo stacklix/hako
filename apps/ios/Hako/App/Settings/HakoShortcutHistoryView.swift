@@ -1,5 +1,6 @@
 import SwiftUI
 import AppIntents
+import UIKit
 
 struct HakoShortcutRunControl: View {
     @ObservedObject private var history = HakoShortcutHistory.shared
@@ -152,6 +153,7 @@ struct HakoShortcutHistoryView: View {
 private struct HakoShortcutRunView: View {
     @ObservedObject var history: HakoShortcutHistory
     let runID: UUID
+    @State private var copiedLogs = false
 
     var body: some View {
         List {
@@ -168,6 +170,24 @@ private struct HakoShortcutRunView: View {
                         LabeledContent("结束时间", value: finished.formatted(date: .abbreviated, time: .standard))
                         LabeledContent("耗时", value: "\(max(0, Int(finished.timeIntervalSince(run.startedAt)))) 秒")
                     }
+                    Button {
+                        let app = Bundle.main.infoDictionary ?? [:]
+                        let version = app["CFBundleShortVersionString"] as? String ?? "未记录"
+                        let build = app["CFBundleVersion"] as? String ?? "未记录"
+                        let header = ["执行 ID：" + run.id.uuidString, "状态：" + run.status.rawValue,
+                                      "应用版本：" + version + " (" + build + ")",
+                                      "触发来源：" + (run.triggerSource?.title ?? "未记录")]
+                        UIPasteboard.general.string = ([run.name] + header + run.steps.map { step in
+                            HakoExecutionLogExport.text(title: step.name, metadata: ["状态：" + step.status.rawValue, step.message ?? ""],
+                                events: step.events ?? [], startedAt: step.startedAt, finishedAt: step.finishedAt, capacity: HakoShortcutHistory.eventCapacity)
+                        }).joined(separator: "\n\n")
+                        copiedLogs = true
+                    } label: {
+                        Label(copiedLogs ? "已复制全部子任务日志" : "复制全部子任务日志", systemImage: copiedLogs ? "checkmark" : "doc.on.doc")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
                 if run.status.canRetry {
                     Section {
@@ -204,6 +224,7 @@ private struct HakoShortcutStepView: View {
     let runID: UUID
     let name: String
     @State private var diagnosticsExpanded = false
+    @State private var copiedLog = false
 
     private var step: HakoShortcutRun.Step? {
         history.runs.first(where: { $0.id == runID })?.steps.first(where: { $0.name == name })
@@ -239,6 +260,15 @@ private struct HakoShortcutStepView: View {
                     }
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        UIPasteboard.general.string = logText(step)
+                        copiedLog = true
+                    } label: {
+                        Label(copiedLog ? "已复制全量日志" : "复制全量日志", systemImage: copiedLog ? "checkmark" : "doc.on.doc")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 }
                 Section("关键步骤") {
                     if !keySteps.isEmpty {
@@ -311,24 +341,17 @@ private struct HakoShortcutStepView: View {
     }
 
     private func logText(_ step: HakoShortcutRun.Step) -> String {
-        let rows = HakoExecutionLogRow.merging(step.events ?? [])
-        func format(_ row: HakoExecutionLogRow) -> String {
-            let start = row.startedAt?.formatted(date: .numeric, time: .standard) ?? "未记录"
-            let end = row.finishedAt?.formatted(date: .numeric, time: .standard) ?? "未记录"
-            let result = row.state == .started && step.status == .running ? "执行中" : row.state.rawValue
-            let duration = row.finishedAt == nil && step.status != .running ? "—" : row.elapsed(at: .now)
-            let branch = row.parallelBranch.map { "\n并行分支：" + $0 } ?? ""
-            return "\(row.stageTitle)\(branch)\n结果：\(result)\n开始时间：\(start)\n结束时间：\(end)\n耗时：\(duration)\n\(row.detail)"
-        }
-        func formatItem(_ item: HakoExecutionLogItem, depth: Int = 0) -> String {
-            let prefix = String(repeating: "  ", count: depth)
-            let text = format(item.row).components(separatedBy: "\n").map { prefix + $0 }.joined(separator: "\n")
-            return ([text] + item.children.map { formatItem($0, depth: depth + 1) }).joined(separator: "\n")
-        }
-        return (["\(name)：\(step.status.rawValue)", step.message ?? "", totalDuration(step, at: .now), "关键步骤"]
-            + HakoExecutionLogItem.grouping(rows).map { formatItem($0) }
-            + ["诊断信息"] + rows.filter(\.isDiagnostic).map(format)).joined(separator: "\n")
+        let app = Bundle.main.infoDictionary ?? [:]
+        let version = app["CFBundleShortVersionString"] as? String ?? "未记录"
+        let build = app["CFBundleVersion"] as? String ?? "未记录"
+        return HakoExecutionLogExport.text(title: name, metadata: [
+            "应用版本：" + version + " (" + build + ")", "执行 ID：" + runID.uuidString,
+            "触发来源：" + (history.runs.first(where: { $0.id == runID })?.triggerSource?.title ?? "未记录"),
+            "状态：" + step.status.rawValue, "执行次数：\(step.attempts ?? 1)", step.message ?? "",
+            totalDuration(step, at: .now)
+        ], events: step.events ?? [], startedAt: step.startedAt, finishedAt: step.finishedAt, capacity: HakoShortcutHistory.eventCapacity)
     }
+
 }
 
 private struct HakoShortcutEventRow: View {

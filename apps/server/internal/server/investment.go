@@ -30,14 +30,14 @@ var investmentTables = []investmentTable{
 	{"market_instruments", "id", "asset_type symbol exchange name quote_currency price_type", false},
 	{"market_derivative_specs", "instrument_id", "contract_multiplier expiry_date", false},
 	{"investment_accounts", "id", "name account_type currency sort_order archived_at", false},
-	{"investment_assets", "id", "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency", false},
+	{"investment_assets", "id", "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency exchange", false},
 	{"investment_events", "id", "account_id asset_id event_type effective_date sequence amount quantity unit_price fee settled_amount transfer_id transfer_account_id version created_at updated_at deleted_at", false},
 	{"investment_derivative_event_details", "event_id", "trade_action position_side margin_delta", false},
 	{"investment_plans", "id", "account_id asset_id amount frequency schedule_day next_date enabled last_result sort_order", false},
 	{"investment_plan_runs", "plan_id scheduled_date", "status event_id executed_at result_detail", false},
 	{"investment_watchlist", "asset_id", "instrument_id sort_order", false},
-	{"market_daily_prices", "instrument_id session_date price_type source", "closed_at_utc valuation_date price is_final revision", false},
-	{"market_daily_fx", "rate_date base_currency quote_currency source", "rate available_at_utc is_final revision", false},
+	{"market_daily_prices", "instrument_id session_date price_type", "source closed_at_utc valuation_date price is_final revision", false},
+	{"market_daily_fx", "rate_date base_currency quote_currency", "rate source available_at_utc is_final revision", false},
 	{"investment_manual_prices", "asset_id valuation_date", "value source is_final", false},
 	{"investment_daily_snapshots", "snapshot_date", "total_cny total_usd cumulative_gain_cny daily_gain_cny status missing_inputs computed_revision", true},
 	{"investment_account_daily_snapshots", "account_id snapshot_date", "cash_native holdings_native gain_native status", true},
@@ -91,6 +91,32 @@ func (t investmentTable) columns() []string {
 	return strings.Fields(t.keys + " " + t.fields)
 }
 
+func (t investmentTable) shared() bool {
+	return t.name == "market_daily_fx" || t.name == "market_instruments" || t.name == "market_derivative_specs" || t.name == "market_daily_prices"
+}
+
+func (t investmentTable) storageColumns() []string {
+	if t.shared() {
+		return t.columns()
+	}
+	return append([]string{"book_id"}, t.columns()...)
+}
+
+func (t investmentTable) storageKeys() []string {
+	keys := strings.Fields(t.keys)
+	if t.shared() {
+		return keys
+	}
+	return append([]string{"book_id"}, keys...)
+}
+
+func (t investmentTable) scope(book string) (string, []any) {
+	if t.shared() {
+		return "1=1", nil
+	}
+	return "book_id=?", []any{book}
+}
+
 func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	path := mainPath
 	if path != ":memory:" {
@@ -113,6 +139,9 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000")
 	if err == nil {
+		err = migrateInvestmentMarket(db)
+	}
+	if err == nil {
 		err = dbschema.InitializeVersion(db, investmentSchemaVersion, func(tx *sql.Tx) error {
 			if _, err := tx.Exec(`CREATE TABLE investment_books (
 				owner_id TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '我的投资',
@@ -123,7 +152,10 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 			}
 			for _, table := range investmentTables {
 				keys := strings.Fields(table.keys)
-				definitions := []string{"book_id TEXT NOT NULL"}
+				definitions := []string{}
+				if !table.shared() {
+					definitions = append(definitions, "book_id TEXT NOT NULL")
+				}
 				for i, column := range table.columns() {
 					definition := column + " TEXT"
 					if table.name == "investment_accounts" && column == "account_type" {
@@ -137,7 +169,7 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 					}
 					definitions = append(definitions, definition)
 				}
-				definitions = append(definitions, "PRIMARY KEY(book_id,"+strings.Join(keys, ",")+")")
+				definitions = append(definitions, "PRIMARY KEY("+strings.Join(table.storageKeys(), ",")+")")
 				if _, err := tx.Exec("CREATE TABLE " + table.name + " (" + strings.Join(definitions, ",") + ") WITHOUT ROWID"); err != nil {
 					return err
 				}
@@ -208,6 +240,18 @@ func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string, tables [
 	err := tx.QueryRowContext(ctx, "SELECT id,generation,revision,snapshot_dirty_from,snapshot_through FROM investment_books WHERE owner_id=?", owner).
 		Scan(&bookID, &state.Generation, &state.Revision, &state.DirtyFrom, &state.Through)
 	if errors.Is(err, sql.ErrNoRows) {
+		for _, table := range investmentTables {
+			if !table.shared() || (tables != nil && !slices.Contains(tables, table.name)) {
+				continue
+			}
+			rows, readErr := table.read(ctx, tx, "")
+			if readErr != nil {
+				return state, readErr
+			}
+			if len(rows) > 0 {
+				state.Tables[table.name] = rows
+			}
+		}
 		return state, nil
 	}
 	if err != nil {
@@ -228,8 +272,9 @@ func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string, tables [
 
 func (t investmentTable) read(ctx context.Context, tx *sql.Tx, owner string) ([]investmentRow, error) {
 	columns := t.columns()
+	where, params := t.scope(owner)
 	rows, err := tx.QueryContext(ctx, "SELECT "+strings.Join(columns, ",")+" FROM "+t.name+
-		" WHERE book_id=? ORDER BY "+strings.Join(strings.Fields(t.keys), ","), owner)
+		" WHERE "+where+" ORDER BY "+strings.Join(strings.Fields(t.keys), ","), params...)
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +358,7 @@ func (s *Server) persistInvestment(ctx context.Context, owner string, write inve
 	matched := 0
 	inputsChanged := false
 	outputsChanged := false
+	sharedFXFrom := ""
 	for _, table := range investmentTables {
 		rows, supplied := write.Tables[table.name]
 		if !supplied {
@@ -328,8 +374,31 @@ func (s *Server) persistInvestment(ctx context.Context, owner string, write inve
 				}
 			}
 		}
+		var beforeFX int64
+		if table.shared() {
+			beforeFX, err = investmentChangesCount(ctx, tx)
+			if err != nil {
+				return state, err
+			}
+		}
 		if err := table.replace(ctx, tx, bookID, rows); err != nil {
 			return state, err
+		}
+		if table.shared() {
+			afterFX, err := investmentChangesCount(ctx, tx)
+			if err != nil {
+				return state, err
+			}
+			if afterFX != beforeFX {
+				day := earliestMarketDate(rows)
+				if day != "" && (sharedFXFrom == "" || day < sharedFXFrom) {
+					sharedFXFrom = day
+				}
+			}
+			state.Tables[table.name], err = table.read(ctx, tx, bookID)
+			if err != nil {
+				return state, err
+			}
 		}
 	}
 	if matched != len(write.Tables) || (inputsChanged && outputsChanged) {
@@ -343,6 +412,14 @@ func (s *Server) persistInvestment(ctx context.Context, owner string, write inve
 	}
 	state.Generation++
 	state.DirtyFrom, state.Through = write.DirtyFrom, write.Through
+	if sharedFXFrom != "" {
+		if state.DirtyFrom == nil || sharedFXFrom < *state.DirtyFrom {
+			state.DirtyFrom = &sharedFXFrom
+		}
+		if err := invalidateSharedFX(ctx, tx, bookID, sharedFXFrom); err != nil {
+			return state, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE investment_books SET generation=?,revision=?,snapshot_dirty_from=?,snapshot_through=? WHERE owner_id=?",
 		state.Generation, state.Revision, state.DirtyFrom, state.Through, owner); err != nil {
 		return state, err
@@ -357,8 +434,26 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 	columns := t.columns()
 	keys := strings.Fields(t.keys)
 	seen := make(map[string]bool, len(rows))
+	if t.shared() {
+		// A ledger upload contributes shared rates; omitted dates are not deletes
+		// of observations that another ledger may still need.
+		for _, row := range rows {
+			if err := t.prepareRow(row); err != nil {
+				return err
+			}
+			key := investmentRowKey(row, keys)
+			if seen[key] {
+				return errInvestmentInvalid
+			}
+			seen[key] = true
+			if err := t.upsert(ctx, tx, owner, row); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	var quoteVersions map[string]investmentRow
-	if t.name == "market_daily_prices" || t.name == "market_daily_fx" {
+	if t.name == "market_daily_prices" {
 		current, err := t.read(ctx, tx, owner)
 		if err != nil {
 			return err
@@ -452,9 +547,27 @@ func validateInvestmentLinks(ctx context.Context, tx *sql.Tx, owner string) erro
 		{"investment_balance_records", "balance_account_id", "investment_balance_accounts", "id"},
 	} {
 		var missing bool
-		query := "SELECT EXISTS(SELECT 1 FROM " + link.from + " a WHERE a.book_id=? AND a." + link.column +
-			" IS NOT NULL AND NOT EXISTS(SELECT 1 FROM " + link.to + " b WHERE b.book_id=a.book_id AND b." + link.target + "=a." + link.column + "))"
-		if err := tx.QueryRowContext(ctx, query, owner).Scan(&missing); err != nil {
+		sharedFrom, sharedTo := false, false
+		for _, table := range investmentTables {
+			if table.name == link.from {
+				sharedFrom = table.shared()
+			}
+			if table.name == link.to {
+				sharedTo = table.shared()
+			}
+		}
+		where, args := "1=1", []any{}
+		if !sharedFrom && !sharedTo {
+			where = "a.book_id=?"
+			args = append(args, owner)
+		}
+		targetScope := ""
+		if !sharedTo {
+			targetScope = "b.book_id=a.book_id AND "
+		}
+		query := "SELECT EXISTS(SELECT 1 FROM " + link.from + " a WHERE " + where + " AND a." + link.column +
+			" IS NOT NULL AND NOT EXISTS(SELECT 1 FROM " + link.to + " b WHERE " + targetScope + "b." + link.target + "=a." + link.column + "))"
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&missing); err != nil {
 			return err
 		}
 		if missing {
@@ -515,6 +628,25 @@ func (t investmentTable) prepareRow(row investmentRow) error {
 	}
 	if t.name == "investment_plans" && !validInvestmentPlan(row) {
 		return errInvestmentInvalid
+	}
+	if t.name == "market_instruments" {
+		if strings.TrimSpace(row["symbol"]) == "" {
+			return errInvestmentInvalid
+		}
+		canonical := canonicalInvestmentInstrument(row)
+		if row["id"] != canonical["id"] {
+			return errInvestmentInvalid
+		}
+		priceType := "close"
+		if row["asset_type"] == "fund" {
+			priceType = "nav"
+		}
+		if row["price_type"] != priceType {
+			return errInvestmentInvalid
+		}
+		for _, key := range []string{"asset_type", "symbol", "exchange", "quote_currency"} {
+			row[key] = canonical[key]
+		}
 	}
 	return nil
 }

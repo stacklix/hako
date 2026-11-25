@@ -7,6 +7,7 @@ struct StockTradeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var page = StockTradeTab.picks
     @State private var sheet: Sheet?
+    @State private var showingPoolHelp = false
     @State private var localError: String?
     private enum Sheet: Identifiable {
         case settings, notifications
@@ -60,7 +61,7 @@ struct StockTradeView: View {
         .navigationBarBackButtonHidden(true)
         .environmentObject(navigation)
         .onChange(of: page) { _, _ in navigation.reset() }
-        .onChange(of: store.scope) { _, _ in navigation.reset(); sheet = nil; localError = nil }
+        .onChange(of: store.scope) { _, _ in navigation.reset(); sheet = nil; showingPoolHelp = false; localError = nil }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
@@ -82,6 +83,7 @@ struct StockTradeView: View {
         .sheet(item: Binding(get: { store.consent }, set: { if $0 == nil { store.dismissConsent() } })) { consent in
             NativeApplicationConsentSheet(consent: consent) { try await store.confirmConsent() }
         }
+        .sheet(isPresented: $showingPoolHelp) { StockTradePoolHelpView(selected: store.pool) }
         .task(id: store.activationKey) { if sheet == nil { await store.activate() } }
         .task(id: "\(store.scope)|\(store.session != nil)|\(scenePhase == .active)") {
             guard store.session != nil, scenePhase == .active else { return }
@@ -124,7 +126,17 @@ struct StockTradeView: View {
             if let run = store.run {
                 summary(run)
                 HStack {
-                    Text("选股范围").font(.headline)
+                    HStack(spacing: 0) {
+                        Text("选股范围").font(.headline)
+                        Button { showingPoolHelp = true } label: {
+                            Image(systemName: "questionmark.circle").font(.subheadline)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .accessibilityLabel("选股范围说明")
+                        .accessibilityHint("查看右侧菜单中每个范围的含义")
+                    }
                     Spacer()
                     Picker("选股范围", selection: Binding(get: { store.pool }, set: { value in Task { await store.selectPool(value) } })) {
                         ForEach(StockTradePool.allCases) { Text($0.title).tag($0) }

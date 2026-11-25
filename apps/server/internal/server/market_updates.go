@@ -234,9 +234,12 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 	result := []marketTarget{}
 	add := func(target marketTarget) {
 		target.Source = source
+		if target.Kind == "fx" {
+			target.Source = "欧洲央行"
+		}
 		target.Expires = now.Add(15 * time.Minute).Unix()
 		if target.Kind != "latest" {
-			cached := coverage[owner+"|"+target.Key+"|"+source]
+			cached := coverage[owner+"|"+target.Key+"|"+target.Source]
 			known := map[string]bool{}
 			if now.Unix()-cached.CheckedAt < 900 {
 				for _, date := range cached.NoDataDates {
@@ -249,7 +252,7 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 				}
 			}
 			for _, row := range bookState.Tables["market_daily_fx"] {
-				if target.Kind == "fx" && row["base_currency"] == target.BaseCurrency && row["quote_currency"] == target.QuoteCurrency && row["is_final"] == "1" {
+				if target.Kind == "fx" && row["base_currency"] == target.BaseCurrency && row["quote_currency"] == target.QuoteCurrency && finalInvestmentFX(row) {
 					known[row["rate_date"]] = true
 				}
 			}
@@ -369,6 +372,7 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	total := 0
 	changed := false
+	sharedFXFrom := ""
 	for _, item := range input.Items {
 		result := marketUpdateResult{TargetID: item.TargetID, Status: "rejected"}
 		target, valid := s.parseMarketTarget(c, item.TargetID, now)
@@ -438,7 +442,7 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 		}
 		if target.InstrumentID != "" {
 			var exists bool
-			if err = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM market_instruments WHERE book_id=? AND id=?)", book, target.InstrumentID).Scan(&exists); err != nil {
+			if err = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM market_instruments WHERE id=?)", target.InstrumentID).Scan(&exists); err != nil {
 				reject(w, 503, "storage_unavailable")
 				return
 			}
@@ -456,13 +460,16 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 				reject(w, 503, "storage_unavailable")
 				return
 			}
+			if target.Kind == "fx" && finalInvestmentFX(previous) {
+				continue
+			}
 			dateColumn, timeColumn := "valuation_date", "closed_at_utc"
 			if target.Kind == "fx" {
 				dateColumn, timeColumn = "rate_date", "available_at_utc"
 			}
 			oldTime, oldErr := time.Parse(time.RFC3339Nano, previous[timeColumn])
 			newTime, _ := time.Parse(time.RFC3339Nano, row[timeColumn])
-			if (previous["is_final"] == "1" && row["is_final"] != "1") || (oldErr == nil && newTime.Before(oldTime)) {
+			if target.Kind != "fx" && ((previous["is_final"] == "1" && row["is_final"] != "1") || (oldErr == nil && newTime.Before(oldTime) && !(previous["is_final"] != "1" && row["is_final"] == "1"))) {
 				continue
 			}
 			if !investmentQuoteChanged(previous, row, table.columns()) {
@@ -474,6 +481,9 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 			}
 			changed = true
 			result.Count++
+			if sharedFXFrom == "" || row[dateColumn] < sharedFXFrom {
+				sharedFXFrom = row[dateColumn]
+			}
 			if !dirty.Valid || row[dateColumn] < dirty.String {
 				dirty = sql.NullString{String: row[dateColumn], Valid: true}
 			}
@@ -500,6 +510,12 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 		results = append(results, result)
 	}
 	if changed {
+		if sharedFXFrom != "" {
+			if err = invalidateSharedFX(r.Context(), tx, book, sharedFXFrom); err != nil {
+				reject(w, 503, "storage_unavailable")
+				return
+			}
+		}
 		revision++
 		if _, err = tx.ExecContext(r.Context(), "UPDATE investment_books SET revision=?,snapshot_dirty_from=? WHERE owner_id=?", revision, dirty, owner); err != nil {
 			reject(w, 503, "storage_unavailable")

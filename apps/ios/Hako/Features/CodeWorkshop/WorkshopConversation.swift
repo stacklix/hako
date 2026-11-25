@@ -711,7 +711,8 @@ import Combine
             if let index = nextEntries.firstIndex(where: { $0.id == followup.id && $0.kind == "followup" && $0.state != followup.state }) {
                 let entry = nextEntries[index]
                 nextEntries[index] = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
-                    state: followup.state, truncated: entry.truncated, questionId: entry.questionId)
+                    state: followup.state, truncated: entry.truncated, questionId: entry.questionId,
+                    turnId: entry.turnId, startedAtMs: entry.startedAtMs, completedAtMs: entry.completedAtMs)
             }
         }
         if entries != nextEntries { entries = nextEntries }

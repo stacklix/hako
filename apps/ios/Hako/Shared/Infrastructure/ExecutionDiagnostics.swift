@@ -93,7 +93,7 @@ struct HakoExecutionLogRow: Identifiable {
          "读取设备身份记录", "读取 Secure Enclave 公钥", "保存服务端登录会话",
          "恢复服务端登录会话", "读取服务端登录会话", "刷新服务端登录会话",
          "生成设备请求签名（Secure Enclave）", "服务端响应"].contains(stage)
-        || stage.hasPrefix("发送请求 ") || stage.hasPrefix("行情请求 ")
+        || stage.hasPrefix("发送请求 ") || stage.hasPrefix("行情请求 ") || stage.hasPrefix("行情缓存缺口 · ") || stage.hasPrefix("行情缓存结果 · ")
     }
 
     func elapsed(at now: Date) -> String {
@@ -166,6 +166,36 @@ struct HakoExecutionLogItem: Identifiable {
             }
         }
         return items(parent: nil)
+    }
+}
+
+enum HakoExecutionLogExport {
+    static func text(title: String, metadata: [String], events: [HakoExecutionEvent],
+                     startedAt: Date? = nil, finishedAt: Date? = nil, now: Date = .now, capacity: Int) -> String {
+        let date = ISO8601DateFormatter()
+        date.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        date.timeZone = TimeZone(secondsFromGMT: 0)
+        var lines = [title, "导出时间：" + date.string(from: now)] + metadata
+        if let startedAt { lines.append("本次开始：" + date.string(from: startedAt)) }
+        if let finishedAt { lines.append("本次结束：" + date.string(from: finishedAt)) }
+        if let startedAt, events.contains(where: { $0.time < startedAt }) {
+            lines.append("包含此前尝试的事件；相对开始时间以本次开始为基准，重试前的事件可以为负数。")
+        }
+        lines.append("原始事件：\(events.count) 条；保留上限：\(capacity) 条。时间采用 UTC，包含毫秒。")
+        if events.count >= capacity { lines.append("已达到保留上限，较早事件可能已被移除；本次导出包含当前保留的全部事件。") }
+        lines.append("\n阶段耗时汇总（并行分支耗时不相加）")
+        for row in HakoExecutionLogRow.merging(events) {
+            let kind = row.isDiagnostic ? "诊断" : "关键步骤"
+            let branch = row.parallelBranch.map { "；分支：" + $0 } ?? ""
+            let finish = row.finishedAt.map { date.string(from: $0) } ?? "未结束或未记录"
+            lines.append("[\(kind)] \(row.stageTitle)\(branch)；\(row.state.rawValue)；耗时：\(row.elapsed(at: now))；开始：\(row.startedAt.map { date.string(from: $0) } ?? "未记录")；结束：\(finish)；ID：\(row.id.uuidString)")
+        }
+        lines.append("\n全量原始事件（保存顺序，包含开始、完成、失败、取消和诊断详情）")
+        for (index, event) in events.enumerated() {
+            let offset = startedAt.map { String(format: "；相对开始：%.3f 秒", event.time.timeIntervalSince($0)) } ?? ""
+            lines.append("\n#\(index + 1) \(date.string(from: event.time))\(offset)\n状态：\(event.state.rawValue)\n事件 ID：\(event.id.uuidString)\n阶段：\(event.stage)\n\(event.detail)")
+        }
+        return HakoLog.sanitize(lines.joined(separator: "\n"), limit: Int.max)
     }
 }
 

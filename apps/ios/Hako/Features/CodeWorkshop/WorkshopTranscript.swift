@@ -102,14 +102,15 @@ struct WorkshopTranscriptPresentation {
     init(entries: [WorkshopEntry], followups: [WorkshopFollowupState]) {
         var history: [WorkshopEntry] = []
         var queued: [WorkshopEntry] = []
-        for entry in entries {
+        for entry in entries where entry.kind != "turn" {
             let presented: WorkshopEntry
             if entry.kind == "followup", let status = followups.first(where: { $0.id == entry.id }) {
                 // Give each row the same resolved state used to place it. A
                 // metadata-only acknowledgement must also change the row value.
                 presented = WorkshopEntry(kind: entry.kind, id: entry.id, text: entry.text, role: entry.role,
                     state: status.state, truncated: entry.truncated, replacesId: entry.replacesId,
-                    questions: entry.questions, questionId: entry.questionId)
+                    questions: entry.questions, questionId: entry.questionId, turnId: entry.turnId,
+                    startedAtMs: entry.startedAtMs, completedAtMs: entry.completedAtMs)
             } else { presented = entry }
             if Self.isQueued(presented) { queued.append(presented) }
             else { history.append(presented) }
@@ -159,6 +160,7 @@ enum WorkshopTranscriptMerge {
                delta.role == event.role, delta.state == event.state, delta.truncated == event.truncated,
                event.replacesId == nil {
                 delta.text += event.text
+                delta = delta.preservingTiming(from: event)
                 pending = delta
             } else {
                 if let pending { apply(pending, entries: &entries, streamText: &streamText) }
@@ -188,8 +190,8 @@ enum WorkshopTranscriptMerge {
                 // History can lag a live stream; do not shorten an already rendered reply.
                 let old = result[index]
                 if !(entry.role == "assistant" && old.text.count > entry.text.count && old.text.hasPrefix(entry.text)) {
-                    result[index] = entry
-                }
+                    result[index] = entry.preservingTiming(from: old)
+                } else { result[index] = old.preservingTiming(from: entry) }
             } else if let nextID, let index = result.firstIndex(where: { $0.id == nextID }) {
                 result.insert(entry, at: index)
             } else { result.append(entry) }
@@ -230,14 +232,17 @@ enum WorkshopTranscriptMerge {
             let text = (streamText[event.id] ?? "") + event.text
             streamText[event.id] = text
             if let index, entries[index].text.utf8.count > text.utf8.count && entries[index].text.hasPrefix(text) {
+                entries[index] = entries[index].preservingTiming(from: event)
                 return // A fresh operation replay is catching up with canonical/cached history.
             }
-            entry = WorkshopEntry(kind: "item", id: event.id, text: text, role: event.role, state: event.state, truncated: event.truncated)
+            entry = WorkshopEntry(kind: "item", id: event.id, text: text, role: event.role, state: event.state, truncated: event.truncated,
+                turnId: event.turnId, startedAtMs: event.startedAtMs, completedAtMs: event.completedAtMs, turn: event.turn)
         } else if event.role == "assistant" {
-            streamText[event.id] = event.text
-            if event.text.isEmpty, let index, !entries[index].text.isEmpty { return }
+            if event.text.isEmpty, let index, !entries[index].text.isEmpty { entry.text = entries[index].text }
+            streamText[event.id] = entry.text
         }
         if let index {
+            entry = entry.preservingTiming(from: entries[index])
             if WorkshopTranscriptPresentation.isQueued(entries[index]), !WorkshopTranscriptPresentation.isQueued(entry) {
                 entries.remove(at: index)
                 entries = queueAtEnd(entries)

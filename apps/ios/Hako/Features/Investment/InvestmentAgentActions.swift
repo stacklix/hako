@@ -278,7 +278,7 @@ struct InvestmentAgentAction: Codable {
             let price = try decimal("price", fallback: 0)
             guard price > 0 || (item.kind == .insurance && price == 0) else { throw missing("有效报价") }
             book.addQuotes([.init(day: try date("date", through: today), price: price, source: "手动录入")], assetID: item.id)
-            book.runPlans(through: today)
+            book.runPlans(through: InvestmentBook.addDays(-1, to: today))
         case .balanceAccount, .balanceRecord, .editBalanceRecord, .deleteBalanceRecord:
             try applyBalance(to: &book, today: today)
         case .refreshMarket, .rebuildSnapshots:
@@ -324,7 +324,7 @@ struct InvestmentAgentAction: Codable {
                 if symbol != item.code || market != item.market {
                     item.code = symbol
                     item.market = market
-                    item.instrumentID = UUID()
+                    item.instrumentID = item.marketInstrument.id
                     book.quotes.removeValue(forKey: item.id)
                     if let first = book.accounts.flatMap(\.events).filter({ $0.assetID == item.id }).map(\.day).min() {
                         book.invalidateDailySnapshots(from: first)

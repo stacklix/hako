@@ -35,7 +35,7 @@ internal sealed class AndroidAdb(string directory) : IAndroidAdb
         budget.CancelAfter(TimeSpan.FromSeconds(arguments.Contains("install") ? 180 : 20));
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
-            StandardErrorEncoding = Encoding.UTF8, StandardInputEncoding = Encoding.UTF8 };
+            StandardErrorEncoding = Encoding.UTF8, StandardInputEncoding = new UTF8Encoding(false) };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new IOException("无法启动 ADB。");
         using var output = new MemoryStream();

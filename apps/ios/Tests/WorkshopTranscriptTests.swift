@@ -6,6 +6,29 @@ import Foundation
     }
 
     static func main() async throws {
+        do {
+        var timedEntries: [WorkshopEntry] = []
+        var timedStream: [String: String] = [:]
+        let started = WorkshopEntry(kind: "item", id: "timed", text: "", role: "assistant", state: "", truncated: false,
+            turnId: "turn", startedAtMs: 1_800_000_000_125)
+        let delta = WorkshopEntry(kind: "delta", id: "timed", text: "Reply", role: "assistant", state: "", truncated: false, turnId: "turn")
+        let completed = WorkshopEntry(kind: "item", id: "timed", text: "Reply", role: "assistant", state: "", truncated: false,
+            turnId: "turn", completedAtMs: 1_800_000_028_875)
+        WorkshopTranscriptMerge.apply([started, delta, completed], entries: &timedEntries, streamText: &timedStream)
+        precondition(timedEntries[0].text == "Reply" && timedEntries[0].startedAtMs == started.startedAtMs &&
+            timedEntries[0].completedAtMs == completed.completedAtMs, "Start/delta/completion must retain both time boundaries")
+        let replay = WorkshopEntry(kind: "item", id: "timed", text: "", role: "assistant", state: "", truncated: false, turnId: "turn")
+        WorkshopTranscriptMerge.apply(replay, entries: &timedEntries, streamText: &timedStream)
+        precondition(timedEntries[0].text == "Reply" && timedEntries[0].elapsedText(at: .distantFuture, running: false) == "28 秒")
+        let historical = WorkshopEntry(kind: "item", id: "timed", text: "Rep", role: "assistant", state: "", truncated: false, turnId: "turn")
+        let mergedTiming = WorkshopTranscriptMerge.history(timedEntries, page: [historical])
+        precondition(mergedTiming == timedEntries, "Lagging history must not erase live text or native timestamps")
+        let timedCache = WorkshopTranscript(key: .init(agentId: "a", applicationId: "p", threadId: "t"),
+            entries: timedEntries, artifacts: [], followups: [], historyCursor: nil, operationId: nil,
+            eventCursor: 3, streamText: timedStream, savedAt: .now)
+        let restoredTiming = try JSONDecoder().decode(WorkshopTranscript.self, from: timedCache.encodedForCache()!)
+        precondition(restoredTiming.entries == timedEntries, "Returning to a cached conversation must preserve timing")
+        }
         let context = WorkshopContextUsage(usedTokens: 67200, modelContextWindow: 160000, updatedAt: 1800000000000)
         var contextSnapshot = WorkshopTranscript(key: WorkshopTranscriptKey(agentId: "agent", applicationId: "app", threadId: "thread"),
             entries: [], artifacts: [], followups: [], historyCursor: nil, operationId: nil, eventCursor: 0, streamText: [:], savedAt: .now)

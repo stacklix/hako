@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="../../src/Hako/Assets/scrcpy-server-v3.3.4" LogicalName="Hako.scrcpy-server-v3.3.4"/>
+    <EmbeddedResource Include="../../src/Hako/Assets/hako-video-api19.jar" LogicalName="Hako.video-api19"/>
     <Compile Include="../../src/Hako/Core/**/*.cs" Link="Core/%(RecursiveDir)%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Cli/*.cs" Link="Cli/%(Filename)%(Extension)"/>
     <Compile Include="../../src/Hako/Features/**/*.cs" Exclude="../../src/Hako/Features/**/*.xaml.cs"

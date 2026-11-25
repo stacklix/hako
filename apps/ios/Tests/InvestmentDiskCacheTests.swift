@@ -1,8 +1,22 @@
 import Foundation
 
+private final class MarketReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func read(_ url: URL) throws -> Data {
+        lock.lock(); count += 1; lock.unlock()
+        return try Data(contentsOf: url)
+    }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func reset() { lock.lock(); count = 0; lock.unlock() }
+}
+
 @main struct InvestmentDiskCacheTests {
     static func main() async throws {
+        try await provisionalFXRefreshesDespiteCoverage()
         try await dailyCryptoSpotReuse()
+        try await refreshReadsMarketCacheOnce()
+        try await closingQuoteOverridesPreCloseCoverage()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = InvestmentDiskCache(directory: directory)
@@ -84,6 +98,101 @@ import Foundation
         do { _ = try await cache.load(scope: "../outside"); preconditionFailure("Unsafe scope accepted") }
         catch is CocoaError {}
         print("Investment disk cache: persistence, precision, scope isolation, range coverage, eviction and server fallback passed")
+    }
+
+    static func closingQuoteOverridesPreCloseCoverage() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = InvestmentDiskCache(directory: directory)
+        let today = InvestmentBook.day()
+        let session = InvestmentBook.addDays(-1, to: today)
+        let asset = InvestmentAsset(name: "Apple", code: "AAPL", market: "NASDAQ", kind: .stock, currency: .usd)
+        let key = InvestmentDiskCache.historyKey(asset)
+        let provisional = InvestmentQuote(day: session, price: 100, isDailyClose: false)
+        try await cache.saveHistory(scope: "close", asset: asset, start: session, end: session, today: today, quotes: [provisional])
+        let snapshot = try await cache.marketReadSnapshot(scope: "close")
+        precondition(snapshot.missingWindows(key: key, start: session, end: session, today: today,
+            observations: [provisional], requiredClose: session) == [session...session],
+            "A same-day pre-close cache hit cannot suppress the actual closing request")
+        precondition(snapshot.missingWindows(key: key, start: session, end: session, today: today,
+            observations: [], requiredClose: session) == [session...session],
+            "An unpublished closing value must be retried after it becomes available")
+        let final = InvestmentQuote(day: session, price: 101, isDailyClose: true)
+        precondition(snapshot.missingWindows(key: key, start: session, end: session, today: today,
+            observations: [final], requiredClose: session).isEmpty, "A confirmed close remains reusable")
+        precondition(snapshot.missingWindows(key: key, start: session, end: session, today: today,
+            observations: [provisional], requiredClose: today).isEmpty, "Never extend a bounded request")
+    }
+
+    static func refreshReadsMarketCacheOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = InvestmentDiskCache(directory: directory)
+        let today = InvestmentBook.day(), start = InvestmentBook.addDays(-179, to: today)
+        let quotes = (0..<180).map { InvestmentQuote(day: InvestmentBook.addDays($0, to: start), price: Decimal($0 + 1), source: "测试行情", isDailyClose: true) }
+        let assets = (0..<16).map { InvestmentAsset(name: "标的\($0)", code: "T\($0)", market: "XNAS", kind: .stock, currency: .usd) }
+        for asset in assets { try await writer.saveHistory(scope: "batch", asset: asset, start: start, end: today, today: today, quotes: quotes) }
+        let keys = assets.map(InvestmentDiskCache.historyKey) + [InvestmentCurrency.usd, .hkd].map(InvestmentDiskCache.rateKey)
+        for key in keys.suffix(2) { try await writer.saveMarketHistory(scope: "batch", key: key, start: start, end: today, today: today, quotes: quotes) }
+        let counter = MarketReadCounter()
+        let reader = InvestmentDiskCache(directory: directory, readFile: { try counter.read($0) })
+        for key in keys {
+            let saved = try await reader.marketQuotes(scope: "batch", key: key)
+            let missing = try await reader.missingWindows(scope: "batch", key: key, start: start, end: today, today: today, observations: saved)
+            precondition(saved == quotes && missing.isEmpty)
+        }
+        let repeatedReads = counter.value
+        precondition(repeatedReads == 36)
+        counter.reset()
+        let snapshot = try await reader.marketReadSnapshot(scope: "batch")
+        for key in keys {
+            let saved = snapshot.marketQuotes(key: key)
+            let missing = snapshot.missingWindows(key: key, start: start, end: today, today: today, observations: saved)
+            precondition(saved == quotes && missing.isEmpty)
+        }
+        precondition(counter.value == 1, "A fully cached refresh must decode the cache once across all assets and currencies")
+        precondition(snapshot.historyCount == 18 && snapshot.quoteCount == 18 * 180)
+        let tomorrow = InvestmentBook.addDays(1, to: today), after = InvestmentBook.addDays(2, to: today)
+        let remaining = snapshot.missingWindows(key: keys[0], start: tomorrow, end: after, today: today,
+            observations: [], additionalCoverage: [tomorrow...tomorrow])
+        precondition(remaining == [after...after], "Successful queries in the same refresh must cover later overlapping requests")
+        let changed = InvestmentQuote(day: today, price: 888, source: "测试行情", isDailyClose: true)
+        try await writer.saveHistory(scope: "batch", asset: assets[0], start: today, end: today, today: today, quotes: [changed])
+        precondition(snapshot.marketQuotes(key: keys[0]).last?.price == 180, "A refresh owns a stable immutable view")
+        let next = try await reader.marketReadSnapshot(scope: "batch")
+        precondition(next.marketQuotes(key: keys[0]).last?.price == 888, "A new refresh must see other cache instances' writes")
+        let other = try await reader.marketReadSnapshot(scope: "other")
+        precondition(other.marketQuotes(key: keys[0]).isEmpty)
+        print("Market cache refresh: 18 series, \(repeatedReads) repeated file decodes -> 1 indexed read; unchanged quotes and coverage")
+    }
+
+    static func provisionalFXRefreshesDespiteCoverage() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = InvestmentDiskCache(directory: directory)
+        let records = InvestmentServerRecords()
+        let yesterday = records.day.date(from: "2026-11-24")!
+        let today = InvestmentBook.addDays(1, to: yesterday)
+        let key = InvestmentDiskCache.rateKey(.usd)
+        let provisional = InvestmentQuote(day: yesterday, price: 7, source: "old", isDailyClose: false)
+        try await cache.saveMarketHistory(scope: "fx", key: key, start: yesterday, end: yesterday,
+            today: today, quotes: [provisional])
+        var snapshot = try await cache.marketReadSnapshot(scope: "fx")
+        precondition(snapshot.missingWindows(key: key, start: yesterday, end: yesterday, today: today,
+            observations: [provisional]) == [yesterday...yesterday], "Coverage cannot hide unfinished FX")
+        let final = InvestmentQuote(day: yesterday, price: Decimal(string: "7.1")!, source: "欧洲央行", isDailyClose: true)
+        try await cache.saveMarketHistory(scope: "fx", key: key, start: yesterday, end: yesterday,
+            today: today, quotes: [final])
+        try await cache.saveMarketHistory(scope: "fx", key: key, start: yesterday, end: yesterday,
+            today: today, quotes: [.init(day: yesterday, price: 8, source: "other", isDailyClose: true)])
+        snapshot = try await cache.marketReadSnapshot(scope: "fx")
+        precondition(snapshot.marketQuotes(key: key) == [final], "A later batch cannot rewrite finalized disk FX")
+        precondition(snapshot.missingWindows(key: key, start: yesterday, end: yesterday, today: today,
+            observations: [final]).isEmpty)
+        var book = InvestmentBook(accounts: [.init(name: "USD", currency: .usd, type: .securities)])
+        book.addExchangeRates([provisional], for: .usd)
+        book = try await cache.restoringMarketQuotes(in: book, scope: "fx")
+        precondition(book.fx[.usd] == [final], "Cached final FX must promote a provisional book rate")
     }
 
     static func dailyCryptoSpotReuse() async throws {

@@ -433,6 +433,27 @@ extension InvestmentMarketDataTests {
         } catch let error as InvestmentError { precondition(error.localizedDescription.contains("每万份收益")) }
     }
 
+    static func localMarketsBecomeFinalAtClose() async throws {
+        let format = ISO8601DateFormatter()
+        let session = day(30)
+        for (symbol, market, currency, secid, code, hour) in [
+            ("510300.SH", "XSHG", InvestmentCurrency.cny, 1, "510300", 15),
+            ("02800.HK", InvestmentAsset.stockConnectMarket, InvestmentCurrency.hkd, 116, "02800", 16)
+        ] {
+            let provider = InvestmentQuoteProvider { request, _ in
+                try eastmoneyBars(request, code: code, market: secid, bars: ["2026-10-30,23,24,25,22,1"])
+            }
+            let close = format.date(from: "2026-10-30T\(hour):00:00+08:00")!
+            let target = asset(symbol, .etf, currency, market: market)
+            let before = try await provider.history(asset: target, start: session, through: session,
+                cached: nil, keys: [:], now: close.addingTimeInterval(-1))
+            let after = try await provider.history(asset: target, start: session, through: session,
+                cached: nil, keys: [:], now: close)
+            precondition(before.last?.isDailyClose == false && after.last?.isDailyClose == true,
+                         "Same-day local closing quotes must become final without waiting until midnight")
+        }
+    }
+
     static func twelveUSCloseTimesAndWatchFreshness() async throws {
         let provider = InvestmentQuoteProvider { request, secrets in
             let query = eastmoneyQuery(request)
@@ -495,5 +516,7 @@ extension InvestmentMarketDataTests {
         }
         let rates = try await provider.ecbRates(for: [.usd, .hkd], start: day(1), end: day(30))
         precondition(rates[.usd]?.first?.price == 7 && rates[.hkd]?.first?.price == Decimal(string: "0.875"))
+        precondition(rates.values.flatMap { $0 }.allSatisfy { $0.source == "欧洲央行" && $0.isDailyClose == true },
+            "Published ECB observations are final reference rates")
     }
 }

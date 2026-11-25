@@ -64,12 +64,12 @@ func TestInvestmentMarketChangesDoNotConflictWithLedgerGeneration(t *testing.T) 
 	f := newFixture(t, true)
 	ctx := context.Background()
 	owner := f.s.investmentSubject()
-	base, err := f.s.persistInvestment(ctx, owner, investmentWrite{Tables: investmentRows{"market_instruments": {{"id": "btc", "asset_type": "crypto", "symbol": "BTCUSDT", "exchange": "BINANCE", "name": "BTC", "quote_currency": "USD", "price_type": "close"}}}})
+	base, err := f.s.persistInvestment(ctx, owner, investmentWrite{Tables: investmentRows{"market_instruments": {{"id": "CRYPTO:CRYPTO:BTC:USD", "asset_type": "crypto", "symbol": "BTCUSDT", "exchange": "BINANCE", "name": "BTC", "quote_currency": "USD", "price_type": "close"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	day := "2026-11-01"
-	quote := investmentRow{"instrument_id": "btc", "session_date": day, "price_type": "close", "source": "test", "price": "123.4", "is_final": "1"}
+	quote := investmentRow{"instrument_id": "CRYPTO:CRYPTO:BTC:USD", "session_date": day, "price_type": "close", "source": "test", "price": "123.4", "is_final": "1"}
 	input := investmentChangeWrite{Generation: 0, DirtyFrom: &day, Changes: investmentChanges{"market_daily_prices": {Upserts: []investmentRow{quote}}}}
 	result, err := f.s.persistInvestmentChanges(ctx, owner, input)
 	if err != nil {

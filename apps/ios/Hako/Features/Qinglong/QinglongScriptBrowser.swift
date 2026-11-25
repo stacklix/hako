@@ -72,14 +72,6 @@ struct QinglongScriptBrowser: View {
             }.padding(.horizontal, 20).padding(.bottom, 24)
         }
         .scrollDismissesKeyboard(.interactively)
-        .navigationBarBackButtonHidden(!directory.isEmpty)
-        .toolbar {
-            if !directory.isEmpty {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { navigate(QinglongScriptTree.parent(directory)) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("返回上一级目录")
-                }
-            }
-        }
         .refreshable { await store.refresh(.scripts) }
         .task(id: RefreshKey(active: active && destination == nil, revision: store.revision)) {
             guard active, destination == nil, store.connection != nil else { return }

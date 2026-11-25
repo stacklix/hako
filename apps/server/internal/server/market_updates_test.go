@@ -24,8 +24,8 @@ func setupMarketBook(t *testing.T, f *fixture) investmentState {
 	t.Helper()
 	day := time.Now().UTC().AddDate(0, 0, -2).Format(time.DateOnly)
 	state, err := f.s.persistInvestment(context.Background(), f.s.investmentSubject(), investmentWrite{Tables: investmentRows{
-		"market_instruments":       {{"id": "btc", "asset_type": "crypto", "symbol": "BTCUSDT", "exchange": "BINANCE", "name": "BTC", "quote_currency": "USD", "price_type": "close"}},
-		"investment_assets":        {{"id": "asset", "instrument_id": "btc", "asset_type": "crypto", "symbol": "BTCUSDT", "name": "BTC", "quote_currency": "USD", "settlement_unit": "USD"}},
+		"market_instruments":       {{"id": "CRYPTO:CRYPTO:BTC:USD", "asset_type": "crypto", "symbol": "BTCUSDT", "exchange": "BINANCE", "name": "BTC", "quote_currency": "USD", "price_type": "close"}},
+		"investment_assets":        {{"id": "asset", "instrument_id": "CRYPTO:CRYPTO:BTC:USD", "asset_type": "crypto", "symbol": "BTCUSDT", "name": "BTC", "quote_currency": "USD", "settlement_unit": "USD"}},
 		"investment_accounts":      {{"id": "account", "name": "Private Account", "account_type": "crypto", "currency": "USD", "sort_order": "0"}},
 		"investment_events":        {{"id": "buy", "account_id": "account", "asset_id": "asset", "event_type": "opening", "effective_date": day, "quantity": "0.058", "sequence": "0"}},
 		"investment_manual_prices": {{"asset_id": "asset", "valuation_date": day, "value": "90", "source": "manual", "is_final": "1"}},
@@ -34,6 +34,72 @@ func setupMarketBook(t *testing.T, f *fixture) investmentState {
 		t.Fatal(err)
 	}
 	return state
+}
+
+func TestMarketFXTargetsUseECBAndOnlySkipFinalPositiveRates(t *testing.T) {
+	f := newFixture(t, true)
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	book := investmentState{Tables: investmentRows{
+		"investment_accounts": {{"id": "account", "currency": "USD"}},
+		"investment_events":   {{"account_id": "account", "effective_date": "2026-11-23"}},
+		"market_daily_fx": {
+			{"rate_date": "2026-11-23", "base_currency": "USD", "quote_currency": "CNY", "rate": "7", "source": "old", "is_final": "1"},
+			{"rate_date": "2026-11-24", "base_currency": "USD", "quote_currency": "CNY", "rate": "7.1", "source": "old", "is_final": "0"},
+			{"rate_date": "2026-11-25", "base_currency": "USD", "quote_currency": "CNY", "rate": "7.2", "source": "old", "is_final": "1"},
+		},
+	}}
+	assert := func(want string) {
+		t.Helper()
+		targets := f.s.marketTargets(AuthClientConfig{ID: "collector"}, "owner", book, now)
+		if len(targets) != 1 || targets[0].Source != "欧洲央行" || targets[0].From != want || targets[0].Through != "2026-11-24" {
+			t.Fatal(targets)
+		}
+	}
+	assert("2026-11-24")
+	book.Tables["market_daily_fx"][1]["is_final"] = "1"
+	if targets := f.s.marketTargets(AuthClientConfig{ID: "another"}, "owner", book, now); len(targets) != 0 {
+		t.Fatal("final rates must work across collectors", targets)
+	}
+	book.Tables["market_daily_fx"][1]["rate"] = "0"
+	assert("2026-11-24")
+}
+
+func TestMarketFXPromotesPublishedRateAndNeverOverwritesFinal(t *testing.T) {
+	f := newFixture(t, true)
+	setupMarketBook(t, f)
+	c, secret := appTestClient(f, "app_fx")
+	c.MarketReadEnabled, c.MarketWriteEnabled = true, true
+	if err := f.s.store.update(func(st *state) error { st.AuthClients[c.ID] = c; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	day := now.AddDate(0, 0, -1).Format(time.DateOnly)
+	_, err := f.s.persistInvestmentChanges(context.Background(), f.s.investmentSubject(), investmentChangeWrite{Changes: investmentChanges{
+		"market_daily_fx": {Upserts: []investmentRow{{"rate_date": day, "base_currency": "USD", "quote_currency": "CNY", "source": "old", "rate": "7", "is_final": "0", "available_at_utc": now.Format(time.RFC3339Nano)}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := marketTarget{Key: "fx|USD|CNY", Kind: "fx", BaseCurrency: "USD", QuoteCurrency: "CNY", Source: "欧洲央行", From: day, Through: day, Expires: now.Add(10 * time.Minute).Unix()}
+	item := marketUpdateItem{TargetID: f.s.signMarketTarget(c, target), Quotes: []marketObservation{{Date: day, Value: "7.1", ObservedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)}}}
+	post := func() {
+		t.Helper()
+		w := marketCall(f, c, secret, "POST", "/api/v1/market/quote-batches", map[string]any{"items": []marketUpdateItem{item}})
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	post()
+	var rate, source, final string
+	var revision int
+	if err = f.s.investment.QueryRow("SELECT rate,source,is_final,revision FROM market_daily_fx").Scan(&rate, &source, &final, &revision); err != nil || rate != "7.1" || source != "欧洲央行" || final != "1" || revision != 2 {
+		t.Fatal(rate, source, final, revision, err)
+	}
+	item.Quotes[0].Value = "9"
+	post()
+	if err = f.s.investment.QueryRow("SELECT rate,revision FROM market_daily_fx").Scan(&rate, &revision); err != nil || rate != "7.1" || revision != 2 {
+		t.Fatal(rate, revision, err)
+	}
 }
 
 func TestMarketPermissionsLatestOverwriteAndLedgerIsolation(t *testing.T) {
@@ -63,7 +129,7 @@ func TestMarketPermissionsLatestOverwriteAndLedgerIsolation(t *testing.T) {
 	}
 	var latest marketTarget
 	for _, target := range list.Targets {
-		if target.Kind == "latest" && target.InstrumentID == "btc" {
+		if target.Kind == "latest" && target.InstrumentID == "CRYPTO:CRYPTO:BTC:USD" {
 			latest = target
 		}
 	}

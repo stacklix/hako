@@ -89,7 +89,7 @@ actor InvestmentDiskCache {
     static let shared = InvestmentDiskCache()
     private let directory: URL
     private let readFile: @Sendable (URL) throws -> Data
-    private struct History: Codable {
+    fileprivate struct History: Codable, Sendable {
         let key: String
         let start: Date
         let end: Date
@@ -100,6 +100,61 @@ actor InvestmentDiskCache {
         var state: InvestmentServerState?
         var incomplete = false
         var histories: [History] = []
+    }
+    struct MarketReadSnapshot: Sendable {
+        fileprivate let histories: [String: [History]]
+        let incomplete: Bool
+        var historyCount: Int { histories.values.reduce(0) { $0 + $1.count } }
+        var quoteCount: Int { histories.values.reduce(0) { $0 + $1.reduce(0) { $0 + $1.quotes.count } } }
+
+        func marketQuotes(key: String) -> [InvestmentQuote] {
+            let quotes = histories[key, default: []].flatMap(\.quotes)
+            return key.hasPrefix("fx|") ? InvestmentBook.mergeExchangeRates([], quotes) : InvestmentBook.merge([], quotes)
+        }
+        func missingWindows(key: String, start: Date, end: Date, today: Date,
+                            observations: [InvestmentQuote], additionalCoverage: [ClosedRange<Date>] = [],
+                            requiredClose: Date? = nil) -> [ClosedRange<Date>] {
+            let covered: [ClosedRange<Date>] = incomplete ? [] : histories[key, default: []].compactMap { range in
+                let end = range.checkedDay < today && range.end >= range.checkedDay
+                    ? InvestmentBook.addDays(-1, to: range.checkedDay) : range.end
+                return range.start <= end ? range.start...end : nil
+            }
+            var missing = InvestmentHistoryRange.missingWindows(from: start, through: end, observations: observations,
+                                                                covered: covered + additionalCoverage)
+            if key.hasPrefix("fx|") {
+                // Query coverage must not hide an unconfirmed previous-day rate.
+                let ranges = missing + observations.filter {
+                    $0.day >= start && $0.day <= end && $0.day < today && $0.isDailyClose != true &&
+                        InvestmentBook.weekdayMarketDate(on: $0.day) == $0.day
+                }.map { $0.day...$0.day }
+                missing = []
+                for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                    InvestmentBook.addQuoteWindow(range, to: &missing)
+                }
+            }
+            if let day = requiredClose, day >= start, day <= end,
+               !observations.contains(where: { $0.day == day && $0.price > 0 && $0.isDailyClose == true }) {
+                // A pre-close query or an unpublished NAV must not cache away the later closing price.
+                let ranges = missing + [day...day]
+                missing = []
+                for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                    InvestmentBook.addQuoteWindow(range, to: &missing)
+                }
+            }
+            return missing
+        }
+        func cachedCryptoSpotQuote(asset: InvestmentAsset, on day: Date,
+                                   observations: [InvestmentQuote] = []) -> InvestmentQuote? {
+            guard asset.kind == .crypto else { return nil }
+            let today = InvestmentBook.day(day)
+            if let quote = histories[InvestmentDiskCache.cryptoSpotKey(asset), default: []]
+                .last(where: { $0.checkedDay == today })?.quotes
+                .last(where: { InvestmentDiskCache.validCryptoSpot($0, through: today) }) { return quote }
+            if let quote = histories[InvestmentDiskCache.historyKey(asset), default: []]
+                .filter({ $0.checkedDay == today }).flatMap(\.quotes)
+                .last(where: { $0.day == today && InvestmentDiskCache.validCryptoSpot($0, through: today) }) { return quote }
+            return observations.last { $0.day == today && InvestmentDiskCache.validCryptoSpot($0, through: today) }
+        }
     }
     init(directory: URL? = nil, readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }) {
         self.readFile = readFile
@@ -116,6 +171,11 @@ actor InvestmentDiskCache {
         let file = try url(scope)
         guard FileManager.default.fileExists(atPath: file.path) else { return Entry() }
         return try JSONDecoder().decode(Entry.self, from: readFile(file))
+    }
+    // A refresh owns one immutable read. Future refreshes and other cache instances read disk again.
+    func marketReadSnapshot(scope: String) throws -> MarketReadSnapshot {
+        let entry = try entry(scope)
+        return .init(histories: Dictionary(grouping: entry.histories, by: \.key), incomplete: entry.incomplete)
     }
     private func persist(_ entry: Entry, scope: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -149,7 +209,7 @@ actor InvestmentDiskCache {
         }
         for currency in InvestmentCurrency.allCases where currency != .cny {
             let saved = histories[Self.rateKey(currency), default: []].flatMap(\.quotes)
-            let known = Set((source.fx[currency] ?? []).filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+            let known = Set((source.fx[currency] ?? []).filter { $0.price > 0 && $0.isDailyClose == true }.map(\.day))
             if !saved.isEmpty { restored.addExchangeRates(saved.filter { !known.contains($0.day) }, for: currency) }
         }
         return restored
@@ -192,14 +252,7 @@ actor InvestmentDiskCache {
     func cachedCryptoSpotQuote(scope: String, asset: InvestmentAsset, on day: Date,
                                observations: [InvestmentQuote] = []) throws -> InvestmentQuote? {
         guard asset.kind == .crypto else { return nil }
-        let today = InvestmentBook.day(day)
-        let cached = try entry(scope)
-        let spotKey = Self.cryptoSpotKey(asset)
-        if let quote = cached.histories.last(where: { $0.key == spotKey && $0.checkedDay == today })?.quotes
-            .last(where: { Self.validCryptoSpot($0, through: today) }) { return quote }
-        if let quote = cached.histories.filter({ $0.key == Self.historyKey(asset) && $0.checkedDay == today })
-            .flatMap(\.quotes).last(where: { $0.day == today && Self.validCryptoSpot($0, through: today) }) { return quote }
-        return observations.last { $0.day == today && Self.validCryptoSpot($0, through: today) }
+        return try marketReadSnapshot(scope: scope).cachedCryptoSpotQuote(asset: asset, on: day, observations: observations)
     }
     func saveCryptoSpotQuote(scope: String, asset: InvestmentAsset, quote: InvestmentQuote, on day: Date) throws {
         let today = InvestmentBook.day(day)
@@ -214,30 +267,19 @@ actor InvestmentDiskCache {
         [asset.id.uuidString, asset.code, asset.market, asset.currency.rawValue, asset.kind.rawValue].joined(separator: "|")
     }
     static func rateKey(_ currency: InvestmentCurrency) -> String { "fx|" + currency.rawValue + "|CNY" }
-    private func coverage(_ histories: [History], key: String, today: Date) -> [ClosedRange<Date>] {
-        histories.filter { $0.key == key }.compactMap { range in
-            // An unfinished query day must be checked again on the next day.
-            let end = range.checkedDay < today && range.end >= range.checkedDay
-                ? InvestmentBook.addDays(-1, to: range.checkedDay) : range.end
-            return range.start <= end ? range.start...end : nil
-        }
-    }
     func marketQuotes(scope: String, key: String) throws -> [InvestmentQuote] {
-        InvestmentBook.merge([], try entry(scope).histories.filter { $0.key == key }.flatMap(\.quotes))
+        try marketReadSnapshot(scope: scope).marketQuotes(key: key)
     }
     func missingWindows(scope: String, key: String, start: Date, end: Date, today: Date,
                         observations: [InvestmentQuote]) throws -> [ClosedRange<Date>] {
-        let entry = try entry(scope)
-        return InvestmentHistoryRange.missingWindows(from: start, through: end, observations: observations,
-            covered: entry.incomplete ? [] : coverage(entry.histories, key: key, today: today))
+        try marketReadSnapshot(scope: scope).missingWindows(key: key, start: start, end: end, today: today, observations: observations)
     }
     func history(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date) throws -> [InvestmentQuote]? {
-        let entry = try entry(scope)
-        guard !entry.incomplete else { return nil }
+        let snapshot = try marketReadSnapshot(scope: scope)
+        guard !snapshot.incomplete else { return nil }
         let key = Self.historyKey(asset)
-        let quotes = InvestmentBook.merge([], entry.histories.filter { $0.key == key }.flatMap(\.quotes))
-        guard InvestmentHistoryRange.missingWindows(from: start, through: end, observations: quotes,
-            covered: coverage(entry.histories, key: key, today: today)).isEmpty else { return nil }
+        let quotes = snapshot.marketQuotes(key: key)
+        guard snapshot.missingWindows(key: key, start: start, end: end, today: today, observations: quotes).isEmpty else { return nil }
         return quotes.filter { $0.day >= start && $0.day <= end }
     }
     func saveHistory(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
@@ -245,8 +287,12 @@ actor InvestmentDiskCache {
     }
     func saveMarketHistory(scope: String, key: String, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
         var entry = try entry(scope)
+        let saved = key.hasPrefix("fx|")
+            ? InvestmentBook.mergeExchangeRates(entry.histories.filter { $0.key == key }.flatMap(\.quotes), quotes)
+                .filter { $0.day >= start && $0.day <= end }
+            : quotes
         entry.histories.removeAll { $0.key == key && $0.start >= start && $0.end <= end }
-        entry.histories.append(.init(key: key, start: start, end: end, checkedDay: today, quotes: quotes))
+        entry.histories.append(.init(key: key, start: start, end: end, checkedDay: today, quotes: saved))
         try persist(entry, scope: scope)
     }
 }

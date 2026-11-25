@@ -40,6 +40,7 @@ internal static class AndroidVideoChecks
         await CheckPowerLifecycle(false, true);
         await CheckCancelledWriteRace();
         CheckTouchValidation();
+        await AndroidLegacyVideoChecks.RunAsync();
         Console.WriteLine("PASS: video encoder integrity, idempotent session keys, device pinning, source limits and stop without launching ADB.");
     }
     private sealed class CancelledWriteSocket(byte[] hello) : WebSocket
@@ -217,14 +218,14 @@ internal static class AndroidVideoChecks
         input.Read(Touch(3, 0)); input.Read(Touch(4, 1));
         Console.WriteLine("PASS: encrypted ordered touch delivery, coordinate bounds, gesture lifecycle and replay rejection.");
     }
-    internal static async Task LiveAsync(string profile, string output)
+    internal static async Task LiveAsync(string profile, string output, string serial = "731dd756")
     {
         await using var manager = new AndroidManager(profile);
         var inventory = await manager.ListAsync(default);
-        var device = Array.Find(inventory.Devices, d => Array.Exists(d.Connections, c => c.Serial == "731dd756")) ?? throw new Exception("Selected test phone offline");
+        var device = Array.Find(inventory.Devices, d => Array.Exists(d.Connections, c => c.Serial == serial)) ?? throw new Exception("Selected test phone offline");
         var id = Guid.NewGuid().ToString("D");
         var descriptor = JsonSerializer.SerializeToElement(await manager.ActionAsync("action.android.stream",
-            JsonSerializer.SerializeToElement(new { operation = "start", sessionId = id, deviceId = device.Id, serial = "731dd756" }), default), AgentConnection.Json);
+            JsonSerializer.SerializeToElement(new { operation = "start", sessionId = id, deviceId = device.Id, serial }), default), AgentConnection.Json);
         var key = Convert.FromBase64String(descriptor.GetProperty("key").GetString()!);
         var name = "Kage.Video.Check." + Guid.NewGuid().ToString("N");
         using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
@@ -232,7 +233,7 @@ internal static class AndroidVideoChecks
         var accepting = pipe.WaitForConnectionAsync(); await peer.ConnectAsync(3000); await accepting;
         using var server = WebSocket.CreateFromStream(pipe, true, null, TimeSpan.FromSeconds(15));
         using var consumer = WebSocket.CreateFromStream(peer, false, null, TimeSpan.FromSeconds(15));
-        using var duration = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var duration = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var work = manager.Video.AcceptAsync(id, server, duration.Token);
         var hello = JsonSerializer.SerializeToUtf8Bytes(new { sessionId = id, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
         await consumer.SendAsync(AgentLanEndpoint.Seal(key, hello, "video-client:" + id).AsMemory(), WebSocketMessageType.Binary, true, default);
@@ -250,9 +251,28 @@ internal static class AndroidVideoChecks
                 if (plain[8] == 0) { video.Write(plain, 9, plain.Length - 9); first ??= clock.Elapsed.TotalMilliseconds; }
             }
         } catch (OperationCanceledException) when (duration.IsCancellationRequested) { }
-        finally { duration.Cancel(); consumer.Abort(); try { await work; } catch (OperationCanceledException) { } }
+        finally {
+            duration.Cancel(); consumer.Abort();
+            try { await work; } catch (OperationCanceledException) { }
+            await manager.Video.StopAsync(id); // Surface failed power cleanup instead of reporting a successful capture.
+        }
         if (video.Length < 20 || !video.ToArray().AsSpan(0, 4).SequenceEqual("h264"u8)) throw new Exception("No live H264 data");
-        await File.WriteAllBytesAsync(output, video.ToArray());
-        Console.WriteLine(JsonSerializer.Serialize(new { videoBytes = video.Length, messages = sequence, firstDataMilliseconds = first, closed = work.IsCompleted }, AgentConnection.Json));
+        var data = video.ToArray();
+        var frames = 0; var configurations = 0; var keyFrames = 0;
+        for (var offset = 12; offset + 12 <= data.Length;) {
+            var flags = BinaryPrimitives.ReadUInt64BigEndian(data.AsSpan(offset));
+            var size = BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset + 8));
+            if (size is 0 or > 2097152) throw new Exception("Invalid live H264 frame size");
+            if (offset + 12L + size > data.Length) break; // Cancellation can cut the final WebSocket chunk.
+            if (!data.AsSpan(offset + 12, (int)size).StartsWith(new byte[] { 0, 0, 0, 1 })
+                && !data.AsSpan(offset + 12, (int)size).StartsWith(new byte[] { 0, 0, 1 })) throw new Exception("Missing H264 NAL boundary");
+            if ((flags & (1UL << 63)) != 0) configurations++;
+            else { frames++; if ((flags & (1UL << 62)) != 0) keyFrames++; }
+            offset += 12 + (int)size;
+        }
+        await File.WriteAllBytesAsync(output, data);
+        Console.WriteLine(JsonSerializer.Serialize(new { videoBytes = video.Length, frames, configurations, keyFrames,
+            messages = sequence, firstDataMilliseconds = first, closed = work.IsCompleted }, AgentConnection.Json));
+        if (configurations == 0 || frames < 2 || keyFrames == 0) throw new Exception("Live video did not contain decodable configuration, key frame and continuous pictures");
     }
 }

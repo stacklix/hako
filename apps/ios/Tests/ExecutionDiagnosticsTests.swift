@@ -7,6 +7,7 @@ import Foundation
 
 @main struct ExecutionDiagnosticsTests {
     @MainActor static func main() async throws {
+        checkFullLogExport()
         try await checkGroups()
         let outer = Events(), inner = Events()
         try await HakoExecutionDiagnostics.context.withValue({ outer.append($0) }) {
@@ -109,6 +110,29 @@ import Foundation
         let restored = try JSONDecoder().decode([HakoExecutionEvent].self, from: data)
         precondition(restored.map(\.id) == outer.values.map(\.id))
         print("PASS: correlated and saved legacy stages, concurrent names, retry boundaries, pending/truncated timing, cancellation sources, transport errors, redaction and persistence")
+    }
+
+    private static func checkFullLogExport() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let id = UUID(), group = UUID()
+        let stage = "[组 · \(group.uuidString)] [并行 · 标的行情] 准备标的行情"
+        let longDetail = "完整详情开始\n" + String(repeating: "数据", count: 3000) + "\n完整详情结束"
+        let events = [
+            HakoExecutionEvent(id: id, time: base, stage: stage, state: .started, detail: "开始"),
+            HakoExecutionEvent(time: base.addingTimeInterval(0.125), stage: "行情缓存缺口 · BTC", state: .info,
+                               detail: "缺口 0 个；token=do-not-copy"),
+            HakoExecutionEvent(id: id, time: base.addingTimeInterval(0.25), stage: stage, state: .succeeded, detail: longDetail)
+        ]
+        let export = HakoExecutionLogExport.text(title: "更新投资账本", metadata: ["执行 ID：example"], events: events,
+            startedAt: base, finishedAt: base.addingTimeInterval(0.25), now: base.addingTimeInterval(1), capacity: 3)
+        precondition(export.contains(".125Z") && export.contains("相对开始：0.125 秒"))
+        precondition(export.contains("250 毫秒") && export.contains("分支：标的行情"))
+        precondition(export.contains("本次结束：") && export.contains(".250Z"))
+        precondition(export.contains(group.uuidString) && export.components(separatedBy: id.uuidString).count >= 3)
+        precondition(export.contains("#1 ") && export.contains("#2 ") && export.contains("#3 "))
+        precondition(export.contains("完整详情开始") && export.contains("完整详情结束"), "Export must not add another truncation limit")
+        precondition(export.contains("[诊断] 行情缓存缺口 · BTC") && export.contains("已达到保留上限"))
+        precondition(!export.contains("do-not-copy") && export.contains("[已隐藏]"))
     }
 
     @MainActor private static func checkGroups() async throws {

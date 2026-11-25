@@ -317,7 +317,6 @@ private struct WorkshopCodeSnippet: View {
         .padding(.horizontal, 12).padding(.bottom, 4)
         .background(HakoStyle.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(HakoStyle.line, lineWidth: 1).allowsHitTesting(false) }
-        .contextMenu { Button("复制代码", systemImage: "doc.on.doc", action: copy).disabled(code.isEmpty) }
         .onChange(of: code) { copied = false }
         .task(id: copied) {
             guard copied else { return }

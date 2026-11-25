@@ -32,13 +32,17 @@ APK 最大 256 MB，每块最多 8192 字节；块重传必须与已有字节一
 
 ## 实时屏幕
 
-iOS 的 Android 设备 Sheet →「投屏」独立 Tab 显示连续 H.264 视频，点击「开启投屏」才连接，进入页面不自动连接。Kage 在通过视频通道认证后自动亮屏并回查状态，再启动编码；点击「关闭投屏」、离开页面、切换连接、进入后台或连接中断时，先关闭视频源并清理 ADB 转发，再自动息屏并回查。息屏完成前不允许新会话接管同一手机；未能确认息屏时明确显示错误。手机需要允许 ADB 输入控制，亮屏不会解除锁屏。视频不轮询截图，不持久保存录像，不包含声音。
+iOS 的 Android 设备 Sheet →「投屏」独立 Tab 显示连续 H.264 视频，点击「开启投屏」才连接，进入页面不自动连接。Kage 在通过视频通道认证后自动亮屏并回查状态，再启动编码；点击「关闭投屏」、离开页面、切换连接、进入后台或连接中断时，先关闭视频源并清理 ADB 转发，再自动息屏并回查。息屏完成前不允许新会话接管同一手机；未能确认息屏时明确显示错误。手机需要允许 ADB 输入控制，亮屏不会解除锁屏。视频不通过 ADB 逐帧下载截图，不持久保存录像，不包含声音。
 
 连接后可直接点击、长按和单指滑动画面；坐标按当前视频像素尺寸换算，横竖屏使用编码器实际尺寸。触控使用 scrcpy 控制 socket，与视频共用该会话的 ADB forward，不逐次启动 `adb shell input`。部分设备须开启「USB 调试（安全设置）」才允许输入注入；不绕过锁屏或系统授权。停止时尽力取消尚未结束的手势，再清理控制和视频连接。
 
 收到投屏画面后才显示右上角全屏图标。全屏与卡片复用同一视频会话，按原比例扩展到整个屏幕，不保留标题栏、说明区或内容内边距；屏幕比例不同时仅保留必要黑边。全屏中只显示悬浮的「退出全屏」按钮，默认位于左上角，可拖动到安全区内其他位置，点击返回卡片后继续投屏；连接结束时自动返回卡片查看状态。在卡片内点击「关闭投屏」结束会话并自动息屏。未连接时显示紧凑的 16:9 占位，卡片内已连接画面最高 360pt。
 
 Kage 内嵌官方 scrcpy 3.3.4 手机端编码器（Apache-2.0，许可证位于 `apps/windows/src/Hako/Assets/scrcpy-LICENSE.txt`），固定 SHA-256 `8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e`。连接时经 ADB 推送到独立的临时路径，通过 `app_process` 启动；H.264 上限 1280 像素、30 fps、2 Mbps，MediaCodec 保留完整帧边界和参数集。断开后关闭专属进程、移除该会话的 ADB forward 和临时文件，不终止 ADB 服务或其他会话。
+
+Android 4.4 / API 19–20 自动选择项目自有的 `LegacyVideoServer`，Android 5.0 及以上继续使用 scrcpy；低于 API 19 或无法确认系统版本时明确拒绝。旧系统源在设备端通过 SurfaceControl 读取显示缓冲，转换为编码器支持的 YUV420 后交给 MediaCodec，避开部分高通固件连原生 screenrecord 都无法处理的 Surface 颜色格式；上限 1024 像素、10 fps、2 Mbps，实际尺寸向下对齐 16 像素。设备没有实体屏幕时，只要系统仍提供显示缓冲即可工作，不要求 root。输出沿用现有 H.264 配置、帧边界及触控格式，iOS 与服务端协议不变；尺寸变化重新配置编码器，触控按当前显示尺寸换算。辅助程序使用每会话独立的 Dalvik 缓存，断开时清理；连接前无人接入的进程在 15 秒后退出。旧系统通过 `dumpsys power` 确认 `mScreenOn`，仅在明确处于相反状态时发送一次电源键；未知状态不盲目切换。
+
+旧系统辅助程序源码位于 `apps/windows/android-video/src/`，内嵌产物为 `Assets/hako-video-api19.jar`，由 `apps/windows/scripts/build-legacy-video.ps1 -JavaHome <JDK目录> -AndroidSdk <SDK目录>` 构建，默认使用 android-36 / build-tools 36.0.0，DEX 最低 API 19。修改源码后重新生成资源、同步 `AndroidVideoSource.LegacySha256` 并运行 Android 检查；构建资源仅需要 JDK 与 Android SDK，设备端无需安装 APK。
 
 `start` 参数为 `sessionId`、`deviceId`、可选 `serial`；返回单会话随机 AES-256 密钥、局域网端口/地址及 `/agent/v1/streams/{sessionId}`。局域网 WebSocket 首包为 AES-GCM 加密的 `{sessionId,timestamp}`，AAD 为 `hako-agent-lan-v1:video-client:{sessionId}`。服务端包的 AAD 为 `hako-agent-lan-v1:video-server:{sessionId}`，明文为 8 字节大端递增序号、1 字节类型及负载：0=视频字节、1=错误、2=ready、3=alive。每包视频负载不超过 32768 字节，每 10 秒发送心跳；客户端拒绝乱序或重复包。密钥只经已鉴权命令交付，不放在 URL 或明文 HTTP 中。
 

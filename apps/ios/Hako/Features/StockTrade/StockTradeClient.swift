@@ -18,6 +18,15 @@ final class StockTradeClient: StockTradeAccess, @unchecked Sendable {
     }
     deinit { if ownsSession { session.invalidateAndCancel() } }
 
+    static func transportFailure(_ error: Error) -> Error {
+        // URLSession may report URLError.cancelled when SwiftUI cancels its
+        // caller. Views already ignore CancellationError for obsolete work.
+        if HTTPTransport.isTaskCancellation(error) { return CancellationError() }
+        // Cancellation without a cancelled caller is still a transport issue.
+        if (error as? URLError)?.code == .cancelled { return StockTradeFailure.requestInterrupted }
+        return error
+    }
+
     func request(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil,
                  token: String? = nil) throws -> URLRequest {
         guard path.allSatisfy({ !$0.isEmpty && !$0.contains("/") && !$0.contains("\\") && $0 != "." && $0 != ".." }),
@@ -40,8 +49,12 @@ final class StockTradeClient: StockTradeAccess, @unchecked Sendable {
     func data(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil,
               token: String? = nil) async throws -> Data {
         let request = try request(path, query: query, method: method, body: body, token: token)
-        let (data, response) = try await HTTPTransport.data(for: request, using: session, source: .stockTrade,
-            secrets: [token].compactMap { $0 }, logBody: false, marketUsage: nil, marketGate: nil)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await HTTPTransport.data(for: request, using: session, source: .stockTrade,
+                secrets: [token].compactMap { $0 }, logBody: false, marketUsage: nil, marketGate: nil)
+        } catch { throw Self.transportFailure(error) }
         guard let response = response as? HTTPURLResponse, data.count <= 16 * 1024 * 1024 else {
             throw StockTradeFailure.invalidResponse
         }

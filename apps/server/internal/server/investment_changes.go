@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type investmentChange struct {
@@ -100,6 +101,7 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 		return result, err
 	}
 	inputs, outputs, matched := false, false, 0
+	sharedFXFrom := ""
 	for _, table := range investmentTables {
 		change, ok := input.Changes[table.name]
 		if !ok {
@@ -114,6 +116,13 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 		seen := map[string]bool{}
 		keys := strings.Fields(table.keys)
 		confirmed := investmentChange{Upserts: []investmentRow{}, Deletes: []investmentRow{}}
+		var beforeFX int64
+		if table.shared() {
+			beforeFX, err = investmentChangesCount(ctx, tx)
+			if err != nil {
+				return result, err
+			}
+		}
 		for _, row := range change.Deletes {
 			if len(row) != len(keys) {
 				return result, errInvestmentInvalid
@@ -129,8 +138,8 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 				return result, errInvestmentInvalid
 			}
 			seen[key] = true
-			args := []any{bookID}
-			where := []string{"book_id=?"}
+			scope, args := table.scope(bookID)
+			where := []string{scope}
 			for _, column := range keys {
 				where = append(where, column+"=?")
 				args = append(args, row[column])
@@ -158,6 +167,18 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 			confirmed.Upserts = append(confirmed.Upserts, row)
 		}
 		result.Changes[table.name] = confirmed
+		if table.shared() {
+			afterFX, err := investmentChangesCount(ctx, tx)
+			if err != nil {
+				return result, err
+			}
+			if afterFX != beforeFX {
+				day := earliestMarketDate(append(append([]investmentRow{}, change.Upserts...), change.Deletes...))
+				if day != "" && (sharedFXFrom == "" || day < sharedFXFrom) {
+					sharedFXFrom = day
+				}
+			}
+		}
 	}
 	if matched != len(input.Changes) || (inputs && outputs) {
 		return result, errInvestmentInvalid
@@ -173,6 +194,14 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 		return result, err
 	}
 	changed := after != before
+	if sharedFXFrom != "" {
+		if input.DirtyFrom == nil || sharedFXFrom < *input.DirtyFrom {
+			input.DirtyFrom = &sharedFXFrom
+		}
+		if err = invalidateSharedFX(ctx, tx, bookID, sharedFXFrom); err != nil {
+			return result, err
+		}
+	}
 	if changed || !reflect.DeepEqual(result.DirtyFrom, input.DirtyFrom) || !reflect.DeepEqual(result.Through, input.Through) {
 		if changed && inputs {
 			result.Revision++
@@ -199,8 +228,8 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 
 func (t investmentTable) row(ctx context.Context, tx *sql.Tx, book string, key investmentRow) (investmentRow, error) {
 	columns := t.columns()
-	args := []any{book}
-	where := []string{"book_id=?"}
+	scope, args := t.scope(book)
+	where := []string{scope}
 	for _, column := range strings.Fields(t.keys) {
 		where = append(where, column+"=?")
 		args = append(args, key[column])
@@ -232,6 +261,37 @@ func (t investmentTable) upsert(ctx context.Context, tx *sql.Tx, book string, ro
 	if err != nil {
 		return err
 	}
+	if t.name == "market_daily_fx" && finalInvestmentFX(previous) {
+		// Confirm the stored record, rather than echoing an ignored replacement.
+		for key := range row {
+			delete(row, key)
+		}
+		for key, value := range previous {
+			row[key] = value
+		}
+		return nil
+	}
+	if t.name == "market_daily_prices" && previous != nil {
+		oldTime, oldErr := time.Parse(time.RFC3339Nano, previous["closed_at_utc"])
+		newTime, newErr := time.Parse(time.RFC3339Nano, row["closed_at_utc"])
+		if previous["is_final"] == "1" && row["is_final"] != "1" || oldErr == nil && newErr == nil && newTime.Before(oldTime) && !(previous["is_final"] != "1" && row["is_final"] == "1") {
+			for key := range row {
+				delete(row, key)
+			}
+			for key, value := range previous {
+				row[key] = value
+			}
+			return nil
+		}
+	}
+	if t.name == "market_derivative_specs" && previous != nil {
+		if !equalInvestmentNumber(previous["contract_multiplier"], row["contract_multiplier"]) {
+			return errInvestmentInvalid
+		}
+		if _, exists := row["expiry_date"]; !exists && previous["expiry_date"] != "" {
+			row["expiry_date"] = previous["expiry_date"]
+		}
+	}
 	columns := t.columns()
 	if t.name == "market_daily_prices" || t.name == "market_daily_fx" {
 		revision, _ := strconv.ParseInt(previous["revision"], 10, 64)
@@ -243,7 +303,10 @@ func (t investmentTable) upsert(ctx context.Context, tx *sql.Tx, book string, ro
 	if reflect.DeepEqual(previous, row) {
 		return nil
 	}
-	args := []any{book}
+	args := []any{}
+	if !t.shared() {
+		args = append(args, book)
+	}
 	for _, column := range columns {
 		if v, ok := row[column]; ok {
 			args = append(args, v)
@@ -255,6 +318,6 @@ func (t investmentTable) upsert(ctx context.Context, tx *sql.Tx, book string, ro
 	for _, column := range strings.Fields(t.fields) {
 		updates = append(updates, column+"=excluded."+column)
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO "+t.name+"(book_id,"+strings.Join(columns, ",")+") VALUES (?"+strings.Repeat(",?", len(columns))+") ON CONFLICT(book_id,"+strings.Join(strings.Fields(t.keys), ",")+") DO UPDATE SET "+strings.Join(updates, ","), args...)
+	_, err = tx.ExecContext(ctx, "INSERT INTO "+t.name+"("+strings.Join(t.storageColumns(), ",")+") VALUES (?"+strings.Repeat(",?", len(args)-1)+") ON CONFLICT("+strings.Join(t.storageKeys(), ",")+") DO UPDATE SET "+strings.Join(updates, ","), args...)
 	return err
 }

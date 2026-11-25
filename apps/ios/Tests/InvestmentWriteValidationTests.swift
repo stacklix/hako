@@ -14,6 +14,20 @@ import Foundation
             catch { precondition(error.localizedDescription.contains("提交前校验失败")) }
         }
         try check(current)
+        let fx: InvestmentServerRow = ["rate_date": "2026-11-24", "base_currency": "USD", "quote_currency": "CNY",
+            "rate": "7.1", "source": "欧洲央行", "is_final": "1"]
+        try check(["market_daily_fx": [fx]])
+        var duplicateFX = fx; duplicateFX["source"] = "another"
+        rejected(["market_daily_fx": [fx, duplicateFX]])
+        let instrument: InvestmentServerRow = ["id": "ETF:US:QQQM:USD", "asset_type": "etf", "symbol": "QQQM",
+            "exchange": "US", "quote_currency": "USD", "name": "QQQM", "price_type": "close"]
+        let quote: InvestmentServerRow = ["instrument_id": "ETF:US:QQQM:USD", "session_date": "2026-11-20",
+            "price_type": "close", "source": "first", "price": "100", "is_final": "1"]
+        try check(["market_instruments": [instrument], "market_daily_prices": [quote]])
+        var duplicateQuote = quote; duplicateQuote["source"] = "second"
+        rejected(["market_instruments": [instrument], "market_daily_prices": [quote, duplicateQuote]])
+        var wrongIdentity = instrument; wrongIdentity["symbol"] = "OTHER"
+        rejected(["market_instruments": [wrongIdentity]])
         rejected(["unknown_table": []])
         rejected(["investment_accounts": [account, account]])
         for (column, value) in [("sort_order", "-1"), ("sort_order", "9223372036854775808"),

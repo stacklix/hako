@@ -109,7 +109,7 @@ final class InvestmentStore: ObservableObject {
         lastAutomaticPublicQuotes = []
     }
 
-    func load(force: Bool = false) async {
+    func load(force: Bool = false, scheduleSnapshots: Bool = true) async {
         discardExpiredSession()
         guard !loading, !saving, force || !loaded || cacheWasCleared else { return }
         loading = true
@@ -135,7 +135,10 @@ final class InvestmentStore: ObservableObject {
             guard scope == dataCacheScope else { throw CancellationError() }
             if loaded { serverContext = context }
             configuredSources = Set(keys().keys)
-            if loaded, !force { scheduleDailySnapshots(); return }
+            if loaded, !force {
+                if scheduleSnapshots { scheduleDailySnapshots() }
+                return
+            }
             lastServerReadSucceeded = false
             let data = try await authentication.send(Self.bookPath, method: "GET", body: nil, logSource: .hako)
             try Task.checkCancellation()
@@ -156,7 +159,7 @@ final class InvestmentStore: ObservableObject {
             loadError = nil
             await persistCache(state, scope: scope)
             configuredSources = Set(keys().keys)
-            scheduleDailySnapshots()
+            if scheduleSnapshots { scheduleDailySnapshots() }
         } catch is CancellationError {
             return
         } catch let error as ServerHTTPError where error.status == 404 {
@@ -168,7 +171,9 @@ final class InvestmentStore: ObservableObject {
     }
 
     private func publish(_ source: InvestmentBook, context: String? = nil, scope: String? = nil) async throws {
-        let prepared = await Task.detached(priority: .userInitiated) { InvestmentPresentation(book: source) }.value
+        let prepared = await HakoExecutionDiagnostics.measure("计算账户与持仓汇总", success: { _ in "已准备账户、持仓与组合汇总。" }) {
+            await Task.detached(priority: .userInitiated) { InvestmentPresentation(book: source) }.value
+        }
         if let context, context != authentication.requestContext { throw CancellationError() }
         if let scope {
             guard scope == dataCacheScope, !authentication.logoutPending,
@@ -179,8 +184,9 @@ final class InvestmentStore: ObservableObject {
     }
 
     func loadForSynchronization() async throws {
+        dailySnapshotTask?.cancel()
         lastServerReadSucceeded = false
-        await load(force: true)
+        await load(force: true, scheduleSnapshots: false)
         try Task.checkCancellation()
         guard lastServerReadSucceeded else {
             throw InvestmentError.invalid(loadError ?? (quoteStatus.isEmpty ? "本次未能读取服务端投资账本，请检查网络后重试。" : quoteStatus))
@@ -210,7 +216,7 @@ final class InvestmentStore: ObservableObject {
 
     func update(scheduleSnapshots: Bool = true, _ change: (inout InvestmentBook) throws -> Void) async throws {
         if cacheWasCleared {
-            await load(force: true)
+            await load(force: true, scheduleSnapshots: scheduleSnapshots)
             guard lastServerReadSucceeded else { throw InvestmentError.invalid("请恢复服务端连接后再保存。") }
         }
         while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
@@ -218,16 +224,27 @@ final class InvestmentStore: ObservableObject {
         try checkWritable()
         var draft = book
         try change(&draft)
+        if let state = serverState {
+            for asset in draft.assets.values where book.assets[asset.id] == nil && !asset.kind.isManual && (draft.quotes[asset.id]?.isEmpty ?? true) {
+                draft.addQuotes(try records.sharedQuotes(for: asset, in: state), assetID: asset.id)
+            }
+        }
         let validatedVersion = bookVersion
-        try await validateCatalogChanges(draft, previous: book)
+        try await HakoExecutionDiagnostics.measure("校验标的变更") {
+            try await validateCatalogChanges(draft, previous: book)
+        }
         while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
         try Task.checkCancellation()
         guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
         var dirty = serverState?.dirtyFrom
         let snapshotSource = draft, priorState = serverState, priorBook = book
-        let firstChanged = try await Task.detached {
-            snapshotSource.snapshotInputChange(comparedTo: try priorState.map { try InvestmentServerRecords().decode($0) } ?? priorBook)
-        }.value
+        let firstChanged: Date? = try await HakoExecutionDiagnostics.measure("检查历史快照影响范围", success: {
+            $0.map { "需要从 " + InvestmentText.date($0) + " 重新计算快照。" } ?? "无须重算历史快照。"
+        }) {
+            try await Task.detached {
+                snapshotSource.snapshotInputChange(comparedTo: try priorState.map { try InvestmentServerRecords().decode($0) } ?? priorBook)
+            }.value
+        }
         guard validatedVersion == bookVersion else { throw InvestmentError.invalid("账本版本已变更，请核对后再保存。") }
         if let first = firstChanged {
             draft.invalidateDailySnapshots(from: first)
@@ -261,7 +278,10 @@ final class InvestmentStore: ObservableObject {
         }
         draft.dailySnapshots = book.dailySnapshots
         do { try await write(draft, dirtyFrom: dirty, includeInputs: true, includeSnapshots: false) }
-        catch { scheduleDailySnapshots(); throw error }
+        catch {
+            if scheduleSnapshots { scheduleDailySnapshots() }
+            throw error
+        }
         if scheduleSnapshots { scheduleDailySnapshots() }
     }
 
@@ -387,23 +407,37 @@ final class InvestmentStore: ObservableObject {
         saving = true
         defer { saving = false }
         let current = book, originalState = state
-        let prepared = try await Task.detached(priority: .userInitiated) {
-            try InvestmentPreparedWrite(draft: draft, current: current, state: originalState,
-                dirtyFrom: dirtyFrom, includeInputs: includeInputs, includeSnapshots: includeSnapshots)
-        }.value
+        let prepared: InvestmentPreparedWrite = try await HakoExecutionDiagnostics.measure("编码账本并比对变化", success: {
+            "已校验账本；\($0.delta.count) 类数据有变化。"
+        }) {
+            try await Task.detached(priority: .userInitiated) {
+                try InvestmentPreparedWrite(draft: draft, current: current, state: originalState,
+                    dirtyFrom: dirtyFrom, includeInputs: includeInputs, includeSnapshots: includeSnapshots)
+            }.value
+        }
         guard context == authentication.requestContext else { throw CancellationError() }
         let changes = prepared.changes, through = prepared.through
-        guard !changes.isEmpty || dirtyFrom != state.dirtyFrom || through != state.through else { return }
-        let encodedDelta = try JSONEncoder().encode(prepared.delta)
-        var body: [String: Any] = ["generation": state.generation, "revision": state.revision,
-                                  "changes": try JSONSerialization.jsonObject(with: encodedDelta)]
-        body["dirtyFrom"] = dirtyFrom.map { $0 as Any } ?? NSNull()
-        body["through"] = through.map { $0 as Any } ?? NSNull()
+        guard !changes.isEmpty || dirtyFrom != state.dirtyFrom || through != state.through else {
+            HakoExecutionDiagnostics.record("保存投资账本", detail: "账本无变化，无须提交服务器。")
+            return
+        }
+        let body: [String: Any] = try HakoExecutionDiagnostics.measure("准备账本同步请求") {
+            let encodedDelta = try JSONEncoder().encode(prepared.delta)
+            var body: [String: Any] = ["generation": state.generation, "revision": state.revision,
+                                      "changes": try JSONSerialization.jsonObject(with: encodedDelta)]
+            body["dirtyFrom"] = dirtyFrom.map { $0 as Any } ?? NSNull()
+            body["through"] = through.map { $0 as Any } ?? NSNull()
+            return body
+        }
         do {
-            let data = try await authentication.send(Self.bookPath + "/changes", method: "POST", body: body, logSource: .hako)
+            let data = try await HakoExecutionDiagnostics.measure("提交账本变化") {
+                try await authentication.send(Self.bookPath + "/changes", method: "POST", body: body, logSource: .hako)
+            }
             guard context == authentication.requestContext else { throw CancellationError() }
             let previousState = state
-            let response = try JSONDecoder().decode(InvestmentDeltaResponse.self, from: data)
+            let response = try HakoExecutionDiagnostics.measure("解析服务器同步结果") {
+                try JSONDecoder().decode(InvestmentDeltaResponse.self, from: data)
+            }
             if response.reloadRequired {
                 let marketOnly = !prepared.delta.isEmpty && prepared.delta.keys.allSatisfy {
                     ["market_daily_prices", "market_daily_fx"].contains($0)
@@ -414,36 +448,42 @@ final class InvestmentStore: ObservableObject {
                     var partial = try response.applying(to: previousState)
                     partial.revision = previousState.revision
                     let pending = partial
-                    let decoded = try await Task.detached { try InvestmentServerRecords().decode(pending) }.value
+                    let decoded = try await HakoExecutionDiagnostics.measure("解码已确认账本") {
+                        try await Task.detached { try InvestmentServerRecords().decode(pending) }.value
+                    }
                     try await publish(decoded, context: context)
                     serverState = pending
                     await persistCache(pending, scope: dataCacheScope)
                 }
                 saving = false
-                await load(force: true)
+                await load(force: true, scheduleSnapshots: false)
                 return
             }
-            let confirmed = try await Task.detached { try response.applying(to: previousState) }.value
+            let confirmed = try await HakoExecutionDiagnostics.measure("合并服务器确认记录") {
+                try await Task.detached { try response.applying(to: previousState) }.value
+            }
             state.generation = confirmed.generation
             state.revision = confirmed.revision
             state.dirtyFrom = confirmed.dirtyFrom
             state.through = confirmed.through
             state.tables.merge(confirmed.tables) { _, incoming in incoming }
             let confirmedState = state
-            let decoded = try await Task.detached { try InvestmentServerRecords().decode(confirmedState) }.value
+            let decoded = try await HakoExecutionDiagnostics.measure("解码已确认账本") {
+                try await Task.detached { try InvestmentServerRecords().decode(confirmedState) }.value
+            }
             try await publish(decoded, context: context)
             serverState = state
-                await persistCache(state, scope: dataCacheScope)
+            await persistCache(state, scope: dataCacheScope)
         } catch let error as ServerHTTPError where error.status == 409 {
             saving = false
-            await load(force: true)
+            await load(force: true, scheduleSnapshots: false)
             let refreshed = serverState?.generation != state.generation
             throw InvestmentError.invalid(refreshed ? "账本已重新读取。请核对后再保存。" : "账本版本已变更，请重新读取后再保存。")
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             saving = false
-            await load(force: true)
+            await load(force: true, scheduleSnapshots: false)
             if let confirmed = serverState, context == authentication.requestContext, confirmed.generation > state.generation,
                confirmed.dirtyFrom == dirtyFrom, confirmed.through == through,
                changes.allSatisfy({ name, rows in
@@ -610,6 +650,11 @@ final class InvestmentStore: ObservableObject {
         let scope = dataCacheScope, credentials = keys()
         if let cached = try await diskCache.history(scope: scope, asset: target, start: start, end: today, today: today),
            let latest = cached.last, latest.day >= start { return cached }
+        if let state = serverState {
+            let shared = try records.sharedQuotes(for: target, in: state).filter { $0.day >= start && $0.day <= today }
+            let required = target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now)
+            if let latest = shared.last, latest.day >= required { return shared }
+        }
         let quotes = try await MarketAPIRequestContext.$reason.withValue("新增关注报价校验") {
             try await InvestmentQuoteProvider().watchQuotes(for: target, keys: credentials, through: today)
         }
@@ -640,6 +685,11 @@ final class InvestmentStore: ObservableObject {
             let key = "latest|" + target.catalogKey
             if let saved = try await diskCache.marketQuotes(scope: scope, key: key).last(where: { $0.day <= today && $0.price > 0 }) {
                 quotes = [saved]
+            } else if let state = serverState,
+                      let shared = try records.sharedQuotes(for: target, in: state).last(where: {
+                          $0.day <= today && $0.day >= (target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now))
+                      }) {
+                quotes = [shared]
             } else {
                 let quote = try await MarketAPIRequestContext.$reason.withValue("保存持仓补查最新报价") {
                     try await provider.latestQuote(for: target, keys: keys())
@@ -694,7 +744,7 @@ final class InvestmentStore: ObservableObject {
     func prepareSettlementQuote(_ token: InvestmentAsset) async {
         let revision = ledgerRevision
         guard book.quote(token.id)?.day != InvestmentBook.day(),
-              let quote = try? await InvestmentQuoteProvider().coinbaseSpotUSDQuote(code: token.code),
+              let quote = try? await InvestmentQuoteProvider().publicSpotUSDQuote(for: token),
               !Task.isCancelled, revision == ledgerRevision, book.asset(token.id) != nil,
               book.quote(token.id)?.day != quote.day else { return }
         try? await update { $0.addQuotes([quote], assetID: token.id) }
@@ -706,29 +756,53 @@ final class InvestmentStore: ObservableObject {
         catch { quoteStatus = error.localizedDescription }
     }
 
-    private func processDuePlans() async throws {
+    private func processDuePlans(scheduleSnapshots: Bool = true) async throws {
         while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
         try Task.checkCancellation()
-        guard book.plans.contains(where: { $0.enabled && $0.nextDay <= InvestmentBook.day() }) else { return }
+        let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
+        guard book.plans.contains(where: { $0.enabled && $0.nextDay <= end }) else { return }
         var preview = book
-        guard preview.runPlans() else { return }
-        try await update { $0.runPlans() }
+        guard preview.runPlans(through: end) else { return }
+        try await update(scheduleSnapshots: scheduleSnapshots) {
+            $0.runPlans(through: end)
+        }
+    }
+
+    func settleHistoricalPlans() async throws {
+        while refreshing { try await Task.sleep(for: .milliseconds(150)) }
+        try Task.checkCancellation()
+        let priorRuns = book.planRuns
+        try await HakoExecutionDiagnostics.measure("补记历史定投流水", success: { _ in book.planReport(since: priorRuns).message }) {
+            try await processDuePlans(scheduleSnapshots: false)
+        }
     }
 
     func refreshAndSettlePlans(reuseDailyCryptoQuotes: Bool = false) async throws {
-        while refreshing { try await Task.sleep(for: .milliseconds(150)) }
+        if refreshing {
+            try await HakoExecutionDiagnostics.measure("等待行情刷新结束") {
+                while refreshing { try await Task.sleep(for: .milliseconds(150)) }
+            }
+        }
         try Task.checkCancellation()
         try await refreshQuotes(reuseDailyCryptoQuotes: reuseDailyCryptoQuotes)
-        try await processDuePlans()
+        let priorRuns = book.planRuns
+        try await HakoExecutionDiagnostics.measure("检查并结算剩余定投", success: { _ in book.planReport(since: priorRuns).message }) {
+            try await processDuePlans()
+        }
     }
 
-    func refreshIfNeeded() async {
+    func refreshIfNeeded(checkUnconfirmedRates: Bool = false) async {
         let today = InvestmentBook.day()
         let currencies = rateCurrencies
+        let previous = InvestmentBook.weekdayMarketDate(on: InvestmentBook.addDays(-1, to: today))
+        let unfinishedRates = checkUnconfirmedRates && book.earliest.map { $0 <= previous } == true &&
+            currencies.contains { currency in
+                !(book.fx[currency] ?? []).contains { $0.day == previous && $0.price > 0 && $0.isDailyClose == true }
+            }
         let publicIDs = publicQuoteIDs
         let marketIDs = marketQuoteIDs
         let general = (configured || !currencies.isEmpty || !marketIDs.isEmpty)
-            && (lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies)
+            && (unfinishedRates || lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies)
                 || !marketIDs.isSubset(of: lastAutomaticMarketQuotes))
         let publicDue = !publicIDs.isEmpty && (!publicIDs.isSubset(of: lastAutomaticPublicQuotes)
             || lastPublicQuoteRefresh.map { Date.now.timeIntervalSince($0) >= 300 } ?? true)
@@ -745,7 +819,8 @@ final class InvestmentStore: ObservableObject {
         if Task.isCancelled, general { lastAutomaticRefresh = nil }
     }
 
-    func refreshSnapshotHistory(fullHistory: Bool = true) async throws {
+    func refreshSnapshotHistory(fullHistory: Bool = true, includePlans: Bool = false, recentDays: Int? = nil,
+                                includeClosedMarkets: Bool = false) async throws {
         if fullHistory { await load(force: true) }
         let revision = ledgerRevision
         while refreshing {
@@ -753,7 +828,9 @@ final class InvestmentStore: ObservableObject {
         }
         try Task.checkCancellation()
         guard ledgerRevision == revision else { throw CancellationError() }
-        try await refreshQuotes(fullSnapshotHistory: fullHistory)
+        let first = recentDays.map { InvestmentBook.addDays(-max(1, $0), to: InvestmentBook.day()) }
+        try await refreshQuotes(fullSnapshotHistory: fullHistory, includeHistoricalPlans: includePlans,
+                                historyNotBefore: first, includeClosedMarkets: includeClosedMarkets)
         try Task.checkCancellation()
         guard ledgerRevision == revision else { throw CancellationError() }
     }
@@ -842,7 +919,10 @@ final class InvestmentStore: ObservableObject {
     }
 
     private func persistCache(_ state: InvestmentServerState, scope: String) async {
-        do { try await diskCache.save(state, scope: scope); cacheError = nil }
+        do {
+            try await HakoExecutionDiagnostics.measure("保存本地账本缓存") { try await diskCache.save(state, scope: scope) }
+            cacheError = nil
+        }
         catch { cacheError = "本机缓存写入失败，请检查可用存储空间。" }
     }
 
@@ -873,7 +953,9 @@ final class InvestmentStore: ObservableObject {
     }
 
     private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil,
-                               reuseDailyCryptoQuotes: Bool = false,
+                               reuseDailyCryptoQuotes: Bool = false, includeHistoricalPlans: Bool = false,
+                               historyNotBefore: Date? = nil,
+                               includeClosedMarkets: Bool = false,
                                preview: ((InvestmentBook) -> Void)? = nil) async throws {
         guard loaded, !refreshing else { return }
         guard lastServerReadSucceeded else {
@@ -890,7 +972,8 @@ final class InvestmentStore: ObservableObject {
             refreshing = false
         }
         do {
-            let today = InvestmentBook.day()
+            let now = Date.now
+            let today = InvestmentBook.day(now)
             let closedDay = InvestmentBook.addDays(-1, to: today)
             let snapshotRefresh = fullSnapshotHistory != nil
             var snapshotRequests: InvestmentSnapshotQuoteRequests?
@@ -899,9 +982,12 @@ final class InvestmentStore: ObservableObject {
                 if let dirty = serverState?.dirtyFrom.flatMap(records.day.date(from:)) {
                     source.invalidateDailySnapshots(from: dirty)
                 }
-                guard let window = source.dailyQuoteWindow(through: closedDay, fullHistory: fullSnapshotHistory) else { return }
                 let valuationSource = source
-                let worker = Task.detached(priority: .utility) { valuationSource.missingDailyMarketData(in: window) }
+                let worker = Task.detached(priority: .utility) {
+                    valuationSource.historicalMarketDataRequests(through: closedDay,
+                        fullHistory: fullSnapshotHistory, includePlans: includeHistoricalPlans, notBefore: historyNotBefore,
+                        closedMarketsAt: includeClosedMarkets ? now : nil)
+                }
                 snapshotRequests = await withTaskCancellationHandler {
                     await worker.value
                 } onCancel: { worker.cancel() }
@@ -924,16 +1010,26 @@ final class InvestmentStore: ObservableObject {
             let provider = InvestmentQuoteProvider()
             let sourceBook = book
             let diskCache = self.diskCache
+            let marketCache = try await HakoExecutionDiagnostics.measure("读取并索引本地行情缓存", success: {
+                "读取 1 份缓存；\($0.historyCount) 个查询区间、\($0.quoteCount) 条报价。后续标的和汇率共用此次读取。"
+            }) { try await diskCache.marketReadSnapshot(scope: scope) }
+            try checkRefresh()
             var cachedCryptoQuotes: [UUID: InvestmentQuote] = [:]
             if reuseDailyCryptoQuotes {
-                for asset in ids.union(publicIDs).compactMap({ sourceBook.asset($0) }) where asset.kind == .crypto {
-                    if let quote = try await diskCache.cachedCryptoSpotQuote(scope: scope, asset: asset, on: today,
-                                                                            observations: sourceBook.quotes[asset.id] ?? []) {
-                        try checkRefresh()
-                        cachedCryptoQuotes[asset.id] = quote
-                        HakoExecutionDiagnostics.record("复用加密货币报价 · " + asset.displayCode,
-                            detail: "使用当天已获取的缓存报价。" + InvestmentQuoteProvider.quoteSummary([quote]))
+                cachedCryptoQuotes = try HakoExecutionDiagnostics.measure("检查加密货币当日报价缓存", success: {
+                    "已复用 \($0.count) 个币种的当日报价。"
+                }) {
+                    var found: [UUID: InvestmentQuote] = [:]
+                    for asset in ids.union(publicIDs).compactMap({ sourceBook.asset($0) }) where asset.kind == .crypto {
+                        if let quote = marketCache.cachedCryptoSpotQuote(asset: asset, on: today,
+                                                                         observations: sourceBook.quotes[asset.id] ?? []) {
+                            try checkRefresh()
+                            found[asset.id] = quote
+                            HakoExecutionDiagnostics.record("复用加密货币报价 · " + asset.displayCode,
+                                detail: "使用当天已获取的缓存报价。" + InvestmentQuoteProvider.quoteSummary([quote]))
+                        }
                     }
+                    return found
                 }
             }
             let reusedCryptoQuotes = cachedCryptoQuotes
@@ -950,21 +1046,29 @@ final class InvestmentStore: ObservableObject {
                     var quotes: [InvestmentQuote] = []
                     var errors: [String] = []
                     let key = InvestmentDiskCache.historyKey(asset)
-                    let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                    let saved = marketCache.marketQuotes(key: key)
                     let existing = sourceBook.quotes[asset.id] ?? []
                     let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
                     quotes = saved.filter { !known.contains($0.day) }
-                    let observations = InvestmentBook.merge(saved, existing)
+                    var observations = InvestmentBook.merge(saved, existing)
+                    var checkedWindows: [ClosedRange<Date>] = []
+                    var requestedWindows = 0
                     // Account history starts at this asset's first trade. Watch-only assets need a recent quote.
                     let requested = assetRequests?[asset.id] ?? [sourceBook.automaticQuoteWindow(for: asset.id, through: today)]
                     for range in requested {
-                        let requests = try await diskCache.missingWindows(scope: scope, key: key,
-                            start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
+                        let requests = HakoExecutionDiagnostics.measure("行情缓存缺口 · " + asset.displayCode, success: {
+                            "发现 \($0.count) 个缺口；没有缺口时不调用行情接口。"
+                        }) {
+                            marketCache.missingWindows(key: key, start: range.lowerBound, end: range.upperBound,
+                                today: today, observations: observations, additionalCoverage: checkedWindows,
+                                requiredClose: includeClosedMarkets ? asset.lastClosedMarketDay(at: now) : nil)
+                        }
                         for request in InvestmentHistoryRange.quoteWindows(for: requests) {
                             try checkRefresh()
                             do {
                                 let result: [InvestmentQuote]
                                 do {
+                                    requestedWindows += 1
                                     result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
                                         success: InvestmentQuoteProvider.quoteSummary) {
                                         try await MarketAPIRequestContext.$reason.withValue(snapshotRefresh ? "历史资产快照补数" : "持仓与关注行情刷新") {
@@ -978,6 +1082,8 @@ final class InvestmentStore: ObservableObject {
                                 try await diskCache.saveHistory(scope: scope, asset: asset, start: request.lowerBound,
                                     end: request.upperBound, today: today, quotes: result)
                                 quotes = InvestmentBook.merge(quotes, result)
+                                observations = InvestmentBook.merge(observations, result)
+                                checkedWindows.append(request)
                             } catch {
                                 try checkRefresh()
                                 if !publicIDs.contains(asset.id) { errors.append(asset.displayCode + "（" + error.localizedDescription + "）") }
@@ -985,6 +1091,8 @@ final class InvestmentStore: ObservableObject {
                         }
                     }
                     try checkRefresh()
+                    HakoExecutionDiagnostics.record("行情缓存结果 · " + asset.displayCode,
+                        detail: "本地报价 \(saved.count) 条；请求行情区间 \(requestedWindows) 个。0 个表示未调用行情接口。")
                     return (asset.id, quotes, errors)
                 }
             }
@@ -993,24 +1101,12 @@ final class InvestmentStore: ObservableObject {
             @MainActor @Sendable func readSpots() async throws -> [(UUID, InvestmentQuote?, String?)] {
                 try checkRefresh()
                 guard !missingSpotAssets.isEmpty else { return [] }
-                let usdt = InvestmentAsset(name: "Tether USD", code: "USDT", market: "BINANCE", kind: .crypto, currency: .usd)
-                let observations = publicAssets.first(where: { $0.code == "USDT" }).flatMap { sourceBook.quotes[$0.id] } ?? []
-                let cachedUSDT = reuseDailyCryptoQuotes
-                    ? try await diskCache.cachedCryptoSpotQuote(scope: scope, asset: usdt, on: today, observations: observations) : nil
-                let usdtUSD: InvestmentQuote?
-                if let cachedUSDT { usdtUSD = cachedUSDT }
-                else {
-                    usdtUSD = try? await HakoExecutionDiagnostics.measure("读取现货美元报价 · USDT",
-                        success: { InvestmentQuoteProvider.quoteSummary([$0]) }) { try await provider.coinbaseSpotUSDQuote(code: "USDT") }
-                    try checkRefresh()
-                    if let usdtUSD { try await diskCache.saveCryptoSpotQuote(scope: scope, asset: usdt, quote: usdtUSD, on: today) }
-                }
                 return try await InvestmentQuoteBatch.map(missingSpotAssets) { token in
                     try checkRefresh()
                     do {
                         let quote = try await HakoExecutionDiagnostics.measure("读取现货美元报价 · " + token.code,
                             success: { InvestmentQuoteProvider.quoteSummary([$0]) }) {
-                            try await provider.publicSpotUSDQuote(for: token, usdtUSD: usdtUSD)
+                            try await provider.publicSpotUSDQuote(for: token)
                         }
                         try checkRefresh()
                         try await diskCache.saveCryptoSpotQuote(scope: scope, asset: token, quote: quote, on: today)
@@ -1036,41 +1132,38 @@ final class InvestmentStore: ObservableObject {
                     var quotes: [InvestmentQuote] = []
                     var errors: [String] = []
                     let key = InvestmentDiskCache.rateKey(currency)
-                    let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                    let saved = marketCache.marketQuotes(key: key)
                     let existing = sourceBook.fx[currency] ?? []
-                    let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+                    let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose == true }.map(\.day))
                     quotes = saved.filter { !known.contains($0.day) }
-                    let observations = InvestmentBook.merge(saved, existing)
+                    var observations = InvestmentBook.mergeExchangeRates(existing, saved)
+                    var checkedWindows: [ClosedRange<Date>] = []
                     for range in rateRequests?[currency] ?? [start...today] {
                         let first = InvestmentBook.weekdayMarketDate(on: range.lowerBound)
                         let last = InvestmentBook.weekdayMarketDate(on: range.upperBound)
-                        let missing = try await diskCache.missingWindows(scope: scope, key: key,
-                            start: first, end: last, today: today, observations: observations)
+                        let missing = HakoExecutionDiagnostics.measure("行情缓存缺口 · " + currency.rawValue + "/CNY", success: {
+                            "发现 \($0.count) 个缺口；没有缺口时不调用汇率接口。"
+                        }) {
+                            marketCache.missingWindows(key: key, start: first, end: last, today: today,
+                                observations: observations, additionalCoverage: checkedWindows)
+                        }
                         for window in InvestmentHistoryRange.forexQuoteWindows(for: missing) {
                             try checkRefresh()
                             do {
-                                let values: [InvestmentQuote]
-                                if let credential = keys[.twelveData] {
-                                    do {
-                                        values = try await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
-                                            success: InvestmentQuoteProvider.quoteSummary) {
-                                            try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
-                                                try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
-                                                    start: window.lowerBound, end: window.upperBound, key: credential)
-                                            }
-                                        }
-                                    } catch InvestmentError.noMarketData(_) { values = [] }
-                                    catch {
-                                        try checkRefresh()
-                                        values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                                let values = try await HakoExecutionDiagnostics.measure("读取汇率 · 欧洲央行 · " + currency.rawValue + "/CNY",
+                                    success: InvestmentQuoteProvider.quoteSummary) {
+                                    try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
+                                        try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
                                     }
-                                } else {
-                                    values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
                                 }
                                 try checkRefresh()
                                 try await diskCache.saveMarketHistory(scope: scope, key: key, start: window.lowerBound,
                                     end: window.upperBound, today: today, quotes: values)
-                                quotes = InvestmentBook.merge(quotes, values)
+                                let finalDays = Set(observations.filter { $0.price > 0 && $0.isDailyClose == true }.map(\.day))
+                                let added = values.filter { !finalDays.contains($0.day) }
+                                quotes = InvestmentBook.mergeExchangeRates(quotes, added)
+                                observations = InvestmentBook.mergeExchangeRates(observations, values)
+                                checkedWindows.append(window)
                             } catch {
                                 try checkRefresh()
                                 errors.append(currency.rawValue + "/CNY（" + error.localizedDescription + "）")
@@ -1081,11 +1174,30 @@ final class InvestmentStore: ObservableObject {
                     return (currency, quotes, errors)
                 }
             }
-            async let assetQuery = readAssets()
-            async let spotQuery = readSpots()
-            async let cryptoQuery = readCrypto()
-            async let rateQuery = readRates()
-            let (assetResults, spotResults, cryptoResults, rateResults) = try await (assetQuery, spotQuery, cryptoQuery, rateQuery)
+            let (assetResults, spotResults, cryptoResults, rateResults) = try await HakoExecutionDiagnostics.measureGroup(
+                "准备行情与汇率", branches: 4, detail: "标的行情、现货报价、加密历史行情和汇率并行准备；各渠道独立限制并发，分支耗时不相加。") {
+                async let assetQuery: [(UUID, [InvestmentQuote], [String])] = HakoExecutionDiagnostics.parallel.withValue("标的行情") {
+                    try await HakoExecutionDiagnostics.measure("准备标的行情", success: {
+                        "已准备 \($0.count) 个标的；\($0.reduce(0) { $0 + $1.1.count }) 条报价。"
+                    }) { try await readAssets() }
+                }
+                async let spotQuery: [(UUID, InvestmentQuote?, String?)] = HakoExecutionDiagnostics.parallel.withValue("现货报价") {
+                    try await HakoExecutionDiagnostics.measure("准备现货报价", success: {
+                        "新增 \($0.compactMap { $0.1 }.count) 个币种报价；其余使用当日缓存或暂未更新。"
+                    }) { try await readSpots() }
+                }
+                async let cryptoQuery: [UUID: [InvestmentQuote]] = HakoExecutionDiagnostics.parallel.withValue("加密历史行情") {
+                    try await HakoExecutionDiagnostics.measure("补齐加密货币历史行情", success: {
+                        "已准备 \($0.values.reduce(0) { $0 + $1.count }) 条历史报价。"
+                    }) { try await readCrypto() }
+                }
+                async let rateQuery: [(InvestmentCurrency, [InvestmentQuote], [String])] = HakoExecutionDiagnostics.parallel.withValue("外币汇率") {
+                    try await HakoExecutionDiagnostics.measure("准备外币汇率", success: {
+                        "已准备 \($0.count) 个币种；\($0.reduce(0) { $0 + $1.1.count }) 条汇率。"
+                    }) { try await readRates() }
+                }
+                return try await (assetQuery, spotQuery, cryptoQuery, rateQuery)
+            }
             try checkRefresh()
             var prices: [UUID: [InvestmentQuote]] = [:]
             var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
@@ -1107,9 +1219,17 @@ final class InvestmentStore: ObservableObject {
             try checkRefresh()
             guard publicQuotesOnly || self.keys() == keys else { return }
             let apply: (inout InvestmentBook) -> Void = { draft in
-                for (id, values) in prices { draft.addQuotes(values, assetID: id) }
-                for (currency, values) in rates { draft.addExchangeRates(values, for: currency) }
-                if !snapshotRefresh { draft.runPlans(through: today) }
+                HakoExecutionDiagnostics.measure("合并行情与汇率") {
+                    for (id, values) in prices { draft.addQuotes(values, assetID: id) }
+                    for (currency, values) in rates { draft.addExchangeRates(values, for: currency) }
+                }
+                if !snapshotRefresh {
+                    let priorRuns = draft.planRuns
+                    _ = HakoExecutionDiagnostics.measure("生成到期定投记录", success: { $0.message }) {
+                        draft.runPlans(through: closedDay)
+                        return draft.planReport(since: priorRuns)
+                    }
+                }
             }
             if let preview {
                 var draft = book
@@ -1171,21 +1291,6 @@ final class InvestmentStore: ObservableObject {
                 return start <= range.upperBound ? (asset, start...range.upperBound) : nil
             }
         }
-        var spotRanges: [ClosedRange<Date>] = []
-        for range in requests.filter({ $0.asset.kind == .crypto }).map(\.range).sorted(by: { $0.lowerBound < $1.lowerBound }) {
-            InvestmentBook.addQuoteWindow(range, to: &spotRanges)
-        }
-        var usdtUSD: [Date: Decimal] = [:]
-        for range in spotRanges {
-            try Task.checkCancellation()
-            let quotes = try? await HakoExecutionDiagnostics.measure("读取历史美元报价 · USDT",
-                success: InvestmentQuoteProvider.quoteSummary) {
-                try await provider.coinbaseUSDDailyQuotes(for: "USDT", from: range.lowerBound, through: range.upperBound)
-            }
-            try Task.checkCancellation()
-            for quote in quotes ?? [] { usdtUSD[quote.day] = quote.price }
-        }
-        let conversionRates = usdtUSD
         let histories = try await InvestmentQuoteBatch.map(requests) { request in
             let (asset, range) = request
             try Task.checkCancellation()
@@ -1194,15 +1299,10 @@ final class InvestmentStore: ObservableObject {
             if asset.kind == .crypto {
                 let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Binance · " + asset.code,
                     success: InvestmentQuoteProvider.quoteSummary) {
-                    try await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end, usdtUSD: conversionRates)
+                    try await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end)
                 }
                 try Task.checkCancellation()
                 if let prices, !prices.isEmpty {
-                    quotes = prices
-                } else if let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Coinbase · " + asset.code,
-                    success: InvestmentQuoteProvider.quoteSummary, operation: {
-                    try await provider.coinbaseUSDDailyQuotes(for: asset.code, from: start, through: end)
-                }) {
                     quotes = prices
                 }
             }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct QinglongRecordDetail: View {
     @ObservedObject var store: QinglongStore
@@ -282,6 +283,7 @@ struct QinglongExecutionLog: View {
     @State private var actionMessage: String?
     @State private var stopping = false
     @State private var refreshed: Date?
+    @State private var copied = false
     init(store: QinglongStore, item: QinglongItem, initialAction: String? = nil, revision: UUID? = nil) {
         self.store = store; self.item = item; self.initialAction = initialAction
         _revision = State(initialValue: revision ?? store.revision)
@@ -315,10 +317,27 @@ struct QinglongExecutionLog: View {
                     }
                 }
                 if let error { QinglongNotice(text: error, error: true) }
-                Text(text.isEmpty ? "暂无执行输出，正在等待日志…" : text)
-                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: 240, alignment: .topLeading)
-                    .qinglongCard(padding: 16, cornerRadius: 16)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button {
+                            guard !text.isEmpty else { return }
+                            UIPasteboard.general.setItems([["public.utf8-plain-text": text]], options: [.localOnly: true])
+                            copied = true
+                        } label: {
+                            Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+                                .font(.caption).frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(copied ? Color.green : QinglongStyle.muted)
+                        .disabled(text.isEmpty)
+                        .accessibilityLabel(copied ? "日志已复制" : "复制当前日志")
+                        .accessibilityHint("复制当前已加载的日志，最多末尾 256 KiB")
+                    }
+                    Text(text.isEmpty ? "暂无执行输出，正在等待日志…" : text)
+                        .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, minHeight: 240, alignment: .topLeading)
+                }.qinglongCard(padding: 16, cornerRadius: 16)
                 Button("刷新日志", systemImage: "arrow.clockwise") { Task { await refresh() } }
                     .buttonStyle(QinglongSecondaryButtonStyle()).disabled(loading || revision != store.revision)
                 if current.resource == .tasks && current.running {
@@ -335,6 +354,12 @@ struct QinglongExecutionLog: View {
         }
         .onAppear { visible = true }.onDisappear { visible = false }
         .onChange(of: store.revision) { _, _ in text = ""; refreshed = nil; error = nil; actionMessage = nil }
+        .onChange(of: text) { _, _ in copied = false }
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
+        }
         .refreshable { await refresh() }
         .task {
             // The first read belongs to the sheet lifetime, not the changing polling key.

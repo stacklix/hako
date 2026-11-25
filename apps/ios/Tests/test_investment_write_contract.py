@@ -24,7 +24,8 @@ class InvestmentWriteContractTests(unittest.TestCase):
         required = dict(re.findall(r'"(\w+)":\s+"([^"]+)"', required_block))
         local_required = dict(re.findall(r'"(\w+)": \.init\([^\n]+required: "([^"]*)"', client))
         self.assertEqual({name: required.get(name, "") for name in tables}, local_required)
-        server_links = set(re.findall(r'\{"(\w+)", "(\w+)", "(\w+)", "(\w+)"\}', server.split("func validateInvestmentLinks", 1)[1]))
+        link_block = server.split("func validateInvestmentLinks", 1)[1].split("\n\t} {", 1)[0]
+        server_links = set(re.findall(r'\{"(\w+)", "(\w+)", "(\w+)", "(\w+)"\}', link_block))
         client_links = set(re.findall(r'\("(\w+)", "(\w+)", "(\w+)", "(\w+)"\)', client))
         self.assertEqual(server_links, client_links)
         for server_name, client_name in [("investmentNumberFields", "numbers"), ("investmentIntegerFields", "integers")]:

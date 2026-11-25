@@ -4,43 +4,33 @@ import FoundationNetworking
 #endif
 
 extension InvestmentQuoteProvider {
-    // The chart uses the same USD and Beijing-day closes as crypto valuations.
+    // Crypto valuations use Binance USDT prices at USD parity and Beijing-day closes.
     func cryptoPriceHistory(code: String, from start: Date, through end: Date,
                             now: Date = .now) async throws -> [InvestmentQuote] {
         let last = min(InvestmentBook.day(end), InvestmentBook.addDays(-1, to: InvestmentBook.day(now)))
         let first = InvestmentBook.day(start)
         guard first <= last else { return [] }
-        do {
-            let rates = try await coinbaseUSDDailyQuotes(for: "USDT", from: first, through: last)
-            try Task.checkCancellation()
-            let values = try await binanceSpotDailyQuotes(for: code, from: first, through: last,
-                                                         usdtUSD: Dictionary(rates.map { ($0.day, $0.price) }, uniquingKeysWith: { _, new in new }))
-            if !values.isEmpty { return values }
-        } catch {
-            try Task.checkCancellation()
-        }
-        let values = try await coinbaseUSDDailyQuotes(for: code, from: first, through: last)
+        let values = try await binanceSpotDailyQuotes(for: code, from: first, through: last)
         try Task.checkCancellation()
-        guard !values.isEmpty else { throw InvestmentError.invalid("没有可用的加密货币历史美元日价。") }
+        guard !values.isEmpty else { throw InvestmentError.invalid("没有可用的 Binance 历史日价。") }
         return values
     }
 
-    func binanceSpotDailyQuotes(for code: String, from start: Date, through end: Date,
-                                usdtUSD: [Date: Decimal]) async throws -> [InvestmentQuote] {
+    // USDT is valued at one USD by the user's selected valuation policy.
+    func binanceSpotDailyQuotes(for code: String, from start: Date, through end: Date) async throws -> [InvestmentQuote] {
         if code == "USDT" {
-            return usdtUSD.filter { (start...end).contains($0.key) }.map {
-                InvestmentQuote(day: $0.key, price: $0.value, source: "Coinbase 美元日价", isDailyClose: true)
-            }.sorted { $0.day < $1.day }
+            var day = InvestmentBook.day(start)
+            let last = min(InvestmentBook.day(end), InvestmentBook.addDays(-1, to: InvestmentBook.day()))
+            var values: [InvestmentQuote] = []
+            while day <= last {
+                try Task.checkCancellation()
+                values.append(InvestmentQuote(day: day, price: 1, source: "USDT 固定估值（1:1）", isDailyClose: true))
+                day = InvestmentBook.addDays(1, to: day)
+            }
+            return values
         }
-        guard !usdtUSD.isEmpty else { return [] }
-        let bars = try await binanceDailyCloses(host: "data-api.binance.vision", path: "/api/v3/klines", symbol: code + "USDT",
-                                               interval: "1d", from: start, through: end, source: "Binance 美元日价")
-        return bars.compactMap { bar in
-            guard let rate = usdtUSD[bar.day] else { return nil }
-            var quote = bar
-            quote.price *= rate
-            return quote
-        }
+        return try await binanceDailyCloses(host: "data-api.binance.vision", path: "/api/v3/klines", symbol: code + "USDT",
+            interval: "1d", from: start, through: end, source: "Binance 日价（USDT≈USD）")
     }
 
     private struct BinanceCandle: Decodable {
@@ -80,35 +70,6 @@ extension InvestmentQuoteProvider {
         return quotes
     }
 
-    private struct CoinbaseCandles: Decodable {
-        struct Candle: Decodable {
-            let start: String
-            let close: String
-        }
-        let candles: [Candle]
-    }
-
-    func coinbaseUSDDailyQuotes(for code: String, from start: Date, through end: Date) async throws -> [InvestmentQuote] {
-        var quotes: [InvestmentQuote] = []
-        var cursor = start
-        while cursor <= end {
-            let boundary = InvestmentBook.addDays(1, to: min(end, InvestmentBook.addDays(49, to: cursor)))
-            let data = try await publicMarketData(host: "api.coinbase.com", path: "/api/v3/brokerage/market/products/" + code + "-USD/candles", query: [
-                .init(name: "granularity", value: "FOUR_HOUR"), .init(name: "limit", value: "350"),
-                .init(name: "start", value: String(Int64(cursor.timeIntervalSince1970))),
-                .init(name: "end", value: String(Int64(boundary.timeIntervalSince1970) - 1))
-            ])
-            let bars = try JSONDecoder().decode(CoinbaseCandles.self, from: data).candles
-            quotes += bars.compactMap {
-                guard let start = Int64($0.start) else { return nil }
-                let close = Date(timeIntervalSince1970: Double(start) + 4 * 3_600)
-                return Self.closingQuote($0.close, at: close, within: cursor...InvestmentBook.addDays(-1, to: boundary), source: "Coinbase 美元日价")
-            }
-            cursor = boundary
-        }
-        return quotes.sorted { $0.day < $1.day }
-    }
-
     private static func closingQuote(_ value: String, at boundary: Date, within days: ClosedRange<Date>,
                                      source: String) -> InvestmentQuote? {
         guard boundary == InvestmentBook.day(boundary),
@@ -117,36 +78,6 @@ extension InvestmentQuoteProvider {
         guard days.contains(day) else { return nil }
         return InvestmentQuote(day: day, price: price, source: source, isDailyClose: true)
     }
-
-    private struct CoinbaseSpot: Decodable {
-        struct Price: Decodable {
-            let amount: String
-            let base: String
-            let currency: String
-        }
-        let data: Price
-    }
-
-    func coinbaseSpotUSDQuote(code: String, on date: Date = InvestmentBook.day()) async throws -> InvestmentQuote {
-        let day = InvestmentBook.day(date)
-        guard day <= InvestmentBook.day() else { throw InvestmentError.invalid("不能查询未来的美元报价。") }
-        let historical = day < InvestmentBook.day()
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = InvestmentBook.calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        let query: [URLQueryItem] = historical
-            ? [.init(name: "date", value: formatter.string(from: day))] : []
-        let data = try await publicMarketData(host: "api.coinbase.com", path: "/v2/prices/" + code + "-USD/spot", query: query)
-        let price = try JSONDecoder().decode(CoinbaseSpot.self, from: data).data
-        guard price.base == code, price.currency == "USD",
-              let amount = Decimal(string: price.amount, locale: Locale(identifier: "en_US_POSIX")), amount > 0 else {
-            throw InvestmentError.invalid("没有有效的现货美元报价")
-        }
-        return InvestmentQuote(day: day, price: amount, source: historical ? "Coinbase 历史现货（UTC 日价）" : "Coinbase 现货")
-    }
-
-
 
     private func publicMarketData(host: String, path: String, query: [URLQueryItem] = []) async throws -> Data {
         var url = URLComponents()

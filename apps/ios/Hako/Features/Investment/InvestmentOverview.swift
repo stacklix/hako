@@ -37,9 +37,37 @@ struct InvestmentOverview: View {
             summary
             InvestmentPerformanceChart(book: book, bookVersion: bookVersion)
             InvestmentCard {
-                InvestmentCurrentAllocation(details: presentation.allocation, currency: .cny, day: presentation.day, overview: true)
+                InvestmentAccountAnalysis(rows: presentation.accountAnalysis.filter { showsArchived || !$0.isArchived },
+                                          day: presentation.day)
             }
             InvestmentProfitCalendar(book: book, bookVersion: bookVersion)
+        }
+    }
+
+    private var accounts: some View {
+        let rows = presentation.dailyAccountGains.filter { showsArchived || !$0.isArchived }
+        return VStack(alignment: .leading, spacing: 9) {
+            if rows.isEmpty {
+                Text("暂无账户").font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(rows) { row in
+                Button { openAccount(row.id) } label: {
+                    HStack(spacing: 10) {
+                        Text(row.name + (row.isArchived ? " · 已归档" : ""))
+                            .font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                        Spacer(minLength: 6)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(InvestmentText.money(row.gain, row.currency, signed: true))
+                                .font(.subheadline.weight(.medium))
+                            Text(InvestmentText.percent(row.rate)).font(.caption)
+                        }.monospacedDigit().foregroundStyle(InvestmentTrendStyle.tint(row.gain))
+                        InvestmentChevron()
+                    }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                if row.id != rows.last?.id { Divider() }
+            }
+            Text("按账户币种显示，按折合人民币盈亏从高到低排序。盈亏比例以昨日资产加当日净流入为基数。")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -65,7 +93,7 @@ struct InvestmentOverview: View {
                 Divider()
                 DisclosureGroup(isExpanded: $accountsExpanded) { accounts } label: {
                     HStack {
-                        Text("账户盈亏").font(.subheadline.weight(.medium))
+                        Text("账户当日盈亏").font(.subheadline.weight(.medium))
                         Spacer(minLength: 8)
                         Text("\(book.visibleAccounts(showArchived: showsArchived).count)个账户").font(.caption).foregroundStyle(.secondary)
                     }.frame(minHeight: 44).contentShape(Rectangle())
@@ -79,27 +107,4 @@ struct InvestmentOverview: View {
         }
     }
 
-    private var accounts: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ForEach(book.visibleAccounts(showArchived: showsArchived)) { account in
-                let current = presentation.accounts[account.id]?.value
-                let change = presentation.accounts[account.id]?.dailyGain
-                Button { openAccount(account.id) } label: {
-                    HStack {
-                        InvestmentTitle(account.name + (account.isArchived ? " · 已归档" : ""), subtitle: "总资产 " + InvestmentText.money(current?.value, account.currency))
-                        Spacer(minLength: 6)
-                        VStack(alignment: .trailing, spacing: 4) {
-                            Text(InvestmentText.money(current?.gain, account.currency, signed: true))
-                                .foregroundStyle(InvestmentTrendStyle.tint(current?.gain))
-                            Text("当日 " + InvestmentText.money(change, account.currency, signed: true))
-                                .font(.caption).foregroundStyle(InvestmentTrendStyle.tint(change))
-                        }.font(.subheadline).monospacedDigit()
-                        InvestmentChevron()
-                    }.frame(minHeight: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                if account.id != book.visibleAccounts(showArchived: showsArchived).last?.id { Divider() }
-            }
-            if book.visibleAccounts(showArchived: showsArchived).isEmpty { Text("暂无账户").foregroundStyle(.secondary).font(.subheadline) }
-        }
-    }
 }

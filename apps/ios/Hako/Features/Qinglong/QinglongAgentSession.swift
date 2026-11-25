@@ -7,6 +7,7 @@ import SwiftUI
 final class QinglongAgentSession: ObservableObject {
     static let shared = QinglongAgentSession(store: .shared)
     static let maximumImageCount = 9
+    static let maximumMessageCharacters = 64_000
     typealias Message = QinglongAgentConversation.Message
     @Published private(set) var messages: [Message] = []
     @Published private(set) var proposal: QinglongAgentProposal?
@@ -102,7 +103,10 @@ final class QinglongAgentSession: ObservableObject {
         guard !working, !committing, !store.busy else { return false }
         guard store.connection != nil else { error = "请先配置青龙连接。"; return false }
         guard storageIssue == nil else { return false }
-        guard text.count <= 12_000, images.count <= Self.maximumImageCount,
+        guard text.count <= Self.maximumMessageCharacters else {
+            error = "单条消息最多 64,000 个字符，当前 \(text.count.formatted()) 个，请分段发送。"; return false
+        }
+        guard images.count <= Self.maximumImageCount,
               images.allSatisfy({ $0.count <= 2_000_000 }), !text.isEmpty || !images.isEmpty else {
             error = "请缩短消息或减少图片后重试。"; return false
         }

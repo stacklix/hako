@@ -16,7 +16,9 @@ namespace Hako.Platform;
 internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
     string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0, WorkshopThreadAccess? Access = null, string? ParentThreadId = null);
-internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null);
+internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null,
+    string? TurnId = null, long? StartedAtMs = null, long? CompletedAtMs = null, WorkshopTurn? Turn = null);
+internal sealed record WorkshopTurn(string Id, string State, long? StartedAt, long? CompletedAt, long? DurationMs);
 internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
 
@@ -30,6 +32,15 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     private readonly WorkshopReads reads = new();
     private readonly WorkshopQueryLog queryLog;
     private readonly Dictionary<string, (JsonElement Thread, JsonElement Turn, JsonElement Page, string Cursor, long Saved)> historyPages = new();
+    private readonly Dictionary<string, TurnSummaryPage> turnSummaryPages = new();
+    private sealed class TurnSummaryPage
+    {
+        public Dictionary<string, WorkshopTurn> Turns { get; } = new();
+        public string? Cursor { get; set; }
+        public bool Complete { get; set; }
+        public long Saved { get; } = Environment.TickCount64;
+        public string Latest { get; set; } = "";
+    }
     private readonly CancellationTokenSource stopping = new();
     private CodexAppServer? metadata;
     private readonly Func<CancellationToken, Task<CodexAppServer>> startServer;
@@ -322,10 +333,14 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
             var nextUsed = itemTurn == currentTurn ? new HashSet<string>(used) : new HashSet<string>();
             var entry = HistoryItem(CodexJson.Field(item, "item"), itemTurn, sent, nextUsed);
             if (entry is null) { offset++; used = nextUsed; currentTurn = itemTurn; continue; }
+            entry = WithItemTiming(entry, item, itemTurn);
             var size = JsonSerializer.SerializeToUtf8Bytes(entry, WorkshopProtocol.Json).Length;
             if (bytes + size > 38 * 1024 && page.Count > 0) break;
             page.Insert(0, entry); bytes += size; offset++; used = nextUsed; currentTurn = itemTurn;
         }
+        var turnSummaries = await ReadTurnSummariesAsync(id, page.Select(entry => entry.TurnId).OfType<string>().ToHashSet(), turn, token);
+        page = page.Select(entry => entry.TurnId is not null && turnSummaries.TryGetValue(entry.TurnId, out var summary)
+            ? entry with { Turn = summary } : entry).ToList();
         WorkshopArtifact[] files;
         string? operationId;
         lock (gate)
@@ -422,6 +437,60 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
                     .Take(8).Select(option => CodexJson.Clip(option.GetString()!, 120)).ToArray()))
             .Where(question => !string.IsNullOrWhiteSpace(question.Title)).ToArray() : [];
         return new(type is "commandExecution" or "fileChange" or "plan" or "imageGeneration" ? type : "item", id, CodexJson.Clip(text, 8000), role, CodexJson.Text(item, "status"), text.Length > 8000, Questions: questions.Length > 0 ? questions : null);
+    }
+
+    internal static WorkshopEvent WithItemTiming(WorkshopEvent entry, JsonElement envelope, string? turnId) => entry with {
+        TurnId = string.IsNullOrEmpty(turnId) ? null : turnId,
+        StartedAtMs = CodexJson.Field(envelope, "startedAtMs").TryGetPositiveInt64(),
+        CompletedAtMs = CodexJson.Field(envelope, "completedAtMs").TryGetPositiveInt64()
+    };
+
+    internal static WorkshopTurn TurnSummary(JsonElement turn) => new(CodexJson.Text(turn, "id"), CodexJson.Text(turn, "status"),
+        CodexJson.Field(turn, "startedAt").TryGetPositiveInt64(), CodexJson.Field(turn, "completedAt").TryGetPositiveInt64(),
+        CodexJson.Field(turn, "durationMs").ValueKind == JsonValueKind.Number && CodexJson.Field(turn, "durationMs").TryGetInt64(out var duration) && duration >= 0 ? duration : null);
+
+    private async Task<Dictionary<string, WorkshopTurn>> ReadTurnSummariesAsync(string threadId, HashSet<string> needed,
+        JsonElement latest, CancellationToken token)
+    {
+        var head = TurnSummary(latest);
+        TurnSummaryPage cache;
+        lock (gate)
+        {
+            var identity = head.Id + "|" + head.State;
+            if (!turnSummaryPages.TryGetValue(threadId, out cache!) || Environment.TickCount64 - cache.Saved >= 30_000 || cache.Latest != identity)
+            {
+                if (turnSummaryPages.Count >= 4) turnSummaryPages.Remove(turnSummaryPages.MinBy(value => value.Value.Saved).Key);
+                turnSummaryPages[threadId] = cache = new() { Latest = identity };
+            }
+            if (head.Id.Length > 0) cache.Turns[head.Id] = head;
+        }
+        // Read summaries only; older item pages continue from the same cached turn cursor.
+        var visited = new HashSet<string>();
+        while (true)
+        {
+            string? cursor;
+            lock (gate)
+            {
+                if (needed.All(id => cache.Turns.ContainsKey(id)) || cache.Complete) break;
+                cursor = cache.Cursor;
+            }
+            if (!visited.Add(cursor ?? "")) throw new WorkshopException("codex_history_cursor", "轮次摘要游标未前进，请重新刷新。");
+            var result = await ReadAsync("thread/turns/list", new { threadId, limit = 32, sortDirection = "desc", itemsView = "summary", cursor }, token);
+            lock (gate)
+            {
+                if (cache.Cursor != cursor) continue;
+                foreach (var value in CodexJson.Items(CodexJson.Field(result, "data")))
+                {
+                    var summary = TurnSummary(value);
+                    if (summary.Id.Length > 0) cache.Turns[summary.Id] = summary;
+                }
+                var next = CodexJson.Text(result, "nextCursor");
+                if (next.Length > 0 && next == cache.Cursor) throw new WorkshopException("codex_history_cursor", "轮次摘要游标未前进，请重新刷新。");
+                cache.Cursor = next.Length > 0 ? next : null;
+                cache.Complete = cache.Cursor is null;
+            }
+        }
+        lock (gate) return new(cache.Turns);
     }
 
     internal static WorkshopEvent? HistoryItem(JsonElement item, string turnId, WorkshopJob[] sent, HashSet<string> used)

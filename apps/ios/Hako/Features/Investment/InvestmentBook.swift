@@ -170,9 +170,72 @@ struct InvestmentDepositTerms: Codable, Hashable {
     let maturity: Date
 }
 
+extension InvestmentKind {
+    var instrumentType: String {
+        switch self {
+        case .stock: "stock"
+        case .fund: "fund"
+        case .etf: "etf"
+        case .option: "option"
+        case .future: "future"
+        case .insurance: "insurance"
+        case .wealth: "wealth"
+        case .deposit: "deposit"
+        case .certificate: "certificate"
+        case .crypto: "crypto"
+        case .generic: "generic"
+        }
+    }
+}
+
+struct InvestmentInstrumentIdentity: Hashable {
+    let id: String
+    let symbol: String
+    let exchange: String
+
+    init(kind: String, symbol: String, market: String, currency: String) {
+        let kind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let currency = currency.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        var code = symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        var venue = market.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        var scope = venue
+        if kind == "crypto" {
+            scope = "CRYPTO"
+            if code.contains("/") { code = String(code.split(separator: "/", omittingEmptySubsequences: false)[0]) }
+            if venue == "BINANCE", code.hasSuffix("USDT"), code.count > 4 { code = String(code.dropLast(4)) }
+            venue = "BINANCE"
+        } else if kind == "fund", currency == "CNY" {
+            scope = "CN"; venue = "OF"
+            if !code.contains(".") { code += ".OF" }
+        } else if ["stock", "etf"].contains(kind), currency == "USD" {
+            scope = "US"; venue = "US"
+            if code.hasSuffix(".US") { code = String(code.dropLast(3)) }
+        } else if ["stock", "etf"].contains(kind), currency == "HKD" {
+            scope = "HK"; venue = "XHKG"
+            if code.hasSuffix(".HK") { code = String(code.dropLast(3)) }
+            while code.count < 5 { code = "0" + code }
+            code += ".HK"
+        } else if ["stock", "etf"].contains(kind), currency == "CNY" {
+            scope = "CN"
+            let suffix = ["SH":"SH", "XSHG":"SH", "SZ":"SZ", "XSHE":"SZ", "BJ":"BJ", "XBSE":"BJ"][venue]
+            if !code.contains("."), let suffix { code += "." + suffix }
+            let parts = code.split(separator: ".")
+            if parts.count == 2, let mic = ["SH":"XSHG", "SZ":"XSHE", "BJ":"XBSE"][String(parts[1])] { venue = mic }
+        } else {
+            venue = ["SHF":"SHFE", "ZCE":"CZCE", "CFX":"CFFEX", "GFE":"GFEX", "SH":"XSHG", "SZ":"XSHE"][venue] ?? venue
+            scope = venue
+        }
+        if scope.isEmpty { scope = "GLOBAL" }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        id = [kind.uppercased(), scope, code, currency].map { $0.addingPercentEncoding(withAllowedCharacters: allowed)! }.joined(separator: ":")
+        self.symbol = code
+        exchange = venue
+    }
+}
+
 struct InvestmentAsset: Codable, Identifiable, Hashable {
     var id = UUID()
-    var instrumentID: UUID?
+    var instrumentID: String?
     var name: String
     var code: String
     var market: String
@@ -183,6 +246,9 @@ struct InvestmentAsset: Codable, Identifiable, Hashable {
     var contractSide: InvestmentContractSide?
     var displayName: String { name }
     var displayCode: String { code }
+    var marketInstrument: InvestmentInstrumentIdentity {
+        InvestmentInstrumentIdentity(kind: kind.instrumentType, symbol: code, market: market, currency: currency.rawValue)
+    }
 
     func matches(_ other: Self) -> Bool {
         (kind == .generic ? name == other.name : code == other.code) && market == other.market && kind == other.kind && currency == other.currency
@@ -1267,11 +1333,20 @@ struct InvestmentBook: Codable {
 
     mutating func addExchangeRates(_ values: [InvestmentQuote], for currency: InvestmentCurrency) {
         let previous = fx[currency] ?? []
-        let updated = Self.merge(previous, values)
+        let updated = Self.mergeExchangeRates(previous, values)
         fx[currency] = updated
         if dailySnapshots != nil, let changed = Self.firstChangedQuoteDay(previous, updated) {
             invalidateDailySnapshots(from: changed)
         }
+    }
+
+    // Final daily FX observations are immutable; provisional rates can be refreshed.
+    static func mergeExchangeRates(_ old: [InvestmentQuote], _ new: [InvestmentQuote]) -> [InvestmentQuote] {
+        var days: [Date: InvestmentQuote] = [:]
+        for quote in old + new where quote.price > 0 && !quote.price.isNaN {
+            if days[quote.day]?.isDailyClose != true { days[quote.day] = quote }
+        }
+        return days.values.sorted { $0.day < $1.day }
     }
 
     private static func firstChangedQuoteDay(_ old: [InvestmentQuote], _ new: [InvestmentQuote]) -> Date? {
@@ -1481,8 +1556,8 @@ struct InvestmentBook: Codable {
 
     func rateToCNY(_ currency: InvestmentCurrency, on day: Date, requiresDailyPrice: Bool = false) -> Decimal? {
         if currency == .cny { return 1 }
-        // Missing daily FX observations carry forward the latest available rate, including
-        // consecutive gaps. Historical snapshots still exclude provisional observations.
+        // Missing days carry forward the latest available rate. Historical
+        // snapshots exclude provisional observations until they are finalized.
         return fx[currency]?.last(where: {
             $0.day <= day && $0.price > 0 &&
                 (!requiresDailyPrice || day >= Self.day() || $0.isDailyClose != false)
@@ -1490,7 +1565,7 @@ struct InvestmentBook: Codable {
     }
 
     @discardableResult
-    mutating func runPlans(through today: Date = Self.day()) -> Bool {
+    mutating func runPlans(through today: Date = Self.addDays(-1, to: Self.day())) -> Bool {
         let originalPlans = plans, originalRuns = planRuns
         for i in plans.indices where account(plans[i].accountID)?.isArchived == true { plans[i].enabled = false }
         var waiting = Set<UUID>()
@@ -1563,7 +1638,9 @@ struct InvestmentBook: Codable {
             due.message = "买入标的不可用，已跳过。"
             return due
         }
-        guard let quote = quotes[id]?.first(where: { $0.day >= plan.nextDay && $0.day < next && $0.day <= today }) else {
+        guard let quote = quotes[id]?.first(where: {
+            $0.day >= plan.nextDay && $0.day < next && $0.day <= today && $0.isDailyClose != false
+        }) else {
             due.waiting = next > today
             due.message = due.waiting ? "等待可用报价。" : "当期缺少报价，已跳过。"
             return due

@@ -16,6 +16,28 @@ struct InvestmentAllocationItem: Identifiable {
 // Prepared once per book change, away from the main actor. View interactions
 // such as opening a sheet must not replay the ledger or sort holdings again.
 struct InvestmentPresentation {
+    struct AccountAnalysis: Identifiable {
+        let id: UUID
+        let name: String
+        let isArchived: Bool
+        let colorIndex: Int
+        let valueCNY: Decimal?
+        let gainCNY: Decimal?
+        let gainRate: Decimal?
+
+        func gainWeight(losses: Bool) -> Decimal? {
+            gainCNY.map { losses ? max(0, -$0) : max(0, $0) }
+        }
+    }
+    struct DailyAccountGain: Identifiable {
+        let id: UUID
+        let name: String
+        let currency: InvestmentCurrency
+        let isArchived: Bool
+        let gain: Decimal?
+        let rate: Decimal?
+        let gainCNY: Decimal?
+    }
     struct Account {
         var ledger: InvestmentLedger?
         var error: String?
@@ -30,6 +52,8 @@ struct InvestmentPresentation {
     var dollars: Decimal?
     var dailyGain: Decimal?
     var allocation: [InvestmentAllocationItem] = []
+    var dailyAccountGains: [DailyAccountGain] = []
+    var accountAnalysis: [AccountAnalysis] = []
     private var gainUsingInsurancePremiums: Decimal?
 
     func historicalGain(insuranceBasis: InvestmentInsuranceGainBasis) -> Decimal? {
@@ -38,11 +62,13 @@ struct InvestmentPresentation {
 
     init(book: InvestmentBook, day: Date = InvestmentBook.day()) {
         self.day = day
+        var dailyValues: [UUID: InvestmentValuation] = [:]
         for account in book.accounts {
             do {
                 let ledger = try book.ledger(account, through: day)
                 let previous = book.value(account, on: InvestmentBook.addDays(-1, to: day), requiresDailyPrices: true)
                 let daily = book.value(ledger, on: day, requiresDailyPrices: true)
+                dailyValues[account.id] = daily
                 let holdings = book.sortedHoldingAssets(in: ledger, showsZeroPositions: true, on: day)
                 let allocation = holdings.map { asset in
                     InvestmentAllocationItem(id: asset.id.uuidString, name: asset.name,
@@ -55,6 +81,21 @@ struct InvestmentPresentation {
                 accounts[account.id] = Account(error: error.localizedDescription)
             }
         }
+        dailyAccountGains = book.accounts.enumerated().map { index, account in
+            let gain = accounts[account.id]?.dailyGain
+            let basis = dailyValues[account.id].flatMap { value in gain.map { value.value - $0 } }
+            let rate = basis.flatMap { basis in basis > 0 ? gain.map { $0 / basis } : nil }
+            return (index, DailyAccountGain(id: account.id, name: account.name, currency: account.currency,
+                isArchived: account.isArchived, gain: gain, rate: rate,
+                gainCNY: gain.flatMap { book.convert($0, from: account.currency, to: .cny, on: day) }))
+        }.sorted { left, right in
+            switch (left.1.gainCNY, right.1.gainCNY) {
+            case let (a?, b?) where a != b: return a > b
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return left.0 < right.0
+            }
+        }.map(\.1)
         total = book.portfolio(on: day)
         allocation = book.accounts.map { account in
             let current = accounts[account.id]?.value?.value
@@ -62,6 +103,14 @@ struct InvestmentPresentation {
                 value: current.flatMap {
                     book.convert($0, from: account.currency, to: .cny, on: day)
                 })
+        }
+        accountAnalysis = book.accounts.enumerated().map { index, account in
+            let current = accounts[account.id]?.value
+            return AccountAnalysis(id: account.id, name: account.name, isArchived: account.isArchived,
+                colorIndex: index,
+                valueCNY: current.flatMap { book.convert($0.value, from: account.currency, to: .cny, on: day) },
+                gainCNY: current.flatMap { book.convert($0.gain, from: account.currency, to: .cny, on: day) },
+                gainRate: current?.gainRate)
         }
         dollars = book.portfolio(on: day, currency: .usd)?.value
         dailyGain = book.dailyGains(from: day, through: day)[day]
@@ -139,7 +188,7 @@ struct InvestmentRecordChange: Codable {
                 // Quote revisions are assigned by the server, not encoded from the book.
                 return old.filter { $0.key != "revision" } != row.filter { $0.key != "revision" }
             }
-            let deletes = (current[table] ?? []).filter { !available.contains(key($0)) }.map { row in
+            let deletes = (InvestmentServerRecords.sharedTables.contains(table) ? [] : (current[table] ?? [])).filter { !available.contains(key($0)) }.map { row in
                 Dictionary(uniqueKeysWithValues: columns.compactMap { column in row[column].map { (column, $0) } })
             }
             if !upserts.isEmpty || !deletes.isEmpty { result[table] = Self(upserts: upserts, deletes: deletes) }

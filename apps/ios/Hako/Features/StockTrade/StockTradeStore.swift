@@ -181,8 +181,9 @@ extension StockTradeLoginStart {
             }
         } catch {
             guard ticket == epoch else { throw CancellationError() }
-            if (error as? StockTradeFailure)?.invalidatesSession == true { try forgetRevokedSession(); throw StockTradeFailure.sessionRequired }
-            throw error
+            let failure = StockTradeClient.transportFailure(error)
+            if (failure as? StockTradeFailure)?.invalidatesSession == true { try forgetRevokedSession(); throw StockTradeFailure.sessionRequired }
+            throw failure
         }
     }
 

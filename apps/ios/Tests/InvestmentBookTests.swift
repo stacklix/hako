@@ -3,6 +3,8 @@ import Foundation
 @main
 struct InvestmentBookTests {
     static func main() throws {
+        try globalInstrumentIDsAndPrices()
+        try finalizedExchangeRatesAreReused()
         try numericStoragePrecision()
         holdingsSortByMarketValue()
         try accountOrderSurvivesSaving()
@@ -27,6 +29,9 @@ struct InvestmentBookTests {
         try plansUseCashInExecutionOrder()
         try planSchedulesRespectCalendarDays()
         try planPeriodsCatchUpOnceAndRoundTrip()
+        try historicalPlansUseClosedPricesAndKeepCashFlows()
+        try historicalShortcutRequestsStayWithinTenClosedDays()
+        try shortcutIncludesSessionsAsSoonAsTheyClose()
         try currencyConversionRequiresQuote()
         try accountCurrencyRestrictsEntries()
         try stockConnectSettlesInRenminbi()
@@ -602,6 +607,137 @@ struct InvestmentBookTests {
         let corrected = try book.ledger(book.accounts[0], through: reward)
         precondition(corrected.positions[token]?.quantity == 1 && corrected.positions[token]?.netCost == 2000)
         precondition(book.accounts[0].events.last?.kind == .spotAdjustment)
+    }
+
+    static func historicalShortcutRequestsStayWithinTenClosedDays() throws {
+        let end = date(7), first = InvestmentBook.addDays(-9, to: end)
+        let old = InvestmentBook.addDays(-30, to: end)
+        let account = InvestmentAccount(name: "长期定投", currency: .usd, type: .crypto)
+        var book = InvestmentBook(accounts: [account])
+        let id = try book.register(.init(name: "Bitcoin", code: "BTC", market: "BINANCE", kind: .crypto, currency: .usd))
+        try book.post(.init(day: old, kind: .deposit, amount: 100), accountID: account.id)
+        try book.post(.init(day: old, kind: .buy, assetID: id, quantity: 1, price: 50), accountID: account.id)
+        book.plans = [.init(accountID: account.id, amount: 10,
+                            schedule: try .init(frequency: .daily, day: 0), nextDay: old)]
+        let requests = book.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true, notBefore: first)
+        precondition(requests.assets[id] == [first...end], "Crypto must retain all ten closed calendar days, including weekends")
+        for ranges in Array(requests.assets.values) + Array(requests.rates.values) {
+            precondition(ranges.allSatisfy { $0.lowerBound >= first && $0.upperBound <= end },
+                         "Snapshot and plan requests cannot escape the ten-day boundary")
+        }
+        precondition(requests.rates[.usd]?.allSatisfy {
+            ![1, 7].contains(InvestmentBook.calendar.component(.weekday, from: $0.lowerBound))
+        } == true, "FX must not expand a weekend lower bound back before the limit")
+        let complete = book.historicalMarketDataRequests(through: end, fullHistory: true)
+        precondition(complete.assets[id]?.first?.lowerBound == old, "Manual full-history work must retain its range")
+        let empty = book.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true,
+                                                     notBefore: InvestmentBook.addDays(1, to: end))
+        precondition(empty.assets.isEmpty && empty.rates.isEmpty)
+        precondition(book.planRuns.isEmpty && book.accounts[0].events.count == 2, "Preparing data must not execute plans")
+    }
+
+    static func shortcutIncludesSessionsAsSoonAsTheyClose() throws {
+        let format = ISO8601DateFormatter()
+        func instant(_ text: String) -> Date { format.date(from: text)! }
+        let mainland = InvestmentAsset(name: "沪深300", code: "510300.SH", market: "XSHG", kind: .etf, currency: .cny)
+        let hongKong = InvestmentAsset(name: "盈富", code: "02800.HK", market: InvestmentAsset.stockConnectMarket, kind: .etf, currency: .hkd)
+        let us = InvestmentAsset(name: "Apple", code: "AAPL", market: "NASDAQ", kind: .stock, currency: .usd)
+        let crypto = InvestmentAsset(name: "Bitcoin", code: "BTC", market: "BINANCE", kind: .crypto, currency: .usd)
+        let today = InvestmentBook.day(instant("2026-11-25T15:00:00+08:00"))
+        let yesterday = InvestmentBook.addDays(-1, to: today)
+        let first = InvestmentBook.addDays(-10, to: today)
+        let account = InvestmentAccount(name: "收盘补数", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        for asset in [mainland, hongKong, us, crypto] {
+            book.assets[asset.id] = asset
+            // A pending first purchase also needs its just-closed session, without executing the plan.
+            book.plans.append(.init(accountID: account.id, assetID: asset.id, amount: 50,
+                schedule: try .init(frequency: .daily, day: 0), nextDay: today))
+        }
+        func requests(_ time: String, _ source: InvestmentBook) -> InvestmentSnapshotQuoteRequests {
+            source.historicalMarketDataRequests(through: yesterday, fullHistory: false, includePlans: true,
+                notBefore: first, closedMarketsAt: instant(time))
+        }
+        let before = requests("2026-11-25T14:59:59+08:00", book)
+        precondition(before.assets[mainland.id] == [yesterday...yesterday])
+        let closed = requests("2026-11-25T15:00:00+08:00", book)
+        precondition(closed.assets[mainland.id] == [today...today])
+        precondition(closed.assets[hongKong.id] == [yesterday...yesterday])
+        precondition(requests("2026-11-25T16:00:00+08:00", book).assets[hongKong.id] == [today...today])
+        precondition(closed.assets[crypto.id] == [yesterday...yesterday], "An unfinished crypto day is never a daily close")
+        precondition(requests("2026-11-25T04:59:59+08:00", book).assets[us.id] == [InvestmentBook.addDays(-1, to: yesterday)...InvestmentBook.addDays(-1, to: yesterday)])
+        precondition(requests("2026-11-25T05:00:00+08:00", book).assets[us.id] == [yesterday...yesterday])
+        precondition(us.lastClosedMarketDay(at: instant("2026-07-15T04:00:00+08:00"))
+            == InvestmentBook.day(instant("2026-07-14T00:00:00+08:00")), "New York daylight time closes at Beijing 04:00")
+        precondition(mainland.lastClosedMarketDay(at: instant("2026-11-28T17:00:00+08:00"))
+            == InvestmentBook.day(instant("2026-11-27T00:00:00+08:00")), "Weekends do not invent a trading session")
+        var held = book
+        held.plans = []
+        held.accounts[0].events = [.init(day: first, kind: .opening, assetID: mainland.id, quantity: 1, price: 1)]
+        held.addQuotes([.init(day: yesterday, price: 1, isDailyClose: true)], assetID: mainland.id)
+        precondition(requests("2026-11-25T15:00:00+08:00", held).assets[mainland.id]?.contains(today...today) == true,
+                     "Carrying yesterday's value must not suppress the held asset's newly closed session")
+        book.addQuotes([.init(day: today, price: 1, isDailyClose: false)], assetID: mainland.id)
+        precondition(requests("2026-11-25T15:00:00+08:00", book).assets[mainland.id] != nil,
+                     "An intraday cached quote must be replaced by a closing quote")
+        book.addQuotes([.init(day: today, price: 2, isDailyClose: true)], assetID: mainland.id)
+        precondition(requests("2026-11-25T15:00:00+08:00", book).assets[mainland.id] == nil)
+        precondition(closed.rates.isEmpty && book.planRuns.isEmpty && book.dailySnapshots == nil,
+                     "Closing-price preparation does not advance plans, snapshots or provisional daily FX")
+        var archived = book
+        archived.accounts[0].archivedAt = first
+        precondition(requests("2026-11-25T17:00:00+08:00", archived).assets.isEmpty)
+    }
+
+    static func historicalPlansUseClosedPricesAndKeepCashFlows() throws {
+        let first = date(1), end = date(2), today = date(3)
+        let account = InvestmentAccount(name: "历史定投", currency: .cny, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        let id = try book.register(.init(name: "ETF", code: "510300", market: "XSHG", kind: .etf, currency: .cny))
+        let daily = try InvestmentPlanSchedule(frequency: .daily, day: 0)
+        book.plans = [
+            .init(accountID: account.id, amount: 100, schedule: daily, nextDay: first),
+            .init(accountID: account.id, assetID: id, amount: 50, schedule: daily, nextDay: first)
+        ]
+        precondition(book.earliest == nil)
+        let requests = book.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true)
+        precondition(requests.assets[id] == [first...end], "First purchases need quotes before a position exists")
+        precondition(requests.rates[.usd] == [first...end], "Snapshot FX for future plan flows must be fetched before settlement")
+        var fundingOnly = book
+        fundingOnly.plans.removeLast()
+        let fundingRequests = fundingOnly.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true)
+        precondition(fundingRequests.assets.isEmpty && fundingRequests.rates[.usd] == [first...end],
+                     "A first deposit needs snapshot FX even without positions or prior transactions")
+        let usAccount = InvestmentAccount(name: "美股定投", currency: .usd, type: .securities)
+        var usBook = InvestmentBook(accounts: [usAccount])
+        let usID = try usBook.register(.init(name: "Apple", code: "AAPL", market: "NASDAQ", kind: .stock, currency: .usd))
+        usBook.plans = [.init(accountID: usAccount.id, assetID: usID, amount: 50, schedule: daily, nextDay: first)]
+        let usRequests = usBook.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true)
+        precondition(usRequests.assets[usID] == [InvestmentBook.addDays(-1, to: first)...end],
+                     "US session prices needed for the first Beijing valuation date must precede settlement")
+        precondition(book.historicalMarketDataRequests(through: end, fullHistory: false).assets.isEmpty)
+        var excluded = book
+        excluded.plans[1].nextDay = today
+        precondition(excluded.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true).assets.isEmpty)
+        excluded = book; excluded.plans[1].enabled = false
+        precondition(excluded.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true).assets.isEmpty)
+        excluded = book; excluded.accounts[0].archivedAt = first
+        precondition(excluded.historicalMarketDataRequests(through: end, fullHistory: false, includePlans: true).assets.isEmpty)
+
+        book.addQuotes([.init(day: first, price: 5, isDailyClose: false),
+                        .init(day: end, price: 10, isDailyClose: true),
+                        .init(day: today, price: 20, isDailyClose: false)], assetID: id)
+        precondition(book.runPlans(through: end))
+        let events = book.accounts[0].events
+        precondition(events.filter { $0.kind == .deposit }.count == 2, "Historical funding must still create cash flows")
+        let buys = events.filter { $0.kind == .buy }
+        precondition(buys.count == 1 && buys[0].day == end && buys[0].price == 10 && buys[0].quantity == 5)
+        precondition(events.allSatisfy { $0.day <= end } && book.plans.allSatisfy { $0.nextDay == today })
+        precondition(book.planRuns.filter { $0.status == "skipped" }.count == 1, "Provisional historical prices cannot execute a buy")
+        precondition(!book.runPlans(through: end), "Reruns cannot duplicate flows")
+        var current = InvestmentBook(accounts: [account])
+        current.plans = [.init(accountID: account.id, amount: 100, schedule: daily, nextDay: InvestmentBook.day())]
+        precondition(!current.runPlans() && current.accounts[0].events.isEmpty, "Default execution must defer today's plans")
     }
 
     static func plansUseCashInExecutionOrder() throws {
@@ -1547,6 +1683,77 @@ struct InvestmentBookTests {
         precondition(restored.dailySnapshotReport(through: monday).latest?.valueUSD == 140)
         precondition(restored.dailySnapshotReport(through: monday).includesDay)
         precondition(restored.makeDailySnapshots(through: monday, rebuild: false) == nil)
+    }
+
+    static func globalInstrumentIDsAndPrices() throws {
+        let vectors: [(InvestmentKind, String, String, InvestmentCurrency, String)] = [
+            (.etf, "QQQM", "IEXG", .usd, "ETF:US:QQQM:USD"),
+            (.etf, "qqqm.us", "XNMS", .usd, "ETF:US:QQQM:USD"),
+            (.stock, "700", "HK_CONNECT", .hkd, "STOCK:HK:00700.HK:HKD"),
+            (.stock, "00700.HK", "XHKG", .hkd, "STOCK:HK:00700.HK:HKD"),
+            (.fund, "017302", "OF", .cny, "FUND:CN:017302.OF:CNY"),
+            (.fund, "017302.OF", "", .cny, "FUND:CN:017302.OF:CNY"),
+            (.etf, "159941", "XSHE", .cny, "ETF:CN:159941.SZ:CNY"),
+            (.crypto, "BTCUSDT", "BINANCE", .usd, "CRYPTO:CRYPTO:BTC:USD"),
+            (.crypto, "BTC/USD", "", .usd, "CRYPTO:CRYPTO:BTC:USD"),
+            (.stock, "BRK/B", "NYSE", .usd, "STOCK:US:BRK%2FB:USD")
+        ]
+        for (kind, symbol, market, currency, expected) in vectors {
+            let asset = InvestmentAsset(name: "目录名称", code: symbol, market: market, kind: kind, currency: currency)
+            precondition(asset.marketInstrument.id == expected)
+        }
+        let a = InvestmentAsset(name: "QQQM", code: "QQQM", market: "IEXG", kind: .etf, currency: .usd)
+        let b = InvestmentAsset(name: "QQQM", code: "QQQM", market: "XNMS", kind: .etf, currency: .usd)
+        var book = InvestmentBook(); book.assets = [a.id: a, b.id: b]
+        let day = InvestmentBook.snapshotDateFormatter().date(from: "2026-11-20")!
+        book.addQuotes([.init(day: day, price: 100, source: "one", isDailyClose: false)], assetID: a.id)
+        book.addQuotes([.init(day: day, price: 101, source: "two", isDailyClose: true)], assetID: b.id)
+        let records = InvestmentServerRecords()
+        let encoded = try records.encode(book, revision: 1)
+        precondition(encoded["market_instruments"]?.count == 1 && encoded["market_daily_prices"]?.count == 1)
+        precondition(encoded["market_daily_prices"]?.first?["price"] == "101")
+        let decoded = try records.decode(.init(generation: 1, revision: 1, tables: encoded))
+        precondition(decoded.assets[a.id]?.market == "IEXG" && decoded.assets[b.id]?.market == "XNMS")
+        precondition(decoded.assets[a.id]?.instrumentID == decoded.assets[b.id]?.instrumentID)
+        let shared = try records.sharedQuotes(for: b, in: .init(generation: 1, revision: 1, tables: encoded))
+        precondition(shared.last?.price == 101,
+            "Another ledger can reuse the global price using its canonical identity")
+        var mixed = encoded
+        mixed["market_daily_prices", default: []].append(["instrument_id": a.marketInstrument.id, "session_date": "2026-11-20", "price_type": "nav", "price": "999", "source": "other", "is_final": "1"])
+        let filtered = try records.decode(.init(generation: 1, revision: 1, tables: mixed))
+        precondition(filtered.quotes[a.id]?.last?.price == 101, "Each asset must select its own price type")
+        let connect = InvestmentAsset(name: "腾讯", code: "00700.HK", market: "HK_CONNECT", kind: .stock, currency: .hkd)
+        book.assets[connect.id] = connect
+        let restored = try records.decode(.init(generation: 1, revision: 1, tables: records.encode(book, revision: 1)))
+        precondition(restored.assets[connect.id]?.isStockConnect == true && restored.assets[connect.id]?.settlementCurrency == .cny)
+    }
+
+    static func finalizedExchangeRatesAreReused() throws {
+        let yesterday = InvestmentBook.snapshotDateFormatter().date(from: "2026-11-24")!
+        let priorDay = InvestmentBook.addDays(-1, to: yesterday)
+        let account = InvestmentAccount(name: "USD", currency: .usd, type: .securities)
+        var book = InvestmentBook(accounts: [account])
+        try book.post(.init(day: priorDay, kind: .deposit, amount: 100), accountID: account.id)
+        let prior = InvestmentQuote(day: priorDay, price: 7, source: "old", isDailyClose: true)
+        let provisional = InvestmentQuote(day: yesterday, price: 7, source: "old", isDailyClose: false)
+        let final = InvestmentQuote(day: yesterday, price: Decimal(string: "7.1")!, source: "欧洲央行", isDailyClose: true)
+        book.addExchangeRates([prior, provisional], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: yesterday, rebuild: true)
+        precondition(book.dailySnapshots?.values[yesterday]?.value == 700,
+            "The previous final rate can make snapshots complete before yesterday's rate is finalized")
+        precondition(book.historicalMarketDataRequests(through: yesterday, fullHistory: false).rates[.usd] == [yesterday...yesterday])
+        book.addExchangeRates([final], for: .usd)
+        book.dailySnapshots = book.makeDailySnapshots(through: yesterday, rebuild: true)
+        let snapshots = book.dailySnapshots
+        precondition(book.historicalMarketDataRequests(through: yesterday, fullHistory: false).rates[.usd] == nil)
+        book.addExchangeRates([.init(day: yesterday, price: 9, source: "different", isDailyClose: true)], for: .usd)
+        precondition(book.fx[.usd] == [prior, final] && book.dailySnapshots?.through == snapshots?.through &&
+            book.dailySnapshots?.values[yesterday]?.value == snapshots?.values[yesterday]?.value &&
+            book.dailySnapshots?.values[yesterday]?.value == 710,
+            "Final FX must survive duplicate refreshes without invalidating snapshots")
+        let encoded = try InvestmentServerRecords().encode(book, revision: 1)
+        let decoded = try InvestmentServerRecords().decode(.init(generation: 1, revision: 1, tables: encoded))
+        precondition(decoded.fx[.usd]?.first?.isDailyClose == true)
     }
 
     static func dailyExchangeRatesCarryForwardAcrossMissingDays() throws {

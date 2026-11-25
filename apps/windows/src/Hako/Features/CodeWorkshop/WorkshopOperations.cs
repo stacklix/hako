@@ -481,7 +481,7 @@ internal sealed partial class CodeWorkshop
                     for (var offset = 0; offset < delta.Length;)
                     {
                         var chunk = CodexJson.Clip(delta[offset..], 3000);
-                        Append(job, new("delta", CodexJson.Text(parameters, "itemId"), chunk, "assistant"));
+                        Append(job, new("delta", CodexJson.Text(parameters, "itemId"), chunk, "assistant", TurnId: job.TurnId));
                         offset += chunk.Length;
                     }
                     break;
@@ -495,6 +495,7 @@ internal sealed partial class CodeWorkshop
                     if (job.ThreadId is not null) DiscoverItemArtifacts(job.ThreadId, job.Cwd, CodexJson.Field(parameters, "item"));
                     if (Item(CodexJson.Field(parameters, "item")) is { } entry && entry.Role != "user")
                     {
+                        entry = WithItemTiming(entry, parameters, job.TurnId);
                         if (method == "item/completed" && entry.Role == "assistant" && !string.IsNullOrWhiteSpace(entry.Text))
                             job.ReplySummary = NotificationText(entry.Text, 240);
                         if (method == "item/completed" && entry.Questions is { Length: > 0 } &&
@@ -509,6 +510,7 @@ internal sealed partial class CodeWorkshop
                     var turn = CodexJson.Field(parameters, "turn");
                     var status = CodexJson.Text(turn, "status");
                     if (job.TurnId is null) job.TurnId = CodexJson.Text(turn, "id");
+                    Append(job, new("turn", "turn-" + job.TurnId, "", TurnId: job.TurnId, Turn: TurnSummary(turn)));
                     if (job.IsCompaction && status == "completed")
                         Append(job, new("notice", job.Id + "-completed", "上下文压缩已完成。"));
                     job.Outcome = status == "completed" ? "completed" : status == "interrupted" ? "interrupted" : "failed";

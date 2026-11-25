@@ -7,14 +7,14 @@ enum InvestmentWriteValidation {
         "market_instruments": .init(keys: "id", fields: "asset_type symbol exchange name quote_currency price_type", required: "asset_type symbol exchange name quote_currency price_type", output: false),
         "market_derivative_specs": .init(keys: "instrument_id", fields: "contract_multiplier expiry_date", required: "contract_multiplier", output: false),
         "investment_accounts": .init(keys: "id", fields: "name account_type currency sort_order archived_at", required: "name account_type currency sort_order", output: false),
-        "investment_assets": .init(keys: "id", fields: "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency", required: "name asset_type quote_currency settlement_unit", output: false),
+        "investment_assets": .init(keys: "id", fields: "instrument_id name asset_type settlement_unit annual_rate maturity_date position_side symbol quote_currency exchange", required: "name asset_type quote_currency settlement_unit", output: false),
         "investment_events": .init(keys: "id", fields: "account_id asset_id event_type effective_date sequence amount quantity unit_price fee settled_amount transfer_id transfer_account_id version created_at updated_at deleted_at", required: "account_id effective_date sequence event_type", output: false),
         "investment_derivative_event_details": .init(keys: "event_id", fields: "trade_action position_side margin_delta", required: "", output: false),
         "investment_plans": .init(keys: "id", fields: "account_id asset_id amount frequency schedule_day next_date enabled last_result sort_order", required: "account_id amount frequency schedule_day next_date enabled", output: false),
         "investment_plan_runs": .init(keys: "plan_id scheduled_date", fields: "status event_id executed_at result_detail", required: "", output: false),
         "investment_watchlist": .init(keys: "asset_id", fields: "instrument_id sort_order", required: "sort_order", output: false),
-        "market_daily_prices": .init(keys: "instrument_id session_date price_type source", fields: "closed_at_utc valuation_date price is_final revision", required: "price", output: false),
-        "market_daily_fx": .init(keys: "rate_date base_currency quote_currency source", fields: "rate available_at_utc is_final revision", required: "rate", output: false),
+        "market_daily_prices": .init(keys: "instrument_id session_date price_type", fields: "source closed_at_utc valuation_date price is_final revision", required: "price", output: false),
+        "market_daily_fx": .init(keys: "rate_date base_currency quote_currency", fields: "rate source available_at_utc is_final revision", required: "rate", output: false),
         "investment_manual_prices": .init(keys: "asset_id valuation_date", fields: "value source is_final", required: "value", output: false),
         "investment_daily_snapshots": .init(keys: "snapshot_date", fields: "total_cny total_usd cumulative_gain_cny daily_gain_cny status missing_inputs computed_revision", required: "status computed_revision", output: true),
         "investment_account_daily_snapshots": .init(keys: "account_id snapshot_date", fields: "cash_native holdings_native gain_native status", required: "status", output: true),
@@ -71,6 +71,11 @@ enum InvestmentWriteValidation {
                 guard seen.insert(key).inserted else { throw reject(table, "重复主键") }
                 for field in rule.required.split(separator: " ") where row[String(field)] == nil {
                     throw reject(table, String(field))
+                }
+                if table == "market_instruments" {
+                    let identity = InvestmentInstrumentIdentity(kind: row["asset_type"] ?? "", symbol: row["symbol"] ?? "",
+                        market: row["exchange"] ?? "", currency: row["quote_currency"] ?? "")
+                    guard row["id"] == identity.id else { throw reject(table, "标的 ID 与代码、市场或币种不一致") }
                 }
                 for (column, value) in row {
                     guard allowed.contains(column), value.utf8.count <= 16_384 else { throw reject(table, column) }

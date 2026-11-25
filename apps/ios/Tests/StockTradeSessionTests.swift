@@ -41,6 +41,7 @@ private final class StockTradeTestSecrets: SecretStorage {
     let auth: StockTradeTestAuth
     var starts = 0, completes = 0, renewals = 0
     var mode = "ok"
+    var taskMode = "ok"
     var failComplete = false
     var switchDuringStart = false
     var mismatchPage = false
@@ -96,7 +97,15 @@ private final class StockTradeTestSecrets: SecretStorage {
             }
             if mode == "unavailable" { throw StockTradeFailure.api(status:503,code:"hako_unavailable",requestID:"r",retryable:true) }
             if mode == "revoked" { throw StockTradeFailure.api(status:401,code:"hako_authorization_invalid",requestID:"r",retryable:false) }
-            if endpoint == "auth/session" { object = method == "DELETE" ? ["ok":true] : ["user":identity] }
+            if endpoint == "tasks" {
+                if taskMode == "cancelled-caller" {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    throw URLError(.cancelled)
+                }
+                if taskMode == "transport-cancel" { throw URLError(.cancelled) }
+                if taskMode == "offline" { throw URLError(.notConnectedToInternet) }
+                object = ["items": [], "nextCursor": NSNull(), "workerOnline": true]
+            } else if endpoint == "auth/session" { object = method == "DELETE" ? ["ok":true] : ["user":identity] }
             else if endpoint == "runs/latest" {
                 object = meta().merging(["runId":"run-one","status":"complete","candidateCount":1,"reviewCount":1,"recommendationCount":1,"thresholds":[:]]) { _, new in new }
             } else {
@@ -128,6 +137,21 @@ private final class StockTradeTestSecrets: SecretStorage {
         try await store.confirmConsent()
         precondition(auth.authorizeBodies == [false,true] && api.completes == 1)
         precondition(store.session?.user.subject == "subject-one" && store.rows.count == 1)
+        api.taskMode = "cancelled-caller"
+        let cancelledRefresh = Task { @MainActor in await store.refreshWorkflows() }
+        await cancelledRefresh.value
+        precondition(store.workflowError == nil && store.session != nil && store.rows.count == 1,
+                     "Lifecycle cancellation must not show a warning or discard the session/results")
+        api.taskMode = "transport-cancel"
+        await store.refreshWorkflows()
+        precondition(store.workflowError == StockTradeFailure.requestInterrupted.localizedDescription,
+                     "Unexplained transport cancellation must remain visible in Chinese")
+        api.taskMode = "offline"
+        await store.refreshWorkflows()
+        precondition(store.workflowError != nil && store.session != nil, "Network errors must not be swallowed")
+        api.taskMode = "ok"
+        await store.refreshWorkflows()
+        precondition(store.workflowError == nil && store.workflowOnline, "A later refresh must recover after cancellation")
         precondition(vault.values.count == 2)
         store.toggleFavorite(store.rows[0]); precondition(store.favorites.count == 1)
         let sessionKey = vault.values.keys.first { $0.hasPrefix("session.v2.") }!

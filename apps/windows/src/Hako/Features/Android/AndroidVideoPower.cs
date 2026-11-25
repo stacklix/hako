@@ -9,20 +9,33 @@ namespace Hako.Platform;
 
 internal static class AndroidVideoPower
 {
+    internal static bool? State(string display, string power = "")
+    {
+        var state = Regex.Match(display, @"mScreenState=(OFF|ON|DOZE_SUSPEND|DOZE|ON_SUSPEND|VR)\b").Groups[1].Value;
+        if (state.Length > 0) return state is "ON" or "ON_SUSPEND" or "VR";
+        var legacy = Regex.Match(power, @"mScreenOn=(true|false)\b").Groups[1].Value;
+        if (legacy.Length > 0) return legacy == "true";
+        return null;
+    }
     internal static async Task SetAsync(IAndroidAdb adb, AndroidEndpoint endpoint, bool awake)
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-        async Task<bool> Matches()
+        var legacy = false;
+        async Task<bool> ReadState()
         {
             var display = Encoding.UTF8.GetString(await adb.RunAsync(["-t", endpoint.TransportId, "shell", "dumpsys display"], budget.Token));
-            var state = Regex.Match(display, @"mScreenState=(OFF|ON|DOZE_SUSPEND|DOZE|ON_SUSPEND|VR)\b").Groups[1].Value;
-            return awake ? state is "ON" or "ON_SUSPEND" or "VR" : state is "OFF" or "DOZE" or "DOZE_SUSPEND";
+            if (State(display) is { } current) return current;
+            var power = Encoding.UTF8.GetString(await adb.RunAsync(["-t", endpoint.TransportId, "shell", "dumpsys power"], budget.Token));
+            legacy = true;
+            return State(display, power) ?? throw new InvalidOperationException("无法确认设备屏幕状态。");
         }
         try
         {
-            if (await Matches()) return;
-            await adb.RunAsync(["-t", endpoint.TransportId, "shell", "input", "keyevent", awake ? "224" : "223"], budget.Token);
-            while (!await Matches()) await Task.Delay(150, budget.Token);
+            if (await ReadState() == awake) return;
+            // KitKat has no reliable dedicated wake/sleep keys. Toggle once only
+            // after confirming the opposite state; never toggle while state is unknown.
+            await adb.RunAsync(["-t", endpoint.TransportId, "shell", "input", "keyevent", legacy ? "26" : awake ? "224" : "223"], budget.Token);
+            while (await ReadState() != awake) await Task.Delay(150, budget.Token);
         }
         catch (Exception error)
         {

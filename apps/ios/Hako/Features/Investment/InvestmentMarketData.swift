@@ -270,21 +270,13 @@ struct InvestmentQuoteProvider {
         let price: String
     }
 
-    func publicSpotUSDQuote(for asset: InvestmentAsset, usdtUSD: InvestmentQuote?) async throws -> InvestmentQuote {
+    func publicSpotUSDQuote(for asset: InvestmentAsset) async throws -> InvestmentQuote {
         guard asset.kind == .crypto else { throw InvestmentError.invalid("无效的现货币种") }
         try asset.validateMarket(settlingIn: .usd)
-        if let usdtUSD, usdtUSD.price > 0, usdtUSD.day == InvestmentBook.day() {
-            if asset.code == "USDT" { return usdtUSD }
-            do {
-                return try await binanceSpotUSDQuote(code: asset.code, usdtUSD: usdtUSD.price)
-            } catch {
-                try Task.checkCancellation()
-            }
+        if asset.code == "USDT" {
+            return InvestmentQuote(day: InvestmentBook.day(), price: 1, source: "USDT 固定估值（1:1）")
         }
-        return try await coinbaseSpotUSDQuote(code: asset.code)
-    }
-
-    private func binanceSpotUSDQuote(code: String, usdtUSD: Decimal) async throws -> InvestmentQuote {
+        let code = asset.code
         var url = URLComponents(string: "https://data-api.binance.vision/api/v3/ticker/price")!
         let symbol = code + "USDT"
         url.queryItems = [.init(name: "symbol", value: symbol)]
@@ -295,13 +287,16 @@ struct InvestmentQuoteProvider {
         let ticker = try JSONDecoder().decode(BinanceSpotPrice.self, from: data)
         guard ticker.symbol == symbol, let price = Decimal(string: ticker.price, locale: Locale(identifier: "en_US_POSIX")),
               price > 0 else { throw InvestmentError.invalid("没有匹配的 Binance 现货报价") }
-        return InvestmentQuote(day: InvestmentBook.day(), price: price * usdtUSD, source: "Binance 现货")
+        return InvestmentQuote(day: InvestmentBook.day(), price: price, source: "Binance 现货")
     }
 
     func searchInstruments(_ search: InvestmentInstrumentSearch, keys: [InvestmentQuoteSource: String],
                            consolidateUSListings: Bool = true) async throws -> [InvestmentAsset] {
         guard !search.query.isEmpty, !search.kind.isManual else { return [] }
         try Task.checkCancellation()
+        if search.kind == .crypto {
+            return try await cryptoCatalog().filter { search.includes($0) }
+        }
         let asset = search.exactAsset
         let symbol = InvestmentQuoteSymbol(asset)
         if asset.usesUSEquityClose {
@@ -433,8 +428,7 @@ struct InvestmentQuoteProvider {
     func latestQuote(for asset: InvestmentAsset, keys: [InvestmentQuoteSource: String], now: Date = .now) async throws -> InvestmentQuote {
         let today = InvestmentBook.day(now)
         if asset.kind == .crypto {
-            let usdt = try? await coinbaseSpotUSDQuote(code: "USDT")
-            return try await publicSpotUSDQuote(for: asset, usdtUSD: usdt)
+            return try await publicSpotUSDQuote(for: asset)
         }
         if asset.usesEastmoneyMarketData {
             let values = try await eastmoneyHistory(asset: asset, start: InvestmentBook.addDays(-30, to: today),
@@ -489,13 +483,15 @@ struct InvestmentQuoteProvider {
             try Task.checkCancellation()
             guard asset.kind == .crypto else { throw error }
         }
-        let usdtUSD = try? await coinbaseSpotUSDQuote(code: "USDT")
         try Task.checkCancellation()
-        return [try await publicSpotUSDQuote(for: asset, usdtUSD: usdtUSD)]
+        return [try await publicSpotUSDQuote(for: asset)]
     }
 
     func history(asset: InvestmentAsset, start: Date, through today: Date, cached: Date?,
                  keys: [InvestmentQuoteSource: String], now: Date = .now) async throws -> [InvestmentQuote] {
+        if asset.kind == .crypto {
+            return try await cryptoPriceHistory(code: asset.code, from: start, through: today, now: now)
+        }
         let symbol = InvestmentQuoteSymbol(asset)
         if asset.usesUSEquityClose {
             let key = try Self.usEquityKey(keys)
@@ -562,9 +558,7 @@ struct InvestmentQuoteProvider {
         guard asset.kind != .crypto else { return quotes }
         return quotes.map { quote in
             var quote = quote
-            quote.isDailyClose = asset.usesUSEquityClose
-                ? InvestmentBook.usEquityClose(on: quote.day) <= now
-                : quote.day < InvestmentBook.day(now) || asset.kind == .fund
+            quote.isDailyClose = asset.kind == .fund || asset.marketClose(on: quote.day) <= now
             return quote
         }
     }
@@ -768,7 +762,7 @@ struct InvestmentQuoteProvider {
         var converted: [InvestmentCurrency: [InvestmentQuote]] = [:]
         for currency in currencies {
             let result = rates[currency, default: [:]].compactMap { day, rate in
-                rates[.cny]?[day].map { InvestmentQuote(day: day, price: $0 / rate, source: "欧洲央行") }
+                rates[.cny]?[day].map { InvestmentQuote(day: day, price: $0 / rate, source: "欧洲央行", isDailyClose: true) }
             }
             converted[currency] = try? Self.valid(result, start: start, end: end)
         }

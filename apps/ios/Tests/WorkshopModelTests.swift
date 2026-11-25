@@ -1,7 +1,51 @@
 import Foundation
 
 @main struct WorkshopModelTests {
+    static func completedTurnFooters() throws {
+        let turn = WorkshopTurn(id: "round", state: "completed", startedAt: 1800000000, completedAt: 1800000383, durationMs: 383250)
+        let interim = WorkshopEntry(kind: "item", id: "progress", text: "Checking", role: "assistant", state: "completed", truncated: false,
+            turnId: "round", startedAtMs: 1800000000000, completedAtMs: 1800000000500)
+        var final = WorkshopEntry(kind: "item", id: "final", text: "Done", role: "assistant", state: "completed", truncated: false,
+            turnId: "round", startedAtMs: 1800000382000, completedAtMs: 1800000383000)
+        precondition(WorkshopTurn.footers(in: [interim, final]).isEmpty, "An item completion is not a turn completion")
+        let event = WorkshopEntry(kind: "turn", id: "turn-round", text: "", role: "", state: "", truncated: false, turnId: "round", turn: turn)
+        let footers = WorkshopTurn.footers(in: [interim, final, event])
+        precondition(footers.count == 1 && footers["final"]?.elapsedText == "6 分 23 秒" && footers["progress"] == nil)
+        final.turn = turn
+        precondition(WorkshopTurn.footers(in: [interim, final])["final"] == turn, "History pages retain native turn boundaries")
+        var active = final
+        active.turn = WorkshopTurn(id: "round", state: "inProgress", startedAt: 1800000000, completedAt: nil, durationMs: nil)
+        precondition(WorkshopTurn.footers(in: [interim, active]).isEmpty)
+        let unknown = WorkshopTurn(id: "unknown", state: "completed", startedAt: nil, completedAt: nil, durationMs: nil)
+        precondition(unknown.elapsedText == nil, "Missing native timing must not become zero seconds")
+        let seconds = WorkshopTurn(id: "round", state: "completed", startedAt: 1000, completedAt: 1383, durationMs: nil)
+        precondition(seconds.elapsedText == "6 分 23 秒")
+        let restored = try JSONDecoder().decode(WorkshopEntry.self, from: JSONEncoder().encode(final))
+        precondition(restored == final)
+    }
+
     static func main() throws {
+        try completedTurnFooters()
+        do {
+        let timed = WorkshopEntry(kind: "item", id: "timed", text: "Reply", role: "assistant", state: "", truncated: false,
+            turnId: "turn", startedAtMs: 1_800_000_000_125, completedAtMs: 1_800_000_028_875)
+        precondition(timed.messageDate == Date(timeIntervalSince1970: 1_800_000_000.125))
+        precondition(timed.elapsedText(at: .distantFuture, running: false) == "28 秒")
+        let decodedTiming = try JSONDecoder().decode(WorkshopEntry.self, from: JSONEncoder().encode(timed))
+        precondition(decodedTiming == timed)
+        var live = timed; live.completedAtMs = nil
+        let timingOperation = WorkshopOperation(id: "o", applicationId: "a", threadId: "t", turnId: "turn",
+            state: "running", message: nil, startedAt: 1_800_000_000)
+        precondition(live.isTimingActive(operation: timingOperation))
+        precondition(live.elapsedText(at: Date(timeIntervalSince1970: 1_800_000_154.125), running: true) == "2 分 34 秒")
+        precondition(live.elapsedText(at: .now, running: false) == nil, "Unknown outcomes must not keep accumulating time")
+        var previous = live; previous.turnId = "previous-turn"
+        precondition(!previous.isTimingActive(operation: timingOperation), "Only the exact executing turn can tick")
+        var malformed = timed; malformed.completedAtMs = timed.startedAtMs! - 1
+        precondition(malformed.elapsedText(at: .now, running: false) == nil)
+        malformed.startedAtMs = 0
+        precondition(malformed.messageDate == nil && malformed.elapsedText(at: .now, running: true) == nil)
+        }
         let context = WorkshopContextUsage(usedTokens: 67_200, modelContextWindow: 160_000, updatedAt: 1_800_000_000_000)
         precondition(abs((context.usedFraction ?? -1) - 0.42) < 0.000001 && abs((context.remainingFraction ?? -1) - 0.58) < 0.000001)
         precondition(context.usedText == "已用 67.2k / 160k tokens" && context.remainingText == "剩余 92.8k tokens")
