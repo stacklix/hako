@@ -13,41 +13,51 @@ struct StockTradeSettingsView: View {
         SettingsSheet(title: "Cerno 连接设置", hasChanges: loaded && draft != original, isBusy: loggingOut,
                       saveEnabled: loaded && draft != original && !store.authenticating && !store.loading,
                       onSave: save) {
-            Form {
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("后端基础地址（HTTPS）").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("https://example.com/cerno/", text: $draft.origin).keyboardType(.URL)
-                            .accessibilityLabel("Cerno 后端基础地址")
-                    }.stockTradeSeparator()
-                    if let origin = draft.applicationOrigin {
-                        HakoLabeledValue(label: "Hako 登记来源", value: origin).stockTradeSeparator()
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Hako 应用 ID（公开）").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("后台登记的 clientId", text: $draft.clientID).accessibilityLabel("Cerno Hako 应用 ID")
-                    }.stockTradeSeparator()
-                } header: { Text("独立后端") } footer: { Text("可填写域名根地址或应用子路径，例如 https://example.com/cerno/，无需追加 api/v1。Hako 应用登记来源仍使用域名根地址。应用 ID 应与后台登记一致；不填写 appSecret、Tushare 或邮件凭据。") }
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .disabled(store.authenticating || store.loading || loggingOut)
-                Section {
-                    LabeledContent("认证方式", value: "Cerno 本地会话 · 设备续期").stockTradeSeparator()
-                    LabeledContent("当前账号", value: store.accountName).stockTradeSeparator()
-                    if let session = store.session {
-                        LabeledContent("访问令牌到期", value: StockTradeTime.display(session.expiresAt)).stockTradeSeparator()
-                        Button("退出 Cerno 并撤销设备续期", role: .destructive) { loggingOut = true }
-                            .disabled(store.authenticating || store.loading)
-                            .confirmationDialog("退出 Cerno 并撤销此设备的续期凭据？", isPresented: $loggingOut, titleVisibility: .visible) {
-                                Button("退出并撤销授权", role: .destructive) { Task { await store.logout() } }
-                            } message: { Text("Cerno 将撤销本设备的续期凭据和关联会话。退出不依赖 Hako；Cerno 网络故障时保留凭据，供你重试。") }
-                    }
-                    if let error = store.error { StockTradeMessage(text: error) }
-                } header: { Text("账号") } footer: { Text("访问令牌有效期为 12 小时；设备标识和续期密钥匹配时自动续期。凭据仅保存在本设备钥匙串，不通过 iCloud 同步；Hako 仅在首次或重新登录时确认身份。") }
-                Section {
-                    Button("通知配置") { showingNotifications = true }.disabled(store.session == nil)
-                    NavigationLink("后台与数据状态") { StockTradeHealthView(store: store) }.disabled(store.session == nil).stockTradeSeparator()
+            StockTradeScreen {
+                StockTradeHeading(title: "连接设置", subtitle: "独立后端 · Hako 原生授权")
+                StockTradeCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("后端基础地址（HTTPS）").font(.subheadline).foregroundStyle(.secondary)
+                            TextField("https://example.com/cerno/", text: $draft.origin).keyboardType(.URL).accessibilityLabel("Cerno 后端基础地址")
+                        }
+                        Divider()
+                        HakoLabeledValue(label: "Hako 登记来源", value: draft.applicationOrigin ?? "请填写有效的 HTTPS 地址")
+                        Divider()
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Hako 应用 ID（公开）").font(.subheadline).foregroundStyle(.secondary)
+                            TextField("后台登记的 clientId", text: $draft.clientID).accessibilityLabel("Cerno Hako 应用 ID")
+                        }
+                    }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(store.authenticating || store.loading || loggingOut)
                 }
-                if let message { Section { Text(message).foregroundStyle(.red).font(.footnote) } }
+                StockTradeFootnote(text: "基础地址可包含应用子路径，无需追加 api/v1。登记来源使用域名根地址；应用 ID 应与后台登记一致。不填写 appSecret、Tushare 或邮件凭据。")
+                StockTradeSectionLabel(title: "账号与授权")
+                StockTradeCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        LabeledContent("登录授权", value: "Hako 原生授权 · PKCE").font(.subheadline)
+                        Divider()
+                        LabeledContent("当前账号", value: store.accountName).font(.subheadline)
+                        Divider()
+                        NavigationLink { StockTradeDeviceAuthorizations(store: store) }
+                        label: { StockTradeEntryRow(title: "设备授权", subtitle: store.session == nil ? "尚未连接" : "查看已授权设备", separator: false) }.buttonStyle(.plain).disabled(store.session == nil)
+                        if let session = store.session {
+                            LabeledContent("访问令牌到期", value: StockTradeTime.display(session.expiresAt)).font(.caption).foregroundStyle(.secondary)
+                            Button("退出 Cerno 并撤销设备续期", role: .destructive) { loggingOut = true }
+                                .disabled(store.authenticating || store.loading)
+                                .confirmationDialog("退出 Cerno 并撤销此设备的续期凭据？", isPresented: $loggingOut, titleVisibility: .visible) {
+                                    Button("退出并撤销授权", role: .destructive) { Task { await store.logout() } }
+                                } message: { Text("Cerno 将撤销本设备的续期凭据和关联会话。退出不依赖 Hako；Cerno 网络故障时保留凭据，供你重试。") }
+                        }
+                        if let error = store.error { StockTradeMessage(text: error) }
+                    }
+                }
+                StockTradeFootnote(text: "Cerno 本地访问令牌有效期为 12 小时，通过本设备钥匙串中的设备凭据自动续期。Hako 仅在首次或重新登录时确认身份。")
+                StockTradeCard(padding: 18) {
+                    Button { showingNotifications = true } label: { StockTradeEntryRow(title: "通知配置") }.buttonStyle(.plain).disabled(store.session == nil)
+                    NavigationLink { StockTradeHealthView(store: store) }
+                    label: { StockTradeEntryRow(title: "调度与后台状态", separator: false) }.buttonStyle(.plain).disabled(store.session == nil)
+                }
+                if let message { Text(message).foregroundStyle(.red).font(.footnote) }
             }
             .onAppear { if !loaded { draft = store.connection; original = draft; loaded = true } }
         }
@@ -73,41 +83,44 @@ struct StockTradeNotificationSettings: View {
         SettingsSheet(title: "通知配置", hasChanges: loaded && draft != original,
                       saveEnabled: loaded && sameAccount && draft.valid && draft != original,
                       onSave: save, saveAccessibilityLabel: "保存本机通知偏好") {
-            Form {
-                Section {
-                    Label("本机偏好 · 尚未同步后台", systemImage: "iphone")
-                    Text("当前 API 只有只读提醒记录。以下偏好保存在本机，不影响后台现有邮件投递；待后端支持后才能实际应用。")
-                        .font(.footnote).foregroundStyle(.secondary)
+            StockTradeScreen {
+                StockTradeHeading(title: "通知配置", subtitle: "选择接收渠道与提醒内容")
+                StockTradeFootnote(text: "本机偏好 · 尚未同步后台。以下设置暂不改变后台现有邮件投递。")
+                StockTradeSectionLabel(title: "接收方式")
+                StockTradeCard {
+                    Toggle("邮件通知", isOn: $draft.email).padding(.vertical, 10)
+                    LabeledContent("邮件收件人", value: "由 Cerno 后台配置").font(.caption).foregroundStyle(.secondary).padding(.bottom, 12)
+                    Divider()
+                    LabeledContent("手机推送", value: "尚未接入").font(.subheadline).padding(.vertical, 14)
                 }
-                Section {
-                    Toggle("邮件通知偏好", isOn: $draft.email).stockTradeSeparator()
-                    LabeledContent("邮件收件人", value: "由 Cerno 后台配置").stockTradeSeparator()
-                    LabeledContent("手机推送", value: "尚未接入").stockTradeSeparator()
-                } header: { Text("接收方式") } footer: { Text("邮件已有后台能力。Cerno 尚未提供 APNs 投递和设备绑定接口，此处不申请通知权限，也不显示虚构的启用状态。") }
-                Section("提醒内容偏好") {
-                    Toggle("每日推荐", isOn: $draft.daily).stockTradeSeparator()
-                    Toggle("监控规则触发", isOn: $draft.rule).stockTradeSeparator()
-                    Toggle("风险观察", isOn: $draft.risk).stockTradeSeparator()
-                    Toggle("后台异常", isOn: $draft.health).stockTradeSeparator()
+                StockTradeSectionLabel(title: "提醒内容")
+                StockTradeCard {
+                    Toggle("每日推荐", isOn: $draft.daily).padding(.vertical, 12); Divider()
+                    Toggle("监控规则触发", isOn: $draft.rule).padding(.vertical, 12); Divider()
+                    Toggle("风险观察", isOn: $draft.risk).padding(.vertical, 12); Divider()
+                    Toggle("任务失败与后台异常", isOn: $draft.health).padding(.vertical, 12)
                 }
-                Section {
-                    Toggle("规则提醒仅交易日", isOn: $draft.tradingDays).stockTradeSeparator()
-                    Toggle("免打扰", isOn: $draft.quiet).stockTradeSeparator()
+                StockTradeSectionLabel(title: "接收时间")
+                StockTradeCard {
+                    Toggle("规则提醒仅交易日", isOn: $draft.tradingDays).padding(.vertical, 12); Divider()
+                    Toggle("免打扰时段", isOn: $draft.quiet).padding(.vertical, 12)
                     if draft.quiet {
-                        DatePicker("开始", selection: timeBinding(\.quietStart), displayedComponents: .hourAndMinute).stockTradeSeparator()
-                        DatePicker("结束", selection: timeBinding(\.quietEnd), displayedComponents: .hourAndMinute).stockTradeSeparator()
+                        Divider()
+                        DatePicker("开始", selection: timeBinding(\.quietStart), displayedComponents: .hourAndMinute).padding(.vertical, 10)
+                        DatePicker("结束", selection: timeBinding(\.quietEnd), displayedComponents: .hourAndMinute).padding(.vertical, 10)
                     }
-                } header: { Text("提醒时段偏好") } footer: { Text("上海时间（Asia/Shanghai）。预期仅交易日约束监控与风险提醒；免打扰结束不补发历史事件。当前仅保存偏好，不改变后台调度。") }
-                Section("重复提醒偏好") {
-                    Picker("同股票、同事件间隔", selection: $draft.duplicateMinutes) {
-                        ForEach([15, 30, 60], id: \.self) { Text("\($0) 分钟").tag($0) }
-                    }.stockTradeSeparator()
                 }
-                if !draft.valid { Section { Text("免打扰开始和结束时间不能相同。").foregroundStyle(.red) } }
-                if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
-                Section {
-                    Button("预览测试通知") { preview = true }.buttonStyle(HakoActionButtonStyle())
-                } footer: { Text("只预览内容，不投递邮件、系统本地通知或手机推送。") }
+                StockTradeFootnote(text: "上海时间。当前只保存本机偏好，不改变后台调度或补发历史事件。")
+                StockTradeCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("同股票、同事件最短提醒间隔").font(.subheadline).foregroundStyle(.secondary)
+                        Picker("重复提醒间隔", selection: $draft.duplicateMinutes) { ForEach([15, 30, 60], id: \.self) { Text("\($0) 分钟").tag($0) } }.pickerStyle(.menu)
+                    }
+                }
+                if !draft.valid { Text("免打扰开始和结束时间不能相同。").font(.footnote).foregroundStyle(.red) }
+                if let error { Text(error).font(.footnote).foregroundStyle(.red) }
+                Button("预览测试提醒") { preview = true }.buttonStyle(HakoActionButtonStyle(primary: false, outlined: true))
+                StockTradeFootnote(text: "只预览内容，不投递邮件或推送；手机推送尚未接入，不申请系统权限。")
             }
             .environment(\.timeZone, TimeZone(identifier: "Asia/Shanghai")!)
             .disabled(!loaded || !sameAccount)
@@ -116,13 +129,14 @@ struct StockTradeNotificationSettings: View {
         }
         .sheet(isPresented: $preview) {
             SettingsSheet(title: "测试通知预览") {
-                Form {
-                    Section("内容示例 · 不是真实推荐") {
-                        Label("Cerno", systemImage: "chart.xyaxis.line")
-                        Text("每日推荐已更新").font(.headline)
-                        Text("本次完整选股结果已发布，可查看排名与评分原因。")
+                StockTradeScreen {
+                    StockTradeHeading(title: "测试提醒", subtitle: "内容预览 · 不发送真实通知")
+                    StockTradeCard {
+                        Text("Cerno · 内容示例").font(.caption).foregroundStyle(.secondary)
+                        Text("选股结果已更新").font(.title3.weight(.semibold)).padding(.vertical, 12)
+                        Text("本次完整选股结果已发布，可查看排名与评分原因。").font(.subheadline)
                     }
-                    Section { Text("这是本机内容预览，没有真实投递。实际送达取决于后台渠道、系统权限与已应用的时段规则。").font(.footnote).foregroundStyle(.secondary) }
+                    StockTradeFootnote(text: "这是本机内容预览，没有真实投递。实际送达取决于后台渠道、系统权限与已应用的时段规则。")
                 }
             }
         }

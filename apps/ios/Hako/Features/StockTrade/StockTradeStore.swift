@@ -27,6 +27,7 @@ extension StockTradeLoginStart {
     @Published private(set) var workflowOnline = false
     @Published private(set) var workflowError: String?
     @Published private(set) var displayedRunID: String?
+    @Published private(set) var missingSnapshot = false
     private var workflowsLoading = false
     private var resultGeneration = UUID()
     var activeWorkflow: StockTradeWorkflowTask? { workflowTasks.first { $0.state.active } }
@@ -76,7 +77,7 @@ extension StockTradeLoginStart {
         renewalTask?.cancel(); renewalTask = nil
         epoch = UUID(); pending = nil; consent = nil; session = nil; run = nil
         rows = []; nextCursor = nil; favorites = []; updatedAt = nil; loading = false; authenticating = false; error = nil
-        workflowTasks = []; workflowCursor = nil; workflowOnline = false; workflowError = nil; workflowsLoading = false; displayedRunID = nil; resultGeneration = UUID()
+        workflowTasks = []; workflowCursor = nil; workflowOnline = false; workflowError = nil; workflowsLoading = false; displayedRunID = nil; resultGeneration = UUID(); missingSnapshot = false
     }
     private static func identityContext(_ authentication: any AuthenticatedServerAccess) -> String {
         NativeApplicationAuthorization.origin(authentication.serverURL) ?? authentication.serverURL
@@ -309,9 +310,16 @@ extension StockTradeLoginStart {
             let page = try await resultPage(run: latest, pool: pool, cursor: nil)
             try checked(ticket)
             guard generation == resultGeneration else { return }
-            run = latest; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now
+            run = latest; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now; missingSnapshot = false
         } catch is CancellationError { }
-        catch { if ticket == epoch { self.error = error.localizedDescription } }
+        catch {
+            if ticket == epoch {
+                self.error = error.localizedDescription
+                if let failure = error as? StockTradeFailure, case .api(_, let code, _, _) = failure {
+                    missingSnapshot = code == "snapshot_unavailable"
+                } else { missingSnapshot = false }
+            }
+        }
     }
     func selectPool(_ value: StockTradePool) async {
         guard !loading else { return }
@@ -406,6 +414,6 @@ extension StockTradeLoginStart {
         let page = try await resultPage(run: value, pool: pool, cursor: nil)
         try checked(ticket)
         guard generation == resultGeneration else { throw CancellationError() }
-        displayedRunID = id; run = value; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now; error = nil
+        displayedRunID = id; run = value; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now; error = nil; missingSnapshot = false
     }
 }
