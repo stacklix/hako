@@ -67,6 +67,7 @@ struct QinglongRecordFields: View {
         if resource == .envs { Section { Toggle("启用此变量", isOn: $enabled).font(.subheadline) } }
     }
     private func field(_ title: String, _ key: String) -> some View {
-        QinglongTextField(title, text: Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 }))
+        QinglongTextField(title, text: Binding(get: { fields[key] ?? "" }, set: { fields[key] = $0 }), wholeRowFocus: resource == .envs)
+            .listRowInsets(resource == .envs ? EdgeInsets() : nil)
     }
 }

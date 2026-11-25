@@ -24,7 +24,8 @@ struct QinglongNewScriptFlow: View {
                 NavigationStack {
                     Form {
                         Section {
-                            QinglongTextField("文件名", text: $filename)
+                            QinglongTextField("文件名", text: $filename, wholeRowFocus: true)
+                                .listRowInsets(EdgeInsets())
                             Button { showDirectory = true } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("保存目录").font(.subheadline).foregroundStyle(.secondary)

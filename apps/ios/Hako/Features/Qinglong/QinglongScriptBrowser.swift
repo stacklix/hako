@@ -191,7 +191,8 @@ private struct QinglongNewScriptDirectory: View {
         NavigationStack {
             Form {
                 Section {
-                    QinglongTextField("文件夹名称", text: $name)
+                    QinglongTextField("文件夹名称", text: $name, wholeRowFocus: true)
+                        .listRowInsets(EdgeInsets())
                     VStack(alignment: .leading, spacing: 6) {
                         Text("创建位置").font(.subheadline).foregroundStyle(.secondary)
                         Text(directory.isEmpty ? "根目录" : directory).textSelection(.enabled)

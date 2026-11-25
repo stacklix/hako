@@ -145,10 +145,14 @@ struct QinglongTextField: View {
     @Binding var text: String
     var secure = false
     var keyboard: UIKeyboardType = .default
+    var wholeRowFocus = false
     @State private var showsSecret = false
+    @FocusState private var inputFocused: Bool
+    @Environment(\.isEnabled) private var enabled
     @Environment(\.scenePhase) private var scenePhase
-    init(_ title: String, text: Binding<String>, secure: Bool = false, keyboard: UIKeyboardType = .default) {
+    init(_ title: String, text: Binding<String>, secure: Bool = false, keyboard: UIKeyboardType = .default, wholeRowFocus: Bool = false) {
         self.title = title; _text = text; self.secure = secure; self.keyboard = keyboard
+        self.wholeRowFocus = wholeRowFocus
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -170,8 +174,16 @@ struct QinglongTextField: View {
                 }
             } else {
                 TextField("", text: $text).keyboardType(keyboard).accessibilityLabel(title)
+                    .focused($inputFocused)
             }
-        }.textInputAutocapitalization(.never).autocorrectionDisabled().padding(.vertical, 4)
+        }.textInputAutocapitalization(.never).autocorrectionDisabled()
+        .frame(maxWidth: wholeRowFocus ? .infinity : nil, minHeight: wholeRowFocus ? 44 : nil, alignment: .leading)
+        .padding(.horizontal, wholeRowFocus ? 20 : 0).padding(.vertical, wholeRowFocus ? 12 : 4)
+        .contentShape(Rectangle())
+        // Keep the text field's native cursor placement and selection gestures.
+        .simultaneousGesture(TapGesture().onEnded {
+            if wholeRowFocus && !secure && enabled { inputFocused = true }
+        })
         .onChange(of: scenePhase) { _, phase in if phase != .active { showsSecret = false } }
         .onDisappear { showsSecret = false }
     }
