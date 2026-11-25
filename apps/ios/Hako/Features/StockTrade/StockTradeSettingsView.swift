@@ -52,6 +52,14 @@ struct StockTradeSettingsView: View {
                     }
                 }
                 StockTradeFootnote(text: "Cerno 本地访问令牌有效期为 12 小时，通过本设备钥匙串中的设备凭据自动续期。Hako 仅在首次或重新登录时确认身份。")
+                StockTradeSectionLabel(title: "选股说明")
+                StockTradeCard {
+                    ForEach(StockTradeGuideTopic.allCases) { topic in
+                        NavigationLink { StockTradeGuideView(topic: topic, store: store) }
+                        label: { StockTradeEntryRow(title: topic.rawValue, subtitle: topic.subtitle, separator: topic != .terms) }
+                            .buttonStyle(.plain).accessibilityIdentifier("cerno.guide.\(topic.id)")
+                    }
+                }
                 StockTradeCard(padding: 18) {
                     Button { showingNotifications = true } label: { StockTradeEntryRow(title: "通知配置") }.buttonStyle(.plain).disabled(store.session == nil)
                     NavigationLink { StockTradeHealthView(store: store) }
