@@ -9,6 +9,9 @@ import Foundation
         precondition(HakoCodeSyntax.language(filename: "settings.JSON") == .json)
         precondition(HakoCodeSyntax.language(filename: "app.toml") == .toml)
         precondition(HakoCodeSyntax.language(filename: "start.sh") == .shell)
+        precondition(HakoCodeSyntax.language(filename: "hako/hako_market_sync.py") == .python)
+        precondition(HakoCodeSyntax.language(filename: "SCRIPT.PYW") == .python)
+        precondition(HakoCodeSyntax.language(filename: "typing.pyi") == .python)
         precondition(HakoCodeSyntax.language(filename: "README.txt") == .plain)
 
         func expect(_ source: String, _ language: HakoCodeSyntax.Language, _ expected: [(String, HakoCodeSyntax.Kind)]) {
@@ -43,6 +46,55 @@ import Foundation
         for token in HakoCodeSyntax.tokens(incomplete, language: .yaml) {
             precondition(NSMaxRange(token.range) <= (incomplete as NSString).length)
         }
-        print("PASS: configuration language detection, UTF-16/emoji ranges, quoted keys, escaped strings, comments, numbers, variables and incomplete input")
+        let python = #"""
+        # 行情😀
+        from decimal import Decimal
+        @staticmethod
+        def number(value):
+            try:
+                result = Decimal(str(value))
+                if not result.is_finite() or result <= 0:
+                    raise ValueError("行情源返回无效或非正数价格") from None
+                return result
+            except (ValueError, TypeError):
+                return False
+        class Price:
+            precision = 50
+        """#
+        expect(python, .python, [("# 行情😀", .comment), ("from", .literal), ("import", .literal),
+               ("@staticmethod", .variable), ("def", .literal), ("number", .key), ("str", .variable),
+               ("try", .literal), ("if", .literal), ("not", .literal), ("or", .literal),
+               ("raise", .literal), ("ValueError", .variable), ("\"行情源返回无效或非正数价格\"", .string),
+               ("None", .literal), ("return", .literal), ("except", .literal), ("False", .literal),
+               ("class", .literal), ("Price", .key), ("50", .number)])
+        expect("value=1#inline😀\ntext=\"# not a comment\"\n", .python,
+               [("1", .number), ("#inline😀", .comment), ("\"# not a comment\"", .string)])
+        expect(#"raw = r"C:\temp\data"; data = b'bytes'; label = f"价格: {value}"; text = 'it\'s ok'"#, .python,
+               [(#"r"C:\temp\data""#, .string), ("b'bytes'", .string), (#"f"价格: {value}""#, .string), (#"'it\'s ok'"#, .string)])
+        expect("x=0xFF_FF; y=0b1010; z=0o755; price=.25; a=1.; b=1_000.5e-2; c=2j", .python,
+               [("0xFF_FF", .number), ("0b1010", .number), ("0o755", .number), (".25", .number),
+                ("1.", .number), ("1_000.5e-2", .number), ("2j", .number)])
+        expect("def\tformat(value):\n    return value.format()\n", .python, [("format", .key), ("return", .literal)])
+        expect("    @cache.memoize\n    def value():\n        return\"ok\"\n", .python,
+               [("@cache.memoize", .variable), ("value", .key), ("return", .literal), ("\"ok\"", .string)])
+        precondition(HakoCodeSyntax.tokens("left @ right", language: .python).isEmpty, "Matrix multiplication is not a decorator")
+        let protected: [String] = [
+            "\"key\":", "\"def return # inside\"", "'''\nfrom False # 文档😀\n'''",
+            "\"\"\"多行\ndef ignored():\n# inside\n\"\"\"", "r'''\n路径\\data\n'''",
+            "\"\"\"未完成😀\ndef ignored():", "\"未完成 # return😀"
+        ]
+        for source in protected {
+            let tokens = HakoCodeSyntax.tokens(source, language: .python)
+            precondition(tokens.count == 1 && tokens[0].kind == .string, "Strings must shield their contents: \(source)")
+            precondition(tokens[0].range.location == 0 && NSMaxRange(tokens[0].range) <= (source as NSString).length)
+        }
+        precondition(HakoCodeSyntax.tokens("return_value = obj.format; true_value = 'x'", language: .python)
+            .allSatisfy { $0.kind == .string }, "Identifier substrings and member names must not become keywords/built-ins")
+        precondition(HakoCodeSyntax.tokens("# def return True 123", language: .python).count == 1)
+        expect("'unfinished\nreturn True\n", .python, [("'unfinished", .string), ("return", .literal), ("True", .literal)])
+        expect("", .python, [])
+        let largePython = String(repeating: "# 😀\ndef value(x):\n    return x + 1\n", count: 1000)
+        expect(largePython, .python, [("value", .key), ("return", .literal), ("1", .number)])
+        print("PASS: configuration and Python detection, UTF-16 ranges, keywords, declarations, decorators, built-ins, strings, comments, numeric forms and unfinished input")
     }
 }
