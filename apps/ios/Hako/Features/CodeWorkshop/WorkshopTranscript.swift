@@ -264,6 +264,7 @@ enum WorkshopTranscriptMerge {
 final class WorkshopTranscriptDisk: @unchecked Sendable {
     private struct Pending { let url: URL; let snapshot: WorkshopTranscript; let order: Int }
     private let queue = DispatchQueue(label: "me.stackli.hako.workshop.transcripts", qos: .utility)
+    private let readQueue = DispatchQueue(label: "me.stackli.hako.workshop.transcripts.read", qos: .userInitiated, attributes: .concurrent)
     private let lock = NSLock()
     private var pending: [URL: Pending] = [:]
     private var writing: [URL: WorkshopTranscript] = [:]
@@ -289,7 +290,7 @@ final class WorkshopTranscriptDisk: @unchecked Sendable {
     func read(_ url: URL, key: WorkshopTranscriptKey) async -> WorkshopTranscript? {
         if let snapshot = latest(url) { return snapshot.key == key && snapshot.eventCursor >= 0 ? snapshot : nil }
         return await withCheckedContinuation { continuation in
-            queue.async {
+            readQueue.async {
                 let snapshot = self.latest(url) ?? Self.load(url)
                 continuation.resume(returning: snapshot.flatMap { $0.key == key && $0.eventCursor >= 0 ? $0 : nil })
             }

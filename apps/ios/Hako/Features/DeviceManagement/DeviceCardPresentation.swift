@@ -35,7 +35,8 @@ enum DeviceCardOrder {
         // Keep the existing local terminal for desktop agents.
         let android = capabilities.contains { ["query.device.status", "query.device.storage", "query.device.battery", "query.network.wifi", "query.device.screen", "query.telephony.sims", "query.sms.messages",
             "query.telephony.calls", "action.sms.send", "action.telephony.call"].contains($0) }
-        return arranged(available: capabilities + (android ? [] : [terminalPageName]), saved: saved)
+        let visible = capabilities.filter { $0 != "action.network.http.check" }
+        return arranged(available: visible + (android ? [] : [terminalPageName]), saved: saved)
     }
 
     static func saving(visible: [String], previous: [String]) -> [String] {

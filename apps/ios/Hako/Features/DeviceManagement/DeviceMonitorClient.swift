@@ -13,7 +13,6 @@ import Combine
         var context = ""
         var inventory = DeviceMonitorInventory()
         var deviceData: [String: ConsoleDeviceData] = [:]
-        var httpChecks: [String: ConsoleHTTPCheckState] = [:]
         var message: String?
         var routes: [String: String] = [:]
     }
@@ -72,10 +71,6 @@ import Combine
     var deviceData: [String: ConsoleDeviceData] {
         get { current.deviceData }
         set { prepareContext(); state.deviceData = newValue }
-    }
-    var httpChecks: [String: ConsoleHTTPCheckState] {
-        get { current.httpChecks }
-        set { prepareContext(); state.httpChecks = newValue }
     }
     var message: String? {
         get {
@@ -214,7 +209,6 @@ import Combine
         }
         if keyChanged {
             deviceData[original.id] = nil
-            httpChecks[original.id] = nil
             lan.reset(context: requestContext)
         }
         do {
@@ -393,20 +387,6 @@ import Combine
             deviceData[agent.id]?.liveUpdates[DeviceServiceCommand.status] = UUID()
             return false
         }
-    }
-    func checkHTTP(_ agent: ConsoleAgent, url: String) async {
-        guard authenticated, !logoutPending, httpChecks[agent.id]?.loading != true else { return }
-        let context = requestContext
-        httpChecks[agent.id, default: ConsoleHTTPCheckState()].loading = true
-        httpChecks[agent.id]?.error = nil
-        defer { if context == requestContext { httpChecks[agent.id]?.loading = false } }
-        do {
-            let result = try await invokeAgent(agent, method: "action.network.http.check", version: 1,
-                                               params: ["url": url.trimmingCharacters(in: .whitespacesAndNewlines)], as: ConsoleHTTPCheck.self)
-            guard context == requestContext else { return }
-            httpChecks[agent.id]?.result = result
-        } catch is CancellationError { }
-        catch { if context == requestContext { httpChecks[agent.id]?.error = DeviceMonitorFailure.message(for: error) } }
     }
     func invokeAgent<Result: Decodable>(_ agent: ConsoleAgent, method: String, version: Int, params: [String: Any] = [:], as type: Result.Type) async throws -> Result {
         guard authenticated, !logoutPending else { throw HakoError(message: "请先登录 Hako 服务器。") }

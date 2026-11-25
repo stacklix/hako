@@ -120,14 +120,10 @@ import Foundation
         precondition(queries.data["query.future.null"]?.result?.formatted == "null")
         precondition(queries.data["query.future.invalid"]?.error?.code == "invalid_data")
         precondition(queries.data["query.missing"] == nil)
-        for status in [200, 301, 401, 404, 500] {
-            let result = try decoder.decode(ConsoleHTTPCheck.self, from: Data("{\"url\":\"https://example.com\",\"reachable\":true,\"httpSuccess\":\(status == 200),\"statusCode\":\(status),\"elapsedMs\":12,\"checkedAt\":\"2026-10-28T08:00:00Z\",\"failure\":null}".utf8))
-            precondition(result.reachable && result.statusCode == status)
-        }
         for malformed in [#"{}"#, #"{"result":{},"error":{"code":"bad","message":"bad"}}"#] {
             do { _ = try decoder.decode(ConsoleAgentReply<ConsoleQueryResult>.self, from: Data(malformed.utf8)); fatalError("Invalid reply accepted") }
             catch is DecodingError { }
         }
-        print("PASS: unknown/empty manifests, aggregate partial errors/null/missing data, integer preservation, HTTP results and reply validation")
+        print("PASS: unknown/empty manifests, aggregate partial errors/null/missing data, integer preservation and reply validation")
     }
 }

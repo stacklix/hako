@@ -82,6 +82,46 @@ import Foundation
         pending.seed(try decode([sample(now, cpu: 20, peak: 20)], bucket: 1, last: now))
         precondition(pending.history?.points.count == 2 && pending.history?.sampleCount == 2,
             "Reseeding must not count a buffered live sample twice")
+        let receivedAt = DeviceResourceHistory.date(now)
+        var readState = DeviceResourceHistoryReadState()
+        var recovery = DeviceResourceHistoryLiveSeries()
+        let timedOut = readState.begin()
+        readState.failed(timedOut, message: "query timed out", at: receivedAt)
+        readState.finish(timedOut)
+        precondition(readState.error == "query timed out" && !readState.loading)
+        if recovery.append(.init(timestamp: now, cpu: 20, memory: 50)) {
+            readState.receivedLiveSample(at: receivedAt)
+        }
+        precondition(readState.error == nil, "An accepted live sample must clear the old history query error")
+        let delayed = readState.begin()
+        if recovery.append(.init(timestamp: now + 1000, cpu: 30, memory: 50)) {
+            readState.receivedLiveSample(at: receivedAt.addingTimeInterval(1))
+        }
+        readState.failed(delayed, message: "late timeout", at: receivedAt.addingTimeInterval(2))
+        precondition(readState.error == nil, "A late history timeout must not replace a newer healthy live update")
+        readState.finish(delayed)
+        let stalled = readState.begin()
+        if recovery.append(.init(timestamp: now + 2000, cpu: 40, memory: 60)) {
+            readState.receivedLiveSample(at: receivedAt.addingTimeInterval(2))
+        }
+        readState.failed(stalled, message: "stream stalled", at: receivedAt.addingTimeInterval(8))
+        precondition(readState.error == "stream stalled", "Stale live data cannot hide a genuine query failure")
+        for sample in [DeviceResourceHistorySample(timestamp: now + 2000, cpu: 90, memory: 70),
+                       .init(timestamp: now, cpu: 20, memory: 50), .init(timestamp: now + 3000, cpu: .nan, memory: 50)] {
+            if recovery.append(sample) { readState.receivedLiveSample(at: receivedAt.addingTimeInterval(8)) }
+        }
+        precondition(readState.error == "stream stalled", "Invalid, repeated and out-of-order samples cannot clear failures")
+        let replacement = readState.begin()
+        readState.failed(stalled, message: "obsolete failure")
+        readState.finish(stalled)
+        precondition(readState.isCurrent(replacement) && readState.loading && readState.error == nil,
+            "An obsolete request must not change a newer range or refresh request")
+        readState.failed(replacement, message: "no new live sample", at: receivedAt.addingTimeInterval(3))
+        precondition(readState.error == "no new live sample", "Samples received before a request are not evidence of recovery")
+        readState.reset(error: "offline")
+        readState.failed(replacement, message: "obsolete timeout")
+        readState.finish(replacement)
+        precondition(readState.error == "offline" && !readState.loading)
         var grouped = DeviceResourceHistoryLiveSeries(range: .fifteenMinutes)
         grouped.seed(try decode([sample(now, cpu: 20, peak: 30, count: 2)], bucket: 4, last: now, range: 900))
         grouped.append(.init(timestamp: now + 1000, cpu: 80, memory: 80))

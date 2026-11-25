@@ -6,6 +6,7 @@ import Combine
     let store: WorkshopStore
     let agent: WorkshopAgent
     let application: WorkshopApplication
+    let parentThreadId: String?
     @Published private(set) var title: String
     let scope: String
     @Published private(set) var threadId: String? { didSet { persistDraft() } }
@@ -117,8 +118,9 @@ import Combine
     private var presentationTask: Task<Void, Never>?
     private var presentationRevision = 0
 
-    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, session: WorkshopSession? = nil, title: String? = nil, archived: Bool = false) {
+    init(store: WorkshopStore, agent: WorkshopAgent, application: WorkshopApplication, session: WorkshopSession? = nil, title: String? = nil, archived: Bool = false, parentThreadId: String? = nil, initialChoice: WorkshopChoice? = nil) {
         self.store = store; self.agent = agent; self.application = application
+        self.parentThreadId = parentThreadId ?? session?.parentThreadId
         self.title = title ?? session?.title ?? "新会话"
         scope = store.scope
         catalogHint = session
@@ -130,7 +132,7 @@ import Combine
         if let receipt, receipt.id == operationId, receipt.state == "pending" {
             uncertain = true; entries.append(receipt.entry); outbox.restore(receipt.id)
         }
-        choice = store.choice(agent: agent, thread: threadId, application: application)
+        choice = initialChoice ?? store.choice(agent: agent, thread: threadId, application: application)
         if let operationId {
             for pending in store.pendingQueue(operationId: operationId) where !entries.contains(where: { $0.id == pending.id }) {
                 entries.append(pending.entry); outbox.restore(pending.id)
@@ -163,6 +165,9 @@ import Combine
             restoringCache = true
             let key = WorkshopTranscriptKey(agentId: agent.id, applicationId: application.id, threadId: threadId)
             cacheLoad = Task { await store.cachedTranscript(key) }
+            // Local restoration must not wait for a preceding network watcher
+            // to drain after navigation or a route change.
+            Task { [weak self] in await self?.restoreTranscript() }
         }
         schedulePresentation()
     }
@@ -189,6 +194,9 @@ import Combine
 
     private func schedulePresentation() {
         presentationRevision += 1
+        if presentation.isEmpty, !entries.isEmpty {
+            presentation = .initial(entries: entries, followups: followups, revision: presentationRevision)
+        }
         guard networkVisible, presentationTask == nil else { return }
         presentationTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -198,14 +206,14 @@ import Combine
                 let layout = await self.renderer.render(entries: self.entries, followups: self.followups,
                     artifacts: self.artifacts, projectPath: self.application.path, revision: revision)
                 guard !Task.isCancelled, self.networkVisible, self.scope == self.store.scope else { break }
-                self.presentation = layout
+                if layout.canReplace(self.presentation, latestRevision: self.presentationRevision) { self.presentation = layout }
                 if revision == self.presentationRevision { break }
             }
             self?.presentationTask = nil
         }
     }
 
-    private var composerSessionID: String { threadId ?? operationId.map { "pending-" + $0 } ?? "new:" + title }
+    private var composerSessionID: String { threadId ?? operationId.map { "pending-" + $0 } ?? parentThreadId.map { "sidechat:" + $0 } ?? "new:" + title }
 
     private var composerDraft: WorkshopComposerDraft {
         WorkshopComposerDraft(input: WorkshopDraftInput(text: draft, imageIds: photos.map(\.id)),
@@ -712,7 +720,7 @@ import Combine
         if approvals != result.approvals { approvals = result.approvals }
         for artifact in result.artifacts where !artifacts.contains(where: { $0.id == artifact.id }) { artifacts.append(artifact) }
         if let resolved = result.operation.threadId, resolved != threadId {
-            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application, background: true, resolvingNew: true) }
+            if threadId == nil { try store.saveChoice(choice, agent: agent, thread: resolved, application: application, background: true, resolvingNew: parentThreadId == nil) }
             threadId = resolved
         }
         if var receipt, receipt.id == id {
@@ -753,6 +761,19 @@ import Combine
         await sendInput(prompt: text)
     }
 
+    // A return from a sidechat is a separate, durable send; keep the editor's draft intact.
+    func sendSidechatConclusion(_ text: String, steer: Bool) async -> Bool {
+        guard canSendPrompt else { return false }
+        let previous = Set(entries.map(\.id))
+        await sendPrompt(text)
+        guard let sent = entries.last(where: { $0.role == "user" && !previous.contains($0.id) }) else { return false }
+        if steer, operation?.active == true, followups.contains(where: { $0.id == sent.id && $0.editable }) {
+            await mutateMessage(sent.id, action: "steer")
+        }
+        // Once a receipt exists, any retry belongs to the main conversation's existing controls.
+        return true
+    }
+
     private func sendInput(prompt: String?) async {
         let message = (prompt ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = prompt == nil ? photos : []
@@ -763,6 +784,7 @@ import Combine
             return
         }
         guard await verifyThreadAccess() else { return }
+        if parentThreadId != nil, threadId == nil { title = String(message.prefix(24)) }
         if let id = draftSendingID, let queued = pendingSend(id) {
             await submitQueued(queued)
             return
@@ -777,7 +799,7 @@ import Combine
                 message: message, imageIds: attachments.map(\.id), reasoningEffort: choice.reasoningEffort)
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存排队消息，请重试。"; return }
-            store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
+            if parentThreadId == nil { store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope) }
             if prompt == nil { draftSendingID = queued.id }
             entries.append(queued.entry); appendedMessageID = queued.id; error = nil
             outbox.enqueue(queued.id)
@@ -790,12 +812,12 @@ import Combine
             }
             return
         }
-        if threadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
+        if threadId == nil, parentThreadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
         let next = WorkshopReceipt(id: UUID().uuidString.lowercased(), agentId: agent.id, applicationId: application.id,
             originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now, state: "pending",
             model: choice.model, permission: choice.permission.rawValue, imageIds: attachments.isEmpty ? nil : attachments.map(\.id),
-            serviceTier: choice.serviceTier ?? "default", systemPrompt: threadId == nil ? store.systemPrompt : nil,
-            reasoningEffort: choice.reasoningEffort)
+            serviceTier: choice.serviceTier ?? "default", systemPrompt: threadId == nil && parentThreadId == nil ? store.systemPrompt : nil,
+            reasoningEffort: choice.reasoningEffort, parentThreadId: parentThreadId)
         guard next.fitsRequestBudget else { error = "首条消息与系统提示词合计过长，请缩短提示词或消息内容。"; return }
         do { try store.saveReceipt(next) }
         catch { self.error = "无法保存发送记录，请重试。"; return }
@@ -823,18 +845,18 @@ import Combine
             do { try store.saveQueuedSend(queued) }
             catch { self.error = "无法保存回答，请重试。"; return }
             entries.append(queued.entry); appendedMessageID = queued.id; outbox.enqueue(queued.id); saveTranscript()
-            store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope)
+            if parentThreadId == nil { store.recordQueuedActivity(queued, agent: agent, application: application, threadId: threadId, title: title, scope: scope) }
             await submitQueued(queued)
             if followups.contains(where: { $0.id == queued.id && $0.editable }) {
                 await mutateMessage(queued.id, action: "steer")
             }
         } else {
-            if threadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
+            if threadId == nil, parentThreadId == nil, let issue = store.systemPromptLoadError { error = issue; return }
             let next = WorkshopReceipt(id: requestID, agentId: agent.id, applicationId: application.id,
                 originalThreadId: threadId, threadId: threadId, title: title, message: message, createdAt: .now,
                 state: "pending", model: choice.model, permission: choice.permission.rawValue,
                 serviceTier: choice.serviceTier ?? "default", questionId: entry.id,
-                systemPrompt: threadId == nil ? store.systemPrompt : nil, reasoningEffort: choice.reasoningEffort)
+                systemPrompt: threadId == nil && parentThreadId == nil ? store.systemPrompt : nil, reasoningEffort: choice.reasoningEffort, parentThreadId: parentThreadId)
             guard next.fitsRequestBudget else { error = "首条消息与系统提示词合计过长，请缩短提示词或消息内容。"; return }
             do { try store.saveReceipt(next) }
             catch { self.error = "无法保存回答，请重试。"; return }
@@ -909,7 +931,7 @@ import Combine
             operation = result; uncertain = false; error = nil
             clearSentDraft(receipt.message, imageIds: receipt.imageIds ?? [], id: receipt.id)
             if let id = result.threadId {
-                if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application, resolvingNew: true) }
+                if threadId == nil { try store.saveChoice(choice, agent: agent, thread: id, application: application, resolvingNew: parentThreadId == nil) }
                 threadId = id
             }
             var confirmed = receipt

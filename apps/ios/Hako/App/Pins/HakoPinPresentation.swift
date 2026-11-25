@@ -268,25 +268,35 @@ private struct HakoPinDrawer: View {
     @ObservedObject private var store = HakoPinStore.shared
     @ObservedObject private var presenter = HakoPinPresenter.shared
     @State private var showingSettings = false
+    @State private var selectedCollection = "pinned"
+    private let registry = HakoApplications.pins
     private var pages: [HakoPinnedPage] { store.pages.filter { HakoApplications.pins.contains($0) } }
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .trailing) {
                 Color.black.opacity(0.3 * Double(motion.progress)).ignoresSafeArea()
-                    .onTapGesture(perform: close).accessibilityLabel("收起 Pin 列表").accessibilityAddTraits(.isButton)
+                    .onTapGesture(perform: close).accessibilityLabel("收起快捷访问").accessibilityAddTraits(.isButton)
                 VStack(spacing: 0) {
                     HStack {
-                        Text("Pin").font(.largeTitle.bold())
-                        Text("\(pages.count)").font(.caption).foregroundStyle(.secondary)
+                        Text("快捷访问").font(.largeTitle.bold())
                         Spacer()
                         Button(action: close) { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                            .accessibilityLabel("关闭 Pin 列表")
-                    }.padding(.horizontal, 20).padding(.top, geometry.safeAreaInsets.top + 12)
-                    Text("把常用页面，留在手边。")
-                        .font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20).padding(.bottom, 10)
-                    if pages.isEmpty {
+                            .accessibilityLabel("关闭快捷访问")
+                    }.padding(.horizontal, 20).padding(.top, geometry.safeAreaInsets.top + 12).padding(.bottom, 16)
+                    HStack(spacing: 24) {
+                        tab("已固定", id: "pinned", count: pages.count)
+                        ForEach(registry.collections) { collection in
+                            tab(collection.title, id: collection.id)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 20)
+                    .overlay(alignment: .bottom) { HakoStyle.line.frame(height: 0.5).padding(.horizontal, 20) }
+                    if let collection = registry.collections.first(where: { $0.id == selectedCollection }) {
+                        collection.content(select)
+                            .environment(\.scenePhase, presenter.scenePhase)
+                    } else if pages.isEmpty {
                         ContentUnavailableView("还没有固定页面", systemImage: "pin",
                             description: Text("在代码工坊会话或容器详情的右上角更多菜单中，选择「加入 Pin」。"))
                             .frame(maxHeight: .infinity)
@@ -295,7 +305,7 @@ private struct HakoPinDrawer: View {
                             ForEach(pages) { page in
                                 Button { select(page) } label: {
                                     HStack(spacing: 12) {
-                                        Image(systemName: page.symbol).font(.title3).frame(width: 38, height: 38)
+                                        registry.icon(for: page).font(.title3).frame(width: 38, height: 38)
                                             .background(HakoStyle.background, in: RoundedRectangle(cornerRadius: 10))
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(page.title).font(.subheadline.weight(.medium))
@@ -343,5 +353,22 @@ private struct HakoPinDrawer: View {
             .environment(\.scenePhase, presenter.scenePhase)
             .tint(.primary)
         }
+    }
+
+    private func tab(_ title: String, id: String, count: Int? = nil) -> some View {
+        let selected = selectedCollection == id
+        return Button { selectedCollection = id } label: {
+            HStack(spacing: 5) {
+                Text(title).font(.subheadline.weight(.medium))
+                if let count { Text("\(count)").font(.caption2).foregroundStyle(.secondary) }
+            }
+            .foregroundStyle(selected ? HakoStyle.text : HakoStyle.muted)
+            .padding(.bottom, 12).frame(minHeight: 44)
+            .overlay(alignment: .bottom) {
+                if selected { HakoStyle.text.frame(height: 2) }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }

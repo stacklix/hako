@@ -18,7 +18,7 @@ struct ConsoleApplicationEditorView: View {
     }
     private var canSave: Bool { client.authenticated && context == client.context && !client.busy && draft.hasRequiredInput && (application == nil || draft != initial) }
     var body: some View {
-        SettingsSheet(title: application == nil ? "登记应用" : "登录方式配置", hasChanges: draft != initial,
+        SettingsSheet(title: application == nil ? "登记应用" : "应用权限配置", hasChanges: draft != initial,
                       isBusy: submitting, saveEnabled: canSave, onSave: requestSave) {
             Form {
                 Section {
@@ -51,6 +51,12 @@ struct ConsoleApplicationEditorView: View {
                             Text("供支持 OpenID Connect 的应用使用").font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                }
+                Section("行情权限") {
+                    Toggle("读取行情更新清单", isOn: $draft.marketReadEnabled)
+                    Toggle("写入行情与汇率", isOn: $draft.marketWriteEnabled)
+                    Text("使用应用 AK/SK 调用；不授予账户、流水或手动估值的访问权限。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if draft.oidcEnabled {
                     Section {

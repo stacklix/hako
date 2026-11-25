@@ -30,6 +30,19 @@ struct WorkshopTranscriptLayout: Sendable {
     var questionReplies: [String: [WorkshopQuestionReply]] = [:]
     var isEmpty: Bool { groups.isEmpty && queued.isEmpty }
 
+    // Local history is visible before Markdown and artifact parsing finishes.
+    static func initial(entries: [WorkshopEntry], followups: [WorkshopFollowupState], revision: Int) -> Self {
+        let transcript = WorkshopTranscriptPresentation(entries: entries, followups: followups)
+        let text = Dictionary(transcript.history.filter { $0.role == "assistant" && $0.kind != "imageGeneration" }
+            .map { ($0.id, [WorkshopMessagePart.text($0.text)]) }, uniquingKeysWith: { _, latest in latest })
+        return Self(revision: revision, groups: WorkshopEntryGroup.group(transcript.history, artifactsAfter: []),
+            queued: transcript.queued, messageParts: text)
+    }
+
+    func canReplace(_ current: Self, latestRevision: Int) -> Bool {
+        revision == latestRevision || !isEmpty || current.isEmpty
+    }
+
     func containsMessage(_ id: String) -> Bool {
         let matches: (WorkshopEntry) -> Bool = { $0.id == id || $0.replacesId == id }
         return queued.contains(where: matches) || groups.contains { $0.entries.contains(where: matches) }

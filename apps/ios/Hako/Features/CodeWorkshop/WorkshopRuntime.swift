@@ -120,9 +120,10 @@ import UIKit
         return value
     }
 
-    func create(agent: WorkshopAgent, application: WorkshopApplication, title: String) -> WorkshopConversation {
+    func create(agent: WorkshopAgent, application: WorkshopApplication, title: String, parentThreadId: String? = nil, initialChoice: WorkshopChoice? = nil) -> WorkshopConversation {
         resetContext()
-        let value = WorkshopConversation(store: store, agent: agent, application: application, title: title)
+        let value = WorkshopConversation(store: store, agent: agent, application: application, title: title,
+            parentThreadId: parentThreadId, initialChoice: initialChoice)
         retain(value)
         return value
     }
@@ -170,7 +171,7 @@ import UIKit
         }
         let session = WorkshopSession(id: threadID, title: title.isEmpty ? "会话" : title,
             applicationId: application.id, cwd: history.cwd, preview: "", updatedAt: Int64(Date.now.timeIntervalSince1970),
-            state: "unknown", operationId: history.operationId, completionId: history.completionId)
+            state: "unknown", operationId: history.operationId, completionId: history.completionId, parentThreadId: history.parentThreadId)
         return open(session, agent: agent, application: application, archived: false)
     }
 

@@ -1,15 +1,35 @@
 import SwiftUI
 import Combine
 
+@MainActor struct HakoPinCollection: Identifiable {
+    let id: String
+    let title: String
+    let content: (@escaping (HakoPinnedPage) -> Void) -> AnyView
+}
+
 @MainActor final class HakoPinRegistry {
     private var routes: [String: [String: (HakoPinnedPage) -> AnyView]] = [:]
     private var previewNavigation: [String: Set<String>] = [:]
+    private var icons: [String: [String: (HakoPinnedPage) -> AnyView]] = [:]
+    private(set) var collections: [HakoPinCollection] = []
+
+    func registerCollection(id: String, title: String,
+                            content: @escaping (@escaping (HakoPinnedPage) -> Void) -> AnyView) {
+        precondition(!collections.contains { $0.id == id }, "Pin collection already registered")
+        collections.append(HakoPinCollection(id: id, title: title, content: content))
+    }
 
     func register(applicationID: String, route: String, providesPreviewNavigation: Bool = false,
+                  icon: ((HakoPinnedPage) -> AnyView)? = nil,
                   content: @escaping (HakoPinnedPage) -> AnyView) {
         precondition(routes[applicationID]?[route] == nil, "Pin route already registered")
         routes[applicationID, default: [:]][route] = content
         if providesPreviewNavigation { previewNavigation[applicationID, default: []].insert(route) }
+        if let icon { icons[applicationID, default: [:]][route] = icon }
+    }
+
+    func icon(for page: HakoPinnedPage) -> AnyView {
+        icons[page.applicationID]?[page.route]?(page) ?? AnyView(Image(systemName: page.symbol))
     }
 
     func contains(_ page: HakoPinnedPage) -> Bool { routes[page.applicationID]?[page.route] != nil }

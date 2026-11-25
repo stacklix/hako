@@ -111,7 +111,12 @@ import Foundation
         precondition(book.positionBefore(first, accountID: owner.id)?.quantity == 10)
         precondition(book.positionBefore(second, accountID: owner.id)?.quantity == 12)
         precondition(book.cashChange(for: first, accountID: owner.id) == 0)
-        let exact = Decimal(string: "9.9876543210987654321")!
+        do {
+            _ = try book.spotBalanceReplacement(first, accountID: owner.id,
+                balance: Decimal(string: "9.9876543210987654321")!, on: day(3))
+            preconditionFailure("Balance edits must reject more than three decimal places")
+        } catch is InvestmentError { }
+        let exact = Decimal(string: "9.987")!
         let edited = try book.spotBalanceReplacement(first, accountID: owner.id, balance: exact, on: day(3))
         precondition(edited.kind == .spotAdjustment && edited.quantity == exact - 10)
         try book.replaceEvent(first, with: edited, accountID: owner.id, today: day(5))

@@ -260,17 +260,3 @@ struct ConsoleDeviceData {
         loaded = true
     }
 }
-struct ConsoleHTTPCheck: Decodable {
-    let url: String
-    let reachable: Bool
-    let httpSuccess: Bool
-    let statusCode: Int?
-    let elapsedMs: Int
-    let checkedAt: String
-    let failure: ConsoleAgentError?
-}
-struct ConsoleHTTPCheckState {
-    var loading = false
-    var result: ConsoleHTTPCheck?
-    var error: String?
-}

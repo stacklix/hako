@@ -7,11 +7,27 @@ enum MarketAPIRequestContext {
     @TaskLocal static var reason: String?
 }
 
-// All market callers share one queue per credential. Credentials stay in memory only.
+// Transport channels include public sources without adding them to credential usage settings.
+enum MarketAPIChannel: String, Sendable {
+    case twelveData, tushare, eastmoney, binance, coinbase, ecb
+
+    static func matching(_ host: String?) -> Self? {
+        guard let host = host?.lowercased() else { return nil }
+        if host == "api.twelvedata.com" { return .twelveData }
+        if host == "api.tushare.pro" { return .tushare }
+        if host == "eastmoney.com" || host.hasSuffix(".eastmoney.com") { return .eastmoney }
+        if host == "binance.com" || host.hasSuffix(".binance.com") || host == "binance.vision" || host.hasSuffix(".binance.vision") { return .binance }
+        if host == "coinbase.com" || host.hasSuffix(".coinbase.com") { return .coinbase }
+        if host == "data-api.ecb.europa.eu" { return .ecb }
+        return nil
+    }
+}
+
+// Concurrency is shared per channel; credits/cooldowns remain isolated per credential.
 actor MarketAPIRequestGate {
     static let shared = MarketAPIRequestGate()
     typealias Response = (Data, URLResponse)
-    private struct Scope: Hashable { let provider: MarketAPIProvider; let credential: String }
+    private struct Scope: Hashable { let channel: MarketAPIChannel; let credential: String }
     private struct RequestKey: Hashable { let request: URLRequest; let session: ObjectIdentifier }
     private final class Flight {
         let id = UUID()
@@ -25,24 +41,28 @@ actor MarketAPIRequestGate {
         var limit: Int
     }
     private var flights: [RequestKey: Flight] = [:]
-    private var tails: [Scope: Tail] = [:]
+    private var tails: [MarketAPIChannel: [Tail]] = [:]
     private var budgets: [Scope: Budget] = [:]
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     private let cooldown: TimeInterval
     private let window: TimeInterval
     private let defaultLimit: Int
+    private let maximumConcurrentRequests: Int
 
     init(cooldown: TimeInterval = 60, window: TimeInterval = 60, defaultLimit: Int = 8,
+         maximumConcurrentRequests: Int = 3,
          now: @escaping @Sendable () -> Date = { .now },
          sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.cooldown = cooldown; self.window = window; self.defaultLimit = defaultLimit
+        precondition(maximumConcurrentRequests > 0)
+        self.maximumConcurrentRequests = maximumConcurrentRequests
         self.now = now; self.sleep = sleep
     }
 
     func data(for request: URLRequest, session: URLSession,
               send: @escaping @Sendable () async throws -> Response) async throws -> Response {
-        guard let provider = MarketAPIProvider.matching(request.url?.host) else { return try await send() }
+        guard let channel = MarketAPIChannel.matching(request.url?.host) else { return try await send() }
         let key = RequestKey(request: request, session: ObjectIdentifier(session))
         let waiter = UUID()
         let response = try await withTaskCancellationHandler {
@@ -52,11 +72,12 @@ actor MarketAPIRequestGate {
                     flight.waiters[waiter] = continuation
                     return
                 }
-                let scope = Scope(provider: provider, credential: Self.credential(request))
+                let scope = Scope(channel: channel, credential: Self.credential(request))
                 let flight = Flight()
                 flight.waiters[waiter] = continuation
                 flights[key] = flight
-                let previous = tails[scope]?.task
+                var lanes = tails[channel] ?? []
+                let previous = lanes.count >= maximumConcurrentRequests ? lanes.removeFirst().task : nil
                 let token = flight.id
                 let task = Task {
                     // Even a cancelled job keeps the chain intact until its predecessor finishes.
@@ -70,10 +91,12 @@ actor MarketAPIRequestGate {
                     } catch {
                         self.complete(key, token: token, result: .failure(error))
                     }
-                    if self.tails[scope]?.id == token { self.tails.removeValue(forKey: scope) }
+                    self.tails[channel]?.removeAll { $0.id == token }
+                    if self.tails[channel]?.isEmpty == true { self.tails.removeValue(forKey: channel) }
                 }
                 flight.task = task
-                tails[scope] = Tail(id: token, task: task)
+                lanes.append(Tail(id: token, task: task))
+                tails[channel] = lanes
             }
         } onCancel: {
             Task { await self.cancel(key, waiter: waiter) }
@@ -99,7 +122,7 @@ actor MarketAPIRequestGate {
         while true {
             try Task.checkCancellation()
             let date = now()
-            var budget = budgets[scope] ?? Budget(limit: scope.provider == .twelveData ? defaultLimit : Int.max)
+            var budget = budgets[scope] ?? Budget(limit: scope.channel == .twelveData ? defaultLimit : Int.max)
             budget.starts.removeAll { date.timeIntervalSince($0) >= window }
             var until = budget.blockedUntil
             if budget.starts.count >= budget.limit, let first = budget.starts.first { until = max(until, first.addingTimeInterval(window)) }
@@ -117,9 +140,9 @@ actor MarketAPIRequestGate {
         let http = result.1 as? HTTPURLResponse
         let object = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any]
         let limited = http?.statusCode == 429 || (object?["code"] as? NSNumber)?.intValue == 429
-        var budget = budgets[scope] ?? Budget(limit: scope.provider == .twelveData ? defaultLimit : Int.max)
+        var budget = budgets[scope] ?? Budget(limit: scope.channel == .twelveData ? defaultLimit : Int.max)
         if limited { budget.blockedUntil = max(budget.blockedUntil, now().addingTimeInterval(cooldown)) }
-        if scope.provider == .twelveData {
+        if scope.channel == .twelveData {
             if let used = http?.value(forHTTPHeaderField: "api-credits-used").flatMap(Int.init),
                let left = http?.value(forHTTPHeaderField: "api-credits-left").flatMap(Int.init), used >= 0, left >= 0, used + left > 0 {
                 budget.limit = used + left

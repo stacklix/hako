@@ -10,18 +10,20 @@ import (
 )
 
 type applicationView struct {
-	OIDC          *OIDCClient `json:"oidc,omitempty"`
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	Origin        string      `json:"origin"`
-	Enabled       bool        `json:"enabled"`
-	NativeEnabled bool        `json:"nativeEnabled"`
-	QREnabled     bool        `json:"qrEnabled"`
-	CreatedAt     string      `json:"createdAt"`
+	OIDC               *OIDCClient `json:"oidc,omitempty"`
+	ID                 string      `json:"id"`
+	Name               string      `json:"name"`
+	Origin             string      `json:"origin"`
+	Enabled            bool        `json:"enabled"`
+	NativeEnabled      bool        `json:"nativeEnabled"`
+	QREnabled          bool        `json:"qrEnabled"`
+	MarketReadEnabled  bool        `json:"marketReadEnabled"`
+	MarketWriteEnabled bool        `json:"marketWriteEnabled"`
+	CreatedAt          string      `json:"createdAt"`
 }
 
 func publicApplication(c AuthClientConfig) applicationView {
-	return applicationView{OIDC: c.OIDC, ID: c.ID, Name: c.Name, Origin: c.Origin, Enabled: c.Enabled, NativeEnabled: c.NativeEnabled, QREnabled: c.QREnabled, CreatedAt: time.Unix(c.CreatedAt, 0).UTC().Format(time.RFC3339)}
+	return applicationView{OIDC: c.OIDC, ID: c.ID, Name: c.Name, Origin: c.Origin, Enabled: c.Enabled, NativeEnabled: c.NativeEnabled, QREnabled: c.QREnabled, MarketReadEnabled: c.MarketReadEnabled, MarketWriteEnabled: c.MarketWriteEnabled, CreatedAt: time.Unix(c.CreatedAt, 0).UTC().Format(time.RFC3339)}
 }
 
 func (s *Server) applicationManagementRoutes() {
@@ -85,17 +87,19 @@ func (s *Server) applicationSecret(w http.ResponseWriter, c AuthClientConfig, se
 
 func (s *Server) createApplication(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name          string      `json:"name"`
-		Origin        string      `json:"origin"`
-		OIDC          *OIDCClient `json:"oidc"`
-		NativeEnabled bool        `json:"nativeEnabled"`
-		QREnabled     bool        `json:"qrEnabled"`
+		Name               string      `json:"name"`
+		Origin             string      `json:"origin"`
+		OIDC               *OIDCClient `json:"oidc"`
+		NativeEnabled      bool        `json:"nativeEnabled"`
+		QREnabled          bool        `json:"qrEnabled"`
+		MarketReadEnabled  bool        `json:"marketReadEnabled"`
+		MarketWriteEnabled bool        `json:"marketWriteEnabled"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
 	secret := randomToken()
-	c := AuthClientConfig{OIDC: body.OIDC, NativeEnabled: body.NativeEnabled, QREnabled: body.QREnabled, Revision: randomToken(), ID: "app_" + randomToken()[:20], Name: strings.TrimSpace(body.Name), Origin: strings.TrimRight(strings.TrimSpace(body.Origin), "/"), SecretHash: digest(secret), Enabled: true, CreatedAt: time.Now().Unix()}
+	c := AuthClientConfig{OIDC: body.OIDC, NativeEnabled: body.NativeEnabled, QREnabled: body.QREnabled, MarketReadEnabled: body.MarketReadEnabled, MarketWriteEnabled: body.MarketWriteEnabled, Revision: randomToken(), ID: "app_" + randomToken()[:20], Name: strings.TrimSpace(body.Name), Origin: strings.TrimRight(strings.TrimSpace(body.Origin), "/"), SecretHash: digest(secret), Enabled: true, CreatedAt: time.Now().Unix()}
 	if validateAuthClients([]AuthClientConfig{c}) != nil || s.validateOIDCRegistration(c.OIDC) != nil {
 		reject(w, 400, "invalid_application_details")
 		return
@@ -168,15 +172,17 @@ func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateApplication(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Enabled       *bool       `json:"enabled"`
-		OIDC          *OIDCClient `json:"oidc"`
-		NativeEnabled *bool       `json:"nativeEnabled"`
-		QREnabled     *bool       `json:"qrEnabled"`
+		Enabled            *bool       `json:"enabled"`
+		OIDC               *OIDCClient `json:"oidc"`
+		NativeEnabled      *bool       `json:"nativeEnabled"`
+		QREnabled          *bool       `json:"qrEnabled"`
+		MarketReadEnabled  *bool       `json:"marketReadEnabled"`
+		MarketWriteEnabled *bool       `json:"marketWriteEnabled"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if (body.Enabled == nil && body.OIDC == nil && body.NativeEnabled == nil && body.QREnabled == nil) || s.validateOIDCRegistration(body.OIDC) != nil {
+	if (body.Enabled == nil && body.OIDC == nil && body.NativeEnabled == nil && body.QREnabled == nil && body.MarketReadEnabled == nil && body.MarketWriteEnabled == nil) || s.validateOIDCRegistration(body.OIDC) != nil {
 		reject(w, 400, "invalid_application_details")
 		return
 	}
@@ -199,6 +205,12 @@ func (s *Server) updateApplication(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.QREnabled != nil {
 			result.QREnabled = *body.QREnabled
+		}
+		if body.MarketReadEnabled != nil {
+			result.MarketReadEnabled = *body.MarketReadEnabled
+		}
+		if body.MarketWriteEnabled != nil {
+			result.MarketWriteEnabled = *body.MarketWriteEnabled
 		}
 		if err := validateOIDCClient(result.OIDC); err != nil {
 			return err

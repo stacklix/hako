@@ -57,6 +57,12 @@ struct WorkshopBrowserView: View {
                         UIAccessibility.post(notification: .announcement, argument: "已复制网页链接")
                     } label: { Image(systemName: "link") }
                         .accessibilityLabel("复制网页链接")
+                    Spacer()
+                    Button {
+                        // Bypass the conversation's openURL handler, which opens this sheet.
+                        UIApplication.shared.open(session.url)
+                    } label: { Image(systemName: "safari") }
+                        .accessibilityLabel("在浏览器中打开")
                 }
             }
         }

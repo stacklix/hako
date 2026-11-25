@@ -290,7 +290,6 @@ private extension ConsoleAgentCapability {
         case ("query.codex.usage", 1): "Codex 活动"
         case ("query.network.listeners", 1): "监听端口"
         case (DeviceServiceCommand.status, 1): "服务监控"
-        case ("action.network.http.check", 1): "URL 连通性检测"
         case (DeviceGitCommand.list, 1): "Git 仓库"
         case (DeviceFilesCommand.list, 1): "文件管理"
         case (KageAndroidCommand.list, 1): "Android 设备"

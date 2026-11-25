@@ -11,9 +11,7 @@ struct DeviceResourceHistoryView: View {
     @State private var range: DeviceResourceHistoryRange = .recent
     @State private var showsRanges = false
     @State private var series = DeviceResourceHistoryLiveSeries()
-    @State private var error: String?
-    @State private var loading = false
-    @State private var loadID = UUID()
+    @State private var readState = DeviceResourceHistoryReadState()
     @State private var selectedDate: Date?
     private var connectionState: DeviceMonitorInventory.ConnectionState { client.connectionState(for: agent.id) }
 
@@ -26,7 +24,7 @@ struct DeviceResourceHistoryView: View {
             HStack {
                 Text("历史利用率").font(.subheadline.weight(.semibold))
                 Spacer()
-                if loading { ProgressView().controlSize(.small) }
+                if readState.loading { ProgressView().controlSize(.small) }
                 rangeSelector
             }.zIndex(40)
             if let history = series.history {
@@ -48,10 +46,10 @@ struct DeviceResourceHistoryView: View {
                     Text("最近采样：\(DeviceResourceHistory.date(last).formatted(date: .numeric, time: .standard))")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-            } else if !loading && error == nil {
+            } else if !readState.loading && readState.error == nil {
                 Text("等待历史数据").font(.footnote).foregroundStyle(.secondary)
             }
-            if let error { Text(error).font(.footnote).foregroundStyle(.orange) }
+            if let error = readState.error { Text(error).font(.footnote).foregroundStyle(.orange) }
             Text(liveRefresh ? "实时刷新已开启 · 随实时采样更新曲线" : "开启「实时刷新」后自动更新历史曲线")
                 .font(.caption2).foregroundStyle(.secondary)
             Text("与实时指标共用每秒采样，每 5 分钟批量写盘，保留最近 7 天；未写盘数据也可查看。Kage 正常退出时保存，异常退出可能丢失最近 5 分钟的数据。")
@@ -64,9 +62,8 @@ struct DeviceResourceHistoryView: View {
         .onChange(of: liveRefresh) { _, enabled in if enabled { appendLiveSample() } }
         .task(id: taskID) {
             guard scenePhase == .active, client.authenticated else { return }
-            guard connectionState != .unknown else { error = nil; return }
-            guard connectionState == .online else { error = "设备离线，暂时无法读取本机历史。"; return }
-            error = nil
+            guard connectionState != .unknown else { readState.reset(); return }
+            guard connectionState == .online else { readState.reset(error: "设备离线，暂时无法读取本机历史。"); return }
             if series.range != range {
                 series = DeviceResourceHistoryLiveSeries(range: range)
                 selectedDate = nil
@@ -112,28 +109,30 @@ struct DeviceResourceHistoryView: View {
 
     private func load() async {
         let requestedRange = range
-        let requestID = UUID()
-        loadID = requestID
-        loading = true
-        defer { if loadID == requestID { loading = false } }
+        let request = readState.begin()
+        defer { readState.finish(request) }
         do {
             let result = try await client.invokeAgent(agent, method: DeviceResourceHistoryCommand.name, version: 1,
                 params: requestedRange.parameters, as: DeviceResourceHistory.self)
             try Task.checkCancellation()
-            guard requestedRange == range, series.range == requestedRange else { return }
+            guard readState.isCurrent(request), requestedRange == range, series.range == requestedRange else { return }
             guard requestedRange.accepts(result) else {
                 throw HakoError(message: "设备返回的历史数据格式无效。")
             }
             series.seed(result)
-            error = nil
+            readState.reset()
         } catch is CancellationError { }
-        catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        catch {
+            if !Task.isCancelled, requestedRange == range, series.range == requestedRange {
+                readState.failed(request, message: error.localizedDescription)
+            }
+        }
     }
 
     private func appendLiveSample() {
         guard liveRefresh, scenePhase == .active, agent.online, client.authenticated, let liveSample else { return }
         if series.range != range { series = DeviceResourceHistoryLiveSeries(range: range) }
-        series.append(liveSample)
+        if series.append(liveSample) { readState.receivedLiveSample() }
     }
 
     private func resourceChart(_ history: DeviceResourceHistory, cpu: Bool) -> some View {

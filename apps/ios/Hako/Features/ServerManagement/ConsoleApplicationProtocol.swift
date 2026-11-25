@@ -15,6 +15,8 @@ struct ConsoleApplication: Decodable, Identifiable, Equatable {
     var enabled: Bool
     var qrEnabled: Bool
     var nativeEnabled: Bool
+    var marketReadEnabled = false
+    var marketWriteEnabled = false
     let createdAt: String
     var oidc: ConsoleApplicationOIDC?
     var usesOIDC: Bool { oidc?.enabled == true }
@@ -42,6 +44,8 @@ struct ConsoleApplicationDraft: Equatable {
     var oidcEnabled = false
     var qrEnabled = false
     var nativeEnabled = false
+    var marketReadEnabled = false
+    var marketWriteEnabled = false
     var redirects = ""
     var profile = true
     var requirePKCE = true
@@ -53,6 +57,8 @@ struct ConsoleApplicationDraft: Equatable {
         name = application.name; origin = application.origin
         qrEnabled = application.qrEnabled
         nativeEnabled = application.nativeEnabled
+        marketReadEnabled = application.marketReadEnabled
+        marketWriteEnabled = application.marketWriteEnabled
         originalOIDC = application.oidc
         if let oidc = application.oidc {
             oidcEnabled = oidc.enabled; redirects = oidc.redirectURIs.joined(separator: "\n")
@@ -89,12 +95,12 @@ struct ConsoleApplicationDraft: Equatable {
         if origin.hasSuffix("/") { origin.removeLast() }
         guard !name.isEmpty, name.utf8.count <= 80, !name.contains(where: { $0.isNewline }),
               ConsoleWebLoginRequest.validApplicationOrigin(origin) else { throw ConsoleApplicationError.invalidDetails }
-        var body: [String: Any] = ["name": name, "origin": origin, "qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled]
+        var body: [String: Any] = ["name": name, "origin": origin, "qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled, "marketReadEnabled": marketReadEnabled, "marketWriteEnabled": marketWriteEnabled]
         if let oidc = try validatedOIDC() { body["oidc"] = try oidc.body() }
         return body
     }
     func updateBody() throws -> [String: Any] {
-        var body: [String: Any] = ["qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled]
+        var body: [String: Any] = ["qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled, "marketReadEnabled": marketReadEnabled, "marketWriteEnabled": marketWriteEnabled]
         if let oidc = try validatedOIDC() { body["oidc"] = try oidc.body() }
         return body
     }

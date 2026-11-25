@@ -17,7 +17,7 @@ enum InvestmentShortcutContributor {
             }
             let priorRuns = store.book.planRuns
             do {
-                try await HakoExecutionDiagnostics.measure("刷新行情并结算到期定投", success: { _ in store.book.planReport(since: priorRuns).message }) { try await store.refreshAndSettlePlans() }
+                try await HakoExecutionDiagnostics.measure("刷新行情并结算到期定投", success: { _ in store.book.planReport(since: priorRuns).message }) { try await store.refreshAndSettlePlans(reuseDailyCryptoQuotes: true) }
                 let plans = store.book.planReport(since: priorRuns)
                 let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
                 guard let earliest = store.book.earliest, earliest <= end else {

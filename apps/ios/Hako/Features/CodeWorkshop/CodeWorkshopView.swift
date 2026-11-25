@@ -319,10 +319,8 @@ struct CodeWorkshopView: View {
                             application: application, archived: store.showingArchived)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: isOccupied ? "lock" : hasDraft || session.inProgress || item.isUnread ? "terminal.fill" : "terminal")
-                                .symbolRenderingMode(.monochrome)
+                            WorkshopSessionStatusIcon(item: item)
                                 .font(.subheadline).padding(.top, 3)
-                                .foregroundStyle(hasDraft ? Color.orange : session.inProgress ? Color.green : item.isUnread ? Color.blue : HakoStyle.text)
                             VStack(alignment: .leading, spacing: 9) {
                                 Text(session.listTitle).font(.subheadline.weight(.medium))
                                     .lineLimit(2).truncationMode(.tail)

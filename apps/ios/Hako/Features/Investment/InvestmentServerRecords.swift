@@ -342,7 +342,7 @@ struct InvestmentServerRecords {
                 asset.depositTerms = InvestmentDepositTerms(annualRate: rate, maturity: maturity)
             }
             book.assets[id] = asset
-            let quoted = try (prices[row["instrument_id"] ?? ""] ?? []).map { try quote($0, day: "session_date", value: "price") }
+            let quoted = try Self.marketOrder(prices[row["instrument_id"] ?? ""] ?? []).map { try quote($0, day: "session_date", value: "price") }
             let edited = try (manual[id.uuidString] ?? []).map { try quote($0, day: "valuation_date", value: "value") }
             if !quoted.isEmpty || !edited.isEmpty {
                 book.quotes[id] = InvestmentBook.merge(quoted, edited, allowZero: kind == .insurance)
@@ -374,7 +374,7 @@ struct InvestmentServerRecords {
                 executedAt: row["executed_at"].flatMap(timestamp.date(from:)), detail: row["result_detail"])
         }
         book.watched = try records("investment_watchlist").sorted { ordering($0) < ordering($1) }.map { try uuid($0, "asset_id") }
-        for row in records("market_daily_fx") {
+        for row in Self.marketOrder(records("market_daily_fx")) {
             let base = try currency(row, "base_currency")
             book.fx[base, default: []].append(try quote(row, day: "rate_date", value: "rate"))
         }
@@ -417,6 +417,22 @@ struct InvestmentServerRecords {
         let value = try required(row, field)
         guard let key = map.first(where: { $0.value == value })?.key else { throw invalid(field) }
         return key
+    }
+
+    private static func marketOrder(_ rows: [InvestmentServerRow]) -> [InvestmentServerRow] {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        let dated = rows.map { row in
+            let value = row["closed_at_utc"] ?? row["available_at_utc"] ?? ""
+            return (row, fractional.date(from: value) ?? standard.date(from: value) ?? .distantPast)
+        }
+        return dated.sorted {
+            let left = $0.0["is_final"] ?? "0", right = $1.0["is_final"] ?? "0"
+            if left != right { return left < right }
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return ($0.0["source"] ?? "") < ($1.0["source"] ?? "")
+        }.map { $0.0 }
     }
 
     private func quote(_ row: InvestmentServerRow, day key: String, value: String) throws -> InvestmentQuote {

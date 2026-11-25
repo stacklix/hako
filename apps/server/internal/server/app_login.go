@@ -14,16 +14,18 @@ import (
 
 // SecretHash is base64url(SHA256(secret)); raw application secrets are never stored.
 type AuthClientConfig struct {
-	OIDC          *OIDCClient `json:"oidc,omitempty"`
-	Revision      string      `json:"revision,omitempty"`
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	Origin        string      `json:"origin"`
-	SecretHash    string      `json:"secretHash"`
-	Enabled       bool        `json:"enabled"`
-	NativeEnabled bool        `json:"nativeEnabled"`
-	QREnabled     bool        `json:"qrEnabled"`
-	CreatedAt     int64       `json:"createdAt"`
+	OIDC               *OIDCClient `json:"oidc,omitempty"`
+	Revision           string      `json:"revision,omitempty"`
+	ID                 string      `json:"id"`
+	Name               string      `json:"name"`
+	Origin             string      `json:"origin"`
+	SecretHash         string      `json:"secretHash"`
+	Enabled            bool        `json:"enabled"`
+	NativeEnabled      bool        `json:"nativeEnabled"`
+	QREnabled          bool        `json:"qrEnabled"`
+	MarketReadEnabled  bool        `json:"marketReadEnabled"`
+	MarketWriteEnabled bool        `json:"marketWriteEnabled"`
+	CreatedAt          int64       `json:"createdAt"`
 }
 
 func validateAuthClients(clients []AuthClientConfig) error {

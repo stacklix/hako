@@ -81,6 +81,18 @@ private final class Counter: @unchecked Sendable {
         let firstFlush = Task { await blocked.flush() }
         let didStart = await Task.detached { started.wait(timeout: .now() + 5) == .success }.value
         precondition(didStart)
+        let otherKey = WorkshopTranscriptKey(agentId: "agent", applicationId: "app", threadId: "other")
+        let otherSnapshot = WorkshopTranscript(key: otherKey, entries: [entry("cached", "Cached history")], artifacts: [],
+            followups: [], eventCursor: 0, streamText: [:], savedAt: .now)
+        let otherFile = directory.appendingPathComponent("other.json")
+        try JSONEncoder().encode(otherSnapshot).write(to: otherFile, options: .atomic)
+        let coldReadFinished = DispatchSemaphore(value: 0)
+        let coldRead = Task {
+            let value = await blocked.read(otherFile, key: otherKey)
+            precondition(value == otherSnapshot)
+            coldReadFinished.signal()
+        }
+        let independentRead = await Task.detached { coldReadFinished.wait(timeout: .now() + 5) == .success }.value
         for cursor in 101...200 { snapshot.eventCursor = Int64(cursor); blocked.write(snapshot, to: file) }
         let read = Task {
             let value = await blocked.read(file, key: key)
@@ -89,7 +101,8 @@ private final class Counter: @unchecked Sendable {
         for _ in 0..<100 where reads.value == 0 { try await Task.sleep(for: .milliseconds(5)) }
         let completedBeforeDisk = reads.value == 1
         release.signal()
-        await firstFlush.value; await read.value; await blocked.flush()
+        await firstFlush.value; await read.value; await coldRead.value; await blocked.flush()
+        precondition(independentRead, "Writing another conversation must not delay cold disk-cache reads")
         precondition(completedBeforeDisk, "A slow write must not block opening the newest cached conversation")
         precondition(blockedWrites.value == 2, "Updates during a slow write must retain only the latest waiting snapshot")
 
@@ -143,6 +156,20 @@ private final class Counter: @unchecked Sendable {
         let artifact = WorkshopArtifact(id: "prototype", name: "Preview", path: "C:/Code/app/docs/demo.html", threadId: "thread")
         history.append(entry("file", "C:/Code/app/docs/demo.html\n+contents", kind: "fileChange", role: ""))
         history.append(entry("live", "See docs/demo.html"))
+        let localFrame = WorkshopTranscriptLayout.initial(entries: history, followups: [], revision: 2)
+        precondition(parses.value == 0 && localFrame.containsMessage("live") && localFrame.containsMessage("message-0"),
+            "Local cached entries must be present without awaiting the rich renderer")
+        precondition(localFrame.messageParts["live"] == [.text("See docs/demo.html")])
+        precondition(!WorkshopTranscriptLayout(revision: 1).canReplace(localFrame, latestRevision: 2),
+            "An in-flight empty render must not blank a newly restored cache")
+        precondition(WorkshopTranscriptLayout(revision: 3).canReplace(localFrame, latestRevision: 3),
+            "A current empty transcript must still be able to clear removed messages")
+        let local = WorkshopTranscriptLayout.initial(entries: history, followups: [], revision: 2)
+        precondition(!local.isEmpty && local.containsMessage("live") && local.messageParts["live"] == [.text("See docs/demo.html")])
+        precondition(parses.value == 0, "Cached history must appear before expensive rich-message parsing")
+        let oldEmpty = WorkshopTranscriptLayout(revision: 1)
+        precondition(!oldEmpty.canReplace(local, latestRevision: 2), "An old empty render must not blank restored cache")
+        precondition(WorkshopTranscriptLayout(revision: 3).canReplace(local, latestRevision: 3), "A current empty history must still clear removed content")
         let first = await renderer.render(entries: history, followups: [], artifacts: [artifact], projectPath: "C:/Code/app", revision: 1)
         precondition(parses.value == 301 && first.artifactsByEntry["live"] == [artifact])
         history[history.count - 1].text += "\n\n```swift\nlet value = 1\n```"

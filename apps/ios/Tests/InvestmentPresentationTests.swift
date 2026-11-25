@@ -84,6 +84,28 @@ private final class ReadCounter: @unchecked Sendable {
                                                 dirtyFrom: records.day.string(from: today), includeInputs: true, includeSnapshots: false)
         precondition(write.changes["investment_events"]?.count == book.accounts.flatMap(\.events).count + 1)
         precondition(write.changes.keys.allSatisfy { !InvestmentServerRecords.snapshotTables.contains($0) })
+        precondition(write.delta["investment_events"]?.upserts.count == 1 && write.delta["investment_events"]?.deletes.isEmpty == true,
+                     "Adding one trade must submit one row, not the table's other 1,200 events")
+        let response = InvestmentDeltaResponse(generation: state.generation + 1, revision: state.revision + 1,
+            dirtyFrom: records.day.string(from: today), through: state.through, changes: write.delta)
+        let confirmed = try response.applying(to: state)
+        precondition(confirmed.tables["investment_events"]?.count == state.tables["investment_events"]!.count + 1)
+        precondition(confirmed.tables["investment_accounts"] == state.tables["investment_accounts"],
+                     "A delta response must preserve all unaffected tables and records")
+        let encodedResponse = try JSONSerialization.data(withJSONObject: ["generation": 2, "revision": 3,
+            "dirtyFrom": NSNull(), "through": NSNull(), "changes": [:], "reloadRequired": true])
+        let reloadResponse = try JSONDecoder().decode(InvestmentDeltaResponse.self, from: encodedResponse)
+        precondition(reloadResponse.reloadRequired,
+                     "Independent market updates must trigger a cache reload after the ledger is confirmed")
+        let originalEvents = state.tables["investment_events"]!
+        let removedID = originalEvents[0]["id"]!
+        let deletion = InvestmentRecordChange.difference(changes: ["investment_events": originalEvents.filter { $0["id"] != removedID }], current: state.tables)
+        precondition(deletion["investment_events"]?.upserts.isEmpty == true
+                     && deletion["investment_events"]?.deletes == [["id": removedID]], "Deletes must send primary keys only")
+        let price: InvestmentServerRow = ["instrument_id":"instrument", "session_date":"2026-11-25", "price_type":"close", "source":"external", "price":"100"]
+        var serverPrice = price; serverPrice["revision"] = "12"
+        precondition(InvestmentRecordChange.difference(changes: ["market_daily_prices":[price]], current: ["market_daily_prices":[serverPrice]]).isEmpty,
+                     "Server-owned quote revisions must not cause unchanged quotes to be resent")
         let next = InvestmentPresentation(book: changed)
         precondition(next.accounts[account.id]?.ledger?.cash == prepared.accounts[account.id]!.ledger!.cash + 5,
                      "The prepared account must reflect the confirmed write before the editor is dismissed")

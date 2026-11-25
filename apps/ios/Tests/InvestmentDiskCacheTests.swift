@@ -2,6 +2,7 @@ import Foundation
 
 @main struct InvestmentDiskCacheTests {
     static func main() async throws {
+        try await dailyCryptoSpotReuse()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = InvestmentDiskCache(directory: directory)
@@ -83,5 +84,73 @@ import Foundation
         do { _ = try await cache.load(scope: "../outside"); preconditionFailure("Unsafe scope accepted") }
         catch is CocoaError {}
         print("Investment disk cache: persistence, precision, scope isolation, range coverage, eviction and server fallback passed")
+    }
+
+    static func dailyCryptoSpotReuse() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = InvestmentDiskCache(directory: directory)
+        let today = InvestmentBook.day(), yesterday = InvestmentBook.addDays(-1, to: today)
+        let tomorrow = InvestmentBook.addDays(1, to: today)
+        let token = InvestmentAsset(name: "Bitcoin", code: "BTC", market: "BINANCE", kind: .crypto, currency: .usd)
+        let quote = InvestmentQuote(day: today, price: 90000, source: "Binance 现货", isDailyClose: false)
+        let absent = try await cache.cachedCryptoSpotQuote(scope: "crypto-a", asset: token, on: today)
+        precondition(absent == nil)
+        for invalid in [InvestmentQuote(day: yesterday, price: 1, source: "Binance 现货"),
+                        .init(day: tomorrow, price: 1, source: "Binance 现货"),
+                        .init(day: today, price: 0, source: "Binance 现货"),
+                        .init(day: today, price: -1, source: "Binance 现货"),
+                        .init(day: today, price: .nan, source: "Binance 现货"),
+                        .init(day: today, price: 1, source: "手动录入")] {
+            let value = try await cache.cachedCryptoSpotQuote(scope: "crypto-a", asset: token, on: today, observations: [invalid])
+            precondition(value == nil, "Only valid automatic quotes from today can satisfy a quote-only cache check")
+        }
+        try await cache.saveCryptoSpotQuote(scope: "crypto-a", asset: token, quote: quote, on: today)
+        let restarted = InvestmentDiskCache(directory: directory)
+        let persisted = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: token, on: today)
+        let newerServer = InvestmentQuote(day: today, price: 91000, source: "Twelve Data")
+        let localFirst = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: token, on: today, observations: [newerServer])
+        let expired = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: token, on: tomorrow)
+        let otherScope = try await restarted.cachedCryptoSpotQuote(scope: "crypto-b", asset: token, on: today)
+        precondition(persisted == quote && localFirst == quote && expired == nil && otherScope == nil,
+                     "Same-day fetches survive restarts, expire on the next Beijing day and remain account/server scoped")
+        var duplicate = token; duplicate.id = UUID()
+        let sameCoin = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: duplicate, on: today)
+        precondition(sameCoin == quote, "Identical catalog identities may reuse one spot fetch")
+        var other = token; other.code = "ETH"
+        let otherCoin = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: other, on: today)
+        other = token; other.market = "OTHER"
+        let otherMarket = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: other, on: today)
+        other = token; other.kind = .stock
+        let otherKind = try await restarted.cachedCryptoSpotQuote(scope: "crypto-a", asset: other, on: today)
+        precondition(otherCoin == nil && otherMarket == nil && otherKind == nil)
+        let missingClose = try await restarted.missingWindows(scope: "crypto-a", key: InvestmentDiskCache.historyKey(token),
+            start: today, end: today, today: today, observations: [])
+        precondition(missingClose == [today...today], "Spot reuse must not claim historical daily-close coverage")
+
+        // Server quotes also satisfy reuse when the local disk cache is empty.
+        var book = InvestmentBook(); book.assets[token.id] = token; book.addQuotes([quote], assetID: token.id)
+        let records = InvestmentServerRecords()
+        let tables = try records.encode(book, revision: 1)
+        let server = try records.decode(.init(generation: 1, revision: 1, tables: tables))
+        let serverQuote = try await restarted.cachedCryptoSpotQuote(scope: "server-only", asset: token, on: today,
+            observations: server.quotes[token.id] ?? [])
+        precondition(serverQuote?.day == today && serverQuote?.price == quote.price,
+                     "Reading the server before a cache miss must prevent a duplicate vendor request")
+        let unchanged = try records.encode(book, revision: 1)
+        precondition(unchanged == tables, "Cache lookup must not rewrite ledger records")
+
+        // The fetch day is distinct from the date carried by the provider's quote.
+        let dated = InvestmentQuote(day: yesterday, price: 1, source: "Coinbase 公开市场")
+        try await restarted.saveCryptoSpotQuote(scope: "dated", asset: token, quote: dated, on: today)
+        let fetchedToday = try await restarted.cachedCryptoSpotQuote(scope: "dated", asset: token, on: today)
+        let datedExpired = try await restarted.cachedCryptoSpotQuote(scope: "dated", asset: token, on: tomorrow)
+        precondition(fetchedToday == dated && datedExpired == nil)
+        try await restarted.saveHistory(scope: "history-only", asset: token, start: today, end: today, today: today, quotes: [quote])
+        let downloaded = try await restarted.cachedCryptoSpotQuote(scope: "history-only", asset: token, on: today)
+        precondition(downloaded == quote, "A downloaded current-day vendor quote can be reused before server synchronization")
+        try await restarted.saveHistory(scope: "empty", asset: token, start: today, end: today, today: today, quotes: [])
+        let empty = try await restarted.cachedCryptoSpotQuote(scope: "empty", asset: token, on: today)
+        precondition(empty == nil, "Empty or failed requests must remain eligible for retry")
     }
 }

@@ -177,8 +177,8 @@ struct DeviceResourceHistoryLiveSeries {
         for sample in pending { append(sample) }
     }
 
-    mutating func append(_ sample: DeviceResourceHistorySample) {
-        guard sample.isValid, lastTimestamp.map({ sample.timestamp > $0 }) != false else { return }
+    @discardableResult mutating func append(_ sample: DeviceResourceHistorySample) -> Bool {
+        guard sample.isValid, lastTimestamp.map({ sample.timestamp > $0 }) != false else { return false }
         lastTimestamp = sample.timestamp
         liveSamples.append(sample)
         if liveSamples.count > 240 { liveSamples.removeFirst(liveSamples.count - 240) }
@@ -189,7 +189,7 @@ struct DeviceResourceHistoryLiveSeries {
                 sampleIntervalSeconds: 1, retentionDays: 7, bucketSeconds: bucketSeconds,
                 lastSampleAt: nil, samplingError: nil, points: [])
         }
-        guard let current = history else { return }
+        guard let current = history else { return false }
         let duration = Int64(current.bucketSeconds) * 1000
         let timestamp = range == .recent ? sample.timestamp
             : bucketOrigin + (sample.timestamp - bucketOrigin) / duration * duration
@@ -218,5 +218,55 @@ struct DeviceResourceHistoryLiveSeries {
             from: range == .recent ? (points.first?.timestamp ?? sample.timestamp) : from, to: sample.timestamp,
             sampleIntervalSeconds: 1, retentionDays: 7, bucketSeconds: current.bucketSeconds,
             lastSampleAt: sample.timestamp, samplingError: current.samplingError, points: points)
+        return true
+    }
+}
+
+struct DeviceResourceHistoryReadState {
+    struct Request {
+        let id = UUID()
+        let liveRevision: UInt64
+    }
+    private(set) var error: String?
+    private(set) var loading = false
+    private var requestID: UUID?
+    private var liveRevision: UInt64 = 0
+    private var lastLiveReceivedAt: Date?
+
+    mutating func begin() -> Request {
+        let request = Request(liveRevision: liveRevision)
+        requestID = request.id
+        loading = true
+        error = nil
+        return request
+    }
+
+    func isCurrent(_ request: Request) -> Bool { requestID == request.id }
+
+    mutating func finish(_ request: Request) {
+        guard isCurrent(request) else { return }
+        requestID = nil
+        loading = false
+    }
+
+    mutating func reset(error: String? = nil) {
+        requestID = nil
+        loading = false
+        self.error = error
+    }
+
+    mutating func receivedLiveSample(at now: Date = .now) {
+        liveRevision &+= 1
+        lastLiveReceivedAt = now
+        error = nil
+    }
+
+    mutating func failed(_ request: Request, message: String, at now: Date = .now) {
+        guard isCurrent(request) else { return }
+        // A late history timeout must not overwrite a newer, healthy live feed.
+        // An old sample alone does not prove that streaming has recovered.
+        if liveRevision != request.liveRevision, let lastLiveReceivedAt,
+           (0...5).contains(now.timeIntervalSince(lastLiveReceivedAt)) { return }
+        error = message
     }
 }

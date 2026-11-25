@@ -141,7 +141,7 @@ final class InvestmentStore: ObservableObject {
             try Task.checkCancellation()
             guard context == authentication.requestContext else { throw CancellationError() }
             let state = try await Task.detached { try JSONDecoder().decode(InvestmentServerState.self, from: data) }.value
-            if !loaded || serverState?.generation != state.generation {
+            if !loaded || (serverState?.generation != state.generation || serverState?.revision != state.revision) {
                 let decoded = try await Task.detached { try InvestmentServerRecords().decode(state) }.value
                 try await publish(try await restoringMarketQuotes(in: decoded, scope: scope), context: context)
             } else if presentation.day != InvestmentBook.day() {
@@ -394,13 +394,36 @@ final class InvestmentStore: ObservableObject {
         guard context == authentication.requestContext else { throw CancellationError() }
         let changes = prepared.changes, through = prepared.through
         guard !changes.isEmpty || dirtyFrom != state.dirtyFrom || through != state.through else { return }
-        var body: [String: Any] = ["generation": state.generation, "tables": changes]
+        let encodedDelta = try JSONEncoder().encode(prepared.delta)
+        var body: [String: Any] = ["generation": state.generation, "revision": state.revision,
+                                  "changes": try JSONSerialization.jsonObject(with: encodedDelta)]
         body["dirtyFrom"] = dirtyFrom.map { $0 as Any } ?? NSNull()
         body["through"] = through.map { $0 as Any } ?? NSNull()
         do {
-            let data = try await authentication.send(Self.bookPath, method: "PUT", body: body, logSource: .hako)
+            let data = try await authentication.send(Self.bookPath + "/changes", method: "POST", body: body, logSource: .hako)
             guard context == authentication.requestContext else { throw CancellationError() }
-            let confirmed = try await Task.detached { try JSONDecoder().decode(InvestmentServerState.self, from: data) }.value
+            let previousState = state
+            let response = try JSONDecoder().decode(InvestmentDeltaResponse.self, from: data)
+            if response.reloadRequired {
+                let marketOnly = !prepared.delta.isEmpty && prepared.delta.keys.allSatisfy {
+                    ["market_daily_prices", "market_daily_fx"].contains($0)
+                }
+                if !marketOnly || response.generation == previousState.generation {
+                    // Keep the confirmed ledger edit visible even if the following
+                    // market reload fails. Its older revision forces a later reread.
+                    var partial = try response.applying(to: previousState)
+                    partial.revision = previousState.revision
+                    let pending = partial
+                    let decoded = try await Task.detached { try InvestmentServerRecords().decode(pending) }.value
+                    try await publish(decoded, context: context)
+                    serverState = pending
+                    await persistCache(pending, scope: dataCacheScope)
+                }
+                saving = false
+                await load(force: true)
+                return
+            }
+            let confirmed = try await Task.detached { try response.applying(to: previousState) }.value
             state.generation = confirmed.generation
             state.revision = confirmed.revision
             state.dirtyFrom = confirmed.dirtyFrom
@@ -692,10 +715,10 @@ final class InvestmentStore: ObservableObject {
         try await update { $0.runPlans() }
     }
 
-    func refreshAndSettlePlans() async throws {
+    func refreshAndSettlePlans(reuseDailyCryptoQuotes: Bool = false) async throws {
         while refreshing { try await Task.sleep(for: .milliseconds(150)) }
         try Task.checkCancellation()
-        try await refreshQuotes()
+        try await refreshQuotes(reuseDailyCryptoQuotes: reuseDailyCryptoQuotes)
         try await processDuePlans()
     }
 
@@ -850,6 +873,7 @@ final class InvestmentStore: ObservableObject {
     }
 
     private func refreshQuotes(publicQuotesOnly: Bool = false, fullSnapshotHistory: Bool? = nil,
+                               reuseDailyCryptoQuotes: Bool = false,
                                preview: ((InvestmentBook) -> Void)? = nil) async throws {
         guard loaded, !refreshing else { return }
         guard lastServerReadSucceeded else {
@@ -857,7 +881,7 @@ final class InvestmentStore: ObservableObject {
         }
         let scope = dataCacheScope
         let revision = ledgerRevision
-        func checkRefresh() throws {
+        @MainActor @Sendable func checkRefresh() throws {
             try Task.checkCancellation()
             guard ledgerRevision == revision, scope == dataCacheScope else { throw CancellationError() }
         }
@@ -898,118 +922,187 @@ final class InvestmentStore: ObservableObject {
             let ids = snapshotRequests.map { Set($0.assets.keys) }
                 ?? Set(book.watched + book.accounts.flatMap(\.events).compactMap(\.assetID) + book.plans.compactMap(\.assetID))
             let provider = InvestmentQuoteProvider()
+            let sourceBook = book
+            let diskCache = self.diskCache
+            var cachedCryptoQuotes: [UUID: InvestmentQuote] = [:]
+            if reuseDailyCryptoQuotes {
+                for asset in ids.union(publicIDs).compactMap({ sourceBook.asset($0) }) where asset.kind == .crypto {
+                    if let quote = try await diskCache.cachedCryptoSpotQuote(scope: scope, asset: asset, on: today,
+                                                                            observations: sourceBook.quotes[asset.id] ?? []) {
+                        try checkRefresh()
+                        cachedCryptoQuotes[asset.id] = quote
+                        HakoExecutionDiagnostics.record("复用加密货币报价 · " + asset.displayCode,
+                            detail: "使用当天已获取的缓存报价。" + InvestmentQuoteProvider.quoteSummary([quote]))
+                    }
+                }
+            }
+            let reusedCryptoQuotes = cachedCryptoQuotes
+            let assets = ids.compactMap({ sourceBook.assets[$0] }).sorted(by: { $0.code < $1.code }).filter { asset in
+                !publicQuotesOnly && (asset.usesEastmoneyMarketData || asset.usesUSEquityClose || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
+                    (!snapshotRefresh || asset.kind != .crypto) && reusedCryptoQuotes[asset.id] == nil
+            }
+            let assetRequests = snapshotRequests?.assets
+            @MainActor @Sendable func readAssets() async throws -> [(UUID, [InvestmentQuote], [String])] {
+                return try await InvestmentQuoteBatch.map(assets, channel: {
+                    $0.usesEastmoneyMarketData ? "eastmoney" : "twelveData"
+                }) { asset in
+                    try checkRefresh()
+                    var quotes: [InvestmentQuote] = []
+                    var errors: [String] = []
+                    let key = InvestmentDiskCache.historyKey(asset)
+                    let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                    let existing = sourceBook.quotes[asset.id] ?? []
+                    let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+                    quotes = saved.filter { !known.contains($0.day) }
+                    let observations = InvestmentBook.merge(saved, existing)
+                    // Account history starts at this asset's first trade. Watch-only assets need a recent quote.
+                    let requested = assetRequests?[asset.id] ?? [sourceBook.automaticQuoteWindow(for: asset.id, through: today)]
+                    for range in requested {
+                        let requests = try await diskCache.missingWindows(scope: scope, key: key,
+                            start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
+                        for request in InvestmentHistoryRange.quoteWindows(for: requests) {
+                            try checkRefresh()
+                            do {
+                                let result: [InvestmentQuote]
+                                do {
+                                    result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
+                                        success: InvestmentQuoteProvider.quoteSummary) {
+                                        try await MarketAPIRequestContext.$reason.withValue(snapshotRefresh ? "历史资产快照补数" : "持仓与关注行情刷新") {
+                                            try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
+                                                cached: nil, keys: keys)
+                                        }
+                                    }
+                                } catch InvestmentError.noMarketData(_) { result = [] }
+                                try checkRefresh()
+                                // Persist downloaded data before attempting any server write.
+                                try await diskCache.saveHistory(scope: scope, asset: asset, start: request.lowerBound,
+                                    end: request.upperBound, today: today, quotes: result)
+                                quotes = InvestmentBook.merge(quotes, result)
+                            } catch {
+                                try checkRefresh()
+                                if !publicIDs.contains(asset.id) { errors.append(asset.displayCode + "（" + error.localizedDescription + "）") }
+                            }
+                        }
+                    }
+                    try checkRefresh()
+                    return (asset.id, quotes, errors)
+                }
+            }
+            let publicAssets = publicIDs.compactMap { sourceBook.asset($0) }
+            let missingSpotAssets = publicAssets.filter { reusedCryptoQuotes[$0.id] == nil }
+            @MainActor @Sendable func readSpots() async throws -> [(UUID, InvestmentQuote?, String?)] {
+                try checkRefresh()
+                guard !missingSpotAssets.isEmpty else { return [] }
+                let usdt = InvestmentAsset(name: "Tether USD", code: "USDT", market: "BINANCE", kind: .crypto, currency: .usd)
+                let observations = publicAssets.first(where: { $0.code == "USDT" }).flatMap { sourceBook.quotes[$0.id] } ?? []
+                let cachedUSDT = reuseDailyCryptoQuotes
+                    ? try await diskCache.cachedCryptoSpotQuote(scope: scope, asset: usdt, on: today, observations: observations) : nil
+                let usdtUSD: InvestmentQuote?
+                if let cachedUSDT { usdtUSD = cachedUSDT }
+                else {
+                    usdtUSD = try? await HakoExecutionDiagnostics.measure("读取现货美元报价 · USDT",
+                        success: { InvestmentQuoteProvider.quoteSummary([$0]) }) { try await provider.coinbaseSpotUSDQuote(code: "USDT") }
+                    try checkRefresh()
+                    if let usdtUSD { try await diskCache.saveCryptoSpotQuote(scope: scope, asset: usdt, quote: usdtUSD, on: today) }
+                }
+                return try await InvestmentQuoteBatch.map(missingSpotAssets) { token in
+                    try checkRefresh()
+                    do {
+                        let quote = try await HakoExecutionDiagnostics.measure("读取现货美元报价 · " + token.code,
+                            success: { InvestmentQuoteProvider.quoteSummary([$0]) }) {
+                            try await provider.publicSpotUSDQuote(for: token, usdtUSD: usdtUSD)
+                        }
+                        try checkRefresh()
+                        try await diskCache.saveCryptoSpotQuote(scope: scope, asset: token, quote: quote, on: today)
+                        return (token.id, Optional(quote), Optional<String>.none)
+                    } catch {
+                        try checkRefresh()
+                        return (token.id, Optional<InvestmentQuote>.none, Optional(token.code + "/USD（现货报价未更新）"))
+                    }
+                }
+            }
+            @MainActor @Sendable func readCrypto() async throws -> [UUID: [InvestmentQuote]] {
+                guard refreshPublicHistory else { return [:] }
+                try checkRefresh()
+                let history = try await self.cryptoHistory(through: closedDay, provider: provider, missing: assetRequests)
+                try checkRefresh()
+                return history
+            }
+            let rateCurrenciesToCheck = Set(snapshotRequests?.rates.keys.map { $0 } ?? Array(currencies))
+            let rateRequests = snapshotRequests?.rates
+            @MainActor @Sendable func readRates() async throws -> [(InvestmentCurrency, [InvestmentQuote], [String])] {
+                return try await InvestmentQuoteBatch.map(rateCurrenciesToCheck.sorted(by: { $0.rawValue < $1.rawValue })) { currency in
+                    try checkRefresh()
+                    var quotes: [InvestmentQuote] = []
+                    var errors: [String] = []
+                    let key = InvestmentDiskCache.rateKey(currency)
+                    let saved = try await diskCache.marketQuotes(scope: scope, key: key)
+                    let existing = sourceBook.fx[currency] ?? []
+                    let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
+                    quotes = saved.filter { !known.contains($0.day) }
+                    let observations = InvestmentBook.merge(saved, existing)
+                    for range in rateRequests?[currency] ?? [start...today] {
+                        let first = InvestmentBook.weekdayMarketDate(on: range.lowerBound)
+                        let last = InvestmentBook.weekdayMarketDate(on: range.upperBound)
+                        let missing = try await diskCache.missingWindows(scope: scope, key: key,
+                            start: first, end: last, today: today, observations: observations)
+                        for window in InvestmentHistoryRange.forexQuoteWindows(for: missing) {
+                            try checkRefresh()
+                            do {
+                                let values: [InvestmentQuote]
+                                if let credential = keys[.twelveData] {
+                                    do {
+                                        values = try await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
+                                            success: InvestmentQuoteProvider.quoteSummary) {
+                                            try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
+                                                try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
+                                                    start: window.lowerBound, end: window.upperBound, key: credential)
+                                            }
+                                        }
+                                    } catch InvestmentError.noMarketData(_) { values = [] }
+                                    catch {
+                                        try checkRefresh()
+                                        values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                                    }
+                                } else {
+                                    values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                                }
+                                try checkRefresh()
+                                try await diskCache.saveMarketHistory(scope: scope, key: key, start: window.lowerBound,
+                                    end: window.upperBound, today: today, quotes: values)
+                                quotes = InvestmentBook.merge(quotes, values)
+                            } catch {
+                                try checkRefresh()
+                                errors.append(currency.rawValue + "/CNY（" + error.localizedDescription + "）")
+                            }
+                        }
+                    }
+                    try checkRefresh()
+                    return (currency, quotes, errors)
+                }
+            }
+            async let assetQuery = readAssets()
+            async let spotQuery = readSpots()
+            async let cryptoQuery = readCrypto()
+            async let rateQuery = readRates()
+            let (assetResults, spotResults, cryptoResults, rateResults) = try await (assetQuery, spotQuery, cryptoQuery, rateQuery)
+            try checkRefresh()
             var prices: [UUID: [InvestmentQuote]] = [:]
             var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
             var failures: [String] = []
-            for asset in ids.compactMap({ book.assets[$0] }).sorted(by: { $0.code < $1.code })
-                where !publicQuotesOnly && (asset.usesEastmoneyMarketData || asset.usesUSEquityClose || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
-                    (!snapshotRefresh || asset.kind != .crypto) {
-                let key = InvestmentDiskCache.historyKey(asset)
-                let saved = try await diskCache.marketQuotes(scope: scope, key: key)
-                let existing = book.quotes[asset.id] ?? []
-                let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
-                prices[asset.id] = saved.filter { !known.contains($0.day) }
-                let observations = InvestmentBook.merge(saved, existing)
-                // Account history starts at this asset's first trade. Watch-only assets need a recent quote.
-                let requested = snapshotRequests?.assets[asset.id] ?? [book.automaticQuoteWindow(for: asset.id, through: today)]
-                for range in requested {
-                    let requests = try await diskCache.missingWindows(scope: scope, key: key,
-                        start: range.lowerBound, end: range.upperBound, today: today, observations: observations)
-                    for request in InvestmentHistoryRange.quoteWindows(for: requests) {
-                        try checkRefresh()
-                        do {
-                            let result: [InvestmentQuote]
-                            do {
-                                result = try await HakoExecutionDiagnostics.measure("读取行情 · " + asset.displayCode,
-                                    success: InvestmentQuoteProvider.quoteSummary) {
-                                    try await MarketAPIRequestContext.$reason.withValue(snapshotRefresh ? "历史资产快照补数" : "持仓与关注行情刷新") {
-                                        try await provider.history(asset: asset, start: request.lowerBound, through: request.upperBound,
-                                            cached: nil, keys: keys)
-                                    }
-                                }
-                            } catch InvestmentError.noMarketData(_) { result = [] }
-                            try checkRefresh()
-                            // Persist downloaded data before attempting any server write.
-                            try await diskCache.saveHistory(scope: scope, asset: asset, start: request.lowerBound,
-                                end: request.upperBound, today: today, quotes: result)
-                            prices[asset.id] = InvestmentBook.merge(prices[asset.id] ?? [], result)
-                        } catch {
-                            try checkRefresh()
-                            if !publicIDs.contains(asset.id) { failures.append(asset.displayCode + "（" + error.localizedDescription + "）") }
-                        }
-                    }
-                }
+            for (id, quotes, errors) in assetResults {
+                prices[id] = quotes
+                failures.append(contentsOf: errors)
             }
-            let publicAssets = publicIDs.compactMap { book.asset($0) }
-            let tokens = Set(publicAssets.map(\.id))
-            let usdtUSD = tokens.isEmpty ? nil : try? await HakoExecutionDiagnostics.measure("读取现货美元报价 · USDT",
-                success: { InvestmentQuoteProvider.quoteSummary([$0]) }) { try await provider.coinbaseSpotUSDQuote(code: "USDT") }
-            for id in tokens {
-                guard let token = book.asset(id) else { continue }
-                try checkRefresh()
-                do {
-                    let quote = try await HakoExecutionDiagnostics.measure("读取现货美元报价 · " + token.code,
-                        success: { InvestmentQuoteProvider.quoteSummary([$0]) }) {
-                        try await provider.publicSpotUSDQuote(for: token, usdtUSD: usdtUSD)
-                    }
-                    prices[id, default: []].append(quote)
-                } catch {
-                    try checkRefresh()
-                    if prices[id]?.last?.day != today, book.quote(id)?.day != today {
-                        failures.append(token.code + "/USD（现货报价未更新）")
-                    }
-                }
+            for (id, quote) in reusedCryptoQuotes { prices[id, default: []].append(quote) }
+            for (id, quote, failure) in spotResults {
+                if let quote { prices[id, default: []].append(quote) }
+                if let failure, prices[id]?.last?.day != today, sourceBook.quote(id)?.day != today { failures.append(failure) }
             }
-            if refreshPublicHistory {
-                let history = try await cryptoHistory(through: closedDay, provider: provider,
-                                                      missing: snapshotRequests?.assets)
-                try checkRefresh()
-                for (id, quotes) in history { prices[id, default: []].append(contentsOf: quotes) }
-            }
-            let rateCurrenciesToCheck = Set(snapshotRequests?.rates.keys.map { $0 } ?? Array(currencies))
-            for currency in rateCurrenciesToCheck.sorted(by: { $0.rawValue < $1.rawValue }) {
-                let key = InvestmentDiskCache.rateKey(currency)
-                let saved = try await diskCache.marketQuotes(scope: scope, key: key)
-                let existing = book.fx[currency] ?? []
-                let known = Set(existing.filter { $0.price > 0 && $0.isDailyClose != false }.map(\.day))
-                rates[currency] = saved.filter { !known.contains($0.day) }
-                let observations = InvestmentBook.merge(saved, existing)
-                for range in snapshotRequests?.rates[currency] ?? [start...today] {
-                    let first = InvestmentBook.weekdayMarketDate(on: range.lowerBound)
-                    let last = InvestmentBook.weekdayMarketDate(on: range.upperBound)
-                    let missing = try await diskCache.missingWindows(scope: scope, key: key,
-                        start: first, end: last, today: today, observations: observations)
-                    for window in InvestmentHistoryRange.forexQuoteWindows(for: missing) {
-                        try checkRefresh()
-                        do {
-                            let values: [InvestmentQuote]
-                            if let credential = keys[.twelveData] {
-                                do {
-                                    values = try await HakoExecutionDiagnostics.measure("读取汇率 · Twelve Data · " + currency.rawValue + "/CNY",
-                                        success: InvestmentQuoteProvider.quoteSummary) {
-                                        try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
-                                            try await provider.twelve(symbol: currency.rawValue + "/CNY", market: "", currency: nil,
-                                                start: window.lowerBound, end: window.upperBound, key: credential)
-                                        }
-                                    }
-                                } catch InvestmentError.noMarketData(_) { values = [] }
-                                catch {
-                                    try checkRefresh()
-                                    values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
-                                }
-                            } else {
-                                values = try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
-                            }
-                            try checkRefresh()
-                            try await diskCache.saveMarketHistory(scope: scope, key: key, start: window.lowerBound,
-                                end: window.upperBound, today: today, quotes: values)
-                            rates[currency] = InvestmentBook.merge(rates[currency] ?? [], values)
-                        } catch {
-                            try checkRefresh()
-                            failures.append(currency.rawValue + "/CNY（" + error.localizedDescription + "）")
-                        }
-                    }
-                }
+            for (id, quotes) in cryptoResults { prices[id, default: []].append(contentsOf: quotes) }
+            for (currency, quotes, errors) in rateResults {
+                rates[currency] = quotes
+                failures.append(contentsOf: errors)
             }
             try checkRefresh()
             guard publicQuotesOnly || self.keys() == keys else { return }
@@ -1092,27 +1185,32 @@ final class InvestmentStore: ObservableObject {
             try Task.checkCancellation()
             for quote in quotes ?? [] { usdtUSD[quote.day] = quote.price }
         }
-        var result: [UUID: [InvestmentQuote]] = [:]
-        for (asset, range) in requests {
+        let conversionRates = usdtUSD
+        let histories = try await InvestmentQuoteBatch.map(requests) { request in
+            let (asset, range) = request
             try Task.checkCancellation()
             let (start, end) = (range.lowerBound, range.upperBound)
+            var quotes: [InvestmentQuote] = []
             if asset.kind == .crypto {
                 let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Binance · " + asset.code,
                     success: InvestmentQuoteProvider.quoteSummary) {
-                    try await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end, usdtUSD: usdtUSD)
+                    try await provider.binanceSpotDailyQuotes(for: asset.code, from: start, through: end, usdtUSD: conversionRates)
                 }
                 try Task.checkCancellation()
                 if let prices, !prices.isEmpty {
-                    result[asset.id, default: []].append(contentsOf: prices)
+                    quotes = prices
                 } else if let prices = try? await HakoExecutionDiagnostics.measure("读取历史行情 · Coinbase · " + asset.code,
                     success: InvestmentQuoteProvider.quoteSummary, operation: {
                     try await provider.coinbaseUSDDailyQuotes(for: asset.code, from: start, through: end)
                 }) {
-                    result[asset.id, default: []].append(contentsOf: prices)
+                    quotes = prices
                 }
             }
             try Task.checkCancellation()
+            return (asset.id, quotes)
         }
+        var result: [UUID: [InvestmentQuote]] = [:]
+        for (id, quotes) in histories { result[id, default: []].append(contentsOf: quotes) }
         return result
     }
 }

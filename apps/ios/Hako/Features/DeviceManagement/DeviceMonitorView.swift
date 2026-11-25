@@ -234,14 +234,12 @@ struct DeviceMetricsView: View {
     @State private var liveContext: String?
     @State private var liveStatus: String?
     @State private var historyRefreshID = UUID()
-    @State private var targetURL = ""
     @State private var codexTab: CodexTab = .sessions
     @State private var listenerTab: ConsoleListenerGroup = .user
     @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
     private var connectionState: DeviceMonitorInventory.ConnectionState { client.connectionState(for: agent.id) }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
-    private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
     private var liveTaskContext: String? {
         guard scenePhase == .active, client.authenticated, !client.logoutPending,
               liveContext == client.requestContext else { return nil }
@@ -426,7 +424,6 @@ struct DeviceMetricsView: View {
         case ("query.codex.usage", 1): return "Codex"
         case ("query.network.listeners", 1): return "端口"
         case (DeviceServiceCommand.status, 1): return "服务"
-        case ("action.network.http.check", 1): return "检测"
         case (DeviceGitCommand.list, 1): return "Git"
         case (DeviceFilesCommand.list, 1): return "文件"
         case (KageAndroidCommand.list, 1): return "Android"
@@ -468,7 +465,6 @@ struct DeviceMetricsView: View {
         switch (capability.name, capability.version) {
         case ("query.codex.usage", 1): codexContent(capability)
         case ("query.network.listeners", 1): listenersContent(capability)
-        case ("action.network.http.check", 1): httpContent
         default:
             if capability.name.hasPrefix("query.") {
                 Button("查询数据") { Task { await client.refreshCapability(currentAgent, capability: capability) } }
@@ -680,44 +676,6 @@ struct DeviceMetricsView: View {
         var index = 0
         while value >= 1024 && index < units.count - 1 { value /= 1024; index += 1 }
         return String(format: index == 0 ? "%.0f %@" : "%.1f %@", value, units[index])
-    }
-    private var httpContent: some View {
-        Group {
-            Text("目标地址").font(.subheadline.weight(.medium))
-            TextField("https://example.com", text: $targetURL)
-                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                .accessibilityLabel("检测目标 URL")
-                .padding(12).background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
-            Text("由此设备访问目标地址，检测结果反映设备所在网络的连通情况。")
-                .font(.caption).foregroundStyle(.secondary)
-            Button { Task { await client.checkHTTP(currentAgent, url: targetURL) } } label: {
-                HStack {
-                    Spacer()
-                    if check.loading { ProgressView().tint(Color(uiColor: .systemBackground)) }
-                    Text(check.loading ? "正在检测…" : "开始检测")
-                    Spacer()
-                }.padding(.vertical, 4)
-            }.disabled(check.loading || !client.authenticated || targetURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .buttonStyle(.borderedProminent).tint(.primary)
-            if let error = check.error {
-                statusMessage(check.result != nil ? "检测失败 · 以下为上次结果" : "检测失败", detail: error)
-            }
-            if let result = check.result {
-                Divider()
-                Label(result.reachable ? "地址可达" : "未获得 HTTP 响应",
-                    systemImage: result.reachable ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .font(.headline).foregroundStyle(result.reachable ? Color.green : Color.orange)
-                Text(result.url).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                VStack(spacing: 12) {
-                    LabeledContent("HTTP 状态", value: result.statusCode.map(String.init) ?? "—")
-                    LabeledContent("请求结果", value: result.httpSuccess ? "成功" : result.reachable ? "目标返回非 2xx 状态" : "检测失败")
-                    LabeledContent("耗时", value: "\(result.elapsedMs) ms")
-                }.font(.subheadline)
-                Text("检测于 \(sampleTime(result.checkedAt))").font(.caption).foregroundStyle(.secondary)
-                if let failure = result.failure { Text(failure.localizedDescription).font(.footnote).foregroundStyle(.red) }
-            }
-        }
     }
     @ViewBuilder private func codexContent(_ capability: ConsoleAgentCapability) -> some View {
         let entry = state.entries[capability.name]

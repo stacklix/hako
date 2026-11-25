@@ -18,7 +18,7 @@ import CryptoKit
     private var subscription: AnyCancellable?
     private var context = ""
     private var preferences = WorkshopPreferences()
-    private var cachedCatalogs: [String: WorkshopCachedCatalog] = [:]
+    @Published private var cachedCatalogs: [String: WorkshopCachedCatalog] = [:]
     private var savedListSnapshot: WorkshopListSnapshot?
     private var savedPreferences: WorkshopPreferences?
     private let quotaCache = WorkshopQuotaCache()
@@ -239,6 +239,104 @@ import CryptoKit
             .filter { $0.applicationId == selectedApplicationID }
         return WorkshopCatalog.listItems(visible, hasDraft: { self.hasDraft($0) }, isUnread: { self.isUnread($0, at: date) })
     }
+
+    // The drawer reads every project without changing the workshop's computer,
+    // project or archive selection underneath an already presented page.
+    private func quickAccessCatalog(for agent: WorkshopAgent) -> WorkshopCatalog? {
+        guard context == scope else { return nil }
+        if selectedAgentID == agent.id, !showingArchived {
+            return WorkshopCatalog(applications: applications, sessions: sessions, nextCursor: cursor)
+        }
+        return cachedCatalogs[catalogKey(agent.id, archived: false)]?.catalog
+    }
+
+    func quickAccessItems(at date: Date) -> [WorkshopQuickAccessItem] {
+        agents.filter(\.supported).flatMap { agent -> [WorkshopQuickAccessItem] in
+            guard let catalog = quickAccessCatalog(for: agent) else { return [] }
+            let visible = localSessions.merging(catalog.sessions, agentId: agent.id,
+                applications: catalog.applications, archived: false).filter { UUID(uuidString: $0.id) != nil }
+            return WorkshopCatalog.listItems(visible, hasDraft: { session in
+                guard let application = catalog.applications.first(where: { $0.id == session.applicationId }) else { return false }
+                return self.hasDraft(session, agent: agent, application: application)
+            }, isUnread: { self.readState.isUnread($0, agentId: agent.id, now: date) }).compactMap { item in
+                guard let application = catalog.applications.first(where: { $0.id == item.session.applicationId }) else { return nil }
+                return WorkshopQuickAccessItem(agent: agent, application: application, item: item)
+            }
+        }.sorted(by: WorkshopQuickAccessItem.precedes)
+    }
+
+    var quickAccessHasMore: Bool {
+        agents.contains { $0.supported && quickAccessCatalog(for: $0)?.nextCursor != nil }
+    }
+
+    func quickAccessItem(agentID: String, threadID: String, at date: Date) -> WorkshopSessionListItem? {
+        guard let agent = agents.first(where: { $0.id == agentID }),
+              let catalog = quickAccessCatalog(for: agent),
+              let session = localSessions.merging(catalog.sessions, agentId: agent.id,
+                applications: catalog.applications, archived: false).first(where: { $0.id.caseInsensitiveCompare(threadID) == .orderedSame }),
+              let application = catalog.applications.first(where: { $0.id == session.applicationId }) else { return nil }
+        return WorkshopSessionListItem(session: session, hasDraft: hasDraft(session, agent: agent, application: application),
+            isUnread: readState.isUnread(session, agentId: agent.id, now: date))
+    }
+
+    func refreshQuickAccess(more: Bool = false) async throws {
+        guard context == scope, authenticated else { throw CancellationError() }
+        guard archivingSessionID == nil else { return }
+        let ticket = scope
+        let available = agents.filter { $0.supported && ($0.online || localEndpoint(for: $0.id) != nil) &&
+            (!more || quickAccessCatalog(for: $0)?.nextCursor != nil) }
+        if more, available.isEmpty { throw HakoError(message: "电脑当前离线，联网后可加载更早的会话。") }
+        var failures: [String] = []
+        for agent in available {
+            try Task.checkCancellation()
+            guard scope == ticket else { throw CancellationError() }
+            if more, quickAccessCatalog(for: agent)?.nextCursor == nil { continue }
+            if selectedAgentID == agent.id, !showingArchived {
+                while more && (refreshing || loadingMore) {
+                    try await Task.sleep(for: .milliseconds(100))
+                    guard scope == ticket, selectedAgentID == agent.id, !showingArchived else { throw CancellationError() }
+                }
+                await refresh(more: more, reconcile: false)
+                if let error { failures.append(agent.name + "：" + error) }
+                continue
+            }
+            do { try await refreshQuickAccessCatalog(agent, more: more) }
+            catch is CancellationError { throw CancellationError() }
+            catch { failures.append(agent.name + "：" + error.localizedDescription) }
+        }
+        guard scope == ticket else { throw CancellationError() }
+        if !failures.isEmpty { throw HakoError(message: failures.joined(separator: "\n")) }
+    }
+
+    private func refreshQuickAccessCatalog(_ agent: WorkshopAgent, more: Bool) async throws {
+        guard archivingSessionID == nil else { throw CancellationError() }
+        let ticket = scope, revision = catalogRevision
+        let checkpoint = sessionUpdates.revision
+        let key = catalogKey(agent.id, archived: false)
+        let previous = cachedCatalogs[key]?.catalog
+        let params: [String: Any] = more ? previous?.nextCursor.map { ["cursor": $0] } ?? [:] : [:]
+        let page: WorkshopCatalog = try await call(agent, "applications.list", params)
+        try Task.checkCancellation()
+        guard scope == ticket, catalogRevision == revision, archivingSessionID == nil else { throw CancellationError() }
+        let reconcile = !more && (catalogChecks[key].map { Date.now.timeIntervalSince($0) >= 30 } ?? true)
+        var fresh = page.sessions, next = page.nextCursor, visited = Set<String>()
+        while reconcile, fresh.count < (previous?.sessions.count ?? 0), let cursor = next, visited.insert(cursor).inserted {
+            let older: WorkshopCatalog = try await call(agent, "applications.list", ["cursor": cursor])
+            try Task.checkCancellation()
+            guard scope == ticket, catalogRevision == revision, archivingSessionID == nil else { throw CancellationError() }
+            fresh += older.sessions; next = older.nextCursor
+            if next == cursor { break }
+        }
+        let values = WorkshopCatalog.merge(sessionUpdates.merging(fresh, agentId: agent.id, since: checkpoint),
+            existing: previous?.sessions ?? [], more: more || !reconcile)
+            .filter { session in page.applications.contains { $0.id == session.applicationId } }
+        let catalog = WorkshopCatalog(applications: page.applications, sessions: values,
+            nextCursor: !more && !reconcile && (previous?.sessions.count ?? 0) > page.sessions.count ? previous?.nextCursor : next)
+        if cachedCatalogs[key]?.catalog != catalog { cachedCatalogs[key] = WorkshopCachedCatalog(catalog: catalog, savedAt: .now) }
+        if reconcile { catalogChecks[key] = .now }
+        confirmSessions(fresh, agentId: agent.id)
+        try saveLists(background: true)
+    }
     var hasMore: Bool { cursor != nil }
 
     private func catalogKey(_ agentID: String, archived: Bool) -> String {
@@ -400,9 +498,14 @@ import CryptoKit
     }
 
     func hasDraft(_ session: WorkshopSession) -> Bool {
-        _ = draftRevision
         guard context == scope, let agent = selectedAgent,
               let application = applications.first(where: { $0.id == session.applicationId }) else { return false }
+        return hasDraft(session, agent: agent, application: application)
+    }
+
+    private func hasDraft(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) -> Bool {
+        _ = draftRevision
+        guard context == scope else { return false }
         return (try? composerDraft(agent: agent, application: application, sessionId: session.id))?.hasUnsentInput == true
     }
 
@@ -465,7 +568,7 @@ import CryptoKit
         savedPreferences = preferences
         queuedSends = (try? stateDisk.read([WorkshopQueuedSend].self, from: queueFile)) ?? []
         localSessions = WorkshopLocalSessions()
-        for receipt in preferences.receipts where receipt.state == "pending" { localSessions.record(receipt, isNew: true) }
+        for receipt in preferences.receipts where receipt.state == "pending" && receipt.parentThreadId == nil { localSessions.record(receipt, isNew: true) }
         readState = (try? stateDisk.read(WorkshopReadState.self, from: readStateFile)) ?? WorkshopReadState()
         selectedAgentID = preferences.agentId
         selectedApplicationID = preferences.applicationId
@@ -808,6 +911,10 @@ import CryptoKit
         return preferences.receipts.last { $0.agentId == agent.id && ($0.id == session.operationId || $0.threadId == session.id) }
     }
 
+    func sidechatReceipts(parent: String, agent: WorkshopAgent) -> [WorkshopReceipt] {
+        preferences.receipts.filter { $0.agentId == agent.id && $0.parentThreadId == parent && $0.state == "pending" }
+    }
+
     func saveReceipt(_ receipt: WorkshopReceipt, background: Bool = false) throws {
         guard context == scope else { throw CancellationError() }
         guard preferences.receipts.first(where: { $0.id == receipt.id }) != receipt else { return }
@@ -817,14 +924,14 @@ import CryptoKit
         else {
             preferences.receipts.append(receipt)
             if preferences.receipts.count > 100 { preferences.receipts.removeFirst() }
-            if receipt.originalThreadId == nil { promote(receipt.applicationId) }
+            if receipt.originalThreadId == nil && receipt.parentThreadId == nil { promote(receipt.applicationId) }
         }
         do { try persist(background: background) }
         catch { preferences = previous; throw error }
         if isNew, let threadId = receipt.threadId {
             sessionUpdates.remove(threadId: threadId, agentId: receipt.agentId)
         }
-        localSessions.record(receipt, isNew: isNew)
+        if receipt.parentThreadId == nil { localSessions.record(receipt, isNew: isNew) }
     }
 
     private var queueFile: URL { cacheFile.deletingPathExtension().appendingPathExtension("queue.json") }

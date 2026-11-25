@@ -160,6 +160,9 @@ func (s *Server) investmentRoutes() {
 	s.mux.HandleFunc("GET /api/v1/investment/version", s.investmentVersion)
 	s.mux.HandleFunc("GET /api/v1/investment/book", s.readInvestment)
 	s.mux.HandleFunc("PUT /api/v1/investment/book", s.writeInvestment)
+	s.mux.HandleFunc("POST /api/v1/investment/book/changes", s.changeInvestment)
+	s.mux.HandleFunc("GET /api/v1/market/update-targets", s.marketUpdateTargets)
+	s.mux.HandleFunc("POST /api/v1/market/quote-batches", s.writeMarketQuotes)
 	s.mux.HandleFunc("GET /api/v1/investment/export", s.exportInvestment)
 }
 
@@ -352,10 +355,6 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 		return errInvestmentInvalid
 	}
 	columns := t.columns()
-	allowed := make(map[string]bool, len(columns))
-	for _, column := range columns {
-		allowed[column] = true
-	}
 	keys := strings.Fields(t.keys)
 	seen := make(map[string]bool, len(rows))
 	var quoteVersions map[string]investmentRow
@@ -380,57 +379,14 @@ func (t investmentTable) replace(ctx context.Context, tx *sql.Tx, owner string, 
 	args := make([]any, len(columns)+1)
 	args[0] = owner
 	for _, row := range rows {
-		for _, column := range keys {
-			value, exists := row[column]
-			if !exists || (value == "" && column != "source") || strings.ContainsRune(value, 0) {
-				return errInvestmentInvalid
-			}
+		if err := t.prepareRow(row); err != nil {
+			return err
 		}
 		key := investmentRowKey(row, keys)
 		if seen[key] {
 			return errInvestmentInvalid
 		}
 		seen[key] = true
-		for _, field := range strings.Fields(investmentRequired[t.name]) {
-			if _, exists := row[field]; !exists {
-				return errInvestmentInvalid
-			}
-		}
-		for column, value := range row {
-			if !allowed[column] || len(value) > 16384 ||
-				(strings.Contains(investmentNumberFields, " "+column+" ") && !investmentDecimal.MatchString(value)) {
-				return errInvestmentInvalid
-			}
-			if strings.Contains(investmentIntegerFields, " "+column+" ") {
-				number, err := strconv.ParseInt(value, 10, 64)
-				if err != nil || number < 0 || ((column == "enabled" || column == "is_final") && number > 1) {
-					return errInvestmentInvalid
-				}
-			}
-			if (strings.HasSuffix(column, "_date") || column == "effective_date") && !validInvestmentDate(value) {
-				return errInvestmentInvalid
-			}
-		}
-		normalizeInvestmentNumbers(row)
-		if kind, exists := row["asset_type"]; exists && !slices.Contains([]string{
-			"stock", "etf", "fund", "future", "crypto", "generic", "insurance", "wealth", "deposit", "certificate",
-		}, kind) {
-			return errInvestmentInvalid
-		}
-		if t.name == "investment_accounts" && !slices.Contains([]string{
-			"securities", "fund_wealth", "futures", "deposits", "crypto", "insurance",
-		}, row["account_type"]) {
-			return errInvestmentInvalid
-		}
-		if kind, exists := row["event_type"]; exists && !slices.Contains([]string{
-			"deposit", "withdrawal", "adjustment", "opening", "buy", "sell", "transfer_out", "transfer_in", "income",
-			"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade", "insurance_withdrawal",
-		}, kind) {
-			return errInvestmentInvalid
-		}
-		if t.name == "investment_plans" && !validInvestmentPlan(row) {
-			return errInvestmentInvalid
-		}
 		if quoteVersions != nil {
 			prior := quoteVersions[key]
 			revision, _ := strconv.ParseInt(prior["revision"], 10, 64)
@@ -504,6 +460,61 @@ func validateInvestmentLinks(ctx context.Context, tx *sql.Tx, owner string) erro
 		if missing {
 			return errInvestmentInvalid
 		}
+	}
+	return nil
+}
+
+func (t investmentTable) prepareRow(row investmentRow) error {
+	keys := strings.Fields(t.keys)
+	allowed := make(map[string]bool)
+	for _, column := range t.columns() {
+		allowed[column] = true
+	}
+	for _, column := range keys {
+		value, exists := row[column]
+		if !exists || (value == "" && column != "source") || strings.ContainsRune(value, 0) {
+			return errInvestmentInvalid
+		}
+	}
+	for _, field := range strings.Fields(investmentRequired[t.name]) {
+		if _, exists := row[field]; !exists {
+			return errInvestmentInvalid
+		}
+	}
+	for column, value := range row {
+		if !allowed[column] || len(value) > 16384 ||
+			(strings.Contains(investmentNumberFields, " "+column+" ") && !investmentDecimal.MatchString(value)) {
+			return errInvestmentInvalid
+		}
+		if strings.Contains(investmentIntegerFields, " "+column+" ") {
+			number, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || number < 0 || ((column == "enabled" || column == "is_final") && number > 1) {
+				return errInvestmentInvalid
+			}
+		}
+		if (strings.HasSuffix(column, "_date") || column == "effective_date") && !validInvestmentDate(value) {
+			return errInvestmentInvalid
+		}
+	}
+	normalizeInvestmentNumbers(row)
+	if kind, exists := row["asset_type"]; exists && !slices.Contains([]string{
+		"stock", "etf", "fund", "future", "crypto", "generic", "insurance", "wealth", "deposit", "certificate",
+	}, kind) {
+		return errInvestmentInvalid
+	}
+	if t.name == "investment_accounts" && !slices.Contains([]string{
+		"securities", "fund_wealth", "futures", "deposits", "crypto", "insurance",
+	}, row["account_type"]) {
+		return errInvestmentInvalid
+	}
+	if kind, exists := row["event_type"]; exists && !slices.Contains([]string{
+		"deposit", "withdrawal", "adjustment", "opening", "buy", "sell", "transfer_out", "transfer_in", "income",
+		"dividend", "bonus_shares", "staking_reward", "spot_adjustment", "derivative_margin", "derivative_settlement", "derivative_trade", "insurance_withdrawal",
+	}, kind) {
+		return errInvestmentInvalid
+	}
+	if t.name == "investment_plans" && !validInvestmentPlan(row) {
+		return errInvestmentInvalid
 	}
 	return nil
 }

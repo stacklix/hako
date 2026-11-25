@@ -39,6 +39,7 @@ type loginChallenge struct {
 }
 
 type state struct {
+	MarketCoverage    map[string]marketCoverage   `json:"marketCoverage,omitempty"`
 	WorkshopComputers map[string]workshopComputer `json:"workshopComputers,omitempty"`
 	WorkshopPush      map[string]int64            `json:"workshopPush,omitempty"`
 	OIDCKey           string                      `json:"oidcKey,omitempty"`

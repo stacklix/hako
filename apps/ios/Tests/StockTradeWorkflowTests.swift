@@ -22,6 +22,18 @@ import Foundation
         precondition(!partial.state.active && partial.result == nil)
         let failed = try decode(fixture.replacingOccurrences(of: "queued", with: "failed").replacingOccurrences(of: "pending", with: "publish"))
         precondition(!failed.state.active)
+        let monitoring = fixture.replacingOccurrences(of: "full", with: "monitor")
+        let monitorQueued = try decode(monitoring)
+        precondition(monitorQueued.kind == .monitor)
+        reject(monitoring.replacingOccurrences(of: "queued", with: "succeeded"))
+        let result = #"{"enabled":true,"snapshotId":"aabbccddeeff00112233445566778899","sourceSnapshotId":"aabbccddeeff00112233445566778899","initializedCount":0,"watchCount":0,"openCount":0,"publishedAt":"2026-11-25T01:00:00+00:00"}"#
+        let ready = monitoring.replacingOccurrences(of: "queued", with: "succeeded")
+            .replacingOccurrences(of: "pending", with: "monitor")
+            .replacingOccurrences(of: #""result":null"#, with: #""result":null,"monitorResult":"# + result)
+        let activated = try decode(ready)
+        precondition(activated.monitorResult?.watchCount == 0 && activated.result == nil)
+        reject(ready.replacingOccurrences(of: #""enabled":true"#, with: #""enabled":false"#))
+        reject(ready.replacingOccurrences(of: #""watchCount":0"#, with: #""watchCount":-1"#))
         print("Cerno workflow contracts passed")
     }
 }

@@ -142,6 +142,7 @@ internal sealed partial class CodeWorkshop
                 sourceKinds = new[] { "cli", "vscode", "appServer", "exec" } }, token);
             foreach (var thread in CodexJson.Items(CodexJson.Field(page, "data")))
             {
+                if (SidechatRoot(CodexJson.Text(thread, "id")) is not null) continue;
                 var application = ApplicationFor(CodexJson.Text(thread, "cwd"));
                 if (application is not null) candidates[CodexJson.Text(thread, "id")] = (thread, application);
             }

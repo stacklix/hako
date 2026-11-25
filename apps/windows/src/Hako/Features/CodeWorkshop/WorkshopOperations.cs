@@ -22,6 +22,8 @@ internal sealed class WorkshopJob
     public string ApplicationId { get; set; } = "";
     public string Cwd { get; set; } = "";
     public string? ThreadId { get; set; }
+    public string? ParentThreadId { get; set; }
+    public string? InheritedTurnId { get; set; }
     public string? TurnId { get; set; }
     public string State { get; set; } = "starting";
     public string? Message { get; set; }
@@ -116,7 +118,7 @@ internal sealed partial class CodeWorkshop
 
     public Task<object?> StartAsync(JsonElement parameters, CancellationToken token)
     {
-        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort");
+        CodexJson.Keys(parameters, "requestId", "applicationId", "threadId", "name", "message", "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort", "parentThreadId");
         var id = OperationId(parameters, "requestId");
         var applicationId = CodexJson.Required(parameters, "applicationId", 16);
         var cwd = ResolveApplication(applicationId);
@@ -135,14 +137,16 @@ internal sealed partial class CodeWorkshop
         if (permission is not ("ask" or "auto" or "full" or "custom")) throw CodexJson.Invalid();
         var threadId = CodexJson.Text(parameters, "threadId");
         if (threadId.Length > 0 && !Guid.TryParse(threadId, out _)) throw CodexJson.Invalid();
+        var parentThreadId = CodexJson.Text(parameters, "parentThreadId");
+        if (parentThreadId.Length > 0 && (threadId.Length > 0 || !Guid.TryParse(parentThreadId, out _))) throw CodexJson.Invalid();
         var promptField = CodexJson.Field(parameters, "systemPrompt");
         if (promptField.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.String)) throw CodexJson.Invalid();
         var systemPrompt = promptField.ValueKind == JsonValueKind.String ? promptField.GetString() : null;
-        if (systemPrompt is not null && (threadId.Length > 0 || systemPrompt.Length > 4000 || systemPrompt.Contains('\0'))) throw CodexJson.Invalid();
+        if (systemPrompt is not null && (threadId.Length > 0 || parentThreadId.Length > 0 || systemPrompt.Length > 4000 || systemPrompt.Contains('\0'))) throw CodexJson.Invalid();
         var name = CodexJson.Text(parameters, "name");
         if (name.Length > 120) throw CodexJson.Invalid();
         var identity = applicationId + "\n" + threadId + "\n" + name + "\n" + message;
-        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort" })
+        foreach (var key in new[] { "model", "permission", "imageIds", "serviceTier", "questionId", "systemPrompt", "reasoningEffort", "parentThreadId" })
             if (parameters.TryGetProperty(key, out var option)) identity += "\n" + key + ":" + option.GetRawText();
         var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
         token.ThrowIfCancellationRequested();
@@ -166,6 +170,7 @@ internal sealed partial class CodeWorkshop
                 NotificationScope = notificationScope,
                 QuestionId = questionId.Length > 0 ? questionId : null,
                 SystemPrompt = systemPrompt,
+                ParentThreadId = parentThreadId.Length > 0 ? parentThreadId : null,
                 ThreadId = threadId.Length > 0 ? threadId : null, InputMessage = message, ImageIds = images,
                 SessionName = name.Length > 0 ? NotificationText(name, 120) : "未命名会话",
                 Model = model, Permission = permission, ServiceTier = serviceTier, ReasoningEffort = reasoningEffort, QueueOrder = DateTime.UtcNow.Ticks };
@@ -202,6 +207,11 @@ internal sealed partial class CodeWorkshop
                 job.Server = server;
                 server.Event += value => Receive(job, value);
                 var options = ThreadOptions(permission);
+                if (job.ParentThreadId is not null || SidechatRoot(job.ThreadId) is not null)
+                {
+                    options["sandbox"] = "read-only";
+                    options["approvalPolicy"] = "never";
+                }
                 if (model.Length > 0) options["model"] = model;
                 if (serviceTier.Length > 0) options["serviceTier"] = serviceTier;
                 JsonElement settings;
@@ -209,14 +219,43 @@ internal sealed partial class CodeWorkshop
                 {
                     if (job.SystemPrompt is not null) options["developerInstructions"] = job.SystemPrompt;
                     options["cwd"] = job.Cwd;
-                    startupStage = "创建会话";
+                    startupStage = job.ParentThreadId is null ? "创建会话" : "创建侧聊";
+                    if (job.ParentThreadId is not null)
+                    {
+                        var parent = await ThreadAsync(job.ParentThreadId, false, stopping.Token);
+                        if (ApplicationFor(CodexJson.Text(parent, "cwd"))?.Id != job.ApplicationId || SidechatRoot(job.ParentThreadId) is not null)
+                            throw new WorkshopException("codex_workspace_invalid", "侧聊来源与所选主会话不一致。");
+                        job.Cwd = CodexJson.Text(parent, "cwd");
+                        options["cwd"] = job.Cwd;
+                        options["threadId"] = job.ParentThreadId;
+                        options["excludeTurns"] = true;
+                        options["deferGoalContinuation"] = true;
+                        options["threadSource"] = "hako-sidechat";
+                    }
                     lock (gate) job.AcquiringThreadWriter = true;
-                    var reply = await server.RequestAsync("thread/start", options, stopping.Token);
+                    var reply = await server.RequestAsync(job.ParentThreadId is null ? "thread/start" : "thread/fork", options, stopping.Token);
                     settings = reply;
+                    var createdId = CodexJson.Text(CodexJson.Field(reply, "thread"), "id");
+                    if (!Guid.TryParse(createdId, out _) || createdId == job.ParentThreadId) throw new InvalidDataException("Codex 未返回独立会话 ID。");
                     lock (gate)
                     {
-                        job.ThreadId = CodexJson.Text(CodexJson.Field(reply, "thread"), "id");
-                        if (!Guid.TryParse(job.ThreadId, out _)) throw new InvalidDataException("Codex 未返回会话 ID。");
+                        // Keep ownership/relationship even if later initialization fails.
+                        job.ThreadId = createdId;
+                        catalogPages.Clear();
+                        Persist(job);
+                    }
+                    if (job.ParentThreadId is not null)
+                    {
+                        // Do not let the inherited goal start work in the side conversation.
+                        await server.RequestAsync("thread/goal/clear", new { threadId = createdId }, stopping.Token);
+                        var inherited = await server.RequestAsync("thread/turns/list", new { threadId = createdId, limit = 1,
+                            sortDirection = "desc", itemsView = "summary" }, stopping.Token);
+                        job.InheritedTurnId = CodexJson.Text(CodexJson.Items(CodexJson.Field(inherited, "data")).FirstOrDefault(), "id");
+                    }
+                    lock (gate)
+                    {
+                        job.ThreadId = createdId;
+                        catalogPages.Clear();
                         Persist(job);
                     }
                     if (name.Length > 0)
@@ -261,6 +300,9 @@ internal sealed partial class CodeWorkshop
                     if (!string.IsNullOrWhiteSpace(message)) input.Add(new { type = "text", text = message });
                     input.AddRange(images.Select(image => (object)new { type = "localImage", path = UploadPath(image) }));
                     var turnOptions = new Dictionary<string, object> { ["threadId"] = job.ThreadId!, ["clientUserMessageId"] = job.Id, ["input"] = input };
+                    if (SidechatRoot(job.ThreadId) is not null)
+                        turnOptions["additionalContext"] = new Dictionary<string, object> { ["hako.sidechat"] = new {
+                            kind = "application", value = "这是基于主会话创建时上下文的独立侧聊。只讨论用户当前的问题，不继续执行主会话的开发、构建或部署任务。需要修改主任务时，请给出可发回主会话的建议。本会话使用只读权限。" } };
                     if (model.Length > 0) turnOptions["model"] = model;
                     if (serviceTier.Length > 0) turnOptions["serviceTier"] = serviceTier;
                     if (job.ReasoningEffort.Length > 0) turnOptions["effort"] = job.ReasoningEffort;

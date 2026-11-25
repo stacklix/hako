@@ -100,7 +100,7 @@ internal sealed class CodexAppServer : IAsyncDisposable
     // Startup can load a long conversation and initialize tools. It runs in the
     // durable worker, so it must not share the short interactive-read deadline.
     internal static TimeSpan RequestTimeout(string method) => TimeSpan.FromSeconds(
-        method is "initialize" or "thread/start" or "thread/resume" or "turn/start" or "thread/compact/start" ? 60 : 8);
+        method is "initialize" or "thread/start" or "thread/fork" or "thread/resume" or "turn/start" or "thread/compact/start" ? 60 : 8);
 
     public async Task<JsonElement> RequestAsync(string method, object parameters, CancellationToken token)
     {

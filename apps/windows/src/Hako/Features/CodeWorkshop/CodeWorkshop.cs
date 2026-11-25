@@ -15,7 +15,7 @@ namespace Hako.Platform;
 
 internal sealed record WorkshopApplication(string Id, string Name, string Path);
 internal sealed record WorkshopSession(string Id, string Title, string ApplicationId, string Cwd,
-    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0, WorkshopThreadAccess? Access = null);
+    string Preview, long UpdatedAt, string State, string? OperationId, string? CompletionId = null, long LastSentAt = 0, WorkshopThreadAccess? Access = null, string? ParentThreadId = null);
 internal sealed record WorkshopEvent(string Kind, string Id, string Text, string Role = "", string State = "", bool Truncated = false, string? ReplacesId = null, WorkshopAsyncQuestion[]? Questions = null, string? QuestionId = null);
 internal sealed record WorkshopAsyncQuestion(string Title, string[] Options);
 internal sealed record WorkshopArtifact(string Id, string Name, string Path, string ThreadId);
@@ -297,7 +297,10 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
                 historyPages.Remove(historyPages.MinBy(value => value.Value.Saved).Key);
             historyPages[id] = (thread, turn, upstream, nativeCursor, Environment.TickCount64);
         }
-        foreach (var item in items)
+        var sidechat = SidechatRoot(id);
+        var inheritedTurn = sidechat?.InheritedTurnId;
+        var sidechatInitializing = sidechat is not null && inheritedTurn is null;
+        foreach (var item in items.TakeWhile(item => !sidechatInitializing && (string.IsNullOrEmpty(inheritedTurn) || CodexJson.Text(item, "turnId") != inheritedTurn)))
         {
             DiscoverItemArtifacts(id, cwd, CodexJson.Field(item, "item"));
             RememberImageSources(id, CodexJson.Field(item, "item"));
@@ -310,10 +313,12 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var currentTurn = position.Turn;
         var page = new List<WorkshopEvent>();
         var bytes = 0;
-        while (offset < items.Length && page.Count < 12)
+        var reachedParent = sidechatInitializing;
+        while (!reachedParent && offset < items.Length && page.Count < 12)
         {
             var item = items[offset];
             var itemTurn = CodexJson.Text(item, "turnId");
+            if (!string.IsNullOrEmpty(inheritedTurn) && itemTurn == inheritedTurn) { reachedParent = true; break; }
             var nextUsed = itemTurn == currentTurn ? new HashSet<string>(used) : new HashSet<string>();
             var entry = HistoryItem(CodexJson.Field(item, "item"), itemTurn, sent, nextUsed);
             if (entry is null) { offset++; used = nextUsed; currentTurn = itemTurn; continue; }
@@ -336,8 +341,9 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
         var older = CodexJson.Text(upstream, "nextCursor");
         var nextCursor = offset < items.Length ? new HistoryPosition(id, nativeCursor, offset, currentTurn, used.ToArray(), HistoryAnchor(items[0])).Encode() :
             older.Length > 0 ? new HistoryPosition(id, older, 0, currentTurn, used.ToArray(), "").Encode() : null;
+        if (reachedParent) nextCursor = null;
         if (nextCursor == cursor) throw new WorkshopException("codex_history_cursor", "会话历史游标未前进，请重新刷新。");
-        object Page() => new { threadId = id, cwd, entries = page, artifacts = files, nextCursor, operationId, completionId,
+        object Page() => new { threadId = id, parentThreadId = SidechatRoot(id)?.ParentThreadId, cwd, entries = page, artifacts = files, nextCursor, operationId, completionId,
             model = CodexJson.Text(thread, "model"), reasoningEffort = CodexJson.Text(thread, "reasoningEffort"), access = ThreadAccess(id), contextUsage };
         while (JsonSerializer.SerializeToUtf8Bytes(Page(), WorkshopProtocol.Json).Length > 56 * 1024 && files.Length > 0)
             files = files[..^1];

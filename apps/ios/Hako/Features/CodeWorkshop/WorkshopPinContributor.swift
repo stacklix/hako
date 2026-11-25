@@ -2,7 +2,20 @@ import SwiftUI
 
 @MainActor enum WorkshopPinContributor {
     static func register(in registry: HakoPinRegistry) {
-        registry.register(applicationID: "代码工坊", route: "conversation", providesPreviewNavigation: true) { AnyView(WorkshopPinnedConversation(page: $0)) }
+        registry.register(applicationID: "代码工坊", route: "conversation", providesPreviewNavigation: true,
+            icon: { AnyView(WorkshopPinnedSessionIcon(page: $0)) }) { AnyView(WorkshopPinnedConversation(page: $0)) }
+        registry.registerCollection(id: "workshop", title: "工坊会话") { select in
+            AnyView(WorkshopQuickAccessView(select: select))
+        }
+    }
+
+    static func page(for session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication,
+                     namespace: String) -> HakoPinnedPage? {
+        guard UUID(uuidString: session.id) != nil else { return nil }
+        return HakoPinnedPage(applicationID: "代码工坊", route: "conversation",
+            key: namespace + ":" + agent.id + ":" + session.id.lowercased(),
+            title: session.listTitle, subtitle: application.name, symbol: "terminal",
+            parameters: ["computerID": agent.id, "threadID": session.id, "namespace": namespace])
     }
 
     static func page(for conversation: WorkshopConversation) -> HakoPinnedPage? {
@@ -29,7 +42,7 @@ private struct WorkshopPinnedConversation: View {
                 WorkshopConversationView(conversation: conversation)
             } else if let failure {
                 VStack(spacing: 16) {
-                    ContentUnavailableView("无法打开固定会话", systemImage: "terminal", description: Text(failure))
+                    ContentUnavailableView("无法打开会话", systemImage: "terminal", description: Text(failure))
                     Button("重试") { attempt += 1 }.buttonStyle(HakoActionButtonStyle()).padding(.horizontal, 20)
                 }
             } else { ProgressView("正在打开会话…").frame(maxWidth: .infinity, maxHeight: .infinity) }

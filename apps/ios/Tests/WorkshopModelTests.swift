@@ -71,6 +71,18 @@ import Foundation
         precondition(draftReads == 300 && unreadReads == 300, "List counts and rows must share a single evaluation of draft and unread flags")
         precondition(listRows.prefix(3).map(\.id) == ["list-0", "list-2", "list-1"],
             "Preparing row flags once must preserve draft, active/unread and chronological priority")
+        let quickAccessAgents = ["a", "b"].map { WorkshopAgent(id: $0, name: $0, online: true, protocolVersion: 1) }
+        let quickAccessRows = sampleRows.enumerated().map { index, session in
+            WorkshopQuickAccessItem(agent: quickAccessAgents[index % 2], application: projects[index % 2],
+                item: WorkshopSessionListItem(session: session, hasDraft: session.id == "list-0", isUnread: session.id == "list-2"))
+        }
+        precondition(quickAccessRows.reversed().sorted(by: WorkshopQuickAccessItem.precedes).map(\.item.id) == listRows.map(\.id),
+            "Quick access must use the workshop's draft, attention, last-send and ID ordering across computers and projects")
+        let mirrored = quickAccessAgents.reversed().map {
+            WorkshopQuickAccessItem(agent: $0, application: projects[0], item: listRows[0])
+        }.sorted(by: WorkshopQuickAccessItem.precedes)
+        precondition(Set(mirrored.map(\.id)).count == 2 && mirrored.map(\.agent.id) == ["a", "b"],
+            "The same thread on different computers must remain independently selectable with a stable tie-breaker")
         for state in ["available", "workshop", "occupied", "unknown", "unrecognized"] {
             let access = WorkshopThreadAccess(state: state, checkedAt: 123)
             precondition(access.canSend == ["available", "workshop"].contains(state))

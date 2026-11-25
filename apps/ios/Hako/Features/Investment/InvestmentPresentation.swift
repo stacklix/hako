@@ -96,6 +96,7 @@ struct InvestmentPresentation {
 
 struct InvestmentPreparedWrite {
     let changes: InvestmentServerTables
+    let delta: [String: InvestmentRecordChange]
     let through: String?
 
     init(draft: InvestmentBook, current: InvestmentBook, state: InvestmentServerState,
@@ -117,5 +118,57 @@ struct InvestmentPreparedWrite {
             dirtyFrom: dirtyFrom, through: through, changes: changes, current: state.tables)
         if includeInputs { try records.validateLedgers(next, comparedTo: old) }
         self.changes = changes
+        delta = InvestmentRecordChange.difference(changes: changes, current: old)
+    }
+}
+
+struct InvestmentRecordChange: Codable {
+    var upserts: [InvestmentServerRow]
+    var deletes: [InvestmentServerRow]
+
+    static func difference(changes: InvestmentServerTables, current: InvestmentServerTables) -> [String: Self] {
+        var result: [String: Self] = [:]
+        for (table, next) in changes {
+            guard let rule = InvestmentWriteValidation.schema[table] else { continue }
+            let columns = rule.keys.split(separator: " ").map(String.init)
+            func key(_ row: InvestmentServerRow) -> String { columns.map { row[$0] ?? "" }.joined(separator: "\0") }
+            let previous = Dictionary((current[table] ?? []).map { (key($0), $0) }, uniquingKeysWith: { _, last in last })
+            let available = Set(next.map(key))
+            let upserts = next.filter { row in
+                guard let old = previous[key(row)] else { return true }
+                // Quote revisions are assigned by the server, not encoded from the book.
+                return old.filter { $0.key != "revision" } != row.filter { $0.key != "revision" }
+            }
+            let deletes = (current[table] ?? []).filter { !available.contains(key($0)) }.map { row in
+                Dictionary(uniqueKeysWithValues: columns.compactMap { column in row[column].map { (column, $0) } })
+            }
+            if !upserts.isEmpty || !deletes.isEmpty { result[table] = Self(upserts: upserts, deletes: deletes) }
+        }
+        return result
+    }
+}
+
+struct InvestmentDeltaResponse: Decodable {
+    let generation: Int64
+    let revision: Int64
+    let dirtyFrom: String?
+    let through: String?
+    let changes: [String: InvestmentRecordChange]
+    var reloadRequired = false
+
+    func applying(to original: InvestmentServerState) throws -> InvestmentServerState {
+        var state = original
+        for (table, change) in changes {
+            guard let rule = InvestmentWriteValidation.schema[table] else { throw InvestmentError.invalid("服务端返回未知账本表。") }
+            let keys = rule.keys.split(separator: " ").map(String.init)
+            func key(_ row: InvestmentServerRow) -> String { keys.map { row[$0] ?? "" }.joined(separator: "\0") }
+            var rows = Dictionary((state.tables[table] ?? []).map { (key($0), $0) }, uniquingKeysWith: { _, last in last })
+            for row in change.deletes { rows[key(row)] = nil }
+            for row in change.upserts { rows[key(row)] = row }
+            state.tables[table] = InvestmentServerRecords.ordered(Array(rows.values))
+        }
+        state.generation = generation; state.revision = revision
+        state.dirtyFrom = dirtyFrom; state.through = through
+        return state
     }
 }

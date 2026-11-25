@@ -31,6 +31,8 @@ struct StockTradeWorkbench: View {
             }
             StockTradeSectionLabel(title: "运行管理")
             StockTradeCard(padding: 18) {
+                Button { navigation.push(.create(.monitor)) }
+                label: { StockTradeEntryRow(title: "规则监控", subtitle: "启用调度 · 初始化观察名单") }.buttonStyle(.plain)
                 Button { navigation.push(.health) }
                 label: { StockTradeEntryRow(title: "调度与后台状态", subtitle: store.workflowOnline ? "执行服务在线" : "尚未确认在线") }.buttonStyle(.plain)
                 Button { notifications = true } label: { StockTradeEntryRow(title: "通知配置", subtitle: "邮件与手机提醒") }.buttonStyle(.plain)
@@ -76,7 +78,7 @@ struct StockTradeOperations: View {
         StockTradeScreen {
             StockTradeHeading(title: "分步操作", subtitle: "用于补数据、排查和发布已有完整结果")
             StockTradeCard(padding: 18) {
-                ForEach(StockTradeWorkflowKind.allCases.filter { $0 != .full }) { kind in
+                ForEach(StockTradeWorkflowKind.allCases.filter { $0 != .full && $0 != .monitor }) { kind in
                     Button { navigation.push(.create(kind)) }
                     label: { StockTradeEntryRow(title: kind.title, subtitle: operationSubtitle(kind), separator: kind != .publish) }.buttonStyle(.plain)
                 }
@@ -91,6 +93,7 @@ struct StockTradeOperations: View {
         case .preselect: "生成候选名单"
         case .review: "评估候选股票"
         case .publish: "校验完整性后发布"
+        case .monitor: "启用盘中规则监控"
         }
     }
 
@@ -129,14 +132,17 @@ struct StockTradeWorkflowFormContent: View {
                                     .environment(\.timeZone, TimeZone(identifier: "Asia/Shanghai")!)
                                 Divider()
                             }
-                            LabeledContent("股票范围", value: "沿用后台配置").font(.subheadline)
+                            LabeledContent(kind == .monitor ? "观察名单来源" : "股票范围", value: kind == .monitor ? "最新已发布的正式推荐" : "沿用后台配置").font(.subheadline)
                             Divider()
                             LabeledContent("策略参数", value: "沿用后台当前规则").font(.subheadline)
                         }
                     }
+                    if kind == .monitor { StockTradeMonitorControlStatus(store: store) }
                     StockTradeCard {
                         Text("执行流程").font(.headline).padding(.bottom, 18)
-                        StockTradeTimeline(phases: kind.phases)
+                        if kind == .monitor {
+                            StockTradeMonitorSteps()
+                        } else { StockTradeTimeline(phases: kind.phases) }
                         Text(kind.explanation).font(.footnote).foregroundStyle(.secondary)
                     }
                     if let error { StockTradeMessage(text: error) }
@@ -145,7 +151,7 @@ struct StockTradeWorkflowFormContent: View {
                     }
                     Button(submitting ? "正在提交…" : "确认启动") { Task { await submit() } }
                         .buttonStyle(StockTradeAppearance.action).disabled(submitting || store.activeWorkflow != nil || openedScope != store.scope)
-                    StockTradeFootnote(text: "预计需要数分钟或更长，取决于数据量和复评耗时。后台保存任务状态，网络结果不确定时重试同一请求，不会重复创建。")
+                    StockTradeFootnote(text: kind == .monitor ? "仅生成规则提醒和纸面模拟记录，不会下单。正式推荐为空时仍会启用调度并发布空快照；重复启用不会启动第二套调度。" : "预计需要数分钟或更长，取决于数据量和复评耗时。后台保存任务状态，网络结果不确定时重试同一请求，不会重复创建。")
                 }.disabled(submitting)
 
             }
@@ -207,7 +213,7 @@ struct StockTradeWorkflowDetail: View {
                     }
                     if task.phase == "pending" { Text("等待后台执行或等待其他数据工作流结束。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12) }
                     if task.state == .failed {
-                        StockTradeMessage(text: task.failureCode == "worker_interrupted" ? "执行进程已结束，结果未确认。请先查看发布记录，再决定是否重新运行。" : "当前步骤失败，本次未完成发布。上一次完整快照继续可用。")
+                        StockTradeMessage(text: task.failureCode == "worker_interrupted" ? "执行进程已结束，结果未确认。请先查看后台状态，再决定是否重新运行。" : task.kind == .monitor ? "监控启用未完成，请检查调度与后台状态后重试。" : "当前步骤失败，本次未完成发布。上一次完整快照继续可用。")
                         Button("重新运行") { navigation.push(.create(task.kind)) }.buttonStyle(StockTradeAppearance.action).disabled(store.activeWorkflow != nil)
                     } else if task.state.active { Text("可以离开页面。阶段内进展由后台持续更新，百分比仅代表当前处理步骤。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12) }
                     if let result = task.result, task.state == .succeeded {
@@ -218,6 +224,18 @@ struct StockTradeWorkflowDetail: View {
                                 catch { self.error = error.localizedDescription }
                             }
                         }.buttonStyle(StockTradeAppearance.action)
+                    }
+                    if let result = task.monitorResult, task.state == .succeeded {
+                        VStack(alignment: .leading, spacing: 12) {
+                            LabeledContent("观察中", value: "\(result.watchCount) 只").font(.subheadline)
+                            LabeledContent("纸面持仓", value: "\(result.openCount) 只").font(.subheadline)
+                            Text("首份监控快照 · " + StockTradeTime.display(result.publishedAt)).font(.caption).foregroundStyle(.secondary)
+                            if result.watchCount == 0 && result.openCount == 0 {
+                                Text("当前没有可监控记录，后续正式推荐发布后会自动同步。首份快照已发布。").font(.footnote).foregroundStyle(.secondary)
+                            }
+                            Text("调度按后台交易日与时段规则采样，启用成功不代表已有实时行情或规则触发。").font(.footnote).foregroundStyle(.secondary)
+                            Button("查看调度与后台状态") { navigation.push(.health) }.buttonStyle(HakoActionButtonStyle(primary: false))
+                        }.padding(.vertical, 12)
                     }
                     DisclosureGroup("执行日志") {
                         ForEach(task.events) { event in
@@ -253,8 +271,8 @@ struct StockTradeWorkflowDetail: View {
         return "\(seconds) 秒"
     }
     private var detailTitle: String {
-        if task.state == .succeeded { return task.result == nil ? "任务已完成" : "结果已发布" }
-        if task.state == .failed { return "选股未完成" }
+        if task.state == .succeeded { return task.kind == .monitor ? "规则监控已启用" : task.result == nil ? "任务已完成" : "结果已发布" }
+        if task.state == .failed { return task.kind == .monitor ? "监控启用未完成" : "选股未完成" }
         return task.kind == .full ? "完整选股进行中" : task.kind.title
     }
 

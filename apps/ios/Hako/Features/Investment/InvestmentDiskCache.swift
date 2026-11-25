@@ -183,6 +183,33 @@ actor InvestmentDiskCache {
         entry.histories = []
         try persist(entry, scope: scope)
     }
+    private static func cryptoSpotKey(_ asset: InvestmentAsset) -> String {
+        "crypto-spot|" + [asset.kind.rawValue, asset.currency.rawValue, asset.market, asset.code].joined(separator: "|")
+    }
+    private static func validCryptoSpot(_ quote: InvestmentQuote, through day: Date) -> Bool {
+        quote.day <= day && !quote.price.isNaN && quote.price > 0 && quote.source != "手动录入"
+    }
+    func cachedCryptoSpotQuote(scope: String, asset: InvestmentAsset, on day: Date,
+                               observations: [InvestmentQuote] = []) throws -> InvestmentQuote? {
+        guard asset.kind == .crypto else { return nil }
+        let today = InvestmentBook.day(day)
+        let cached = try entry(scope)
+        let spotKey = Self.cryptoSpotKey(asset)
+        if let quote = cached.histories.last(where: { $0.key == spotKey && $0.checkedDay == today })?.quotes
+            .last(where: { Self.validCryptoSpot($0, through: today) }) { return quote }
+        if let quote = cached.histories.filter({ $0.key == Self.historyKey(asset) && $0.checkedDay == today })
+            .flatMap(\.quotes).last(where: { $0.day == today && Self.validCryptoSpot($0, through: today) }) { return quote }
+        return observations.last { $0.day == today && Self.validCryptoSpot($0, through: today) }
+    }
+    func saveCryptoSpotQuote(scope: String, asset: InvestmentAsset, quote: InvestmentQuote, on day: Date) throws {
+        let today = InvestmentBook.day(day)
+        guard asset.kind == .crypto, Self.validCryptoSpot(quote, through: today) else {
+            throw InvestmentError.invalid("加密货币报价无效，无法缓存。")
+        }
+        // This records the successful fetch day without claiming historical close coverage.
+        try saveMarketHistory(scope: scope, key: Self.cryptoSpotKey(asset), start: quote.day, end: quote.day,
+                              today: today, quotes: [quote])
+    }
     static func historyKey(_ asset: InvestmentAsset) -> String {
         [asset.id.uuidString, asset.code, asset.market, asset.currency.rawValue, asset.kind.rawValue].joined(separator: "|")
     }

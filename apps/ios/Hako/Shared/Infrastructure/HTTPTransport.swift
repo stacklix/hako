@@ -59,7 +59,7 @@ enum HTTPTransport {
                 }
             }
         }
-        if let marketGate, MarketAPIProvider.matching(request.url?.host) != nil {
+        if let marketGate, MarketAPIChannel.matching(request.url?.host) != nil {
             return try await marketGate.data(for: request, session: session, send: send)
         }
         return try await send()

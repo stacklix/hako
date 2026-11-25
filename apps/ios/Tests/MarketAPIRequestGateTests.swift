@@ -17,6 +17,30 @@ private actor GateCalls {
     func sent() { count += 1 }
 }
 
+private actor GateConcurrency {
+    var active = 0
+    var maximum = 0
+    var started = 0
+    var released = false
+    var timedOut = false
+    var starts: [CheckedContinuation<Void, Never>] = []
+    var responses: [CheckedContinuation<Void, Never>] = []
+    func enter() async {
+        active += 1; started += 1; maximum = max(maximum, active)
+        if started == 3 { starts.forEach { $0.resume() }; starts.removeAll() }
+        if !released { await withCheckedContinuation { responses.append($0) } }
+    }
+    func leave() { active -= 1 }
+    func waitForThree() async {
+        if started < 3 { await withCheckedContinuation { starts.append($0) } }
+    }
+    func release(timedOut: Bool = false) {
+        self.timedOut = timedOut; released = true
+        starts.forEach { $0.resume() }; starts.removeAll()
+        responses.forEach { $0.resume() }; responses.removeAll()
+    }
+}
+
 private actor GateResponseLatch {
     private var started = false
     private var released = false
@@ -62,6 +86,82 @@ private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
     static func main() async throws {
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
+        do {
+            let gate = MarketAPIRequestGate()
+            let channels = [GateConcurrency(), GateConcurrency(), GateConcurrency()]
+            let reads = Task {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for channel in 0..<3 {
+                        let probe = channels[channel]
+                        for index in 0..<6 {
+                            let host = channel == 0 ? "api.twelvedata.com" : channel == 1
+                                ? (index.isMultiple(of: 2) ? "push2his.eastmoney.com" : "api.fund.eastmoney.com")
+                                : (index.isMultiple(of: 2) ? "data-api.binance.vision" : "www.binance.com")
+                            let query = URLRequest(url: URL(string: "https://\(host)/quote/\(index)?apikey=channel-key-\(index % 2)")!)
+                            group.addTask {
+                                _ = try await gate.data(for: query, session: session) {
+                                    await probe.enter()
+                                    await probe.leave()
+                                    return reply(query)
+                                }
+                            }
+                        }
+                    }
+                    try await group.waitForAll()
+                }
+            }
+            let watchdog = Task {
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled { for probe in channels { await probe.release(timedOut: true) } }
+            }
+            for probe in channels { await probe.waitForThree() }
+            var active = 0
+            for probe in channels {
+                let (started, timedOut, running) = await (probe.started, probe.timedOut, probe.active)
+                precondition(started == 3 && !timedOut, "A blocked channel must not consume another channel's slots")
+                active += running
+            }
+            precondition(active == 9, "Three channels can each have three physical requests in flight")
+            for probe in channels { await probe.release() }
+            watchdog.cancel(); try await reads.value
+            for probe in channels {
+                let (maximum, total) = await (probe.maximum, probe.started)
+                precondition(maximum == 3 && total == 6, "Subdomains and credentials must share their channel concurrency limit")
+            }
+            precondition(MarketAPIChannel.matching("api.coinbase.com") == .coinbase)
+            precondition(MarketAPIChannel.matching("data-api.ecb.europa.eu") == .ecb)
+            precondition(MarketAPIChannel.matching("eastmoney.com.example.org") == nil)
+        }
+        do {
+            let gate = MarketAPIRequestGate()
+            let probe = GateConcurrency()
+            let reads = Task {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for index in 0..<7 {
+                        group.addTask {
+                            let query = request("parallel-key", path: "quote/\(index)")
+                            _ = try await gate.data(for: query, session: session) {
+                                await probe.enter()
+                                await probe.leave()
+                                return reply(query)
+                            }
+                        }
+                    }
+                    try await group.waitForAll()
+                }
+            }
+            let watchdog = Task {
+                try? await Task.sleep(for: .seconds(3))
+                if !Task.isCancelled { await probe.release(timedOut: true) }
+            }
+            await probe.waitForThree()
+            let (started, timedOut) = await (probe.started, probe.timedOut)
+            precondition(started == 3 && !timedOut, "One credential must allow three overlapping physical reads")
+            await probe.release(); watchdog.cancel()
+            try await reads.value
+            let (maximum, total) = await (probe.maximum, probe.started)
+            precondition(maximum == 3 && total == 7, "The shared gate must never exceed three physical requests")
+        }
         for status in [429, 200] {
             let clock = GateClock()
             let gate = MarketAPIRequestGate(now: { clock.now() }, sleep: { clock.advance($0) })
@@ -142,6 +242,14 @@ private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
             let snapshot = try await usage.snapshot(for: .twelveData)
             precondition(clock.waits() == [60] && snapshot.total == 2 && snapshot.succeeded == 1 && snapshot.failed == 1,
                          "Real transport calls use the gate; cooldown waits never count as provider requests")
+            let publicLimited = URLRequest(url: URL(string: "https://push2his.eastmoney.com/limited")!)
+            let publicNext = URLRequest(url: URL(string: "https://api.fund.eastmoney.com/nav")!)
+            _ = try await HTTPTransport.data(for: publicLimited, using: mock, marketUsage: usage, marketGate: gate)
+            let independent = request("transport-key", path: "quote")
+            _ = try await HTTPTransport.data(for: independent, using: mock, marketUsage: usage, marketGate: gate)
+            precondition(clock.waits() == [60], "A public channel cooldown must not block Twelve Data")
+            _ = try await HTTPTransport.data(for: publicNext, using: mock, marketUsage: usage, marketGate: gate)
+            precondition(clock.waits() == [60, 60], "Public sources must use the transport gate across their subdomains")
         }
         do {
             let gate = MarketAPIRequestGate()
@@ -210,6 +318,6 @@ private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
             precondition(!timedOut, "Cancelled cooldown waiter must return while the shared cooldown is still blocked")
             await latch.release()
         }
-        print("Market request gate: exact 60-second HTTP/business-429 cooldown, key isolation, repeated cooldowns, shared endpoint budget, Tushare, coalescing and cancellation passed")
+        print("Market request gate: three concurrent reads, exact 60-second HTTP/business-429 cooldown, key isolation, repeated cooldowns, shared endpoint budget, Tushare, coalescing and cancellation passed")
     }
 }

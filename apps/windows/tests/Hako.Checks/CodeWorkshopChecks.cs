@@ -27,6 +27,7 @@ internal static class CodeWorkshopChecks
         await WorkshopContextChecks.RunAsync();
         await WorkshopProjectFileChecks.RunAsync();
         await WorkshopConcurrencyChecks.RunAsync();
+        await WorkshopSidechatChecks.RunAsync();
         WorkshopCatalogChecks.Run();
         Check(CodexAppServer.RequestTimeout("turn/start") == TimeSpan.FromSeconds(60) &&
             CodexAppServer.RequestTimeout("thread/compact/start") == TimeSpan.FromSeconds(60) &&

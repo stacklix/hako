@@ -98,6 +98,7 @@ struct StockTradeFeedView: View {
     @State private var recentSnapshot: String?
     @State private var recentScope: UUID?
     @State private var recentError: String?
+    @State private var monitorUnavailable = false
     @State private var message: String?
     @State private var loading = false
     @State private var notifications = false
@@ -112,6 +113,10 @@ struct StockTradeFeedView: View {
                 }.pickerStyle(.segmented)
             } else { StockTradeHeading(title: "提醒记录", subtitle: "监控与任务事件集中查看") }
             if let message { StockTradeMessage(text: message) }
+            if kind == .monitor && monitorUnavailable {
+                Button("启用规则监控") { navigation.push(.create(.monitor)) }
+                    .buttonStyle(StockTradeAppearance.action)
+            }
             StockTradeCard(padding: 18) {
                 if displayedScope == store.scope {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, record in
@@ -166,7 +171,7 @@ struct StockTradeFeedView: View {
     }
     private func load(append: Bool) async {
         let activeKey = key
-        loading = true; message = nil
+        loading = true; message = nil; monitorUnavailable = false
         defer { if activeKey == key { loading = false } }
         do {
             var query = [URLQueryItem(name: "limit", value: "50")]
@@ -180,7 +185,14 @@ struct StockTradeFeedView: View {
                   !append || (value.snapshotId == page?.snapshotId && Set(items.map(\.id)).isDisjoint(with: value.items.map(\.id))) else { throw StockTradeFailure.invalidResponse }
             items = append ? items + value.items : value.items; page = value; displayedScope = store.scope
         } catch is CancellationError { }
-        catch { if key == activeKey { message = error.localizedDescription } }
+        catch {
+            if key == activeKey {
+                message = error.localizedDescription
+                if let failure = error as? StockTradeFailure, case .api(_, let code, _, _) = failure {
+                    monitorUnavailable = code == "monitor_unavailable"
+                }
+            }
+        }
     }
 }
 
@@ -236,6 +248,7 @@ struct StockTradeHealthView: View {
             StockTradeHeading(title: "调度与后台状态", subtitle: "核对服务、数据与自动任务")
             if let error { StockTradeMessage(text: error) }
             if let error = store.workflowError { StockTradeMessage(text: error) }
+            StockTradeMonitorControlStatus(store: store)
             StockTradeCard {
                 VStack(spacing: 14) {
                     LabeledContent("执行服务", value: store.workflowOnline ? "在线 · 心跳正常" : "尚未确认在线").font(.subheadline)

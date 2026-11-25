@@ -40,6 +40,9 @@ import Foundation
         precondition(initialPages == manifest + [terminal])
         precondition(DeviceCardOrder.pageNames(capabilities: [], saved: []) == [terminal],
                      "The terminal is a local page, independent of the Agent capability manifest")
+        precondition(DeviceCardOrder.pageNames(capabilities: ["query.system.metrics", "action.network.http.check", "query.network.listeners"],
+            saved: ["action.network.http.check", "query.network.listeners"]) == ["query.network.listeners", "query.system.metrics", terminal],
+            "The removed URL connectivity page must stay absent from tabs, overflow and page ordering")
         let reordered = [terminal, "system", "codex", "ports", "processes", "http", "disk", "services"]
         let saved = DeviceCardOrder.saving(visible: reordered, previous: manifest)
         let restored = DeviceCardOrder.pageNames(capabilities: manifest, saved: saved)

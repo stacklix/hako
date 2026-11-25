@@ -191,6 +191,7 @@ struct WorkshopSession: Codable, Identifiable, Hashable, Sendable {
     var completionId: String? = nil
     var lastSentAt: Int64 = 0
     var access: WorkshopThreadAccess? = nil
+    var parentThreadId: String? = nil
 
     var inProgress: Bool { ["starting", "running", "waiting", "stopping", "finishing", "queued", "steering"].contains(state) }
 
@@ -268,9 +269,8 @@ struct WorkshopCatalog: Codable, Equatable, Sendable {
 
     static func listItems(_ sessions: [WorkshopSession], hasDraft: (WorkshopSession) -> Bool,
                           isUnread: (WorkshopSession) -> Bool) -> [WorkshopSessionListItem] {
-        let items = ordered(sessions).map { WorkshopSessionListItem(session: $0, hasDraft: hasDraft($0), isUnread: isUnread($0)) }
-        return items.filter(\.hasDraft) + items.filter { !$0.hasDraft && ($0.session.inProgress || $0.isUnread) } +
-            items.filter { !$0.hasDraft && !$0.session.inProgress && !$0.isUnread }
+        sessions.map { WorkshopSessionListItem(session: $0, hasDraft: hasDraft($0), isUnread: isUnread($0)) }
+            .sorted(by: WorkshopSessionListItem.precedes)
     }
 }
 
@@ -279,6 +279,27 @@ struct WorkshopSessionListItem: Identifiable {
     let hasDraft: Bool
     let isUnread: Bool
     var id: String { session.id }
+
+    private var priority: Int { hasDraft ? 0 : session.inProgress || isUnread ? 1 : 2 }
+
+    static func precedes(_ left: Self, _ right: Self) -> Bool {
+        if left.priority != right.priority { return left.priority < right.priority }
+        if left.session.lastSentAt != right.session.lastSentAt { return left.session.lastSentAt > right.session.lastSentAt }
+        return left.id < right.id
+    }
+}
+
+struct WorkshopQuickAccessItem: Identifiable {
+    let agent: WorkshopAgent
+    let application: WorkshopApplication
+    let item: WorkshopSessionListItem
+    var id: String { agent.id + ":" + item.id }
+
+    static func precedes(_ left: Self, _ right: Self) -> Bool {
+        if WorkshopSessionListItem.precedes(left.item, right.item) { return true }
+        if WorkshopSessionListItem.precedes(right.item, left.item) { return false }
+        return left.agent.id < right.agent.id
+    }
 }
 
 // Detail reads fence older catalog responses. A verified terminal state also
@@ -424,6 +445,7 @@ struct WorkshopArtifact: Codable, Identifiable, Hashable, Sendable {
 }
 
 struct WorkshopHistory: Decodable {
+    var parentThreadId: String? = nil
     let threadId: String
     let cwd: String
     let entries: [WorkshopEntry]
@@ -690,6 +712,7 @@ struct WorkshopReceipt: Codable, Identifiable, Equatable, Sendable {
     var questionId: String? = nil
     var systemPrompt: String? = nil
     var reasoningEffort: String? = nil
+    var parentThreadId: String? = nil
 
     var entry: WorkshopEntry { WorkshopEntry(kind: "item", id: id,
         text: message + ((imageIds ?? []).isEmpty ? "" : "\n[图片 × \((imageIds ?? []).count)]"),
@@ -704,7 +727,10 @@ struct WorkshopReceipt: Codable, Identifiable, Equatable, Sendable {
         result["serviceTier"] = serviceTier
         result["reasoningEffort"] = reasoningEffort
         result["questionId"] = questionId
-        if originalThreadId == nil { result["systemPrompt"] = systemPrompt }
+        if originalThreadId == nil {
+            result["systemPrompt"] = systemPrompt
+            result["parentThreadId"] = parentThreadId
+        }
         return result
     }
 

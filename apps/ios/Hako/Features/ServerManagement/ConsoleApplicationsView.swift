@@ -153,7 +153,7 @@ private struct ConsoleApplicationDetailView: View {
                     Button { edit(application) } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text("配置登录方式")
+                                Text("配置应用权限")
                                 Text(application.usesOIDC ? "已启用 · \(application.oidc?.scopes.joined(separator: " ") ?? "")" : "未启用")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
@@ -161,6 +161,10 @@ private struct ConsoleApplicationDetailView: View {
                             Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
                         }.foregroundStyle(.primary)
                     }.disabled(client.busy)
+                }
+                Section("行情权限") {
+                    LabeledContent("读取行情更新清单", value: application.marketReadEnabled ? "已开启" : "未开启")
+                    LabeledContent("写入行情与汇率", value: application.marketWriteEnabled ? "已开启" : "未开启")
                 }
                 if let oidc = application.oidc, oidc.enabled {
                     Section("OIDC 接入信息") {

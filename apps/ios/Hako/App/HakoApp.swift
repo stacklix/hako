@@ -106,7 +106,7 @@ struct HomeView: View {
             // Re-identifying only the workshop list leaves its old destination above it.
             .id(buildPush.workshopNavigationID)
             .tint(.primary)
-            .accessibilityAction(named: "打开 Pin 列表") { HakoPinPresenter.shared.openDrawer() }
+            .accessibilityAction(named: "打开快捷访问") { HakoPinPresenter.shared.openDrawer() }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 HakoPinPresenter.shared.scenePhase = phase
             }

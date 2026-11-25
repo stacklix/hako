@@ -8,6 +8,17 @@ import AVFoundation
 struct WorkshopConversationView: View {
     @ObservedObject var conversation: WorkshopConversation
     private let onSwitch: (() -> Void)?
+    private let sidechatParent: WorkshopConversation?
+    private let showSidechatList: (() -> Void)?
+    private let newSidechat: (() -> Void)?
+    private let returnSidechat: ((String) -> Void)?
+    private let sidechatOverlayPresented: Bool
+    @StateObject private var sidechats: WorkshopSidechats
+    @State private var showingSidechats = false
+    @State private var resolvedSidechatParent: WorkshopConversation?
+    @State private var standaloneSidechatTransfer: WorkshopSidechatTransfer?
+    @State private var returnToParent: WorkshopConversation?
+    @State private var openParentAfterTransfer = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.hakoPinPreview) private var pinPreview
@@ -34,13 +45,22 @@ struct WorkshopConversationView: View {
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @State private var synchronizationOwner = UUID()
 
-    init(conversation: WorkshopConversation, onSwitch: (() -> Void)? = nil) {
+    init(conversation: WorkshopConversation, onSwitch: (() -> Void)? = nil,
+         sidechatParent: WorkshopConversation? = nil, showSidechatList: (() -> Void)? = nil,
+         newSidechat: (() -> Void)? = nil, returnSidechat: ((String) -> Void)? = nil, sidechatOverlayPresented: Bool = false) {
         self.conversation = conversation
         self.onSwitch = onSwitch
+        self.sidechatParent = sidechatParent
+        self.showSidechatList = showSidechatList
+        self.newSidechat = newSidechat
+        self.returnSidechat = returnSidechat
+        self.sidechatOverlayPresented = sidechatOverlayPresented
+        _sidechats = StateObject(wrappedValue: WorkshopSidechats(parent: conversation))
         _commands = StateObject(wrappedValue: WorkshopCommands(store: conversation.store, agent: conversation.agent, application: conversation.application))
     }
 
-    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask }
+    private var transcriptVisible: Bool { detail == nil && artifact == nil && browserLink == nil && previewPhoto == nil && !showingCamera && !showingInfo && !showingFiles && !showingCommandTask && !showingSidechats && standaloneSidechatTransfer == nil && returnToParent == nil && !sidechatOverlayPresented }
+    private var activeSidechatParent: WorkshopConversation? { sidechatParent ?? resolvedSidechatParent }
 
     var body: some View {
         let transcript = conversation.presentation
@@ -171,11 +191,15 @@ struct WorkshopConversationView: View {
         .background(HakoStyle.background)
         .background(WorkshopKeyboardDismissal())
         .background(WorkshopPageCaptureHost(capture: pageCapture).frame(width: 0, height: 0))
-        .navigationTitle(conversation.title)
+        .navigationTitle(activeSidechatParent == nil ? conversation.title : "侧聊")
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 projectInfo
+                if let activeSidechatParent {
+                    WorkshopSidechatParentStatus(parent: activeSidechatParent)
+                        .padding(.horizontal, 20).padding(.vertical, 8).background(HakoStyle.card)
+                }
                 if commands.task?.active == true || commands.pendingCommand != nil {
                     Button { showingCommandTask = true } label: {
                         HStack {
@@ -228,11 +252,14 @@ struct WorkshopConversationView: View {
         .refreshable { await conversation.synchronize() }
         .toolbar {
             ToolbarItemGroup(placement: .topBarLeading) {
+                if let showSidechatList {
+                    Button(action: showSidechatList) { Image(systemName: "list.bullet") }.accessibilityLabel("侧聊历史")
+                }
                 if let enter = onSwitch ?? (pinPreview ? enterPinnedPage : nil) {
                     Button("进入", systemImage: "arrow.up.right", action: enter)
                         .accessibilityLabel("进入此会话")
                 }
-                if pageCapture.available {
+                if pageCapture.available && activeSidechatParent == nil {
                     Button { Task { await capturePage() } } label: {
                         if capturingPage { ProgressView() }
                         else { Image(systemName: "camera.viewfinder") }
@@ -242,17 +269,28 @@ struct WorkshopConversationView: View {
                     .disabled(!conversation.canCompose || conversation.isArchived || conversation.editingMessageID != nil || loadingPhoto || conversation.photos.count >= 3)
                 }
             }
-            if onSwitch != nil {
+            if activeSidechatParent != nil {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if let newSidechat {
+                        Button(action: newSidechat) { Image(systemName: "plus") }.accessibilityLabel("新建侧聊")
+                    }
+                    Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭侧聊")
+                }
+            } else if onSwitch != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
                         .accessibilityLabel("关闭会话预览")
                 }
             } else if !pinPreview {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { showingFiles = true } label: { Image(systemName: "folder") }.accessibilityLabel("浏览项目文件")
+                    Button { showingSidechats = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                        .accessibilityLabel("侧聊")
+                        .disabled(conversation.threadId == nil || conversation.isArchived || conversation.parentThreadId != nil)
+                        .disabled(!conversation.store.authenticated || conversation.scope != conversation.store.scope)
                     Menu {
                         if let page = WorkshopPinContributor.page(for: conversation) { HakoPinButton(page: page) }
                         Button { showingInfo = true } label: { Label("设置", systemImage: "slider.horizontal.3") }
+                        Button { showingFiles = true } label: { Label("项目文件", systemImage: "folder") }
                         if !commands.commands.isEmpty {
                             Section("快捷命令") {
                                 ForEach(commands.commands) { command in
@@ -315,6 +353,18 @@ struct WorkshopConversationView: View {
         } message: { Text("请在系统设置中允许 Hako 使用相机，以拍照添加图片。") }
         .sheet(isPresented: $showingInfo) { WorkshopConversationSettings(conversation: conversation, commands: commands) }
         .sheet(isPresented: $showingFiles) { WorkshopFilesView(store: conversation.store, agent: conversation.agent, application: conversation.application) }
+        .sheet(isPresented: $showingSidechats) { WorkshopSidechatSheet(model: sidechats) }
+        .sheet(item: $standaloneSidechatTransfer, onDismiss: {
+            if openParentAfterTransfer { openParentAfterTransfer = false; returnToParent = activeSidechatParent }
+        }) { transfer in
+            if let activeSidechatParent {
+                WorkshopSidechatReturnView(parent: activeSidechatParent, text: transfer.text) {
+                    openParentAfterTransfer = true
+                    standaloneSidechatTransfer = nil
+                }
+            }
+        }
+        .sheet(item: $returnToParent) { parent in NavigationStack { WorkshopConversationView(conversation: parent) } }
         .sheet(isPresented: $showingCommandTask) { SettingsSheet(title: "命令执行") { WorkshopCommandTaskView(client: commands) } }
         .alert("压缩上下文", isPresented: $confirmsCompact) {
             Button("取消", role: .cancel) { }
@@ -323,6 +373,14 @@ struct WorkshopConversationView: View {
         .task(id: commands.observationID) { await commands.observe() }
         .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
+        .task(id: conversation.parentThreadId) {
+            guard sidechatParent == nil, let parentID = conversation.parentThreadId else { return }
+            do {
+                resolvedSidechatParent = try await WorkshopRuntime.shared.pageConversation(computerID: conversation.agent.id,
+                    threadID: parentID, title: "主会话")
+            } catch is CancellationError { }
+            catch { conversation.error = "暂时无法读取关联的主会话：" + error.localizedDescription }
+        }
     }
 
     private func updateReadingLatest(_ visible: Bool) {
@@ -362,6 +420,21 @@ struct WorkshopConversationView: View {
                 }
                 if entry.truncated {
                     Button("查看内容说明") { detail = entry }.font(.caption)
+                }
+                if let returnSidechat {
+                    Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                        .font(.caption).buttonStyle(.bordered)
+                } else if activeSidechatParent != nil {
+                    Button { standaloneSidechatTransfer = .init(text: entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
+                        .font(.caption).buttonStyle(.bordered)
+                }
+            }
+            .contextMenu {
+                if conversation.parentThreadId == nil, conversation.threadId != nil {
+                    Button {
+                        sidechats.create(quote: entry.text)
+                        showingSidechats = true
+                    } label: { Label("在侧聊中提问", systemImage: "bubble.left.and.bubble.right") }
                 }
             }
         } else if entry.kind == "notice" {

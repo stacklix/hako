@@ -78,6 +78,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
             "account.limits.read" => workshop.QuotaAsync,
             "history.read" => workshop.HistoryAsync, "operation.read" => workshop.OperationAsync,
             "thread.access.read" => workshop.ThreadAccessAsync,
+            "sidechat.list" => workshop.SidechatsAsync,
             "tasks.list" => workshop.TaskProgressAsync,
             "artifact.read" => workshop.ArtifactAsync, "image.read" => workshop.ImageAsync,
             "turn.start" => workshop.StartAsync, "turn.stop" => workshop.StopAsync,
