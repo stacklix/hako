@@ -124,16 +124,10 @@ struct CodeWorkshopView: View {
                                 clearQuotaCache = true
                                 quotaVisit = UUID()
                             } label: {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("Codex 额度").font(.subheadline.weight(.semibold))
-                                    WorkshopQuotaView(store: store, agent: agent, state: quotaState)
-                                        .equatable()
-                                        .id(agent.id)
-                                }
-                                .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+                                WorkshopQuotaView(store: store, agent: agent, state: quotaState)
+                                    .equatable()
+                                    .id(agent.id)
                             }
-                            .background(HakoStyle.card,in:RoundedRectangle(cornerRadius:12))
                             .accessibilityHint("清空缓存并重新获取额度")
                             VStack(alignment: .leading, spacing: 4) {
                                 applicationTabs

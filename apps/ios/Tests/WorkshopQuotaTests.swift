@@ -17,6 +17,18 @@ import Foundation
         precondition(WorkshopQuotaWindow(usedPercent:1,windowDurationMins:10080,resetsAt:nil).periodLabel(primary:false) == "1周")
         let data=Data(#"{"checkedAt":1800000000,"buckets":[{"id":"codex","name":"","model":"","primary":{"usedPercent":27.5,"windowDurationMins":300,"resetsAt":1800003661},"secondary":null},{"id":"other","name":"Other model","model":"other-model","primary":null,"secondary":{"usedPercent":1,"windowDurationMins":10080,"resetsAt":null}}]}"#.utf8)
         let snapshot=try JSONDecoder().decode(WorkshopQuotaSnapshot.self,from:data)
+        precondition(snapshot.remainingFraction(at: now) == 0.725, "Section fill uses the least remaining reported quota, not an average")
+        precondition(snapshot.remainingFraction(at: now.addingTimeInterval(3661)) == nil,
+            "An elapsed window must not display an apparently healthy section fill from other windows")
+        let exhausted = WorkshopQuotaWindow(usedPercent: 100, windowDurationMins: 10080, resetsAt: nil)
+        let full = WorkshopQuotaWindow(usedPercent: 0, windowDurationMins: 300, resetsAt: nil)
+        let limited = WorkshopQuotaSnapshot(buckets: [.init(id:"codex", name:"", model:"", primary:full, secondary:exhausted)], checkedAt:0)
+        precondition(limited.remainingFraction(at: now) == 0, "An exhausted secondary window empties the whole-section fill")
+        precondition(WorkshopQuotaSnapshot(buckets: [.init(id:"codex", name:"", model:"", primary:full, secondary:nil)], checkedAt:0).remainingFraction(at:now) == 1)
+        precondition(WorkshopQuotaSnapshot(buckets: [], checkedAt:0).remainingFraction(at:now) == nil, "Missing quota has no fill")
+        let invalid = WorkshopQuotaWindow(usedPercent:Double.nan, windowDurationMins:300, resetsAt:nil)
+        precondition(WorkshopQuotaSnapshot(buckets: [.init(id:"codex", name:"", model:"", primary:invalid, secondary:full)], checkedAt:0).remainingFraction(at:now) == nil,
+            "A valid peer window cannot hide an invalid quota")
         precondition(snapshot.buckets[0].title == "Codex" && snapshot.buckets[1].title == "Other model")
         precondition(snapshot.displayBuckets(model:"other-model").map(\.id) == ["codex","other"],"model quota must not hide shared account quota")
         precondition(snapshot.displayBuckets(model:"unmetered-model").count == 2)

@@ -5,12 +5,13 @@ struct DeviceProcessesView: View {
     let entry: ConsoleCapabilityData?
     let metrics: ConsoleMetrics?
     let loaded: Bool
+    @ObservedObject private var client = DeviceMonitorClient.shared
     private enum Ranking: String, CaseIterable { case cpu = "CPU", memory = "内存" }
     @State private var ranking: Ranking = .cpu
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !agent.online {
+            if client.connectionState(for: agent.id) == .offline {
                 Label("设备离线，以下为上次采样结果。", systemImage: "clock")
                     .font(.footnote).foregroundStyle(.orange)
             }

@@ -86,18 +86,40 @@ import SwiftUI
     var body: some View {
         let identity = store.settingsAccount + "|" + agent.id
         let snapshot = state.identity == identity ? state.cached?.snapshot(at: state.displayedAt) : nil
-        VStack(alignment: .leading, spacing: 5) {
-            if let snapshot, !snapshot.buckets.isEmpty {
-                ForEach(snapshot.buckets) { bucket in
-                    if let window = bucket.primary { row(bucket, window: window, primary: true) }
-                    if let window = bucket.secondary { row(bucket, window: window, primary: false) }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Codex 额度").font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 5) {
+                if let snapshot, !snapshot.buckets.isEmpty {
+                    ForEach(snapshot.buckets) { bucket in
+                        if let window = bucket.primary { row(bucket, window: window, primary: true) }
+                        if let window = bucket.secondary { row(bucket, window: window, primary: false) }
+                    }
+                } else {
+                    Text(state.identity == identity && state.fetching ? "正在获取额度…" : "未知")
                 }
-            } else {
-                Text(state.identity == identity && state.fetching ? "正在获取额度…" : "未知")
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(HakoStyle.card)
+        .overlay(alignment: .bottom) {
+            if let fraction = snapshot?.remainingFraction(at: state.displayedAt) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        HakoStyle.adaptive(0xeef4f1, 0x2a302e)
+                        Color.green
+                            .frame(width: geometry.size.width * CGFloat(fraction))
+                    }
+                }
+                .frame(height: 2)
+                .clipShape(Capsule())
+                .padding(.horizontal, 14)
+                .accessibilityHidden(true)
             }
         }
-        .font(.caption).foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(Rectangle())
     }
 
     private func row(_ bucket: WorkshopQuotaBucket, window: WorkshopQuotaWindow, primary: Bool) -> some View {

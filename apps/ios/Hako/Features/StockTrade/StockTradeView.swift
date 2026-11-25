@@ -90,14 +90,17 @@ struct StockTradeView: View {
             Section {
                 Picker("选股范围", selection: Binding(get: { store.pool }, set: { value in Task { await store.selectPool(value) } })) {
                     ForEach(StockTradePool.allCases) { Text($0.title).tag($0) }
-                }.disabled(store.loading).stockTradeSeparator()
+                }.disabled(store.loading || store.run == nil).stockTradeSeparator()
                 ForEach(store.rows) { record in
                     NavigationLink {
                         StockTradeStockView(store: store, record: record, run: store.run)
                     } label: { StockTradeStockRow(record: record) }.stockTradeSeparator()
                 }
                 if store.loading { ProgressView("读取快照…") }
-                else if store.rows.isEmpty { Text("当前范围没有已发布记录。").foregroundStyle(.secondary) }
+                else if store.rows.isEmpty {
+                    Text(store.error == nil ? "当前范围没有已发布记录。" : "尚未载入选股数据，请查看上方提示。")
+                        .foregroundStyle(.secondary)
+                }
                 if store.nextCursor != nil {
                     Button("加载更多") { Task { await store.loadResults(append: true) } }.disabled(store.loading)
                 }

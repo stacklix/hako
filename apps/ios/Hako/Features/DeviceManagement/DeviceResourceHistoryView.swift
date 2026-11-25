@@ -15,9 +15,10 @@ struct DeviceResourceHistoryView: View {
     @State private var loading = false
     @State private var loadID = UUID()
     @State private var selectedDate: Date?
+    private var connectionState: DeviceMonitorInventory.ConnectionState { client.connectionState(for: agent.id) }
 
     private var taskID: String {
-        "\(client.requestContext)-\(client.authenticated)-\(agent.online)-\(range.rawValue)-\(scenePhase)-\(refreshID)"
+        "\(client.requestContext)-\(client.authenticated)-\(connectionState.rawValue)-\(range.rawValue)-\(scenePhase)-\(refreshID)"
     }
 
     var body: some View {
@@ -63,7 +64,9 @@ struct DeviceResourceHistoryView: View {
         .onChange(of: liveRefresh) { _, enabled in if enabled { appendLiveSample() } }
         .task(id: taskID) {
             guard scenePhase == .active, client.authenticated else { return }
-            guard agent.online else { error = "设备离线，暂时无法读取本机历史。"; return }
+            guard connectionState != .unknown else { error = nil; return }
+            guard connectionState == .online else { error = "设备离线，暂时无法读取本机历史。"; return }
+            error = nil
             if series.range != range {
                 series = DeviceResourceHistoryLiveSeries(range: range)
                 selectedDate = nil

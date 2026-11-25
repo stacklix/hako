@@ -55,6 +55,10 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
         dismissTap.cancelsTouchesInView = false
         dismissTap.delegate = context.coordinator
         editor.addGestureRecognizer(dismissTap)
+        let quoteTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.placeCaretInEmptyQuotes(_:)))
+        quoteTap.cancelsTouchesInView = false
+        quoteTap.delegate = context.coordinator
+        view.addGestureRecognizer(quoteTap)
         return editor
     }
 
@@ -113,6 +117,11 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
         init(_ parent: HakoCodeEditorTextView) { self.parent = parent }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if gestureRecognizer.view === editor?.textView {
+                guard let view = editor?.textView else { return false }
+                return touch.tapCount == 1 && view.isEditable && view.markedTextRange == nil
+                    && view.selectedRange.length == 0 && !view.isDragging && !view.isDecelerating
+            }
             // Keep the text area's native caret, selection handles and edit menu gestures.
             // Only the gutter dismisses the keyboard; the toolbar also has a dismiss button.
             guard let editor, editor.textView.isFirstResponder else { return false }
@@ -126,6 +135,35 @@ private struct HakoCodeEditorTextView: UIViewRepresentable {
             guard let view = editor?.textView else { return }
             // Run after UIKit's caret gesture so it cannot immediately reopen the keyboard.
             DispatchQueue.main.async { [weak view] in _ = view?.resignFirstResponder() }
+        }
+
+        @objc func placeCaretInEmptyQuotes(_ tap: UITapGestureRecognizer) {
+            guard tap.state == .ended, let view = editor?.textView, view.isEditable,
+                  view.markedTextRange == nil, view.selectedRange.length == 0,
+                  !view.isDragging, !view.isDecelerating else { return }
+            // UIKit's word-based tap placement can skip the insertion position in "".
+            // Hit-test the actual glyphs, so wrapped lines and a scrolled editor agree.
+            let point = tap.location(in: view)
+            let location = CGPoint(x: point.x - view.textContainerInset.left,
+                                   y: point.y - view.textContainerInset.top)
+            let layout = view.layoutManager
+            layout.ensureLayout(for: view.textContainer)
+            let offset = layout.characterIndex(for: location, in: view.textContainer,
+                                              fractionOfDistanceBetweenInsertionPoints: nil)
+            let text = view.text ?? ""
+            guard let insertion = HakoEditorCaret.emptyQuoteInsertion(in: text, atUTF16Offset: offset) else { return }
+            let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: insertion - 1, length: 2),
+                                          actualCharacterRange: nil)
+            let bounds = layout.boundingRect(forGlyphRange: glyphs, in: view.textContainer)
+            guard bounds.contains(location) else { return }
+            // Apply after the native single-tap recognizer. Double taps, selection
+            // handles, long presses and IME composition keep their native behavior.
+            DispatchQueue.main.async { [weak view] in
+                guard let view, view.isEditable, view.text == text, view.markedTextRange == nil,
+                      view.selectedRange.length == 0, !view.isDragging, !view.isDecelerating else { return }
+                view.becomeFirstResponder()
+                view.selectedRange = NSRange(location: insertion, length: 0)
+            }
         }
 
         func textViewDidBeginEditing(_ view: UITextView) { parent.keyboard.focused = true }

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 protocol StockTradeAccess: Sendable {
     func data(_ path: [String], query: [URLQueryItem], method: String, body: Data?, token: String?) async throws -> Data
@@ -17,11 +20,11 @@ final class StockTradeClient: StockTradeAccess, @unchecked Sendable {
 
     func request(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil,
                  token: String? = nil) throws -> URLRequest {
-        guard path.allSatisfy({ !$0.isEmpty && !$0.contains("/") && $0 != "." && $0 != ".." }),
+        guard path.allSatisfy({ !$0.isEmpty && !$0.contains("/") && !$0.contains("\\") && $0 != "." && $0 != ".." }),
               var parts = URLComponents(string: connection.origin) else { throw StockTradeFailure.configuration }
         // Each segment is separately encoded; callers cannot inject another origin or query.
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        parts.percentEncodedPath = "/api/v1/" + path.map { $0.addingPercentEncoding(withAllowedCharacters: allowed)! }.joined(separator: "/")
+        parts.percentEncodedPath += "/api/v1/" + path.map { $0.addingPercentEncoding(withAllowedCharacters: allowed)! }.joined(separator: "/")
         parts.queryItems = query.isEmpty ? nil : query
         guard let url = parts.url else { throw StockTradeFailure.configuration }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)

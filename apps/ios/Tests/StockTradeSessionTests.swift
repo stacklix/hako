@@ -39,12 +39,14 @@ private final class StockTradeTestSecrets: SecretStorage {
 
 @MainActor private final class StockTradeTestBackend: StockTradeAccess {
     let auth: StockTradeTestAuth
-    var starts = 0, completes = 0
+    var starts = 0, completes = 0, renewals = 0
     var mode = "ok"
     var failComplete = false
     var switchDuringStart = false
     var mismatchPage = false
     var challenge = ""
+    var fingerprint = ""
+    var expireAccessOnce = false
     init(_ auth: StockTradeTestAuth) { self.auth = auth }
     private let identity = ["id": "account", "issuer": "https://hako.test", "subject": "subject-one", "username": "owner"]
     private func meta(_ snapshot: String = "snap") -> [String: Any] {
@@ -54,11 +56,13 @@ private final class StockTradeTestSecrets: SecretStorage {
         let endpoint = path.joined(separator: "/")
         let object: [String: Any]
         if endpoint == "meta" {
-            object = ["apiVersion":"1", "timezone":"Asia/Shanghai", "auth":["configured":true,"issuer":"https://hako.test","clientId":"stocktrade","applicationOrigin":"https://trade.test","refreshSupported":false], "features":[:]]
+            object = ["apiVersion":"1", "timezone":"Asia/Shanghai", "auth":["configured":true,"issuer":"https://hako.test","clientId":"stocktrade","applicationOrigin":"https://trade.test","refreshSupported":true,"deviceBoundRefresh":true,"sessionAuthority":"cerno"], "features":[:]]
         } else if endpoint == "auth/native/start" {
             starts += 1
             let payload = try JSONSerialization.jsonObject(with: body!) as! [String:String]
             challenge = payload["codeChallenge"]!
+            fingerprint = payload["deviceFingerprint"]!
+            precondition(fingerprint.count == 64)
             precondition(payload["codeChallengeMethod"] == "S256")
             var details: [String:Any] = ["id":String(repeating:"a",count:43),"issuer":"https://hako.test","clientId":"stocktrade","application":"StockTrade","applicationOrigin":"https://trade.test","nonce":String(repeating:"b",count:43),"expiresAt":StockTradeTestAuth.future(90),"codeChallenge":challenge,"codeChallengeMethod":"S256"]
             auth.details = details
@@ -71,9 +75,25 @@ private final class StockTradeTestSecrets: SecretStorage {
             let computed = Data(SHA256.hash(data: Data(payload["codeVerifier"]!.utf8))).base64EncodedString().replacingOccurrences(of:"+",with:"-").replacingOccurrences(of:"/",with:"_").replacingOccurrences(of:"=",with:"")
             precondition(computed == challenge)
             if failComplete { throw StockTradeFailure.api(status:409,code:"login_finished",requestID:"r",retryable:false) }
-            object = ["accessToken":"own-stocktrade-token","tokenType":"Bearer","expiresAt":StockTradeTestAuth.future(3600),"user":identity]
+            object = ["accessToken":"own-stocktrade-token","tokenType":"Bearer","expiresAt":StockTradeTestAuth.future(3600),"deviceId":String(repeating:"a",count:32),"deviceToken":String(repeating:"d",count:64),"user":identity]
+        } else if endpoint == "auth/native/refresh" {
+            renewals += 1
+            if mode == "unavailable" { throw StockTradeFailure.api(status:503,code:"service_unavailable",requestID:"r",retryable:true) }
+            if mode == "revoked" { throw StockTradeFailure.api(status:401,code:"device_session_invalid",requestID:"r",retryable:false) }
+            let payload = try JSONSerialization.jsonObject(with: body!) as! [String:String]
+            precondition(payload["deviceFingerprint"] == fingerprint && payload["deviceToken"] == String(repeating:"d",count:64))
+            precondition(token == nil && auth.authorizeBodies.count >= 1)
+            object = ["accessToken":"own-stocktrade-token","tokenType":"Bearer","expiresAt":StockTradeTestAuth.future(3600),"deviceId":String(repeating:"a",count:32),"deviceToken":String(repeating:"d",count:64),"user":identity]
+        } else if endpoint == "auth/native/logout" {
+            if mode == "unavailable" { throw StockTradeFailure.api(status:503,code:"service_unavailable",requestID:"r",retryable:true) }
+            precondition(token == nil)
+            object = ["ok":true]
         } else {
             precondition(token == "own-stocktrade-token", "Only the application's token may reach its API")
+            if endpoint == "auth/session" && method == "GET" && expireAccessOnce {
+                expireAccessOnce = false
+                throw StockTradeFailure.api(status:401,code:"session_expired",requestID:"r",retryable:false)
+            }
             if mode == "unavailable" { throw StockTradeFailure.api(status:503,code:"hako_unavailable",requestID:"r",retryable:true) }
             if mode == "revoked" { throw StockTradeFailure.api(status:401,code:"hako_authorization_invalid",requestID:"r",retryable:false) }
             if endpoint == "auth/session" { object = method == "DELETE" ? ["ok":true] : ["user":identity] }
@@ -108,8 +128,24 @@ private final class StockTradeTestSecrets: SecretStorage {
         try await store.confirmConsent()
         precondition(auth.authorizeBodies == [false,true] && api.completes == 1)
         precondition(store.session?.user.subject == "subject-one" && store.rows.count == 1)
-        precondition(vault.values.count == 1)
+        precondition(vault.values.count == 2)
         store.toggleFavorite(store.rows[0]); precondition(store.favorites.count == 1)
+        let sessionKey = vault.values.keys.first { $0.hasPrefix("session.v2.") }!
+        var expired = try JSONSerialization.jsonObject(with: vault.values[sessionKey]!) as! [String:Any]
+        expired["expiresAt"] = StockTradeTestAuth.future(-1)
+        vault.values[sessionKey] = try JSONSerialization.data(withJSONObject: expired)
+        let approvals = auth.authorizeBodies.count
+        auth.authenticated = false
+        let renewed = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
+        await renewed.activate()
+        precondition(renewed.session?.valid == true && api.renewals == 1 && api.starts == 1)
+        precondition(auth.authorizeBodies.count == approvals, "Device renewal must not contact Hako, even after Console logout")
+        api.expireAccessOnce = true
+        let expiredAccess = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
+        await expiredAccess.activate()
+        precondition(expiredAccess.session?.valid == true && api.renewals == 2 && api.starts == 1, "Server-side access expiry must use device renewal, including restore")
+        precondition(auth.authorizeBodies.count == approvals)
+        auth.authenticated = true
         let restored = StockTradeStore(defaults:defaults,secrets:vault,authentication:auth,clientFactory:{ _ in api })
         await restored.activate()
         precondition(restored.session != nil && restored.favorites.count == 1 && api.starts == 1)
@@ -120,7 +156,7 @@ private final class StockTradeTestSecrets: SecretStorage {
         precondition(restored.session != nil, "An uncertain logout must remain retryable")
         api.mode = "revoked"
         await restored.refresh()
-        precondition(restored.session == nil && restored.rows.isEmpty && restored.favorites.isEmpty && vault.values.isEmpty)
+        precondition(restored.session == nil && restored.rows.isEmpty && restored.favorites.isEmpty && vault.values.count == 1)
         api.mode = "ok"; auth.requireConsent = false
         await store.logout()
         precondition(store.session == nil)
@@ -131,7 +167,8 @@ private final class StockTradeTestSecrets: SecretStorage {
         precondition(store.error != nil && store.rows.count == 1, "Never replace data with another snapshot's page")
         auth.requestContext = "console-two"
         store.synchronizeContext()
-        precondition(store.session == nil && store.rows.isEmpty && store.favorites.isEmpty)
+        precondition(store.session != nil, "A Console session change must not revoke Cerno's independently maintained session")
+        await store.logout()
         api.mismatchPage = false; api.switchDuringStart = true
         auth.requestContext = "console-three"; store.synchronizeContext()
         let before = api.completes
@@ -148,6 +185,29 @@ private final class StockTradeTestSecrets: SecretStorage {
         precondition(request.value(forHTTPHeaderField:"Authorization") == "Bearer own-token")
         for name in ["Origin","Sec-Fetch-Site","X-Proxy","Cookie"] { precondition(request.value(forHTTPHeaderField:name) == nil) }
         precondition(request.url?.absoluteString == "https://trade.test/api/v1/auth/native/complete")
-        print("StockTrade native session, consent, revocation, paging and direct transport tests passed")
+
+        let pathSuite = "stocktrade.paths." + UUID().uuidString
+        let pathDefaults = UserDefaults(suiteName: pathSuite)!
+        defer { pathDefaults.removePersistentDomain(forName: pathSuite) }
+        let pathAuth = StockTradeTestAuth(), pathVault = StockTradeTestSecrets()
+        let pathAPI = StockTradeTestBackend(pathAuth)
+        let prefixed = StockTradeStore(defaults: pathDefaults, secrets: pathVault, authentication: pathAuth, clientFactory: { _ in pathAPI })
+        try prefixed.configure(.init(origin: "https://trade.test/cerno/", clientID: "stocktrade"))
+        await prefixed.login()
+        precondition(prefixed.session != nil && prefixed.error == nil, "An application base path must still authorize against its root origin")
+        prefixed.toggleFavorite(prefixed.rows[0])
+        let firstPreference = prefixed.preferenceKey
+        let firstKeys = Set(pathVault.values.keys)
+        let starts = pathAPI.starts
+        try prefixed.configure(.init(origin: "https://trade.test/other/", clientID: "stocktrade"))
+        precondition(prefixed.session == nil && prefixed.favorites.isEmpty)
+        await prefixed.login()
+        precondition(prefixed.session != nil && pathAPI.starts == starts + 1, "Another path must not restore the first application's token")
+        precondition(prefixed.favorites.isEmpty && prefixed.preferenceKey != firstPreference)
+        precondition(pathVault.values.count == 3 && firstKeys.isSubset(of: Set(pathVault.values.keys)))
+        try prefixed.configure(.init(origin: "https://trade.test/cerno", clientID: "stocktrade"))
+        await prefixed.login()
+        precondition(pathAPI.starts == starts + 1 && prefixed.favorites.count == 1, "Returning to the same normalized path restores only its own account data")
+        print("Cerno local sessions, device renewal, consent, revocation, paging and direct transport tests passed")
     }
 }

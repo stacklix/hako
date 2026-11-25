@@ -15,6 +15,17 @@ import Foundation
         for offset in 9...12 { precondition(unicode.index(containingUTF16Offset: offset) == 2) }
         let many = HakoEditorLines(String(repeating: "\n", count: 1000))
         precondition(many.starts.count == 1001 && many.index(containingUTF16Offset: 1000) == 1000)
+        let emptyValue = "secret: \"\"\nnext: true"
+        precondition(HakoEditorCaret.emptyQuoteInsertion(in: emptyValue, atUTF16Offset: 8) == 9)
+        precondition(HakoEditorCaret.emptyQuoteInsertion(in: emptyValue, atUTF16Offset: 9) == 9)
+        precondition(HakoEditorCaret.emptyQuoteInsertion(in: "''", atUTF16Offset: 0) == 1)
+        precondition(HakoEditorCaret.emptyQuoteInsertion(in: "😀中文: \"\"", atUTF16Offset: 7) == 7)
+        for (text, offset) in [("", 0), ("\"\"", -1), ("\"\"", 2), ("key: \"value\"", 5),
+                               ("\\\"\"", 1), ("\"\"\"", 1), ("key: ''word", 0)] {
+            precondition(HakoEditorCaret.emptyQuoteInsertion(in: text, atUTF16Offset: offset) == nil)
+        }
+        precondition(HakoEditorCaret.emptyQuoteInsertion(in: "\\\\\"\"", atUTF16Offset: 2) == 3)
         print("PASS: logical editor lines, empty/trailing lines, mixed newlines, UTF-16 and line lookup")
+        print("PASS: empty quote caret placement, both glyphs, Unicode offsets and escaped delimiters")
     }
 }

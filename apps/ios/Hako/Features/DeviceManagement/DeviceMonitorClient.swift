@@ -54,6 +54,9 @@ import Combine
         set { prepareContext(); state.inventory.agents = newValue; inventoryStorage.save(state.inventory) }
     }
     var hasFetchedAgents: Bool { current.inventory.hasFetched }
+    func connectionState(for id: String) -> DeviceMonitorInventory.ConnectionState {
+        current.inventory.connectionState(for: id)
+    }
     func transportLabel(_ agent: ConsoleAgent) -> String {
         current.routes[agent.id].map { "局域网直连 · " + $0 } ?? "服务器转发"
     }
@@ -61,6 +64,10 @@ import Combine
     private func markOffline(agentID: String? = nil) {
         prepareContext()
         state.inventory.markOffline(agentID: agentID)
+    }
+    private func markUnknown() {
+        prepareContext()
+        state.inventory.markUnknown()
     }
     var deviceData: [String: ConsoleDeviceData] {
         get { current.deviceData }
@@ -107,7 +114,7 @@ import Combine
         } catch {
             guard context == requestContext else { throw CancellationError() }
             if error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
-            if error is URLError { markOffline() }
+            if error is URLError { markUnknown() }
             throw error
         }
     }
@@ -120,7 +127,7 @@ import Combine
         catch is CancellationError { }
         catch {
             guard context == requestContext else { return }
-            markOffline()
+            markUnknown()
             message = DeviceMonitorFailure.message(for: error)
         }
     }

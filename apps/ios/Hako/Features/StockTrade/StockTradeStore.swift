@@ -30,7 +30,8 @@ extension StockTradeLoginStart {
     private var client: (any StockTradeAccess)?
     private var context: String
     private var epoch = UUID()
-    private var pending: (StockTradeLoginStart, NativeApplicationLoginProof, UUID)?
+    private var pending: (StockTradeLoginStart, NativeApplicationLoginProof, UUID, String)?
+    private var renewalTask: Task<StockTradeSession, Error>?
     private var observer: AnyCancellable?
     private var explicitlyLoggedOut = false
     private var configurationError: String?
@@ -44,7 +45,7 @@ extension StockTradeLoginStart {
         self.defaults = defaults; self.secrets = secrets; self.authentication = authentication
         self.authorization = NativeApplicationAuthorization(authentication: authentication)
         self.clientFactory = clientFactory
-        context = authentication.requestContext
+        context = Self.identityContext(authentication)
         if let data = defaults.data(forKey: Self.settingsKey) {
             do { connection = try JSONDecoder().decode(StockTradeConnection.self, from: data).normalized() }
             catch { connection = .init(); configurationError = "Cerno 连接配置无法读取，请重新保存。" }
@@ -59,17 +60,37 @@ extension StockTradeLoginStart {
     var activationKey: String { connection.origin + "|" + connection.clientID + "|" + context }
     var preferenceKey: String? { favoriteKey.map { $0 + ".notifications" } }
     var accountName: String { session?.user.username ?? "尚未连接" }
-    private var sessionKey: String { "session." + Self.digest(connection.origin + "\n" + connection.clientID + "\n" + context) }
+    private var sessionKey: String { "session.v2." + Self.digest(connection.origin + "\n" + connection.clientID + "\n" + context) }
     private var favoriteKey: String? { session.map { "stocktrade.watchlist." + Self.digest(connection.origin + "\n" + $0.user.issuer + "\n" + $0.user.subject) } }
     private static func digest(_ text: String) -> String { SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined() }
 
     private func clearVisible() {
+        renewalTask?.cancel(); renewalTask = nil
         epoch = UUID(); pending = nil; consent = nil; session = nil; run = nil
         rows = []; nextCursor = nil; favorites = []; updatedAt = nil; loading = false; authenticating = false; error = nil
     }
+    private static func identityContext(_ authentication: any AuthenticatedServerAccess) -> String {
+        NativeApplicationAuthorization.origin(authentication.serverURL) ?? authentication.serverURL
+    }
     func synchronizeContext() {
-        guard context != authentication.requestContext else { return }
-        clearVisible(); context = authentication.requestContext; explicitlyLoggedOut = false
+        let current = Self.identityContext(authentication)
+        if context != current {
+            clearVisible(); context = current; explicitlyLoggedOut = false
+        } else if let pending, pending.3 != authentication.requestContext {
+            dismissConsent()
+        }
+    }
+    private func deviceFingerprint() throws -> String {
+        let key = "device.identity.v1"
+        let identity: String
+        if let data = try secrets.read(account: key) {
+            guard let value = String(data: data, encoding: .utf8), UUID(uuidString: value) != nil else { throw StockTradeFailure.invalidResponse }
+            identity = value
+        } else {
+            identity = UUID().uuidString.lowercased()
+            try secrets.save(Data(identity.utf8), account: key, accessibility: .whenUnlocked)
+        }
+        return Self.digest("cerno-device-v1\n" + identity + "\n" + connection.origin + "\n" + connection.clientID)
     }
     func configure(_ value: StockTradeConnection) throws {
         let normalized = try value.normalized()
@@ -83,8 +104,37 @@ extension StockTradeLoginStart {
 
     private func checked(_ ticket: UUID) throws {
         try Task.checkCancellation()
-        guard ticket == epoch, context == authentication.requestContext,
-              authentication.authenticated, !authentication.logoutPending else { throw CancellationError() }
+        guard ticket == epoch, context == Self.identityContext(authentication) else { throw CancellationError() }
+    }
+    private func checkedLogin(_ ticket: UUID, consoleContext: String) throws {
+        try checked(ticket)
+        guard authentication.requestContext == consoleContext, authentication.authenticated,
+              !authentication.logoutPending else { throw CancellationError() }
+    }
+    private func renewed(_ stored: StockTradeSession, ticket: UUID) async throws -> StockTradeSession {
+        if let renewalTask { return try await renewalTask.value }
+        guard stored.renewable else { throw StockTradeFailure.sessionRequired }
+        let task = Task { @MainActor [self] in
+            let fingerprint = try deviceFingerprint()
+            let value: StockTradeSession = try await raw(["auth", "native", "refresh"], method: "POST",
+                body: ["deviceId": stored.deviceId, "deviceToken": stored.deviceToken, "deviceFingerprint": fingerprint], as: StockTradeSession.self)
+            try checked(ticket)
+            guard value.valid, value.deviceId == stored.deviceId, value.deviceToken == stored.deviceToken,
+                  value.user.id == stored.user.id, value.user.issuer == stored.user.issuer, value.user.subject == stored.user.subject,
+                  let expiry = StockTradeTime.date(value.expiresAt), expiry.timeIntervalSinceNow <= 12 * 3600 + 5 else { throw StockTradeFailure.invalidResponse }
+            try secrets.save(try JSONEncoder().encode(value), account: sessionKey, accessibility: .whenUnlocked)
+            session = value
+            return value
+        }
+        renewalTask = task
+        defer { if ticket == epoch { renewalTask = nil } }
+        return try await task.value
+    }
+    private func forgetRevokedSession() throws {
+        let key = sessionKey
+        clearVisible(); explicitlyLoggedOut = true
+        error = StockTradeFailure.sessionRequired.localizedDescription
+        try secrets.delete(account: key)
     }
     private func backend() throws -> any StockTradeAccess {
         if let client { return client }
@@ -103,27 +153,25 @@ extension StockTradeLoginStart {
     func read<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], as: T.Type) async throws -> T {
         synchronizeContext()
         let ticket = epoch
-        guard let session else { throw StockTradeFailure.sessionRequired }
-        guard session.valid else {
-            let key = sessionKey
-            clearVisible()
-            try secrets.delete(account: key)
-            throw StockTradeFailure.sessionRequired
-        }
+        guard var current = session else { throw StockTradeFailure.sessionRequired }
+        var didRenew = false
         do {
-            let value: T = try await raw(path, query: query, token: session.accessToken, as: T.self)
-            try checked(ticket)
-            return value
+            if !current.valid || StockTradeTime.date(current.expiresAt).map({ $0.timeIntervalSinceNow < 120 }) == true {
+                didRenew = true; current = try await renewed(current, ticket: ticket)
+            }
+            do {
+                let value: T = try await raw(path, query: query, token: current.accessToken, as: T.self)
+                try checked(ticket)
+                return value
+            } catch let failure as StockTradeFailure where failure.invalidatesSession && !didRenew {
+                current = try await renewed(current, ticket: ticket)
+                let value: T = try await raw(path, query: query, token: current.accessToken, as: T.self)
+                try checked(ticket)
+                return value
+            }
         } catch {
             guard ticket == epoch else { throw CancellationError() }
-            if (error as? StockTradeFailure)?.invalidatesSession == true {
-                // A network/503 error must retain the session. Only explicit invalidity clears it.
-                let key = sessionKey
-                clearVisible()
-                self.error = StockTradeFailure.sessionRequired.localizedDescription
-                try secrets.delete(account: key)
-                throw StockTradeFailure.sessionRequired
-            }
+            if (error as? StockTradeFailure)?.invalidatesSession == true { try forgetRevokedSession(); throw StockTradeFailure.sessionRequired }
             throw error
         }
     }
@@ -139,49 +187,51 @@ extension StockTradeLoginStart {
     func login() async {
         synchronizeContext()
         guard !authenticating else { return }
-        if session?.valid == false { clearVisible() }
         authenticating = true; error = nil; explicitlyLoggedOut = false
         let ticket = epoch
         defer { if ticket == epoch { authenticating = false } }
         do {
-            guard authentication.authenticated, !authentication.logoutPending else { throw NativeApplicationAuthorizationError.loginRequired }
             _ = try connection.normalized()
-            if session == nil, let data = try secrets.read(account: sessionKey) {
-                let stored = try decode(StockTradeSession.self, data)
-                if stored.valid {
+            var stored = session
+            if stored == nil, let data = try secrets.read(account: sessionKey) { stored = try decode(StockTradeSession.self, data) }
+            if let stored {
+                session = stored
+                do {
                     struct Identity: Decodable { let user: StockTradeUser }
-                    do {
-                        let verified: Identity = try await raw(["auth", "session"], token: stored.accessToken, as: Identity.self)
-                        try checked(ticket)
-                        guard verified.user.id == stored.user.id, verified.user.issuer == stored.user.issuer, verified.user.subject == stored.user.subject,
-                              let issuer = NativeApplicationAuthorization.origin(authentication.serverURL),
-                              NativeApplicationAuthorization.origin(verified.user.issuer) == issuer else { throw StockTradeFailure.invalidResponse }
-                        session = StockTradeSession(accessToken: stored.accessToken, tokenType: stored.tokenType, expiresAt: stored.expiresAt, user: verified.user)
-                        loadFavorites(); await refresh(); return
-                    } catch let failure as StockTradeFailure where failure.invalidatesSession {
-                        try secrets.delete(account: sessionKey)
-                    }
-                } else { try secrets.delete(account: sessionKey) }
+                    let verified: Identity = try await read(["auth", "session"], as: Identity.self)
+                    try checked(ticket)
+                    guard let current = session, verified.user.id == current.user.id, verified.user.issuer == current.user.issuer,
+                          verified.user.subject == current.user.subject,
+                          NativeApplicationAuthorization.origin(verified.user.issuer) == context else { throw StockTradeFailure.invalidResponse }
+                    session = current
+                    loadFavorites(); await refresh(); return
+                } catch let failure as StockTradeFailure where failure.invalidatesSession {
+                    try forgetRevokedSession()
+                    throw StockTradeFailure.sessionRequired
+                }
             }
+            guard authentication.authenticated, !authentication.logoutPending else { throw NativeApplicationAuthorizationError.loginRequired }
+            let consoleContext = authentication.requestContext
             let meta: StockTradeMeta = try await raw(["meta"], as: StockTradeMeta.self)
-            try checked(ticket)
+            try checkedLogin(ticket, consoleContext: consoleContext)
             guard meta.auth.configured else { throw StockTradeFailure.api(status: 503, code: "auth_not_configured", requestID: "", retryable: false) }
-            guard meta.apiVersion == "1", meta.timezone == "Asia/Shanghai", !meta.auth.refreshSupported,
-                  meta.auth.clientId == connection.clientID,
-                  NativeApplicationAuthorization.origin(meta.auth.applicationOrigin) == connection.origin,
+            guard meta.apiVersion == "1", meta.timezone == "Asia/Shanghai", meta.auth.refreshSupported,
+                  meta.auth.deviceBoundRefresh, meta.auth.sessionAuthority == "cerno", meta.auth.clientId == connection.clientID,
+                  let backendOrigin = connection.applicationOrigin,
+                  NativeApplicationAuthorization.origin(meta.auth.applicationOrigin) == backendOrigin,
                   let issuer = NativeApplicationAuthorization.origin(authentication.serverURL),
                   NativeApplicationAuthorization.origin(meta.auth.issuer) == issuer else { throw NativeApplicationAuthorizationError.bindingMismatch }
             let proof = try NativeApplicationLoginProof()
             let start: StockTradeLoginStart = try await raw(["auth", "native", "start"], method: "POST",
-                body: ["codeChallenge": proof.challenge, "codeChallengeMethod": "S256"], as: StockTradeLoginStart.self)
-            try checked(ticket)
+                body: ["codeChallenge": proof.challenge, "codeChallengeMethod": "S256", "deviceFingerprint": try deviceFingerprint()], as: StockTradeLoginStart.self)
+            try checkedLogin(ticket, consoleContext: consoleContext)
             guard !start.loginId.isEmpty, start.codeChallenge == proof.challenge, start.codeChallengeMethod == "S256" else { throw StockTradeFailure.invalidResponse }
             do {
                 let code = try await authorization.authorize(start.hakoRequest, proof: proof,
-                    expectedClientID: connection.clientID, backendOrigin: connection.origin)
-                try await complete(start, proof: proof, code: code, ticket: ticket)
+                    expectedClientID: connection.clientID, backendOrigin: backendOrigin)
+                try await complete(start, proof: proof, code: code, ticket: ticket, consoleContext: consoleContext)
             } catch NativeApplicationAuthorizationError.consentRequired(let value) {
-                try checked(ticket); pending = (start, proof, ticket); consent = value
+                try checkedLogin(ticket, consoleContext: consoleContext); pending = (start, proof, ticket, consoleContext); consent = value
             }
         } catch is CancellationError { }
         catch { if ticket == epoch { self.error = error.localizedDescription } }
@@ -189,25 +239,26 @@ extension StockTradeLoginStart {
 
     func confirmConsent() async throws {
         guard let pending, let consent else { throw StockTradeFailure.changedContext }
-        let (start, proof, ticket) = pending
+        let (start, proof, ticket, consoleContext) = pending
         // Retire the pending context before exchange: a failed/uncertain complete is never replayed.
         self.pending = nil
         authenticating = true
         defer { if ticket == epoch { authenticating = false } }
         do {
+            try checkedLogin(ticket, consoleContext: consoleContext)
             let code = try await authorization.confirm(consent)
-            try await complete(start, proof: proof, code: code, ticket: ticket)
+            try await complete(start, proof: proof, code: code, ticket: ticket, consoleContext: consoleContext)
         } catch {
             if ticket == epoch { self.error = error.localizedDescription; self.consent = nil }
             throw error
         }
     }
     private func complete(_ start: StockTradeLoginStart, proof: NativeApplicationLoginProof,
-                          code: NativeApplicationAuthorizationCode, ticket: UUID) async throws {
-        try checked(ticket)
+                          code: NativeApplicationAuthorizationCode, ticket: UUID, consoleContext: String) async throws {
+        try checkedLogin(ticket, consoleContext: consoleContext)
         let value: StockTradeSession = try await raw(["auth", "native", "complete"], method: "POST",
             body: ["loginId": start.loginId, "code": code.code, "codeVerifier": proof.verifier], as: StockTradeSession.self)
-        try checked(ticket)
+        try checkedLogin(ticket, consoleContext: consoleContext)
         guard value.valid, let issuer = NativeApplicationAuthorization.origin(authentication.serverURL),
               NativeApplicationAuthorization.origin(value.user.issuer) == issuer,
               !value.user.subject.isEmpty, !value.user.id.isEmpty,
@@ -222,7 +273,9 @@ extension StockTradeLoginStart {
         defer { if ticket == epoch { authenticating = false } }
         do {
             struct Result: Decodable { let ok: Bool }
-            let response: Result = try await raw(["auth", "session"], method: "DELETE", token: session!.accessToken, as: Result.self)
+            let current = session!
+            let response: Result = try await raw(["auth", "native", "logout"], method: "POST",
+                body: ["deviceId": current.deviceId, "deviceToken": current.deviceToken, "deviceFingerprint": try deviceFingerprint()], as: Result.self)
             try checked(ticket)
             guard response.ok else { throw StockTradeFailure.invalidResponse }
             try secrets.delete(account: sessionKey); clearVisible(); explicitlyLoggedOut = true

@@ -101,7 +101,8 @@ struct StockTradeMeta: Decodable, Sendable {
     struct Auth: Decodable, Sendable {
         let configured: Bool
         let issuer, clientId, applicationOrigin: String
-        let refreshSupported: Bool
+        let refreshSupported, deviceBoundRefresh: Bool
+        let sessionAuthority: String
     }
     let apiVersion, timezone: String
     let auth: Auth
@@ -163,8 +164,14 @@ enum StockTradePool: String, CaseIterable, Identifiable {
 struct StockTradeUser: Codable, Equatable, Sendable { let id, issuer, subject, username: String }
 struct StockTradeSession: Codable, Sendable {
     let accessToken, tokenType, expiresAt: String
+    let deviceId, deviceToken: String
     let user: StockTradeUser
-    var valid: Bool { tokenType == "Bearer" && !accessToken.isEmpty && accessToken.utf8.count <= 4096 && accessToken.utf8.allSatisfy { (33...126).contains($0) } && StockTradeTime.date(expiresAt).map { $0 > .now } == true }
+    var renewable: Bool {
+        deviceId.utf8.count == 32 && deviceId.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            && (32...128).contains(deviceToken.utf8.count)
+            && deviceToken.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
+    }
+    var valid: Bool { renewable && tokenType == "Bearer" && !accessToken.isEmpty && accessToken.utf8.count <= 4096 && accessToken.utf8.allSatisfy { (33...126).contains($0) } && StockTradeTime.date(expiresAt).map { $0 > .now } == true }
 }
 struct StockTradeLoginStart: Decodable, Sendable {
     let loginId, requestId, issuer, clientId, application, applicationOrigin, nonce, expiresAt, codeChallenge, codeChallengeMethod: String
@@ -174,9 +181,38 @@ struct StockTradeConnection: Codable, Equatable, Sendable {
     var origin = ""
     var clientID = ""
     func normalized() throws -> Self {
-        guard let origin = Self.httpsOrigin(origin.trimmingCharacters(in: .whitespacesAndNewlines)),
+        guard let origin = Self.httpsBaseURL(origin.trimmingCharacters(in: .whitespacesAndNewlines)),
               !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw StockTradeFailure.configuration }
         return Self(origin: origin, clientID: clientID.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    // The persisted address includes the application path. Authorization still
+    // binds to the HTTPS origin and the separately configured client ID.
+    var applicationOrigin: String? {
+        guard let base = Self.httpsBaseURL(origin.trimmingCharacters(in: .whitespacesAndNewlines)),
+              var parts = URLComponents(string: base) else { return nil }
+        parts.percentEncodedPath = ""
+        return parts.string.flatMap(Self.httpsOrigin)
+    }
+    static func httpsBaseURL(_ text: String) -> String? {
+        guard !text.contains(where: { $0.isWhitespace || $0.isNewline }), !text.contains("\\"),
+              var parts = URLComponents(string: text), parts.query == nil, parts.fragment == nil else { return nil }
+        var path = parts.percentEncodedPath
+        guard !path.contains("//") else { return nil }
+        if path.hasSuffix("/") { path.removeLast() }
+        parts.percentEncodedPath = ""
+        guard let root = parts.string.flatMap(Self.httpsOrigin) else { return nil }
+        if path.isEmpty { return root }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        var segments: [String] = []
+        for segment in path.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
+            guard let decoded = String(segment).removingPercentEncoding, !decoded.isEmpty,
+                  decoded != ".", decoded != "..",
+                  !decoded.contains(where: { "/\\%?#".contains($0) || $0.isWhitespace || $0.isNewline }),
+                  !decoded.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  let encoded = decoded.addingPercentEncoding(withAllowedCharacters: allowed) else { return nil }
+            segments.append(encoded)
+        }
+        return root + "/" + segments.joined(separator: "/")
     }
     static func httpsOrigin(_ text: String) -> String? {
         guard let p = URLComponents(string: text), p.scheme?.lowercased() == "https",
@@ -207,7 +243,7 @@ enum StockTradeFailure: Error, LocalizedError {
     case api(status: Int, code: String, requestID: String, retryable: Bool)
     var errorDescription: String? {
         switch self {
-        case .configuration: "请配置独立后端的 HTTPS 地址与 Hako 应用 ID。"
+        case .configuration: "请填写有效的 HTTPS 后端基础地址和 Hako 应用 ID；不要包含账号、查询参数、片段或路径跳转。"
         case .invalidResponse: "Cerno 响应与接口契约不符，已停止使用这份数据。"
         case .sessionRequired: "Cerno 会话已失效，请重新使用 Hako 登录。"
         case .changedContext: "账号或连接已切换，请重新进入。"
@@ -218,7 +254,8 @@ enum StockTradeFailure: Error, LocalizedError {
             case "hako_binding_mismatch", "hako_invalid_response": "应用登记与登录响应不一致，请检查后台配置。"
             case "hako_unavailable": "暂时无法核验 Hako 授权，请稍后重试。"
             case "auth_not_configured": "Cerno 后台尚未配置 Hako 登录。"
-            case "snapshot_unavailable", "monitor_unavailable": "后台尚未发布完整数据，请稍后刷新。"
+            case "snapshot_unavailable": "Cerno 尚未发布完整选股快照，请先在后台完成数据发布，再刷新。"
+            case "monitor_unavailable": "Cerno 尚未发布规则监控快照，请先在后台发布监控数据，再刷新。"
             case "snapshot_expired": "此快照已不可用，请刷新首屏。"
             case "stock_not_found": "此快照没有该股票的行情。"
             case "review_not_found": "此运行没有该股票的复评。"

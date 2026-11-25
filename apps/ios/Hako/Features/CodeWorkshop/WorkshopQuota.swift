@@ -60,6 +60,14 @@ struct WorkshopQuotaCacheEntry: Codable, Sendable {
 struct WorkshopQuotaSnapshot: Codable, Sendable {
     let buckets: [WorkshopQuotaBucket]
     let checkedAt: Double
+    func remainingFraction(at now: Date) -> Double? {
+        let windows = buckets.flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
+        let remaining = windows.compactMap { $0.remaining(at: now) }
+        // The section's progress indicator represents the most restrictive reported quota.
+        // An unknown/elapsed window cannot be treated as recovered capacity.
+        guard !windows.isEmpty, remaining.count == windows.count, let minimum = remaining.min() else { return nil }
+        return minimum / 100
+    }
     var nextRefreshDelay: TimeInterval {
         let future=buckets.flatMap { [$0.primary,$0.secondary].compactMap { $0?.resetsAt } }
             .map { $0-Date.now.timeIntervalSince1970 }.filter { $0 > 0 }

@@ -12,10 +12,11 @@ struct DeviceAgentVersionSection: View {
         agent.capabilities?.contains { $0.name == DeviceAgentVersions.command && $0.version == 1 } == true
     }
     private var context: String {
-        "\(client.requestContext)\n\(agent.id)\n\(agent.online)\n\(supported)\n\(scenePhase)"
+        "\(client.requestContext)\n\(agent.id)\n\(client.connectionState(for: agent.id).rawValue)\n\(supported)\n\(scenePhase)"
     }
     private var placeholder: String {
-        if !agent.online { return "设备离线" }
+        if client.connectionState(for: agent.id) == .unknown { return "状态待确认" }
+        if client.connectionState(for: agent.id) == .offline { return "设备离线" }
         if !supported { return "设备未提供" }
         return loading ? "正在读取…" : "暂时无法读取"
     }

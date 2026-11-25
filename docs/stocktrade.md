@@ -4,15 +4,21 @@ Hako iOS 的「金融 → A 股选股」是独立原生子应用。业务、模�
 
 ## 连接与登录
 
-在右上角滑杆设置中填写独立 Cerno HTTPS origin 和公开的 Hako 应用 `clientId`。后台需部署 Cerno API v1、登记相同的 HTTPS origin，并配置 Hako issuer、应用 Secret 和后台会话加密密钥。手机不接收这些后台凭据，也不使用 Hako Agent 或 `X-Proxy` 转发业务请求。
+在右上角滑杆设置中填写 Cerno 的 HTTPS 后端基础地址和公开的 Hako 应用 `clientId`。基础地址可为域名根地址，也可包含应用子路径，例如 `https://example.com/cerno/`；客户端会在其后追加 `/api/v1/`，因此填写时不再追加 API 路径。此时登录、会话、选股、行情和提醒均请求 `/cerno/api/v1/…`。设置中同时显示用于 Hako 登记的根来源 `https://example.com`，授权按该根来源和 Client ID 核对，不把业务路径作为来源。
+
+后台需部署 Cerno API v1、登记相同的 HTTPS 根来源，并配置 Hako issuer、应用 Secret 和后台会话加密密钥。同域名下不同应用分别登记，使用各自 Client ID 和 Secret；业务路径由反向代理路由到对应后端。手机不接收后台凭据，也不使用 Hako Agent 或 `X-Proxy` 转发业务请求。基础地址不允许账号、查询、片段、路径跳转或歧义编码；末尾斜杠统一移除。本机会话、自选及通知偏好按包含路径的完整后端地址隔离，切换路径不会复用另一应用的令牌。
 
 在 Hako「第三方应用 → Cerno → 配置登录方式」开启「原生授权」。仅使用原生接入时，扫码登录和 OIDC 可保持关闭；应用总开关仍须启用。
 
 手机生成随机 PKCE verifier，调用 Cerno `POST /api/v1/auth/native/start`，把响应 `requestId` 映射为共享原生授权请求的 `id`。客户端分别核对 meta、start 和 Hako 的登记、nonce、挑战、期限及当前 Console 上下文；首次需要显式确认，不能自动把 `consent:false` 升级为 `true`。再向 Cerno `native/complete` 提交 `loginId,code,codeVerifier`，只保存 Cerno 自己的 Bearer 令牌。
 
-会话保存在设备绑定的钥匙串命名空间，按后端、应用 ID 和当前 Console 会话隔离，不进行 iCloud 凭据同步。恢复时调用 `GET /api/v1/auth/session` 核实 issuer、subject 和应用账户 ID。切换 Hako 身份或连接时立即清空可见业务数据和待确认授权；过期或 401 要重新登录。503、网络故障和结果不确定的退出不会被当作成功登出。`native/complete` 为一次性调用，失败或结果不确定后重新开始，绝不重放。
+会话与设备凭据保存在本设备钥匙串，不经 iCloud 同步。Hako 仅在首次或重新登录时证明身份；Cerno 在本地维护 12 小时访问令牌，后续查询、续期和退出都不连接 Hako。已有 Cerno 会话不会因为 Console 临时离线或重新登录而失效；切换 Hako 服务器或 Cerno 连接时仍隔离可见账号与偏好。
 
-后台仍须每次保护请求核验保存的 Hako 应用授权。客户端没有 refresh token。退出通过 `DELETE /api/v1/auth/session` 撤销应用授权；成功才清理本机会话。通用协议见[服务器认证](server-authentication.md)。
+首次生成随机 UUID（ThisDeviceOnly），对 UUID、规范化后端基础地址和应用 ID 求 SHA-256，作为设备指纹。`native/start` 提交 `deviceFingerprint`；初次 PKCE 兑换返回 `deviceId`、随机 `deviceToken` 和访问令牌。服务端对指纹再次求 SHA-256，同时只存设备密钥和访问令牌摘要。钥匙串会话使用 v2 命名空间，不恢复旧的无设备凭据记录。
+
+访问前对临近到期令牌提前续期；重新打开应用时可凭已过期的访问令牌记录内的设备凭据续期，无需 Hako 在线。`POST /cerno/api/v1/auth/native/refresh` 使用设备 ID、设备密钥和指纹，无固定续期截止时间；同设备未被退出或撤销就可持续续期。并发读取合并续期请求，只对 GET 读取在 401 后续期并重试一次。Cerno 网络故障保留账号、历史数据与设备凭据；明确 401 后停止自动恢复并要求用户主动重新登录。
+
+退出调用 `POST /cerno/api/v1/auth/native/logout`，撤销当前设备及其访问令牌，成功后删除本地会话；设备 UUID 保留以便之后重新登记。退出不依赖 Hako，也不撤销其他设备或 Hako Console。通用 Hako 身份证明协议不变；本地续期由 Cerno 自己提供。
 
 ## 页面与数据口径
 
@@ -37,5 +43,7 @@ Hako iOS 的「金融 → A 股选股」是独立原生子应用。业务、模�
 ## 验证
 
 `StockTradeModelsTests.swift` 覆盖快照、单位、行情合法性、空字段、均线与通知时段；`StockTradeSessionTests.swift` 使用假 Hako 与假 Cerno 验证显式同意、单次兑换、持久会话恢复、401/503、退出不确定、身份切换、固定快照与直连请求头。macOS CI 编译执行两组测试；模块边界由 `test_subapp_boundaries.py` 检查。
+
+`StockTradeRoutingTests.swift` 验证根地址与多级应用路径下所有类型请求的 URL 拼接、授权根来源、规范编码、请求头及路径越界拦截，已接入 macOS CI，也可使用 Linux Swift 工具链运行。会话测试同时覆盖同域名不同路径之间的令牌、自选和通知偏好隔离，以及切回相同规范路径后的独立恢复。
 
 真实端到端验收仍需部署支持通用原生授权的 Hako 服务与 Cerno API、相互一致的 HTTPS 应用登记，以及完整的数据/监控快照。测试数据不能证明生产授权、真实行情、邮件或推送送达成功。

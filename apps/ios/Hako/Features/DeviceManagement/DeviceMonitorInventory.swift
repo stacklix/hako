@@ -12,22 +12,45 @@ enum DeviceAgentHistory {
 }
 
 struct DeviceMonitorInventory {
+    enum ConnectionState: String {
+        case unknown, online, offline
+        var title: String {
+            switch self {
+            case .unknown: "待确认"
+            case .online: "在线"
+            case .offline: "离线"
+            }
+        }
+    }
     var agents: [ConsoleAgent]
     private(set) var hasFetched = false
+    private var connections: [String: ConnectionState] = [:]
 
     init(cachedAgents: [ConsoleAgent] = []) {
         agents = cachedAgents
-        markOffline()
+        markUnknown()
     }
 
     mutating func receive(_ agents: [ConsoleAgent]) {
         self.agents = agents
+        connections = Dictionary(agents.map { ($0.id, $0.online ? .online : .offline) }, uniquingKeysWith: { _, latest in latest })
         hasFetched = true
+    }
+
+    func connectionState(for id: String) -> ConnectionState {
+        if agents.first(where: { $0.id == id })?.online == true { return .online }
+        return connections[id] ?? .unknown
+    }
+
+    mutating func markUnknown() {
+        markOffline()
+        connections.removeAll()
     }
 
     mutating func markOffline(agentID: String? = nil) {
         agents = agents.map { agent in
             guard agentID == nil || agent.id == agentID else { return agent }
+            connections[agent.id] = .offline
             return ConsoleAgent(dataQueryEnabled: agent.dataQueryEnabled, modules: agent.modules, id: agent.id, name: agent.name, online: false,
                                 lastSeen: agent.lastSeen, capabilities: agent.capabilities)
         }

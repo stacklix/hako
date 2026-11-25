@@ -170,6 +170,8 @@ swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift -target arm64-apple-maco
 
 编辑器语法高亮只更新前景色并使对应范围重绘，不重设全文字体、不因高亮失效文字布局，也不回设光标或滚动位置；实际输入、字体和窗口尺寸变化仍由 TextKit 正常布局。行号栏预留四位数字宽度，超过后只增加，不因删行反复缩放。
 
-编辑器行号测试覆盖空文件、末尾空行、连续空行、混合换行、Unicode／Emoji 的 UTF-16 偏移和行号查找，已接入 macOS CI。iPhone 验收需检查长行折行与滚动时行号对齐、中文输入、覆盖粘贴后保存／放弃、无文本剪贴板、只读文件，以及短文件和长文件编辑时点击「收起键盘」。滚动回归需在长 YAML 文件中部和底部输入、停顿等待高亮、选词和拖动滚动，确认没有上下回跳；另检查中文候选确认、撤销／重做和 9／10、99／100、999／1000 行之间增删时的光标、颜色与折行。
+点击空的成对双引号或单引号时，编辑器按实际文字位置将光标放到引号中间，便于填写空配置值；不修改文本。已有选区、输入法组词、长按和拖动继续使用系统交互。
+
+编辑器行号测试覆盖空文件、末尾空行、连续空行、混合换行、Unicode／Emoji 的 UTF-16 偏移和行号查找，以及空引号定位与转义排除，已接入 macOS CI。iPhone 验收需检查点击空引号后直接输入、滚动和折行后的定位、双击选词、长按拖动光标、中文输入、覆盖粘贴后保存／放弃、无文本剪贴板、只读文件，以及短文件和长文件编辑时点击「收起键盘」。滚动回归需在长 YAML 文件中部和底部输入、停顿等待高亮、选词和拖动滚动，确认没有上下回跳；另检查中文候选确认、撤销／重做和 9／10、99／100、999／1000 行之间增删时的光标、颜色与折行。
 
 官方参考：[API](https://getarcane.app/docs/reference/api)、[容器](https://getarcane.app/docs/docker/containers)、[权限](https://getarcane.app/docs/access/roles)、[v2.17.1 容器实现](https://github.com/getarcaneapp/arcane/blob/v2.17.1/backend/internal/container/service.go)。

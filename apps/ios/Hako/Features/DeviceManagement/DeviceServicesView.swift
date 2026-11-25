@@ -13,7 +13,7 @@ struct DeviceServicesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if !online {
+            if client.connectionState(for: agent.id) == .offline {
                 Label("设备离线，以下为上次检查结果。", systemImage: "clock")
                     .font(.footnote).foregroundStyle(.orange)
             }

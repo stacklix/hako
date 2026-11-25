@@ -16,30 +16,33 @@ struct StockTradeSettingsView: View {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("后端 HTTPS 地址").font(.subheadline).foregroundStyle(.secondary)
-                        TextField("https://cerno.example.com", text: $draft.origin).keyboardType(.URL)
-                            .accessibilityLabel("Cerno 后端 HTTPS 地址")
+                        Text("后端基础地址（HTTPS）").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("https://example.com/cerno/", text: $draft.origin).keyboardType(.URL)
+                            .accessibilityLabel("Cerno 后端基础地址")
                     }.stockTradeSeparator()
+                    if let origin = draft.applicationOrigin {
+                        HakoLabeledValue(label: "Hako 登记来源", value: origin).stockTradeSeparator()
+                    }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Hako 应用 ID（公开）").font(.subheadline).foregroundStyle(.secondary)
                         TextField("后台登记的 clientId", text: $draft.clientID).accessibilityLabel("Cerno Hako 应用 ID")
                     }.stockTradeSeparator()
-                } header: { Text("独立后端") } footer: { Text("只接受 HTTPS origin，不含路径、账号或查询参数。应用 ID 应与后台登记一致；不填写 appSecret、Tushare 或邮件凭据。业务数据直接访问此后端。") }
+                } header: { Text("独立后端") } footer: { Text("可填写域名根地址或应用子路径，例如 https://example.com/cerno/，无需追加 api/v1。Hako 应用登记来源仍使用域名根地址。应用 ID 应与后台登记一致；不填写 appSecret、Tushare 或邮件凭据。") }
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .disabled(store.authenticating || store.loading || loggingOut)
                 Section {
-                    LabeledContent("认证方式", value: "Hako 原生授权 · PKCE").stockTradeSeparator()
+                    LabeledContent("认证方式", value: "Cerno 本地会话 · 设备续期").stockTradeSeparator()
                     LabeledContent("当前账号", value: store.accountName).stockTradeSeparator()
                     if let session = store.session {
-                        LabeledContent("会话到期", value: StockTradeTime.display(session.expiresAt)).stockTradeSeparator()
-                        Button("退出 Cerno 并撤销应用授权", role: .destructive) { loggingOut = true }
+                        LabeledContent("访问令牌到期", value: StockTradeTime.display(session.expiresAt)).stockTradeSeparator()
+                        Button("退出 Cerno 并撤销设备续期", role: .destructive) { loggingOut = true }
                             .disabled(store.authenticating || store.loading)
-                            .confirmationDialog("退出 Cerno 并撤销此设备的应用授权？", isPresented: $loggingOut, titleVisibility: .visible) {
+                            .confirmationDialog("退出 Cerno 并撤销此设备的续期凭据？", isPresented: $loggingOut, titleVisibility: .visible) {
                                 Button("退出并撤销授权", role: .destructive) { Task { await store.logout() } }
-                            } message: { Text("后台将撤销关联 Hako 应用授权；同一授权下的原生会话也会失效。网络故障时保留会话，供你明确重试。") }
+                            } message: { Text("Cerno 将撤销本设备的续期凭据和关联会话。退出不依赖 Hako；Cerno 网络故障时保留凭据，供你重试。") }
                     }
                     if let error = store.error { StockTradeMessage(text: error) }
-                } header: { Text("账号") } footer: { Text("首版没有 refresh token。到期重新走 Hako 通用授权，有效同意可静默登录。令牌仅保存在此设备钥匙串，登录请求不会导出 Console 凭据。") }
+                } header: { Text("账号") } footer: { Text("访问令牌有效期为 12 小时；设备标识和续期密钥匹配时自动续期。凭据仅保存在本设备钥匙串，不通过 iCloud 同步；Hako 仅在首次或重新登录时确认身份。") }
                 Section {
                     Button("通知配置") { showingNotifications = true }.disabled(store.session == nil)
                     NavigationLink("后台与数据状态") { StockTradeHealthView(store: store) }.disabled(store.session == nil).stockTradeSeparator()

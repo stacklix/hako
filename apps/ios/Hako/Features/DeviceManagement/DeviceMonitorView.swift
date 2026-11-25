@@ -193,7 +193,7 @@ struct DeviceMonitorView: View {
                 Text("设备 ID · " + agent.id).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(agent.online ? "在线" : "离线").font(.caption)
+            Text(client.connectionState(for: agent.id).title).font(.caption)
                 .foregroundStyle(agent.online ? Color.green : Color.secondary)
             if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityHidden(true) }
         }
@@ -239,6 +239,7 @@ struct DeviceMetricsView: View {
     @State private var listenerTab: ConsoleListenerGroup = .user
     @State private var showingCodexNotes = false
     private var currentAgent: ConsoleAgent { client.agents.first { $0.id == agent.id } ?? agent }
+    private var connectionState: DeviceMonitorInventory.ConnectionState { client.connectionState(for: agent.id) }
     private var state: ConsoleDeviceData { client.deviceData[agent.id] ?? ConsoleDeviceData() }
     private var check: ConsoleHTTPCheckState { client.httpChecks[agent.id] ?? ConsoleHTTPCheckState() }
     private var liveTaskContext: String? {
@@ -309,7 +310,7 @@ struct DeviceMetricsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .trailing, spacing: 0) {
-                    Label(currentAgent.online ? "在线" : "离线", systemImage: "circle.fill")
+                    Label(connectionState.title, systemImage: "circle.fill")
                         .font(.caption).foregroundStyle(currentAgent.online ? Color.green : Color.secondary)
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background((currentAgent.online ? Color.green : Color.secondary).opacity(0.1), in: Capsule())
@@ -334,11 +335,11 @@ struct DeviceMetricsView: View {
                 statusMessage(state.loaded ? "刷新失败 · 保留上次数据" : "无法获取设备数据", detail: error)
             } else if let message = client.message {
                 statusMessage("连接提示", detail: message)
-            } else if !currentAgent.online {
-                Text(client.hasFetchedAgents ? "等待设备重新连接…" : "尚未连接服务器，暂时无法确认设备状态。")
+            } else if connectionState != .online {
+                Text(connectionState == .offline ? "等待设备重新连接…" : "正在获取设备状态…")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            if !currentAgent.online {
+            if connectionState == .offline || (connectionState == .unknown && client.message != nil && !client.busy) {
                 Button("重新连接") { Task { await refreshDevice() } }
                     .buttonStyle(HakoActionButtonStyle())
                     .disabled(client.busy)

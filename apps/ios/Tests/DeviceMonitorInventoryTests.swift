@@ -25,9 +25,17 @@ import Foundation
                      "The last opened device must remain reachable when the first list request fails")
         precondition(!inventory.hasFetched && inventory.agents.isEmpty,
                      "An unknown list must not be presented as a confirmed empty list")
+        precondition(inventory.connectionState(for: first.id) == .unknown,
+                     "A remembered device without a response has unknown connectivity, not confirmed offline")
+        let cached = DeviceMonitorInventory(cachedAgents: [first, second])
+        precondition(cached.agents.allSatisfy { !$0.online } && cached.connectionState(for: first.id) == .unknown,
+                     "Cached devices stay non-actionable while loading without an offline badge")
 
         inventory.receive([first, second])
+        precondition(inventory.connectionState(for: first.id) == .online)
         inventory.markOffline(agentID: first.id)
+        precondition(inventory.connectionState(for: first.id) == .offline && inventory.connectionState(for: second.id) == .online,
+                     "A server-confirmed offline device must not change its peer's state")
         precondition(inventory.selectedAgent(id: first.id)?.online == false)
         precondition(inventory.selectedAgent(id: first.id)?.supportsProxy == true,
                      "Going offline must preserve the declared module support")
@@ -44,6 +52,12 @@ import Foundation
         inventory.receive([first, second])
         precondition(inventory.selectedAgent(id: first.id)?.online == true,
                      "A successful refresh must recover the online state")
+        inventory.markUnknown()
+        precondition(inventory.hasFetched && inventory.connectionState(for: first.id) == .unknown && inventory.agents.allSatisfy { !$0.online },
+                     "A server connection failure invalidates online status without asserting device offline or forgetting the list")
+        precondition(inventory.selectedAgent(id: first.id)?.supportsProxy == true,
+                     "Unknown connectivity retains device permissions and capabilities")
+        inventory.receive([first, second])
 
         let suite = "DeviceMonitorInventoryTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -57,6 +71,12 @@ import Foundation
                      "Offline/cache round trips must preserve the server permission state")
         precondition(reopened.agents.allSatisfy { !$0.online },
                      "Relaunching offline must not reuse a cached online badge")
+        precondition(reopened.connectionState(for: first.id) == .unknown,
+                     "Relaunch must not restore a stale offline verdict either")
+        var offlineList = cached
+        offlineList.receive(cached.agents)
+        precondition(offlineList.connectionState(for: first.id) == .offline,
+                     "A fetched offline verdict differs from an identical cached boolean")
         let anotherAccount = DeviceMonitorInventory.Storage(server: "https://one.example", account: "bob", defaults: defaults)
         let anotherServer = DeviceMonitorInventory.Storage(server: "https://two.example", account: "alice", defaults: defaults)
         precondition(anotherAccount.load().agents.isEmpty && anotherServer.load().agents.isEmpty,
