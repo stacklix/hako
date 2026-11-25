@@ -6,7 +6,8 @@ struct StockTradeView: View {
     @State private var page = Page.picks
     @State private var showingSettings = false
     @State private var showingNotifications = false
-    private enum Page: String, CaseIterable { case picks = "选股", watch = "关注", alerts = "提醒" }
+    @State private var requestingWorkflow = false
+    private enum Page: String, CaseIterable { case picks = "选股", watch = "关注", monitor = "监控", work = "工作台" }
 
     var body: some View {
         Group {
@@ -22,11 +23,17 @@ struct StockTradeView: View {
                 loginState
             } else {
                 VStack(spacing: 0) {
-                    if let error = store.error { StockTradeMessage(text: error).padding(.horizontal, 18) }
+                    if page == .picks, let error = store.error { StockTradeMessage(text: error).padding(.horizontal, 18) }
+                    if let task = store.activeWorkflow, page == .picks {
+                        Button { page = .work } label: {
+                            HStack { Label(task.kind.title, systemImage: "arrow.triangle.2.circlepath"); Spacer(); Text(StockTradeWorkflowKind.phaseTitle(task.phase)); Image(systemName: "chevron.right") }.font(.footnote)
+                        }.padding(.horizontal, 18).padding(.vertical, 10)
+                    }
                     switch page {
                     case .picks: picks
                     case .watch: StockTradeWatchView(store: store)
-                    case .alerts: StockTradeFeedView(store: store, kind: .alerts)
+                    case .monitor: StockTradeFeedView(store: store, kind: .monitor)
+                    case .work: StockTradeWorkbench(store: store, showResults: { page = .picks }, newTaskRequested: requestingWorkflow, requestConsumed: { requestingWorkflow = false })
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -36,9 +43,9 @@ struct StockTradeView: View {
             }
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("A 股选股")
+        .navigationTitle(page == .picks ? "A 股选股" : page.rawValue)
         .toolbar {
-            if page == .alerts, store.session != nil {
+            if page == .monitor, store.session != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showingNotifications = true } label: { Image(systemName: "bell.badge") }
                         .accessibilityLabel("Cerno 通知配置")
@@ -55,6 +62,13 @@ struct StockTradeView: View {
             NativeApplicationConsentSheet(consent: consent) { try await store.confirmConsent() }
         }
         .task(id: store.activationKey) { if !showingSettings { await store.activate() } }
+        .task(id: "\(store.scope)|\(store.session != nil)|\(scenePhase == .active)") {
+            guard store.session != nil, scenePhase == .active else { return }
+            repeat {
+                await store.refreshWorkflows()
+                do { try await Task.sleep(for: .seconds(store.activeWorkflow == nil ? 15 : 4)) } catch { return }
+            } while !Task.isCancelled
+        }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.activate() } } }
     }
 
@@ -73,14 +87,29 @@ struct StockTradeView: View {
 
     private var picks: some View {
         List {
+            if store.run == nil, !store.loading {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("开始第一次完整选股").font(.headline)
+                        Text("抓取行情、初选、逐票复评，完成后自动发布。任务在后台执行，可以稍后回来查看。").font(.subheadline).foregroundStyle(.secondary)
+                        Button(store.activeWorkflow == nil ? "启动完整选股" : "查看进行中的任务") {
+                            requestingWorkflow = store.activeWorkflow == nil; page = .work
+                        }.buttonStyle(HakoActionButtonStyle())
+                    }.padding(.vertical, 6).stockTradeSeparator()
+                }
+            }
             if let run = store.run {
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("最近完整选股 · " + run.dataAsOf).font(.headline)
+                        Text((store.displayedRunID == nil ? "最近完整选股 · " : "历史完整选股 · ") + run.dataAsOf).font(.headline)
                         Text("候选 \(run.candidateCount) · 复评 \(run.reviewCount) · 推荐 \(run.recommendationCount)")
                             .font(.subheadline).monospacedDigit()
                         StockTradeFreshness(publishedAt: run.publishedAt, dataAsOf: run.dataAsOf, stale: run.stale)
                     }.stockTradeSeparator()
+                    if store.displayedRunID != nil {
+                        Button("返回最新结果") { Task { try? await store.openPublishedRun(nil) } }.stockTradeSeparator()
+                    }
+                    Button("完整选股并发布") { requestingWorkflow = true; page = .work }.stockTradeSeparator()
                     NavigationLink("后台与数据状态") { StockTradeHealthView(store: store) }.stockTradeSeparator()
                     DisclosureGroup("本轮门槛与规则") {
                         StockTradeFields(fields: run.thresholds)

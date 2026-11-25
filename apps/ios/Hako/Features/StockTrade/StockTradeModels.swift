@@ -115,10 +115,12 @@ struct StockTradeBar: Decodable, Equatable, Identifiable, Sendable {
     let amount: Double?
     let isComplete: Bool
     let firstTradeDate, lastTradeDate: String?
+    let lines: [String: Double?]
     var id: String { date }
     var valid: Bool {
         [open, high, low, close, volume].allSatisfy(\.isFinite)
             && low > 0 && low <= min(open, close) && high >= max(open, close) && volume >= 0
+            && lines.values.compactMap { $0 }.allSatisfy(\.isFinite)
     }
 }
 
@@ -137,7 +139,9 @@ struct StockTradeBars: Decodable, Sendable {
               units["price"]?.text == "CNY", units["volume"]?.text == "hand",
               units["sharesPerHand"]?.number == 100, units["amount"]?.text == "CNY_thousand",
               expectedPeriod != "1w" || weeklyAnchor == "W-FRI",
-              items.allSatisfy(\.valid), Set(items.map(\.date)).count == items.count,
+              items.allSatisfy(\.valid),
+              items.allSatisfy({ Set($0.lines.keys) == Set(expectedPeriod == "1d" ? ["short", "long"] : ["ma5", "ma10", "ma20", "ma60"]) }),
+              Set(items.map(\.date)).count == items.count,
               zip(items, items.dropFirst()).allSatisfy({ $0.date > $1.date }) else {
             throw StockTradeFailure.invalidResponse
         }
@@ -254,7 +258,11 @@ enum StockTradeFailure: Error, LocalizedError {
             case "hako_binding_mismatch", "hako_invalid_response": "应用登记与登录响应不一致，请检查后台配置。"
             case "hako_unavailable": "暂时无法核验 Hako 授权，请稍后重试。"
             case "auth_not_configured": "Cerno 后台尚未配置 Hako 登录。"
-            case "snapshot_unavailable": "Cerno 尚未发布完整选股快照，请先在后台完成数据发布，再刷新。"
+            case "snapshot_unavailable": "Cerno 尚未发布完整选股快照，可从工作台启动完整选股并发布。"
+            case "workflow_disabled": "Cerno 数据执行端尚未启用手动任务，请检查后台配置。"
+            case "workflow_starting": "后台执行服务正在启动，请稍后重试同一请求。"
+            case "workflow_active": "已有任务执行中。请查看任务记录；重复请求不会创建新任务。"
+            case "task_not_found": "此任务不存在，请刷新任务记录。"
             case "monitor_unavailable": "Cerno 尚未发布规则监控快照，请先在后台发布监控数据，再刷新。"
             case "snapshot_expired": "此快照已不可用，请刷新首屏。"
             case "stock_not_found": "此快照没有该股票的行情。"

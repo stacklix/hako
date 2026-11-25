@@ -9,13 +9,12 @@ struct StockTradeWatchView: View {
     @State private var loading = false
     @State private var message: String?
     @State private var displayedScope: UUID?
-    private enum Mode: String, CaseIterable { case mine = "我的自选", search = "搜索", monitor = "后台监控" }
+    private enum Mode: String, CaseIterable { case mine = "我的关注", search = "搜索" }
     private var key: String { "\(store.scope)|\(store.run?.snapshotId ?? "")|\(mode)|\(query)" }
     var body: some View {
         VStack(spacing: 0) {
             HakoUnderlineTabs(title: "关注范围", options: Mode.allCases, selection: $mode) { $0.rawValue }.padding(.horizontal, 18)
-            if mode == .monitor { StockTradeFeedView(store: store, kind: .monitor) }
-            else {
+            Group {
                 List {
                     if mode == .search {
                         Section {
@@ -84,6 +83,9 @@ struct StockTradeFeedView: View {
     var body: some View {
         List {
             if kind == .monitor {
+                Section {
+                    NavigationLink("提醒记录") { StockTradeFeedView(store: store, kind: .alerts).navigationTitle("提醒记录") }.stockTradeSeparator()
+                }
                 Section {
                     Picker("监控状态", selection: $state) {
                         Text("全部").tag(""); Text("规则观察").tag("watch")
@@ -195,6 +197,11 @@ struct StockTradeHealthView: View {
     var body: some View {
         List {
             if let error { StockTradeMessage(text: error) }
+            Section("手动任务服务") {
+                LabeledContent("执行服务", value: store.workflowOnline ? "在线" : "尚未确认在线").stockTradeSeparator()
+                if let task = store.activeWorkflow { StockTradeWorkflowRow(task: task).stockTradeSeparator() }
+                if let error = store.workflowError { StockTradeMessage(text: error) }
+            }
             if displayedScope == store.scope, let detail {
                 Section("后台监控状态") { StockTradeFields(fields: detail.item.fields) }
                 Section { StockTradeFreshness(publishedAt: detail.publishedAt, dataAsOf: detail.dataAsOf, stale: detail.stale) }
@@ -211,6 +218,7 @@ struct StockTradeHealthView: View {
     }
     private func load() async {
         error = nil
+        await store.refreshWorkflows()
         do { detail = try await store.read(["health"], as: StockTradeDetail.self); displayedScope = store.scope }
         catch is CancellationError { }
         catch { self.error = error.localizedDescription }

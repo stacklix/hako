@@ -22,6 +22,14 @@ extension StockTradeLoginStart {
     @Published private(set) var updatedAt: Date?
     @Published private(set) var favorites: [StockTradeRecord] = []
     @Published private(set) var consent: NativeApplicationConsent?
+    @Published private(set) var workflowTasks: [StockTradeWorkflowTask] = []
+    @Published private(set) var workflowCursor: String?
+    @Published private(set) var workflowOnline = false
+    @Published private(set) var workflowError: String?
+    @Published private(set) var displayedRunID: String?
+    private var workflowsLoading = false
+    private var resultGeneration = UUID()
+    var activeWorkflow: StockTradeWorkflowTask? { workflowTasks.first { $0.state.active } }
     private let defaults: UserDefaults
     private let secrets: any SecretStorage
     private let authentication: any AuthenticatedServerAccess
@@ -68,6 +76,7 @@ extension StockTradeLoginStart {
         renewalTask?.cancel(); renewalTask = nil
         epoch = UUID(); pending = nil; consent = nil; session = nil; run = nil
         rows = []; nextCursor = nil; favorites = []; updatedAt = nil; loading = false; authenticating = false; error = nil
+        workflowTasks = []; workflowCursor = nil; workflowOnline = false; workflowError = nil; workflowsLoading = false; displayedRunID = nil; resultGeneration = UUID()
     }
     private static func identityContext(_ authentication: any AuthenticatedServerAccess) -> String {
         NativeApplicationAuthorization.origin(authentication.serverURL) ?? authentication.serverURL
@@ -150,7 +159,7 @@ extension StockTradeLoginStart {
             body: try body.map { try JSONEncoder().encode($0) }, token: token)
         return try decode(T.self, data)
     }
-    func read<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], as: T.Type) async throws -> T {
+    func read<T: Decodable>(_ path: [String], query: [URLQueryItem] = [], method: String = "GET", body: [String: String]? = nil, as: T.Type) async throws -> T {
         synchronizeContext()
         let ticket = epoch
         guard var current = session else { throw StockTradeFailure.sessionRequired }
@@ -160,12 +169,12 @@ extension StockTradeLoginStart {
                 didRenew = true; current = try await renewed(current, ticket: ticket)
             }
             do {
-                let value: T = try await raw(path, query: query, token: current.accessToken, as: T.self)
+                let value: T = try await raw(path, query: query, method: method, body: body, token: current.accessToken, as: T.self)
                 try checked(ticket)
                 return value
             } catch let failure as StockTradeFailure where failure.invalidatesSession && !didRenew {
                 current = try await renewed(current, ticket: ticket)
-                let value: T = try await raw(path, query: query, token: current.accessToken, as: T.self)
+                let value: T = try await raw(path, query: query, method: method, body: body, token: current.accessToken, as: T.self)
                 try checked(ticket)
                 return value
             }
@@ -291,14 +300,15 @@ extension StockTradeLoginStart {
     func refresh() async {
         guard !loading, session != nil else { return }
         loading = true; error = nil
-        let ticket = epoch
+        let ticket = epoch, generation = resultGeneration
         defer { if ticket == epoch { loading = false } }
         do {
-            let latest: StockTradeRun = try await read(["runs", "latest"], as: StockTradeRun.self)
+            let latest: StockTradeRun = try await read(["runs", displayedRunID ?? "latest"], as: StockTradeRun.self)
             try checked(ticket)
             guard latest.status == "complete" else { throw StockTradeFailure.invalidResponse }
             let page = try await resultPage(run: latest, pool: pool, cursor: nil)
             try checked(ticket)
+            guard generation == resultGeneration else { return }
             run = latest; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now
         } catch is CancellationError { }
         catch { if ticket == epoch { self.error = error.localizedDescription } }
@@ -311,11 +321,12 @@ extension StockTradeLoginStart {
     func loadResults(append: Bool) async {
         guard !loading, let run, !append || nextCursor != nil else { return }
         loading = true; error = nil
-        let ticket = epoch, selectedPool = pool
+        let ticket = epoch, selectedPool = pool, generation = resultGeneration
         defer { if ticket == epoch { loading = false } }
         do {
             let page = try await resultPage(run: run, pool: selectedPool, cursor: append ? nextCursor : nil)
             try checked(ticket)
+            guard generation == resultGeneration, pool == selectedPool else { return }
             if append {
                 guard Set(rows.map(\.symbol)).isDisjoint(with: page.items.map(\.symbol)) else { throw StockTradeFailure.invalidResponse }
                 rows += page.items
@@ -345,5 +356,56 @@ extension StockTradeLoginStart {
         guard let key = favoriteKey, let data = defaults.data(forKey: key) else { favorites = []; return }
         do { favorites = try JSONDecoder().decode([StockTradeRecord].self, from: data).filter { Self.validSymbol($0.symbol) } }
         catch { favorites = []; self.error = "本机自选无法读取，原记录已保留。" }
+    }
+
+    func refreshWorkflows(append: Bool = false) async {
+        guard session != nil, !workflowsLoading, !append || workflowCursor != nil else { return }
+        let ticket = epoch
+        workflowsLoading = true
+        defer { if ticket == epoch { workflowsLoading = false } }
+        do {
+            var query = [URLQueryItem(name: "limit", value: "50")]
+            if append, let cursor = workflowCursor { query.append(.init(name: "cursor", value: cursor)) }
+            let page = try await read(["tasks"], query: query, as: StockTradeWorkflowPage.self)
+            try checked(ticket)
+            let tasks = try page.items.map { try $0.validated() }
+            guard Set(tasks.map(\.id)).count == tasks.count,
+                  !append || Set(workflowTasks.map(\.id)).isDisjoint(with: tasks.map(\.id)) else { throw StockTradeFailure.invalidResponse }
+            // First-page refresh preserves older loaded rows, and replaces their status by ID.
+            let refreshedIDs = Set(tasks.map(\.id))
+            let older = workflowTasks.filter { !refreshedIDs.contains($0.id) }
+            workflowTasks = append ? workflowTasks + tasks : tasks + older
+            if append || older.isEmpty { workflowCursor = page.nextCursor }
+            workflowOnline = page.workerOnline; workflowError = nil
+        } catch is CancellationError { }
+        catch { if ticket == epoch { workflowError = error.localizedDescription } }
+    }
+
+    func workflowTask(_ id: String) async throws -> StockTradeWorkflowTask {
+        let task = try await read(["tasks", id], as: StockTradeWorkflowTask.self).validated()
+        guard task.id == id else { throw StockTradeFailure.invalidResponse }
+        if let index = workflowTasks.firstIndex(where: { $0.id == id }) { workflowTasks[index] = task }
+        return task
+    }
+
+    func submitWorkflow(kind: StockTradeWorkflowKind, dataDate: String?, requestID: String) async throws -> StockTradeWorkflowTask {
+        var body = ["kind": kind.rawValue, "requestId": requestID]
+        if let dataDate { body["dataDate"] = dataDate }
+        let task = try await read(["tasks"], method: "POST", body: body, as: StockTradeWorkflowTask.self).validated()
+        guard task.kind == kind, task.dataDate == dataDate else { throw StockTradeFailure.invalidResponse }
+        workflowTasks.removeAll { $0.id == task.id }; workflowTasks.insert(task, at: 0)
+        workflowError = nil
+        return task
+    }
+
+    func openPublishedRun(_ id: String?) async throws {
+        let ticket = epoch
+        let generation = UUID(); resultGeneration = generation
+        let value = try await read(["runs", id ?? "latest"], as: StockTradeRun.self)
+        guard value.status == "complete", id == nil || value.runId == id else { throw StockTradeFailure.invalidResponse }
+        let page = try await resultPage(run: value, pool: pool, cursor: nil)
+        try checked(ticket)
+        guard generation == resultGeneration else { throw CancellationError() }
+        displayedRunID = id; run = value; rows = page.items; nextCursor = page.nextCursor; updatedAt = .now; error = nil
     }
 }

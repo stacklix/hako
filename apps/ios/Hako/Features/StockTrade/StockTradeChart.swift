@@ -3,19 +3,24 @@ import SwiftUI
 struct StockTradeChart: View {
     let bars: [StockTradeBar] // Ascending by actual trading date.
     @Binding var visibleCount: Int
+    let period: String
+    let weeklyWindows: Set<Int>
     @State private var selectedDate: String?
     @State private var initialCount: Int?
     @Environment(\.colorScheme) private var appearance
     private var visible: [StockTradeBar] { Array(bars.suffix(max(1, visibleCount))) }
     private var selected: StockTradeBar? { visible.first { $0.date == selectedDate } }
+    private var lines: [(String, String, Color)] {
+        period == "1d" ? [("short", "知行短期", .orange), ("long", "知行多空", .blue)] :
+            [(5, Color.orange), (10, Color.green), (20, Color.blue), (60, Color.purple)].filter { weeklyWindows.contains($0.0) }.map { ("ma\($0.0)", "MA\($0.0)", $0.1) }
+    }
     private var rising: Color { appearance == .dark ? Color(red: 0.95, green: 0.49, blue: 0.51) : Color(red: 0.75, green: 0.24, blue: 0.27) }
     private var falling: Color { appearance == .dark ? Color(red: 0.40, green: 0.73, blue: 0.61) : Color(red: 0.22, green: 0.51, blue: 0.42) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("MA5").foregroundStyle(.orange)
-                Text("MA20").foregroundStyle(.blue)
+                ForEach(lines, id: \.0) { line in Text(line.1).foregroundStyle(line.2) }
                 Spacer()
                 Text("成交量 · 手").foregroundStyle(.secondary)
             }.font(.caption)
@@ -63,7 +68,7 @@ struct StockTradeChart: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("前复权 K 线、MA5、MA20 与成交量；红涨绿跌。使用上一根和下一根查看数据。")
+        .accessibilityLabel("前复权 K 线、后台指标与成交量；红涨绿跌。使用上一根和下一根查看数据。")
         .onChange(of: bars.map(\.date)) { _, _ in selectedDate = nil }
     }
     private func price(_ n: Double) -> String { n.formatted(.number.precision(.fractionLength(2))) }
@@ -94,12 +99,10 @@ struct StockTradeChart: View {
             let height = bar.volume / volumeMax * 43
             context.fill(Path(CGRect(x: x - bodyWidth / 2, y: volumeBottom - height, width: bodyWidth, height: height)), with: .color(color.opacity(0.5)))
         }
-        for (window, color) in [(5, Color.orange), (20, Color.blue)] {
-            let values = StockTradeChartData.movingAverage(bars, count: window)
-            let offset = bars.count - rows.count
+        for (key, _, color) in lines {
             var path = Path(), started = false
             for index in rows.indices {
-                guard let average = values[index + offset] else { continue }
+                guard let average = rows[index].lines[key] ?? nil else { started = false; continue }
                 let point = CGPoint(x: step * (Double(index) + 0.5), y: y(average))
                 if started { path.addLine(to: point) } else { path.move(to: point); started = true }
             }
@@ -132,6 +135,8 @@ struct StockTradeStockView: View {
     @State private var reviewError: String?
     @State private var loading = false
     @State private var visibleCount = 60
+    @State private var requestedCount = 120
+    @State private var weeklyWindows: Set<Int> = [5, 10, 20, 60]
     @State private var openedScope: UUID?
     private enum Tab: String, CaseIterable { case chart = "K 线", reason = "评分与原因" }
     private var key: String { "\(store.scope)|\(record.symbol)|\(period)|\(run?.snapshotId ?? "")" }
@@ -166,14 +171,25 @@ struct StockTradeStockView: View {
             else { reasonSection }
         }
         .navigationTitle("单股看盘").navigationBarTitleDisplayMode(.inline)
-        .task(id: key) { bars = []; response = nil; await loadBars(append: false) }
+        .task(id: key) { bars = []; response = nil; await loadBars(append: false); await loadRequestedBars() }
+        .task(id: requestedCount) { await loadRequestedBars() }
         .task(id: "\(store.scope)|\(tab.rawValue)") { if tab == .reason { await loadReview() } }
     }
     @ViewBuilder private var chartSection: some View {
         Section {
             Picker("行情周期", selection: $period) { Text("日 K").tag("1d"); Text("周 K").tag("1w") }.pickerStyle(.segmented)
+            Picker("显示 K 线数量", selection: $requestedCount) {
+                Text("近 60 根").tag(60); Text("近 120 根").tag(120); Text("近 250 根").tag(250); Text("全部").tag(0)
+            }.stockTradeSeparator()
+            if period == "1w" {
+                ForEach([5, 10, 20, 60], id: \.self) { window in
+                    Toggle("MA\(window)", isOn: Binding(get: { weeklyWindows.contains(window) }, set: { value in
+                        if value { weeklyWindows.insert(window) } else { weeklyWindows.remove(window) }
+                    })).stockTradeSeparator()
+                }
+            }
             if let message { StockTradeMessage(text: message) }
-            if !bars.isEmpty { StockTradeChart(bars: bars, visibleCount: $visibleCount) }
+            if !bars.isEmpty { StockTradeChart(bars: bars, visibleCount: $visibleCount, period: period, weeklyWindows: weeklyWindows) }
             if loading { ProgressView("读取行情快照…") }
             if !loading && bars.isEmpty { Text("此快照没有可用行情。").foregroundStyle(.secondary) }
             if response?.nextCursor != nil { Button("加载更早 K 线") { Task { await loadBars(append: true) } }.disabled(loading) }
@@ -214,10 +230,21 @@ struct StockTradeStockView: View {
                 guard Set(bars.map(\.date)).isDisjoint(with: older.map(\.date)),
                       older.last.map({ $0.date < (bars.first?.date ?? "9999") }) != false else { throw StockTradeFailure.invalidResponse }
                 bars = older + bars
-            } else { bars = older; visibleCount = 60 }
+            } else { bars = older; visibleCount = requestedCount == 0 ? bars.count : requestedCount }
             response = value
         } catch is CancellationError { }
         catch { if key == activeKey { message = error.localizedDescription } }
+    }
+    private func loadRequestedBars() async {
+        let activeKey = key
+        repeat {
+            guard activeKey == key, response?.nextCursor != nil, !loading,
+                  requestedCount == 0 || bars.count < requestedCount else { break }
+            let previous = response?.nextCursor
+            await loadBars(append: true)
+            if message != nil || previous == response?.nextCursor { break }
+        } while !Task.isCancelled
+        if activeKey == key { visibleCount = requestedCount == 0 ? bars.count : requestedCount }
     }
     private func loadReview() async {
         reviewError = nil
