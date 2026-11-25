@@ -1,13 +1,13 @@
 import SwiftUI
 
 enum StockTradeAppearance {
-    static let background = HakoStyle.adaptive(0xf3f2f8, 0x19191e)
-    static let panel = HakoStyle.adaptive(0xffffff, 0x27272e)
-    static let tint = HakoStyle.adaptive(0x0860d4, 0x77b1ff)
-    static let soft = HakoStyle.adaptive(0xedf4ff, 0x20314c)
-    static let line = HakoStyle.adaptive(0xe9e8ee, 0x393940)
-    static let selectedText = HakoStyle.adaptive(0xffffff, 0x11213b)
-    static let action = HakoActionButtonStyle(backgroundColor: tint)
+    static let background = HakoStyle.background
+    static let panel = HakoStyle.card
+    static let tint = HakoStyle.text
+    static let soft = HakoStyle.line.opacity(0.55)
+    static let line = HakoStyle.line
+    static let selectedText = HakoStyle.card
+    static let action = HakoActionButtonStyle()
 }
 
 enum StockTradeTab: String, CaseIterable, Identifiable {
@@ -34,15 +34,15 @@ enum StockTradeTab: String, CaseIterable, Identifiable {
 struct StockTradeBottomTabs: View {
     @Binding var selection: StockTradeTab
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             ForEach(StockTradeTab.allCases) { tab in
                 Button { selection = tab } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: tab.symbol).font(.system(size: 20, weight: .regular))
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.symbol).font(.system(size: 21))
                         Text(tab.rawValue).font(.caption2.weight(selection == tab ? .semibold : .regular))
                     }
-                    .foregroundStyle(selection == tab ? StockTradeAppearance.tint : Color.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .foregroundStyle(selection == tab ? HakoStyle.text : HakoStyle.muted)
+                    .frame(maxWidth: .infinity, minHeight: 52)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -51,9 +51,9 @@ struct StockTradeBottomTabs: View {
                 .accessibilityIdentifier(tab.accessibilityID)
             }
         }
-        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 6)
-        .background(StockTradeAppearance.panel)
-        .overlay(alignment: .top) { Rectangle().fill(StockTradeAppearance.line).frame(height: 0.5) }
+        .padding(.horizontal, 12).padding(.top, 5)
+        .background(HakoStyle.card.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .contain).accessibilityLabel("Cerno 导航")
     }
 }
@@ -64,18 +64,20 @@ struct StockTradeScreen<Content: View>: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16, content: content)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 24)
-        }.background(StockTradeAppearance.background)
+                .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 24)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .background(StockTradeAppearance.background)
     }
 }
 
 struct StockTradeCard<Content: View>: View {
-    var padding: CGFloat = 19
+    var padding: CGFloat = 16
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 0, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(padding).background(StockTradeAppearance.panel, in: RoundedRectangle(cornerRadius: 25))
+            .padding(padding).background(StockTradeAppearance.panel, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -85,23 +87,21 @@ struct StockTradeHeading: View {
     var action: String? = nil
     var symbol: String? = nil
     var perform: (() -> Void)? = nil
-    @ScaledMetric(relativeTo: .largeTitle) private var titleSize = 29
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text("CERNO / A 股").font(.caption2).tracking(1).foregroundStyle(.secondary)
-                Text(title).font(.system(size: titleSize, weight: .bold))
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Text(subtitle).font(.footnote).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
             if let action, let perform {
                 Button(action: perform) {
                     Group {
-                        if let symbol { Image(systemName: symbol).font(.title3) }
+                        if let symbol { Image(systemName: symbol).font(.body) }
                         else { Text(action).font(.subheadline) }
                     }.frame(minWidth: 44, minHeight: 44)
                 }.buttonStyle(.plain).foregroundStyle(StockTradeAppearance.tint).accessibilityLabel(action)
             }
-        }.padding(.bottom, 7)
+        }.padding(.bottom, 4)
     }
 }
 
@@ -120,7 +120,7 @@ struct StockTradeEntryRow: View {
             Spacer(minLength: 8)
             Text(subtitle).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
             Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-        }.frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        }.frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             .contentShape(Rectangle())
             .overlay(alignment: .bottom) { if separator { Divider() } }
             .accessibilityElement(children: .combine)
@@ -138,9 +138,9 @@ struct StockTradeTaskBanner: View {
                 Spacer(minLength: 4)
                 Image(systemName: "chevron.right")
             }.font(.footnote).foregroundStyle(StockTradeAppearance.tint)
-                .padding(.horizontal, 15).padding(.vertical, 14)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(StockTradeAppearance.soft, in: RoundedRectangle(cornerRadius: 17))
+                .background(StockTradeAppearance.panel, in: RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain)
     }
 }

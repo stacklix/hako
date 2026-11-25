@@ -146,7 +146,9 @@ struct StockTradeView: View {
                     Button("重新选股", action: startOrShowTask).font(.subheadline)
                 }.padding(.horizontal, 4)
                 StockTradeFootnote(text: "候选与评分用于研究参考。打开或刷新页面只读取已发布结果，不会启动选股。")
-                DisclosureGroup("本轮门槛与规则") { StockTradeFields(fields: run.thresholds).padding(.top, 8) }.font(.footnote).padding(.horizontal, 4)
+                StockTradeCard {
+                    DisclosureGroup("本轮门槛与规则") { StockTradeFields(fields: run.thresholds).padding(.top, 8) }.font(.subheadline)
+                }
             } else if store.loading { ProgressView("读取快照…").frame(maxWidth: .infinity).padding(.vertical, 32) }
             else { emptyState }
         }.refreshable { await store.refresh() }
@@ -178,7 +180,7 @@ struct StockTradeView: View {
     }
     private func metric(_ value: String, label: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(value).font(.title2.weight(.semibold)).monospacedDigit()
+            Text(value).font(.title3.weight(.semibold)).monospacedDigit()
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -192,8 +194,8 @@ struct StockTradeView: View {
         return StockTradeCard {
             VStack(spacing: 16) {
                 Image(systemName: unavailable ? "wifi.exclamationmark" : "list.bullet.rectangle").font(.title).foregroundStyle(StockTradeAppearance.tint)
-                    .frame(width: 64, height: 64).background(StockTradeAppearance.soft, in: RoundedRectangle(cornerRadius: 20))
-                Text(unavailable ? "暂时无法载入选股数据" : "开始第一次完整选股").font(.title3.weight(.semibold))
+                    .frame(width: 48, height: 48)
+                Text(unavailable ? "暂时无法载入选股数据" : "开始第一次完整选股").font(.headline)
                 Text(unavailable ? "检查网络与后端连接。恢复连接后可重新载入，已有任务继续由后台执行。" : "抓取行情、策略初选、逐票复评，完成后自动发布。你可以离开页面，稍后回来查看。")
                     .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 if let error = store.error { StockTradeMessage(text: error) }
@@ -249,17 +251,51 @@ struct StockTradeFields: View {
     let fields: [String: StockTradeValue]
     var body: some View {
         ForEach(fields.keys.sorted(), id: \.self) { key in
-            VStack(alignment: .leading, spacing: 6) {
-                Text(StockTradeLabels.title(key)).font(.subheadline).foregroundStyle(.secondary)
-                Text(fields[key]!.text).font(.subheadline).textSelection(.enabled)
-            }.frame(maxWidth: .infinity, alignment: .leading).stockTradeSeparator()
+            Group {
+                if case .object(let children) = fields[key]!, !children.isEmpty {
+                    DisclosureGroup(StockTradeLabels.title(key)) {
+                        StockTradeFields(fields: children).padding(.leading, 12)
+                    }.font(.subheadline)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(StockTradeLabels.title(key)).font(.subheadline).foregroundStyle(.secondary)
+                        Text(StockTradeLabels.value(fields[key]!)).font(.subheadline).textSelection(.enabled)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8).stockTradeSeparator()
+            if key != fields.keys.sorted().last { Divider() }
         }
     }
 }
 
 enum StockTradeLabels {
     static func title(_ key: String) -> String {
-        ["rank_score":"排序分", "total_score":"规则评分", "risk_score":"风险分", "rank_reason":"排序原因", "rank_factors":"排序因子", "risk_flags":"风险标记", "risk_categories":"风险分类", "exclusion_reasons":"排除原因", "why_candidate":"入选依据", "missing_checks":"待验证事项", "comment":"复评说明", "verdict":"复评结论", "evidence":"评分依据", "min_score_threshold":"最低规则评分", "min_rank_score_threshold":"最低排序分", "max_risk_score_for_recommendation":"最高风险分", "trading_rules":"纸面模拟规则", "status":"状态", "updated_at":"状态更新时间", "last_tick_at":"最近调度", "last_quote_at":"最近行情", "last_alert_at":"最近提醒", "open_positions":"模拟进行中数量", "pending_alerts":"等待投递提醒数", "alert_type":"事件类型", "alert_time":"事件时间", "reason":"触发原因", "price":"触发价", "source_suggestion_date":"来源推荐日", "entry_time":"模拟开始时间", "exit_time":"模拟结束时间", "entry_price":"模拟参考价", "stop_price":"规则止损价", "take_profit_price":"规则止盈价"][key] ?? key
+        if let title = ruleTitles[key] { return title }
+        return ["rank_score":"排序分", "total_score":"规则评分", "risk_score":"风险分", "rank_reason":"排序原因", "rank_factors":"排序因子", "risk_flags":"风险标记", "risk_categories":"风险分类", "exclusion_reasons":"排除原因", "why_candidate":"入选依据", "missing_checks":"待验证事项", "comment":"复评说明", "verdict":"复评结论", "evidence":"评分依据", "min_score_threshold":"最低规则评分", "min_rank_score_threshold":"最低排序分", "max_risk_score_for_recommendation":"最高风险分", "trading_rules":"纸面模拟规则", "status":"状态", "updated_at":"状态更新时间", "last_tick_at":"最近调度", "last_quote_at":"最近行情", "last_alert_at":"最近提醒", "open_positions":"模拟进行中数量", "pending_alerts":"等待投递提醒数", "alert_type":"事件类型", "alert_time":"事件时间", "reason":"触发原因", "price":"触发价", "source_suggestion_date":"来源推荐日", "entry_time":"模拟开始时间", "exit_time":"模拟结束时间", "entry_price":"模拟参考价", "stop_price":"规则止损价", "take_profit_price":"规则止盈价"][key] ?? key
+    }
+    private static let ruleTitles = [
+        "aggressive_watchlist_thresholds": "进取观察条件", "strong_watchlist_thresholds": "强势观察条件",
+        "near_miss_thresholds": "近门槛观察条件", "date": "选股基准日期",
+        "min_score": "最低规则评分", "min_rank_score": "最低排序分", "max_rank_score": "普通观察区间上界（不含）",
+        "auto_score_threshold": "常规评分参考线", "max_risk_score": "普通条件最高风险分",
+        "min_market_score": "最低市场环境评分", "min_industry_rank_pct": "行业强度最低百分位",
+        "pattern_min_rank_score": "形态例外最低排序分", "pattern_min_industry_rank_pct": "形态例外行业最低百分位",
+        "top_n": "最多保留数量", "defensive_market_regime_min": "防御条件市场评分分界",
+        "defensive_min_rank_score_threshold": "防御条件最低排序分", "hard_veto_risk_codes": "一票否决风险项",
+        "hard_veto_risk_prefixes": "一票否决风险代码前缀", "min_market_regime_score": "最低市场环境评分",
+        "near_miss_min_score": "近门槛最低规则评分", "near_miss_min_rank_score": "近门槛最低排序分",
+        "near_miss_top_n": "近门槛最多保留数量"
+    ]
+    static func value(_ value: StockTradeValue) -> String {
+        switch value {
+        case .string(let text):
+            return ["b1_quality_hard_veto": "B1 形态严重质量风险", "destructive_bearish_volume": "破坏性放量阴线",
+                    "limit_break": "涨停炸板", "limit_down": "当日跌停", "micro_cap_risk": "小市值风险",
+                    "filter_": "前置过滤未通过（filter_）"][text] ?? text
+        case .array(let values): return values.map(Self.value).joined(separator: "、")
+        default: return value.text
+        }
     }
 }
 

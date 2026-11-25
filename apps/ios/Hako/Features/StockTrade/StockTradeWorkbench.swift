@@ -13,7 +13,7 @@ struct StockTradeWorkbench: View {
             if let task = store.activeWorkflow { StockTradeTaskBanner(task: task) { navigation.push(.task(task)) } }
             StockTradeCard {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("完整选股并发布").font(.title3.weight(.semibold))
+                    Text("完整选股并发布").font(.headline)
                     Text("抓取行情 → 初选 → 复评 → 发布").font(.subheadline).foregroundStyle(.secondary)
                     Text("任务在后台执行，离开应用后仍会继续。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 6)
                     Button {
