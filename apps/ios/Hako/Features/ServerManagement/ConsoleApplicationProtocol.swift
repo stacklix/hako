@@ -13,10 +13,15 @@ struct ConsoleApplication: Decodable, Identifiable, Equatable {
     let name: String
     let origin: String
     var enabled: Bool
+    var qrEnabled: Bool
+    var nativeEnabled: Bool
     let createdAt: String
     var oidc: ConsoleApplicationOIDC?
     var usesOIDC: Bool { oidc?.enabled == true }
-    var loginMethods: String { usesOIDC ? "OIDC · 扫码登录" : "扫码登录" }
+    var loginMethods: String {
+        let methods = (qrEnabled ? ["扫码登录"] : []) + (nativeEnabled ? ["原生授权"] : []) + (usesOIDC ? ["OIDC"] : [])
+        return methods.isEmpty ? "未开启登录方式" : methods.joined(separator: " · ")
+    }
 
     func configuration(issuer: String, secret: String? = nil) -> String {
         var lines = ["HAKO_URL=\(issuer)", "HAKO_CLIENT_ID=\(id)"]
@@ -35,6 +40,8 @@ struct ConsoleApplicationDraft: Equatable {
     var name = ""
     var origin = ""
     var oidcEnabled = false
+    var qrEnabled = false
+    var nativeEnabled = false
     var redirects = ""
     var profile = true
     var requirePKCE = true
@@ -44,6 +51,8 @@ struct ConsoleApplicationDraft: Equatable {
     init(application: ConsoleApplication? = nil) {
         guard let application else { return }
         name = application.name; origin = application.origin
+        qrEnabled = application.qrEnabled
+        nativeEnabled = application.nativeEnabled
         originalOIDC = application.oidc
         if let oidc = application.oidc {
             oidcEnabled = oidc.enabled; redirects = oidc.redirectURIs.joined(separator: "\n")
@@ -80,13 +89,14 @@ struct ConsoleApplicationDraft: Equatable {
         if origin.hasSuffix("/") { origin.removeLast() }
         guard !name.isEmpty, name.utf8.count <= 80, !name.contains(where: { $0.isNewline }),
               ConsoleWebLoginRequest.validApplicationOrigin(origin) else { throw ConsoleApplicationError.invalidDetails }
-        var body: [String: Any] = ["name": name, "origin": origin]
+        var body: [String: Any] = ["name": name, "origin": origin, "qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled]
         if let oidc = try validatedOIDC() { body["oidc"] = try oidc.body() }
         return body
     }
     func updateBody() throws -> [String: Any] {
-        guard let oidc = try validatedOIDC() else { throw ConsoleApplicationError.unchanged }
-        return ["oidc": try oidc.body()]
+        var body: [String: Any] = ["qrEnabled": qrEnabled, "nativeEnabled": nativeEnabled]
+        if let oidc = try validatedOIDC() { body["oidc"] = try oidc.body() }
+        return body
     }
 }
 private extension URLComponents {

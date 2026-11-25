@@ -35,6 +35,8 @@ struct ServerHTTPError: Error, LocalizedError {
         if let serverMessage { return serverMessage }
         switch code {
         case "notifications_unavailable": return "Sora 通知服务尚未启用，请检查服务端配置。"
+        case "native_authorization_disabled": return "此应用尚未开启原生授权，请在第三方应用的登录方式配置中开启。"
+        case "qr_login_disabled": return "此应用尚未开启扫码登录，请在第三方应用的登录方式配置中开启。"
         case "device_not_registered": return "账号或设备公钥尚未在服务端登记。"
         case "invalid_login_challenge": return "登录挑战无效或已过期，请重新登录。"
         case "rate_limited", "too_many_requests": return "请求过于频繁或设备繁忙，请稍后重试。"

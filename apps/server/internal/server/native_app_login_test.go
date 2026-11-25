@@ -18,6 +18,15 @@ type nativeStart struct {
 	ExpiresAt                                                                  string
 }
 
+func nativeTestClient(f *fixture, id string) (AuthClientConfig, string) {
+	c, secret := appTestClient(f, id)
+	c.NativeEnabled = true
+	if err := f.s.store.update(func(st *state) error { st.AuthClients[id] = c; return nil }); err != nil {
+		f.t.Fatal(err)
+	}
+	return c, secret
+}
+
 func startNative(f *fixture, client AuthClientConfig, secret, verifier string) nativeStart {
 	f.t.Helper()
 	w := appCall(f, client, secret, "POST", "/native/requests", "", "", map[string]string{
@@ -47,7 +56,7 @@ func nativeComplete(f *fixture, c AuthClientConfig, secret string, start nativeS
 
 func TestNativeApplicationConsentPKCEAndSingleUse(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	verifier := randomToken()
 	start := startNative(f, c, secret, verifier)
 	path := "/api/v1/auth/native-app/requests/" + start.ID
@@ -98,8 +107,8 @@ func TestNativeApplicationConsentPKCEAndSingleUse(t *testing.T) {
 
 func TestNativeApplicationBackendAndQRIsolation(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
-	other, otherSecret := appTestClient(f, "other")
+	c, secret := nativeTestClient(f, "stocktrade")
+	other, otherSecret := nativeTestClient(f, "other")
 	if w := appCall(f, c, secret, "POST", "/native/requests", "", "", map[string]string{"codeChallenge": randomToken(), "codeChallengeMethod": "plain"}); w.Code != 400 {
 		t.Fatal("plain PKCE accepted")
 	}
@@ -124,7 +133,7 @@ func TestNativeApplicationRevocationRemovesSilentConsent(t *testing.T) {
 	for _, backendLogout := range []bool{false, true} {
 		t.Run(map[bool]string{false: "console-removal", true: "backend-logout"}[backendLogout], func(t *testing.T) {
 			f := newFixture(t, true)
-			c, secret := appTestClient(f, "stocktrade")
+			c, secret := nativeTestClient(f, "stocktrade")
 			// A browser grant for the same application is independent of native consent.
 			qr := startApp(f, c, secret, "login")
 			_, detail := f.call("GET", "/api/v1/auth/web-login/requests/"+qr.ID, nil, f.tokens.AccessToken)
@@ -178,7 +187,7 @@ func TestNativeApplicationRevocationRemovesSilentConsent(t *testing.T) {
 
 func TestNativeApplicationExpirationAndConsoleLogout(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	verifier := randomToken()
 	start := startNative(f, c, secret, verifier)
 	_, code := authorizeNative(f, start, true)
@@ -202,7 +211,7 @@ func TestNativeApplicationExpirationAndConsoleLogout(t *testing.T) {
 
 func TestNativeApplicationRotationInvalidatesConsentAndCodes(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	start := startNative(f, c, secret, randomToken())
 	_, _ = authorizeNative(f, start, true)
 	newSecret := randomToken()
@@ -219,7 +228,7 @@ func TestNativeApplicationRotationInvalidatesConsentAndCodes(t *testing.T) {
 
 func TestNativeApplicationConcurrentCodeRedemption(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	verifier := randomToken()
 	start := startNative(f, c, secret, verifier)
 	_, code := authorizeNative(f, start, true)
@@ -250,7 +259,7 @@ func TestNativeApplicationConcurrentCodeRedemption(t *testing.T) {
 
 func TestNativeApplicationConsentVisibleAndRevocableWithoutSession(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	start := startNative(f, c, secret, randomToken())
 	if status, _ := authorizeNative(f, start, true); status != 200 {
 		t.Fatal("initial consent failed")
@@ -286,7 +295,7 @@ func TestNativeApplicationConsentVisibleAndRevocableWithoutSession(t *testing.T)
 
 func TestNativeApplicationConsentSurvivesNaturalSessionExpiryVisibly(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	verifier := randomToken()
 	start := startNative(f, c, secret, verifier)
 	_, code := authorizeNative(f, start, true)
@@ -313,7 +322,7 @@ func TestNativeApplicationConsentSurvivesNaturalSessionExpiryVisibly(t *testing.
 
 func TestNativeApplicationConsentIsolatedBetweenConsoles(t *testing.T) {
 	f := newFixture(t, true)
-	c, secret := appTestClient(f, "stocktrade")
+	c, secret := nativeTestClient(f, "stocktrade")
 	first := startNative(f, c, secret, randomToken())
 	if status, _ := authorizeNative(f, first, true); status != 200 {
 		t.Fatal("first Console consent failed")

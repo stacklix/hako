@@ -39,7 +39,7 @@ struct ConsoleApplicationsView: View {
                         ContentUnavailableView {
                             Label("还没有第三方应用", systemImage: "square.stack.3d.up")
                         } description: {
-                            Text("登记应用，让它通过扫码或 OIDC 使用 Hako 登录。")
+                            Text("登记应用，让它通过扫码、原生授权或 OIDC 使用 Hako 登录。")
                         } actions: {
                             Button("登记应用") { editor = ApplicationEditorRoute(application: nil) }
                                 .disabled(client.busy)
@@ -148,11 +148,12 @@ private struct ConsoleApplicationDetailView: View {
                     })).disabled(client.busy)
                 }
                 Section("登录方式") {
-                    LabeledContent("扫码登录", value: "支持")
+                    LabeledContent("扫码登录", value: application.qrEnabled ? "已开启" : "未开启")
+                    LabeledContent("原生授权", value: application.nativeEnabled ? "已开启" : "未开启")
                     Button { edit(application) } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 5) {
-                                Text("OIDC 登录")
+                                Text("配置登录方式")
                                 Text(application.usesOIDC ? "已启用 · \(application.oidc?.scopes.joined(separator: " ") ?? "")" : "未启用")
                                     .font(.caption).foregroundStyle(.secondary)
                             }

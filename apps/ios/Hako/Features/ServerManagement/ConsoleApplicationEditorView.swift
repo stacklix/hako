@@ -16,9 +16,9 @@ struct ConsoleApplicationEditorView: View {
         let initial = ConsoleApplicationDraft(application: application)
         self.initial = initial; self._draft = State(initialValue: initial); self.context = client.context
     }
-    private var canSave: Bool { client.authenticated && context == client.context && !client.busy && draft.hasRequiredInput && (application == nil || (draft != initial && (draft.oidcEnabled || application?.oidc != nil))) }
+    private var canSave: Bool { client.authenticated && context == client.context && !client.busy && draft.hasRequiredInput && (application == nil || draft != initial) }
     var body: some View {
-        SettingsSheet(title: application == nil ? "登记应用" : "OIDC 配置", hasChanges: draft != initial,
+        SettingsSheet(title: application == nil ? "登记应用" : "登录方式配置", hasChanges: draft != initial,
                       isBusy: submitting, saveEnabled: canSave, onSave: requestSave) {
             Form {
                 Section {
@@ -33,13 +33,21 @@ struct ConsoleApplicationEditorView: View {
                     Text("手机确认授权时会展示应用名称与登记来源。来源为根地址，支持 HTTPS 或局域网 HTTP。")
                 }
                 Section("登录方式") {
-                    VStack(alignment: .leading, spacing: 5) {
-                        LabeledContent("扫码登录", value: "支持")
-                        Text("登记后即可使用 Hako 自定义扫码登录").font(.caption).foregroundStyle(.secondary)
+                    Toggle(isOn: $draft.qrEnabled) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("开启扫码登录")
+                            Text("允许应用通过 Hako 二维码确认登录").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle(isOn: $draft.nativeEnabled) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("开启原生授权")
+                            Text("允许原生子应用通过 Hako 授权登录，首次使用仍需确认").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Toggle(isOn: $draft.oidcEnabled) {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("启用 OIDC 登录")
+                            Text("开启 OIDC 登录")
                             Text("供支持 OpenID Connect 的应用使用").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -96,7 +104,7 @@ struct ConsoleApplicationEditorView: View {
                 if submitting { Section { ProgressView("正在保存应用…") } }
                 if let errorMessage { Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) } }
             }.disabled(submitting || !client.authenticated || context != client.context)
-            .alert("保存 OIDC 配置？", isPresented: $confirmingSave) {
+            .alert("保存登录方式配置？", isPresented: $confirmingSave) {
                 Button("保存配置", role: .destructive) { Task { await save() } }
                 Button("取消", role: .cancel) { }
             } message: { Text("该应用已有的待授权请求、授权码和 Hako 访问授权将失效。第三方应用自己的登录会话由它管理。") }
@@ -122,7 +130,7 @@ struct ConsoleApplicationEditorView: View {
         submitting = true; errorMessage = nil
         defer { submitting = false }
         do {
-            if let application { try await client.updateOIDC(application, draft: draft) }
+            if let application { try await client.updateLoginMethods(application, draft: draft) }
             else { onCreated(try await client.create(draft)) }
             dismiss()
         } catch is CancellationError { }

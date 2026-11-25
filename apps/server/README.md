@@ -355,4 +355,8 @@ Hako iOS 首页通知按钮展示当前全部待处理登录请求，涵盖管�
 
 ### iOS 原生第三方应用管理
 
-Hako iOS「设置 → Hako 服务 → 第三方应用」支持登记、列表、启停、OIDC 配置和 Secret 轮换，与 Web 管理端共用记录。原生接口 `GET/POST /api/v1/applications`、`PATCH /api/v1/applications/{id}`、`POST /api/v1/applications/{id}/rotate` 使用可信 Console 会话和 DPoP；不接受管理 Cookie 或第三方应用凭据。写请求要求 JSON，每 Console 会话每分钟最多 30 次。需同步更新 iOS 和服务端，现有 Web 管理接口及自定义扫码接口保持兼容。
+Hako iOS「设置 → Hako 服务 → 第三方应用」支持登记、列表、启停、扫码／原生授权／OIDC 三个独立开关和 Secret 轮换，与 Web 管理端共用记录。原生接口 `GET/POST /api/v1/applications`、`PATCH /api/v1/applications/{id}`、`POST /api/v1/applications/{id}/rotate` 使用可信 Console 会话和 DPoP；不接受管理 Cookie 或第三方应用凭据。写请求要求 JSON，每 Console 会话每分钟最多 30 次。需同步更新 iOS 和服务端，现有 Web 管理接口及自定义扫码接口保持兼容。
+
+### 应用登录方式开关
+
+服务端 0.8.20 在应用登记中提供 `qrEnabled`、`nativeEnabled` 和 `oidc.enabled` 三个独立开关，`enabled` 仍为总开关。三种登录方式默认关闭；已有记录缺少扫码或原生开关时也为关闭，升级后需在网页或 iOS「配置登录方式」中按用途明确开启。已有 OIDC 配置保留。保存登录方式会撤销该应用的旧请求和 Hako 授权，重新开启不恢复旧授权。管理后台自己的 Console 扫码不受影响。Cerno 原生接入只需开启原生授权，不要求同时开启扫码或 OIDC。

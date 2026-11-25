@@ -14,14 +14,16 @@ import (
 
 // SecretHash is base64url(SHA256(secret)); raw application secrets are never stored.
 type AuthClientConfig struct {
-	OIDC       *OIDCClient `json:"oidc,omitempty"`
-	Revision   string      `json:"revision,omitempty"`
-	ID         string      `json:"id"`
-	Name       string      `json:"name"`
-	Origin     string      `json:"origin"`
-	SecretHash string      `json:"secretHash"`
-	Enabled    bool        `json:"enabled"`
-	CreatedAt  int64       `json:"createdAt"`
+	OIDC          *OIDCClient `json:"oidc,omitempty"`
+	Revision      string      `json:"revision,omitempty"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	Origin        string      `json:"origin"`
+	SecretHash    string      `json:"secretHash"`
+	Enabled       bool        `json:"enabled"`
+	NativeEnabled bool        `json:"nativeEnabled"`
+	QREnabled     bool        `json:"qrEnabled"`
+	CreatedAt     int64       `json:"createdAt"`
 }
 
 func validateAuthClients(clients []AuthClientConfig) error {
@@ -77,7 +79,7 @@ func (s *Server) validApplicationRequest(req *adminLoginRequest) bool {
 		return true
 	}
 	c, ok := s.authClient(req.ClientID)
-	return ok && c.SecretHash == req.ClientKeyHash && (req.OIDC == nil || (c.OIDC != nil && c.OIDC.Enabled && c.Revision == req.OIDC.Revision))
+	return ok && c.SecretHash == req.ClientKeyHash && ((req.OIDC == nil && c.QREnabled) || (req.OIDC != nil && c.OIDC != nil && c.OIDC.Enabled && c.Revision == req.OIDC.Revision))
 }
 
 func (s *Server) appClient(w http.ResponseWriter, r *http.Request) (AuthClientConfig, bool) {
@@ -107,6 +109,10 @@ func (s *Server) appLoginRoutes() {
 func (s *Server) createAppLogin(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.appClient(w, r)
 	if !ok {
+		return
+	}
+	if !c.QREnabled {
+		reject(w, 403, "qr_login_disabled")
 		return
 	}
 	if !s.hasAdminConsole() {
@@ -255,7 +261,7 @@ func (s *Server) appSession(w http.ResponseWriter, r *http.Request) {
 	key := digest(token)
 	ss, ok := s.adminSessions[key]
 	current, enabled := s.authClient(c.ID)
-	if !validLoginID(token) || !ok || ss.ClientID != c.ID || !enabled || current.SecretHash != c.SecretHash || ss.ClientKeyHash != c.SecretHash {
+	if !validLoginID(token) || !ok || ss.ClientID != c.ID || !enabled || current.SecretHash != c.SecretHash || ss.ClientKeyHash != c.SecretHash || (ss.NativeConsentID != "" && !current.NativeEnabled) || (ss.NativeConsentID == "" && !current.QREnabled) {
 		reject(w, 401, "invalid_session")
 		return
 	}

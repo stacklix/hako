@@ -66,7 +66,7 @@ func (s *Server) cleanupNativeAppLogins(now time.Time) {
 
 func (s *Server) validNativeConsent(consent nativeApplicationConsent) bool {
 	c, ok := s.authClient(consent.ClientID)
-	return ok && c.SecretHash == consent.ClientKeyHash && s.validAdminApprover(consent.SessionID, consent.Thumb)
+	return ok && c.NativeEnabled && c.SecretHash == consent.ClientKeyHash && s.validAdminApprover(consent.SessionID, consent.Thumb)
 }
 
 func (s *Server) nativeRequest(w http.ResponseWriter, id string) (*nativeApplicationRequest, AuthClientConfig) {
@@ -85,6 +85,10 @@ func (s *Server) nativeRequest(w http.ResponseWriter, id string) (*nativeApplica
 		reject(w, 401, "invalid_application")
 		return nil, AuthClientConfig{}
 	}
+	if !c.NativeEnabled {
+		reject(w, 403, "native_authorization_disabled")
+		return nil, AuthClientConfig{}
+	}
 	return req, c
 }
 
@@ -97,6 +101,10 @@ func (s *Server) nativeRequestInfo(id string, req *nativeApplicationRequest, c A
 func (s *Server) createNativeAppLogin(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.appClient(w, r)
 	if !ok {
+		return
+	}
+	if !c.NativeEnabled {
+		reject(w, 403, "native_authorization_disabled")
 		return
 	}
 	if !s.hasAdminConsole() {
@@ -124,6 +132,10 @@ func (s *Server) createNativeAppLogin(w http.ResponseWriter, r *http.Request) {
 	current, enabled := s.authClient(c.ID)
 	if !enabled || current.SecretHash != c.SecretHash {
 		reject(w, 401, "invalid_application")
+		return
+	}
+	if !current.NativeEnabled {
+		reject(w, 403, "native_authorization_disabled")
 		return
 	}
 	s.cleanupNativeAppLogins(now)

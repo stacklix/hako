@@ -44,6 +44,10 @@ Console 只接受当前 HTTPS 服务器的二维码或手动粘贴的登录请�
 
 ## 第三方应用扫码登录
 
+应用管理提供三个独立开关：扫码登录（`qrEnabled`）、原生授权（`nativeEnabled`）和 OIDC（`oidc.enabled`）；`enabled` 为应用总开关。网页与 iOS 均可在创建或「配置登录方式」时设置。三种方式默认关闭；未保存过新字段的已有应用，其扫码及原生授权也处于关闭状态，升级后需按实际用途手动开启，已有 OIDC 配置保留。管理后台自身的 Console 扫码登录不受这些第三方应用开关影响。
+
+创建和 PATCH 应用接口接受上述开关，列表和详情返回当前状态；PATCH 未提供的开关保留原值。保存登录方式配置会撤销该应用已有的待处理请求、授权码、原生同意与 Hako 授权，重新开启不会恢复旧授权。关闭扫码或原生授权后，创建请求分别返回 403 `qr_login_disabled`、`native_authorization_disabled`；检查、批准和兑换也复核当前开关。此能力要求服务端 0.8.20，配套 iOS 最低要求服务端 0.8.20。
+
 可信管理员登录 `/consilium/applications` 创建应用，填写名称与实际应用根地址（HTTPS 或局域网 HTTP）。服务器自动生成唯一应用 ID 和随机 32 字节 Base64url SK，仅创建 / 轮换响应返回原始 SK 和可复制的 `HAKO_URL / HAKO_CLIENT_ID / HAKO_CLIENT_SECRET` 配置。应用记录、启用状态和 `base64url(SHA256(SK))`（无填充）持久保存在现有加密数据库，不使用 `server.json` 管理应用，不保存原始 SK；重启不丢失。
 
 管理接口为 `GET/POST /consilium/api/applications`、`PATCH /consilium/api/applications/{id}`（正文 `enabled`）、`POST /consilium/api/applications/{id}/rotate`（正文 `{}`），全部要求原生 Hako 管理 Cookie，写请求还要求 CSRF 和同源。列表仅返回 `id,name,origin,enabled,createdAt`，不返回 SK 或其哈希。最多 64 个应用。停用 / 轮换立即清除该应用的待授权请求及授权会话；每次请求和授权还绑定创建时的密钥哈希，防止并发轮换恢复旧授权。重新启用不恢复旧授权。轮换后应用更新 SK 并重启；SK 遗失只能轮换，不能查看旧值。
@@ -92,7 +96,7 @@ iOS 的 `NativeApplicationAuthorization` 注入 `AuthenticatedServerAccess`，�
 
 ## iOS Console 第三方应用管理
 
-原生入口为「设置 → Hako 服务 → 第三方应用」。与 Web 管理页共用应用记录、Secret 哈希及 OIDC 配置；不会在手机建立另一份独立登记表。登记默认支持自定义扫码登录，OIDC 仍须明确开启。
+原生入口为「设置 → Hako 服务 → 第三方应用」。与 Web 管理页共用应用记录、Secret 哈希及登录方式配置；不会在手机建立另一份独立登记表。扫码、原生授权和 OIDC 均须通过各自开关明确开启。
 
 | 原生 Console 接口 | 用途 |
 | --- | --- |

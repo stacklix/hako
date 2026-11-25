@@ -8,7 +8,8 @@ import Foundation
                 """.utf8), iosVersion: installed).warning
         }
 
-        precondition(warning(server: "0.8.19", minimumIOS: "0.8.0", installed: "0.8.0") == nil)
+        precondition(warning(server: "0.8.20", minimumIOS: "0.8.0", installed: "0.8.0") == nil)
+        precondition(warning(server: "0.8.19", minimumIOS: "0.8.0", installed: "0.8.0") != nil)
         precondition(warning(server: "0.8.18", minimumIOS: "0.8.0", installed: "0.8.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.8.17", minimumIOS: "0.8.0", installed: "0.8.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.8.16", minimumIOS: "0.8.0", installed: "0.8.0")?.hasSuffix("请升级 服务端。") == true)
@@ -19,9 +20,9 @@ import Foundation
         precondition(warning(server: "0.2.4", minimumIOS: "0.7.0", installed: "0.7.13")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.8.110", minimumIOS: "0.7.9", installed: "0.7.10") == nil)
         precondition(warning(server: "0.2.99", minimumIOS: "0.7.0", installed: "0.7.0")?.hasSuffix("请升级 服务端。") == true)
-        precondition(warning(server: "0.8.19", minimumIOS: "0.7.2", installed: "0.7.1")?.hasSuffix("请升级 Hako iOS。") == true)
-        precondition(warning(server: "0.8.19", minimumIOS: "0.7.0", installed: "0.2.4")?.hasSuffix("请升级 Hako iOS。") == true)
-        precondition(warning(server: "0.8.19", minimumIOS: "0.8.0", installed: "0.7.0")?.hasSuffix("请升级 Hako iOS。") == true)
+        precondition(warning(server: "0.8.20", minimumIOS: "0.7.2", installed: "0.7.1")?.hasSuffix("请升级 Hako iOS。") == true)
+        precondition(warning(server: "0.8.20", minimumIOS: "0.7.0", installed: "0.2.4")?.hasSuffix("请升级 Hako iOS。") == true)
+        precondition(warning(server: "0.8.20", minimumIOS: "0.8.0", installed: "0.7.0")?.hasSuffix("请升级 Hako iOS。") == true)
         precondition(warning(server: "0.0.9", minimumIOS: "0.7.0", installed: "0.7.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.3.9", minimumIOS: "0.9.0", installed: "0.10.0")?.hasSuffix("请升级 服务端。") == true)
         precondition(warning(server: "0.9.0", minimumIOS: "0.7.0", installed: "0.7.0")?.hasSuffix("请升级 Hako iOS。") == true)

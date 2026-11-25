@@ -12,7 +12,7 @@ import (
 
 func appTestClient(f *fixture, id string) (AuthClientConfig, string) {
 	secret := randomToken()
-	c := AuthClientConfig{ID: id, Name: "iLinker", Origin: "https://notify.example.com", SecretHash: digest(secret), Enabled: true, CreatedAt: time.Now().Unix()}
+	c := AuthClientConfig{ID: id, Name: "iLinker", Origin: "https://notify.example.com", SecretHash: digest(secret), Enabled: true, QREnabled: true, CreatedAt: time.Now().Unix()}
 	if err := f.s.store.update(func(st *state) error { st.AuthClients[id] = c; return nil }); err != nil {
 		f.t.Fatal(err)
 	}

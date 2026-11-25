@@ -87,7 +87,7 @@ import Combine
         upsert(result.application)
         return ConsoleApplicationCredential(application: result.application, secret: result.clientSecret, issuer: issuer, context: expected)
     }
-    func updateOIDC(_ application: ConsoleApplication, draft: ConsoleApplicationDraft) async throws {
+    func updateLoginMethods(_ application: ConsoleApplication, draft: ConsoleApplicationDraft) async throws {
         try await update(application, body: draft.updateBody())
     }
     func setEnabled(_ application: ConsoleApplication, enabled: Bool) async throws {

@@ -26,7 +26,7 @@ func consoleApplicationCall(f *fixture, method, path string, body any, token str
 func TestConsoleApplicationManagementSharesWebRecords(t *testing.T) {
 	f := newFixture(t, true)
 	oidc := OIDCClient{Enabled: true, RedirectURIs: []string{"https://client.example/callback"}, Scopes: []string{"openid", "profile"}, RequirePKCE: true, AuthMethod: "client_secret_basic"}
-	status, data := consoleApplicationCall(f, "POST", "/api/v1/applications", map[string]any{"name": "Phone-created", "origin": "https://client.example", "oidc": oidc}, f.tokens.AccessToken)
+	status, data := consoleApplicationCall(f, "POST", "/api/v1/applications", map[string]any{"name": "Phone-created", "origin": "https://client.example", "qrEnabled": true, "nativeEnabled": true, "oidc": oidc}, f.tokens.AccessToken)
 	var created createdApplication
 	if status != 201 || json.Unmarshal(data, &created) != nil || !validLoginID(created.Secret) {
 		t.Fatalf("Console create: %d", status)
@@ -43,6 +43,9 @@ func TestConsoleApplicationManagementSharesWebRecords(t *testing.T) {
 	}
 	if status != 200 || json.Unmarshal(data, &listed) != nil || len(listed.Applications) != 1 || listed.Issuer != f.s.config.PublicURL || strings.Contains(string(data), created.Secret) || strings.Contains(string(data), "secretHash") {
 		t.Fatal("invalid Console listing")
+	}
+	if !listed.Applications[0].QREnabled || !listed.Applications[0].NativeEnabled || !listed.Applications[0].OIDC.Enabled {
+		t.Fatal("Console and Web login method choices differ")
 	}
 	c, _ := f.s.authClient(created.Application.ID)
 	pending := startApp(f, c, created.Secret, "login")

@@ -6,6 +6,8 @@ Hako iOS 的「金融 → A 股选股」是独立原生子应用。业务、模�
 
 在右上角滑杆设置中填写独立 Cerno HTTPS origin 和公开的 Hako 应用 `clientId`。后台需部署 Cerno API v1、登记相同的 HTTPS origin，并配置 Hako issuer、应用 Secret 和后台会话加密密钥。手机不接收这些后台凭据，也不使用 Hako Agent 或 `X-Proxy` 转发业务请求。
 
+在 Hako「第三方应用 → Cerno → 配置登录方式」开启「原生授权」。仅使用原生接入时，扫码登录和 OIDC 可保持关闭；应用总开关仍须启用。
+
 手机生成随机 PKCE verifier，调用 Cerno `POST /api/v1/auth/native/start`，把响应 `requestId` 映射为共享原生授权请求的 `id`。客户端分别核对 meta、start 和 Hako 的登记、nonce、挑战、期限及当前 Console 上下文；首次需要显式确认，不能自动把 `consent:false` 升级为 `true`。再向 Cerno `native/complete` 提交 `loginId,code,codeVerifier`，只保存 Cerno 自己的 Bearer 令牌。
 
 会话保存在设备绑定的钥匙串命名空间，按后端、应用 ID 和当前 Console 会话隔离，不进行 iCloud 凭据同步。恢复时调用 `GET /api/v1/auth/session` 核实 issuer、subject 和应用账户 ID。切换 Hako 身份或连接时立即清空可见业务数据和待确认授权；过期或 401 要重新登录。503、网络故障和结果不确定的退出不会被当作成功登出。`native/complete` 为一次性调用，失败或结果不确定后重新开始，绝不重放。

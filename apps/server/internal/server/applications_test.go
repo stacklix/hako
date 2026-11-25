@@ -23,7 +23,7 @@ func TestApplicationOriginsSupportLocalHTTP(t *testing.T) {
 func TestManagedLANApplicationCanApproveAndRedeem(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
-	data := a.call("POST", "applications", map[string]string{"name": "局域网 iLinker", "origin": "http://192.168.0.2:8001/"}, 201)
+	data := a.call("POST", "applications", map[string]any{"name": "局域网 iLinker", "origin": "http://192.168.0.2:8001/", "qrEnabled": true}, 201)
 	var created createdApplication
 	if json.Unmarshal(data, &created) != nil {
 		t.Fatal("invalid application")
@@ -50,7 +50,7 @@ type createdApplication struct {
 
 func createManagedApplication(f *fixture, a *adminClient) createdApplication {
 	f.t.Helper()
-	data := a.call("POST", "applications", map[string]string{"name": "iLinker", "origin": "https://notify.example.com/"}, 201)
+	data := a.call("POST", "applications", map[string]any{"name": "iLinker", "origin": "https://notify.example.com/", "qrEnabled": true}, 201)
 	var result createdApplication
 	if json.Unmarshal(data, &result) != nil || !validLoginID(result.Secret) || result.Application.ID == "" || !strings.Contains(result.Configuration, "HAKO_CLIENT_SECRET="+result.Secret) {
 		f.t.Fatal("invalid application credential response")

@@ -6,6 +6,7 @@ import Foundation
         draft.name = "  Example  "; draft.origin = "https://app.example.com/"
         let body = try draft.creationBody()
         precondition(body["name"] as? String == "Example" && body["origin"] as? String == "https://app.example.com")
+        precondition(body["qrEnabled"] as? Bool == false && body["nativeEnabled"] as? Bool == false)
         precondition(body["oidc"] == nil, "New applications must not implicitly enable OIDC")
         draft.oidcEnabled = true; draft.redirects = "https://app.example.com/callback\nhttps://app.example.com/alternate?fixed=1"
         let enabled = try draft.validatedOIDC()!
@@ -17,7 +18,7 @@ import Foundation
         }
         draft.oidcEnabled = false; draft.redirects = ""; draft.name = String(repeating: "中", count: 27)
         do { _ = try draft.creationBody(); fatalError("UTF-8 name limit ignored") } catch ConsoleApplicationError.invalidDetails { }
-        let app = ConsoleApplication(id: "app_sample", name: "Example", origin: "https://app.example.com", enabled: true, createdAt: "", oidc: enabled)
+        let app = ConsoleApplication(id: "app_sample", name: "Example", origin: "https://app.example.com", enabled: true, qrEnabled: true, nativeEnabled: false, createdAt: "", oidc: enabled)
         var edit = ConsoleApplicationDraft(application: app); edit.oidcEnabled = false
         let update = try edit.updateBody(); let config = update["oidc"] as! [String: Any]
         precondition(config["enabled"] as? Bool == false)
@@ -25,9 +26,17 @@ import Foundation
         let secret = "test_secret_that_is_not_persisted"
         precondition(!app.configuration(issuer: "https://hako.example.com").contains(secret))
         precondition(app.configuration(issuer: "https://hako.example.com", secret: secret).contains("HAKO_CLIENT_SECRET=" + secret))
-        let data = Data(#"{"applications":[{"id":"app_sample","name":"Example","origin":"https://app.example.com","enabled":false,"createdAt":"2026-11-04T00:00:00Z"}],"issuer":"https://hako.example.com"}"#.utf8)
+        let data = Data(#"{"applications":[{"id":"app_sample","name":"Example","origin":"https://app.example.com","enabled":false,"qrEnabled":true,"nativeEnabled":false,"createdAt":"2026-11-04T00:00:00Z"}],"issuer":"https://hako.example.com"}"#.utf8)
         let list = try JSONDecoder().decode(ConsoleApplicationList.self, from: data)
         precondition(list.applications.count == 1 && list.applications[0].oidc == nil && list.applications[0].loginMethods == "扫码登录")
+        let nativeOnly = ConsoleApplication(id: "app_native", name: "Cerno", origin: "https://cerno.example.com", enabled: true, qrEnabled: false, nativeEnabled: true, createdAt: "", oidc: nil)
+        precondition(nativeOnly.loginMethods == "原生授权")
+        var nativeDraft = ConsoleApplicationDraft(application: nativeOnly)
+        nativeDraft.nativeEnabled = false; nativeDraft.qrEnabled = true
+        let nativeUpdate = try nativeDraft.updateBody()
+        precondition(nativeUpdate["nativeEnabled"] as? Bool == false && nativeUpdate["qrEnabled"] as? Bool == true && nativeUpdate["oidc"] == nil)
+        let defaults = try ConsoleApplicationDraft().updateBody()
+        precondition(defaults["qrEnabled"] as? Bool == false && defaults["nativeEnabled"] as? Bool == false && defaults["oidc"] == nil)
         print("PASS: application drafts, explicit OIDC enablement, callback policy, scope, UTF-8 limit, disable preservation and credential isolation")
     }
 }
