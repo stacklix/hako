@@ -2,7 +2,6 @@ import SwiftUI
 
 struct StockTradeSettingsView: View {
     @ObservedObject var store: StockTradeStore
-    @Environment(\.dismiss) private var dismiss
     @State private var draft = StockTradeConnection()
     @State private var original = StockTradeConnection()
     @State private var loaded = false
@@ -10,27 +9,18 @@ struct StockTradeSettingsView: View {
     @State private var loggingOut = false
     @State private var showingNotifications = false
     var body: some View {
-        SettingsSheet(title: "Cerno 连接设置", hasChanges: loaded && draft != original, isBusy: loggingOut,
-                      saveEnabled: loaded && draft != original && !store.authenticating && !store.loading,
-                      onSave: save) {
+        SettingsSheet(title: "Cerno 设置", hasChanges: loaded && draft != original, isBusy: loggingOut) {
             StockTradeScreen {
-                StockTradeHeading(title: "连接设置", subtitle: "独立后端 · Hako 原生授权")
+                StockTradeSectionLabel(title: "连接")
                 StockTradeCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("后端基础地址（HTTPS）").font(.subheadline).foregroundStyle(.secondary)
-                            TextField("https://example.com/cerno/", text: $draft.origin).keyboardType(.URL).accessibilityLabel("Cerno 后端基础地址")
-                        }
-                        Divider()
-                        HakoLabeledValue(label: "Hako 登记来源", value: draft.applicationOrigin ?? "请填写有效的 HTTPS 地址")
-                        Divider()
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Hako 应用 ID（公开）").font(.subheadline).foregroundStyle(.secondary)
-                            TextField("后台登记的 clientId", text: $draft.clientID).accessibilityLabel("Cerno Hako 应用 ID")
-                        }
-                    }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(store.authenticating || store.loading || loggingOut)
+                    NavigationLink {
+                        StockTradeConnectionSettingsView(store: store, draft: $draft, message: $message,
+                            hasChanges: loaded && draft != original,
+                            save: save, discard: { draft = original; message = nil })
+                    } label: {
+                        StockTradeEntryRow(title: "连接设置", subtitle: store.configured ? "后端地址与应用 ID" : "尚未配置", separator: false)
+                    }.buttonStyle(.plain).accessibilityIdentifier("cerno.settings.connection")
                 }
-                StockTradeFootnote(text: "基础地址可包含应用子路径，无需追加 api/v1。登记来源使用域名根地址；应用 ID 应与后台登记一致。不填写 appSecret、Tushare 或邮件凭据。")
                 StockTradeSectionLabel(title: "账号与授权")
                 StockTradeCard {
                     VStack(alignment: .leading, spacing: 14) {
@@ -65,15 +55,14 @@ struct StockTradeSettingsView: View {
                     NavigationLink { StockTradeHealthView(store: store) }
                     label: { StockTradeEntryRow(title: "调度与后台状态", separator: false) }.buttonStyle(.plain).disabled(store.session == nil)
                 }
-                if let message { Text(message).foregroundStyle(.red).font(.footnote) }
             }
             .onAppear { if !loaded { draft = store.connection; original = draft; loaded = true } }
         }
         .sheet(isPresented: $showingNotifications) { StockTradeNotificationSettings(store: store) }
     }
-    private func save() {
-        do { try store.configure(draft); original = store.connection; dismiss() }
-        catch { message = error.localizedDescription }
+    private func save() -> Bool {
+        do { try store.configure(draft); original = store.connection; message = nil; return true }
+        catch { message = error.localizedDescription; return false }
     }
 }
 

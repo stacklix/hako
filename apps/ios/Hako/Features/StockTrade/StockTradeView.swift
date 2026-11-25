@@ -70,7 +70,7 @@ struct StockTradeView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { sheet = .settings } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("Cerno 连接设置")
+                    .accessibilityLabel("Cerno 设置")
             }
         }
         .sheet(item: $sheet, onDismiss: { Task { await store.activate() } }) { selected in
