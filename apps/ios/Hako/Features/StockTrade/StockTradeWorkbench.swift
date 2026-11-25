@@ -188,11 +188,28 @@ struct StockTradeWorkflowDetail: View {
                     ProgressView(value: Double(completedPhases), total: Double(task.kind.phases.count))
                         .tint(StockTradeAppearance.tint).padding(.vertical, 16).accessibilityLabel("已完成流程阶段")
                     StockTradeTimeline(phases: task.kind.phases, task: task)
+                    if let event = task.events.last {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(event.message).font(.subheadline)
+                            Text("最近更新 · " + StockTradeTime.display(event.at))
+                                .font(.caption).foregroundStyle(.secondary)
+                            if task.state.active, let started = task.startedAt.flatMap(StockTradeTime.date) {
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    Text("已运行 " + Self.elapsed(context.date.timeIntervalSince(started)))
+                                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(StockTradeAppearance.soft, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.bottom, 12)
+                    }
                     if task.phase == "pending" { Text("等待后台执行或等待其他数据工作流结束。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12) }
                     if task.state == .failed {
                         StockTradeMessage(text: task.failureCode == "worker_interrupted" ? "执行进程已结束，结果未确认。请先查看发布记录，再决定是否重新运行。" : "当前步骤失败，本次未完成发布。上一次完整快照继续可用。")
                         Button("重新运行") { navigation.push(.create(task.kind)) }.buttonStyle(StockTradeAppearance.action).disabled(store.activeWorkflow != nil)
-                    } else if task.state.active { Text("可以离开页面。进度按实际完成阶段显示。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12) }
+                    } else if task.state.active { Text("可以离开页面。阶段内进展由后台持续更新，百分比仅代表当前处理步骤。").font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12) }
                     if let result = task.result, task.state == .succeeded {
                         Text("数据日期 · " + result.dataAsOf).font(.footnote).foregroundStyle(.secondary).padding(.bottom, 12)
                         Button("查看选股结果") {
@@ -228,6 +245,12 @@ struct StockTradeWorkflowDetail: View {
     }
     private var completedPhases: Int {
         task.state == .succeeded ? task.kind.phases.count : task.kind.phases.firstIndex(of: task.phase) ?? 0
+    }
+    private static func elapsed(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        if seconds >= 3600 { return "\(seconds / 3600) 小时 \(seconds % 3600 / 60) 分 \(seconds % 60) 秒" }
+        if seconds >= 60 { return "\(seconds / 60) 分 \(seconds % 60) 秒" }
+        return "\(seconds) 秒"
     }
     private var detailTitle: String {
         if task.state == .succeeded { return task.result == nil ? "任务已完成" : "结果已发布" }
