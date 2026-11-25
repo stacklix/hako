@@ -371,9 +371,9 @@ struct WorkshopTurn: Codable, Equatable, Sendable {
                 completedAt - startedAt <= Int64.max / 1000 { milliseconds = (completedAt - startedAt) * 1000 }
         else { return nil }
         let seconds = milliseconds / 1000
-        if seconds >= 3600 { return "\(seconds / 3600) 小时 \(seconds / 60 % 60) 分 \(seconds % 60) 秒" }
-        if seconds >= 60 { return "\(seconds / 60) 分 \(seconds % 60) 秒" }
-        return "\(seconds) 秒"
+        if seconds >= 3600 { return "\(seconds / 3600)h \(seconds / 60 % 60)m \(seconds % 60)s" }
+        if seconds >= 60 { return "\(seconds / 60)m \(seconds % 60)s" }
+        return "\(seconds)s"
     }
 
     static func footers(in entries: [WorkshopEntry]) -> [String: Self] {

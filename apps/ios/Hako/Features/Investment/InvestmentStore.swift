@@ -35,6 +35,7 @@ final class InvestmentStore: ObservableObject {
     @Published private(set) var cacheError: String?
     private var cacheWasCleared = false
     private var lastServerReadSucceeded = false
+    private var lastFundNAVRefresh: Date?
     private let diskCache = InvestmentDiskCache.shared
     var dataCacheScope: String { (authentication.serverURL + "\n" + authentication.username).consoleDigest }
     private var authenticationChanges: AnyCancellable?
@@ -102,6 +103,7 @@ final class InvestmentStore: ObservableObject {
         presentation = InvestmentPresentation(book: InvestmentBook())
         book = InvestmentBook()
         lastAutomaticRefresh = nil
+        lastFundNAVRefresh = nil
         lastAutomaticCurrencies = []
         lastAutomaticMarketQuotes = []
         lastPublicQuoteRefresh = nil
@@ -586,6 +588,7 @@ final class InvestmentStore: ObservableObject {
             configuredSources.insert(source)
         }
         lastAutomaticRefresh = nil
+        lastFundNAVRefresh = nil
         quoteStatus = ""
     }
 
@@ -646,14 +649,14 @@ final class InvestmentStore: ObservableObject {
 
     func watchQuotes(for asset: InvestmentAsset) async throws -> [InvestmentQuote] {
         let target = book.assets.values.first(where: { $0.matches(asset) }) ?? asset
-        let today = InvestmentBook.day(), start = InvestmentBook.addDays(-14, to: InvestmentBook.day())
+        let today = InvestmentBook.day(), start = InvestmentBook.addDays(target.usesPublishedFundNAV ? -30 : -14, to: InvestmentBook.day())
         let scope = dataCacheScope, credentials = keys()
         if let cached = try await diskCache.history(scope: scope, asset: target, start: start, end: today, today: today),
            let latest = cached.last, latest.day >= start { return cached }
         if let state = serverState {
             let shared = try records.sharedQuotes(for: target, in: state).filter { $0.day >= start && $0.day <= today }
             let required = target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now)
-            if let latest = shared.last, latest.day >= required { return shared }
+            if let latest = shared.last, latest.day >= (target.usesPublishedFundNAV ? start : required) { return shared }
         }
         let quotes = try await MarketAPIRequestContext.$reason.withValue("新增关注报价校验") {
             try await InvestmentQuoteProvider().watchQuotes(for: target, keys: credentials, through: today)
@@ -687,7 +690,7 @@ final class InvestmentStore: ObservableObject {
                 quotes = [saved]
             } else if let state = serverState,
                       let shared = try records.sharedQuotes(for: target, in: state).last(where: {
-                          $0.day <= today && $0.day >= (target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now))
+                          $0.day <= today && $0.day >= (target.usesPublishedFundNAV ? InvestmentBook.addDays(-30, to: today) : (target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now)))
                       }) {
                 quotes = [shared]
             } else {
@@ -801,8 +804,10 @@ final class InvestmentStore: ObservableObject {
             }
         let publicIDs = publicQuoteIDs
         let marketIDs = marketQuoteIDs
+        let fundDue = marketIDs.contains { book.asset($0)?.usesPublishedFundNAV == true }
+            && (lastFundNAVRefresh.map { Date.now.timeIntervalSince($0) >= 900 } ?? true)
         let general = (configured || !currencies.isEmpty || !marketIDs.isEmpty)
-            && (unfinishedRates || lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies)
+            && (fundDue || unfinishedRates || lastAutomaticRefresh != today || !currencies.isSubset(of: lastAutomaticCurrencies)
                 || !marketIDs.isSubset(of: lastAutomaticMarketQuotes))
         let publicDue = !publicIDs.isEmpty && (!publicIDs.isSubset(of: lastAutomaticPublicQuotes)
             || lastPublicQuoteRefresh.map { Date.now.timeIntervalSince($0) >= 300 } ?? true)
@@ -812,6 +817,7 @@ final class InvestmentStore: ObservableObject {
         }
         if general {
             lastAutomaticRefresh = today
+            lastFundNAVRefresh = .now
             lastAutomaticCurrencies = currencies
             lastAutomaticMarketQuotes = marketIDs
         }
@@ -857,7 +863,7 @@ final class InvestmentStore: ObservableObject {
             $0.isDailyClose == true && $0.source != "手动录入"
         }
         if try await diskCache.missingWindows(scope: scope, key: key, start: first, end: end,
-            today: today, observations: localQuotes).isEmpty {
+            today: today, observations: localQuotes, publishedNAV: asset.usesPublishedFundNAV).isEmpty {
             return InvestmentPriceHistoryResult(quotes: localQuotes, warning: nil)
         }
         // A disk miss must consult the server before making a provider request.
@@ -871,7 +877,7 @@ final class InvestmentStore: ObservableObject {
         var fetched = saved
         var firstFailure: String?
         let missing = try await diskCache.missingWindows(scope: scope, key: key, start: first, end: end,
-            today: today, observations: result)
+            today: today, observations: result, publishedNAV: asset.usesPublishedFundNAV)
         for window in InvestmentHistoryRange.quoteWindows(for: missing).reversed() {
             try Task.checkCancellation()
             do {
@@ -1055,13 +1061,16 @@ final class InvestmentStore: ObservableObject {
                     var requestedWindows = 0
                     // Account history starts at this asset's first trade. Watch-only assets need a recent quote.
                     let requested = assetRequests?[asset.id] ?? [sourceBook.automaticQuoteWindow(for: asset.id, through: today)]
-                    for range in requested {
+                    for originalRange in requested {
+                        let end = asset.usesPublishedFundNAV ? min(originalRange.upperBound, asset.lastClosedMarketDay(at: now)) : originalRange.upperBound
+                        guard originalRange.lowerBound <= end else { continue }
+                        let range = originalRange.lowerBound...end
                         let requests = HakoExecutionDiagnostics.measure("行情缓存缺口 · " + asset.displayCode, success: {
                             "发现 \($0.count) 个缺口；没有缺口时不调用行情接口。"
                         }) {
                             marketCache.missingWindows(key: key, start: range.lowerBound, end: range.upperBound,
                                 today: today, observations: observations, additionalCoverage: checkedWindows,
-                                requiredClose: includeClosedMarkets ? asset.lastClosedMarketDay(at: now) : nil)
+                                requiredClose: includeClosedMarkets ? asset.lastClosedMarketDay(at: now) : nil, publishedNAV: asset.usesPublishedFundNAV)
                         }
                         for request in InvestmentHistoryRange.quoteWindows(for: requests) {
                             try checkRefresh()

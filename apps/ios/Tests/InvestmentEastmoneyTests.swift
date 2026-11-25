@@ -433,6 +433,37 @@ extension InvestmentMarketDataTests {
         } catch let error as InvestmentError { precondition(error.localizedDescription.contains("每万份收益")) }
     }
 
+
+    static func publishedFundNAVUsesPublishedDatesAndNormalPendingResults() async throws {
+        let now = ISO8601DateFormatter().date(from: "2026-11-26T02:00:00+08:00")!
+        let format = InvestmentBook.snapshotDateFormatter()
+        let today = InvestmentBook.day(now), yesterday = InvestmentBook.addDays(-1, to: today)
+        let published = InvestmentBook.addDays(-2, to: today)
+        let fund = asset("017302.OF", .fund, .cny)
+        let provider = InvestmentQuoteProvider { request, _ in
+            precondition(eastmoneyQuery(request)["endDate"] == format.string(from: yesterday),
+                         "Before the session closes, never request today's fund NAV")
+            return response(request, "{\"ErrCode\":0,\"TotalCount\":1,\"Data\":{\"LSJZList\":[{\"FSRQ\":\"\(format.string(from: published))\",\"DWJZ\":\"1.2345\"}]}}")
+        }
+        let quote = try await provider.latestQuote(for: fund, keys: [:], now: now)
+        precondition(quote.day == published && quote.isDailyClose == true, "QDII's published date must never be relabeled")
+        let empty = InvestmentQuoteProvider { request, _ in
+            response(request, #"{"ErrCode":0,"TotalCount":0,"Data":{"LSJZList":[]}}"#)
+        }
+        let pending = try await empty.history(asset: fund, start: yesterday, through: today, cached: nil, keys: [:], now: now)
+        precondition(pending.isEmpty, "An unpublished NAV is a pending result, not a provider failure")
+        let noRequest = InvestmentQuoteProvider { _, _ in preconditionFailure("A future NAV date must not reach the network") }
+        let future = try await noRequest.history(asset: fund, start: today, through: today, cached: nil, keys: [:], now: now)
+        precondition(future.isEmpty)
+        let evening = now.addingTimeInterval(18*3600)
+        let publishedToday = InvestmentQuoteProvider { request, _ in
+            precondition(eastmoneyQuery(request)["endDate"] == format.string(from: today))
+            return response(request, "{\"ErrCode\":0,\"TotalCount\":1,\"Data\":{\"LSJZList\":[{\"FSRQ\":\"\(format.string(from: today))\",\"DWJZ\":\"1.3456\"}]}}")
+        }
+        let actual = try await publishedToday.latestQuote(for: fund, keys: [:], now: evening)
+        precondition(actual.day == today && actual.isDailyClose == true, "Same-evening official NAVs remain available")
+    }
+
     static func localMarketsBecomeFinalAtClose() async throws {
         let format = ISO8601DateFormatter()
         let session = day(30)

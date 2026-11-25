@@ -1,11 +1,14 @@
 import importlib.util
 import io
 import json
+import socket
+import ssl
 import sys
 import time
 import unittest
 from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta, timezone
+from http.client import RemoteDisconnected, IncompleteRead
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -125,6 +128,20 @@ class MarketTests(unittest.TestCase):
         with self.assertRaises(sync.SyncError):
             sync.Providers(http).fetch(target())
 
+    def test_delayed_fund_nav_keeps_real_date_and_empty_response_remains_retryable(self):
+        t = target(symbol='017302.OF', priceType='nav', fromDate='2026-11-23', throughDate='2026-11-25')
+        http = FakeHTTP([{'ErrCode': 0, 'TotalCount': 1,
+                          'Data': {'LSJZList': [{'FSRQ': '2026-11-23', 'DWJZ': '1.2345'}]}},
+                         {'ErrCode': 0, 'TotalCount': 0, 'Data': {'LSJZList': []}}])
+        provider = sync.Providers(http)
+        rows, complete = provider.fetch(t)
+        self.assertEqual([row['date'] for row in rows], ['2026-11-23'])
+        self.assertTrue(complete)
+        rows, complete = provider.fetch(t)
+        self.assertEqual(rows, [])
+        self.assertTrue(complete)  # Server only suppresses empty dates for 15 minutes.
+        self.assertEqual(http.calls[0][2]['query']['endDate'], '2026-11-25')
+
     def test_fund_pagination_and_money_market_fund_rejection(self):
         today = date.today().isoformat()
         http = FakeHTTP([{'ErrCode': 0, 'PageIndex': 1, 'TotalCount': 1,
@@ -240,6 +257,63 @@ class MarketTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(sync.run(FakeHako(), FakeProviders()), 1)
         self.assertIn('写入变更 1 条，失败 1 个', output.getvalue())
+
+    def test_transport_reports_safe_failure_types_without_raw_messages(self):
+        cases = [(URLError(socket.gaierror(-2, 'SECRET')), 'DNS'),
+                 (URLError(ssl.SSLCertVerificationError('SECRET')), 'TLS'),
+                 (TimeoutError('SECRET'), '超时'),
+                 (RemoteDisconnected('https://host?apikey=SECRET'), '对端断开'),
+                 (IncompleteRead(b'SECRET', 20), '传输不完整'),
+                 (URLError('https://host?apikey=SECRET'), '网络连接失败')]
+        for error, hint in cases:
+            with self.subTest(error=type(error).__name__):
+                detail = sync.transport_failure(error)
+                self.assertIn(hint, detail)
+                self.assertNotIn('SECRET', detail)
+                self.assertNotIn('https://', detail)
+
+    def test_eastmoney_connection_failures_pause_only_that_domain(self):
+        http = sync.HTTP(time.monotonic() + 120)
+        calls = []
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return b'{"ErrCode":0}'
+        class Opener:
+            def open(self, request, timeout):
+                calls.append(request)
+                if 'push2his.eastmoney.com' in request.full_url:
+                    raise RemoteDisconnected('SECRET')
+                return Response()
+        http.opener = Opener()
+        output = io.StringIO()
+        with patch.object(sync.time, 'sleep'), redirect_stdout(output):
+            with self.assertRaisesRegex(sync.SyncError, '暂停 60 秒'):
+                http.request('eastmoney', 'https://push2his.eastmoney.com/api/qt/stock/kline/get')
+            self.assertEqual(len(calls), 3)
+            with self.assertRaises(sync.ProviderDeferred):
+                http.request('eastmoney', 'https://push2his.eastmoney.com/api/qt/stock/kline/get')
+            self.assertEqual(len(calls), 3, 'A paused host must not receive another request')
+            self.assertEqual(http.request('eastmoney', 'https://api.fund.eastmoney.com/f10/lsjz'), {'ErrCode': 0})
+        self.assertIn('第 1/3 次请求失败', output.getvalue())
+        self.assertNotIn('SECRET', output.getvalue())
+        http.blocked_hosts['push2his.eastmoney.com'] = time.monotonic() - 1
+        with patch.object(sync.time, 'sleep'), redirect_stdout(io.StringIO()):
+            with self.assertRaises(sync.SyncError):
+                http.request('eastmoney', 'https://push2his.eastmoney.com/api/qt/stock/kline/get')
+        self.assertEqual(len(calls), 7, 'The host becomes retryable after cooldown')
+
+    def test_deferred_targets_are_separate_from_actual_request_failures(self):
+        class FakeHako:
+            def targets(self): return [[target(key='paused')]]
+            def upload(self, *args): raise AssertionError('A deferred request must not upload')
+        class FakeProviders:
+            def fetch(self, item): raise sync.ProviderDeferred('连接异常，稍后重试')
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(sync.run(FakeHako(), FakeProviders()), 0)
+        self.assertIn('延后', output.getvalue())
+        self.assertIn('失败 0 个，延后 1 个', output.getvalue())
 
     def test_transport_retries_exact_body_and_sanitizes_errors(self):
         http = sync.HTTP(time.monotonic() + 120)

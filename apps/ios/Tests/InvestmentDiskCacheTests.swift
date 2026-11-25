@@ -13,6 +13,7 @@ private final class MarketReadCounter: @unchecked Sendable {
 
 @main struct InvestmentDiskCacheTests {
     static func main() async throws {
+        try await publishedFundNAVRetriesAfterDelay()
         try await provisionalFXRefreshesDespiteCoverage()
         try await dailyCryptoSpotReuse()
         try await refreshReadsMarketCacheOnce()
@@ -98,6 +99,37 @@ private final class MarketReadCounter: @unchecked Sendable {
         do { _ = try await cache.load(scope: "../outside"); preconditionFailure("Unsafe scope accepted") }
         catch is CocoaError {}
         print("Investment disk cache: persistence, precision, scope isolation, range coverage, eviction and server fallback passed")
+    }
+
+
+    static func publishedFundNAVRetriesAfterDelay() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let cache = InvestmentDiskCache(directory: directory)
+        let today = InvestmentBook.day(), first = InvestmentBook.addDays(-3, to: today)
+        let end = InvestmentBook.addDays(-1, to: today)
+        let fund = InvestmentAsset(name: "QDII", code: "017302.OF", market: "OF", kind: .fund, currency: .cny)
+        let key = InvestmentDiskCache.historyKey(fund)
+        let quote = InvestmentQuote(day: first, price: Decimal(string: "1.2345")!, isDailyClose: true)
+        try await cache.saveHistory(scope: "nav", asset: fund, start: first, end: end, today: today, quotes: [quote])
+        let current = try await cache.marketReadSnapshot(scope: "nav")
+        precondition(current.missingWindows(key: key, start: first, end: end, today: today, observations: [quote], requiredClose: end, publishedNAV: true).isEmpty,
+                     "A missing NAV must not defeat the short retry cooldown")
+        let expired = try await cache.marketReadSnapshot(scope: "nav", now: Date.now.addingTimeInterval(901))
+        precondition(expired.missingWindows(key: key, start: first, end: end, today: today, observations: [quote], publishedNAV: true) == [InvestmentBook.addDays(1, to: first)...end],
+                     "Published NAV coverage cannot permanently hide a late QDII tail")
+        let reopened = try await InvestmentDiskCache(directory: directory).marketReadSnapshot(scope: "nav")
+        precondition(!reopened.missingWindows(key: key, start: first, end: end, today: today, observations: [quote], publishedNAV: true).isEmpty,
+                     "Restarting must not turn an unpublished NAV into a permanent holiday")
+        let holiday = InvestmentBook.addDays(-1, to: first)
+        try await cache.saveHistory(scope: "nav", asset: fund, start: holiday, end: holiday, today: today, quotes: [])
+        let historical = try await InvestmentDiskCache(directory: directory).marketReadSnapshot(scope: "nav")
+        precondition(historical.missingWindows(key: key, start: holiday, end: holiday, today: today, observations: [quote], publishedNAV: true).isEmpty,
+                     "An empty historical holiday before a published NAV must stay reusable")
+        let late = InvestmentQuote(day: end, price: Decimal(string: "1.3456")!, isDailyClose: true)
+        try await cache.saveHistory(scope: "nav", asset: fund, start: InvestmentBook.addDays(1, to: first), end: end, today: today, quotes: [late])
+        let saved = try await cache.marketQuotes(scope: "nav", key: key)
+        precondition(saved.first?.day == first && saved.last?.day == end && saved.last?.price == late.price)
     }
 
     static func closingQuoteOverridesPreCloseCoverage() async throws {

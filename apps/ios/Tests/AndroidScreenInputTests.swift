@@ -17,6 +17,30 @@ import Foundation
         precondition(AndroidScreenInput.touch(action: 4, point: .zero, surface: surface, pixels: pixels) == nil)
         precondition(AndroidScreenInput.touch(action: 0, point: .zero, surface: .zero, pixels: pixels) == nil)
         precondition(AndroidScreenInput.touch(action: 0, point: CGPoint(x: CGFloat.nan, y: 0), surface: surface, pixels: pixels) == nil)
+        let toolbar = CGSize(width: 228, height: 64), bubble = CGSize(width: 44, height: 44)
+        let portrait = CGSize(width: 320, height: 600)
+        let dragged = AndroidFloatingControlsLayout.center(in: portrait, controls: toolbar, position: .zero,
+                                                          translation: CGSize(width: 900, height: -900))
+        precondition(dragged == CGPoint(x: 198, y: 40))
+        let position = AndroidFloatingControlsLayout.position(for: dragged, in: portrait, controls: toolbar)
+        precondition(position == CGPoint(x: 1, y: 0))
+        let folded = AndroidFloatingControlsLayout.center(in: portrait, controls: bubble, position: position)
+        precondition(folded.x + bubble.width / 2 == portrait.width - 8)
+        precondition(AndroidFloatingControlsLayout.center(in: portrait, controls: toolbar, position: position) == dragged)
+        let landscape = CGSize(width: 600, height: 320)
+        let rotatedControl = AndroidFloatingControlsLayout.center(in: landscape, controls: toolbar, position: position)
+        precondition(rotatedControl == CGPoint(x: 478, y: 40))
+        let small = AndroidFloatingControlsLayout.center(in: CGSize(width: 180, height: 40), controls: toolbar, position: position)
+        precondition(small == CGPoint(x: 90, y: 20))
+        var gesture = AndroidFloatingDragState()
+        for point in [CGSize(width: 3, height: 2), CGSize(width: 8, height: 9), CGSize(width: 1, height: 0)] {
+            gesture.move(to: point); precondition(!gesture.isDragging)
+        }
+        gesture.move(to: CGSize(width: 16, height: 0)); precondition(gesture.isDragging)
+        gesture.move(to: .zero); precondition(gesture.isDragging)
+        gesture = AndroidFloatingDragState(); precondition(!gesture.isDragging && gesture.translation == .zero)
+        print("PASS: finger jitter remains a tap; dragging stays active after moving back and resets for the next tap.")
+        print("PASS: floating controls clamp dragging, retain position through folding, and stay bounded after rotation.")
         print("PASS: touch packet format, scaled coordinates, edge clamp, rotation and invalid input.")
     }
 }

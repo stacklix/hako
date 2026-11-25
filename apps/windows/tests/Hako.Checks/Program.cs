@@ -95,6 +95,7 @@ internal static class Program
             if (args.Length == 3 && args[0] == "android-preview-live") { await AndroidChecks.PreviewLiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 3 && args[0] == "android-video-live") { await AndroidVideoChecks.LiveAsync(args[1], args[2]); return 0; }
             if (args.Length == 4 && args[0] == "android-video-live") { await AndroidVideoChecks.LiveAsync(args[1], args[2], args[3]); return 0; }
+            if (args.Length == 4 && args[0] == "android-navigation-live") { await AndroidVideoChecks.LiveAsync(args[1], args[2], args[3], navigation: true); return 0; }
             if (args.Length == 1 && args[0] == "processes") { await ProcessMetricsChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "guardian-broker") { await GuardianBrokerChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "registered-services")

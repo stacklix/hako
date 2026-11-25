@@ -432,7 +432,7 @@ struct InvestmentQuoteProvider {
         }
         if asset.usesEastmoneyMarketData {
             let values = try await eastmoneyHistory(asset: asset, start: InvestmentBook.addDays(-30, to: today),
-                                                    through: today, latestOnly: true)
+                                                    through: asset.usesPublishedFundNAV ? min(today, asset.lastClosedMarketDay(at: now)) : today, latestOnly: true)
             guard let quote = markDailyCloses(values, asset: asset, now: now).last else {
                 throw InvestmentError.invalid("未取得最新报价。")
             }
@@ -474,11 +474,12 @@ struct InvestmentQuoteProvider {
             throw InvestmentError.invalid("该报价币种不支持关注此资产类型。")
         }
         try asset.validateMarket(settlingIn: asset.settlementCurrency)
+        let lookback = asset.usesPublishedFundNAV ? 30 : 14
         do {
-            let quotes = try await history(asset: asset, start: InvestmentBook.addDays(-14, to: today),
+            let quotes = try await history(asset: asset, start: InvestmentBook.addDays(-lookback, to: today),
                                            through: today, cached: nil, keys: keys)
-            if let latest = quotes.last, latest.day >= InvestmentBook.addDays(-14, to: today) { return quotes }
-            throw InvestmentError.invalid("没有获取到近 14 天的报价。")
+            if let latest = quotes.last, latest.day >= InvestmentBook.addDays(-lookback, to: today) { return quotes }
+            throw InvestmentError.invalid("没有获取到近 \(lookback) 天的报价。")
         } catch {
             try Task.checkCancellation()
             guard asset.kind == .crypto else { throw error }
@@ -505,7 +506,8 @@ struct InvestmentQuoteProvider {
         var failures: [String] = []
         if asset.usesEastmoneyMarketData {
             do {
-                let result = markDailyCloses(try await eastmoneyHistory(asset: asset, start: start, through: today), asset: asset, now: now)
+                let result = markDailyCloses(try await eastmoneyHistory(asset: asset, start: start,
+                    through: asset.usesPublishedFundNAV ? min(today, asset.lastClosedMarketDay(at: now)) : today), asset: asset, now: now)
                 // Published fund NAVs and closed historical windows can legitimately end before a weekend.
                 if !asset.kind.derivative || result.last!.day >= cutoff { return result }
                 best = result

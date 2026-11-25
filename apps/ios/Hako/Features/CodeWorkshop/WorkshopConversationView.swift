@@ -415,18 +415,21 @@ struct WorkshopConversationView: View {
             }
         } else if entry.role == "assistant" {
             let completedTurn = conversation.presentation.turnFooters[entry.id]
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Codex", systemImage: "terminal").font(.caption.weight(.medium))
-                if entry.kind == "imageGeneration" {
-                    WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
-                } else {
-                    WorkshopMessageView(text: entry.text, parts: conversation.presentation.messageParts[entry.id] ?? [],
-                        store: conversation.store).equatable()
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Codex", systemImage: "terminal").font(.caption.weight(.medium))
+                    if entry.kind == "imageGeneration" {
+                        WorkshopUserMessage(entry: entry, threadId: conversation.threadId, store: conversation.store, agent: conversation.agent)
+                    } else {
+                        WorkshopMessageView(text: entry.text, parts: conversation.presentation.messageParts[entry.id] ?? [],
+                            store: conversation.store).equatable()
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if entry.truncated {
+                        Button("查看内容说明") { detail = entry }.font(.caption)
+                    }
                 }
-                if entry.truncated {
-                    Button("查看内容说明") { detail = entry }.font(.caption)
-                }
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     if let returnSidechat, completedTurn != nil {
                         Button { returnSidechat(entry.text) } label: { Label("发回主会话", systemImage: "arrow.up.right") }
                             .frame(minHeight: 44)
@@ -439,13 +442,14 @@ struct WorkshopConversationView: View {
                             showingSidechats = true
                         } label: {
                             Image(systemName: "bubble.left.and.bubble.right")
-                                .frame(width: 44, height: 44)
+                                .frame(width: 44, height: 44, alignment: .leading)
                         }
                         .accessibilityLabel("引用这条回复进入侧聊")
                         .disabled(entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: completedTurn != nil,
+                        completedTurn: completedTurn, alignment: .leading)
                     Spacer(minLength: 0)
-                    WorkshopMessageMetadata(entry: entry, running: false, showsElapsed: completedTurn != nil, completedTurn: completedTurn)
                 }
                 .font(.caption).foregroundStyle(HakoStyle.muted).buttonStyle(.plain)
             }
@@ -700,6 +704,7 @@ private struct WorkshopMessageMetadata: View {
     let running: Bool
     var showsElapsed = true
     var completedTurn: WorkshopTurn? = nil
+    var alignment: HorizontalAlignment = .trailing
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -721,7 +726,7 @@ private struct WorkshopMessageMetadata: View {
                     Text((running ? "已耗时 " : "耗时 ") + elapsed)
                 }
             }.fixedSize(horizontal: true, vertical: false)
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: alignment, spacing: 3) {
                 timestamp
                 if let elapsed = showsElapsed ? completedTurn?.elapsedText : nil {
                     Text((running ? "已耗时 " : "耗时 ") + elapsed)

@@ -328,6 +328,7 @@ extension InvestmentQuoteProvider {
     }
 
     private func eastmoneyFundNAV(code: String, start: Date, end: Date, latestOnly: Bool) async throws -> [InvestmentQuote] {
+        guard start <= end else { return [] }
         let format = Self.eastmoneyDateFormat("yyyy-MM-dd")
         var page = 1
         var quotes: [InvestmentQuote] = []
@@ -350,7 +351,6 @@ extension InvestmentQuoteProvider {
                 if let total = result.TotalCount, received < total {
                     throw InvestmentError.invalid("天天基金历史净值分页数据不完整")
                 }
-                if received == 0 { throw InvestmentError.noMarketData("该区间没有已发布基金净值") }
                 break
             }
             guard result.PageIndex == nil || result.PageIndex == page, rows.first?.FSRQ != previousFirst else {
@@ -370,7 +370,7 @@ extension InvestmentQuoteProvider {
             page += 1
             guard page <= 1000 else { throw InvestmentError.invalid("天天基金历史净值页数异常") }
         }
-        return try Self.eastmoneyValid(quotes)
+        return received == 0 ? [] : try Self.eastmoneyValid(quotes)
     }
 
     private static func eastmoneyDateFormat(_ pattern: String) -> DateFormatter {

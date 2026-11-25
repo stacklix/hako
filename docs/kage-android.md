@@ -20,7 +20,7 @@ Kage 在 Windows 本机执行 ADB 操作，Hako iOS 提供远程入口。服务�
 | `query.android.logs` | `deviceId`、可选 `serial`；Nami Agent 当前进程近期日志，按需读取并遮蔽带敏感字段的行 |
 | `query.android.artifact` | `requestId`、`offset`；分块读取已完成任务的截图 |
 | `query.android.preview` | `requestId`；一次读取不超过 40 KB 的 JPEG 预览，原始 PNG 保持不变 |
-| `action.android.stream` | `operation=start/relay/stop`、`sessionId`；创建、接通或结束独立视频会话 |
+| `action.android.stream` | `operation=start/relay/navigate/stop`、`sessionId`；创建、接通、导航或结束独立视频会话 |
 | `action.android.execute` | UUID `requestId`、`operation`，以及所需设备、连接或配对参数；立即返回独立任务 |
 | `action.android.upload` | UUID `uploadId`、`fileName`、`length`、`sha256`、`offset`、`data`；顺序上传 APK |
 
@@ -45,6 +45,12 @@ Android 4.4 / API 19–20 自动选择项目自有的 `LegacyVideoServer`，Andr
 旧系统辅助程序源码位于 `apps/windows/android-video/src/`，内嵌产物为 `Assets/hako-video-api19.jar`，由 `apps/windows/scripts/build-legacy-video.ps1 -JavaHome <JDK目录> -AndroidSdk <SDK目录>` 构建，默认使用 android-36 / build-tools 36.0.0，DEX 最低 API 19。修改源码后重新生成资源、同步 `AndroidVideoSource.LegacySha256` 并运行 Android 检查；构建资源仅需要 JDK 与 Android SDK，设备端无需安装 APK。
 
 `start` 参数为 `sessionId`、`deviceId`、可选 `serial`；返回单会话随机 AES-256 密钥、局域网端口/地址及 `/agent/v1/streams/{sessionId}`。局域网 WebSocket 首包为 AES-GCM 加密的 `{sessionId,timestamp}`，AAD 为 `hako-agent-lan-v1:video-client:{sessionId}`。服务端包的 AAD 为 `hako-agent-lan-v1:video-server:{sessionId}`，明文为 8 字节大端递增序号、1 字节类型及负载：0=视频字节、1=错误、2=ready、3=alive。每包视频负载不超过 32768 字节，每 10 秒发送心跳；客户端拒绝乱序或重复包。密钥只经已鉴权命令交付，不放在 URL 或明文 HTTP 中。
+
+`navigate` 参数为 `sessionId` 和 `navigation=back/home/recents`，分别发送 Android 返回、主页、最近任务键，成功返回 `{sent:true}`。仅连接完成且未结束的投屏会话可操作，沿用该会话固定的 ADB transport；不接受任意键码。导航通过已鉴权的设备命令发送，服务端继续只透传。每个会话串行执行导航，单次最多 3 秒，关闭投屏会取消待执行指令，并在导航退出后再关闭视频源和息屏。
+
+iOS 将三个导航键与全屏开关放在同一悬浮工具条中。普通投屏和全屏共用折叠状态与相对位置；拖动整组可调整位置，收起后显示可拖动的小圆点，点击恢复。工具条随屏幕尺寸和展开尺寸调整边界，导航等待时仍可折叠、拖动或退出全屏。导航失败显示原因，不自动重试或中断视频。
+
+悬浮工具条使用原生按钮响应点击，拖动识别不延迟按钮的按下和抬起；移动达到 16pt 后才取消当前按钮并开始拖动，避免轻点时的手指晃动吞掉展开、收起或导航操作。拖动一旦开始，即使移回原点也不触发点击；下一次触摸重新独立识别。
 
 认证后的客户端触控包使用独立 AAD `hako-agent-lan-v1:video-input:{sessionId}`，明文为从 0 递增的 8 字节大端序号和 32 字节 scrcpy 触控消息（类型 2）。Kage 校验单指按下/移动/抬起/取消的顺序、坐标范围、压力、指针编号及空按钮字段，拒绝重放、乱序、任意其他 scrcpy 命令和剪贴板数据。iOS 串行发送；发送不及时合并中间移动，保留按下和抬起事件，队列有界且不自动重放操作。
 

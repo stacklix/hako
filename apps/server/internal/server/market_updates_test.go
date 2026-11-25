@@ -283,3 +283,47 @@ func TestMarketValidationItemAtomicityAndCoverage(t *testing.T) {
 		t.Fatal("modified target accepted")
 	}
 }
+
+func TestMarketFundNAVUsesPublishedHistoryInsteadOfIntradayLatest(t *testing.T) {
+	f := newFixture(t, true)
+	for _, tc := range []struct{ at, through string }{
+		{"2026-11-25T18:00:00Z", "2026-11-25"}, // 02:00 Beijing: today's NAV cannot exist yet.
+		{"2026-11-26T12:00:00Z", "2026-11-26"}, // Evening: accept NAVs only if actually published.
+		{"2026-11-29T04:00:00Z", "2026-11-27"},
+	} {
+		now, _ := time.Parse(time.RFC3339, tc.at)
+		book := investmentState{Tables: investmentRows{
+			"market_instruments":   {{"id": "FUND:CN:017302.OF:CNY", "asset_type": "fund", "symbol": "017302.OF", "exchange": "OF", "quote_currency": "CNY", "price_type": "nav"}},
+			"investment_assets":    {{"id": "fund", "instrument_id": "FUND:CN:017302.OF:CNY"}},
+			"investment_watchlist": {{"asset_id": "fund"}},
+		}}
+		targets := f.s.marketTargets(AuthClientConfig{ID: "collector"}, "owner", book, now)
+		if len(targets) != 1 || targets[0].Kind != "daily_close" || targets[0].Through != tc.through || targets[0].From >= targets[0].Through {
+			t.Fatalf("%s: %+v", tc.at, targets)
+		}
+		target := targets[0]
+		start, _ := time.Parse(time.DateOnly, target.From)
+		end, _ := time.Parse(time.DateOnly, target.Through)
+		// Existing published observations are reusable; an unpublished tail only gets a short cooldown.
+		for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
+			book.Tables["market_daily_prices"] = append(book.Tables["market_daily_prices"], investmentRow{"instrument_id": target.InstrumentID, "session_date": day.Format(time.DateOnly), "price_type": "nav", "price": "1.2345", "is_final": "1"})
+		}
+		key := "owner|" + target.Key + "|external:collector"
+		if err := f.s.store.update(func(st *state) error {
+			if st.MarketCoverage == nil {
+				st.MarketCoverage = map[string]marketCoverage{}
+			}
+			st.MarketCoverage[key] = marketCoverage{CheckedAt: now.Unix(), NoDataDates: []string{target.Through}}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.s.marketTargets(AuthClientConfig{ID: "collector"}, "owner", book, now); len(got) != 0 {
+			t.Fatal("unpublished NAV retried immediately", got)
+		}
+		got := f.s.marketTargets(AuthClientConfig{ID: "collector"}, "owner", book, now.Add(16*time.Minute))
+		if len(got) != 1 || got[0].From != target.Through {
+			t.Fatal("unpublished NAV must be retried after cooldown", got)
+		}
+	}
+}

@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import CryptoKit
 import Combine
+import UIKit.UIGestureRecognizerSubclass
 
 private struct AndroidVideoDescriptor: Decodable {
     let sessionId: String
@@ -26,6 +27,8 @@ private struct AndroidVideoDescriptor: Decodable {
     @Published private(set) var stopping = false
     @Published private(set) var message: String?
     @Published private(set) var shutdownMessage: String?
+    @Published private(set) var navigationPending = false
+    @Published private(set) var navigationMessage: String?
     @Published private(set) var route = ""
     @Published private(set) var aspect: CGFloat = 9 / 20
     private var worker: Task<Void, Never>?
@@ -43,6 +46,7 @@ private struct AndroidVideoDescriptor: Decodable {
     private var inputSequence: UInt64 = 0
     private var inputs: [Data] = []
     private var inputWorker: Task<Void, Never>?
+    private var navigationWorker: Task<Void, Never>?
     private let transport: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil; config.httpShouldSetCookies = false
@@ -188,6 +192,27 @@ private struct AndroidVideoDescriptor: Decodable {
         connecting = false; connected = true
     }
     func disconnect() { end(nil) }
+    func navigate(_ navigation: AndroidScreenNavigation) {
+        guard connected, !navigationPending, let agent, let id = sessionID else { return }
+        let client = DeviceMonitorClient.shared, context = requestContext, ticket = generation
+        guard context == client.requestContext, client.authenticated, !client.logoutPending else { return }
+        navigationPending = true; navigationMessage = nil
+        navigationWorker = Task {
+            defer { if generation == ticket { navigationPending = false; navigationWorker = nil } }
+            do {
+                struct Sent: Decodable { let sent: Bool }
+                let result = try await client.invokeAgent(agent, method: KageAndroidCommand.stream, version: 1,
+                    params: ["operation": "navigate", "sessionId": id, "navigation": navigation.rawValue], as: Sent.self)
+                try Task.checkCancellation()
+                guard generation == ticket, context == client.requestContext else { return }
+                guard result.sent else { throw HakoError(message: "导航指令未确认发送。") }
+            } catch {
+                if generation == ticket, context == client.requestContext, !Task.isCancelled {
+                    navigationMessage = navigation.title + "失败：" + error.localizedDescription
+                }
+            }
+        }
+    }
     func touch(_ action: UInt8, point: CGPoint, surface: CGSize) {
         guard connected, let packet = AndroidScreenInput.touch(action: action, point: point, surface: surface, pixels: pixels) else { return }
         // Replace queued intermediate moves; never drop finger down/up/cancel.
@@ -217,6 +242,7 @@ private struct AndroidVideoDescriptor: Decodable {
         let id = sessionID, agent = agent, context = requestContext, deviceID = deviceID, serial = serial
         generation = UUID(); worker?.cancel(); worker = nil
         inputWorker?.cancel(); inputWorker = nil; inputs = []; controlKey = nil; pixels = .zero
+        navigationWorker?.cancel(); navigationWorker = nil; navigationPending = false; navigationMessage = nil
         let closing = generation
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         sessionID = nil; self.agent = nil; self.deviceID = nil; self.serial = nil
@@ -311,6 +337,8 @@ struct AndroidLiveScreenView: View {
     let available: Bool
     @StateObject private var player = AndroidVideoPlayer()
     @State private var fullScreen = false
+    @State private var controlsCollapsed = false
+    @State private var controlsPosition = CGPoint.zero
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -336,6 +364,13 @@ struct AndroidLiveScreenView: View {
                     }
                 }.clipShape(RoundedRectangle(cornerRadius: 12))
             }.frame(maxWidth: .infinity, alignment: .center)
+                .overlay {
+                    if player.connected && !fullScreen {
+                        AndroidFloatingControls(player: player, collapsed: $controlsCollapsed, position: $controlsPosition,
+                                                fullScreen: false) { fullScreen = true }
+                    }
+                }
+            if let message = player.navigationMessage { Text(message).font(.caption).foregroundStyle(.orange) }
             if let message = player.message { Text(message).font(.caption).foregroundStyle(.orange) }
             if let message = player.shutdownMessage { Text(message).font(.caption).foregroundStyle(.orange) }
             if player.connected { Text("可直接点击、长按或单指滑动屏幕。部分手机需开启「USB 调试（安全设置）」。").font(.caption).foregroundStyle(.secondary) }
@@ -347,7 +382,9 @@ struct AndroidLiveScreenView: View {
             Text("开启投屏时自动亮屏，关闭时自动息屏。切换页面或进入后台也会关闭投屏；亮屏不会解锁手机。")
                 .font(.caption).foregroundStyle(.secondary)
         }.devicePagePanel()
-        .fullScreenCover(isPresented: $fullScreen) { AndroidFullScreenView(player: player) }
+        .fullScreenCover(isPresented: $fullScreen) {
+            AndroidFullScreenView(player: player, controlsCollapsed: $controlsCollapsed, controlsPosition: $controlsPosition)
+        }
         .onDisappear { if !fullScreen { player.disconnect() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { player.disconnect() } }
         .onChange(of: serial) { _, _ in player.disconnect() }
@@ -355,53 +392,195 @@ struct AndroidLiveScreenView: View {
     }
 }
 
+private struct AndroidFloatingControls: View {
+    @ObservedObject var player: AndroidVideoPlayer
+    @Binding var collapsed: Bool
+    @Binding var position: CGPoint
+    let fullScreen: Bool
+    let toggleFullScreen: () -> Void
+    @State private var translation = CGSize.zero
+    private var controlsSize: CGSize { collapsed ? CGSize(width: 44, height: 44) : CGSize(width: 228, height: 64) }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let center = AndroidFloatingControlsLayout.center(in: geometry.size, controls: controlsSize, position: position, translation: translation)
+            AndroidFloatingToolbar(collapsed: collapsed, fullScreen: fullScreen,
+                                   navigationEnabled: player.connected && !player.navigationPending,
+                                   toggleFullScreen: toggleFullScreen, navigate: player.navigate,
+                                   toggleCollapsed: { collapsed.toggle() }) { delta, ended in
+                if ended {
+                    let final = AndroidFloatingControlsLayout.center(in: geometry.size, controls: controlsSize, position: position, translation: delta)
+                    position = AndroidFloatingControlsLayout.position(for: final, in: geometry.size, controls: controlsSize)
+                    translation = .zero
+                } else { translation = delta }
+            }
+            .frame(width: controlsSize.width, height: controlsSize.height)
+            .background(Color(white: 0.15).opacity(0.95), in: RoundedRectangle(cornerRadius: collapsed ? 22 : 18))
+            .overlay { RoundedRectangle(cornerRadius: collapsed ? 22 : 18).strokeBorder(.white.opacity(0.18), lineWidth: 0.5).allowsHitTesting(false) }
+            .position(center)
+        }
+    }
+}
+
+// Native controls receive touch-up directly. The drag recognizer stays possible
+// through normal finger jitter and only cancels a button once dragging begins.
+private struct AndroidFloatingToolbar: UIViewRepresentable {
+    let collapsed: Bool
+    let fullScreen: Bool
+    let navigationEnabled: Bool
+    let toggleFullScreen: () -> Void
+    let navigate: (AndroidScreenNavigation) -> Void
+    let toggleCollapsed: () -> Void
+    let drag: (CGSize, Bool) -> Void
+
+    func makeUIView(context: Context) -> Toolbar { Toolbar(self) }
+    func updateUIView(_ view: Toolbar, context: Context) { view.update(self) }
+
+    final class Toolbar: UIView {
+        private var parent: AndroidFloatingToolbar
+        private var buttons: [UIButton] = []
+        private let movement = AndroidFloatingDragRecognizer()
+        private var configured = false
+
+        init(_ parent: AndroidFloatingToolbar) {
+            self.parent = parent
+            super.init(frame: .zero)
+            for index in 0..<6 {
+                let button = UIButton(type: .custom)
+                button.tag = index
+                button.addTarget(self, action: #selector(pressed(_:)), for: .touchUpInside)
+                button.accessibilityHint = "也可拖动整组工具条调整位置"
+                addSubview(button); buttons.append(button)
+            }
+            movement.addTarget(self, action: #selector(moved(_:)))
+            movement.delaysTouchesBegan = false; movement.delaysTouchesEnded = false
+            movement.cancelsTouchesInView = false
+            addGestureRecognizer(movement)
+            update(parent)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        func update(_ value: AndroidFloatingToolbar) {
+            let changed = !configured || parent.collapsed != value.collapsed || parent.fullScreen != value.fullScreen || parent.navigationEnabled != value.navigationEnabled
+            parent = value
+            // Video frames refresh the hosting view frequently. Keep native
+            // button tracking/configuration stable until a control state changes.
+            guard changed else { return }
+            configured = true
+            configure(buttons[0], title: value.fullScreen ? "退出" : "全屏",
+                      symbol: value.fullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                      accessibility: value.fullScreen ? "退出全屏" : "全屏投屏")
+            for (index, navigation) in AndroidScreenNavigation.allCases.enumerated() {
+                let button = buttons[index + 1]
+                configure(button, title: navigation.title, symbol: navigation.symbol, accessibility: navigation.accessibilityLabel)
+                button.isEnabled = value.navigationEnabled
+                button.alpha = value.navigationEnabled ? 1 : 0.5
+            }
+            configure(buttons[4], title: "收起", symbol: "chevron.compact.left", accessibility: "收起投屏工具条")
+            buttons[4].alpha = 0.65
+            configure(buttons[5], title: nil, symbol: "ellipsis", accessibility: "展开投屏工具条")
+            for button in buttons { button.isHidden = value.collapsed ? button.tag != 5 : button.tag == 5 }
+            setNeedsLayout()
+        }
+        private func configure(_ button: UIButton, title: String?, symbol: String, accessibility: String) {
+            var configuration = UIButton.Configuration.plain()
+            configuration.title = title
+            configuration.image = UIImage(systemName: symbol)
+            configuration.imagePlacement = .top; configuration.imagePadding = 3
+            configuration.contentInsets = .zero
+            configuration.baseForegroundColor = .white
+            configuration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 19)
+            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+                var attributes = attributes; attributes.font = .systemFont(ofSize: 11); return attributes
+            }
+            button.configuration = configuration; button.accessibilityLabel = accessibility
+        }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            for button in buttons {
+                button.frame = parent.collapsed ? bounds : CGRect(x: 4 + CGFloat(button.tag) * 44, y: 4, width: 44, height: 56)
+            }
+        }
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            var ancestor = superview
+            while let view = ancestor {
+                if let scroll = view as? UIScrollView { scroll.panGestureRecognizer.require(toFail: movement); break }
+                ancestor = view.superview
+            }
+        }
+        @objc private func pressed(_ button: UIButton) {
+            switch button.tag {
+            case 0: parent.toggleFullScreen()
+            case 1...3: parent.navigate(AndroidScreenNavigation.allCases[button.tag - 1])
+            default: parent.toggleCollapsed()
+            }
+        }
+        @objc private func moved(_ gesture: AndroidFloatingDragRecognizer) {
+            guard gesture.isDragging else { return }
+            switch gesture.state {
+            case .began, .changed: parent.drag(gesture.translation, false)
+            case .ended, .cancelled: parent.drag(gesture.translation, true)
+            default: break
+            }
+        }
+    }
+}
+
+private final class AndroidFloatingDragRecognizer: UIGestureRecognizer {
+    private var origin: CGPoint?
+    private var movement = AndroidFloatingDragState()
+    var translation: CGSize { movement.translation }
+    var isDragging: Bool { movement.isDragging }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard touches.count == 1, origin == nil, let touch = touches.first else {
+            state = state == .possible ? .failed : .cancelled; return
+        }
+        origin = touch.location(in: view?.window)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let origin, let touch = touches.first else { return }
+        let point = touch.location(in: view?.window)
+        movement.move(to: CGSize(width: point.x - origin.x, height: point.y - origin.y))
+        if state == .possible {
+            if movement.isDragging { cancelsTouchesInView = true; state = .began }
+        } else if state == .began || state == .changed { state = .changed }
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        // Claim a tap without cancelling native button delivery. This also
+        // prevents an ancestor ScrollView from winning when small jitter ends.
+        state = .ended
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        state = state == .possible ? .failed : .cancelled
+    }
+    override func reset() { super.reset(); origin = nil; movement = AndroidFloatingDragState(); cancelsTouchesInView = false }
+}
+
 private struct AndroidFullScreenView: View {
     @ObservedObject var player: AndroidVideoPlayer
+    @Binding var controlsCollapsed: Bool
+    @Binding var controlsPosition: CGPoint
     @Environment(\.dismiss) private var dismiss
-    @State private var exitPosition: CGPoint?
-    @GestureState private var exitTranslation = CGSize.zero
     var body: some View {
         ZStack {
             GeometryReader { geometry in
                 AndroidVideoViewport(aspect: player.aspect, maximumHeight: geometry.size.height) {
                     AndroidVideoSurface(player: player)
                 }.frame(width: geometry.size.width, height: geometry.size.height)
-            }.ignoresSafeArea()
-            GeometryReader { controls in exitButton(in: controls.size) }
-                .coordinateSpace(name: "android-fullscreen-controls")
+            }
+            AndroidFloatingControls(player: player, collapsed: $controlsCollapsed, position: $controlsPosition,
+                                    fullScreen: true) { dismiss() }
+        }
+        .overlay(alignment: .bottom) {
+            if let message = player.navigationMessage {
+                Text(message).font(.caption).foregroundStyle(.orange).padding(12)
+                    .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(12).allowsHitTesting(false)
+            }
         }
         .background(.black).foregroundStyle(.white).statusBarHidden().persistentSystemOverlays(.hidden)
         .onChange(of: player.connected) { _, connected in if !connected { dismiss() } }
     }
 
-    private func boundedPosition(_ point: CGPoint, in size: CGSize) -> CGPoint {
-        let inset: CGFloat = 34
-        return CGPoint(x: min(max(point.x, inset), max(inset, size.width - inset)),
-                       y: min(max(point.y, inset), max(inset, size.height - inset)))
-    }
-
-    private func exitButton(in size: CGSize) -> some View {
-        let origin = boundedPosition(exitPosition ?? CGPoint(x: 34, y: 34), in: size)
-        let position = boundedPosition(CGPoint(x: origin.x + exitTranslation.width,
-                                               y: origin.y + exitTranslation.height), in: size)
-        return Button { dismiss() } label: {
-            Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.body.weight(.semibold))
-                .frame(width: 44, height: 44)
-                .background(.black.opacity(0.6), in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("退出全屏")
-        .accessibilityHint("点击返回投屏卡片，也可拖动按钮调整位置")
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 8, coordinateSpace: .named("android-fullscreen-controls"))
-                .updating($exitTranslation) { value, translation, _ in translation = value.translation }
-                .onEnded { value in
-                    exitPosition = boundedPosition(CGPoint(x: origin.x + value.translation.width,
-                                                          y: origin.y + value.translation.height), in: size)
-                }
-        )
-        .position(position)
-    }
 }

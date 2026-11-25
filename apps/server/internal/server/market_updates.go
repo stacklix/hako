@@ -299,8 +299,17 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 			continue
 		}
 		target := marketTarget{Key: "close|" + id, Kind: "daily_close", InstrumentID: id, Symbol: instrument["symbol"], Exchange: instrument["exchange"], Currency: instrument["quote_currency"], PriceType: instrument["price_type"], From: start, Through: marketLastClose(now, instrument)}
+		// NAVs have no intraday/latest quote; new holdings also need the latest published NAV.
+		fundNAV := instrument["asset_type"] == "fund" && instrument["price_type"] == "nav" && strings.HasSuffix(instrument["symbol"], ".OF")
+		if fundNAV {
+			end, _ := time.Parse(time.DateOnly, target.Through)
+			recent := end.AddDate(0, 0, -30).Format(time.DateOnly)
+			if target.From > recent {
+				target.From = recent
+			}
+		}
 		add(target)
-		if !active[id] {
+		if fundNAV || !active[id] {
 			continue
 		}
 		localDay := now.In(marketLocation(instrument["exchange"])).Format(time.DateOnly)

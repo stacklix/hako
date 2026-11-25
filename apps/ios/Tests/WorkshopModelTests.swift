@@ -10,7 +10,7 @@ import Foundation
         precondition(WorkshopTurn.footers(in: [interim, final]).isEmpty, "An item completion is not a turn completion")
         let event = WorkshopEntry(kind: "turn", id: "turn-round", text: "", role: "", state: "", truncated: false, turnId: "round", turn: turn)
         let footers = WorkshopTurn.footers(in: [interim, final, event])
-        precondition(footers.count == 1 && footers["final"]?.elapsedText == "6 分 23 秒" && footers["progress"] == nil)
+        precondition(footers.count == 1 && footers["final"]?.elapsedText == "6m 23s" && footers["progress"] == nil)
         final.turn = turn
         precondition(WorkshopTurn.footers(in: [interim, final])["final"] == turn, "History pages retain native turn boundaries")
         var active = final
@@ -19,7 +19,10 @@ import Foundation
         let unknown = WorkshopTurn(id: "unknown", state: "completed", startedAt: nil, completedAt: nil, durationMs: nil)
         precondition(unknown.elapsedText == nil, "Missing native timing must not become zero seconds")
         let seconds = WorkshopTurn(id: "round", state: "completed", startedAt: 1000, completedAt: 1383, durationMs: nil)
-        precondition(seconds.elapsedText == "6 分 23 秒")
+        precondition(seconds.elapsedText == "6m 23s")
+        for (duration, expected) in [(Int64(0), "0s"), (59999, "59s"), (60000, "1m 0s"), (3601000, "1h 0m 1s")] {
+            precondition(WorkshopTurn(id: "round", state: "completed", startedAt: nil, completedAt: nil, durationMs: duration).elapsedText == expected)
+        }
         let restored = try JSONDecoder().decode(WorkshopEntry.self, from: JSONEncoder().encode(final))
         precondition(restored == final)
     }

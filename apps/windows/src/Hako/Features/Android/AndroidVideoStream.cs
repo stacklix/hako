@@ -25,7 +25,9 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         internal readonly AndroidEndpoint Endpoint = endpoint;
         internal readonly byte[] Key = RandomNumberGenerator.GetBytes(32);
         internal readonly CancellationTokenSource Lifetime = new(TimeSpan.FromSeconds(30));
+        internal readonly SemaphoreSlim Navigation = new(1, 1);
         internal bool Claimed;
+        internal bool SourceReady;
         internal Task? Worker;
         internal bool PowerOwned;
         internal string? EndError;
@@ -62,6 +64,26 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         if (value?.Worker is not null) try { await value.Worker; } catch (OperationCanceledException) { }
         if (value?.EndError is { } error) throw new AgentActionException("screen_sleep_failed", error);
         return new { stopped = true };
+    }
+    internal async Task<object> NavigateAsync(string id, string navigation, CancellationToken token)
+    {
+        var key = navigation switch {
+            "back" => "4", "home" => "3", "recents" => "187",
+            _ => throw new AgentActionException("invalid_params", "仅支持返回、主页和最近任务。")
+        };
+        var s = Get(id);
+        lock (sync) {
+            if (!s.SourceReady) throw new AgentActionException("stream_not_ready", "投屏尚未连接，请等待画面出现后操作。");
+        }
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(token, s.Lifetime.Token);
+        budget.CancelAfter(TimeSpan.FromSeconds(3));
+        await s.Navigation.WaitAsync(budget.Token);
+        try {
+            budget.Token.ThrowIfCancellationRequested();
+            await adb.RunAsync(["-t", s.Endpoint.TransportId, "shell", "input", "keyevent", key], budget.Token);
+            budget.Token.ThrowIfCancellationRequested();
+            return new { sent = true };
+        } finally { s.Navigation.Release(); }
     }
     private Session Get(string id)
     {
@@ -152,6 +174,7 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
             await AndroidVideoPower.SetAsync(adb, s.Endpoint, awake: true);
             token.ThrowIfCancellationRequested();
             var video = await source.OpenAsync(token);
+            lock (sync) s.SourceReady = true;
             reading = Task.Run(async () =>
             {
                 var input = new AndroidVideoInput();
@@ -196,9 +219,12 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         }
         finally
         {
+            lock (sync) s.SourceReady = false;
             lifetime.Cancel(); s.Lifetime.Cancel(); socket.Abort();
             if (reading is not null) try { await reading; } catch { }
             if (heartbeat is not null) try { await heartbeat; } catch { }
+            // A pending Home key must finish/cancel before cleanup puts the phone to sleep.
+            await s.Navigation.WaitAsync(); s.Navigation.Release();
             try { await source.DisposeAsync(); }
             finally
             {

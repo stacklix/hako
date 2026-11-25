@@ -101,9 +101,15 @@ actor InvestmentDiskCache {
         var incomplete = false
         var histories: [History] = []
     }
+    private struct FundCheck: Sendable {
+        let start: Date, end: Date, checkedAt: Date
+    }
+    // Unpublished NAV coverage expires and is never persisted as a holiday.
+    private var fundChecks: [String: [String: [FundCheck]]] = [:]
     struct MarketReadSnapshot: Sendable {
         fileprivate let histories: [String: [History]]
         let incomplete: Bool
+        fileprivate var fundChecks: [String: [ClosedRange<Date>]] = [:]
         var historyCount: Int { histories.values.reduce(0) { $0 + $1.count } }
         var quoteCount: Int { histories.values.reduce(0) { $0 + $1.reduce(0) { $0 + $1.quotes.count } } }
 
@@ -113,14 +119,20 @@ actor InvestmentDiskCache {
         }
         func missingWindows(key: String, start: Date, end: Date, today: Date,
                             observations: [InvestmentQuote], additionalCoverage: [ClosedRange<Date>] = [],
-                            requiredClose: Date? = nil) -> [ClosedRange<Date>] {
+                            requiredClose: Date? = nil, publishedNAV: Bool = false) -> [ClosedRange<Date>] {
+            let publishedThrough = publishedNAV ? (observations + histories[key, default: []].flatMap(\.quotes))
+                .filter { $0.price > 0 && $0.isDailyClose == true }.map(\.day).max() : nil
             let covered: [ClosedRange<Date>] = incomplete ? [] : histories[key, default: []].compactMap { range in
-                let end = range.checkedDay < today && range.end >= range.checkedDay
+                var end = range.checkedDay < today && range.end >= range.checkedDay
                     ? InvestmentBook.addDays(-1, to: range.checkedDay) : range.end
+                if publishedNAV {
+                    guard let last = publishedThrough else { return nil }
+                    end = min(end, last)
+                }
                 return range.start <= end ? range.start...end : nil
             }
             var missing = InvestmentHistoryRange.missingWindows(from: start, through: end, observations: observations,
-                                                                covered: covered + additionalCoverage)
+                                                                covered: covered + additionalCoverage + (publishedNAV ? fundChecks[key, default: []] : []))
             if key.hasPrefix("fx|") {
                 // Query coverage must not hide an unconfirmed previous-day rate.
                 let ranges = missing + observations.filter {
@@ -132,7 +144,7 @@ actor InvestmentDiskCache {
                     InvestmentBook.addQuoteWindow(range, to: &missing)
                 }
             }
-            if let day = requiredClose, day >= start, day <= end,
+            if !publishedNAV, let day = requiredClose, day >= start, day <= end,
                !observations.contains(where: { $0.day == day && $0.price > 0 && $0.isDailyClose == true }) {
                 // A pre-close query or an unpublished NAV must not cache away the later closing price.
                 let ranges = missing + [day...day]
@@ -173,9 +185,12 @@ actor InvestmentDiskCache {
         return try JSONDecoder().decode(Entry.self, from: readFile(file))
     }
     // A refresh owns one immutable read. Future refreshes and other cache instances read disk again.
-    func marketReadSnapshot(scope: String) throws -> MarketReadSnapshot {
+    func marketReadSnapshot(scope: String, now: Date = .now) throws -> MarketReadSnapshot {
         let entry = try entry(scope)
-        return .init(histories: Dictionary(grouping: entry.histories, by: \.key), incomplete: entry.incomplete)
+        let recent = fundChecks[scope, default: [:]].mapValues { checks in
+            checks.filter { now >= $0.checkedAt && now.timeIntervalSince($0.checkedAt) < 900 }.map { $0.start...$0.end }
+        }
+        return .init(histories: Dictionary(grouping: entry.histories, by: \.key), incomplete: entry.incomplete, fundChecks: recent)
     }
     private func persist(_ entry: Entry, scope: String) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -226,6 +241,7 @@ actor InvestmentDiskCache {
         try persist(entry, scope: scope)
     }
     func remove(scope: String, category: InvestmentDataCategory? = nil, rows: [InvestmentCachedRow]? = nil) throws {
+        fundChecks[scope] = nil
         guard let category else {
             let file = try url(scope)
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
@@ -271,19 +287,25 @@ actor InvestmentDiskCache {
         try marketReadSnapshot(scope: scope).marketQuotes(key: key)
     }
     func missingWindows(scope: String, key: String, start: Date, end: Date, today: Date,
-                        observations: [InvestmentQuote]) throws -> [ClosedRange<Date>] {
-        try marketReadSnapshot(scope: scope).missingWindows(key: key, start: start, end: end, today: today, observations: observations)
+                        observations: [InvestmentQuote], publishedNAV: Bool = false) throws -> [ClosedRange<Date>] {
+        try marketReadSnapshot(scope: scope).missingWindows(key: key, start: start, end: end, today: today, observations: observations, publishedNAV: publishedNAV)
     }
     func history(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date) throws -> [InvestmentQuote]? {
         let snapshot = try marketReadSnapshot(scope: scope)
         guard !snapshot.incomplete else { return nil }
         let key = Self.historyKey(asset)
         let quotes = snapshot.marketQuotes(key: key)
-        guard snapshot.missingWindows(key: key, start: start, end: end, today: today, observations: quotes).isEmpty else { return nil }
+        guard snapshot.missingWindows(key: key, start: start, end: end, today: today, observations: quotes, publishedNAV: asset.usesPublishedFundNAV).isEmpty else { return nil }
         return quotes.filter { $0.day >= start && $0.day <= end }
     }
     func saveHistory(scope: String, asset: InvestmentAsset, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
-        try saveMarketHistory(scope: scope, key: Self.historyKey(asset), start: start, end: end, today: today, quotes: quotes)
+        let key = Self.historyKey(asset)
+        try saveMarketHistory(scope: scope, key: key, start: start, end: end, today: today, quotes: quotes)
+        if asset.usesPublishedFundNAV {
+            let now = Date.now
+            fundChecks[scope, default: [:]][key, default: []].removeAll { now.timeIntervalSince($0.checkedAt) >= 900 }
+            fundChecks[scope, default: [:]][key, default: []].append(.init(start: start, end: end, checkedAt: now))
+        }
     }
     func saveMarketHistory(scope: String, key: String, start: Date, end: Date, today: Date, quotes: [InvestmentQuote]) throws {
         var entry = try entry(scope)

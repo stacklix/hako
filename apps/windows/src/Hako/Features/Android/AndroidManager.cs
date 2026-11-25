@@ -191,11 +191,12 @@ internal sealed class AndroidManager : IAsyncDisposable
     {
         if (method == "action.android.stream")
         {
-            Fields(p, "sessionId", "operation", "deviceId", "serial", "relayId", "ticket");
+            Fields(p, "sessionId", "operation", "deviceId", "serial", "relayId", "ticket", "navigation");
             var session = Id(p, "sessionId");
             switch (Text(p, "operation"))
             {
                 case "stop": return await Video.StopAsync(session);
+                case "navigate": return await Video.NavigateAsync(session, Text(p, "navigation"), token);
                 case "relay": return Video.Relay(session, Text(p, "relayId"), Text(p, "ticket"));
                 case "start":
                     var target = Text(p, "deviceId");

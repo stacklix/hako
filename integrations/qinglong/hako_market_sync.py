@@ -14,6 +14,8 @@ import io
 import json
 import os
 import re
+import socket
+import ssl
 import sys
 import tempfile
 import time
@@ -21,6 +23,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from hashlib import sha256
+from http.client import HTTPException, RemoteDisconnected
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
@@ -34,6 +37,31 @@ BODY_LIMIT = 15_000  # Hako currently limits these request bodies to 16 KiB.
 
 class SyncError(Exception):
     """Only sanitized messages belong here; never include a URL or response body."""
+
+
+class ProviderDeferred(SyncError):
+    """A provider domain is temporarily paused; other providers can continue."""
+
+
+def transport_failure(error):
+    # Exception text may contain a URL, query or credentials. Emit only fixed hints,
+    # exception type and numeric system codes, never str(error) or str(reason).
+    cause = error.reason if isinstance(error, URLError) else error
+    if isinstance(cause, socket.gaierror):
+        hint = 'DNS 解析失败'
+    elif isinstance(cause, ssl.SSLError):
+        hint = 'TLS 连接或证书校验失败'
+    elif isinstance(cause, TimeoutError):
+        hint = '连接或读取超时'
+    elif isinstance(cause, (RemoteDisconnected, ConnectionResetError, BrokenPipeError)):
+        hint = '连接被对端断开，未取得完整响应'
+    elif isinstance(cause, HTTPException):
+        hint = 'HTTP 响应传输不完整或格式异常'
+    else:
+        hint = '网络连接失败'
+    code = getattr(cause, 'errno', None)
+    system = f'，系统码 {code}' if isinstance(code, int) else ''
+    return f'{hint}（{type(cause).__name__}{system}）'
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -101,8 +129,13 @@ class HTTP:
         self.opener = build_opener(proxies, NoRedirect())
         self.deadline, self.timeout = deadline, timeout
         self.next_request = {}
+        self.blocked_hosts = {}
 
     def request(self, label, url, *, query=None, body=None, headers=None, json_result=True):
+        host = urlsplit(url).hostname or ''
+        blocked = self.blocked_hosts.get(host, 0) - time.monotonic()
+        if blocked > 0:
+            raise ProviderDeferred(f'{label} {host} 连接异常，暂停该域名，约 {int(blocked) + 1} 秒后可重试')
         if query:
             url += '?' + urlencode(query)
         intervals = {'hako': 0.6, 'twelve': 8.0, 'eastmoney': 0.4, 'binance': 0.25, 'ecb': 0.4}
@@ -117,6 +150,7 @@ class HTTP:
             if wait:
                 time.sleep(wait)
             self.next_request[label] = time.monotonic() + intervals.get(label, 0.5)
+            started = time.monotonic()
             try:
                 request = Request(url, data=payload, headers=request_headers)
                 timeout = max(1, min(self.timeout, self.deadline - time.monotonic()))
@@ -152,11 +186,19 @@ class HTTP:
                 hint = {401: '凭据无效', 403: '权限不足或来源访问受限', 404: '接口未部署或标的不存在',
                         413: '请求正文超限', 429: '请求频率超限'}.get(status, '请求失败')
                 raise SyncError(f'{label} HTTP {status}：{hint}') from None
-            except (URLError, TimeoutError, OSError):
+            except (URLError, TimeoutError, OSError, HTTPException) as error:
+                reason = transport_failure(error)
+                elapsed = time.monotonic() - started
                 if attempt < 2:
-                    self.next_request[label] = time.monotonic() + 2 ** attempt
+                    seconds = 2 ** attempt
+                    self.next_request[label] = time.monotonic() + seconds
+                    log(f'{label} {host} 第 {attempt + 1}/3 次请求失败，耗时 {elapsed:.2f} 秒：{reason}；{seconds} 秒后重试')
                     continue
-                raise SyncError(f'{label} 网络连接失败或超时') from None
+                pause = ''
+                if label == 'eastmoney':
+                    self.blocked_hosts[host] = time.monotonic() + 60
+                    pause = '；该域名暂停 60 秒，其余标的延后处理'
+                raise SyncError(f'{label} {host} 3 次请求均失败：{reason}{pause}') from None
             except (ValueError, UnicodeError):
                 raise SyncError(f'{label} 响应格式无效') from None
 
@@ -469,7 +511,7 @@ def single_instance(identity):
 
 
 def run(hako, providers, *, check=False, dry_run=False, rounds=10):
-    seen, failed, written, found = set(), 0, 0, 0
+    seen, failed, written, found, deferred = set(), 0, 0, 0, 0
     for _ in range(rounds):
         fresh = 0
         for page in hako.targets():
@@ -499,9 +541,15 @@ def run(hako, providers, *, check=False, dry_run=False, rounds=10):
                     elif quotes or complete:
                         count = hako.upload(target, quotes, complete)
                         written += count
-                        log(f'完成 {label}：取得 {len(quotes)} 条，实际变更 {count} 条')
+                        if not quotes and target.get('priceType') == 'nav':
+                            log('基金净值尚未公布，稍后重查 ' + label)
+                        else:
+                            log(f'完成 {label}：取得 {len(quotes)} 条，实际变更 {count} 条')
                     else:
                         log('暂无该日期已发布报价 ' + label)
+                except ProviderDeferred as error:
+                    deferred += 1
+                    log(f'延后 {label}：{error}')
                 except SyncError as error:
                     failed += 1
                     log(f'失败 {label}：{error}')
@@ -510,7 +558,7 @@ def run(hako, providers, *, check=False, dry_run=False, rounds=10):
                     log('失败 ' + label + '：响应字段无效，未确认的范围不标记完成')
         if not fresh or check or dry_run:
             break
-    log(f'结束：检查 {found} 个目标，写入变更 {written} 条，失败 {failed} 个')
+    log(f'结束：检查 {found} 个目标，写入变更 {written} 条，失败 {failed} 个，延后 {deferred} 个')
     return 1 if failed else 0
 
 

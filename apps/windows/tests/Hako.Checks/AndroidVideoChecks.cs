@@ -39,11 +39,12 @@ internal static class AndroidVideoChecks
         await CheckPowerLifecycle(true, false);
         await CheckPowerLifecycle(false, true);
         await CheckCancelledWriteRace();
+        await CheckNavigation();
         CheckTouchValidation();
         await AndroidLegacyVideoChecks.RunAsync();
         Console.WriteLine("PASS: video encoder integrity, idempotent session keys, device pinning, source limits and stop without launching ADB.");
     }
-    private sealed class CancelledWriteSocket(byte[] hello) : WebSocket
+    private sealed class CancelledWriteSocket(byte[] hello, bool blockWrite = true) : WebSocket
     {
         internal readonly TaskCompletionSource Writing = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int writes, reads;
@@ -69,9 +70,46 @@ internal static class AndroidVideoChecks
         {
             if (Interlocked.Increment(ref writes) != 2) return;
             Writing.TrySetResult();
+            if (!blockWrite) return;
             try { await Task.Delay(Timeout.Infinite, token); }
             catch (OperationCanceledException) { throw new WebSocketException("Fixture: an aborted write raced with stop."); }
         }
+    }
+    private static async Task CheckNavigation()
+    {
+        var source = new Source(); var adb = new PowerAdb(source, false, false);
+        await using var streams = new AndroidVideoStreams(adb, () => null, Path.GetTempPath(), _ => source);
+        var id = Guid.NewGuid().ToString("D");
+        var descriptor = JsonSerializer.SerializeToElement(streams.Create(id, "phone", new("pinned", "7", "usb", "device"), 0), AgentConnection.Json);
+        async Task Reject(string action, string code) {
+            try { await streams.NavigateAsync(id, action, default); throw new Exception("Unsafe navigation accepted"); }
+            catch (AgentActionException error) when (error.Code == code) { }
+        }
+        await Reject("home", "stream_not_ready");
+        await Reject("26", "invalid_params");
+        var key = Convert.FromBase64String(descriptor.GetProperty("key").GetString()!);
+        var hello = JsonSerializer.SerializeToUtf8Bytes(new { sessionId = id, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+        using var socket = new CancelledWriteSocket(AgentLanEndpoint.Seal(key, hello, "video-client:" + id), false);
+        var worker = streams.AcceptAsync(id, socket, default);
+        await socket.Writing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        foreach (var action in new[] { "back", "home", "recents" }) await streams.NavigateAsync(id, action, default);
+        if (string.Join(",", adb.NavigationKeys) != "4,3,187" || !adb.Awake)
+            throw new Exception("Navigation changed its key, target or phone power state");
+        await Reject("shell input keyevent 26", "invalid_params");
+        adb.HoldNavigation = true;
+        var pending = streams.NavigateAsync(id, "home", default);
+        await adb.NavigationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var queued = streams.NavigateAsync(id, "back", default);
+        await streams.StopAsync(id).WaitAsync(TimeSpan.FromSeconds(3));
+        foreach (var task in new[] { pending, queued }) {
+            try { await task; throw new Exception("Stopped navigation completed instead of cancelling"); }
+            catch (OperationCanceledException) { }
+        }
+        await worker;
+        await Reject("home", "stream_expired");
+        if (!source.Disposed || adb.Awake || adb.NavigationKeys.Count != 4 || string.Join(",", adb.Keys) != "224,223")
+            throw new Exception("Navigation was replayed after stop or phone cleanup was incomplete");
+        Console.WriteLine("PASS: navigation pins transport, rejects arbitrary keys/not-ready/ended sessions, cancels queued input before sleep.");
     }
     private static async Task CheckCancelledWriteRace()
     {
@@ -125,16 +163,30 @@ internal static class AndroidVideoChecks
         public string? Executable => "fixture";
         internal bool Awake;
         internal readonly List<string> Keys = [];
-        public Task<byte[]> RunAsync(string[] arguments, CancellationToken token, string? input = null, int limit = 2097152)
+        internal readonly List<string> NavigationKeys = [];
+        internal bool HoldNavigation, NavigationRunning;
+        internal readonly TaskCompletionSource NavigationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<byte[]> RunAsync(string[] arguments, CancellationToken token, string? input = null, int limit = 2097152)
         {
             if (arguments[0] != "-t" || arguments[1] != "7") throw new Exception("Video power control changed transport");
             if (arguments[^2] == "keyevent") {
-                var key = arguments[^1]; Keys.Add(key);
+                var key = arguments[^1];
+                if (key is "4" or "3" or "187") {
+                    NavigationKeys.Add(key);
+                    if (HoldNavigation) {
+                        NavigationRunning = true; NavigationStarted.TrySetResult();
+                        try { await Task.Delay(Timeout.Infinite, token); }
+                        finally { NavigationRunning = false; }
+                    }
+                    return [];
+                }
+                Keys.Add(key);
                 if ((key == "224" && failWake) || (key == "223" && failSleep)) throw new AgentActionException("adb_failed", "fixture denied");
                 if (key == "223" && !source.Disposed) throw new Exception("Phone slept before video source closed");
+                if (key == "223" && NavigationRunning) throw new Exception("Phone slept while navigation was still pending");
                 Awake = key == "224";
             }
-            return Task.FromResult(Encoding.UTF8.GetBytes("mScreenState=" + (Awake ? "ON" : "OFF")));
+            return Encoding.UTF8.GetBytes("mScreenState=" + (Awake ? "ON" : "OFF"));
         }
     }
     private static async Task CheckPowerLifecycle(bool failWake, bool failSleep)
@@ -218,7 +270,7 @@ internal static class AndroidVideoChecks
         input.Read(Touch(3, 0)); input.Read(Touch(4, 1));
         Console.WriteLine("PASS: encrypted ordered touch delivery, coordinate bounds, gesture lifecycle and replay rejection.");
     }
-    internal static async Task LiveAsync(string profile, string output, string serial = "731dd756")
+    internal static async Task LiveAsync(string profile, string output, string serial = "731dd756", bool navigation = false)
     {
         await using var manager = new AndroidManager(profile);
         var inventory = await manager.ListAsync(default);
@@ -238,7 +290,7 @@ internal static class AndroidVideoChecks
         var hello = JsonSerializer.SerializeToUtf8Bytes(new { sessionId = id, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
         await consumer.SendAsync(AgentLanEndpoint.Seal(key, hello, "video-client:" + id).AsMemory(), WebSocketMessageType.Binary, true, default);
         using var video = new MemoryStream(); var clock = Stopwatch.StartNew(); double? first = null;
-        ulong sequence = 0;
+        ulong sequence = 0; var navigationCount = 0;
         try {
             while (!duration.IsCancellationRequested) {
                 var bytes = new byte[65564]; var length = 0;
@@ -248,7 +300,17 @@ internal static class AndroidVideoChecks
                 var plain = AgentLanEndpoint.Open(key, bytes[..length], "video-server:" + id);
                 if (BinaryPrimitives.ReadUInt64BigEndian(plain) != sequence++) throw new Exception("Video sequence changed");
                 if (plain[8] == 1) throw new Exception(Encoding.UTF8.GetString(plain, 9, plain.Length - 9));
-                if (plain[8] == 0) { video.Write(plain, 9, plain.Length - 9); first ??= clock.Elapsed.TotalMilliseconds; }
+                if (plain[8] == 0) {
+                    video.Write(plain, 9, plain.Length - 9); first ??= clock.Elapsed.TotalMilliseconds;
+                    if (navigation && navigationCount == 0) {
+                        foreach (var action in new[] { "home", "recents", "back" }) {
+                            var sent = JsonSerializer.SerializeToElement(await manager.ActionAsync("action.android.stream",
+                                JsonSerializer.SerializeToElement(new { operation = "navigate", sessionId = id, navigation = action }), duration.Token), AgentConnection.Json);
+                            if (!sent.GetProperty("sent").GetBoolean()) throw new Exception("Live navigation was not confirmed");
+                            navigationCount++;
+                        }
+                    }
+                }
             }
         } catch (OperationCanceledException) when (duration.IsCancellationRequested) { }
         finally {
@@ -272,7 +334,7 @@ internal static class AndroidVideoChecks
         }
         await File.WriteAllBytesAsync(output, data);
         Console.WriteLine(JsonSerializer.Serialize(new { videoBytes = video.Length, frames, configurations, keyFrames,
-            messages = sequence, firstDataMilliseconds = first, closed = work.IsCompleted }, AgentConnection.Json));
+            messages = sequence, firstDataMilliseconds = first, navigationCount, closed = work.IsCompleted }, AgentConnection.Json));
         if (configurations == 0 || frames < 2 || keyFrames == 0) throw new Exception("Live video did not contain decodable configuration, key frame and continuous pictures");
     }
 }

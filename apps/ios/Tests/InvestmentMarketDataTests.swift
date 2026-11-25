@@ -27,6 +27,7 @@ struct InvestmentMarketDataTests {
         try await eastmoneyDerivativeMarketsAndContractFormats()
         try await eastmoneyExpiredContractsCanUseTushare()
         try await eastmoneyFundNAVPaginatesAndRejectsMoneyYields()
+        try await publishedFundNAVUsesPublishedDatesAndNormalPendingResults()
         try await twelveUSCloseTimesAndWatchFreshness()
         try await localMarketsBecomeFinalAtClose()
         try await eastmoneyFailuresAndRetryAreExplicit()

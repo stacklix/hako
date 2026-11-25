@@ -53,6 +53,8 @@ struct InvestmentSnapshotQuoteRequests {
 }
 
 extension InvestmentAsset {
+    var usesPublishedFundNAV: Bool { kind == .fund && currency == .cny && mainlandSymbol?.venue == "OF" }
+
     var usesUSEquityClose: Bool { currency == .usd && (kind == .stock || kind == .etf) }
 
     func marketClose(on sessionDay: Date) -> Date {

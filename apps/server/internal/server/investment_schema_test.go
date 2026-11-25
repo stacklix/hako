@@ -15,7 +15,7 @@ import (
 )
 
 func TestInvestmentDatabaseRejectsUnsupportedSchemaWithoutChangingRecords(t *testing.T) {
-	for _, version := range []int{2, 3, 4, 5, 6, 10} {
+	for _, version := range []int{2, 3, 4, 5, 6, 7, 8, 10} {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
 			testInvestmentDatabaseRejectsSchema(t, version)
 		})
@@ -79,6 +79,16 @@ func TestInvestmentCurrentSchemaReopensWithoutChangingLedger(t *testing.T) {
 		VALUES('owner','book',7,3,'2026-11-15');
 		INSERT INTO investment_accounts(book_id,id,name,account_type,currency,sort_order,archived_at)
 		VALUES('book','account','基金理财','fund_wealth','CNY',0,'2026-11-16T00:00:00Z');
+		INSERT INTO market_instruments(id,asset_type,symbol,exchange,name,quote_currency,price_type)
+		VALUES('STOCK:HK:00700.HK:HKD','stock','00700.HK','XHKG','腾讯','HKD','close');
+		INSERT INTO investment_assets(book_id,id,instrument_id,name,asset_type,settlement_unit,exchange)
+		VALUES('book','asset','STOCK:HK:00700.HK:HKD','腾讯','stock','CNY','HK_CONNECT');
+		INSERT INTO investment_watchlist(book_id,asset_id,instrument_id,sort_order)
+		VALUES('book','asset','STOCK:HK:00700.HK:HKD',0);
+		INSERT INTO market_daily_prices(instrument_id,session_date,price_type,source,price,is_final)
+		VALUES('STOCK:HK:00700.HK:HKD','2026-11-15','close','行情源','300.1234',1);
+		INSERT INTO market_daily_fx(rate_date,base_currency,quote_currency,rate,source,is_final)
+		VALUES('2026-11-15','HKD','CNY','0.912345678901234567','欧洲央行',1);
 		INSERT INTO investment_events(book_id,id,account_id,event_type,effective_date,amount)
 		VALUES('book','event','account','deposit','2026-11-15','100.123456789012345678');
 		INSERT INTO investment_plans(book_id,id,account_id,amount,frequency,schedule_day,next_date,enabled)
