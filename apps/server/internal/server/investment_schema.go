@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math/big"
 )
 
@@ -10,6 +11,29 @@ import (
 const investmentSchemaVersion = 10
 
 const investmentAccountTypesSQL = "'securities','fund_wealth','futures','deposits','crypto','insurance'"
+
+// Schema 10 only adds shared trading calendars; existing ledger data is unchanged.
+func migrateInvestmentCalendars(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version != 9 {
+		return nil
+	}
+	if _, err := tx.Exec(marketCalendarsSQL); err != nil {
+		return fmt.Errorf("migrate investment calendars: %w", err)
+	}
+	if _, err := tx.Exec("PRAGMA user_version=10"); err != nil {
+		return fmt.Errorf("migrate investment calendars version: %w", err)
+	}
+	return tx.Commit()
+}
 
 func finalInvestmentFX(row investmentRow) bool {
 	if row["is_final"] != "1" {
