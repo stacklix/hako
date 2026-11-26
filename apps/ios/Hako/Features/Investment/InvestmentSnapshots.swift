@@ -83,6 +83,7 @@ struct InvestmentDailySnapshotReport {
     var latest: InvestmentValuation? = nil
     var missingExamples: [Date] = []
     var missingUSD = 0
+    var noUpdateNeeded = false
 
     var totals: String {
         let cny = latest?.value.formatted(.currency(code: "CNY")) ?? "—"
@@ -92,7 +93,9 @@ struct InvestmentDailySnapshotReport {
 
     var message: String {
         if saved == 0, missing == 0 { return "暂无已结束的记账日。" }
-        var result = "已保存 \(saved) 天的日终快照。"
+        let date = InvestmentBook.snapshotDateFormatter().string(from: day)
+        var result = noUpdateNeeded && missing == 0 && missingUSD == 0 && includesDay ? "日终快照已齐备，本次无需更新。" : ""
+        result += "现有 \(saved) 天的日终快照，截至\(date)。"
         if missing > 0 {
             let formatter = InvestmentBook.snapshotDateFormatter()
             let dates = missingExamples.map { formatter.string(from: $0) }.joined(separator: "、")

@@ -27,6 +27,7 @@ struct InvestmentOverview: View {
     let presentation: InvestmentPresentation
     var showsArchived = false
     var insuranceGainBasis: InvestmentInsuranceGainBasis = .cashValue
+    var snapshotWriteRunning = false
     let openAccount: (UUID) -> Void
     @State private var accountsExpanded = false
 
@@ -76,9 +77,24 @@ struct InvestmentOverview: View {
         let dayGain = presentation.dailyGain
         let dollars = presentation.dollars
         let historicalGain = presentation.historicalGain(insuranceBasis: insuranceGainBasis)
+        let showsSnapshotProgress = snapshotWriteRunning && !book.accounts.isEmpty &&
+            (current == nil || dayGain == nil || historicalGain == nil)
         return InvestmentCard {
             VStack(alignment: .leading, spacing: 4) {
-                InvestmentMetric(title: "总资产 · CNY", value: InvestmentText.money(current?.value, .cny), prominent: true)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("总资产 · CNY").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if showsSnapshotProgress {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.mini).accessibilityHidden(true)
+                            Text("快照计算中…").font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                Text(InvestmentText.money(current?.value, .cny))
+                    .font(.title2.weight(.semibold)).monospacedDigit()
                 Text("折合美元 · " + InvestmentText.money(dollars, .usd))
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }

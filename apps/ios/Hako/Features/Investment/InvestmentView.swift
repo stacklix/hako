@@ -49,7 +49,8 @@ struct InvestmentView: View {
                 switch tab {
                 case .overview:
                     InvestmentOverview(book: store.book, bookVersion: store.bookVersion, presentation: store.presentation,
-                                       showsArchived: store.showsArchived, insuranceGainBasis: store.insuranceGainBasis) { id in
+                                       showsArchived: store.showsArchived, insuranceGainBasis: store.insuranceGainBasis,
+                                       snapshotWriteRunning: store.snapshotWriteRunning) { id in
                         selectedAccount = id
                         tab = .accounts
                     }

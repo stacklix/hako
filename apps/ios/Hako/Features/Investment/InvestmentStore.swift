@@ -53,7 +53,7 @@ final class InvestmentStore: ObservableObject {
     private var loaded = false
     @Published private(set) var ledgerRevision = UUID()
     private var dailySnapshotTask: Task<Void, Never>?
-    private var snapshotWriteRunning = false
+    @Published private(set) var snapshotWriteRunning = false
     private var lastAutomaticRefresh: Date?
     private var lastAutomaticCurrencies: Set<InvestmentCurrency> = []
     private var lastAutomaticMarketQuotes: Set<UUID> = []
@@ -593,7 +593,9 @@ final class InvestmentStore: ObservableObject {
         let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
         guard let initial = serverState else { throw InvestmentError.invalid("请先读取服务端投资账本。") }
         guard let start = book.snapshotBatchStart(state: initial, through: end, rebuild: rebuild) else {
-            return book.dailySnapshotReport(through: end)
+            var report = book.dailySnapshotReport(through: end)
+            report.noUpdateNeeded = true
+            return report
         }
         let oldLast = InvestmentServerRecords.snapshotTables.flatMap { initial.tables[$0] ?? [] }
             .compactMap { $0["snapshot_date"].flatMap(records.day.date(from:)) }.max()
@@ -659,7 +661,9 @@ final class InvestmentStore: ObservableObject {
             cursor = next
         }
         snapshotSaveError = nil
-        return book.dailySnapshotReport(through: end)
+        var report = book.dailySnapshotReport(through: end)
+        report.noUpdateNeeded = start > processingEnd
+        return report
     }
 
     private func calculatedSnapshots(_ source: InvestmentBook, through end: Date, rebuild: Bool) async throws -> InvestmentBook {
@@ -1128,7 +1132,7 @@ final class InvestmentStore: ObservableObject {
                                historyNotBefore: Date? = nil,
                                includeClosedMarkets: Bool = false,
                                preview: ((InvestmentBook) -> Void)? = nil) async throws {
-        try await InvestmentDiagnostics.run("准备行情与汇率") {
+        try await InvestmentDiagnostics.run("刷新并保存行情与汇率") {
             try await performQuoteRefresh(publicQuotesOnly: publicQuotesOnly, fullSnapshotHistory: fullSnapshotHistory,
                 reuseDailyCryptoQuotes: reuseDailyCryptoQuotes, includeHistoricalPlans: includeHistoricalPlans,
                 historyNotBefore: historyNotBefore, includeClosedMarkets: includeClosedMarkets, preview: preview)
@@ -1363,7 +1367,7 @@ final class InvestmentStore: ObservableObject {
                 }
             }
             let (assetResults, spotResults, cryptoResults, rateResults) = try await HakoExecutionDiagnostics.measureGroup(
-                "准备行情与汇率", branches: 4, detail: "标的行情、现货报价、加密历史行情和汇率并行准备；各渠道独立限制并发，分支耗时不相加。") {
+                "并行准备行情与汇率", branches: 4, detail: "标的行情、现货报价、加密历史行情和汇率并行准备；各渠道独立限制并发，分支耗时不相加。") {
                 async let assetQuery: [(UUID, [InvestmentQuote], [String])] = HakoExecutionDiagnostics.parallel.withValue("标的行情") {
                     try await HakoExecutionDiagnostics.measure("准备标的行情", success: {
                         "已准备 \($0.count) 个标的；\($0.reduce(0) { $0 + $1.1.count }) 条报价。"

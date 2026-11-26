@@ -273,7 +273,7 @@ private struct HakoShortcutStepView: View {
                 Section("关键步骤") {
                     if !keySteps.isEmpty {
                         ForEach(keySteps) { item in
-                            HakoShortcutEventRow(row: item.row, running: step.status == .running, children: item.children)
+                            HakoShortcutEventRow(row: item.row, running: step.status == .running, children: item.children, stepNumber: item.stepNumber)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -358,6 +358,7 @@ private struct HakoShortcutEventRow: View {
     let row: HakoExecutionLogRow
     let running: Bool
     var children: [HakoExecutionLogItem] = []
+    var stepNumber: String?
     var showsParallelBadge = true
     var expansion: Binding<Bool>?
     @State private var expanded = false
@@ -379,6 +380,7 @@ private struct HakoShortcutEventRow: View {
                         ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
                             if index > 0 { Divider() }
                             AnyView(HakoShortcutEventRow(row: child.row, running: running, children: child.children,
+                                                        stepNumber: child.stepNumber,
                                                         showsParallelBadge: false, expansion: childExpansion(child.id)))
                         }
                     }
@@ -395,6 +397,10 @@ private struct HakoShortcutEventRow: View {
                     .frame(width: 18).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if let stepNumber {
+                            Text(stepNumber).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
                         Text(row.stageTitle).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                         if showsParallelBadge && (row.parallelBranch != nil || (row.plannedBranches ?? 0) > 1) {
                             Text("并行").font(.caption2.weight(.medium))

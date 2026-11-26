@@ -8,6 +8,7 @@ import Foundation
 @main struct ExecutionDiagnosticsTests {
     @MainActor static func main() async throws {
         checkFullLogExport()
+        checkStepNumbers()
         try await checkGroups()
         let outer = Events(), inner = Events()
         try await HakoExecutionDiagnostics.context.withValue({ outer.append($0) }) {
@@ -133,6 +134,40 @@ import Foundation
         precondition(export.contains("完整详情开始") && export.contains("完整详情结束"), "Export must not add another truncation limit")
         precondition(export.contains("[诊断] 行情缓存缺口 · BTC") && export.contains("已达到保留上限"))
         precondition(!export.contains("do-not-copy") && export.contains("[已隐藏]"))
+    }
+
+    private static func checkStepNumbers() {
+        let group = UUID(), nested = UUID(), child = UUID(), sibling = UUID()
+        let groupStage = "[分组 · 2] 准备行情"
+        let nestedStage = "[组 · \(group.uuidString)] [分组 · 1] 渠道任务"
+        let childStage = "[组 · \(nested.uuidString)] 同名请求"
+        let siblingStage = "[组 · \(group.uuidString)] 同名请求"
+        let events = [
+            HakoExecutionEvent(stage: "触发来源", state: .info, detail: ""),
+            HakoExecutionEvent(id: group, stage: groupStage, state: .started, detail: ""),
+            HakoExecutionEvent(stage: "发送请求 GET /diagnostic", state: .info, detail: ""),
+            HakoExecutionEvent(id: nested, stage: nestedStage, state: .started, detail: ""),
+            HakoExecutionEvent(id: child, stage: childStage, state: .started, detail: "多行详情\n不应单独编号"),
+            HakoExecutionEvent(id: sibling, stage: siblingStage, state: .started, detail: ""),
+            HakoExecutionEvent(id: sibling, stage: siblingStage, state: .succeeded, detail: ""),
+            HakoExecutionEvent(id: child, stage: childStage, state: .succeeded, detail: ""),
+            HakoExecutionEvent(id: nested, stage: nestedStage, state: .succeeded, detail: ""),
+            HakoExecutionEvent(id: group, stage: groupStage, state: .succeeded, detail: ""),
+            HakoExecutionEvent(stage: "保存结果", state: .info, detail: "")
+        ]
+        let pending = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(Array(events.prefix(6))))
+        let items = HakoExecutionLogItem.grouping(HakoExecutionLogRow.merging(events))
+        precondition(items.map(\.stepNumber) == ["1", "2", "3"])
+        precondition(items[1].children.map(\.stepNumber) == ["2.1", "2.2"])
+        precondition(items[1].children[0].children.map(\.stepNumber) == ["2.1.1"])
+        precondition(pending[1].children.map(\.stepNumber) == items[1].children.map(\.stepNumber),
+                     "Completion order must not renumber parallel siblings")
+        let export = HakoExecutionLogExport.text(title: "test", metadata: [], events: events, capacity: 100)
+        precondition(export.contains("[关键步骤 2.1.1] 同名请求"))
+        precondition(export.contains("[关键步骤 2.2] 同名请求"))
+        precondition(export.components(separatedBy: "步骤序号：2.1.1\n").count == 3,
+                     "Correlated start and finish must reference the same UI step")
+        precondition(export.contains("[诊断] 发送请求 GET /diagnostic"))
     }
 
     @MainActor private static func checkGroups() async throws {

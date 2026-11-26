@@ -937,6 +937,10 @@ private struct InvestmentDataInspection: View {
                     .buttonStyle(HakoActionButtonStyle())
                     .disabled(checking || store.saving)
                     .investmentListRow()
+                if store.saving && !checking {
+                    Text("账本正在保存，完成后即可开始检验。")
+                        .font(.footnote).foregroundStyle(.secondary).investmentListRow()
+                }
                 if checking {
                     HStack(spacing: 12) {
                         ProgressView()

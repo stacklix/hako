@@ -3,6 +3,7 @@ import Foundation
 @main
 struct InvestmentBookTests {
     static func main() throws {
+        snapshotReportDistinguishesExistingHistoryFromUpdates()
         try globalInstrumentIDsAndPrices()
         try finalizedExchangeRatesAreReused()
         try numericStoragePrecision()
@@ -75,6 +76,22 @@ struct InvestmentBookTests {
         try deletesUnreferencedRegistrationsAndTheirQuotes()
         try deletionPreservesPlanReferences()
         print("Investment ledger checks passed")
+    }
+
+    static func snapshotReportDistinguishesExistingHistoryFromUpdates() {
+        let day = InvestmentBook.calendar.date(from: DateComponents(year: 2026, month: 11, day: 25))!
+        var report = InvestmentDailySnapshotReport(day: day, saved: 867, missing: 0, includesDay: true)
+        precondition(report.message == "现有 867 天的日终快照，截至2026-11-25。")
+        report.noUpdateNeeded = true
+        precondition(report.message == "日终快照已齐备，本次无需更新。现有 867 天的日终快照，截至2026-11-25。")
+        report.missingUSD = 1
+        precondition(!report.message.contains("已齐备") && report.message.contains("1 天缺少美元折算汇率"))
+        let incomplete = InvestmentDailySnapshotReport(day: day, saved: 866, missing: 1, includesDay: false,
+                                                     noUpdateNeeded: true)
+        precondition(!incomplete.message.contains("已齐备") && incomplete.message.contains("1 天缺少完整的估值数据"))
+        let empty = InvestmentDailySnapshotReport(day: day, saved: 0, missing: 0, includesDay: false,
+                                                noUpdateNeeded: true)
+        precondition(empty.message == "暂无已结束的记账日。")
     }
 
     static func holdingsSortByMarketValue() {

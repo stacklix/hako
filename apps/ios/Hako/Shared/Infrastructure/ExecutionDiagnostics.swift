@@ -147,6 +147,7 @@ struct HakoExecutionLogRow: Identifiable {
 struct HakoExecutionLogItem: Identifiable {
     let row: HakoExecutionLogRow
     var children: [Self] = []
+    var stepNumber = ""
     var id: UUID { row.id }
 
     var completedBranches: Int {
@@ -157,12 +158,14 @@ struct HakoExecutionLogItem: Identifiable {
     static func grouping(_ rows: [HakoExecutionLogRow]) -> [Self] {
         let business = rows.filter { !$0.isDiagnostic }
         let groups = Set(business.filter { $0.plannedBranches != nil }.map(\.id))
-        func items(parent: UUID?) -> [Self] {
+        func items(parent: UUID?, prefix: String = "") -> [Self] {
             business.filter { row in
                 let owner = row.parentGroupID.flatMap { groups.contains($0) ? $0 : nil }
                 return owner == parent
-            }.map { row in
-                Self(row: row, children: row.plannedBranches == nil ? [] : items(parent: row.id))
+            }.enumerated().map { index, row in
+                let number = prefix + String(index + 1)
+                return Self(row: row, children: row.plannedBranches == nil ? [] : items(parent: row.id, prefix: number + "."),
+                            stepNumber: number)
             }
         }
         return items(parent: nil)
@@ -184,8 +187,17 @@ enum HakoExecutionLogExport {
         lines.append("原始事件：\(events.count) 条；保留上限：\(capacity) 条。时间采用 UTC，包含毫秒。")
         if events.count >= capacity { lines.append("已达到保留上限，较早事件可能已被移除；本次导出包含当前保留的全部事件。") }
         lines.append("\n阶段耗时汇总（并行分支耗时不相加）")
-        for row in HakoExecutionLogRow.merging(events) {
-            let kind = row.isDiagnostic ? "诊断" : "关键步骤"
+        let rows = HakoExecutionLogRow.merging(events)
+        var stepNumbers: [UUID: String] = [:]
+        func collectNumbers(_ items: [HakoExecutionLogItem]) {
+            for item in items {
+                stepNumbers[item.id] = item.stepNumber
+                collectNumbers(item.children)
+            }
+        }
+        collectNumbers(HakoExecutionLogItem.grouping(rows))
+        for row in rows {
+            let kind = row.isDiagnostic ? "诊断" : "关键步骤 " + (stepNumbers[row.id] ?? "")
             let branch = row.parallelBranch.map { "；分支：" + $0 } ?? ""
             let finish = row.finishedAt.map { date.string(from: $0) } ?? "未结束或未记录"
             lines.append("[\(kind)] \(row.stageTitle)\(branch)；\(row.state.rawValue)；耗时：\(row.elapsed(at: now))；开始：\(row.startedAt.map { date.string(from: $0) } ?? "未记录")；结束：\(finish)；ID：\(row.id.uuidString)")
@@ -193,7 +205,8 @@ enum HakoExecutionLogExport {
         lines.append("\n全量原始事件（保存顺序，包含开始、完成、失败、取消和诊断详情）")
         for (index, event) in events.enumerated() {
             let offset = startedAt.map { String(format: "；相对开始：%.3f 秒", event.time.timeIntervalSince($0)) } ?? ""
-            lines.append("\n#\(index + 1) \(date.string(from: event.time))\(offset)\n状态：\(event.state.rawValue)\n事件 ID：\(event.id.uuidString)\n阶段：\(event.stage)\n\(event.detail)")
+            let number = stepNumbers[event.id].map { "\n步骤序号：" + $0 } ?? ""
+            lines.append("\n#\(index + 1) \(date.string(from: event.time))\(offset)\n状态：\(event.state.rawValue)\n事件 ID：\(event.id.uuidString)\(number)\n阶段：\(event.stage)\n\(event.detail)")
         }
         return HakoLog.sanitize(lines.joined(separator: "\n"), limit: Int.max)
     }

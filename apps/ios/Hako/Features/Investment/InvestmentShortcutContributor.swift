@@ -30,7 +30,7 @@ enum InvestmentShortcutContributor {
                 guard report.includesDay else {
                     throw InvestmentError.invalid(InvestmentText.date(report.day) + " 缺少完整的估值数据。" + report.message)
                 }
-                return plans.message + "\n" + InvestmentText.date(report.day) + " 的日终快照已保存。" + report.message + "\n" + report.totals
+                return plans.message + "\n" + report.message + "\n" + report.totals
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
