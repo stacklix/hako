@@ -68,7 +68,33 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def log(message):
-    print(time.strftime('%H:%M:%S'), message, flush=True)
+    print(time.strftime('%H:%M:%S'), message, end='\n\n\n', flush=True)
+
+
+def quote_log_details(target, quotes, providers):
+    """Describe returned data without treating retrieval time as quote time."""
+    days = sorted({row['date'] for row in quotes})
+    dates = '无' if not days else days[0] if len(days) == 1 else f'{days[0]} 至 {days[-1]}'
+    nav = target.get('priceType') == 'nav'
+    label = '净值日期' if nav else '汇率日期' if target['kind'] == 'fx' else '报价日期'
+    lines = [f'{label}：{dates}']
+    if target['kind'] == 'latest' and quotes:
+        if getattr(providers, 'quote_log_has_actual_time', False):
+            times = sorted({row['observedAt'] for row in quotes})
+            actual = times[0] if len(times) == 1 else f'{times[0]} 至 {times[-1]}'
+            lines.append(f'报价实际时间（UTC）：{actual}')
+        else:
+            lines.append('报价实际时间：数据源未提供')
+    lines.append('来源：' + getattr(providers, 'quote_log_source', '未知'))
+    if not quotes:
+        lines.append('状态：无返回报价')
+    elif nav:
+        lines.append('状态：已发布净值')
+    elif target['kind'] == 'fx':
+        lines.append('最终值：是（已发布中间价）')
+    else:
+        lines.append('最终价：否（按临时报价处理）' if target['kind'] == 'latest' else '最终价：是（按日终价处理）')
+    return '\n'.join(lines)
 
 
 def encode(value):
@@ -136,7 +162,7 @@ class HTTP:
             raise ProviderDeferred(f'{label} {host} 连接异常，暂停该域名，约 {int(blocked) + 1} 秒后可重试')
         if query:
             url += '?' + urlencode(query)
-        intervals = {'hako': 0.6, 'twelve': 8.0, 'tushare': 1.3, 'eastmoney': 0.4, 'binance': 0.25}
+        intervals = {'hako': 0.6, 'twelve': 8.0, 'tushare': 1.3, 'tushare_hk_daily': 61, 'eastmoney': 0.4, 'binance': 0.25}
         payload = None if body is None else encode(body)
         request_headers = {'User-Agent': 'HakoMarketSync/1.0', 'Accept': 'application/json', **(headers or {})}
         if payload is not None:
@@ -207,6 +233,8 @@ class Providers:
         self.cache = {}
 
     def fetch(self, target):
+        self.quote_log_source = '未知'
+        self.quote_log_has_actual_time = False
         if target['kind'] == 'fx':
             return self.fx(target)
         market = target.get('exchange', '').upper()
@@ -215,11 +243,13 @@ class Providers:
             return self.crypto(target)
         if target.get('priceType') == 'nav' and symbol.endswith('.OF'):
             return self.fund(target)
-        if target.get('currency') == 'CNY' and market not in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK'):
+        if market in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK'):
+            return self.tushare(target)
+        if target.get('currency') == 'CNY':
             base, _, suffix = symbol.partition('.')
             if re.fullmatch(r'\d{6}', base) and (suffix or market) in ('SH', 'SZ', 'BJ', 'SSE', 'SZSE', 'BSE', 'XSHG', 'XSHE', 'XBSE'):
                 return self.tushare(target)
-        if target.get('currency') == 'CNY' or market in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK'):
+        if target.get('currency') == 'CNY':
             return self.eastmoney(target)
         us_markets = {'US', 'NASDAQ', 'NYSE', 'AMEX', 'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
                       'BATY', 'EDGA', 'EDGX', 'XNGS', 'XNMS', 'XNCM', 'XOTC', 'OTCM', 'IEXG', 'MEMX'}
@@ -229,39 +259,49 @@ class Providers:
 
     def tushare(self, target):
         if not self.tushare_token:
-            raise SyncError('A 股和场内 ETF 需要配置 TUSHARE_TOKEN')
+            raise SyncError('股票和场内 ETF（含港股通）需要配置 TUSHARE_TOKEN')
         kind = target.get('assetType')
         if kind not in ('stock', 'etf'):
             raise SyncError('Tushare 股票/ETF 任务缺少明确的 assetType，请更新 Hako 服务端')
         base, _, suffix = target['symbol'].upper().partition('.')
         aliases = {'XSHG': 'SH', 'SSE': 'SH', 'XSHE': 'SZ', 'SZSE': 'SZ', 'XBSE': 'BJ', 'BSE': 'BJ'}
         venue = aliases.get(suffix or target.get('exchange', '').upper(), suffix or target.get('exchange', '').upper())
-        if not re.fullmatch(r'\d{6}', base) or venue not in ('SH', 'SZ', 'BJ'):
-            raise SyncError('Tushare 标的代码或交易所无效')
-        symbol = base + '.' + venue
+        hong_kong = target.get('exchange', '').upper() in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK')
+        if hong_kong:
+            if not re.fullmatch(r'\d{1,5}', base) or suffix not in ('', 'HK') or target.get('currency') != 'HKD':
+                raise SyncError('Tushare 港股代码或报价币种无效')
+            symbol = base.zfill(5) + '.HK'
+        else:
+            if not re.fullmatch(r'\d{6}', base) or venue not in ('SH', 'SZ', 'BJ'):
+                raise SyncError('Tushare 标的代码或交易所无效')
+            symbol = base + '.' + venue
         latest = target['kind'] == 'latest'
-        api = ('rt_etf_k' if kind == 'etf' else 'rt_k') if latest else ('fund_daily' if kind == 'etf' else 'daily')
+        api = ('rt_hk_k' if latest else 'hk_daily') if hong_kong else (('rt_etf_k' if kind == 'etf' else 'rt_k') if latest else ('fund_daily' if kind == 'etf' else 'daily'))
+        self.quote_log_source = 'Tushare Pro · ' + api
+        self.quote_log_has_actual_time = latest and not hong_kong
         params = {'ts_code': symbol}
         if not latest:
             params.update(start_date=target['fromDate'].replace('-', ''), end_date=target['throughDate'].replace('-', ''))
         date_field = 'trade_time' if latest else 'trade_date'
-        fields = ['ts_code', date_field, 'close']
-        payload = self.http.request('tushare', 'https://api.tushare.pro/',
+        fields = ['ts_code', 'close'] if hong_kong and latest else ['ts_code', date_field, 'close']
+        channel = 'tushare_hk_daily' if api == 'hk_daily' else 'tushare'
+        payload = self.http.request(channel, 'https://api.tushare.pro/',
             body={'api_name': api, 'token': self.tushare_token, 'params': params, 'fields': ','.join(fields)})
         if not isinstance(payload, dict) or payload.get('code') != 0:
             code = payload.get('code') if isinstance(payload, dict) else None
-            if code == 429:
-                self.http.next_request['tushare'] = time.monotonic() + 60
+            if code in (429, 40203):
+                self.http.next_request[channel] = time.monotonic() + 61
+                raise ProviderDeferred(f'Tushare {api} 请求频率超限，等待下一轮重查')
             safe_code = str(code) if isinstance(code, int) else 'unknown'
             raise SyncError(f'Tushare {api} 业务错误，代码 {safe_code}；请检查 Token、积分及该接口权限')
         data = payload.get('data')
         if not isinstance(data, dict) or not isinstance(data.get('fields'), list) or not isinstance(data.get('items'), list):
             raise SyncError('Tushare 响应缺少字段或记录列表')
         columns, items = data['fields'], data['items']
-        if not set(fields).issubset(columns) or len(set(columns)) != len(columns) or len(items) >= 6000 or (latest and len(items) > 1):
+        if not set(fields).issubset(columns) or len(set(columns)) != len(columns) or len(items) >= (5000 if hong_kong else 6000) or (latest and len(items) > 1):
             raise SyncError('Tushare 响应字段无效或结果被截断')
         try:
-            zone = ZoneInfo('Asia/Shanghai')
+            zone = ZoneInfo('Asia/Hong_Kong' if hong_kong else 'Asia/Shanghai')
         except ZoneInfoNotFoundError:
             raise SyncError('缺少时区数据库，请在青龙 Python 依赖中安装 tzdata') from None
         rows = []
@@ -271,7 +311,14 @@ class Providers:
             row = dict(zip(columns, item))
             if row['ts_code'] != symbol:
                 raise SyncError('Tushare 返回了其他标的，未写入数据')
-            if latest:
+            if hong_kong and latest:
+                # rt_hk_k has no quote timestamp. This is retrieval time, and the
+                # server only issues today's latest targets during a known session.
+                published = datetime.now(UTC)
+                day = published.astimezone(zone).date().isoformat()
+                if not self.within(target, day):
+                    raise SyncError('港股实时任务不是当前交易日，未写入数据')
+            elif latest:
                 try:
                     published = datetime.fromisoformat(str(row[date_field]))
                 except ValueError:
@@ -289,7 +336,7 @@ class Providers:
                 day = datetime.strptime(raw, '%Y%m%d').date().isoformat()
                 if not self.within(target, day):
                     raise SyncError('Tushare 返回了查询范围外的日期')
-                published = day_start(day, zone) + timedelta(hours=15)
+                published = day_start(day, zone) + timedelta(hours=16 if hong_kong else 15)
             rows.append(observation(day, row['close'], published))
         return sorted(rows, key=lambda row: row['date']), not latest
 
@@ -320,6 +367,7 @@ class Providers:
         raise SyncError('国内标的需要明确的交易所代码；此脚本暂不采集期权')
 
     def eastmoney(self, target):
+        self.quote_log_source = '东方财富 · 日线'
         secid, future = self.secid(target)
         query = {'secid': secid, 'klt': 101, 'fqt': 0, 'lmt': 10000,
                  'beg': target['fromDate'].replace('-', ''), 'end': target['throughDate'].replace('-', ''),
@@ -345,6 +393,7 @@ class Providers:
         return rows, target['kind'] != 'latest'
 
     def fund(self, target):
+        self.quote_log_source = '东方财富 · 天天基金'
         code = target['symbol'].upper().removesuffix('.OF')
         if not re.fullmatch(r'\d{6}', code):
             raise SyncError('基金代码格式无效')
@@ -384,6 +433,8 @@ class Providers:
         elif market and market != 'US':
             query['mic_code'] = {'NYSE': 'XNYS', 'AMEX': 'XASE'}.get(market, market)
         latest = target['kind'] == 'latest'
+        self.quote_log_source = 'Twelve Data · ' + ('/quote' if latest else '/time_series')
+        self.quote_log_has_actual_time = latest
         if not latest:
             query.update(interval='1day', start_date=target['fromDate'], end_date=target['throughDate'],
                          outputsize=5000, adjust='none')
@@ -418,6 +469,7 @@ class Providers:
                 if self.within(target, bar['datetime'][:10])], True
 
     def crypto(self, target):
+        self.quote_log_source = 'Binance 现货'
         if target.get('currency') != 'USD':
             raise SyncError('当前加密资产采集只支持美元估值')
         code = target['symbol'].upper()
@@ -427,6 +479,7 @@ class Providers:
             raise SyncError('加密资产代码格式无效')
         latest = target['kind'] == 'latest'
         if code == 'USDT':
+            self.quote_log_source = 'USDT 固定美元估值（1 USD）'
             start, end = day_start(target['fromDate']), day_start(target['throughDate'])
             last = day_start(datetime.now(UTC).date().isoformat())
             if not latest:
@@ -462,6 +515,7 @@ class Providers:
         return sorted(rows, key=lambda row: row['date']), True
 
     def fx(self, target):
+        self.quote_log_source = 'Tushare Pro · fx_midrate'
         if not self.tushare_token:
             raise SyncError('汇率需要配置 TUSHARE_TOKEN，并具备 fx_midrate 权限')
         base, quote = target['baseCurrency'], target['quoteCurrency']
@@ -643,14 +697,14 @@ def run(hako, providers, *, check=False, dry_run=False, rounds=10):
                         returned = '、'.join(sorted(days)) if days else '无'
                         log(f'基金净值查询结果 · 基金代码：{name} · 查询日期：{dates} · 数据源返回净值日期：{returned}')
                     if dry_run:
-                        log(f'预演 {label}：{len(quotes)} 条，不写入')
+                        log(f'预演 {label}\n{quote_log_details(target, quotes, providers)}\n取得 {len(quotes)} 条，不写入')
                     elif quotes or complete:
                         count = hako.upload(target, quotes, complete)
                         written += count
                         if not quotes and target.get('priceType') == 'nav':
                             log('该查询范围未返回基金净值，稍后重查 · ' + label)
                         else:
-                            log(f'完成 {label}：取得 {len(quotes)} 条，实际变更 {count} 条')
+                            log(f'完成 {label}\n{quote_log_details(target, quotes, providers)}\n取得 {len(quotes)} 条，实际变更 {count} 条')
                     else:
                         log('暂无该日期已发布报价 ' + label)
                 except ProviderDeferred as error:

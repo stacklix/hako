@@ -218,17 +218,20 @@ private final class HakoEditorKeyboardState: ObservableObject {
     weak var textView: UITextView?
     @Published var focused = false
 
-    func perform(_ action: String) {
-        guard let view = textView else { return }
+    func perform(_ action: String) -> HakoEditorKeyFeedback? {
+        guard let view = textView else { return nil }
         if action == "复制全部" {
-            UIPasteboard.general.string = view.text ?? ""
-            return
+            guard let text = view.text, !text.isEmpty else {
+                return .init(title: "无内容", succeeded: false, announcement: "文件为空，没有可复制的内容")
+            }
+            UIPasteboard.general.string = text
+            return .init(title: "已复制", succeeded: true, announcement: "已复制全部内容")
         }
         if action == "收起键盘" {
             view.resignFirstResponder()
-            return
+            return nil
         }
-        guard view.isEditable else { return }
+        guard view.isEditable else { return nil }
         switch action {
         case "Tab":
             view.unmarkText()
@@ -236,18 +239,31 @@ private final class HakoEditorKeyboardState: ObservableObject {
             view.scrollRangeToVisible(view.selectedRange)
         case "撤销": view.undoManager?.undo()
         case "重做": view.undoManager?.redo()
-        case "粘贴": view.paste(nil)
-        case "覆盖粘贴":
+        case "粘贴", "覆盖粘贴":
             // Read before selecting: an unavailable or non-text clipboard must not erase the draft.
-            guard let replacement = UIPasteboard.general.string else { return }
+            guard let replacement = UIPasteboard.general.string, !replacement.isEmpty else {
+                return .init(title: "无文本", succeeded: false, announcement: "剪贴板中没有可粘贴的文本")
+            }
             view.unmarkText()
-            view.selectedRange = NSRange(location: 0, length: view.textStorage.length)
+            if action == "覆盖粘贴" {
+                view.selectedRange = NSRange(location: 0, length: view.textStorage.length)
+            }
             view.insertText(replacement)
-            view.selectedRange = NSRange(location: 0, length: 0)
+            if action == "覆盖粘贴" { view.selectedRange = NSRange(location: 0, length: 0) }
             view.scrollRangeToVisible(view.selectedRange)
+            return .init(title: action == "覆盖粘贴" ? "已覆盖" : "已粘贴", succeeded: true,
+                         announcement: action == "覆盖粘贴" ? "已用剪贴板文本覆盖全部内容，可撤销" : "已粘贴文本")
         default: break
         }
+        return nil
     }
+}
+
+private struct HakoEditorKeyFeedback {
+    let id = UUID()
+    let title: String
+    let succeeded: Bool
+    let announcement: String
 }
 
 private struct HakoEditorKeyboardKeys: View {
@@ -257,11 +273,56 @@ private struct HakoEditorKeyboardKeys: View {
     var body: some View {
         HakoShortcutBar {
             ForEach(keys, id: \.self) { key in
-                Button(key) { state.perform(key) }
-                    .accessibilityLabel(key == "Tab" ? "插入制表符" : key)
-                    .accessibilityHint(key == "覆盖粘贴" ? "用剪贴板文本替换全部文件内容，可撤销" : "")
-                    .disabled(key != "复制全部" && key != "收起键盘" && !editingEnabled)
+                HakoEditorKeyboardKey(state: state, key: key, editingEnabled: editingEnabled)
             }
+        }
+    }
+}
+
+private struct HakoEditorKeyboardKey: View {
+    let state: HakoEditorKeyboardState
+    let key: String
+    let editingEnabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var feedback: HakoEditorKeyFeedback?
+
+    private var successTitle: String? {
+        switch key {
+        case "粘贴": "已粘贴"
+        case "覆盖粘贴": "已覆盖"
+        case "复制全部": "已复制"
+        default: nil
+        }
+    }
+    private var animation: Animation { reduceMotion ? .easeOut(duration: 0.15) : .spring(duration: 0.3, bounce: 0.25) }
+
+    var body: some View {
+        Button {
+            guard let result = state.perform(key) else { return }
+            withAnimation(animation) { feedback = result }
+            UINotificationFeedbackGenerator().notificationOccurred(result.succeeded ? .success : .warning)
+            UIAccessibility.post(notification: .announcement, argument: result.announcement)
+        } label: {
+            ZStack {
+                // Reserve the success label's width so nearby shortcuts do not move.
+                Text(key).hidden()
+                if let successTitle { Label(successTitle, systemImage: "checkmark").hidden() }
+                if let feedback {
+                    Label(feedback.title, systemImage: feedback.succeeded ? "checkmark" : "exclamationmark")
+                        .id(feedback.id)
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
+                } else { Text(key).transition(.opacity) }
+            }
+        }
+        .tint(feedback.map { $0.succeeded ? Color.green : Color.orange } ?? Color.primary)
+        .accessibilityLabel(key == "Tab" ? "插入制表符" : key)
+        .accessibilityValue(feedback?.announcement ?? "")
+        .accessibilityHint(key == "覆盖粘贴" ? "用剪贴板文本替换全部文件内容，可撤销" : "")
+        .disabled(key != "复制全部" && key != "收起键盘" && !editingEnabled)
+        .task(id: feedback?.id) {
+            guard feedback != nil else { return }
+            do { try await Task.sleep(for: .milliseconds(1500)) } catch { return }
+            withAnimation(animation) { feedback = nil }
         }
     }
 }

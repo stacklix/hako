@@ -38,6 +38,74 @@ class FakeHTTP:
 
 
 class MarketTests(unittest.TestCase):
+    def test_log_keeps_multiline_entry_and_two_blank_lines_between_entries(self):
+        output = io.StringIO()
+        with patch.object(sync.time, 'strftime', return_value='16:00:00'), redirect_stdout(output):
+            sync.log('完成 BTC\n报价日期：2026-11-26\n来源：Binance 现货')
+            sync.log('结束')
+        self.assertEqual(output.getvalue(),
+            '16:00:00 完成 BTC\n报价日期：2026-11-26\n来源：Binance 现货\n\n\n16:00:00 结束\n\n\n')
+
+    def test_quote_logs_distinguish_actual_time_from_retrieval_time(self):
+        t = target(assetType='etf', symbol='159941.SZ', kind='latest',
+                   fromDate='2026-11-25', throughDate='2026-11-25')
+        http = FakeHTTP([{'code': 0, 'data': {'fields': ['ts_code', 'trade_time', 'close'],
+                            'items': [['159941.SZ', '2026-11-25 13:05:00', '2']]}}])
+        provider = sync.Providers(http, tushare_token='PRIVATE-TOKEN')
+        rows, _ = provider.fetch(t)
+        detail = sync.quote_log_details(t, rows, provider)
+        self.assertIn('报价实际时间（UTC）：2026-11-25T05:05:00Z', detail)
+        self.assertIn('来源：Tushare Pro · rt_etf_k', detail)
+        self.assertIn('最终价：否（按临时报价处理）', detail)
+        self.assertNotIn('PRIVATE-TOKEN', detail)
+        t = target(kind='latest', symbol='BTC', exchange='BINANCE', currency='USD')
+        provider = sync.Providers(FakeHTTP([{'symbol': 'BTCUSDT', 'price': '100'}]))
+        rows, _ = provider.fetch(t)
+        detail = sync.quote_log_details(t, rows, provider)
+        self.assertIn('报价实际时间：数据源未提供', detail)
+        self.assertNotIn(rows[0]['observedAt'], detail, 'Retrieval timestamp must not be presented as quote time')
+        self.assertIn('来源：Binance 现货', detail)
+
+    def test_quote_log_dates_fund_fx_and_empty_data(self):
+        provider = sync.Providers(FakeHTTP([]))
+        provider.quote_log_source = '测试行情源'
+        rows = [sync.observation('2025-01-03', '2'), sync.observation('2025-01-02', '1')]
+        t = target()
+        detail = sync.quote_log_details(t, rows, provider)
+        self.assertIn('报价日期：2025-01-02 至 2025-01-03', detail)
+        self.assertIn('最终价：是（按日终价处理）', detail)
+        self.assertNotIn('报价实际时间', detail)
+        detail = sync.quote_log_details(target(priceType='nav'), rows, provider)
+        self.assertIn('净值日期：2025-01-02 至 2025-01-03', detail)
+        self.assertIn('状态：已发布净值', detail)
+        self.assertNotIn('最终价', detail)
+        detail = sync.quote_log_details(target(kind='fx'), rows, provider)
+        self.assertIn('汇率日期：2025-01-02 至 2025-01-03', detail)
+        self.assertIn('最终值：是（已发布中间价）', detail)
+        empty = sync.quote_log_details(t, [], object())
+        self.assertIn('来源：未知', empty)
+        self.assertIn('状态：无返回报价', empty)
+        self.assertNotIn('最终价：是', empty)
+
+    def test_completed_quote_log_includes_metadata_and_change_count(self):
+        t = target(kind='latest')
+        class FakeHako:
+            def targets(self): yield [t]
+            def upload(self, *args): return 0
+        class FakeProviders:
+            quote_log_source = '测试行情源'
+            quote_log_has_actual_time = True
+            def fetch(self, item):
+                return [sync.observation(t['fromDate'], '2', datetime(2026, 11, 25, 5, 5, tzinfo=timezone.utc))], False
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(sync.run(FakeHako(), FakeProviders()), 0)
+        text = output.getvalue()
+        self.assertIn('· 最新价 · 查询日期：', text)
+        self.assertIn('\n来源：测试行情源\n最终价：否', text)
+        self.assertIn('取得 1 条，实际变更 0 条\n\n\n', text)
+        self.assertNotIn(t['targetId'], text)
+
     def test_tushare_routes_stock_and_etf_without_eastmoney(self):
         for kind, symbol, api in [('stock', '600000.SH', 'daily'), ('etf', '159941.SZ', 'fund_daily')]:
             with self.subTest(kind=kind):
@@ -53,6 +121,39 @@ class MarketTests(unittest.TestCase):
                 self.assertEqual(options['body']['api_name'], api)
                 self.assertEqual(options['body']['params']['ts_code'], symbol)
                 self.assertNotIn('Authorization', options.get('headers', {}))
+
+    def test_hong_kong_uses_tushare_and_preserves_dates(self):
+        t = target(assetType='stock', symbol='00700.HK', exchange='HK_CONNECT', currency='HKD',
+                   fromDate='2026-11-25', throughDate='2026-11-25')
+        payload = {'code': 0, 'data': {'fields': ['ts_code', 'trade_date', 'close'], 'items': [['00700.HK', '20261125', 337.4]]}}
+        http = FakeHTTP([payload])
+        rows, complete = sync.Providers(http, tushare_token='key').fetch(t)
+        self.assertTrue(complete)
+        self.assertEqual(rows[0], {'date': '2026-11-25', 'value': '337.4', 'observedAt': '2026-11-25T08:00:00Z'})
+        self.assertEqual(http.calls[0][2]['body']['api_name'], 'hk_daily')
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 25, 5, 5, tzinfo=timezone.utc)
+        t['kind'] = 'latest'
+        live = FakeHTTP([{'code': 0, 'data': {'fields': ['ts_code', 'close'], 'items': [['00700.HK', 341]]}}])
+        with patch.object(sync, 'datetime', Frozen):
+            rows, complete = sync.Providers(live, tushare_token='key').fetch(t)
+        self.assertFalse(complete)
+        self.assertEqual(rows[0]['observedAt'], '2026-11-25T05:05:00Z')
+        self.assertEqual(live.calls[0][2]['body']['api_name'], 'rt_hk_k')
+        self.assertEqual(live.calls[0][2]['body']['fields'], 'ts_code,close')
+        t['kind'] = 'daily_close'
+        limited = FakeHTTP([{'code': 40203}])
+        with self.assertRaises(sync.ProviderDeferred):
+            sync.Providers(limited, tushare_token='key').fetch(t)
+        self.assertGreater(limited.next_request['tushare_hk_daily'], time.monotonic() + 59)
+        t['kind'] = 'latest'
+        for response in [{'code': 2002}, {'code': 0, 'data': {'fields': ['ts_code', 'close'], 'items': [['00001.HK', 1]]}}]:
+            denied = FakeHTTP([response])
+            with self.assertRaises(sync.SyncError):
+                sync.Providers(denied, tushare_token='key').fetch(t)
+            self.assertEqual(len(denied.calls), 1)
 
     def test_tushare_denial_and_mismatched_data_do_not_fall_back(self):
         t = target(assetType='stock', symbol='600000.SH', fromDate='2026-11-25', throughDate='2026-11-25')

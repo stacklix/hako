@@ -5,11 +5,11 @@ import FoundationNetworking
 
 extension InvestmentAsset {
     var usesTushareEquityData: Bool {
-        currency == .cny && !isStockConnect && (kind == .stock || kind == .etf) && mainlandSymbol != nil
+        (kind == .stock || kind == .etf) && (isStockConnect || (currency == .cny && mainlandSymbol != nil))
     }
     var usesEastmoneyMarketData: Bool {
         if usesTushareEquityData { return false }
-        if isStockConnect { return kind == .stock || kind == .etf }
+        if isStockConnect { return false }
         if currency == .usd { return false }
         return currency == .cny && [.stock, .etf, .fund, .future, .option].contains(kind)
     }

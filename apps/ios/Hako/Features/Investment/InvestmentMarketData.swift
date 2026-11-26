@@ -586,7 +586,7 @@ struct InvestmentQuoteProvider {
 
     private static func tushareEquityKey(_ keys: [InvestmentQuoteSource: String]) throws -> String {
         guard let key = keys[.tushare]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
-            throw InvestmentError.invalid("请在投资记账设置中配置 Tushare Pro API Token，以查询 A 股和场内 ETF。")
+            throw InvestmentError.invalid("请在投资记账设置中配置 Tushare Pro API Token，以查询 A 股、场内 ETF 和港股通。")
         }
         return key
     }
@@ -757,6 +757,21 @@ struct InvestmentQuoteProvider {
 
     private func tushareLatest(asset: InvestmentAsset, key: String, now: Date) async throws -> InvestmentQuote {
         guard let code = InvestmentQuoteSymbol(asset).tushareSymbol else { throw InvestmentError.invalid("Tushare 标的代码无效。") }
+        if asset.isStockConnect {
+            guard InvestmentTradingCalendar.isOpen(calendars, market: "HK", now: now) else {
+                throw InvestmentError.noMarketData("港股当前未开市，不获取无日期的盘中报价。")
+            }
+            let table = try await tushareTable(api: "rt_hk_k", params: ["ts_code": code], fields: ["ts_code", "close"], key: key)
+            guard Set(table.fields).count == table.fields.count, table.items.count == 1, let row = table.items.first,
+                  let codeIndex = table.fields.firstIndex(of: "ts_code"), let priceIndex = table.fields.firstIndex(of: "close"),
+                  row.count == table.fields.count, row[codeIndex]?.string == code,
+                  let price = row[priceIndex]?.decimal, !price.isNaN, price > 0 else {
+                throw InvestmentError.invalid("Tushare 港股实时报价的代码或价格无效。")
+            }
+            // rt_hk_k does not supply a quote timestamp. Only use its snapshot
+            // during a confirmed HK session; never mark it as a final daily close.
+            return .init(day: InvestmentBook.day(now), price: price, source: "Tushare Pro", isDailyClose: false)
+        }
         let api = asset.kind == .etf ? "rt_etf_k" : "rt_k"
         let table = try await tushareTable(api: api, params: ["ts_code": code], fields: ["ts_code", "close", "trade_time"], key: key)
         guard table.items.count == 1, let row = table.items.first,

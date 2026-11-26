@@ -27,7 +27,7 @@ enum MarketAPIChannel: String, Sendable {
 actor MarketAPIRequestGate {
     static let shared = MarketAPIRequestGate()
     typealias Response = (Data, URLResponse)
-    private struct Scope: Hashable { let channel: MarketAPIChannel; let credential: String }
+    private struct Scope: Hashable { let channel: MarketAPIChannel; let credential: String; let operation: String }
     private struct RequestKey: Hashable { let request: URLRequest; let session: ObjectIdentifier }
     private final class Flight {
         let id = UUID()
@@ -72,7 +72,7 @@ actor MarketAPIRequestGate {
                     flight.waiters[waiter] = continuation
                     return
                 }
-                let scope = Scope(channel: channel, credential: Self.credential(request))
+                let scope = Scope(channel: channel, credential: Self.credential(request), operation: Self.operation(request))
                 let flight = Flight()
                 flight.waiters[waiter] = continuation
                 flights[key] = flight
@@ -107,6 +107,17 @@ actor MarketAPIRequestGate {
         return response
     }
 
+    private static func operation(_ request: URLRequest) -> String {
+        guard MarketAPIChannel.matching(request.url?.host) == .tushare, let data = request.httpBody,
+              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              body["api_name"] as? String == "hk_daily" else { return "" }
+        return "hk_daily"
+    }
+
+    private func initialLimit(_ scope: Scope) -> Int {
+        scope.operation == "hk_daily" ? 1 : (scope.channel == .twelveData ? defaultLimit : Int.max)
+    }
+
     private static func credential(_ request: URLRequest) -> String {
         let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
         if let key = query.first(where: { ["apikey", "token"].contains($0.name.lowercased()) })?.value { return key }
@@ -122,10 +133,11 @@ actor MarketAPIRequestGate {
         while true {
             try Task.checkCancellation()
             let date = now()
-            var budget = budgets[scope] ?? Budget(limit: scope.channel == .twelveData ? defaultLimit : Int.max)
-            budget.starts.removeAll { date.timeIntervalSince($0) >= window }
+            var budget = budgets[scope] ?? Budget(limit: initialLimit(scope))
+            let period = scope.operation == "hk_daily" ? max(window, 61) : window
+            budget.starts.removeAll { date.timeIntervalSince($0) >= period }
             var until = budget.blockedUntil
-            if budget.starts.count >= budget.limit, let first = budget.starts.first { until = max(until, first.addingTimeInterval(window)) }
+            if budget.starts.count >= budget.limit, let first = budget.starts.first { until = max(until, first.addingTimeInterval(period)) }
             if until <= date {
                 budget.starts.append(date)
                 budgets[scope] = budget
@@ -139,8 +151,9 @@ actor MarketAPIRequestGate {
     private func observe(_ result: Response, request: URLRequest, scope: Scope) {
         let http = result.1 as? HTTPURLResponse
         let object = (try? JSONSerialization.jsonObject(with: result.0)) as? [String: Any]
-        let limited = http?.statusCode == 429 || (object?["code"] as? NSNumber)?.intValue == 429
-        var budget = budgets[scope] ?? Budget(limit: scope.channel == .twelveData ? defaultLimit : Int.max)
+        let code = (object?["code"] as? NSNumber)?.intValue
+        let limited = http?.statusCode == 429 || code == 429 || (scope.operation == "hk_daily" && code == 40203)
+        var budget = budgets[scope] ?? Budget(limit: initialLimit(scope))
         if limited { budget.blockedUntil = max(budget.blockedUntil, now().addingTimeInterval(cooldown)) }
         if scope.channel == .twelveData {
             if let used = http?.value(forHTTPHeaderField: "api-credits-used").flatMap(Int.init),

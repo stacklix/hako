@@ -87,6 +87,27 @@ private final class GateHTTPProtocol: URLProtocol, @unchecked Sendable {
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         do {
+            let clock = GateClock()
+            let gate = MarketAPIRequestGate(now: { clock.now() }, sleep: { clock.advance($0) })
+            func tushare(_ api: String, key: String = "hk-key") throws -> URLRequest {
+                var query = URLRequest(url: URL(string: "https://api.tushare.pro/")!)
+                query.httpMethod = "POST"
+                query.httpBody = try JSONSerialization.data(withJSONObject: ["api_name": api, "token": key])
+                return query
+            }
+            let daily = try tushare("hk_daily"), live = try tushare("rt_hk_k"), mainland = try tushare("daily")
+            _ = try await gate.data(for: daily, session: session) { reply(daily) }
+            _ = try await gate.data(for: live, session: session) { reply(live) }
+            _ = try await gate.data(for: mainland, session: session) { reply(mainland) }
+            let other = try tushare("hk_daily", key: "other-key")
+            _ = try await gate.data(for: other, session: session) { reply(other) }
+            precondition(clock.waits().isEmpty, "HK history budget must not slow other APIs or credentials")
+            _ = try await gate.data(for: daily, session: session) { reply(daily, body: #"{"code":40203}"#) }
+            precondition(clock.waits() == [61], "HK historical reads must be at least one minute apart")
+            _ = try await gate.data(for: live, session: session) { reply(live) }
+            precondition(clock.waits() == [61], "HK history cooldown must leave live quotes available")
+        }
+        do {
             let gate = MarketAPIRequestGate()
             let channels = [GateConcurrency(), GateConcurrency(), GateConcurrency()]
             let reads = Task {

@@ -475,8 +475,8 @@ extension InvestmentMarketDataTests {
             let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 if request.url?.host == "api.tushare.pro" {
                     let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-                    precondition(body["api_name"] as? String == "fund_daily")
-                    return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["510300.SH","20261030",24]]}}"#)
+                    precondition(body["api_name"] as? String == (currency == .hkd ? "hk_daily" : "fund_daily"))
+                    return response(request, "{\"code\":0,\"data\":{\"fields\":[\"ts_code\",\"trade_date\",\"close\"],\"items\":[[\"\(symbol)\",\"20261030\",24]]}}")
                 }
                 return try eastmoneyBars(request, code: code, market: secid, bars: ["2026-10-30,23,24,25,22,1"])
             }
@@ -524,11 +524,13 @@ extension InvestmentMarketDataTests {
             preconditionFailure("Stale prices must not pass watch validation")
         } catch is InvestmentError { }
         let hk = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
-            precondition(eastmoneyQuery(request)["secid"] == "116.02800")
-            return try eastmoneyBars(request, code: "02800", market: 116, bars: ["2026-10-30,23,24,25,22,1"])
+            precondition(request.url?.host == "api.tushare.pro")
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            precondition(body["api_name"] as? String == "hk_daily")
+            return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["02800.HK","20261030",24]]}}"#)
         }
         let rows = try await hk.history(asset: asset("02800.HK", .etf, .hkd, market: InvestmentAsset.stockConnectMarket),
-                                        start: day(1), through: day(30), cached: nil, keys: [:])
+                                        start: day(1), through: day(30), cached: nil, keys: [.tushare: "fixture"])
         precondition(rows.first?.price == 24)
     }
 
@@ -546,6 +548,42 @@ extension InvestmentMarketDataTests {
             _ = try await offline.searchInstruments(.init(query: "110022", kind: .fund, currency: .cny), keys: [:])
             preconditionFailure("Network failure must not be reported as no matches")
         } catch is URLError { }
+    }
+
+    static func hongKongTushareSnapshotsAndFailures() async throws {
+        let target = asset("00700.HK", .stock, .hkd, market: InvestmentAsset.stockConnectMarket)
+        precondition(target.usesTushareEquityData && !target.usesEastmoneyMarketData)
+        let format = ISO8601DateFormatter()
+        let now = format.date(from: "2026-10-30T10:00:00+08:00")!
+        var apis: [String] = []
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
+            precondition(request.url?.host == "api.tushare.pro" && secrets == ["fixture"])
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            let api = body["api_name"] as! String
+            apis.append(api)
+            precondition((body["params"] as! [String: String])["ts_code"] == "00700.HK")
+            if api == "rt_hk_k" {
+                return response(request, #"{"code":0,"data":{"fields":["ts_code","close"],"items":[["00700.HK",341]]}}"#)
+            }
+            precondition(api == "hk_daily")
+            return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["00700.HK","20261030",337.4]]}}"#)
+        }
+        let live = try await provider.latestQuote(for: target, keys: [.tushare: "fixture"], now: now)
+        precondition(live.price == 341 && live.day == day(30) && live.isDailyClose == false)
+        let weekend = try await provider.latestQuote(for: target, keys: [.tushare: "fixture"], now: day(31))
+        precondition(weekend.day == day(30) && weekend.price == Decimal(string: "337.4") && weekend.isDailyClose == true)
+        precondition(apis == ["rt_hk_k", "hk_daily"])
+        var failures = 0
+        let denied = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
+            failures += 1
+            precondition(request.url?.host == "api.tushare.pro")
+            return response(request, #"{"code":2002,"msg":"No permission"}"#)
+        }
+        do {
+            _ = try await denied.latestQuote(for: target, keys: [.tushare: "fixture"], now: now)
+            preconditionFailure("Permission denial must not fall back to Eastmoney")
+        } catch is InvestmentError { }
+        precondition(failures == 1)
     }
 
     static func referenceRates() async throws {

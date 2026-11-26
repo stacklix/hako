@@ -39,6 +39,7 @@ struct InvestmentMarketDataTests {
         try await cryptoChartHistoryUsesPublicDailyCloses()
         try await cryptoChartHistoryPreservesBinanceFailures()
 
+        try await hongKongTushareSnapshotsAndFailures()
         try await referenceRates()
         try await quoteRequestDiagnostics()
         try await paginatedQuoteProgress()
