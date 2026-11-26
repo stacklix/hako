@@ -20,7 +20,6 @@ import Combine
     @Published private(set) var historyCursor: String?
     @Published private(set) var busy = false
     @Published private(set) var access: WorkshopThreadAccess?
-    @Published private(set) var checkingAccess = false
     @Published private(set) var loadingHistory = false
     @Published private(set) var uncertain = false
     let composerInput = WorkshopComposerInput()
@@ -105,8 +104,6 @@ import Combine
         if !threadWritable {
             if let access {
                 if let warning = access.synchronizationWarning(operation: operation, threadId: threadId) { return warning }
-            } else {
-                return "正在检查会话是否可写，可先编辑草稿"
             }
         }
         if connectionIssue != nil { return "会话暂未同步，自动重试中" }
@@ -270,30 +267,18 @@ import Combine
         access = value
     }
 
-    private func verifyThreadAccess() async -> Bool {
-        guard let threadId else { return true }
-        guard !checkingAccess, scope == store.scope else { return false }
-        checkingAccess = true
-        defer { checkingAccess = false }
-        do {
-            let current: WorkshopThreadAccess = try await store.call(agent, "thread.access.read",
-                ["threadId": threadId, "applicationId": application.id])
-            guard scope == store.scope, self.threadId == threadId else { return false }
-            access = current
-            if let reason = current.unavailableReason { error = reason }
-            return current.canSend
-        } catch {
-            guard scope == store.scope else { return false }
-            access = WorkshopThreadAccess(state: "unknown", checkedAt: access?.checkedAt ?? 0)
-            self.error = "无法确认会话是否可写，文字和图片已保留。" + error.localizedDescription
-            return false
-        }
+    private func threadAccessAllowsSend() -> Bool {
+        guard scope == store.scope, !Task.isCancelled else { return false }
+        // The background observer provides early conflict feedback. The Agent
+        // checks again when accepting input, without extra phone-side round trips.
+        if let reason = access?.unavailableReason { error = reason; return false }
+        return true
     }
 
     private func requireThreadAccess() async throws {
-        guard await verifyThreadAccess() else {
-            throw WorkshopFailure(code: access?.state == "occupied" ? "codex_thread_occupied" : "codex_thread_access_unknown",
-                message: error ?? "会话暂不可写，文字和图片已保留。")
+        guard scope == store.scope, !Task.isCancelled else { throw CancellationError() }
+        if !threadAccessAllowsSend() {
+            throw WorkshopFailure(code: "codex_thread_occupied", message: access?.unavailableReason ?? "其他客户端占用此会话。")
         }
     }
 
@@ -305,7 +290,7 @@ import Combine
     }
 
     private func refreshThreadAccess() async {
-        guard let threadId, !checkingAccess, scope == store.scope else { return }
+        guard let threadId, scope == store.scope else { return }
         do {
             let value: WorkshopThreadAccess = try await store.call(agent, "thread.access.read",
                 ["threadId": threadId, "applicationId": application.id])
@@ -332,8 +317,8 @@ import Combine
     }
     var canConfigure: Bool { configurationUnavailableReason == nil }
     var awaitingSubmissionCheck: Bool { restoringCache || synchronizing || (uncertain && outbox.activeID == nil) }
-    private var threadWritable: Bool { threadId == nil || (access?.canSend ?? (operation?.active == true)) }
-    var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck && !checkingAccess && threadWritable }
+    private var threadWritable: Bool { threadId == nil || (access?.canSend ?? true) }
+    var canSubmitMessage: Bool { canCompose && !awaitingSubmissionCheck && threadWritable }
     var canEditMessages: Bool { canSubmitMessage && !busy && !hasMoreEvents }
     var hasDraftInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty ||
         (editingMessageID != nil && followups.contains { $0.id == editingMessageID && !$0.imageIds.isEmpty }) }
@@ -784,7 +769,7 @@ import Combine
             await mutateMessage(id, action: "update", message: message)
             return
         }
-        guard await verifyThreadAccess() else { return }
+        guard threadAccessAllowsSend() else { return }
         if parentThreadId != nil, threadId == nil { title = String(message.prefix(24)) }
         if let id = draftSendingID, let queued = pendingSend(id) {
             await submitQueued(queued)

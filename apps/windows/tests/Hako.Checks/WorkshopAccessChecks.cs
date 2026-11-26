@@ -36,12 +36,8 @@ internal static class WorkshopAccessChecks
                 async Task<string?> Access() => Json((await workshop.ThreadAccessAsync(Json(new { applicationId, threadId = thread }), default))!)
                     .GetProperty("state").GetString();
                 Check(await Access() == "unknown", "A pending workshop resume was mistaken for an external writer or granted unconfirmed ownership");
-                try
-                {
-                    await workshop.QueueAsync(Json(new { operationId = id, requestId = Guid.NewGuid().ToString("D"), message = "Not yet owned" }), default);
-                    throw new Exception("Pending writer ownership accepted a follow-up");
-                }
-                catch (WorkshopException error) when (error.Code == "codex_thread_access_unknown") { }
+                var queued = Json((await workshop.QueueAsync(Json(new { operationId = id, requestId = Guid.NewGuid().ToString("D"), message = "Queue while unconfirmed" }), default))!);
+                Check(queued.GetProperty("state").GetString() == "queued", "Unknown writer ownership blocked a follow-up");
                 File.WriteAllText(release, "resume acknowledgement");
                 var expected = conflict ? "occupied" : "workshop";
                 deadline = DateTime.UtcNow.AddSeconds(5);
@@ -87,13 +83,18 @@ internal static class WorkshopAccessChecks
             Check(catalog.GetProperty("sessions")[0].GetProperty("access").GetProperty("state").GetString() == "occupied", "Catalog hid an idle external writer");
             var history = Json((await workshop.HistoryAsync(Json(new { threadId = thread }), default))!);
             Check(history.GetProperty("access").GetProperty("state").GetString() == "occupied", "Occupied history could not be read");
-            foreach (var sample in new[] { (CodexWriterState.Held, "codex_thread_occupied"), (CodexWriterState.Unknown, "codex_thread_access_unknown") })
+            foreach (var sample in new[] { (CodexWriterState.Held, "codex_thread_occupied") })
             {
                 state = sample.Item1;
                 try { await workshop.StartAsync(Json(new { requestId = Guid.NewGuid().ToString("D"), applicationId, threadId = thread, message = "Never submitted" }), default); throw new Exception("Unavailable thread accepted a message"); }
                 catch (WorkshopException error) when (error.Code == sample.Item2) { }
             }
             Check(!Directory.Exists(storage) || !Directory.GetFiles(storage, "*.json").Any(), "Rejected preflight created a durable message");
+            await using (var unknown = new CodeWorkshop(Path.Combine(directory, "unknown-access"), code, home, start, _ => CodexWriterState.Unknown))
+            {
+                var accepted = Json((await unknown.StartAsync(Json(new { requestId = Guid.NewGuid().ToString("D"), applicationId, threadId = thread, message = "Send while access is unknown" }), default))!);
+                Check(accepted.GetProperty("id").GetString() is { Length: > 0 }, "Unknown access blocked a new message");
+            }
             state = CodexWriterState.Free;
             var released = Json((await workshop.ThreadAccessAsync(Json(new { applicationId, threadId = thread }), default))!);
             Check(released.GetProperty("state").GetString() == "available", "Releasing the writer did not restore availability");

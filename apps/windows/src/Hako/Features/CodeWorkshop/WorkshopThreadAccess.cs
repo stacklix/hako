@@ -18,7 +18,7 @@ internal sealed partial class CodeWorkshop
             var state = jobs.Values.Any(job => job.ThreadId == threadId && job.OwnsThreadWriter) ? "workshop" :
                 // Codex can acquire its byte lock before acknowledging resume.
                 // Until that RPC finishes, neither ownership nor an external
-                // conflict has been established; keep writes blocked meanwhile.
+                // conflict has been established; report uncertainty without blocking input.
                 jobs.Values.Any(job => job.ThreadId == threadId && job.AcquiringThreadWriter) ? "unknown" :
                 readWriter(threadId) switch { CodexWriterState.Free => "available", CodexWriterState.Held => "occupied", _ => "unknown" };
             return new(state, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -30,7 +30,6 @@ internal sealed partial class CodeWorkshop
         if (threadId is null || threadId.Length == 0) return;
         var access = ThreadAccess(threadId);
         if (access.State == "occupied") throw new WorkshopException("codex_thread_occupied", "其他客户端占用此会话，请释放后再发送。文字和图片已保留。");
-        if (access.State == "unknown") throw new WorkshopException("codex_thread_access_unknown", "暂时无法确认会话是否可写，请重新检查后发送。文字和图片已保留。");
     }
 
     public async Task<object?> ThreadAccessAsync(JsonElement parameters, CancellationToken token)

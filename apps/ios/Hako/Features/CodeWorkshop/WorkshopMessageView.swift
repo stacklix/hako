@@ -71,7 +71,11 @@ struct WorkshopMessageView: View, Equatable {
                 case .text(let prose):
                     WorkshopInlineProse(source: prose.trimmingCharacters(in: .newlines))
                 case .code(let code, let language):
-                    WorkshopCodeSnippet(code: code, language: language)
+                    if WorkshopDiagramDocument.supports(language) {
+                        WorkshopDiagramView(source: code)
+                    } else {
+                        WorkshopCodeSnippet(code: code, language: language)
+                    }
                 case .image(let alt, let url):
                     WorkshopRemoteImage(alt: alt, url: url, store: store)
                 case .table(let table):

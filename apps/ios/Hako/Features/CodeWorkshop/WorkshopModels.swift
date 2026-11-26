@@ -160,21 +160,15 @@ struct WorkshopApplication: Codable, Identifiable, Equatable, Sendable {
 struct WorkshopThreadAccess: Codable, Hashable, Sendable {
     let state: String
     let checkedAt: Int64
-    var canSend: Bool { state == "available" || state == "workshop" }
+    var canSend: Bool { state != "occupied" }
     var unavailableReason: String? {
         switch state {
-        case "available", "workshop": nil
         case "occupied": "其他客户端占用此会话，请释放后再发送；可先编辑草稿。"
-        default: "暂时无法确认会话是否可写，请重新检查；草稿已保留。"
+        default: nil
         }
     }
 
     func synchronizationWarning(operation: WorkshopOperation?, threadId: String?) -> String? {
-        // Startup ownership checks can lag behind the accepted operation stream.
-        // Keep send permissions conservative while avoiding a contradictory notice.
-        if state == "unknown", let threadId, operation?.threadId == threadId, operation?.active == true {
-            return nil
-        }
         return unavailableReason
     }
 }

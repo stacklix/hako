@@ -132,7 +132,7 @@ import Foundation
             "The same thread on different computers must remain independently selectable with a stable tie-breaker")
         for state in ["available", "workshop", "occupied", "unknown", "unrecognized"] {
             let access = WorkshopThreadAccess(state: state, checkedAt: 123)
-            precondition(access.canSend == ["available", "workshop"].contains(state))
+            precondition(access.canSend == (state != "occupied"))
             precondition((access.unavailableReason == nil) == access.canSend)
             let decoded = try JSONDecoder().decode(WorkshopThreadAccess.self, from: JSONEncoder().encode(access))
             precondition(decoded == access)
@@ -141,16 +141,15 @@ import Foundation
         for state in ["starting", "running", "waiting", "stopping", "finishing", "completed", "failed", "unknown"] {
             let operation = WorkshopOperation(id: "accepted", applicationId: "app", threadId: "thread", turnId: nil,
                 state: state, message: nil, startedAt: 1)
-            precondition((unknownAccess.synchronizationWarning(operation: operation, threadId: "thread") == nil) == operation.active,
-                         "A confirmed active operation still displays the unknown-writer warning")
-            precondition(unknownAccess.synchronizationWarning(operation: operation, threadId: "another-thread") != nil,
-                         "An unrelated operation hid this thread's warning")
+            precondition(unknownAccess.synchronizationWarning(operation: operation, threadId: "thread") == nil,
+                         "Unknown access must not show a warning")
+            precondition(unknownAccess.synchronizationWarning(operation: operation, threadId: "another-thread") == nil)
             let occupied = WorkshopThreadAccess(state: "occupied", checkedAt: 123)
             precondition(occupied.synchronizationWarning(operation: operation, threadId: "thread") == occupied.unavailableReason,
                          "A confirmed external writer conflict was hidden")
         }
-        precondition(!unknownAccess.canSend, "Hiding a redundant notice must not grant write access")
-        precondition(unknownAccess.synchronizationWarning(operation: nil, threadId: "thread") != nil)
+        precondition(unknownAccess.canSend, "Unknown access must allow sending")
+        precondition(unknownAccess.synchronizationWarning(operation: nil, threadId: "thread") == nil)
         let computer = try JSONDecoder().decode(WorkshopAgent.self, from: Data(#"{"id":"desktop","name":"PC","online":false,"protocolVersion":1,"lan":{"addresses":["192.168.0.10"],"port":8005}}"#.utf8))
         precondition(computer.lan.addresses == ["192.168.0.10"] && computer.lan.port == 8005 && !computer.online)
         var originalListRow = WorkshopSession(id: "thread", title: "Task", applicationId: "app", cwd: "/app",

@@ -16,6 +16,7 @@ internal static class WorkshopSidechatChecks
 {
     private const string Parent = "11111111-1111-4111-8111-111111111111";
     private const string Child = "33333333-3333-4333-8333-333333333333";
+    private const string Agent = "44444444-4444-4444-8444-444444444444";
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, WorkshopProtocol.Json);
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
 
@@ -46,10 +47,26 @@ internal static class WorkshopSidechatChecks
         }
         try
         {
+            var large = new string('测', 4000);
+            var bounded = CodeWorkshop.Subagent(Json(new { id = Agent, agentNickname = large, agentRole = large,
+                preview = large, model = large, reasoningEffort = large, updatedAt = 1L }), "completed");
+            Check(JsonSerializer.SerializeToUtf8Bytes(new { agents = Enumerable.Repeat(bounded, 20).ToArray(), nextCursor = new string('x', 8192) }, WorkshopProtocol.Json).Length < 64 * 1024,
+                "Subagent page exceeded its wire response budget");
             var id = Guid.NewGuid().ToString("D");
             var request = Json(new { requestId = id, applicationId, parentThreadId = Parent, message = "Explain the design", name = "Design" });
             await using (var service = Service())
             {
+                var agents = Json((await service.SubagentsAsync(Json(new { threadId = Parent, applicationId }), default))!);
+                Check(agents.GetProperty("agents").GetArrayLength() == 1, "Unrelated subagents leaked into collaboration");
+                var agent = agents.GetProperty("agents")[0];
+                Check(agent.GetProperty("name").GetString() == "Darwin" && agent.GetProperty("role").GetString() == "explorer"
+                    && agent.GetProperty("model").GetString() == "fixture-model", "Subagent metadata was lost");
+                var agentHistory = Json((await service.SubagentReadAsync(Json(new { threadId = Parent, applicationId, agentId = Agent }), default))!);
+                Check(agentHistory.GetProperty("threadId").GetString() == Agent, "Subagent history was not read");
+                try {
+                    await service.SubagentReadAsync(Json(new { threadId = Parent, applicationId, agentId = Child }), default);
+                    throw new Exception("An unrelated thread was read as a subagent");
+                } catch (WorkshopException error) when (error.Code == "codex_subagent_invalid") { }
                 await service.StartAsync(request, default);
                 await Finish(service, id);
                 await service.StartAsync(request, default);
@@ -118,7 +135,14 @@ internal static class WorkshopSidechatChecks
             var id = CodexJson.Text(p, "threadId");
             var own = File.Exists(Path.Combine(project, "turn")) ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(project, "turn"))) : default;
             var turnId = own.ValueKind == JsonValueKind.Undefined ? "parent-turn" : CodexJson.Text(own, "clientUserMessageId");
-            object Thread(string threadId) => new { id = threadId, cwd = project, name = "Design", preview = "Discussion", updatedAt = 1000L, recencyAt = 1000L, status = new { type = threadId == Parent ? "active" : "idle" } };
+            object Thread(string threadId) => new { id = threadId, cwd = project, name = "Design", preview = "Discussion", updatedAt = 1000L, recencyAt = 1000L,
+                parentThreadId = threadId == Agent ? Parent : (string?)null,
+                agentNickname = threadId == Agent ? "Darwin" : null, agentRole = "explorer", model = "fixture-model", reasoningEffort = "high",
+                source = new { subAgent = new { thread_spawn = new { parent_thread_id = Parent, depth = 1 } } },
+                status = new { type = threadId == Parent ? "active" : "idle" } };
+            if (method == "thread/list" && CodexJson.Text(p, "parentThreadId").Length > 0)
+                Check(CodexJson.Text(p, "parentThreadId") == Parent && p.GetProperty("limit").GetInt32() == 20 &&
+                    p.GetProperty("sourceKinds")[0].GetString() == "subAgentThreadSpawn", "Subagent query scanned unbounded or unrelated sessions");
             if (method is "thread/fork" or "thread/resume")
             {
                 Check(CodexJson.Text(p, "sandbox") == "read-only" && CodexJson.Text(p, "approvalPolicy") == "never", "Sidechat permissions not constrained");
@@ -134,7 +158,7 @@ internal static class WorkshopSidechatChecks
             {
                 "thread/fork" or "thread/resume" => new { thread = Thread(Child), model = "fixture" },
                 "thread/read" => new { thread = Thread(id) },
-                "thread/list" => new { data = new[] { Thread(Parent), Thread(Child) }, nextCursor = (string?)null },
+                "thread/list" => new { data = CodexJson.Text(p, "parentThreadId").Length > 0 ? new[] { Thread(Agent), Thread(Child) } : new[] { Thread(Parent), Thread(Child) }, nextCursor = (string?)null },
                 "thread/turns/list" => new { data = new[] { new { id = id == Parent ? "parent-turn" : turnId, status = id == Parent ? "inProgress" : "completed", items = Array.Empty<object>() } }, nextCursor = (string?)null },
                 "thread/items/list" => new { data = id == Parent ? Array.Empty<object>() : own.ValueKind == JsonValueKind.Undefined ? new object[] {
                     new { turnId = "parent-turn", item = new { id = "parent-answer", type = "agentMessage", text = "Parent-only response" } }

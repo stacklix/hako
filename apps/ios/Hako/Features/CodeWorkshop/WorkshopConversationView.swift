@@ -284,8 +284,11 @@ struct WorkshopConversationView: View {
                 }
             } else if !pinPreview {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { showingSidechats = true } label: { Image(systemName: "bubble.left.and.bubble.right") }
-                        .accessibilityLabel("侧聊")
+                    Button { showingSidechats = true } label: {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .foregroundStyle(sidechats.hasCollaboration ? Color.green : Color.primary)
+                    }
+                    .accessibilityLabel(sidechats.hasCollaboration ? "会话协作，已有侧聊或子代理" : "会话协作")
                         .disabled(conversation.threadId == nil || conversation.isArchived || conversation.parentThreadId != nil)
                         .disabled(!conversation.store.authenticated || conversation.scope != conversation.store.scope)
                     Menu {
@@ -372,6 +375,14 @@ struct WorkshopConversationView: View {
             Button("开始压缩") { Task { await conversation.compactContext() } }
         } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
         .task(id: commands.observationID) { await commands.observe() }
+        .task(id: "\(conversation.threadId ?? ""):\(conversation.operation?.active == true):\(scenePhase == .active && transcriptVisible)") {
+            guard scenePhase == .active, transcriptVisible else { return }
+            repeat {
+                await sidechats.refreshCollaboration()
+                guard conversation.operation?.active == true else { return }
+                try? await Task.sleep(for: .seconds(15))
+            } while !Task.isCancelled
+        }
         .task(id: selectedPhotos) { await loadPhotos(selectedPhotos) }
         .task { if conversation.models.isEmpty || conversation.modelError != nil { await conversation.loadModels() } }
         .task(id: conversation.parentThreadId) {

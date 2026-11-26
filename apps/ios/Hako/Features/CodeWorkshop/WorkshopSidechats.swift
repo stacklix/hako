@@ -10,9 +10,37 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
     @Published private(set) var loading = false
     @Published var error: String?
     @Published private(set) var nextCursor: String?
+    @Published private(set) var agents: [WorkshopSubagent] = []
+    @Published private(set) var loadingAgents = false
+    @Published private(set) var agentCursor: String?
+    @Published private(set) var agentError: String?
+    var hasCollaboration: Bool { !sessions.isEmpty || !agents.isEmpty }
     private var draft: WorkshopConversation?
 
     init(parent: WorkshopConversation) { self.parent = parent }
+
+    func refreshAgents(more: Bool = false) async {
+        guard parent.scope == parent.store.scope, parent.store.authenticated, let id = parent.threadId, !loadingAgents else { return }
+        loadingAgents = true
+        defer { loadingAgents = false }
+        do {
+            var parameters: [String: Any] = ["threadId": id, "applicationId": parent.application.id]
+            if more { guard let agentCursor else { return }; parameters["cursor"] = agentCursor }
+            let reply: WorkshopSubagentList = try await parent.store.call(parent.agent, "subagent.list", parameters)
+            guard parent.scope == parent.store.scope, !Task.isCancelled else { return }
+            if more { agents.append(contentsOf: reply.agents.filter { incoming in !agents.contains(where: { $0.id == incoming.id }) }) }
+            else { agents = reply.agents }
+            agentCursor = reply.nextCursor
+            agentError = nil
+        } catch is CancellationError { }
+        catch { if parent.scope == parent.store.scope { agentError = error.localizedDescription } }
+    }
+
+    func refreshCollaboration() async {
+        async let sides: () = refresh()
+        async let children: () = refreshAgents()
+        _ = await (sides, children)
+    }
 
     func refresh(more: Bool = false) async {
         guard parent.scope == parent.store.scope, parent.store.authenticated, let id = parent.threadId, !loading else { return }
@@ -61,7 +89,9 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
 struct WorkshopSidechatSheet: View {
     @ObservedObject var model: WorkshopSidechats
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var transfer: WorkshopSidechatTransfer?
+    @State private var tab = WorkshopCollaborationTab.sidechats
 
     var body: some View {
         NavigationStack {
@@ -70,10 +100,25 @@ struct WorkshopSidechatSheet: View {
                     showSidechatList: { model.selected = nil; Task { await model.refresh() } },
                     newSidechat: { model.create() }, returnSidechat: { transfer = .init(text: $0) }, sidechatOverlayPresented: transfer != nil)
             } else {
-                List {
+                VStack(spacing: 0) {
+                    HStack(spacing: 28) {
+                        ForEach(WorkshopCollaborationTab.allCases, id: \.self) { option in
+                            Button { tab = option } label: {
+                                Text("\(option.rawValue) · \(option == .sidechats ? model.sessions.count : model.agents.count)")
+                                    .font(.subheadline).fontWeight(tab == option ? .semibold : .regular)
+                                    .foregroundStyle(tab == option ? Color.primary : Color.secondary)
+                                    .frame(minHeight: 44)
+                                    .overlay(alignment: .bottom) { Capsule().fill(tab == option ? Color.primary : .clear).frame(height: 2) }
+                            }.buttonStyle(.plain).accessibilityAddTraits(tab == option ? .isSelected : [])
+                        }
+                        Spacer(minLength: 0)
+                    }.padding(.horizontal, 20)
+                    Divider()
+                    List {
                     Section {
                         WorkshopSidechatParentStatus(parent: model.parent)
                     }
+                    if tab == .sidechats {
                     if let error = model.error {
                         Section {
                             Text(error).font(.footnote).foregroundStyle(.secondary)
@@ -81,6 +126,9 @@ struct WorkshopSidechatSheet: View {
                         }
                     }
                     if model.loading && model.sessions.isEmpty { ProgressView("正在读取侧聊…") }
+                    if !model.loading && model.error == nil && model.sessions.isEmpty {
+                        Text("暂无侧聊").foregroundStyle(.secondary)
+                    }
                     ForEach(model.sessions) { session in
                         Button { model.open(session) } label: {
                             HStack(spacing: 12) {
@@ -105,19 +153,51 @@ struct WorkshopSidechatSheet: View {
                     } footer: {
                         Text("创建时继承主会话上下文，后续讨论独立保存。")
                     }
+                    } else {
+                        if let error = model.agentError {
+                            Section {
+                                Text(error).font(.footnote).foregroundStyle(.secondary)
+                                Button("重新读取") { Task { await model.refreshAgents() } }.disabled(model.loadingAgents)
+                            }
+                        }
+                        if model.loadingAgents && model.agents.isEmpty { ProgressView("正在读取子代理…") }
+                        if !model.loadingAgents && model.agentError == nil && model.agents.isEmpty {
+                            Text("暂无子代理").foregroundStyle(.secondary)
+                        }
+                        ForEach(model.agents) { agent in
+                            NavigationLink {
+                                WorkshopSubagentDetail(model: model, initial: agent)
+                            } label: { WorkshopSubagentRow(agent: agent) }
+                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
+                        }
+                        if model.agentCursor != nil {
+                            Button("加载更多子代理") { Task { await model.refreshAgents(more: true) } }.disabled(model.loadingAgents)
+                        }
+                    }
                 }
                 .scrollContentBackground(.hidden).background(HakoStyle.background)
-                .navigationTitle("侧聊").navigationBarTitleDisplayMode(.inline)
+                .refreshable { await model.refreshCollaboration() }
+                }
+                .background(HakoStyle.background)
+                .navigationTitle("会话协作").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭侧聊")
+                        Button { dismiss() } label: { Image(systemName: "xmark") }.accessibilityLabel("关闭会话协作")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { model.create() } label: { Image(systemName: "plus") }.accessibilityLabel("新建侧聊")
+                        if tab == .sidechats {
+                            Button { model.create() } label: { Image(systemName: "plus") }.accessibilityLabel("新建侧聊")
+                        }
                     }
                 }
-                .refreshable { await model.refresh() }
-                .task { await model.refresh() }
+                .task(id: scenePhase) {
+                    guard scenePhase == .active else { return }
+                    while !Task.isCancelled {
+                        await model.refreshCollaboration()
+                        try? await Task.sleep(for: .seconds(10))
+                    }
+                }
             }
         }
         .presentationDetents([.large]).presentationDragIndicator(.visible)
