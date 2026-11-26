@@ -48,7 +48,7 @@ class AgentConnectionTest {
         lateinit var peer: WebSocket
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                if (request.path == "/api/v1/version") return MockResponse().setChunkedBody("""{"serverVersion":"0.8.4","minimumAgentVersion":"1.4.7"}""", 7)
+                if (request.path == "/api/v1/version") return MockResponse().setChunkedBody("""{"serverVersion":"0.9.1","minimumAgentVersion":"1.5.10"}""", 7)
                 if (request.path != "/ws/agent") return MockResponse().setResponseCode(404)
                 assertNull(request.getHeader("Origin"))
                 return MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
@@ -140,7 +140,7 @@ class AgentConnectionTest {
         server.start()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
-                "/api/v1/version" -> MockResponse().setBody("""{"serverVersion":"0.8.5"}""")
+                "/api/v1/version" -> MockResponse().setBody("""{"serverVersion":"0.9.1"}""")
                 else -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
             }
         }

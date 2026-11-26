@@ -3,10 +3,11 @@ import SwiftUI
 // Both lists use the same status precedence as well as the same ordering.
 struct WorkshopSessionStatusIcon: View {
     let item: WorkshopSessionListItem
+    var symbol: String? = nil
 
     var body: some View {
         Image(systemName: item.session.access?.state == "occupied" ? "lock" :
-            item.hasDraft || item.session.inProgress || item.isUnread ? "terminal.fill" : "terminal")
+            symbol ?? (item.hasDraft || item.session.inProgress || item.isUnread ? "terminal.fill" : "terminal"))
             .symbolRenderingMode(.monochrome)
             .foregroundStyle(item.hasDraft ? Color.orange : item.session.inProgress ? Color.green :
                 item.isUnread ? Color.blue : HakoStyle.text)

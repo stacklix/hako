@@ -285,10 +285,8 @@ struct WorkshopConversationView: View {
             } else if !pinPreview {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { showingSidechats = true } label: {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                            .foregroundStyle(sidechats.hasCollaboration ? Color.green : Color.primary)
+                        WorkshopCollaborationButtonIcon(model: sidechats)
                     }
-                    .accessibilityLabel(sidechats.hasCollaboration ? "会话协作，已有侧聊或子代理" : "会话协作")
                         .disabled(conversation.threadId == nil || conversation.isArchived || conversation.parentThreadId != nil)
                         .disabled(!conversation.store.authenticated || conversation.scope != conversation.store.scope)
                     Menu {
@@ -375,11 +373,11 @@ struct WorkshopConversationView: View {
             Button("开始压缩") { Task { await conversation.compactContext() } }
         } message: { Text("将压缩当前会话的模型上下文，历史消息仍会保留。") }
         .task(id: commands.observationID) { await commands.observe() }
-        .task(id: "\(conversation.threadId ?? ""):\(conversation.operation?.active == true):\(scenePhase == .active && transcriptVisible)") {
+        .task(id: "\(conversation.threadId ?? ""):\(conversation.operation?.active == true || sidechats.hasRunning):\(scenePhase == .active && transcriptVisible)") {
             guard scenePhase == .active, transcriptVisible else { return }
             repeat {
                 await sidechats.refreshCollaboration()
-                guard conversation.operation?.active == true else { return }
+                guard conversation.operation?.active == true || sidechats.hasRunning else { return }
                 try? await Task.sleep(for: .seconds(15))
             } while !Task.isCancelled
         }
@@ -454,7 +452,10 @@ struct WorkshopConversationView: View {
                         } label: {
                             Image(systemName: "bubble.left.and.bubble.right")
                                 .frame(width: 44, height: 44, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
+                        // Keep the 44pt hit area; reserve only 20pt before the timestamp.
+                        .padding(.trailing, -24)
                         .accessibilityLabel("引用这条回复进入侧聊")
                         .disabled(entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }

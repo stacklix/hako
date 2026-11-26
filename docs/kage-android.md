@@ -46,7 +46,7 @@ Android 4.4 / API 19–20 自动选择项目自有的 `LegacyVideoServer`，Andr
 
 `start` 参数为 `sessionId`、`deviceId`、可选 `serial`；返回单会话随机 AES-256 密钥、局域网端口/地址及 `/agent/v1/streams/{sessionId}`。局域网 WebSocket 首包为 AES-GCM 加密的 `{sessionId,timestamp}`，AAD 为 `hako-agent-lan-v1:video-client:{sessionId}`。服务端包的 AAD 为 `hako-agent-lan-v1:video-server:{sessionId}`，明文为 8 字节大端递增序号、1 字节类型及负载：0=视频字节、1=错误、2=ready、3=alive。每包视频负载不超过 32768 字节，每 10 秒发送心跳；客户端拒绝乱序或重复包。密钥只经已鉴权命令交付，不放在 URL 或明文 HTTP 中。
 
-`navigate` 参数为 `sessionId` 和 `navigation=back/home/recents`，分别发送 Android 返回、主页、最近任务键，成功返回 `{sent:true}`。仅连接完成且未结束的投屏会话可操作，沿用该会话固定的 ADB transport；不接受任意键码。导航通过已鉴权的设备命令发送，服务端继续只透传。每个会话串行执行导航，单次最多 3 秒，关闭投屏会取消待执行指令，并在导航退出后再关闭视频源和息屏。
+`navigate` 参数为 `sessionId` 和 `navigation=back/home/recents`，返回和最近任务发送对应 Android 按键，主页启动系统 `MAIN` / `HOME` Intent，避免部分无屏固件忽略 Home 键；成功返回 `{sent:true}`。仅连接完成且未结束的投屏会话可操作，沿用该会话固定的 ADB transport；不接受任意键码或任意 Intent。导航通过已鉴权的设备命令发送，服务端继续只透传。每个会话串行执行导航，单次最多 3 秒，关闭投屏会取消待执行指令，并在导航退出后再关闭视频源和息屏。
 
 iOS 将三个导航键与全屏开关放在同一悬浮工具条中。普通投屏和全屏共用折叠状态与相对位置；拖动整组可调整位置，收起后显示可拖动的小圆点，点击恢复。工具条随屏幕尺寸和展开尺寸调整边界，导航等待时仍可折叠、拖动或退出全屏。导航失败显示原因，不自动重试或中断视频。
 

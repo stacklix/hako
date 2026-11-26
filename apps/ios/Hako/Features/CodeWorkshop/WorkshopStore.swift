@@ -412,6 +412,14 @@ import CryptoKit
         readState.isUnread(session, agentId: selectedAgentID, now: date)
     }
 
+    func collaborationUnread(_ session: WorkshopSession, agentId: String, at date: Date) -> Bool {
+        readState.isUnread(session, agentId: agentId, now: date)
+    }
+
+    func collaborationUnread(_ child: WorkshopSubagent, agentId: String, at date: Date) -> Bool {
+        readState.isUnread(child.session, agentId: agentId, now: date)
+    }
+
     func markRead(threadId: String, completionId: String, agentId: String) {
         guard context == scope else { return }
         var updated = readState
@@ -503,7 +511,7 @@ import CryptoKit
         return hasDraft(session, agent: agent, application: application)
     }
 
-    private func hasDraft(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) -> Bool {
+    func hasDraft(_ session: WorkshopSession, agent: WorkshopAgent, application: WorkshopApplication) -> Bool {
         _ = draftRevision
         guard context == scope else { return false }
         return (try? composerDraft(agent: agent, application: application, sessionId: session.id))?.hasUnsentInput == true

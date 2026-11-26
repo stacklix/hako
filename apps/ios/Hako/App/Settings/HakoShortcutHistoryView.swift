@@ -33,7 +33,10 @@ struct HakoShortcutsView: View {
                 ForEach(HakoShortcutRegistry.availableTaskNames, id: \.self) { name in
                     let step = displayedRun?.steps.first { $0.name == name }
                     VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent(name, value: step?.status.rawValue ?? (displayedRun == nil ? "待执行" : "本次未执行"))
+                        LabeledContent {
+                            if let step { HakoShortcutStepStatusView(step: step) }
+                            else { Text(displayedRun == nil ? "待执行" : "本次未执行") }
+                        } label: { Text(name) }
                         if step?.status == .running, let event = step?.events?.last {
                             Text(event.stageTitle + " · " + event.state.rawValue)
                                 .font(.caption).foregroundStyle(.secondary)
@@ -68,6 +71,36 @@ struct HakoShortcutsView: View {
         }
         .navigationTitle("快捷指令")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct HakoShortcutStepStatusView: View {
+    let step: HakoShortcutRun.Step
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(step.status.rawValue)
+            if step.status != .pending {
+                Group {
+                    if step.status == .running {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            duration(at: context.date)
+                        }
+                    } else { duration(at: .now) }
+                }
+                .font(.caption).monospacedDigit()
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
+    private func duration(at now: Date) -> Text {
+        guard let start = step.startedAt,
+              let end = step.finishedAt ?? (step.status == .running ? now : nil) else {
+            return Text("耗时未记录")
+        }
+        return Text((step.status == .running ? "已耗时 " : "耗时 ")
+            + String(format: "%.2f 秒", max(0, end.timeIntervalSince(start))))
     }
 }
 
@@ -202,7 +235,9 @@ private struct HakoShortcutRunView: View {
                             NavigationLink {
                                 HakoShortcutStepView(history: history, runID: runID, name: step.name)
                             } label: {
-                                LabeledContent(step.name, value: step.status.rawValue)
+                                LabeledContent {
+                                    HakoShortcutStepStatusView(step: step)
+                                } label: { Text(step.name) }
                             }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }

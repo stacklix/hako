@@ -80,7 +80,12 @@ internal sealed class AndroidVideoStreams(IAndroidAdb adb, Func<Uri?> origin, st
         await s.Navigation.WaitAsync(budget.Token);
         try {
             budget.Token.ThrowIfCancellationRequested();
-            await adb.RunAsync(["-t", s.Endpoint.TransportId, "shell", "input", "keyevent", key], budget.Token);
+            // Launch the system HOME intent: some headless Android firmware
+            // acknowledges KEYCODE_HOME without bringing its launcher forward.
+            var command = navigation == "home"
+                ? new[] { "-t", s.Endpoint.TransportId, "shell", "am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME" }
+                : new[] { "-t", s.Endpoint.TransportId, "shell", "input", "keyevent", key };
+            await adb.RunAsync(command, budget.Token);
             budget.Token.ThrowIfCancellationRequested();
             return new { sent = true };
         } finally { s.Navigation.Release(); }

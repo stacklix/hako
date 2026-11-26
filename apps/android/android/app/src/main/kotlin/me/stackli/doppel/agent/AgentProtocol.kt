@@ -16,7 +16,7 @@ internal data class AgentCapability(val name: String, val aggregate: Boolean = f
 internal object AgentProtocol {
     const val VERSION = 4
     const val MAX_BYTES = 64 * 1024
-    const val MINIMUM_SERVER = "0.8.0"
+    const val MINIMUM_SERVER = "0.9.0"
     val capabilities = listOf(
         AgentCapability(AgentVersions.COMMAND),
         AgentCapability("query.device.status", true),
@@ -71,7 +71,8 @@ internal object AgentProtocol {
         val parts = version.split('.')
         if (parts.size != 3 || parts.any { !it.matches(Regex("0|[1-9][0-9]*")) }) return false
         val values = parts.map { it.toIntOrNull() ?: return false }
-        return values[0] == 0 && values[1] == 8 && values[2] >= 0
+        val minimum = MINIMUM_SERVER.split('.').map(String::toInt)
+        return values[0] == minimum[0] && values[1] == minimum[1] && values[2] >= minimum[2]
     }
 
     fun request(message: JSONObject): Triple<String, Int, JSONObject> {

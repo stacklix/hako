@@ -15,6 +15,24 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
     @Published private(set) var agentCursor: String?
     @Published private(set) var agentError: String?
     var hasCollaboration: Bool { !sessions.isEmpty || !agents.isEmpty }
+    var hasRunning: Bool { sessions.contains { $0.inProgress } || agents.contains { $0.active } }
+    func isUnread(_ session: WorkshopSession, at date: Date) -> Bool {
+        parent.store.collaborationUnread(session, agentId: parent.agent.id, at: date)
+    }
+    func isUnread(_ agent: WorkshopSubagent, at date: Date) -> Bool {
+        parent.store.collaborationUnread(agent, agentId: parent.agent.id, at: date)
+    }
+    func hasUnread(at date: Date) -> Bool {
+        sessions.contains { isUnread($0, at: date) } || agents.contains { isUnread($0, at: date) }
+    }
+    func sessionItems(at date: Date) -> [WorkshopSessionListItem] {
+        WorkshopCatalog.listItems(sessions, hasDraft: {
+            parent.store.hasDraft($0, agent: parent.agent, application: parent.application)
+        }, isUnread: { isUnread($0, at: date) })
+    }
+    func orderedAgents(at date: Date) -> [WorkshopSubagent] {
+        WorkshopSubagent.ordered(agents, isUnread: { isUnread($0, at: date) })
+    }
     private var draft: WorkshopConversation?
 
     init(parent: WorkshopConversation) { self.parent = parent }
@@ -88,10 +106,16 @@ struct WorkshopSidechatList: Decodable { let sessions: [WorkshopSession]; let ne
 
 struct WorkshopSidechatSheet: View {
     @ObservedObject var model: WorkshopSidechats
+    @ObservedObject private var store: WorkshopStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var transfer: WorkshopSidechatTransfer?
     @State private var tab = WorkshopCollaborationTab.sidechats
+
+    init(model: WorkshopSidechats) {
+        self.model = model
+        _store = ObservedObject(wrappedValue: model.parent.store)
+    }
 
     var body: some View {
         NavigationStack {
@@ -129,10 +153,11 @@ struct WorkshopSidechatSheet: View {
                     if !model.loading && model.error == nil && model.sessions.isEmpty {
                         Text("暂无侧聊").foregroundStyle(.secondary)
                     }
-                    ForEach(model.sessions) { session in
+                    ForEach(model.sessionItems(at: .now)) { item in
+                        let session = item.session
                         Button { model.open(session) } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(HakoStyle.muted)
+                                WorkshopSessionStatusIcon(item: item, symbol: "bubble.left.and.bubble.right")
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(session.title).foregroundStyle(HakoStyle.text).lineLimit(2)
                                     Text(session.preview).font(.caption).foregroundStyle(HakoStyle.muted).lineLimit(2)
@@ -164,10 +189,10 @@ struct WorkshopSidechatSheet: View {
                         if !model.loadingAgents && model.agentError == nil && model.agents.isEmpty {
                             Text("暂无子代理").foregroundStyle(.secondary)
                         }
-                        ForEach(model.agents) { agent in
+                        ForEach(model.orderedAgents(at: .now)) { agent in
                             NavigationLink {
                                 WorkshopSubagentDetail(model: model, initial: agent)
-                            } label: { WorkshopSubagentRow(agent: agent) }
+                            } label: { WorkshopSubagentRow(agent: agent, unread: model.isUnread(agent, at: .now)) }
                                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                                 .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                         }
@@ -203,6 +228,26 @@ struct WorkshopSidechatSheet: View {
         .presentationDetents([.large]).presentationDragIndicator(.visible)
         .sheet(item: $transfer) { item in
             WorkshopSidechatReturnView(parent: model.parent, text: item.text) { dismiss() }
+        }
+    }
+}
+
+struct WorkshopCollaborationButtonIcon: View {
+    @ObservedObject var model: WorkshopSidechats
+    @ObservedObject private var store: WorkshopStore
+
+    init(model: WorkshopSidechats) {
+        self.model = model
+        _store = ObservedObject(wrappedValue: model.parent.store)
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            let unread = model.hasUnread(at: timeline.date)
+            Image(systemName: "bubble.left.and.bubble.right")
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(unread ? Color.blue : model.hasRunning ? Color.green : Color.primary)
+                .accessibilityLabel(unread ? "会话协作，有未读回复" : model.hasRunning ? "会话协作，有任务执行中" : "会话协作")
         }
     }
 }

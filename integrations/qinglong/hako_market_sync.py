@@ -522,7 +522,10 @@ def run(hako, providers, *, check=False, dry_run=False, rounds=10):
                 seen.add(fingerprint)
                 fresh += 1; found += 1
                 name = target.get('symbol') or (target.get('baseCurrency', '') + '/' + target.get('quoteCurrency', ''))
-                label = f"{name} {target.get('kind')} {target.get('fromDate')}～{target.get('throughDate')}"
+                start, end = target.get('fromDate'), target.get('throughDate')
+                dates = start if start == end else f'{start} 至 {end}（含首尾）'
+                kind = {'latest': '最新价', 'daily_close': '历史行情', 'fx': '汇率'}.get(target.get('kind'), target.get('kind'))
+                label = f'{name} · {kind} · 查询日期：{dates}'
                 try:
                     if target.get('kind') not in ('latest', 'daily_close', 'fx'):
                         raise SyncError('不支持的任务类型')
@@ -532,17 +535,22 @@ def run(hako, providers, *, check=False, dry_run=False, rounds=10):
                     if check:
                         log('待更新 ' + label)
                         continue
+                    if target.get('priceType') == 'nav':
+                        log(f'开始查询基金净值 · 基金代码：{name} · 净值日期：{dates}')
                     quotes, complete = providers.fetch(target)
                     days = [row['date'] for row in quotes]
                     if len(set(days)) != len(days) or any(not Providers.within(target, day) for day in days):
                         raise SyncError('行情返回重复或越界日期')
+                    if target.get('priceType') == 'nav':
+                        returned = '、'.join(sorted(days)) if days else '无'
+                        log(f'基金净值查询结果 · 基金代码：{name} · 查询日期：{dates} · 数据源返回净值日期：{returned}')
                     if dry_run:
                         log(f'预演 {label}：{len(quotes)} 条，不写入')
                     elif quotes or complete:
                         count = hako.upload(target, quotes, complete)
                         written += count
                         if not quotes and target.get('priceType') == 'nav':
-                            log('基金净值尚未公布，稍后重查 ' + label)
+                            log('该查询范围未返回基金净值，稍后重查 · ' + label)
                         else:
                             log(f'完成 {label}：取得 {len(quotes)} 条，实际变更 {count} 条')
                     else:

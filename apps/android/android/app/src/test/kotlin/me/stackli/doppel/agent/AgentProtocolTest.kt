@@ -51,9 +51,11 @@ class AgentProtocolTest {
     }
 
     @Test fun serverVersionUsesDeclaredCompatibilityLine() {
-        assertTrue(AgentProtocol.compatibleServer("0.8.0"))
-        assertTrue(AgentProtocol.compatibleServer("0.8.20"))
-        for (version in listOf("0.7.99", "0.9.0", "0.8", "0.8.0-beta", "0.8.-1")) {
+        assertEquals("0.9.0", AgentProtocol.MINIMUM_SERVER)
+        assertTrue(AgentProtocol.compatibleServer("0.9.0"))
+        assertTrue(AgentProtocol.compatibleServer("0.9.1"))
+        assertTrue(AgentProtocol.compatibleServer("0.9.20"))
+        for (version in listOf("0.8.99", "0.10.0", "0.9", "0.9.0-beta", "0.9.-1", "0.09.0", "0.9.2147483648")) {
             assertFalse(AgentProtocol.compatibleServer(version))
         }
     }

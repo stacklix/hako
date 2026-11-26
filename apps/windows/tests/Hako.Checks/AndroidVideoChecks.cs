@@ -169,15 +169,17 @@ internal static class AndroidVideoChecks
         public async Task<byte[]> RunAsync(string[] arguments, CancellationToken token, string? input = null, int limit = 2097152)
         {
             if (arguments[0] != "-t" || arguments[1] != "7") throw new Exception("Video power control changed transport");
+            if (arguments[3] == "am") {
+                if (string.Join(" ", arguments[3..]) != "am start -a android.intent.action.MAIN -c android.intent.category.HOME")
+                    throw new Exception("Home navigation changed its system intent");
+                await Navigate("3", token);
+                return [];
+            }
             if (arguments[^2] == "keyevent") {
                 var key = arguments[^1];
                 if (key is "4" or "3" or "187") {
-                    NavigationKeys.Add(key);
-                    if (HoldNavigation) {
-                        NavigationRunning = true; NavigationStarted.TrySetResult();
-                        try { await Task.Delay(Timeout.Infinite, token); }
-                        finally { NavigationRunning = false; }
-                    }
+                    if (key == "3") throw new Exception("Home must launch the system HOME intent instead of injecting a key");
+                    await Navigate(key, token);
                     return [];
                 }
                 Keys.Add(key);
@@ -187,6 +189,14 @@ internal static class AndroidVideoChecks
                 Awake = key == "224";
             }
             return Encoding.UTF8.GetBytes("mScreenState=" + (Awake ? "ON" : "OFF"));
+        }
+        private async Task Navigate(string key, CancellationToken token) {
+            NavigationKeys.Add(key);
+            if (HoldNavigation) {
+                NavigationRunning = true; NavigationStarted.TrySetResult();
+                try { await Task.Delay(Timeout.Infinite, token); }
+                finally { NavigationRunning = false; }
+            }
         }
     }
     private static async Task CheckPowerLifecycle(bool failWake, bool failSleep)

@@ -2,19 +2,19 @@ import SwiftUI
 
 struct WorkshopSubagentRow: View {
     let agent: WorkshopSubagent
+    var unread = false
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "person.crop.square").foregroundStyle(HakoStyle.muted)
+            WorkshopSessionStatusIcon(item: .init(session: agent.session, hasDraft: false, isUnread: unread),
+                symbol: "person.crop.square")
             VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(agent.name).foregroundStyle(HakoStyle.text).fontWeight(.medium)
-                    Spacer(minLength: 4)
-                    Text(agent.status).font(.caption).foregroundStyle(agent.active ? Color.green : agent.state == "failed" ? Color.red : Color.secondary)
-                }
+                Text(agent.name).foregroundStyle(HakoStyle.text).fontWeight(.medium)
                 if !agent.role.isEmpty { Text(agent.role).font(.caption).foregroundStyle(.secondary) }
                 Text(agent.task.isEmpty ? "尚无任务说明" : agent.task).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityValue(agent.status + (unread ? "，未读" : "，已读"))
     }
 }
 
@@ -76,6 +76,7 @@ struct WorkshopSubagentDetail: View {
         guard !loading, parent.scope == parent.store.scope, parent.store.authenticated, let id = parent.threadId else { return }
         loading = true
         defer { loading = false }
+        let snapshot = agent
         do {
             var params: [String: Any] = ["threadId": id, "applicationId": parent.application.id, "agentId": initial.id]
             if more { guard let cursor else { return }; params["cursor"] = cursor }
@@ -90,6 +91,9 @@ struct WorkshopSubagentDetail: View {
                 } else { entries = reply.entries; cursor = reply.nextCursor }
             }
             if more || cursor == nil { cursor = reply.nextCursor }
+            if !more, snapshot.state == "completed" {
+                parent.store.markRead(threadId: snapshot.id, completionId: snapshot.readToken, agentId: parent.agent.id)
+            }
             error = nil
         } catch is CancellationError { }
         catch { if parent.scope == parent.store.scope { self.error = error.localizedDescription } }

@@ -76,7 +76,7 @@ internal class AgentConnection(
                 if (!response.isSuccessful || source.buffer.size > 8192) throw IllegalStateException()
                 val metadata = JSONObject(source.readUtf8())
                 if (!AgentProtocol.compatibleServer(metadata.optString("serverVersion"))) {
-                    status("version_mismatch", "需要 Sora 服务端 0.8.x；30 秒后自动检查")
+                    status("version_mismatch", "需要 Sora 服务端 ${AgentProtocol.MINIMUM_SERVER.substringBeforeLast('.')}.x；30 秒后自动检查")
                     reconnect = control.schedule({ if (!closed) connect() }, 30, TimeUnit.SECONDS)
                     return
                 }
