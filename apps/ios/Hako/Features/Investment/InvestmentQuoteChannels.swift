@@ -21,14 +21,11 @@ struct InvestmentQuoteChannels: View {
               coverage: "美股、美股 ETF 的搜索与历史行情，以及 Binance Stock 持仓报价。",
               credential: "需配置 API Key"),
         .init(title: "Tushare Pro",
-              coverage: "A 股与境内 ETF 的历史行情、盘中报价；国内期货、期权历史补查。盘中股票和 ETF 接口需分别开通权限。",
+              coverage: "A 股与境内 ETF 的历史行情、盘中报价；国内期货、期权历史补查；美元、港币兑人民币的每日官方中间价。盘中股票和 ETF 接口需分别开通权限。",
               credential: "需配置 API Token，并具备相应接口权限"),
         .init(title: "Binance",
               coverage: "加密现货的币种目录、公开报价和支持交易对的历史 K 线；按 1 USDT≈1 USD 估值。",
-              credential: "公开行情，无需交易所密钥"),
-        .init(title: "欧洲央行（ECB）",
-              coverage: "外币兑人民币汇率的固定来源；已确认的每日汇率直接复用，前一日未确认的汇率会重新获取。",
-              credential: "公开数据，无需密钥")
+              credential: "公开行情，无需交易所密钥")
     ]
 
     var body: some View {

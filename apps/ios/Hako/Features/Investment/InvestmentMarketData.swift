@@ -794,40 +794,44 @@ struct InvestmentQuoteProvider {
         return table
     }
 
-    func ecbRates(for currencies: Set<InvestmentCurrency>, start: Date, end: Date) async throws -> [InvestmentCurrency: [InvestmentQuote]] {
+    func referenceRates(for currencies: Set<InvestmentCurrency>, start: Date, end: Date,
+                        keys: [InvestmentQuoteSource: String]) async throws -> [InvestmentCurrency: [InvestmentQuote]] {
+        let currencies = currencies.subtracting([.cny])
         guard !currencies.isEmpty else { return [:] }
-        let format = Self.dateFormat("yyyy-MM-dd")
-        let codes = currencies.union([.cny]).map(\.rawValue).sorted().joined(separator: "+")
-        var url = URLComponents()
-        url.scheme = "https"
-        url.host = "data-api.ecb.europa.eu"
-        url.path = "/service/data/EXR/D." + codes + ".EUR.SP00.A"
-        url.queryItems = [.init(name: "startPeriod", value: format.string(from: start)),
-                          .init(name: "endPeriod", value: format.string(from: end)),
-                          .init(name: "format", value: "csvdata"), .init(name: "detail", value: "dataonly")]
-        guard let url = url.url else { throw InvestmentError.invalid("汇率请求无效") }
-        let (data, response) = try await send(URLRequest(url: url, timeoutInterval: 15), [])
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200, let text = String(data: data, encoding: .utf8) else { throw Self.failure(status) }
-        let rows = try CSV.parse(text)
-        guard let header = rows.first, let code = header.firstIndex(of: "CURRENCY"),
-              let time = header.firstIndex(of: "TIME_PERIOD"), let value = header.firstIndex(of: "OBS_VALUE") else {
-            throw InvestmentError.invalid("欧洲央行汇率响应缺少必要字段")
+        guard let key = keys[.tushare]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw InvestmentError.invalid("请在投资记账设置中配置 Tushare Pro API Token，以查询人民币汇率中间价。")
         }
-        var rates: [InvestmentCurrency: [Date: Decimal]] = [:]
-        for row in rows.dropFirst() where row.count > max(code, time, value) {
-            guard let currency = InvestmentCurrency(rawValue: row[code]), let day = format.date(from: row[time]),
-                  let rate = Decimal(string: row[value], locale: format.locale), rate > 0 else { continue }
-            rates[currency, default: [:]][day] = rate
-        }
-        var converted: [InvestmentCurrency: [InvestmentQuote]] = [:]
-        for currency in currencies {
-            let result = rates[currency, default: [:]].compactMap { day, rate in
-                rates[.cny]?[day].map { InvestmentQuote(day: day, price: $0 / rate, source: "欧洲央行", isDailyClose: true) }
+        let format = Self.dateFormat("yyyyMMdd")
+        format.isLenient = false
+        var result: [InvestmentCurrency: [InvestmentQuote]] = [:]
+        for currency in currencies.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let symbol = "CNY" + currency.rawValue
+            let table = try await tushareTable(api: "fx_midrate", params: ["ts_code": symbol,
+                "start_date": format.string(from: start), "end_date": format.string(from: end)],
+                fields: ["trade_date", "ts_code", "mid_rate"], key: key)
+            guard Set(table.fields).count == table.fields.count, table.items.count < 3000,
+                  let code = table.fields.firstIndex(of: "ts_code"),
+                  let date = table.fields.firstIndex(of: "trade_date"),
+                  let rate = table.fields.firstIndex(of: "mid_rate") else {
+                throw InvestmentError.invalid("Tushare 汇率字段缺失或结果被截断。")
             }
-            converted[currency] = try? Self.valid(result, start: start, end: end)
+            var quotes: [InvestmentQuote] = []
+            var seen = Set<Date>()
+            for row in table.items {
+                guard row.count == table.fields.count, row[code]?.string == symbol,
+                      let text = row[date]?.string, text.count == 8, text.allSatisfy({ $0.isASCII && $0.isNumber }),
+                      let day = format.date(from: text), day >= start, day <= end,
+                      seen.insert(day).inserted, let value = row[rate]?.decimal, value > 0,
+                      let published = InvestmentBook.calendar.date(bySettingHour: 9, minute: 15, second: 0, of: day),
+                      published <= Date.now else {
+                    throw InvestmentError.invalid("Tushare 汇率币种、日期或数值无效。")
+                }
+                // USD and HKD are quoted as CNY per 100 foreign units.
+                quotes.append(.init(day: day, price: value / 100, source: "Tushare Pro", isDailyClose: true))
+            }
+            result[currency] = InvestmentBook.merge([], quotes)
         }
-        return converted
+        return result
     }
 
     private static func dateFormat(_ pattern: String) -> DateFormatter {

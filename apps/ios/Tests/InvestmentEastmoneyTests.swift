@@ -549,14 +549,29 @@ extension InvestmentMarketDataTests {
     }
 
     static func referenceRates() async throws {
+        var calls = 0
         let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
-            precondition(request.url?.host == "data-api.ecb.europa.eu" && secrets.isEmpty)
-            return response(request, "CURRENCY,TIME_PERIOD,OBS_VALUE\nCNY,2026-10-30,8.4\nUSD,2026-10-30,1.2\nHKD,2026-10-30,9.6\n")
+            precondition(request.url?.host == "api.tushare.pro" && secrets == ["TOKEN"])
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            precondition(body["api_name"] as? String == "fx_midrate")
+            let params = body["params"] as! [String: String]
+            let symbol = params["ts_code"]!
+            calls += 1
+            return response(request, "{\"code\":0,\"data\":{\"fields\":[\"ts_code\",\"trade_date\",\"mid_rate\"],\"items\":[[\"\(symbol)\",\"20261030\",\(symbol == "CNYUSD" ? "670.96" : "85.582")]]}}")
         }
-        let rates = try await provider.ecbRates(for: [.usd, .hkd], start: day(1), end: day(30))
-        precondition(rates[.usd]?.first?.price == 7 && rates[.hkd]?.first?.price == Decimal(string: "0.875"))
-        precondition(rates.values.flatMap { $0 }.allSatisfy { $0.source == "欧洲央行" && $0.isDailyClose == true },
-            "Published ECB observations are final reference rates")
+        let rates = try await provider.referenceRates(for: [.usd, .hkd], start: day(1), end: day(30), keys: [.tushare: "TOKEN"])
+        precondition(calls == 2 && rates[.usd]?.first?.price == Decimal(string: "6.7096") && rates[.hkd]?.first?.price == Decimal(string: "0.85582"))
+        precondition(rates.values.flatMap { $0 }.allSatisfy { $0.source == "Tushare Pro" && $0.isDailyClose == true })
+        do {
+            _ = try await provider.referenceRates(for: [.usd], start: day(1), end: day(30), keys: [:])
+            preconditionFailure("Missing Tushare token must fail without a request")
+        } catch is InvestmentError { }
+        precondition(calls == 2)
+        let empty = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
+            response(request, "{\"code\":0,\"data\":{\"fields\":[\"ts_code\",\"trade_date\",\"mid_rate\"],\"items\":[]}}")
+        }
+        let absent = try await empty.referenceRates(for: [.usd], start: day(1), end: day(30), keys: [.tushare: "TOKEN"])
+        precondition(absent[.usd]?.isEmpty == true)
     }
 }
 

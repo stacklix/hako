@@ -36,7 +36,7 @@ func setupMarketBook(t *testing.T, f *fixture) investmentState {
 	return state
 }
 
-func TestMarketFXTargetsUseECBAndOnlySkipFinalPositiveRates(t *testing.T) {
+func TestMarketFXTargetsAreSourceIndependentAndOnlySkipFinalPositiveRates(t *testing.T) {
 	f := newFixture(t, true)
 	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	book := investmentState{Tables: investmentRows{
@@ -51,7 +51,7 @@ func TestMarketFXTargetsUseECBAndOnlySkipFinalPositiveRates(t *testing.T) {
 	assert := func(want string) {
 		t.Helper()
 		targets := f.s.marketTargets(AuthClientConfig{ID: "collector"}, "owner", book, now)
-		if len(targets) != 1 || targets[0].Source != "欧洲央行" || targets[0].From != want || targets[0].Through != "2026-11-24" {
+		if len(targets) != 1 || targets[0].Source != "external" || targets[0].From != want || targets[0].Through != "2026-11-24" {
 			t.Fatal(targets)
 		}
 	}
@@ -81,7 +81,7 @@ func TestMarketFXPromotesPublishedRateAndNeverOverwritesFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := marketTarget{Key: "fx|USD|CNY", Kind: "fx", BaseCurrency: "USD", QuoteCurrency: "CNY", Source: "欧洲央行", From: day, Through: day, Expires: now.Add(10 * time.Minute).Unix()}
-	item := marketUpdateItem{TargetID: f.s.signMarketTarget(c, target), Quotes: []marketObservation{{Date: day, Value: "7.1", ObservedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)}}}
+	item := marketUpdateItem{Source: "Tushare Pro", TargetID: f.s.signMarketTarget(c, target), Quotes: []marketObservation{{Date: day, Value: "7.1", ObservedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)}}}
 	post := func() {
 		t.Helper()
 		w := marketCall(f, c, secret, "POST", "/api/v1/market/quote-batches", map[string]any{"items": []marketUpdateItem{item}})
@@ -89,16 +89,33 @@ func TestMarketFXPromotesPublishedRateAndNeverOverwritesFinal(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
+	for _, invalid := range []string{"", " ", "Tushare\nPro"} {
+		bad := item
+		bad.Source = invalid
+		w := marketCall(f, c, secret, "POST", "/api/v1/market/quote-batches", map[string]any{"items": []marketUpdateItem{bad}})
+		if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"error":"invalid_source"`)) {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
 	post()
 	var rate, source, final string
 	var revision int
-	if err = f.s.investment.QueryRow("SELECT rate,source,is_final,revision FROM market_daily_fx").Scan(&rate, &source, &final, &revision); err != nil || rate != "7.1" || source != "欧洲央行" || final != "1" || revision != 2 {
+	if err = f.s.investment.QueryRow("SELECT rate,source,is_final,revision FROM market_daily_fx").Scan(&rate, &source, &final, &revision); err != nil || rate != "7.1" || source != "Tushare Pro" || final != "1" || revision != 2 {
 		t.Fatal(rate, source, final, revision, err)
 	}
 	item.Quotes[0].Value = "9"
 	post()
 	if err = f.s.investment.QueryRow("SELECT rate,revision FROM market_daily_fx").Scan(&rate, &revision); err != nil || rate != "7.1" || revision != 2 {
 		t.Fatal(rate, revision, err)
+	}
+	// Sources are collector-supplied metadata, not an ECB/Tushare allowlist.
+	otherDay := now.AddDate(0, 0, -2).Format(time.DateOnly)
+	target.From, target.Through = otherDay, otherDay
+	item.TargetID, item.Source = f.s.signMarketTarget(c, target), "中国外汇交易中心"
+	item.Quotes[0].Date = otherDay
+	post()
+	if err = f.s.investment.QueryRow("SELECT source FROM market_daily_fx WHERE rate_date=?", otherDay).Scan(&source); err != nil || source != item.Source {
+		t.Fatal(source, err)
 	}
 }
 

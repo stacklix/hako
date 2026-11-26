@@ -875,7 +875,7 @@ final class InvestmentStore: ObservableObject {
             else { missing.insert(currency) }
         }
         if !missing.isEmpty {
-            let fetched = try await provider.ecbRates(for: missing, start: InvestmentBook.addDays(-14, to: today), end: today)
+            let fetched = try await provider.referenceRates(for: missing, start: InvestmentBook.addDays(-14, to: today), end: today, keys: keys())
             for currency in missing {
                 guard let quote = fetched[currency]?.last else { throw InvestmentError.invalid("暂未取得估值所需汇率，请稍后重试保存。") }
                 rates[currency] = [quote]
@@ -1346,10 +1346,10 @@ final class InvestmentStore: ObservableObject {
                         for window in InvestmentHistoryRange.forexQuoteWindows(for: missing) {
                             try checkRefresh()
                             do {
-                                let values = try await HakoExecutionDiagnostics.measure("读取汇率 · 欧洲央行 · " + currency.rawValue + "/CNY",
+                                let values = try await HakoExecutionDiagnostics.measure("读取汇率 · Tushare Pro · " + currency.rawValue + "/CNY",
                                     success: InvestmentQuoteProvider.quoteSummary) {
                                     try await MarketAPIRequestContext.$reason.withValue("历史汇率补数") {
-                                        try await provider.ecbRates(for: [currency], start: window.lowerBound, end: window.upperBound)[currency] ?? []
+                                        try await provider.referenceRates(for: [currency], start: window.lowerBound, end: window.upperBound, keys: keys)[currency] ?? []
                                     }
                                 }
                                 try checkRefresh()

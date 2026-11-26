@@ -258,13 +258,28 @@ class MarketTests(unittest.TestCase):
             sync.Providers(http, 'key').fetch(target(symbol='BTC', currency='USD', exchange=''))
         self.assertFalse(http.calls)
 
-    def test_ecb_cross_rates_and_publication_time(self):
-        text = 'CURRENCY,TIME_PERIOD,OBS_VALUE\nCNY,2025-01-02,7.6\nUSD,2025-01-02,1.0\n'
-        http = FakeHTTP([text])
-        t = target(kind='fx', baseCurrency='USD', quoteCurrency='CNY', fromDate='2025-01-02', throughDate='2025-01-02')
-        rows, complete = sync.Providers(http).fetch(t)
-        self.assertEqual(rows[0], {'date': '2025-01-02', 'value': '7.6', 'observedAt': '2025-01-02T15:00:00Z'})
-        self.assertTrue(complete)
+    def test_tushare_reference_rates_units_time_and_source(self):
+        for currency, value, expected in [('USD', '670.96', '6.7096'), ('HKD', '85.582', '0.8558')]:
+            http = FakeHTTP([{'code': 0, 'data': {'fields': ['ts_code', 'mid_rate', 'trade_date'],
+                'items': [['CNY' + currency, value, '20261126']]}}])
+            t = target(kind='fx', baseCurrency=currency, quoteCurrency='CNY', fromDate='2026-11-26', throughDate='2026-11-26')
+            rows, complete = sync.Providers(http, tushare_token='PRIVATE').fetch(t)
+            self.assertEqual(rows, [{'date': '2026-11-26', 'value': expected, 'observedAt': '2026-11-26T01:15:00Z'}])
+            self.assertTrue(complete)
+            self.assertEqual(http.calls[0][2]['body']['api_name'], 'fx_midrate')
+            http = FakeHTTP([{'results': [{'targetId': t['targetId'], 'status': 'updated', 'count': 1}]}])
+            sync.Hako(http, 'https://hako.example.com', 'ak', 'sk').upload(t, rows, complete)
+            self.assertEqual(http.calls[0][2]['body']['items'][0]['source'], 'Tushare Pro')
+
+    def test_tushare_reference_rates_empty_missing_key_and_wrong_currency(self):
+        t = target(kind='fx', baseCurrency='USD', quoteCurrency='CNY', fromDate='2025-01-01', throughDate='2025-01-01')
+        with self.assertRaises(sync.SyncError):
+            sync.Providers(FakeHTTP([])).fetch(t)
+        empty = {'code': 0, 'data': {'fields': ['ts_code', 'mid_rate', 'trade_date'], 'items': []}}
+        self.assertEqual(sync.Providers(FakeHTTP([empty]), tushare_token='key').fetch(t), ([], True))
+        wrong = {'code': 0, 'data': {'fields': ['ts_code', 'mid_rate', 'trade_date'], 'items': [['CNYHKD', 100, '20250101']]}}
+        with self.assertRaises(sync.SyncError):
+            sync.Providers(FakeHTTP([wrong]), tushare_token='key').fetch(t)
 
     def test_check_dry_run_and_partial_failure_never_write_unconfirmed_data(self):
         t = target()

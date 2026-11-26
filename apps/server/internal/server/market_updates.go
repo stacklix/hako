@@ -38,6 +38,7 @@ type marketObservation struct {
 }
 type marketUpdateItem struct {
 	TargetID string              `json:"targetId"`
+	Source   string              `json:"source,omitempty"`
 	Quotes   []marketObservation `json:"quotes"`
 	Complete bool                `json:"complete"`
 }
@@ -238,9 +239,6 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 	result := []marketTarget{}
 	add := func(target marketTarget) {
 		target.Source = source
-		if target.Kind == "fx" {
-			target.Source = "欧洲央行"
-		}
 		target.Expires = now.Add(15 * time.Minute).Unix()
 		if target.Kind != "latest" {
 			cached := coverage[owner+"|"+target.Key+"|"+target.Source]
@@ -417,6 +415,11 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 			results = append(results, result)
 			continue
 		}
+		if target.Kind == "fx" && len(item.Quotes) > 0 && (strings.TrimSpace(item.Source) == "" || strings.TrimSpace(item.Source) != item.Source || len(item.Source) > 160 || strings.ContainsAny(item.Source, "\r\n\t\x00")) {
+			result.Error = "invalid_source"
+			results = append(results, result)
+			continue
+		}
 		if len(item.Quotes) > 1000 || total+len(item.Quotes) > 5000 {
 			result.Error = "too_many_quotes"
 			results = append(results, result)
@@ -443,6 +446,7 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 				row["source"] = "external:" + c.ID
 			}
 			if target.Kind == "fx" {
+				row["source"] = item.Source
 				row["rate_date"] = quote.Date
 				row["base_currency"] = target.BaseCurrency
 				row["quote_currency"] = target.QuoteCurrency

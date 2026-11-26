@@ -1,10 +1,10 @@
 # 青龙：Hako 行情同步
 
-将同目录 `hako_market_sync.py` 上传到青龙「脚本管理」。脚本只依赖 Python 3.10+ 标准库；容器需安装系统时区数据库 `tzdata`，供 ECB 和 Tushare 时间换算使用。不要将密钥写在脚本中。
+将同目录 `hako_market_sync.py` 上传到青龙「脚本管理」。脚本只依赖 Python 3.10+ 标准库；容器需安装系统时区数据库 `tzdata`，供 Tushare 时间换算使用。不要将密钥写在脚本中。
 
 ## 配置
 
-Hako 服务端需要先部署 **0.9.3 或更新的 0.9.x 版本**。在 Hako「第三方应用」登记一个供青龙使用的应用，开启「写入行情与汇率」权限；读取清单开放，不需要读取权限；不需要开启扫码、原生或 OIDC 登录。登记来源填写青龙的实际地址。
+Hako 服务端需要先部署 **0.9.5 或更新的 0.9.x 版本**。在 Hako「第三方应用」登记一个供青龙使用的应用，开启「写入行情与汇率」权限；读取清单开放，不需要读取权限；不需要开启扫码、原生或 OIDC 登录。登记来源填写青龙的实际地址。
 
 标的和行情全局共享后，采集流程保持不变：脚本直接使用清单返回的 `instrumentId` 和 `targetId`，不解析 ID、不生成数据库主键。`STOCK`、`ETF`、`FUND` 等大写类型前缀及统一的 `US` 市场均可直接使用；每轮重新获取目标签名，升级前的旧目标不要手工重用。环境变量、AK/SK 和任务命令无需调整。
 
@@ -15,7 +15,7 @@ Hako 服务端需要先部署 **0.9.3 或更新的 0.9.x 版本**。在 Hako「�
 | `HAKO_URL` | Hako 的 HTTPS 根地址，例如 `https://hako.example.com`；不要填写青龙地址或 `/api/v1` |
 | `HAKO_CLIENT_ID` | Hako 第三方应用 AK，即 `app_...` 应用 ID |
 | `HAKO_CLIENT_SECRET` | 同一 Hako 应用的 SK；这些不是青龙开放平台的 Client ID/Secret |
-| `TUSHARE_TOKEN` | 有 A 股或境内场内 ETF 时填写；历史与实时接口需要对应权限 |
+| `TUSHARE_TOKEN` | 有 A 股、境内场内 ETF 或汇率任务时填写；汇率需要 fx_midrate 权限，历史与实时行情需要对应权限 |
 | `TWELVE_DATA_API_KEY` | 有美股或美股 ETF 时填写；没有美股则可不填 |
 
 Hako 不会将手机中保存的行情商凭据返回给脚本；美股需要在青龙另配有效的 Twelve Data Key 和相应行情权限。
@@ -52,7 +52,7 @@ task hako_market_sync.py
 | 国内期货 | 东方财富；支持 `.SHF`、`.DCE`、`.ZCE`、`.CFX`、`.INE`、`.GFE` 明确交割月份代码 |
 | 美股、美股 ETF | Twelve Data；核对代码、币种、交易所，历史使用未复权日线；最新价使用实际报价时间 |
 | Binance 加密资产 | Binance UTC 日线／现货，按用户确认的 1 USDT≈1 USD 直接估值；USDT 本身固定为 1 |
-| 汇率 | ECB 日参考汇率，通过同日欧元交叉盘计算，不填充未发布日期 |
+| 汇率 | Tushare Pro `fx_midrate` 人民币中间价（美元、港币）；每 100 外币的原值除以 100，按原日期保存，不填充未发布日期 |
 
 当前不采集期权、无法明确识别交易所的代码以及非美元计价的加密资产；遇到这些目标会明确记录失败，其他可采集目标继续执行。美元标的也须有明确美股或 Binance 交易所，不会仅凭币种将未知标的当成美股。东方财富和天天基金沿用 iOS 已有公开接口，接口变动、风控或访问地区限制可能导致失败。Twelve Data 受 Key 套餐权限限制，未配置时只影响美股目标。
 
@@ -71,7 +71,7 @@ A 股与场内 ETF 固定使用 Tushare，不因缺少 Token 或权限而切回�
 
 日志明确标注「查询日期」，单日直接显示日期，多日显示包含首尾的范围。基金净值还会在请求前显示基金代码和净值查询日期，在成功查询后列出数据源实际返回的净值日期（无记录时显示「无」）。查询范围与实际返回日期分别展示；范围内未返回的日期不代表一定应有净值，也不会用其他日期的净值补写。
 
-网络错误和 HTTP 5xx 每次最多请求三次。网络重试日志包含域名、尝试次数、耗时及 DNS／TLS／超时／对端断开等错误类别，不输出原始异常文本或完整 URL。东财同一域名连续三次网络请求失败后暂停该域名 60 秒，其余标的记为「延后」并留待后续执行；天天基金等不同域名继续处理。连接异常不会被标记为已查询或覆盖完成，已有行情保留。HTTP 429 遵守至少 60 秒冷却及更长的数字 Retry-After；同一请求重试使用相同正文和观察时间。业务限额错误会记录失败，不回显可能含密钥的响应正文。Hako 写入按同一标的、日期、类型、来源 upsert，相同数据重试不重复插入。目标 15 分钟有效，过期后停止该目标并留待下一次重新查询。
+网络错误和 HTTP 5xx 每次最多请求三次。网络重试日志包含域名、尝试次数、耗时及 DNS／TLS／超时／对端断开等错误类别，不输出原始异常文本或完整 URL。东财同一域名连续三次网络请求失败后暂停该域名 60 秒，其余标的记为「延后」并留待后续执行；天天基金等不同域名继续处理。连接异常不会被标记为已查询或覆盖完成，已有行情保留。HTTP 429 遵守至少 60 秒冷却及更长的数字 Retry-After；同一请求重试使用相同正文和观察时间。业务限额错误会记录失败，不回显可能含密钥的响应正文。Hako 写入按同一标的、日期、类型、来源 upsert，相同数据重试不重复插入。汇率写入显式提交 `source: "Tushare Pro"`，来源不绑定目标；需先更新支持该字段的服务端，旧接口不能接收新版汇率提交。目标 15 分钟有效，过期后停止该目标并留待下一次重新查询。
 
 Hako 请求与提供商请求分别构造请求头，AK/SK 仅发送到配置的 Hako 地址。禁止重定向转发凭据；默认不使用环境 HTTP 代理。日志不输出完整 URL、请求头、响应正文、签名 targetId 或密钥。`--dry-run` 同样遵守这些规则。
 
@@ -92,6 +92,8 @@ Twelve Data 请求固定至少间隔八秒；Hako 至少间隔 0.6 秒；其他�
 python3 -m unittest discover -s integrations/qinglong/tests -v
 ```
 
-接口协议见 [Hako 外部行情更新](../../docs/market-updates.md)。行情源协议参考 [Binance](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints)、[Twelve Data](https://twelvedata.com/docs/market-data/time-series)、[ECB](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html)。
+接口协议见 [Hako 外部行情更新](../../docs/market-updates.md)。行情源协议参考 [Binance](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints)、[Twelve Data](https://twelvedata.com/docs/market-data/time-series)、[Tushare 人民币汇率中间价](https://tushare.pro/document/2?doc_id=517)。
 
 交易日历读取开放，第三方写入需要独立的「更新交易日历」权限。日历格式、版本冲突和接口用法见[共享交易日历](../../docs/market-calendars.md)。Hako 不会在启动时生成假定的全年日历，首次使用或跨年时需由获准第三方写入完整日历。
+
+汇率使用中国外汇交易中心公布的中间价，不是实时成交价；美元、港币按 100 外币折合人民币报价，脚本先除以 100 再按接口要求四舍五入到四位小数。发布时间按北京时间 09:15，未返回的日期不写入，不将股票交易日当成汇率发布日期；估值继续沿用最近已发布的有效汇率。

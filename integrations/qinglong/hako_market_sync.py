@@ -9,8 +9,6 @@ new Env('Hako 行情同步');
 """
 
 import argparse
-import csv
-import io
 import json
 import os
 import re
@@ -138,7 +136,7 @@ class HTTP:
             raise ProviderDeferred(f'{label} {host} 连接异常，暂停该域名，约 {int(blocked) + 1} 秒后可重试')
         if query:
             url += '?' + urlencode(query)
-        intervals = {'hako': 0.6, 'twelve': 8.0, 'tushare': 1.3, 'eastmoney': 0.4, 'binance': 0.25, 'ecb': 0.4}
+        intervals = {'hako': 0.6, 'twelve': 8.0, 'tushare': 1.3, 'eastmoney': 0.4, 'binance': 0.25}
         payload = None if body is None else encode(body)
         request_headers = {'User-Agent': 'HakoMarketSync/1.0', 'Accept': 'application/json', **(headers or {})}
         if payload is not None:
@@ -464,30 +462,50 @@ class Providers:
         return sorted(rows, key=lambda row: row['date']), True
 
     def fx(self, target):
+        if not self.tushare_token:
+            raise SyncError('汇率需要配置 TUSHARE_TOKEN，并具备 fx_midrate 权限')
         base, quote = target['baseCurrency'], target['quoteCurrency']
-        codes = sorted({base, quote} - {'EUR'})
-        key = ('fx', tuple(codes), target['fromDate'], target['throughDate'])
-        if key not in self.cache:
-            text = self.http.request('ecb', 'https://data-api.ecb.europa.eu/service/data/EXR/D.' + '+'.join(codes) + '.EUR.SP00.A',
-                query={'startPeriod': target['fromDate'], 'endPeriod': target['throughDate'], 'format': 'csvdata', 'detail': 'dataonly'},
-                json_result=False, headers={'Accept': 'text/csv'})
-            reader, values = csv.DictReader(io.StringIO(text)), {}
-            if not {'CURRENCY', 'TIME_PERIOD', 'OBS_VALUE'}.issubset(reader.fieldnames or []):
-                raise SyncError('ECB 汇率响应缺少必要字段')
-            for row in reader:
-                if row['CURRENCY'] in codes and self.within(target, row['TIME_PERIOD']):
-                    values.setdefault(row['TIME_PERIOD'], {'EUR': Decimal(1)})[row['CURRENCY']] = number(row['OBS_VALUE'])
-            self.cache[key] = values
-        rows = []
+        if quote != 'CNY' or base not in ('USD', 'HKD'):
+            raise SyncError('当前汇率采集仅支持美元、港币兑人民币中间价')
+        symbol = 'CNY' + base
+        fields = ['trade_date', 'ts_code', 'mid_rate']
+        payload = self.http.request('tushare', 'https://api.tushare.pro/',
+            body={'api_name': 'fx_midrate', 'token': self.tushare_token,
+                  'params': {'ts_code': symbol, 'start_date': target['fromDate'].replace('-', ''),
+                             'end_date': target['throughDate'].replace('-', '')}, 'fields': ','.join(fields)})
+        if not isinstance(payload, dict) or payload.get('code') != 0:
+            code = payload.get('code') if isinstance(payload, dict) else None
+            if code == 429:
+                self.http.next_request['tushare'] = time.monotonic() + 60
+            raise SyncError('Tushare fx_midrate 业务错误，代码 ' + (str(code) if isinstance(code, int) else 'unknown'))
+        data = payload.get('data')
+        if not isinstance(data, dict) or not isinstance(data.get('fields'), list) or not isinstance(data.get('items'), list):
+            raise SyncError('Tushare 汇率响应缺少字段或记录列表')
+        columns, items = data['fields'], data['items']
+        if not set(fields).issubset(columns) or len(set(columns)) != len(columns) or len(items) >= 3000:
+            raise SyncError('Tushare 汇率字段缺失或结果被截断')
         try:
-            zone = ZoneInfo('Europe/Berlin')
+            zone = ZoneInfo('Asia/Shanghai')
         except ZoneInfoNotFoundError:
-            raise SyncError('缺少时区数据库，请在青龙 Python 依赖中安装 tzdata') from None
-        for day, values in sorted(self.cache[key].items()):
-            if base in values and quote in values:
-                published = day_start(day, zone) + timedelta(hours=16)
-                rows.append(observation(day, values[quote] / values[base], published))
-        return rows, True
+            raise SyncError('缺少时区数据库，请安装 tzdata') from None
+        rows, seen = [], set()
+        for item in items:
+            if not isinstance(item, list) or len(item) != len(columns):
+                raise SyncError('Tushare 汇率记录格式无效')
+            record = dict(zip(columns, item))
+            raw_day = record['trade_date']
+            if record['ts_code'] != symbol or not isinstance(raw_day, str) or not re.fullmatch(r'\d{8}', raw_day):
+                raise SyncError('Tushare 汇率币种或日期不符')
+            day = datetime.strptime(raw_day, '%Y%m%d').date().isoformat()
+            if not self.within(target, day) or day in seen:
+                raise SyncError('Tushare 汇率日期超出范围或重复')
+            seen.add(day)
+            published = day_start(day, zone) + timedelta(hours=9, minutes=15)
+            if published > datetime.now(UTC):
+                raise SyncError('Tushare 汇率发布时间尚未到达')
+            # USD/HKD mid_rate is CNY per 100 foreign units, regardless of CNY-prefixed code.
+            rows.append(observation(day, number(record['mid_rate']) / Decimal(100), published))
+        return sorted(rows, key=lambda row: row['date']), True
 
 
 class Hako:
@@ -532,7 +550,7 @@ class Hako:
         # Split around the actual encoded body size, not just the row count.
         chunks, chunk = [], []
         for row in quotes:
-            trial = {'items': [{'targetId': target['targetId'], 'quotes': chunk + [row], 'complete': False}]}
+            trial = {'items': [{'targetId': target['targetId'], **({'source': 'Tushare Pro'} if target['kind'] == 'fx' else {}), 'quotes': chunk + [row], 'complete': False}]}
             if len(encode(trial)) > BODY_LIMIT:
                 if not chunk:
                     raise SyncError('单条行情或 targetId 过大')
@@ -546,7 +564,7 @@ class Hako:
             if int(target['expiresAt']) <= time.time() + 5:
                 raise SyncError('行情目标已过期，已成功写入的部分保留，下次重新查询')
             # A split upload cannot claim that its last chunk contains the full range.
-            body = {'items': [{'targetId': target['targetId'], 'quotes': chunk, 'complete': bool(complete and len(chunks) == 1)}]}
+            body = {'items': [{'targetId': target['targetId'], **({'source': 'Tushare Pro'} if target['kind'] == 'fx' else {}), 'quotes': chunk, 'complete': bool(complete and len(chunks) == 1)}]}
             if len(encode(body)) > BODY_LIMIT:
                 raise SyncError('请求超过 Hako 正文上限')
             result = self.call('quote-batches', body=body)
@@ -557,7 +575,7 @@ class Hako:
             if item.get('status') not in ('updated', 'unchanged'):
                 # Only known error codes, never arbitrary server text.
                 allowed = {'invalid_or_expired_target', 'instrument_removed', 'invalid_quote_or_precision',
-                           'invalid_quote', 'too_many_quotes', 'duplicate_quote'}
+                           'invalid_quote', 'too_many_quotes', 'duplicate_quote', 'invalid_source'}
                 code = item.get('error')
                 raise SyncError('Hako 拒绝行情：' + (code if code in allowed else 'unknown_error'))
             written += int(item.get('count', 0))
