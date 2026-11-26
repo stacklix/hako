@@ -612,7 +612,8 @@ internal sealed partial class CodeWorkshop : IAsyncDisposable
     {
         await stopping.CancelAsync();
         Task[] running;
-        lock (gate) running = jobs.Values.Select(job => job.Worker).OfType<Task>().ToArray();
+        lock (gate) running = jobs.Values.Select(job => job.Worker)
+            .Concat(subagentTasks.Values.Select(index => index.Worker)).OfType<Task>().ToArray();
         await Task.WhenAll(running);
         await metadataGate.WaitAsync();
         try { if (metadata is not null) await metadata.DisposeAsync(); metadata = null; }

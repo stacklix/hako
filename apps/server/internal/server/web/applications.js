@@ -26,13 +26,13 @@ async function refreshApplications() {
       title.append(node('span', app.enabled ? '已启用' : '已停用', 'badge' + (app.enabled ? ' online' : '')));
       info.append(title, node('p', '应用 ID：' + app.id, 'device-meta'), node('p', app.origin, 'device-meta'), node('p', '创建时间：' + date(app.createdAt), 'device-meta'));
       const buttons = node('div', undefined, 'device-actions');
-      const configuration = 'Issuer: ' + result.issuer + '\nClient ID: ' + app.id + '\nQR Login: ' + app.qrEnabled + '\nNative Authorization: ' + app.nativeEnabled + '\nMarket Read: ' + app.marketReadEnabled + '\nMarket Write: ' + app.marketWriteEnabled + '\n' + (app.oidc ? 'OIDC: ' + app.oidc.enabled + '\nRedirect URIs: ' + app.oidc.redirectURIs.join(', ') + '\nScopes: ' + app.oidc.scopes.join(' ') + '\nAuth: ' + app.oidc.authMethod : 'OIDC 未配置');
+      const configuration = 'Issuer: ' + result.issuer + '\nClient ID: ' + app.id + '\nQR Login: ' + app.qrEnabled + '\nNative Authorization: ' + app.nativeEnabled + '\nCalendar Write: ' + app.calendarWriteEnabled + '\nMarket Write: ' + app.marketWriteEnabled + '\n' + (app.oidc ? 'OIDC: ' + app.oidc.enabled + '\nRedirect URIs: ' + app.oidc.redirectURIs.join(', ') + '\nScopes: ' + app.oidc.scopes.join(' ') + '\nAuth: ' + app.oidc.authMethod : 'OIDC 未配置');
       info.append(node('pre', configuration, 'device-meta'));
       buttons.append(action('复制接入信息', async () => { await navigator.clipboard.writeText(configuration); notice('接入信息已复制。', true); }), action('配置应用权限', () => {
         editingApplication = app.id; $('application-dialog-title').textContent = '配置应用权限';
         $('application-name').value = app.name; $('application-origin').value = app.origin;
         $('application-name').disabled = true; $('application-origin').disabled = true;
-        $('application-qr').checked = app.qrEnabled; $('application-native').checked = app.nativeEnabled; $('application-market-read').checked = app.marketReadEnabled; $('application-market-write').checked = app.marketWriteEnabled;
+        $('application-qr').checked = app.qrEnabled; $('application-native').checked = app.nativeEnabled; $('application-calendar-write').checked = app.calendarWriteEnabled; $('application-market-write').checked = app.marketWriteEnabled;
         $('application-oidc').checked = !!app.oidc?.enabled;
         $('application-redirects').value = app.oidc?.redirectURIs.join('\n') || '';
         $('application-profile').checked = app.oidc?.scopes.includes('profile') ?? true;
@@ -71,7 +71,7 @@ $('application-form').addEventListener('submit', async event => {
   button.disabled = true; $('application-error').hidden = true;
   try {
     const oidc = { enabled: $('application-oidc').checked, redirectURIs: $('application-redirects').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean), scopes: $('application-profile').checked ? ['openid','profile'] : ['openid'], requirePKCE: $('application-pkce').checked, authMethod: $('application-auth').value };
-    const methods = { qrEnabled: $('application-qr').checked, nativeEnabled: $('application-native').checked, marketReadEnabled: $('application-market-read').checked, marketWriteEnabled: $('application-market-write').checked, ...((oidc.enabled || oidc.redirectURIs.length) ? { oidc } : {}) };
+    const methods = { qrEnabled: $('application-qr').checked, nativeEnabled: $('application-native').checked, calendarWriteEnabled: $('application-calendar-write').checked, marketWriteEnabled: $('application-market-write').checked, ...((oidc.enabled || oidc.redirectURIs.length) ? { oidc } : {}) };
     const result = editingApplication
       ? await api('applications/' + encodeURIComponent(editingApplication), 'PATCH', methods)
       : await api('applications', 'POST', { name: $('application-name').value, origin: $('application-origin').value, ...methods });

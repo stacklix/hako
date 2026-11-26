@@ -108,6 +108,7 @@ internal static class Program
             if (args.Length == 1 && args[0] == "--codex-workshop-fixture") { await CodeWorkshopChecks.RunFixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "--workshop-sidechat-fixture") { await WorkshopSidechatChecks.FixtureAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-sidechats") { await WorkshopSidechatChecks.RunAsync(); return 0; }
+            if (args.Length == 3 && args[0] == "workshop-subagent-tasks-live") { await WorkshopSidechatChecks.ReadLiveTasksAsync(args[1], args[2]); return 0; }
             if (args.Length == 1 && args[0] == "code-workshop") { await CodeWorkshopChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "workshop-files") { await WorkshopProjectFileChecks.RunAsync(); return 0; }
             if (args.Length == 1 && args[0] == "user-files") { await UserFileChecks.RunAsync(); return 0; }

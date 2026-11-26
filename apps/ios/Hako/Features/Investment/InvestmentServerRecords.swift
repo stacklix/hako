@@ -4,6 +4,7 @@ typealias InvestmentServerRow = [String: String]
 typealias InvestmentServerTables = [String: [InvestmentServerRow]]
 
 struct InvestmentServerState: Codable {
+	var calendars: [InvestmentTradingCalendar]? = nil
     var generation: Int64
     var revision: Int64
     var dirtyFrom: String?

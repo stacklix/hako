@@ -14,6 +14,22 @@ import Foundation
         {"agents":[{"id":"a","name":"Darwin","role":"explorer","task":"检查缓存","state":"completed","model":"m","reasoningEffort":"high","updatedAt":1}],"nextCursor":null}
         """.utf8))
         precondition(list.agents.count == 1 && list.agents[0].status == "已完成" && !list.agents[0].active)
+        var pendingTask = list.agents[0]
+        pendingTask = WorkshopSubagent(id: "a", name: "Darwin", role: "", task: "", state: "completed",
+            model: "", reasoningEffort: "", updatedAt: 1, taskState: "loading")
+        precondition(pendingTask.taskDescription == "正在读取任务说明…")
+        pendingTask.taskState = "missing"
+        precondition(pendingTask.taskDescription == "未记录任务说明")
+        pendingTask.taskState = "error"
+        precondition(pendingTask.taskDescription.contains("读取失败"))
+        let first = WorkshopSubagentInstruction(id: "task@0", messageId: "task", kind: "task", text: "检查😀", offset: 0, complete: false, position: 0)
+        let tail = WorkshopSubagentInstruction(id: "task@4", messageId: "task", kind: "task", text: "缓存", offset: 4, complete: true, position: 0)
+        let followup = WorkshopSubagentInstruction(id: "next@0", messageId: "next", kind: "followup", text: "追加验证", offset: 0, complete: true, position: 1)
+        let instructions = WorkshopSubagentTaskPage.messages([followup, tail, first, first])
+        precondition(instructions.count == 2 && instructions[0].text == "检查😀缓存" && instructions[0].complete)
+        precondition(instructions[1].kind == "followup" && instructions[1].text == "追加验证")
+        precondition(WorkshopSubagentTaskPage.messages([tail]).isEmpty, "A missing prefix must not become a complete task")
+        precondition(!WorkshopSubagentTaskPage.messages([first])[0].complete, "Partial task text must remain marked incomplete")
         func child(_ id: String, _ state: String, _ time: Int64) -> WorkshopSubagent {
             WorkshopSubagent(id: id, name: id, role: "", task: "", state: state,
                 model: "", reasoningEffort: "", updatedAt: time)

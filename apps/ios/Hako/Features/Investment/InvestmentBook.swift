@@ -443,6 +443,90 @@ struct InvestmentQuote: Codable, Equatable, Identifiable {
     var id: Date { day }
 }
 
+struct InvestmentTradingCalendar: Codable, Equatable, Sendable {
+    struct Session: Codable, Equatable, Sendable {
+        var open: String
+        var close: String
+    }
+    var market: String
+    var year: Int
+    var tradingDays: String
+    var sessionOverrides: [String: [Session]]
+
+    static func market(for asset: InvestmentAsset) -> String? {
+        guard asset.kind == .stock || asset.kind == .etf else { return nil }
+        if asset.isStockConnect || asset.isHongKongEquity { return "HK" }
+        if asset.usesUSEquityClose { return "US" }
+        if asset.currency == .cny, asset.mainlandSymbol != nil { return "CN_A" }
+        return nil
+    }
+
+    static func formatter(market: String) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: market == "US" ? "America/New_York" : market == "HK" ? "Asia/Hong_Kong" : "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        return formatter
+    }
+
+    func sessions(on date: String) -> [Session]? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let formatter = Self.formatter(market: market)
+        formatter.timeZone = calendar.timeZone
+        guard let day = formatter.date(from: date), calendar.component(.year, from: day) == year,
+              let ordinal = calendar.ordinality(of: .day, in: .year, for: day),
+              let expected = calendar.range(of: .day, in: .year, for: day)?.count,
+              tradingDays.utf8.count == expected, tradingDays.utf8.allSatisfy({ $0 == 48 || $0 == 49 }) else { return nil }
+        if Array(tradingDays.utf8)[ordinal - 1] == 48 { return [] }
+        if let special = sessionOverrides[date] { return special }
+        switch market {
+        case "CN_A": return [.init(open: "09:30", close: "11:30"), .init(open: "13:00", close: "15:00")]
+        case "US": return [.init(open: "09:30", close: "16:00")]
+        case "HK": return [.init(open: "09:30", close: "12:00"), .init(open: "13:00", close: "16:00")]
+        default: return nil
+        }
+    }
+
+    static func sessions(_ calendars: [Self], market: String, date: String) -> [Session]? {
+        calendars.first { $0.market == market && String($0.year) == String(date.prefix(4)) }?.sessions(on: date)
+    }
+
+    static func instant(market: String, date: String, time: String) -> Date? {
+        let formatter = formatter(market: market)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: date + " " + time)
+    }
+
+    static func lastClosed(_ calendars: [Self], market: String, now: Date) -> Date? {
+        let formatter = formatter(market: market)
+        guard var day = formatter.date(from: formatter.string(from: now)) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = formatter.timeZone
+        for _ in 0..<367 {
+            let date = formatter.string(from: day)
+            guard let sessions = sessions(calendars, market: market, date: date) else { return nil }
+            if let last = sessions.last, let close = instant(market: market, date: date, time: last.close), close <= now {
+                return InvestmentBook.snapshotDateFormatter().date(from: date)
+            }
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { return nil }
+            day = previous
+        }
+        return nil
+    }
+
+    static func isOpen(_ calendars: [Self], market: String, now: Date) -> Bool {
+        let date = formatter(market: market).string(from: now)
+        return (sessions(calendars, market: market, date: date) ?? []).contains { session in
+            guard let open = instant(market: market, date: date, time: session.open),
+                  let close = instant(market: market, date: date, time: session.close) else { return false }
+            return open <= now && now < close
+        }
+    }
+}
+
 enum InvestmentEventKind: String, Codable {
     case deposit = "转入", withdrawal = "提取", adjustment = "余额调整"
     case opening = "首次录入", buy = "买入", sell = "卖出"

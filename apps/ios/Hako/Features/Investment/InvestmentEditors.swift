@@ -1333,7 +1333,7 @@ struct InvestmentQuoteEditor: View {
                 LabeledContent("日期与来源", value: InvestmentText.quoteDetail(quote))
             }
 
-            if editorDraft == nil && (hasPublicQuote || asset.usesEastmoneyMarketData || (store.configured && !asset.kind.isManual)) {
+            if editorDraft == nil && (hasPublicQuote || asset.usesTushareEquityData || asset.usesEastmoneyMarketData || (store.configured && !asset.kind.isManual)) {
                 Button(store.refreshing ? "正在刷新…" : "刷新行情") {
                     Task { await store.refresh(publicQuotesOnly: hasPublicQuote) }
                 }

@@ -17,8 +17,35 @@ internal static class WorkshopSidechatChecks
     private const string Parent = "11111111-1111-4111-8111-111111111111";
     private const string Child = "33333333-3333-4333-8333-333333333333";
     private const string Agent = "44444444-4444-4444-8444-444444444444";
+    private static readonly string TaskText = new string('测', 4095) + "😀" + new string('任', 6200);
     private static JsonElement Json(object value) => JsonSerializer.SerializeToElement(value, WorkshopProtocol.Json);
     private static void Check(bool value, string message) { if (!value) throw new Exception(message); }
+
+    internal static async Task ReadLiveTasksAsync(string parent, string project)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "hako-subagent-read-" + Guid.NewGuid().ToString("N"));
+        var applicationId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(project).ToUpperInvariant())))[..16].ToLowerInvariant();
+        try {
+            await using var service = new CodeWorkshop(directory, Path.GetDirectoryName(Path.GetFullPath(project)), "C:/Users/xliqi/.codex");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            JsonElement agents;
+            do {
+                var reply = Json((await service.SubagentsAsync(Json(new { threadId = parent, applicationId }), deadline.Token))!);
+                agents = reply.GetProperty("agents");
+                if (agents.EnumerateArray().All(a => a.GetProperty("taskState").GetString() != "loading")) break;
+                await Task.Delay(500, deadline.Token);
+            } while (true);
+            Console.WriteLine(JsonSerializer.Serialize(agents.EnumerateArray().Select(a => new {
+                name = a.GetProperty("name").GetString(), state = a.GetProperty("taskState").GetString(),
+                taskLength = a.GetProperty("task").GetString()!.Length }), WorkshopProtocol.Json));
+            if (agents.EnumerateArray().Any(a => a.GetProperty("taskState").GetString() == "error")) {
+                var indexes = (System.Collections.IDictionary)typeof(CodeWorkshop).GetField("subagentTasks", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(service)!;
+                var index = indexes[parent]!;
+                Console.WriteLine(index.GetType().GetField("Failure", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(index));
+            }
+            Check(agents.EnumerateArray().All(a => a.GetProperty("taskState").GetString() == "ready"), "A live assignment was not recovered");
+        } finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
 
     internal static async Task RunAsync()
     {
@@ -27,6 +54,13 @@ internal static class WorkshopSidechatChecks
         var project = Path.Combine(code, "fixture");
         var storage = Path.Combine(directory, "state");
         Directory.CreateDirectory(Path.Combine(project, ".git"));
+        Directory.CreateDirectory(Path.Combine(directory, "sessions"));
+        var taskFile = Path.Combine(directory, "sessions", "parent.jsonl");
+        string RecordedCall(string id, string name, string message) => Json(new { type = "response_item", payload = new {
+            type = "function_call", call_id = id, name, arguments = Json(new { message }).GetRawText() } }).GetRawText() + "\n";
+        File.WriteAllText(taskFile, Json(new { type = "session_meta", payload = new { id = Parent } }).GetRawText() + "\n"
+            + Json(new { type = "compacted", payload = new { text = new string('x', 150000) } }).GetRawText() + "\n"
+            + RecordedCall("spawn-task", "spawn_agent", TaskText) + RecordedCall("message-task", "send_message", "补充要求"));
         var applicationId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(project.ToUpperInvariant())))[..16].ToLowerInvariant();
         Task<CodexAppServer> Start(CancellationToken token)
         {
@@ -61,6 +95,56 @@ internal static class WorkshopSidechatChecks
                 var agent = agents.GetProperty("agents")[0];
                 Check(agent.GetProperty("name").GetString() == "Darwin" && agent.GetProperty("role").GetString() == "explorer"
                     && agent.GetProperty("model").GetString() == "fixture-model", "Subagent metadata was lost");
+                for (var attempt = 0; attempt < 100 && agent.GetProperty("taskState").GetString() == "loading"; attempt++) {
+                    await Task.Delay(10);
+                    agents = Json((await service.SubagentsAsync(Json(new { threadId = Parent, applicationId }), default))!);
+                    agent = agents.GetProperty("agents")[0];
+                }
+                Check(agent.GetProperty("taskState").GetString() == "ready" && agent.GetProperty("task").GetString() == CodexJson.Clip(TaskText, 160),
+                    "Empty preview hid the real spawn assignment");
+                async Task<Dictionary<string, string>> Tasks() {
+                    var text = new Dictionary<string, string>(); string? cursor = null;
+                    do {
+                        var page = Json((await service.SubagentTaskReadAsync(Json(new { threadId = Parent, applicationId, agentId = Agent, cursor }), default))!);
+                        Check(JsonSerializer.SerializeToUtf8Bytes(page, WorkshopProtocol.Json).Length < 56 * 1024, "Task page exceeds transport budget");
+                        foreach (var chunk in page.GetProperty("entries").EnumerateArray()) {
+                            var message = chunk.GetProperty("messageId").GetString()!;
+                            var part = chunk.GetProperty("text").GetString()!;
+                            text.TryGetValue(message, out var previous); previous ??= "";
+                            Check(chunk.GetProperty("offset").GetInt32() == previous.Length, "Task chunks skipped or repeated text");
+                            Check(part.Length == 0 || (!char.IsLowSurrogate(part[0]) && !char.IsHighSurrogate(part[^1])), "Task chunk split a Unicode scalar");
+                            text[message] = previous + part;
+                        }
+                        cursor = page.GetProperty("nextCursor").GetString();
+                    } while (cursor is not null);
+                    return text;
+                }
+                var assignments = await Tasks();
+                Check(assignments.Count == 3 && assignments["spawn-task"] == TaskText && assignments["followup-task"] == "追加检查" && assignments["message-task"] == "补充要求",
+                    "Assignments lost full text/followups or included inherited/failed calls");
+                var scans = File.ReadAllText(Path.Combine(project, "assignment-reads"));
+                await Tasks();
+                Check(scans == File.ReadAllText(Path.Combine(project, "assignment-reads")), "Unchanged task descriptions were rescanned");
+                var partial = RecordedCall("second-followup", "followup_task", "继续执行同一个子代理");
+                File.AppendAllText(taskFile, partial[..(partial.Length / 2)]);
+                File.WriteAllText(Path.Combine(project, "assignment-updated"), "yes");
+                await service.SubagentsAsync(Json(new { threadId = Parent, applicationId }), default);
+                await Task.Delay(50);
+                Check(!(await Tasks()).ContainsKey("second-followup"), "An incomplete history line became an instruction");
+                File.AppendAllText(taskFile, partial[(partial.Length / 2)..]);
+                for (var attempt = 0; attempt < 100; attempt++) {
+                    await service.SubagentsAsync(Json(new { threadId = Parent, applicationId }), default);
+                    await Task.Delay(10);
+                    assignments = await Tasks();
+                    if (assignments.ContainsKey("second-followup")) break;
+                }
+                Check(assignments.Count == 4 && assignments["spawn-task"] == TaskText && assignments["second-followup"] == "继续执行同一个子代理",
+                    "Reusing a child overwrote its original task or lost the next instruction");
+                Check(!File.Exists(Path.Combine(project, "fork-count")), "Reading tasks resumed or forked an agent");
+                try {
+                    await service.SubagentTaskReadAsync(Json(new { threadId = Parent, applicationId, agentId = Child }), default);
+                    throw new Exception("An unrelated child's assignments were read");
+                } catch (WorkshopException error) when (error.Code == "codex_subagent_invalid") { }
                 var agentHistory = Json((await service.SubagentReadAsync(Json(new { threadId = Parent, applicationId, agentId = Agent }), default))!);
                 Check(agentHistory.GetProperty("threadId").GetString() == Agent, "Subagent history was not read");
                 try {
@@ -135,11 +219,28 @@ internal static class WorkshopSidechatChecks
             var id = CodexJson.Text(p, "threadId");
             var own = File.Exists(Path.Combine(project, "turn")) ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(Path.Combine(project, "turn"))) : default;
             var turnId = own.ValueKind == JsonValueKind.Undefined ? "parent-turn" : CodexJson.Text(own, "clientUserMessageId");
-            object Thread(string threadId) => new { id = threadId, cwd = project, name = "Design", preview = "Discussion", updatedAt = 1000L, recencyAt = 1000L,
+            object Thread(string threadId) => new { id = threadId, cwd = project, name = "Design", preview = threadId == Agent ? "" : "Discussion",
+                path = @"\\?\" + Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(project))!, "sessions", "parent.jsonl"),
+                updatedAt = threadId == Agent && File.Exists(Path.Combine(project, "assignment-updated")) ? 1001L : 1000L, recencyAt = 1000L,
                 parentThreadId = threadId == Agent ? Parent : (string?)null,
                 agentNickname = threadId == Agent ? "Darwin" : null, agentRole = "explorer", model = "fixture-model", reasoningEffort = "high",
                 source = new { subAgent = new { thread_spawn = new { parent_thread_id = Parent, depth = 1 } } },
                 status = new { type = threadId == Parent ? "active" : "idle" } };
+            object AssignmentItems() {
+                var counter = Path.Combine(project, "assignment-reads");
+                File.WriteAllText(counter, (File.Exists(counter) ? int.Parse(File.ReadAllText(counter)) + 1 : 1).ToString());
+                object Item(string key, string tool, string prompt, string sender = Parent, string status = "completed") => new {
+                    turnId = "parent-turn", item = new { id = key, type = "collabAgentToolCall", tool, prompt, senderThreadId = sender,
+                        receiverThreadIds = new[] { Agent }, status } };
+                object Activity(string key, string kind) => new { turnId = "parent-turn", item = new {
+                    id = key, type = "subAgentActivity", kind, agentThreadId = Agent, agentPath = "/root/fixture" } };
+                var items = new List<object> { Item("inherited-task", "spawnAgent", "其他会话的任务", Child),
+                    Item("failed-task", "spawnAgent", "未成功分派", status: "failed"), Activity("spawn-task", "started"),
+                    Item("followup-task", "followupTask", "追加检查"), Activity("message-task", "interacted") };
+                if (File.Exists(Path.Combine(project, "assignment-updated"))) items.Add(Activity("second-followup", "interacted"));
+                if (CodexJson.Text(p, "sortDirection") == "desc") items.Reverse();
+                return items.ToArray();
+            }
             if (method == "thread/list" && CodexJson.Text(p, "parentThreadId").Length > 0)
                 Check(CodexJson.Text(p, "parentThreadId") == Parent && p.GetProperty("limit").GetInt32() == 20 &&
                     p.GetProperty("sourceKinds")[0].GetString() == "subAgentThreadSpawn", "Subagent query scanned unbounded or unrelated sessions");
@@ -160,7 +261,7 @@ internal static class WorkshopSidechatChecks
                 "thread/read" => new { thread = Thread(id) },
                 "thread/list" => new { data = CodexJson.Text(p, "parentThreadId").Length > 0 ? new[] { Thread(Agent), Thread(Child) } : new[] { Thread(Parent), Thread(Child) }, nextCursor = (string?)null },
                 "thread/turns/list" => new { data = new[] { new { id = id == Parent ? "parent-turn" : turnId, status = id == Parent ? "inProgress" : "completed", items = Array.Empty<object>() } }, nextCursor = (string?)null },
-                "thread/items/list" => new { data = id == Parent ? Array.Empty<object>() : own.ValueKind == JsonValueKind.Undefined ? new object[] {
+                "thread/items/list" => new { data = id == Parent ? (object[])AssignmentItems() : own.ValueKind == JsonValueKind.Undefined ? new object[] {
                     new { turnId = "parent-turn", item = new { id = "parent-answer", type = "agentMessage", text = "Parent-only response" } }
                 } : new object[] {
                     new { turnId, item = (object)new { id = "answer", type = "agentMessage", text = "Sidechat answer" } },

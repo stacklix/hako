@@ -80,6 +80,7 @@ internal sealed class WorkshopDispatcher : IAsyncDisposable, IWorkshopDispatcher
             "thread.access.read" => workshop.ThreadAccessAsync,
             "sidechat.list" => workshop.SidechatsAsync,
             "subagent.list" => workshop.SubagentsAsync, "subagent.read" => workshop.SubagentReadAsync,
+            "subagent.task.read" => workshop.SubagentTaskReadAsync,
             "tasks.list" => workshop.TaskProgressAsync,
             "artifact.read" => workshop.ArtifactAsync, "image.read" => workshop.ImageAsync,
             "turn.start" => workshop.StartAsync, "turn.stop" => workshop.StopAsync,

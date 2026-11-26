@@ -131,8 +131,10 @@ struct InvestmentQuoteSymbol {
 struct InvestmentQuoteProvider {
     typealias Transport = (URLRequest, [String]) async throws -> (Data, URLResponse)
     let send: Transport
+    let calendars: [InvestmentTradingCalendar]
 
-    init(send: @escaping Transport = { request, secrets in try await HTTPTransport.data(for: request, secrets: secrets) }) {
+    init(calendars: [InvestmentTradingCalendar] = [], send: @escaping Transport = { request, secrets in try await HTTPTransport.data(for: request, secrets: secrets) }) {
+        self.calendars = calendars
         self.send = { request, secrets in
             guard let sink = HakoExecutionDiagnostics.sink else { return try await send(request, secrets) }
             // Keep headers, query values and bodies out of shortcut history.
@@ -430,6 +432,19 @@ struct InvestmentQuoteProvider {
         if asset.kind == .crypto {
             return try await publicSpotUSDQuote(for: asset)
         }
+        if let market = InvestmentTradingCalendar.market(for: asset) {
+            guard let closed = InvestmentTradingCalendar.lastClosed(calendars, market: market, now: now) else {
+                throw InvestmentError.noMarketData("\(market) 交易日历待更新，暂不猜测报价日期。")
+            }
+            if !InvestmentTradingCalendar.isOpen(calendars, market: market, now: now) {
+                let quotes = try await history(asset: asset, start: InvestmentBook.addDays(-14, to: closed), through: closed, cached: nil, keys: keys, now: now)
+                guard let latest = quotes.last else { throw InvestmentError.noMarketData("最近交易日尚无已发布报价。") }
+                return latest
+            }
+        }
+        if asset.usesTushareEquityData {
+            return try await tushareLatest(asset: asset, key: Self.tushareEquityKey(keys), now: now)
+        }
         if asset.usesEastmoneyMarketData {
             let values = try await eastmoneyHistory(asset: asset, start: InvestmentBook.addDays(-30, to: today),
                                                     through: asset.usesPublishedFundNAV ? min(today, asset.lastClosedMarketDay(at: now)) : today, latestOnly: true)
@@ -493,7 +508,20 @@ struct InvestmentQuoteProvider {
         if asset.kind == .crypto {
             return try await cryptoPriceHistory(code: asset.code, from: start, through: today, now: now)
         }
+        var today = today
+        if let market = InvestmentTradingCalendar.market(for: asset) {
+            guard let closed = InvestmentTradingCalendar.lastClosed(calendars, market: market, now: now) else {
+                throw InvestmentError.noMarketData("\(market) 交易日历待更新，暂不查询未知交易日。")
+            }
+            today = min(today, closed)
+            guard start <= today else { throw InvestmentError.noMarketData("该区间尚无已结束的交易日。") }
+        }
         let symbol = InvestmentQuoteSymbol(asset)
+        if asset.usesTushareEquityData {
+            guard let api = symbol.tushareAPI, let code = symbol.tushareSymbol else { throw InvestmentError.invalid("Tushare 标的代码或交易所无效。") }
+            let quotes = try await tushare(api: api, symbol: code, start: start, end: today, key: Self.tushareEquityKey(keys))
+            return markDailyCloses(quotes, asset: asset, now: now)
+        }
         if asset.usesUSEquityClose {
             let key = try Self.usEquityKey(keys)
             guard let code = symbol.twelveSymbol else { throw InvestmentError.invalid("美股标的代码或交易所无效") }
@@ -556,11 +584,24 @@ struct InvestmentQuoteProvider {
         return key
     }
 
+    private static func tushareEquityKey(_ keys: [InvestmentQuoteSource: String]) throws -> String {
+        guard let key = keys[.tushare]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw InvestmentError.invalid("请在投资记账设置中配置 Tushare Pro API Token，以查询 A 股和场内 ETF。")
+        }
+        return key
+    }
+
     private func markDailyCloses(_ quotes: [InvestmentQuote], asset: InvestmentAsset, now: Date) -> [InvestmentQuote] {
         guard asset.kind != .crypto else { return quotes }
         return quotes.map { quote in
             var quote = quote
-            quote.isDailyClose = asset.kind == .fund || asset.marketClose(on: quote.day) <= now
+            if let market = InvestmentTradingCalendar.market(for: asset) {
+                let day = InvestmentBook.snapshotDateFormatter().string(from: quote.day)
+                if let last = InvestmentTradingCalendar.sessions(calendars, market: market, date: day)?.last,
+                   let close = InvestmentTradingCalendar.instant(market: market, date: day, time: last.close) {
+                    quote.isDailyClose = close <= now
+                } else { quote.isDailyClose = false }
+            } else { quote.isDailyClose = asset.kind == .fund || asset.marketClose(on: quote.day) <= now }
             return quote
         }
     }
@@ -712,6 +753,24 @@ struct InvestmentQuoteProvider {
             rows[day] = (InvestmentQuote(day: day, price: price, source: InvestmentQuoteSource.tushare.title), published)
         }
         return try Self.valid(rows.values.map(\.quote), start: start, end: end)
+    }
+
+    private func tushareLatest(asset: InvestmentAsset, key: String, now: Date) async throws -> InvestmentQuote {
+        guard let code = InvestmentQuoteSymbol(asset).tushareSymbol else { throw InvestmentError.invalid("Tushare 标的代码无效。") }
+        let api = asset.kind == .etf ? "rt_etf_k" : "rt_k"
+        let table = try await tushareTable(api: api, params: ["ts_code": code], fields: ["ts_code", "close", "trade_time"], key: key)
+        guard table.items.count == 1, let row = table.items.first,
+              let codeIndex = table.fields.firstIndex(of: "ts_code"), let priceIndex = table.fields.firstIndex(of: "close"),
+              let timeIndex = table.fields.firstIndex(of: "trade_time"), row.count == table.fields.count,
+              row[codeIndex]?.string == code, let price = row[priceIndex]?.decimal, price > 0,
+              let time = row[timeIndex]?.string else { throw InvestmentError.invalid("Tushare 实时报价的代码、价格或时间不完整。") }
+        let formatter = Self.dateFormat("yyyy-MM-dd HH:mm:ss")
+        formatter.isLenient = false
+        guard let observed = formatter.date(from: time), observed <= now.addingTimeInterval(300),
+              InvestmentBook.day(observed) == InvestmentBook.day(now) else {
+            throw InvestmentError.noMarketData("Tushare 尚无当天的实际报价，不将旧报价改为今天。")
+        }
+        return .init(day: InvestmentBook.day(observed), price: price, source: "Tushare Pro", isDailyClose: false)
     }
 
     private func tushareTable(api: String, params: [String: String], fields: [String], key: String) async throws -> TushareResponse.Table {

@@ -150,20 +150,11 @@ private struct ConsoleApplicationDetailView: View {
                 Section("登录方式") {
                     LabeledContent("扫码登录", value: application.qrEnabled ? "已开启" : "未开启")
                     LabeledContent("原生授权", value: application.nativeEnabled ? "已开启" : "未开启")
-                    Button { edit(application) } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("配置应用权限")
-                                Text(application.usesOIDC ? "已启用 · \(application.oidc?.scopes.joined(separator: " ") ?? "")" : "未启用")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary)
-                        }.foregroundStyle(.primary)
-                    }.disabled(client.busy)
+                    LabeledContent("OIDC 登录", value: application.usesOIDC ? "已开启" : "未开启")
                 }
                 Section("行情权限") {
-                    LabeledContent("读取行情更新清单", value: application.marketReadEnabled ? "已开启" : "未开启")
+                    LabeledContent("行情与日历读取", value: "开放")
+                    LabeledContent("更新交易日历", value: application.calendarWriteEnabled ? "已开启" : "未开启")
                     LabeledContent("写入行情与汇率", value: application.marketWriteEnabled ? "已开启" : "未开启")
                 }
                 if let oidc = application.oidc, oidc.enabled {
@@ -200,6 +191,16 @@ private struct ConsoleApplicationDetailView: View {
             }
         }
         .navigationTitle(application?.name ?? "第三方应用").navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let application {
+                    Button { edit(application) } label: { Image(systemName: "slider.horizontal.3") }
+                        .accessibilityLabel("编辑应用配置")
+                        .accessibilityHint("配置登录方式、行情权限及 OIDC 接入")
+                        .disabled(client.busy)
+                }
+            }
+        }
         .alert(confirmation == .rotate ? "轮换 Client Secret？" : "停用应用？", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } })) {
             let action = confirmation
             Button(action == .rotate ? "轮换 Secret" : "停用应用", role: .destructive) {

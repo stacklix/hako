@@ -29,6 +29,7 @@ final class InvestmentStore: ObservableObject {
 
     private let authentication: any AuthenticatedServerAccess
     private let records = InvestmentServerRecords()
+    private var quoteCalendars: [InvestmentTradingCalendar] = []
     private var serverState: InvestmentServerState?
     private var serverContext: String?
     private var loadedScope: String?
@@ -65,7 +66,7 @@ final class InvestmentStore: ObservableObject {
     private var selectedInstruments: [String: InvestmentAsset] = [:]
     var hasLoaded: Bool { loaded }
     var configured: Bool { !configuredSources.isEmpty }
-    var marketQuoteIDs: Set<UUID> { Set(book.assets.values.filter { $0.usesEastmoneyMarketData || $0.usesUSEquityClose }.map(\.id)) }
+    var marketQuoteIDs: Set<UUID> { Set(book.assets.values.filter { $0.usesTushareEquityData || $0.usesEastmoneyMarketData || $0.usesUSEquityClose }.map(\.id)) }
     var canRefresh: Bool { configured || !marketQuoteIDs.isEmpty || !rateCurrencies.isEmpty || !publicQuoteIDs.isEmpty }
     func entryEditorStore(book: InvestmentBook) -> InvestmentStore {
         let preview = InvestmentStore(authentication: authentication)
@@ -73,6 +74,7 @@ final class InvestmentStore: ObservableObject {
         preview.configuredSources = configuredSources
         preview.selectedInstruments = selectedInstruments
         preview.cryptoCatalog = cryptoCatalog
+        preview.quoteCalendars = quoteCalendars
         // No server state/session is installed: an editor cannot write through this store.
         return preview
     }
@@ -99,6 +101,7 @@ final class InvestmentStore: ObservableObject {
         self.serverContext = nil
         loadedScope = nil
         serverState = nil
+        quoteCalendars = []
         lastServerReadSucceeded = false
         loaded = false
         presentation = InvestmentPresentation(book: InvestmentBook())
@@ -132,7 +135,7 @@ final class InvestmentStore: ObservableObject {
                 if scope == dataCacheScope, !authentication.logoutPending,
                    authentication.authenticated || authentication.hasSavedSession {
                     try await publish(cached.book, scope: scope)
-                    serverState = cached.state; loadedScope = scope
+                    serverState = cached.state; quoteCalendars = cached.state.calendars ?? []; loadedScope = scope
                     loaded = true; loadError = nil
                 }
             }
@@ -163,6 +166,7 @@ final class InvestmentStore: ObservableObject {
             serverContext = context
             loadedScope = scope
             serverState = state
+            quoteCalendars = state.calendars ?? []
             loaded = true
             lastServerReadSucceeded = true
             cacheWasCleared = false
@@ -762,7 +766,7 @@ final class InvestmentStore: ObservableObject {
                 guard search.currency == .usd else { return [] }
                 entries = try await loadCryptoCatalog().filter(search.includes)
             } else {
-                entries = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys(),
+                entries = try await InvestmentQuoteProvider(calendars: quoteCalendars).searchInstruments(search, keys: keys(),
                                                                               consolidateUSListings: consolidateUSListings)
             }
             for asset in entries { selectedInstruments[asset.catalogKey] = asset }
@@ -775,7 +779,7 @@ final class InvestmentStore: ObservableObject {
         let local = book.assets.values.filter(search.includes)
         let online: [InvestmentAsset]
         do {
-            online = try await InvestmentQuoteProvider().searchInstruments(search, keys: keys())
+            online = try await InvestmentQuoteProvider(calendars: quoteCalendars).searchInstruments(search, keys: keys())
         } catch {
             try Task.checkCancellation()
             guard !local.isEmpty else { throw error }
@@ -814,7 +818,7 @@ final class InvestmentStore: ObservableObject {
             }
         }
         let quotes = try await MarketAPIRequestContext.$reason.withValue("新增关注报价校验") {
-            try await InvestmentQuoteProvider().watchQuotes(for: target, keys: credentials, through: today)
+            try await InvestmentQuoteProvider(calendars: quoteCalendars).watchQuotes(for: target, keys: credentials, through: today)
         }
         try Task.checkCancellation()
         guard scope == dataCacheScope, credentials == keys() else { throw CancellationError() }
@@ -845,7 +849,7 @@ final class InvestmentStore: ObservableObject {
         guard lastServerReadSucceeded else { throw InvestmentError.invalid("请先恢复服务端连接，再保存新持仓。") }
         var quotes: [InvestmentQuote] = []
         var rates: [InvestmentCurrency: [InvestmentQuote]] = [:]
-        let today = InvestmentBook.day(), provider = InvestmentQuoteProvider()
+        let today = InvestmentBook.day(), provider = InvestmentQuoteProvider(calendars: quoteCalendars)
         if needsQuote {
             let key = "latest|" + target.catalogKey
             if let saved = try await diskCache.marketQuotes(scope: scope, key: key).last(where: { $0.day <= today && $0.price > 0 }) {
@@ -887,7 +891,7 @@ final class InvestmentStore: ObservableObject {
     private func loadCryptoCatalog() async throws -> [InvestmentAsset] {
         if let cached = cryptoCatalog, Date.now.timeIntervalSince(cached.loadedAt) < 900 { return cached.entries }
         if let request = cryptoCatalogRequest { return try await request.value }
-        let request = Task { try await InvestmentQuoteProvider().cryptoCatalog() }
+        let request = Task { try await InvestmentQuoteProvider(calendars: quoteCalendars).cryptoCatalog() }
         cryptoCatalogRequest = request
         defer { cryptoCatalogRequest = nil }
         let entries = try await request.value
@@ -909,7 +913,7 @@ final class InvestmentStore: ObservableObject {
     func prepareSettlementQuote(_ token: InvestmentAsset) async {
         let revision = ledgerRevision
         guard book.quote(token.id)?.day != InvestmentBook.day(),
-              let quote = try? await InvestmentQuoteProvider().publicSpotUSDQuote(for: token),
+              let quote = try? await InvestmentQuoteProvider(calendars: quoteCalendars).publicSpotUSDQuote(for: token),
               !Task.isCancelled, revision == ledgerRevision, book.asset(token.id) != nil,
               book.quote(token.id)?.day != quote.day else { return }
         try? await update { $0.addQuotes([quote], assetID: token.id) }
@@ -1038,7 +1042,7 @@ final class InvestmentStore: ObservableObject {
         await load(force: true)
         guard loaded, scope == dataCacheScope, ledgerRevision == revision else { throw CancellationError() }
         guard lastServerReadSucceeded else { throw InvestmentError.invalid("无法确认服务端历史数据，请恢复连接后重试。") }
-        let provider = InvestmentQuoteProvider()
+        let provider = InvestmentQuoteProvider(calendars: quoteCalendars)
         var result = InvestmentBook.merge(saved, book.quotes[assetID] ?? []).filter {
             $0.isDailyClose == true && $0.source != "手动录入"
         }
@@ -1196,7 +1200,7 @@ final class InvestmentStore: ObservableObject {
             let start = min(yearStart, book.earliest ?? yearStart)
             let ids = snapshotRequests.map { Set($0.assets.keys) }
                 ?? Set(book.watched + book.accounts.flatMap(\.events).compactMap(\.assetID) + book.plans.compactMap(\.assetID))
-            let provider = InvestmentQuoteProvider()
+            let provider = InvestmentQuoteProvider(calendars: quoteCalendars)
             let sourceBook = book
             let diskCache = self.diskCache
             let marketCache = try await HakoExecutionDiagnostics.measure("读取并索引本地行情缓存", success: {
@@ -1223,13 +1227,13 @@ final class InvestmentStore: ObservableObject {
             }
             let reusedCryptoQuotes = cachedCryptoQuotes
             let assets = ids.compactMap({ sourceBook.assets[$0] }).sorted(by: { $0.code < $1.code }).filter { asset in
-                !publicQuotesOnly && (asset.usesEastmoneyMarketData || asset.usesUSEquityClose || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
+                !publicQuotesOnly && (asset.usesTushareEquityData || asset.usesEastmoneyMarketData || asset.usesUSEquityClose || !keys.isEmpty) && !asset.kind.isManual && (!asset.isHongKongEquity || asset.isStockConnect) &&
                     (!snapshotRefresh || asset.kind != .crypto) && reusedCryptoQuotes[asset.id] == nil
             }
             let assetRequests = snapshotRequests?.assets
             @MainActor @Sendable func readAssets() async throws -> [(UUID, [InvestmentQuote], [String])] {
                 return try await InvestmentQuoteBatch.map(assets, channel: {
-                    $0.usesEastmoneyMarketData ? "eastmoney" : "twelveData"
+                    $0.usesTushareEquityData ? "tushare" : ($0.usesEastmoneyMarketData ? "eastmoney" : "twelveData")
                 }) { asset in
                     try checkRefresh()
                     var quotes: [InvestmentQuote] = []

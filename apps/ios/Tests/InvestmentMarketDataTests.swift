@@ -30,6 +30,7 @@ struct InvestmentMarketDataTests {
         try await publishedFundNAVUsesPublishedDatesAndNormalPendingResults()
         try await twelveUSCloseTimesAndWatchFreshness()
         try await localMarketsBecomeFinalAtClose()
+        try await sharedTradingCalendarSkipsUnopenedAndHolidayQuotes()
         try await eastmoneyFailuresAndRetryAreExplicit()
         try await cryptocurrencyUsesBinanceWithoutCredentials()
         try await binanceSpotCatalogFindsTRX()
@@ -123,7 +124,7 @@ struct InvestmentMarketDataTests {
 
     static func credentialTestsUseAuthenticatedEndpoints() async throws {
         var requests = 0
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             requests += 1
             precondition(secrets == ["fixture"])
             if request.url?.host == "api.tushare.pro" {
@@ -167,14 +168,14 @@ struct InvestmentMarketDataTests {
             (.twelveData, #"{"status":"ok"}"#)
         ]
         for (source, payload) in responses {
-            let provider = InvestmentQuoteProvider { request, _ in response(request, payload) }
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in response(request, payload) }
             do {
                 try await provider.testCredential("fixture", for: source)
                 preconditionFailure("A failed or incomplete response must not pass the connection test")
             } catch InvestmentError.invalid {}
         }
         var rejectedRequests = 0
-        let unauthorized = InvestmentQuoteProvider { request, _ in
+        let unauthorized = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             rejectedRequests += 1
             return (Data(#"{"status":"error","code":401,"message":"Invalid apikey"}"#.utf8),
                     HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!)
@@ -184,7 +185,7 @@ struct InvestmentMarketDataTests {
             preconditionFailure("A real HTTP 401 must still reject the credential")
         } catch InvestmentError.invalid {}
         precondition(rejectedRequests == 1, "Do not retry authentication or treat a rejected key as valid")
-        let offline = InvestmentQuoteProvider { _, _ in throw URLError(.notConnectedToInternet) }
+        let offline = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in throw URLError(.notConnectedToInternet) }
         do {
             try await offline.testCredential("fixture", for: .twelveData)
             preconditionFailure("Network failure must not pass the connection test")
@@ -196,7 +197,7 @@ struct InvestmentMarketDataTests {
         for reason in reasons {
             var requests = 0
             let payload = try JSONSerialization.data(withJSONObject: ["code": 40203, "msg": reason])
-            let provider = InvestmentQuoteProvider { request, _ in
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 requests += 1
                 return (payload, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             }
@@ -235,7 +236,7 @@ struct InvestmentMarketDataTests {
     }
 
     static func cryptocurrencyUsesBinanceWithoutCredentials() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(secrets.isEmpty && request.value(forHTTPHeaderField: "Authorization") == nil)
             precondition(request.url?.host == "data-api.binance.vision" || request.url?.host == "www.binance.com")
             if request.url?.path == "/api/v3/exchangeInfo" {
@@ -263,7 +264,7 @@ struct InvestmentMarketDataTests {
             {"baseAsset":"OLD","quoteAsset":"USDT","status":"BREAK","isSpotTradingAllowed":true},
             {"baseAsset":"OTHER","quoteAsset":"USDT","status":"TRADING","isSpotTradingAllowed":false}]}
             """#
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(secrets.isEmpty && request.value(forHTTPHeaderField: "Authorization") == nil)
             if request.url?.host == "www.binance.com" {
                 return response(request, #"{"data":[{"assetCode":"TRX","assetName":"TRON"}]}"#)
@@ -280,7 +281,7 @@ struct InvestmentMarketDataTests {
         let byName = InvestmentInstrumentSearch(query: "tron", kind: .crypto, currency: .usd)
         precondition(spot.filter(byName.includes).map(\.code) == ["TRX"])
 
-        let codeOnly = InvestmentQuoteProvider { request, _ in
+        let codeOnly = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             if request.url?.host == "www.binance.com" { throw URLError(.timedOut) }
             return response(request, pairs)
         }
@@ -290,7 +291,7 @@ struct InvestmentMarketDataTests {
 
     static func publicSpotPricesUseUSDTParity() async throws {
         var calls = 0
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             calls += 1
             precondition(secrets.isEmpty)
             if request.url?.path == "/api/v3/klines" { return response(request, "[]") }
@@ -307,7 +308,7 @@ struct InvestmentMarketDataTests {
         precondition(latest.price == quote.price)
         let watched = try await provider.watchQuotes(for: trx, keys: [:])
         precondition(watched.last?.price == quote.price && watched.last?.source == quote.source)
-        let failing = InvestmentQuoteProvider { _, _ in throw URLError(.cannotConnectToHost) }
+        let failing = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in throw URLError(.cannotConnectToHost) }
         do { _ = try await failing.publicSpotUSDQuote(for: trx); preconditionFailure("Binance failure was swallowed") }
         catch { precondition((error as? URLError)?.code == .cannotConnectToHost) }
     }
@@ -316,7 +317,7 @@ struct InvestmentMarketDataTests {
         let first = day(29), next = day(30)
         let start = Int64(first.timeIntervalSince1970)
         let end = Int64(next.timeIntervalSince1970)
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(secrets.isEmpty)
             let url = request.url!
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
@@ -335,7 +336,7 @@ struct InvestmentMarketDataTests {
     static func cryptoChartHistoryUsesPublicDailyCloses() async throws {
         let first = day(29), next = day(30)
         let start = Int64(first.timeIntervalSince1970), end = Int64(next.timeIntervalSince1970)
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(secrets.isEmpty)
             switch request.url!.path {
             case "/api/v3/klines":
@@ -356,7 +357,7 @@ struct InvestmentMarketDataTests {
     static func cryptoChartHistoryPreservesBinanceFailures() async throws {
         let first = day(29)
         var calls = 0
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             calls += 1
             precondition(secrets.isEmpty && request.url?.host == "data-api.binance.vision")
             throw URLError(.cannotConnectToHost)
@@ -366,7 +367,7 @@ struct InvestmentMarketDataTests {
             preconditionFailure("Binance errors must be reported without another provider")
         } catch { precondition((error as? URLError)?.code == .cannotConnectToHost) }
         precondition(calls == 1)
-        let empty = InvestmentQuoteProvider { request, _ in response(request, "[]") }
+        let empty = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in response(request, "[]") }
         do {
             _ = try await empty.cryptoPriceHistory(code: "BTC", from: first, through: first)
             preconditionFailure("Missing prices must report a query failure")
@@ -392,7 +393,7 @@ extension InvestmentMarketDataTests {
         var events: [HakoExecutionEvent] = []
         var calls = 0
         let credential = "fixture-secret-quote"
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             calls += 1
             switch request.url!.path {
             case "/timeout": throw URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: credential])
@@ -441,7 +442,7 @@ extension InvestmentMarketDataTests {
     @MainActor static func paginatedQuoteProgress() async throws {
         var events: [HakoExecutionEvent] = []
         var calls = 0
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             calls += 1
             // A previous page must report completion before the next one starts.
             precondition(events.filter { $0.stage.hasPrefix("行情请求 ") && $0.state == .succeeded }.count == calls - 1)

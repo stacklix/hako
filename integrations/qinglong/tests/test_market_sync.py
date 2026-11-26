@@ -38,6 +38,49 @@ class FakeHTTP:
 
 
 class MarketTests(unittest.TestCase):
+    def test_tushare_routes_stock_and_etf_without_eastmoney(self):
+        for kind, symbol, api in [('stock', '600000.SH', 'daily'), ('etf', '159941.SZ', 'fund_daily')]:
+            with self.subTest(kind=kind):
+                http = FakeHTTP([{'code': 0, 'data': {'fields': ['close', 'trade_date', 'ts_code'], 'items': [['2.34565', '20261125', symbol]]}}])
+                t = target(assetType=kind, symbol=symbol, fromDate='2026-11-25', throughDate='2026-11-25')
+                rows, complete = sync.Providers(http, tushare_token='PRIVATE-TOKEN').fetch(t)
+                self.assertTrue(complete)
+                self.assertEqual(rows[0]['value'], '2.3457')
+                self.assertEqual(rows[0]['date'], '2026-11-25')
+                self.assertEqual(rows[0]['observedAt'], '2026-11-25T07:00:00Z')
+                label, url, options = http.calls[0]
+                self.assertEqual((label, url), ('tushare', 'https://api.tushare.pro/'))
+                self.assertEqual(options['body']['api_name'], api)
+                self.assertEqual(options['body']['params']['ts_code'], symbol)
+                self.assertNotIn('Authorization', options.get('headers', {}))
+
+    def test_tushare_denial_and_mismatched_data_do_not_fall_back(self):
+        t = target(assetType='stock', symbol='600000.SH', fromDate='2026-11-25', throughDate='2026-11-25')
+        for response in [
+            {'code': 2002, 'msg': 'PRIVATE-TOKEN'},
+            {'code': 0, 'data': {'fields': ['ts_code', 'trade_date', 'close'], 'items': [['000001.SZ', '20261125', '1']]}},
+            {'code': 0, 'data': {'fields': ['ts_code', 'trade_date', 'close'], 'items': [['600000.SH', '20261126', '1']]}},
+        ]:
+            http = FakeHTTP([response])
+            with self.assertRaises(sync.SyncError) as failure:
+                sync.Providers(http, tushare_token='PRIVATE-TOKEN').fetch(t)
+            self.assertNotIn('PRIVATE-TOKEN', str(failure.exception))
+            self.assertEqual(len(http.calls), 1)
+        http = FakeHTTP([])
+        with self.assertRaisesRegex(sync.SyncError, 'TUSHARE_TOKEN'):
+            sync.Providers(http).fetch(t)
+        self.assertFalse(http.calls)
+
+    def test_tushare_realtime_keeps_actual_date_and_time(self):
+        t = target(assetType='etf', symbol='159941.SZ', kind='latest', fromDate='2026-11-25', throughDate='2026-11-25')
+        http = FakeHTTP([{'code': 0, 'data': {'fields': ['ts_code', 'trade_time', 'close'], 'items': [['159941.SZ', '2026-11-25 13:05:00', '2']]}}])
+        rows, complete = sync.Providers(http, tushare_token='PRIVATE-TOKEN').fetch(t)
+        self.assertFalse(complete)
+        self.assertEqual(rows[0]['observedAt'], '2026-11-25T05:05:00Z')
+        self.assertEqual(http.calls[0][2]['body']['api_name'], 'rt_etf_k')
+        http.responses.append({'code': 0, 'data': {'fields': ['ts_code', 'trade_time', 'close'], 'items': [['159941.SZ', '2026-11-24 15:00:00', '2']]}})
+        self.assertEqual(sync.Providers(http, tushare_token='PRIVATE-TOKEN').fetch(t), ([], False))
+
     def test_global_id_is_opaque_and_upload_uses_new_target_signature(self):
         t = target(instrumentId='ETF:US:QQQM:USD', key='close|ETF:US:QQQM:USD', targetId='new-signed-target')
         http = FakeHTTP([{'targets': [t], 'nextCursor': ''},
@@ -103,9 +146,9 @@ class MarketTests(unittest.TestCase):
         http = FakeHTTP([{'targets': [], 'nextCursor': ''}, {'rc': 0, 'data': {'code': '000001', 'market': 0, 'klines': []}}])
         hako = sync.Hako(http, 'https://hako.example.com/prefix/', 'hako-ak', 'hako-secret')
         list(hako.targets())
-        sync.Providers(http).fetch(target())
+        sync.Providers(http).eastmoney(target())
         self.assertEqual(http.calls[0][1], 'https://hako.example.com/prefix/api/v1/market/update-targets')
-        self.assertEqual(http.calls[0][2]['headers']['Authorization'], 'Bearer hako-secret')
+        self.assertNotIn('Authorization', http.calls[0][2]['headers'])
         self.assertNotIn('Authorization', http.calls[1][2]['headers'])
         for url in ('http://host', 'https://ak:sk@host', 'https://host?key=x', 'https://host/#fragment'):
             with self.assertRaises(sync.SyncError):
@@ -123,10 +166,10 @@ class MarketTests(unittest.TestCase):
     def test_eastmoney_does_not_mark_bad_or_truncated_data_complete(self):
         http = FakeHTTP([{'rc': 0, 'data': {'code': '600000', 'market': 1, 'klines': []}}])
         with self.assertRaises(sync.SyncError):
-            sync.Providers(http).fetch(target())
+            sync.Providers(http).eastmoney(target())
         http.responses.append({'rc': 0, 'data': {'code': '000001', 'market': 0, 'klines': ['bad']}})
         with self.assertRaises(sync.SyncError):
-            sync.Providers(http).fetch(target())
+            sync.Providers(http).eastmoney(target())
 
     def test_delayed_fund_nav_keeps_real_date_and_empty_response_remains_retryable(self):
         t = target(symbol='017302.OF', priceType='nav', fromDate='2026-11-23', throughDate='2026-11-25')

@@ -15,7 +15,7 @@ import (
 )
 
 func TestInvestmentDatabaseRejectsUnsupportedSchemaWithoutChangingRecords(t *testing.T) {
-	for _, version := range []int{2, 3, 4, 5, 6, 7, 8, 10} {
+	for _, version := range []int{2, 3, 4, 5, 6, 7, 8, 9, 11} {
 		t.Run(fmt.Sprintf("schema_%d", version), func(t *testing.T) {
 			testInvestmentDatabaseRejectsSchema(t, version)
 		})
@@ -100,7 +100,7 @@ func TestInvestmentCurrentSchemaReopensWithoutChangingLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema, err := dbschema.Inspect(context.Background(), db)
-	if err != nil || schema.Version != investmentSchemaVersion || len(schema.Tables) != len(investmentTables)+1 {
+	if err != nil || schema.Version != investmentSchemaVersion || len(schema.Tables) != len(investmentTables)+2 {
 		t.Fatalf("initialized schema = %+v (%v)", schema, err)
 	}
 	contents := func() string {

@@ -107,7 +107,7 @@ func TestMarketPermissionsLatestOverwriteAndLedgerIsolation(t *testing.T) {
 	base := setupMarketBook(t, f)
 	c, secret := appTestClient(f, "app_market")
 	path := "/api/v1/market/update-targets"
-	if w := marketCall(f, c, secret, "GET", path, nil); w.Code != 403 {
+	if w := marketCall(f, c, secret, "GET", path, nil); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	c.MarketReadEnabled = true
@@ -185,18 +185,18 @@ func TestMarketPermissionsLatestOverwriteAndLedgerIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal("market feed conflicted with ledger edit", err)
 	}
-	// Another application's key cannot reuse this application's signed targets.
+	// Public targets are usable by any independently authorized writer.
 	other, otherSecret := appTestClient(f, "app_other")
 	other.MarketWriteEnabled = true
 	f.s.store.update(func(st *state) error { st.AuthClients[other.ID] = other; return nil })
 	w = marketCall(f, other, otherSecret, "POST", "/api/v1/market/quote-batches", body)
-	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte("invalid_or_expired_target")) {
-		t.Fatal("cross-application target accepted", w.Code, w.Body.String())
+	if w.Code != 200 || bytes.Contains(w.Body.Bytes(), []byte("invalid_or_expired_target")) {
+		t.Fatal("authorized writer cannot use public target", w.Code, w.Body.String())
 	}
 	c.Enabled = false
 	f.s.store.update(func(st *state) error { st.AuthClients[c.ID] = c; return nil })
-	if w = marketCall(f, c, secret, "GET", path, nil); w.Code != 401 {
-		t.Fatal("disabled application accepted", w.Code)
+	if w = marketCall(f, c, secret, "POST", "/api/v1/market/quote-batches", body); w.Code != 401 {
+		t.Fatal("disabled writer accepted", w.Code)
 	}
 }
 
@@ -204,7 +204,7 @@ func TestManagedApplicationMarketPermissions(t *testing.T) {
 	f := newFixture(t, true)
 	a := loginAdmin(f)
 	created := createManagedApplication(f, a)
-	if created.Application.MarketReadEnabled || created.Application.MarketWriteEnabled {
+	if !created.Application.MarketReadEnabled || created.Application.MarketWriteEnabled {
 		t.Fatal("market permissions must require explicit enablement")
 	}
 	data := a.call("PATCH", "applications/"+created.Application.ID, map[string]bool{"marketReadEnabled": true, "marketWriteEnabled": true}, 200)
@@ -308,7 +308,7 @@ func TestMarketFundNAVUsesPublishedHistoryInsteadOfIntradayLatest(t *testing.T) 
 		for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
 			book.Tables["market_daily_prices"] = append(book.Tables["market_daily_prices"], investmentRow{"instrument_id": target.InstrumentID, "session_date": day.Format(time.DateOnly), "price_type": "nav", "price": "1.2345", "is_final": "1"})
 		}
-		key := "owner|" + target.Key + "|external:collector"
+		key := "owner|" + target.Key + "|external"
 		if err := f.s.store.update(func(st *state) error {
 			if st.MarketCoverage == nil {
 				st.MarketCoverage = map[string]marketCoverage{}

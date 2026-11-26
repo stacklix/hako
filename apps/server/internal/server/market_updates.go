@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -24,6 +25,7 @@ type marketTarget struct {
 	BaseCurrency  string `json:"baseCurrency,omitempty"`
 	QuoteCurrency string `json:"quoteCurrency,omitempty"`
 	PriceType     string `json:"priceType,omitempty"`
+	AssetType     string `json:"assetType,omitempty"`
 	Source        string `json:"source"`
 	From          string `json:"fromDate"`
 	Through       string `json:"throughDate"`
@@ -57,7 +59,7 @@ func (s *Server) marketClient(w http.ResponseWriter, r *http.Request, write bool
 	if !ok {
 		return c, false
 	}
-	if (write && !c.MarketWriteEnabled) || (!write && !c.MarketReadEnabled) {
+	if write && !c.MarketWriteEnabled {
 		reject(w, 403, "market_permission_required")
 		return c, false
 	}
@@ -68,11 +70,11 @@ func (s *Server) marketClient(w http.ResponseWriter, r *http.Request, write bool
 	return c, true
 }
 
-func (s *Server) signMarketTarget(c AuthClientConfig, target marketTarget) string {
+func (s *Server) signMarketTarget(_ AuthClientConfig, target marketTarget) string {
 	target.ID = ""
 	data, _ := json.Marshal(target)
 	h := hmac.New(sha256.New, s.config.MasterKey)
-	h.Write([]byte("hako-market/v1\n" + c.ID + "\n" + c.SecretHash + "\n" + c.Revision + "\n"))
+	h.Write([]byte("hako-public-market/v1\n"))
 	h.Write(data)
 	return raw64.EncodeToString(data) + "." + raw64.EncodeToString(h.Sum(nil))
 }
@@ -92,7 +94,7 @@ func (s *Server) parseMarketTarget(c AuthClientConfig, id string, now time.Time)
 func marketLocation(exchange string) *time.Location {
 	name := "Asia/Shanghai"
 	switch strings.ToUpper(exchange) {
-	case "NASDAQ", "NYSE", "XNYS", "XNAS", "AMEX", "US":
+	case "NASDAQ", "NYSE", "XNYS", "XNAS", "AMEX", "US", "XASE", "ARCX", "BATS", "BATY", "EDGA", "EDGX", "XNGS", "XNMS", "XNCM", "XOTC", "OTCM", "IEXG", "MEMX":
 		name = "America/New_York"
 	case "HKEX", "XHKG", "HK":
 		name = "Asia/Hong_Kong"
@@ -121,10 +123,12 @@ func marketLastClose(now time.Time, instrument investmentRow) string {
 }
 
 func (s *Server) marketUpdateTargets(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.marketClient(w, r, false)
-	if !ok {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !s.allow("public-market:"+ip, 120, time.Minute) {
+		reject(w, 429, "rate_limited")
 		return
 	}
+	c := AuthClientConfig{}
 	limit := 100
 	if value := r.URL.Query().Get("limit"); value != "" {
 		n, err := strconv.Atoi(value)
@@ -167,7 +171,7 @@ func (s *Server) marketUpdateTargets(w http.ResponseWriter, r *http.Request) {
 	for i := range filtered {
 		filtered[i].ID = s.signMarketTarget(c, filtered[i])
 	}
-	respond(w, 200, map[string]any{"targets": filtered, "nextCursor": next, "pollAfterSeconds": 60, "maxDecimalPlaces": 4, "revision": state.Revision})
+	respond(w, 200, map[string]any{"targets": filtered, "nextCursor": next, "calendarRequests": missingMarketCalendars(state, now), "pollAfterSeconds": 60, "maxDecimalPlaces": 4, "revision": state.Revision})
 }
 
 func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState investmentState, now time.Time) []marketTarget {
@@ -230,7 +234,7 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 			coverage[key] = value
 		}
 	})
-	source := "external:" + c.ID
+	source := "external"
 	result := []marketTarget{}
 	add := func(target marketTarget) {
 		target.Source = source
@@ -267,7 +271,16 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 				if e != nil {
 					return
 				}
-				if !known[target.From] && (crypto || (day.Weekday() != time.Saturday && day.Weekday() != time.Sunday)) {
+				trading := day.Weekday() != time.Saturday && day.Weekday() != time.Sunday
+				market := calendarMarket(investmentRow{"exchange": target.Exchange, "asset_type": target.AssetType})
+				if market != "" {
+					sessions, knownDay := calendarSessions(bookState.Calendars, market, day)
+					if !knownDay {
+						return
+					}
+					trading = len(sessions) > 0
+				}
+				if !known[target.From] && (crypto || trading) {
 					break
 				}
 				target.From = day.AddDate(0, 0, 1).Format(time.DateOnly)
@@ -298,7 +311,21 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 		if start == "" {
 			continue
 		}
-		target := marketTarget{Key: "close|" + id, Kind: "daily_close", InstrumentID: id, Symbol: instrument["symbol"], Exchange: instrument["exchange"], Currency: instrument["quote_currency"], PriceType: instrument["price_type"], From: start, Through: marketLastClose(now, instrument)}
+		target := marketTarget{Key: "close|" + id, Kind: "daily_close", InstrumentID: id, Symbol: instrument["symbol"], Exchange: instrument["exchange"], Currency: instrument["quote_currency"], PriceType: instrument["price_type"], AssetType: instrument["asset_type"], From: start, Through: marketLastClose(now, instrument)}
+		market := calendarMarket(instrument)
+		latestAvailable := true
+		if market != "" {
+			through, known := calendarLastClose(bookState.Calendars, market, now)
+			if !known {
+				continue
+			}
+			target.Through = through
+			latestAvailable = calendarLatestAvailable(bookState.Calendars, market, now)
+		}
+		if market != "" && target.From > target.Through {
+			// Newly watched assets need their last completed session before today's open.
+			target.From = target.Through
+		}
 		// NAVs have no intraday/latest quote; new holdings also need the latest published NAV.
 		fundNAV := instrument["asset_type"] == "fund" && instrument["price_type"] == "nav" && strings.HasSuffix(instrument["symbol"], ".OF")
 		if fundNAV {
@@ -309,7 +336,7 @@ func (s *Server) marketTargets(c AuthClientConfig, owner string, bookState inves
 			}
 		}
 		add(target)
-		if fundNAV || !active[id] {
+		if fundNAV || !active[id] || !latestAvailable {
 			continue
 		}
 		localDay := now.In(marketLocation(instrument["exchange"])).Format(time.DateOnly)
@@ -412,6 +439,9 @@ func (s *Server) writeMarketQuotes(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			row := investmentRow{"source": target.Source, "is_final": "1"}
+			if target.Kind != "fx" {
+				row["source"] = "external:" + c.ID
+			}
 			if target.Kind == "fx" {
 				row["rate_date"] = quote.Date
 				row["base_currency"] = target.BaseCurrency

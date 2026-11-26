@@ -5,7 +5,7 @@ import FoundationNetworking
 
 extension InvestmentMarketDataTests {
     static func twelveEmptyDatesRemainDistinctFromAPIFailures() async throws {
-        let empty = InvestmentQuoteProvider { request, _ in
+        let empty = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             (Data(#"{"code":400,"message":"No data is available on the specified dates. Try setting different start/end dates.","status":"error","meta":{"symbol":"AAPL","interval":"1day","exchange":""}}"#.utf8),
              HTTPURLResponse(url: request.url!, statusCode: 400, httpVersion: nil, headerFields: nil)!)
         }
@@ -14,7 +14,7 @@ extension InvestmentMarketDataTests {
             preconditionFailure("Explicit no-data response lost")
         } catch InvestmentError.noMarketData(_) { }
         for code in [400, 401, 403, 429, 500] {
-            let failure = InvestmentQuoteProvider { request, _ in
+            let failure = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 response(request, "{\"code\":\(code),\"message\":\"Invalid request\",\"status\":\"error\"}")
             }
             do {
@@ -29,7 +29,7 @@ extension InvestmentMarketDataTests {
         let calendar = InvestmentBook.calendar
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 18))!
         for benchmark in InvestmentBenchmark.allCases {
-            let provider = InvestmentQuoteProvider { request, secrets in
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
                 let query = eastmoneyQuery(request)
                 precondition(secrets.isEmpty && query["secid"] == benchmark.quoteID && query["fqt"] == "0")
                 precondition(request.url?.host == "push2his.eastmoney.com")
@@ -44,7 +44,7 @@ extension InvestmentMarketDataTests {
                              "A US session must be closed before it becomes visible on its Beijing date")
             } else { precondition(values.count == 2 && values.last?.day == InvestmentBook.addDays(-1, to: day)) }
         }
-        let wrong = InvestmentQuoteProvider { request, _ in
+        let wrong = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             try eastmoneyBars(request, code: "510300", market: 1, bars: ["2026-11-17,10,10"])
         }
         do {
@@ -68,7 +68,7 @@ extension InvestmentMarketDataTests {
     }
 
     static func eastmoneyCatalogFindsNamesCodesAndMarkets() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(request.url?.host == "searchapi.eastmoney.com" && secrets.isEmpty)
             precondition(eastmoneyQuery(request)["type"] == "14")
             return try eastmoneySearch(request, [
@@ -95,7 +95,7 @@ extension InvestmentMarketDataTests {
     }
 
     static func twelveUSCatalogSeparatesStocksAndETFs() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             let query = eastmoneyQuery(request)
             precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/symbol_search")
             precondition(query["apikey"] == "fixture" && secrets == ["fixture"])
@@ -129,7 +129,7 @@ extension InvestmentMarketDataTests {
                     consolidate: Bool = true) async throws -> [InvestmentAsset] {
             let body = String(data: try JSONSerialization.data(withJSONObject: ["data": rows]), encoding: .utf8)!
             var requests = 0
-            let provider = InvestmentQuoteProvider { request, _ in
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 requests += 1
                 precondition(request.url?.path == "/symbol_search", "Consolidation must not make extra API requests")
                 return response(request, body)
@@ -185,8 +185,8 @@ extension InvestmentMarketDataTests {
     }
 
     static func latestQuotesDoNotFetchChartHistory() async throws {
-        let now = ISO8601DateFormatter().date(from: "2026-10-31T02:00:00Z")!
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let now = ISO8601DateFormatter().date(from: "2026-10-30T18:00:00Z")!
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             let query = eastmoneyQuery(request)
             precondition(request.url?.path == "/quote" && query["symbol"] == "SPCX")
             precondition(query["mic_code"] == "XNMS" && query["apikey"] == "fixture" && secrets == ["fixture"])
@@ -194,7 +194,7 @@ extension InvestmentMarketDataTests {
             return response(request, #"{"symbol":"SPCX","currency":"USD","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#)
         }
         let quote = try await provider.latestQuote(for: asset("SPCX", .stock, .usd, market: "XNMS"), keys: [.twelveData: "fixture"], now: now)
-        precondition(quote.price == Decimal(string: "137.36") && quote.isDailyClose == true)
+        precondition(quote.price == Decimal(string: "137.36") && quote.isDailyClose == false)
         for payload in [
             #"{"symbol":"OTHER","currency":"USD","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#,
             #"{"symbol":"SPCX","currency":"CNY","mic_code":"XNMS","datetime":"2026-10-30","close":"137.36"}"#,
@@ -202,20 +202,22 @@ extension InvestmentMarketDataTests {
             #"{"symbol":"SPCX","currency":"USD","mic_code":"XNMS","datetime":"2027-10-30","close":"137.36"}"#,
             #"{"code":429,"status":"error"}"#
         ] {
-            let invalid = InvestmentQuoteProvider { request, _ in response(request, payload) }
+            let invalid = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in response(request, payload) }
             do {
                 _ = try await invalid.latestQuote(for: asset("SPCX", .stock, .usd, market: "XNMS"), keys: [.twelveData: "fixture"], now: now)
                 preconditionFailure("Invalid latest quotes must never be saved")
             } catch is InvestmentError { }
         }
-        let etf = InvestmentQuoteProvider { request, _ in
-            precondition(eastmoneyQuery(request)["lmt"] == "1")
-            return try eastmoneyBars(request, code: "159941", market: 0, bars: ["2026-10-30,1,2.3456,3,1,100"])
+        let etf = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            precondition(body["api_name"] as? String == "rt_etf_k")
+            return response(request, #"{"code":0,"data":{"fields":["ts_code","close","trade_time"],"items":[["159941.SZ",2.3456,"2026-10-30 14:00:00"]]}}"#)
         }
-        let etfQuote = try await etf.latestQuote(for: asset("159941.SZ", .etf, .cny), keys: [:], now: now)
-        precondition(etfQuote.price == Decimal(string: "2.3456"))
+        let etfNow = ISO8601DateFormatter().date(from: "2026-10-30T06:00:00Z")!
+        let etfQuote = try await etf.latestQuote(for: asset("159941.SZ", .etf, .cny), keys: [.tushare: "fixture"], now: etfNow)
+        precondition(etfQuote.price == Decimal(string: "2.3456") && etfQuote.isDailyClose == false)
         var calls = 0
-        let fund = InvestmentQuoteProvider { request, _ in
+        let fund = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             calls += 1
             precondition(request.url?.path == "/f10/lsjz" && eastmoneyQuery(request)["pageSize"] == "1")
             return response(request, #"{"ErrCode":0,"TotalCount":100,"PageIndex":1,"Data":{"FundType":"001","LSJZList":[{"FSRQ":"2026-10-30","DWJZ":"1.2345"}]}}"#)
@@ -226,7 +228,7 @@ extension InvestmentMarketDataTests {
     }
 
     static func twelveUSEquitiesRequireKeysAndPreserveErrors() async throws {
-        let unused = InvestmentQuoteProvider { _, _ in preconditionFailure("No other provider may be queried") }
+        let unused = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in preconditionFailure("No other provider may be queried") }
         for keys: [InvestmentQuoteSource: String] in [[:], [.tushare: "fixture"], [.twelveData: "  "]] {
             do {
                 _ = try await unused.searchInstruments(.init(query: "AAPL", kind: .stock, currency: .usd), keys: keys)
@@ -238,7 +240,7 @@ extension InvestmentMarketDataTests {
             } catch { precondition(error.localizedDescription.contains("Twelve Data API Key")) }
         }
         for code in [401, 429] {
-            let rejected = InvestmentQuoteProvider { request, _ in
+            let rejected = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 precondition(request.url?.host == "api.twelvedata.com")
                 return response(request, "{\"status\":\"error\",\"code\":\(code)}")
             }
@@ -252,7 +254,7 @@ extension InvestmentMarketDataTests {
             #"{"symbol":"OTHER","currency":"USD","mic_code":"XNAS"}"#,
             #"{"symbol":"AAPL","currency":"CNY","mic_code":"XNAS"}"#,
             #"{"symbol":"AAPL","currency":"USD","mic_code":"XNYS"}"#] {
-            let wrong = InvestmentQuoteProvider { request, _ in
+            let wrong = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 response(request, "{\"meta\":\(meta),\"values\":[{\"datetime\":\"2026-10-30\",\"close\":\"20\"}]}")
             }
             do {
@@ -265,7 +267,7 @@ extension InvestmentMarketDataTests {
 
     static func twelveNasdaqOperatingMarketIncludesSegments() async throws {
         for mic in ["XNAS", "XNMS", "XNGS", "XNCM"] {
-            let provider = InvestmentQuoteProvider { request, _ in
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 let query = eastmoneyQuery(request)
                 precondition(query["symbol"] == "QQQM" && query["interval"] == "1day")
                 precondition(query["exchange"] == "NASDAQ" && query["mic_code"] == nil)
@@ -276,7 +278,7 @@ extension InvestmentMarketDataTests {
                 start: day(1), through: day(30), cached: nil, keys: [.twelveData: "fixture"])
             precondition(values.count == 1 && values[0].price == 250)
         }
-        let exact = InvestmentQuoteProvider { request, _ in
+        let exact = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             let query = eastmoneyQuery(request)
             precondition(query["mic_code"] == "XNMS" && query["exchange"] == nil)
             return response(request, #"{"meta":{"symbol":"QQQM","currency":"USD","mic_code":"XNGS","type":"ETF"},"values":[{"datetime":"2026-10-30","close":"250"}]}"#)
@@ -287,7 +289,7 @@ extension InvestmentMarketDataTests {
             preconditionFailure("Explicit Nasdaq segments must not be widened to other segments")
         } catch is InvestmentError { }
         for mic in ["XNYS", "IEXG", "XMEX", ""] {
-            let wrong = InvestmentQuoteProvider { request, _ in
+            let wrong = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 response(request, "{\"meta\":{\"symbol\":\"QQQM\",\"currency\":\"USD\",\"mic_code\":\"\(mic)\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"2026-10-30\",\"close\":\"250\"}]}")
             }
             do {
@@ -298,7 +300,7 @@ extension InvestmentMarketDataTests {
         }
         for code in [404, 429] {
             var calls = 0
-            let rejected = InvestmentQuoteProvider { request, _ in
+            let rejected = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
                 calls += 1
                 return response(request, "{\"status\":\"error\",\"code\":\(code)}")
             }
@@ -312,7 +314,7 @@ extension InvestmentMarketDataTests {
     }
 
     static func eastmoneyStockConnectCatalogNormalizesCodes() async throws {
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             if request.url?.host == "push2.eastmoney.com" {
                 let code = eastmoneyQuery(request)["secid"] == "116.00823" ? "00823" : "02800"
                 return response(request, code == "02800"
@@ -338,26 +340,25 @@ extension InvestmentMarketDataTests {
     }
 
     static func eastmoneyHistoryUsesUnadjustedClosesWithoutKeys() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
-            precondition(request.url?.host == "push2his.eastmoney.com" && secrets.isEmpty && request.httpBody == nil)
-            let query = eastmoneyQuery(request)
-            precondition(query["secid"] == "1.600036" && query["klt"] == "101" && query["fqt"] == "0")
-            return try eastmoneyBars(request, code: "600036", market: 1, bars: [
-                "2026-09-30,30,31,32,29,100", "2026-10-29,30,31.50,32,29,100",
-                "2026-10-30,31,32.25,33,30,100", "2026-10-31,1,999,999,1,100",
-                "2026-10-28,1,-,2,1,0"])
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
+            precondition(request.url?.host == "api.tushare.pro" && secrets == ["fixture"])
+            let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+            precondition(body["api_name"] as? String == "daily")
+            let params = body["params"] as! [String: String]
+            precondition(params["ts_code"] == "600036.SH" && params["end_date"] == "20261030")
+            return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["600036.SH","20261029",31.5],["600036.SH","20261030",32.25]]}}"#)
         }
         let rows = try await provider.history(asset: asset("600036.SH", .stock, .cny), start: day(1), through: day(30), cached: nil,
-                                              keys: [.tushare: "must-not-use", .twelveData: "must-not-use"], now: day(31))
+                                              keys: [.tushare: "fixture", .twelveData: "must-not-use"], now: day(31))
         precondition(rows.map(\.price) == [Decimal(string: "31.50")!, Decimal(string: "32.25")!])
-        precondition(rows.allSatisfy { $0.source == "东方财富" && $0.isDailyClose == true })
-        let mismatch = InvestmentQuoteProvider { request, _ in
-            try eastmoneyBars(request, code: "600000", market: 1, bars: ["2026-10-30,1,2,2,1,1"])
+        precondition(rows.allSatisfy { $0.source == "Tushare Pro" && $0.isDailyClose == true })
+        let unused = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in
+            preconditionFailure("Missing Tushare credentials must not invoke Eastmoney")
         }
         do {
-            _ = try await mismatch.history(asset: asset("600036.SH", .stock, .cny), start: day(1), through: day(30), cached: nil, keys: [:])
-            preconditionFailure("Mismatched symbol must not be stored")
-        } catch is InvestmentError { }
+            _ = try await unused.history(asset: asset("600036.SH", .stock, .cny), start: day(1), through: day(30), cached: nil, keys: [:])
+            preconditionFailure("Tushare Token must be required")
+        } catch { precondition(error.localizedDescription.contains("Tushare Pro API Token")) }
     }
 
     static func eastmoneyDerivativeMarketsAndContractFormats() async throws {
@@ -368,7 +369,7 @@ extension InvestmentMarketDataTests {
             ("10012189.SH", .option, "10.10012189"), ("90007769.SZ", .option, "12.90007769"),
             ("EB2612-P-9000.DCE", .option, "140.eb2612p9000"), ("MO2611-P-6000.CFX", .option, "221.MO2611-P-6000")]
         for (code, kind, quoteID) in cases {
-            let provider = InvestmentQuoteProvider { request, secrets in
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
                 let query = eastmoneyQuery(request)
                 precondition(secrets.isEmpty && query["secid"] == quoteID)
                 precondition(query["forcect"] == "1" && query["iscca"] == "1")
@@ -378,7 +379,7 @@ extension InvestmentMarketDataTests {
             let rows = try await provider.history(asset: asset(code, kind, .cny), start: day(1), through: day(30), cached: nil, keys: [:])
             precondition(rows.first?.price == 3007)
         }
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             try eastmoneySearch(request, [["Code": "IF2612", "Name": "沪深2612", "Classify": "CFFEX", "JYS": "CFFEX",
                                           "SecurityTypeName": "期货", "MktNum": "220"]])
         }
@@ -388,7 +389,7 @@ extension InvestmentMarketDataTests {
 
     static func eastmoneyExpiredContractsCanUseTushare() async throws {
         var hosts: [String] = []
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             hosts.append(request.url!.host!)
             if request.url?.host == "push2his.eastmoney.com" { return response(request, #"{"rc":100,"data":null}"#) }
             precondition(request.url?.host == "api.tushare.pro")
@@ -400,7 +401,7 @@ extension InvestmentMarketDataTests {
                                               keys: [.tushare: "fixture"])
         precondition(hosts == ["push2his.eastmoney.com", "api.tushare.pro"])
         precondition(rows.first?.price == 3100 && rows.first?.source == "Tushare Pro")
-        let empty = InvestmentQuoteProvider { request, _ in response(request, #"{"rc":100,"data":null}"#) }
+        let empty = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in response(request, #"{"rc":100,"data":null}"#) }
         do {
             _ = try await empty.history(asset: asset("RB2610.SHF", .future, .cny), start: day(1), through: day(30), cached: nil, keys: [:])
             preconditionFailure("Missing expired data must not become zero prices")
@@ -409,7 +410,7 @@ extension InvestmentMarketDataTests {
 
     static func eastmoneyFundNAVPaginatesAndRejectsMoneyYields() async throws {
         var pages: [String] = []
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(request.url?.host == "api.fund.eastmoney.com" && secrets.isEmpty)
             precondition(request.value(forHTTPHeaderField: "Referer") == "https://fundf10.eastmoney.com/")
             let query = eastmoneyQuery(request)
@@ -423,7 +424,7 @@ extension InvestmentMarketDataTests {
         let rows = try await provider.history(asset: asset("110022.OF", .fund, .cny), start: day(1), through: day(30), cached: nil, keys: [:])
         precondition(pages == ["1", "2"] && rows.count == 3 && rows.last?.price == Decimal(string: "1.42"))
         precondition(rows.allSatisfy { $0.isDailyClose == true && $0.source == "东方财富 · 天天基金" })
-        let money = InvestmentQuoteProvider { request, _ in
+        let money = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             precondition(request.url?.host == "api.fund.eastmoney.com")
             return response(request, #"{"ErrCode":0,"TotalCount":1,"Data":{"FundType":"005","SYType":"每万份收益","LSJZList":[{"FSRQ":"2026-10-30","DWJZ":"0.2150"}]}}"#)
         }
@@ -440,23 +441,23 @@ extension InvestmentMarketDataTests {
         let today = InvestmentBook.day(now), yesterday = InvestmentBook.addDays(-1, to: today)
         let published = InvestmentBook.addDays(-2, to: today)
         let fund = asset("017302.OF", .fund, .cny)
-        let provider = InvestmentQuoteProvider { request, _ in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             precondition(eastmoneyQuery(request)["endDate"] == format.string(from: yesterday),
                          "Before the session closes, never request today's fund NAV")
             return response(request, "{\"ErrCode\":0,\"TotalCount\":1,\"Data\":{\"LSJZList\":[{\"FSRQ\":\"\(format.string(from: published))\",\"DWJZ\":\"1.2345\"}]}}")
         }
         let quote = try await provider.latestQuote(for: fund, keys: [:], now: now)
         precondition(quote.day == published && quote.isDailyClose == true, "QDII's published date must never be relabeled")
-        let empty = InvestmentQuoteProvider { request, _ in
+        let empty = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             response(request, #"{"ErrCode":0,"TotalCount":0,"Data":{"LSJZList":[]}}"#)
         }
         let pending = try await empty.history(asset: fund, start: yesterday, through: today, cached: nil, keys: [:], now: now)
         precondition(pending.isEmpty, "An unpublished NAV is a pending result, not a provider failure")
-        let noRequest = InvestmentQuoteProvider { _, _ in preconditionFailure("A future NAV date must not reach the network") }
+        let noRequest = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in preconditionFailure("A future NAV date must not reach the network") }
         let future = try await noRequest.history(asset: fund, start: today, through: today, cached: nil, keys: [:], now: now)
         precondition(future.isEmpty)
         let evening = now.addingTimeInterval(18*3600)
-        let publishedToday = InvestmentQuoteProvider { request, _ in
+        let publishedToday = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             precondition(eastmoneyQuery(request)["endDate"] == format.string(from: today))
             return response(request, "{\"ErrCode\":0,\"TotalCount\":1,\"Data\":{\"LSJZList\":[{\"FSRQ\":\"\(format.string(from: today))\",\"DWJZ\":\"1.3456\"}]}}")
         }
@@ -471,22 +472,29 @@ extension InvestmentMarketDataTests {
             ("510300.SH", "XSHG", InvestmentCurrency.cny, 1, "510300", 15),
             ("02800.HK", InvestmentAsset.stockConnectMarket, InvestmentCurrency.hkd, 116, "02800", 16)
         ] {
-            let provider = InvestmentQuoteProvider { request, _ in
-                try eastmoneyBars(request, code: code, market: secid, bars: ["2026-10-30,23,24,25,22,1"])
+            let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
+                if request.url?.host == "api.tushare.pro" {
+                    let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                    precondition(body["api_name"] as? String == "fund_daily")
+                    return response(request, #"{"code":0,"data":{"fields":["ts_code","trade_date","close"],"items":[["510300.SH","20261030",24]]}}"#)
+                }
+                return try eastmoneyBars(request, code: code, market: secid, bars: ["2026-10-30,23,24,25,22,1"])
             }
             let close = format.date(from: "2026-10-30T\(hour):00:00+08:00")!
             let target = asset(symbol, .etf, currency, market: market)
-            let before = try await provider.history(asset: target, start: session, through: session,
-                cached: nil, keys: [:], now: close.addingTimeInterval(-1))
+            do {
+                _ = try await provider.history(asset: target, start: session, through: session,
+                    cached: nil, keys: [.tushare: "fixture"], now: close.addingTimeInterval(-1))
+                preconditionFailure("Unclosed daily bars must not be requested as history")
+            } catch InvestmentError.noMarketData(_) { }
             let after = try await provider.history(asset: target, start: session, through: session,
-                cached: nil, keys: [:], now: close)
-            precondition(before.last?.isDailyClose == false && after.last?.isDailyClose == true,
-                         "Same-day local closing quotes must become final without waiting until midnight")
+                cached: nil, keys: [.tushare: "fixture"], now: close)
+            precondition(after.last?.isDailyClose == true)
         }
     }
 
     static func twelveUSCloseTimesAndWatchFreshness() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             let query = eastmoneyQuery(request)
             precondition(request.url?.host == "api.twelvedata.com" && request.url?.path == "/time_series")
             precondition(query["apikey"] == "fixture" && secrets == ["fixture"])
@@ -498,7 +506,7 @@ extension InvestmentMarketDataTests {
             }
             let code = query["symbol"]!
             if code == "VOO" { precondition(query["mic_code"] == "ARCX") }
-            let date = code == "OLD" ? "2026-10-01" : "2026-10-30"
+            let date = code == "OLD" ? "2026-10-01" : (query["end_date"] == "2026-10-29" ? "2026-10-29" : "2026-10-30")
             return response(request, "{\"meta\":{\"symbol\":\"\(code)\",\"currency\":\"USD\",\"mic_code\":\"ARCX\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"\(date)\",\"close\":\"500.20\"}]}")
         }
         let keys: [InvestmentQuoteSource: String] = [.twelveData: "fixture"]
@@ -507,7 +515,7 @@ extension InvestmentMarketDataTests {
         precondition(!symbol.usesEastmoneyMarketData)
         let early = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close.addingTimeInterval(-60))
         let done = try await provider.history(asset: symbol, start: day(1), through: day(30), cached: nil, keys: keys, now: close)
-        precondition(early.last?.isDailyClose == false && done.last?.isDailyClose == true)
+        precondition(early.last?.day == day(29) && early.last?.isDailyClose == true && done.last?.day == day(30) && done.last?.isDailyClose == true)
         precondition(done.last?.source == "Twelve Data" && done.last?.price == Decimal(string: "500.20"))
         let watch = try await provider.watchQuotes(for: symbol, keys: keys, through: day(30))
         precondition(watch.last?.price == Decimal(string: "500.20"))
@@ -515,7 +523,7 @@ extension InvestmentMarketDataTests {
             _ = try await provider.watchQuotes(for: asset("OLD", .etf, .usd), keys: keys, through: day(30))
             preconditionFailure("Stale prices must not pass watch validation")
         } catch is InvestmentError { }
-        let hk = InvestmentQuoteProvider { request, _ in
+        let hk = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             precondition(eastmoneyQuery(request)["secid"] == "116.02800")
             return try eastmoneyBars(request, code: "02800", market: 116, bars: ["2026-10-30,23,24,25,22,1"])
         }
@@ -526,14 +534,14 @@ extension InvestmentMarketDataTests {
 
     static func eastmoneyFailuresAndRetryAreExplicit() async throws {
         var attempts = 0
-        let retry = InvestmentQuoteProvider { request, _ in
+        let retry = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, _ in
             attempts += 1
             if attempts == 1 { throw URLError(.networkConnectionLost) }
             return try eastmoneySearch(request, [])
         }
         let empty = try await retry.searchInstruments(.init(query: "不存在", kind: .fund, currency: .cny), keys: [:])
         precondition(empty.isEmpty && attempts == 2)
-        let offline = InvestmentQuoteProvider { _, _ in throw URLError(.notConnectedToInternet) }
+        let offline = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { _, _ in throw URLError(.notConnectedToInternet) }
         do {
             _ = try await offline.searchInstruments(.init(query: "110022", kind: .fund, currency: .cny), keys: [:])
             preconditionFailure("Network failure must not be reported as no matches")
@@ -541,7 +549,7 @@ extension InvestmentMarketDataTests {
     }
 
     static func referenceRates() async throws {
-        let provider = InvestmentQuoteProvider { request, secrets in
+        let provider = InvestmentQuoteProvider(calendars: sampleTradingCalendars()) { request, secrets in
             precondition(request.url?.host == "data-api.ecb.europa.eu" && secrets.isEmpty)
             return response(request, "CURRENCY,TIME_PERIOD,OBS_VALUE\nCNY,2026-10-30,8.4\nUSD,2026-10-30,1.2\nHKD,2026-10-30,9.6\n")
         }
@@ -549,5 +557,56 @@ extension InvestmentMarketDataTests {
         precondition(rates[.usd]?.first?.price == 7 && rates[.hkd]?.first?.price == Decimal(string: "0.875"))
         precondition(rates.values.flatMap { $0 }.allSatisfy { $0.source == "欧洲央行" && $0.isDailyClose == true },
             "Published ECB observations are final reference rates")
+    }
+}
+
+
+extension InvestmentMarketDataTests {
+    static func sharedTradingCalendarSkipsUnopenedAndHolidayQuotes() async throws {
+        var calendars = sampleTradingCalendars()
+        let index = calendars.firstIndex { $0.market == "US" && $0.year == 2026 }!
+        var days = Array(calendars[index].tradingDays)
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let holiday = utc.date(from: DateComponents(year: 2026, month: 11, day: 26))!
+        days[utc.ordinality(of: .day, in: .year, for: holiday)! - 1] = "0"
+        calendars[index].tradingDays = String(days)
+        calendars[index].sessionOverrides["2026-11-27"] = [.init(open: "09:30", close: "13:00")]
+        for (time, end) in [("2026-11-26T05:00:00Z", "2026-11-25"), ("2026-11-27T14:29:59Z", "2026-11-25"), ("2026-11-27T18:00:00Z", "2026-11-27")] {
+            let now = ISO8601DateFormatter().date(from: time)!
+            let provider = InvestmentQuoteProvider(calendars: calendars) { request, _ in
+                precondition(request.url?.path == "/time_series", "Closed markets must not poll /quote")
+                precondition(eastmoneyQuery(request)["end_date"] == end)
+                return response(request, "{\"meta\":{\"symbol\":\"SPYM\",\"currency\":\"USD\",\"mic_code\":\"ARCX\",\"type\":\"ETF\"},\"values\":[{\"datetime\":\"\(end)\",\"close\":\"100\"}]}")
+            }
+            let quote = try await provider.latestQuote(for: asset("SPYM", .etf, .usd, market: "US"), keys: [.twelveData: "fixture"], now: now)
+            precondition(InvestmentBook.snapshotDateFormatter().string(from: quote.day) == end && quote.isDailyClose == true)
+        }
+        let unknown = InvestmentQuoteProvider { _, _ in preconditionFailure("Unknown calendars must not be guessed") }
+        do {
+            _ = try await unknown.latestQuote(for: asset("SPYM", .etf, .usd, market: "US"), keys: [.twelveData: "fixture"])
+            preconditionFailure("Missing calendar accepted")
+        } catch InvestmentError.noMarketData(_) { }
+        let leap = InvestmentTradingCalendar(market: "CN_A", year: 2028, tradingDays: String(repeating: "1", count: 366), sessionOverrides: [:])
+        precondition(leap.sessions(on: "2028-02-29")?.count == 2)
+        let truncated = InvestmentTradingCalendar(market: "CN_A", year: 2028, tradingDays: String(repeating: "1", count: 365), sessionOverrides: [:])
+        precondition(truncated.sessions(on: "2028-02-29") == nil)
+    }
+
+    static func sampleTradingCalendars() -> [InvestmentTradingCalendar] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return [2025, 2026, 2027].flatMap { year in
+            ["CN_A", "US", "HK"].map { market in
+                let first = calendar.date(from: DateComponents(year: year, month: 1, day: 1))!
+                let count = calendar.range(of: .day, in: .year, for: first)!.count
+                let days = (0..<count).map { offset in
+                    let day = calendar.date(byAdding: .day, value: offset, to: first)!
+                    let weekday = calendar.component(.weekday, from: day)
+                    return weekday == 1 || weekday == 7 ? "0" : "1"
+                }.joined()
+                return InvestmentTradingCalendar(market: market, year: year, tradingDays: days, sessionOverrides: [:])
+            }
+        }
     }
 }

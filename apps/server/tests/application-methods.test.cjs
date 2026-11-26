@@ -44,12 +44,15 @@ test('application creation sends the three independent login choices', async () 
     assert.equal(request.body.qrEnabled, !!(mask & 1));
     assert.equal(request.body.nativeEnabled, !!(mask & 2));
     assert.equal(request.body.oidc?.enabled ?? false, !!(mask & 4));
+    assert.equal(request.body.calendarWriteEnabled, false);
+    assert.equal(request.body.marketWriteEnabled, false);
+    assert.equal('marketReadEnabled' in request.body, false);
   }
 });
 
 test('editing a native-only application does not require or enable OIDC', async () => {
   const application = {id: 'app_cerno', name: 'Cerno', origin: 'https://cerno.example.com', enabled: true,
-    qrEnabled: false, nativeEnabled: true, marketReadEnabled:false, marketWriteEnabled:false, createdAt: ''};
+    qrEnabled: false, nativeEnabled: true, calendarWriteEnabled:false, marketWriteEnabled:false, createdAt: ''};
   const {$, context, calls} = page(application);
   await vm.runInContext('refreshApplications()', context);
   const buttons = $('application-list').children[0].children[1];
@@ -60,5 +63,5 @@ test('editing a native-only application does not require or enable OIDC', async 
   $('application-native').checked = false; $('application-qr').checked = true;
   await $('application-form').events.submit({preventDefault() {}});
   const request = calls.find(call => call.method === 'PATCH');
-  assert.deepEqual(request.body, {qrEnabled: true, nativeEnabled: false, marketReadEnabled: false, marketWriteEnabled: false});
+  assert.deepEqual(request.body, {qrEnabled: true, nativeEnabled: false, calendarWriteEnabled: false, marketWriteEnabled: false});
 });

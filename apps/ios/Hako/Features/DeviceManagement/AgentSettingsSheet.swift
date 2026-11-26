@@ -60,7 +60,7 @@ import SwiftUI
                         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                         .alignmentGuide(.listRowSeparatorTrailing) { $0.width }
                 } header: { Text("已登记设备") } footer: {
-                    Text("点击 Agent 修改名称和公钥。设备管理、HTTP 代理等子应用共用此列表。")
+                    Text("点击 Agent 修改名称、公钥和账本查询权限。设备管理、HTTP 代理等子应用共用此列表。")
                 }
                 if let error { Section { Text(error).font(.footnote).foregroundStyle(.red) } }
             }

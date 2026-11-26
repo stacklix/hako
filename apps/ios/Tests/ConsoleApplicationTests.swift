@@ -26,7 +26,7 @@ import Foundation
         let secret = "test_secret_that_is_not_persisted"
         precondition(!app.configuration(issuer: "https://hako.example.com").contains(secret))
         precondition(app.configuration(issuer: "https://hako.example.com", secret: secret).contains("HAKO_CLIENT_SECRET=" + secret))
-        let data = Data(#"{"applications":[{"id":"app_sample","name":"Example","origin":"https://app.example.com","enabled":false,"qrEnabled":true,"nativeEnabled":false,"marketReadEnabled":false,"marketWriteEnabled":false,"createdAt":"2026-11-04T00:00:00Z"}],"issuer":"https://hako.example.com"}"#.utf8)
+        let data = Data(#"{"applications":[{"id":"app_sample","name":"Example","origin":"https://app.example.com","enabled":false,"qrEnabled":true,"nativeEnabled":false,"calendarWriteEnabled":false,"marketWriteEnabled":false,"createdAt":"2026-11-04T00:00:00Z"}],"issuer":"https://hako.example.com"}"#.utf8)
         let list = try JSONDecoder().decode(ConsoleApplicationList.self, from: data)
         precondition(list.applications.count == 1 && list.applications[0].oidc == nil && list.applications[0].loginMethods == "扫码登录")
         let nativeOnly = ConsoleApplication(id: "app_native", name: "Cerno", origin: "https://cerno.example.com", enabled: true, qrEnabled: false, nativeEnabled: true, createdAt: "", oidc: nil)
@@ -36,9 +36,9 @@ import Foundation
         let nativeUpdate = try nativeDraft.updateBody()
         precondition(nativeUpdate["nativeEnabled"] as? Bool == false && nativeUpdate["qrEnabled"] as? Bool == true && nativeUpdate["oidc"] == nil)
         var marketDraft = ConsoleApplicationDraft(application: nativeOnly)
-        marketDraft.marketReadEnabled = true; marketDraft.marketWriteEnabled = true
+        marketDraft.calendarWriteEnabled = true; marketDraft.marketWriteEnabled = true
         let marketBody = try marketDraft.updateBody()
-        precondition(marketBody["marketReadEnabled"] as? Bool == true && marketBody["marketWriteEnabled"] as? Bool == true)
+        precondition(marketBody["calendarWriteEnabled"] as? Bool == true && marketBody["marketWriteEnabled"] as? Bool == true)
         let defaults = try ConsoleApplicationDraft().updateBody()
         precondition(defaults["qrEnabled"] as? Bool == false && defaults["nativeEnabled"] as? Bool == false && defaults["oidc"] == nil)
         print("PASS: application drafts, explicit OIDC enablement, callback policy, scope, UTF-8 limit, disable preservation and credential isolation")

@@ -73,11 +73,12 @@ var investmentRequired = map[string]string{
 }
 
 type investmentState struct {
-	Generation int64          `json:"generation"`
-	Revision   int64          `json:"revision"`
-	DirtyFrom  *string        `json:"dirtyFrom"`
-	Through    *string        `json:"through"`
-	Tables     investmentRows `json:"tables"`
+	Calendars  []tradingCalendar `json:"calendars"`
+	Generation int64             `json:"generation"`
+	Revision   int64             `json:"revision"`
+	DirtyFrom  *string           `json:"dirtyFrom"`
+	Through    *string           `json:"through"`
+	Tables     investmentRows    `json:"tables"`
 }
 
 type investmentWrite struct {
@@ -175,6 +176,10 @@ func openInvestmentDB(mainPath string) (*sql.DB, error) {
 				ON investment_events(book_id,account_id,effective_date,sequence);
 				CREATE INDEX investment_balance_records_account_day
 				ON investment_balance_records(book_id,balance_account_id,recorded_at);`)
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(marketCalendarsSQL)
 			return err
 		})
 	}
@@ -192,6 +197,8 @@ func (s *Server) investmentRoutes() {
 	s.mux.HandleFunc("POST /api/v1/investment/book/changes", s.changeInvestment)
 	s.mux.HandleFunc("GET /api/v1/market/update-targets", s.marketUpdateTargets)
 	s.mux.HandleFunc("POST /api/v1/market/quote-batches", s.writeMarketQuotes)
+	s.mux.HandleFunc("GET /api/v1/market/calendars", s.readMarketCalendars)
+	s.mux.HandleFunc("PUT /api/v1/market/calendars", s.writeMarketCalendar)
 	s.mux.HandleFunc("GET /api/v1/investment/export", s.exportInvestment)
 }
 
@@ -233,6 +240,11 @@ func (s *Server) readInvestmentBook(w http.ResponseWriter, r *http.Request, owne
 
 func readInvestmentState(ctx context.Context, tx *sql.Tx, owner string, tables []string) (investmentState, error) {
 	state := investmentState{Tables: investmentRows{}}
+	calendars, calendarErr := readTradingCalendars(ctx, tx)
+	if calendarErr != nil {
+		return state, calendarErr
+	}
+	state.Calendars = calendars
 	var bookID string
 	err := tx.QueryRowContext(ctx, "SELECT id,generation,revision,snapshot_dirty_from,snapshot_through FROM investment_books WHERE owner_id=?", owner).
 		Scan(&bookID, &state.Generation, &state.Revision, &state.DirtyFrom, &state.Through)

@@ -138,7 +138,7 @@ class HTTP:
             raise ProviderDeferred(f'{label} {host} 连接异常，暂停该域名，约 {int(blocked) + 1} 秒后可重试')
         if query:
             url += '?' + urlencode(query)
-        intervals = {'hako': 0.6, 'twelve': 8.0, 'eastmoney': 0.4, 'binance': 0.25, 'ecb': 0.4}
+        intervals = {'hako': 0.6, 'twelve': 8.0, 'tushare': 1.3, 'eastmoney': 0.4, 'binance': 0.25, 'ecb': 0.4}
         payload = None if body is None else encode(body)
         request_headers = {'User-Agent': 'HakoMarketSync/1.0', 'Accept': 'application/json', **(headers or {})}
         if payload is not None:
@@ -204,8 +204,8 @@ class HTTP:
 
 
 class Providers:
-    def __init__(self, http, twelve_key=''):
-        self.http, self.twelve_key = http, twelve_key
+    def __init__(self, http, twelve_key='', tushare_token=''):
+        self.http, self.twelve_key, self.tushare_token = http, twelve_key, tushare_token
         self.cache = {}
 
     def fetch(self, target):
@@ -217,6 +217,10 @@ class Providers:
             return self.crypto(target)
         if target.get('priceType') == 'nav' and symbol.endswith('.OF'):
             return self.fund(target)
+        if target.get('currency') == 'CNY' and market not in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK'):
+            base, _, suffix = symbol.partition('.')
+            if re.fullmatch(r'\d{6}', base) and (suffix or market) in ('SH', 'SZ', 'BJ', 'SSE', 'SZSE', 'BSE', 'XSHG', 'XSHE', 'XBSE'):
+                return self.tushare(target)
         if target.get('currency') == 'CNY' or market in ('HK_CONNECT', 'XHKG', 'HKEX', 'HK'):
             return self.eastmoney(target)
         us_markets = {'US', 'NASDAQ', 'NYSE', 'AMEX', 'XNAS', 'XNYS', 'XASE', 'ARCX', 'BATS',
@@ -224,6 +228,72 @@ class Providers:
         if target.get('currency') == 'USD' and market in us_markets:
             return self.twelve(target)
         raise SyncError('该标的尚无匹配的行情源，未写入数据')
+
+    def tushare(self, target):
+        if not self.tushare_token:
+            raise SyncError('A 股和场内 ETF 需要配置 TUSHARE_TOKEN')
+        kind = target.get('assetType')
+        if kind not in ('stock', 'etf'):
+            raise SyncError('Tushare 股票/ETF 任务缺少明确的 assetType，请更新 Hako 服务端')
+        base, _, suffix = target['symbol'].upper().partition('.')
+        aliases = {'XSHG': 'SH', 'SSE': 'SH', 'XSHE': 'SZ', 'SZSE': 'SZ', 'XBSE': 'BJ', 'BSE': 'BJ'}
+        venue = aliases.get(suffix or target.get('exchange', '').upper(), suffix or target.get('exchange', '').upper())
+        if not re.fullmatch(r'\d{6}', base) or venue not in ('SH', 'SZ', 'BJ'):
+            raise SyncError('Tushare 标的代码或交易所无效')
+        symbol = base + '.' + venue
+        latest = target['kind'] == 'latest'
+        api = ('rt_etf_k' if kind == 'etf' else 'rt_k') if latest else ('fund_daily' if kind == 'etf' else 'daily')
+        params = {'ts_code': symbol}
+        if not latest:
+            params.update(start_date=target['fromDate'].replace('-', ''), end_date=target['throughDate'].replace('-', ''))
+        date_field = 'trade_time' if latest else 'trade_date'
+        fields = ['ts_code', date_field, 'close']
+        payload = self.http.request('tushare', 'https://api.tushare.pro/',
+            body={'api_name': api, 'token': self.tushare_token, 'params': params, 'fields': ','.join(fields)})
+        if not isinstance(payload, dict) or payload.get('code') != 0:
+            code = payload.get('code') if isinstance(payload, dict) else None
+            if code == 429:
+                self.http.next_request['tushare'] = time.monotonic() + 60
+            safe_code = str(code) if isinstance(code, int) else 'unknown'
+            raise SyncError(f'Tushare {api} 业务错误，代码 {safe_code}；请检查 Token、积分及该接口权限')
+        data = payload.get('data')
+        if not isinstance(data, dict) or not isinstance(data.get('fields'), list) or not isinstance(data.get('items'), list):
+            raise SyncError('Tushare 响应缺少字段或记录列表')
+        columns, items = data['fields'], data['items']
+        if not set(fields).issubset(columns) or len(set(columns)) != len(columns) or len(items) >= 6000 or (latest and len(items) > 1):
+            raise SyncError('Tushare 响应字段无效或结果被截断')
+        try:
+            zone = ZoneInfo('Asia/Shanghai')
+        except ZoneInfoNotFoundError:
+            raise SyncError('缺少时区数据库，请在青龙 Python 依赖中安装 tzdata') from None
+        rows = []
+        for item in items:
+            if not isinstance(item, list) or len(item) != len(columns):
+                raise SyncError('Tushare 行情记录格式无效')
+            row = dict(zip(columns, item))
+            if row['ts_code'] != symbol:
+                raise SyncError('Tushare 返回了其他标的，未写入数据')
+            if latest:
+                try:
+                    published = datetime.fromisoformat(str(row[date_field]))
+                except ValueError:
+                    raise SyncError('Tushare 实时行情缺少有效的实际报价时间') from None
+                published = published.replace(tzinfo=zone) if published.tzinfo is None else published.astimezone(zone)
+                day = published.date().isoformat()
+                if not self.within(target, day):
+                    continue
+                if published > datetime.now(UTC) + timedelta(minutes=5):
+                    raise SyncError('Tushare 实际报价时间在未来')
+            else:
+                raw = row[date_field]
+                if not isinstance(raw, str) or not re.fullmatch(r'\d{8}', raw):
+                    raise SyncError('Tushare 交易日期无效')
+                day = datetime.strptime(raw, '%Y%m%d').date().isoformat()
+                if not self.within(target, day):
+                    raise SyncError('Tushare 返回了查询范围外的日期')
+                published = day_start(day, zone) + timedelta(hours=15)
+            rows.append(observation(day, row['close'], published))
+        return sorted(rows, key=lambda row: row['date']), not latest
 
     @staticmethod
     def within(target, day):
@@ -426,12 +496,13 @@ class Hako:
         parsed = urlsplit(self.url)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise SyncError('HAKO_URL 必须为不含账号、查询参数的 HTTPS 地址')
-        if not client or not secret or any(c in client + secret for c in '\r\n'):
-            raise SyncError('请配置 HAKO_CLIENT_ID 和 HAKO_CLIENT_SECRET')
+        if any(c in client + secret for c in '\r\n'):
+            raise SyncError('HAKO_CLIENT_ID 或 HAKO_CLIENT_SECRET 格式无效')
         self.headers = {'X-Hako-Client': client, 'Authorization': 'Bearer ' + secret}
 
     def call(self, path, **options):
-        return self.http.request('hako', self.url + '/api/v1/market/' + path, headers=self.headers, **options)
+        headers = self.headers if options.get('body') is not None else {}
+        return self.http.request('hako', self.url + '/api/v1/market/' + path, headers=headers, **options)
 
     def targets(self):
         cursor, seen = '', set()
@@ -440,6 +511,13 @@ class Hako:
             targets = result.get('targets')
             if not isinstance(targets, list):
                 raise SyncError('Hako 未返回行情清单，请确认服务端已部署 0.9.0 或更新版本')
+            if not cursor:
+                missing = result.get('calendarRequests', [])
+                labels = [f"{item['market']} {item['year']} 年" for item in missing
+                          if isinstance(item, dict) and item.get('market') in ('CN_A', 'US', 'HK')
+                          and isinstance(item.get('year'), int) and 1970 <= item['year'] <= 2100]
+                if labels:
+                    log('交易日历待更新：' + '、'.join(labels) + '；未知交易日期不会生成行情任务')
             yield targets
             cursor = result.get('nextCursor')
             if not cursor:
@@ -449,6 +527,8 @@ class Hako:
             seen.add(cursor)
 
     def upload(self, target, quotes, complete):
+        if not self.headers['X-Hako-Client'] or self.headers['Authorization'] == 'Bearer ':
+            raise SyncError('写入行情需要配置 HAKO_CLIENT_ID 和 HAKO_CLIENT_SECRET，并开启写入权限')
         # Split around the actual encoded body size, not just the row count.
         chunks, chunk = [], []
         for row in quotes:
@@ -585,7 +665,7 @@ def main():
         rounds = bounded_env('HAKO_MARKET_MAX_ROUNDS', 10, 1, 100)
         http = HTTP(time.monotonic() + budget, timeout)
         hako = Hako(http, url, client, secret)
-        providers = Providers(http, os.getenv('TWELVE_DATA_API_KEY', '').strip())
+        providers = Providers(http, os.getenv('TWELVE_DATA_API_KEY', '').strip(), os.getenv('TUSHARE_TOKEN', '').strip())
         with single_instance(hako.url + '|' + client):
             return run(hako, providers, check=args.check, dry_run=args.dry_run, rounds=rounds)
     except SyncError as error:

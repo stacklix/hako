@@ -9,6 +9,18 @@ struct WorkshopSubagent: Decodable, Identifiable {
     let model: String
     let reasoningEffort: String
     let updatedAt: Int64
+    var taskState: String? = nil
+    var taskVersion: String? = nil
+
+    var taskDescription: String {
+        if !task.isEmpty { return task }
+        switch taskState {
+        case "loading": return "正在读取任务说明…"
+        case "missing": return "未记录任务说明"
+        case "error": return "任务说明读取失败，请重新刷新"
+        default: return "任务说明尚未加载"
+        }
+    }
 
     // The native list exposes the latest update time, rather than a completion ID.
     var readToken: String { "subagent:\(updatedAt)" }
@@ -41,6 +53,45 @@ struct WorkshopSubagent: Decodable, Identifiable {
 struct WorkshopSubagentList: Decodable {
     let agents: [WorkshopSubagent]
     let nextCursor: String?
+}
+
+struct WorkshopSubagentInstruction: Decodable, Identifiable {
+    let id: String
+    let messageId: String
+    let kind: String
+    let text: String
+    let offset: Int
+    let complete: Bool
+    let position: Int
+}
+
+struct WorkshopSubagentTaskPage: Decodable {
+    let state: String
+    let entries: [WorkshopSubagentInstruction]
+    let nextCursor: String?
+
+    struct Message: Identifiable {
+        let id: String
+        let kind: String
+        let text: String
+        let complete: Bool
+        let position: Int
+    }
+
+    static func messages(_ entries: [WorkshopSubagentInstruction]) -> [Message] {
+        let unique = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
+        return Dictionary(grouping: unique.values, by: \.messageId).compactMap { id, chunks -> Message? in
+            let sorted = chunks.sorted { $0.offset < $1.offset }
+            guard let first = sorted.first, first.offset == 0 else { return nil }
+            var text = "", complete = false
+            for chunk in sorted {
+                guard chunk.offset == text.utf16.count else { break }
+                text += chunk.text
+                complete = chunk.complete
+            }
+            return Message(id: id, kind: first.kind, text: text, complete: complete, position: first.position)
+        }.sorted { $0.position < $1.position }
+    }
 }
 
 enum WorkshopCollaborationTab: String, CaseIterable { case sidechats = "侧聊", agents = "子代理" }

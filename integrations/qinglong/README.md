@@ -1,10 +1,10 @@
 # 青龙：Hako 行情同步
 
-将同目录 `hako_market_sync.py` 上传到青龙「脚本管理」。脚本只依赖 Python 3.10+ 标准库；容器需安装系统时区数据库 `tzdata`，供 ECB 发布时间换算使用。不要将密钥写在脚本中。
+将同目录 `hako_market_sync.py` 上传到青龙「脚本管理」。脚本只依赖 Python 3.10+ 标准库；容器需安装系统时区数据库 `tzdata`，供 ECB 和 Tushare 时间换算使用。不要将密钥写在脚本中。
 
 ## 配置
 
-Hako 服务端需要先部署 **0.9.0 或更新的 0.9.x 版本**。在 Hako「第三方应用」登记一个供青龙使用的应用，开启「读取行情更新清单」和「写入行情与汇率」两项权限；不需要开启扫码、原生或 OIDC 登录。登记来源填写青龙的实际地址。
+Hako 服务端需要先部署 **0.9.3 或更新的 0.9.x 版本**。在 Hako「第三方应用」登记一个供青龙使用的应用，开启「写入行情与汇率」权限；读取清单开放，不需要读取权限；不需要开启扫码、原生或 OIDC 登录。登记来源填写青龙的实际地址。
 
 标的和行情全局共享后，采集流程保持不变：脚本直接使用清单返回的 `instrumentId` 和 `targetId`，不解析 ID、不生成数据库主键。`STOCK`、`ETF`、`FUND` 等大写类型前缀及统一的 `US` 市场均可直接使用；每轮重新获取目标签名，升级前的旧目标不要手工重用。环境变量、AK/SK 和任务命令无需调整。
 
@@ -15,6 +15,7 @@ Hako 服务端需要先部署 **0.9.0 或更新的 0.9.x 版本**。在 Hako「�
 | `HAKO_URL` | Hako 的 HTTPS 根地址，例如 `https://hako.example.com`；不要填写青龙地址或 `/api/v1` |
 | `HAKO_CLIENT_ID` | Hako 第三方应用 AK，即 `app_...` 应用 ID |
 | `HAKO_CLIENT_SECRET` | 同一 Hako 应用的 SK；这些不是青龙开放平台的 Client ID/Secret |
+| `TUSHARE_TOKEN` | 有 A 股或境内场内 ETF 时填写；历史与实时接口需要对应权限 |
 | `TWELVE_DATA_API_KEY` | 有美股或美股 ETF 时填写；没有美股则可不填 |
 
 Hako 不会将手机中保存的行情商凭据返回给脚本；美股需要在青龙另配有效的 Twelve Data Key 和相应行情权限。
@@ -25,7 +26,7 @@ Hako 不会将手机中保存的行情商凭据返回给脚本；美股需要在
 python3 /ql/data/scripts/hako_market_sync.py --check
 ```
 
-该模式只验证 Hako 读取权限和待更新清单，不访问行情源，也不验证写入权限。再用 `--dry-run` 实际采集但不写入；验证无误后移除参数正式运行。
+该模式只读取 Hako 公开的待更新清单，不访问行情源，也不验证写入权限；`--check` 和 `--dry-run` 无需 Hako 应用凭据。再用 `--dry-run` 实际采集但不写入；验证无误后移除参数正式运行。
 
 青龙任务命令（若上传到子目录，请相应调整路径）：
 
@@ -45,7 +46,7 @@ task hako_market_sync.py
 
 | 数据 | 行情源及规则 |
 | --- | --- |
-| A 股、场内 ETF | 东方财富未复权日线；支持 `.SH`、`.SZ`、`.BJ` 或明确交易所 MIC |
+| A 股、场内 ETF | Tushare：股票历史 `daily`、ETF 历史 `fund_daily`；盘中分别为 `rt_k`、`rt_etf_k`，支持 `.SH`、`.SZ`、`.BJ` 及明确交易所 MIC |
 | 港股 | 东方财富；明确 `HK_CONNECT`、`XHKG`、`HKEX`、`HK` 市场，五位代码 |
 | 场外基金 | 天天基金历史单位净值，代码以 `.OF` 结尾；不把货币基金每万份收益当净值 |
 | 国内期货 | 东方财富；支持 `.SHF`、`.DCE`、`.ZCE`、`.CFX`、`.INE`、`.GFE` 明确交割月份代码 |
@@ -55,7 +56,7 @@ task hako_market_sync.py
 
 当前不采集期权、无法明确识别交易所的代码以及非美元计价的加密资产；遇到这些目标会明确记录失败，其他可采集目标继续执行。美元标的也须有明确美股或 Binance 交易所，不会仅凭币种将未知标的当成美股。东方财富和天天基金沿用 iOS 已有公开接口，接口变动、风控或访问地区限制可能导致失败。Twelve Data 受 Key 套餐权限限制，未配置时只影响美股目标。
 
-国内最新价使用当日日线中已返回的价格。服务端 0.9.1 起，场外基金仅生成历史单位净值任务，不生成当天 `latest` 任务；新持仓／关注向前查询最多近 30 天以发现最新已公布净值。收盘前截止上个工作日，收盘后允许查询当天，但只保存实际已公布净值及其原始日期，不假定 T+1 或把旧净值改成今天。尚未公布的日期只冷却 15 分钟，然后允许重查，兼容 QDII 等延迟公布。美股休市时返回上个交易日的报价会跳过，不改成今天的日期。最新价刷新间隔实际还受 Hako 清单的五分钟新鲜度判断影响。
+A 股与场内 ETF 固定使用 Tushare，不因缺少 Token 或权限而切回东方财富；盘中股票与 ETF 实时接口需分别开通权限，并要求返回实际报价时间。股票/ETF 任务使用服务端返回的 `assetType` 区分接口，不解析不透明的 instrumentId。需更新后端，以取得新任务字段及日历调度。其他国内标的最新价仍使用对应渠道当日日线已返回的价格。服务端 0.9.1 起，场外基金仅生成历史单位净值任务，不生成当天 `latest` 任务；新持仓／关注向前查询最多近 30 天以发现最新已公布净值。收盘前截止上个工作日，收盘后允许查询当天，但只保存实际已公布净值及其原始日期，不假定 T+1 或把旧净值改成今天。尚未公布的日期只冷却 15 分钟，然后允许重查，兼容 QDII 等延迟公布。美股休市时返回上个交易日的报价会跳过，不改成今天的日期。最新价刷新间隔实际还受 Hako 清单的五分钟新鲜度判断影响。
 
 ## 执行及失败处理
 
@@ -92,3 +93,5 @@ python3 -m unittest discover -s integrations/qinglong/tests -v
 ```
 
 接口协议见 [Hako 外部行情更新](../../docs/market-updates.md)。行情源协议参考 [Binance](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints)、[Twelve Data](https://twelvedata.com/docs/market-data/time-series)、[ECB](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html)。
+
+交易日历读取开放，第三方写入需要独立的「更新交易日历」权限。日历格式、版本冲突和接口用法见[共享交易日历](../../docs/market-calendars.md)。Hako 不会在启动时生成假定的全年日历，首次使用或跨年时需由获准第三方写入完整日历。

@@ -18,7 +18,7 @@ struct ConsoleApplicationEditorView: View {
     }
     private var canSave: Bool { client.authenticated && context == client.context && !client.busy && draft.hasRequiredInput && (application == nil || draft != initial) }
     var body: some View {
-        SettingsSheet(title: application == nil ? "登记应用" : "应用权限配置", hasChanges: draft != initial,
+        SettingsSheet(title: application == nil ? "登记应用" : "应用配置", hasChanges: draft != initial,
                       isBusy: submitting, saveEnabled: canSave, onSave: requestSave) {
             Form {
                 Section {
@@ -53,9 +53,9 @@ struct ConsoleApplicationEditorView: View {
                     }
                 }
                 Section("行情权限") {
-                    Toggle("读取行情更新清单", isOn: $draft.marketReadEnabled)
+                    Toggle("更新交易日历", isOn: $draft.calendarWriteEnabled)
                     Toggle("写入行情与汇率", isOn: $draft.marketWriteEnabled)
-                    Text("使用应用 AK/SK 调用；不授予账户、流水或手动估值的访问权限。")
+                    Text("行情和交易日历读取开放；写入使用应用 AK/SK，并分别校验权限。不授予账户、流水或手动估值的访问权限。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if draft.oidcEnabled {
@@ -110,7 +110,7 @@ struct ConsoleApplicationEditorView: View {
                 if submitting { Section { ProgressView("正在保存应用…") } }
                 if let errorMessage { Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) } }
             }.disabled(submitting || !client.authenticated || context != client.context)
-            .alert("保存登录方式配置？", isPresented: $confirmingSave) {
+            .alert("保存应用配置？", isPresented: $confirmingSave) {
                 Button("保存配置", role: .destructive) { Task { await save() } }
                 Button("取消", role: .cancel) { }
             } message: { Text("该应用已有的待授权请求、授权码和 Hako 访问授权将失效。第三方应用自己的登录会话由它管理。") }

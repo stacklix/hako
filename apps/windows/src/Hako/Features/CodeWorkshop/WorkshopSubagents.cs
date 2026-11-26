@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 namespace Hako.Platform;
 
 internal sealed record WorkshopSubagent(string Id, string Name, string Role, string Task, string State,
-    string Model, string ReasoningEffort, long UpdatedAt);
+    string Model, string ReasoningEffort, long UpdatedAt, string TaskState = "loading", string TaskVersion = "");
 
 internal sealed partial class CodeWorkshop
 {
@@ -48,13 +48,18 @@ internal sealed partial class CodeWorkshop
             cursor = cursor.Length == 0 ? null : cursor, sortKey = "updated_at", sortDirection = "desc",
             sourceKinds = new[] { "subAgentThreadSpawn" }, modelProviders = Array.Empty<string>(), useStateDbOnly = true }, token);
         var threads = CodexJson.Items(CodexJson.Field(page, "data")).Where(thread => IsDirectSubagent(thread, parent)).Take(20).ToArray();
+        if (threads.Length == 0) return new { agents = Array.Empty<WorkshopSubagent>(),
+            nextCursor = CodexJson.Text(page, "nextCursor") is { Length: > 0 } emptyNext ? emptyNext : null };
+        var tasks = EnsureSubagentTasks(parent, threads);
         var agents = new WorkshopSubagent[threads.Length];
         await Parallel.ForEachAsync(Enumerable.Range(0, threads.Length),
             new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = token }, async (index, cancellation) =>
         {
             var turn = await ReadAsync("thread/turns/list", new { threadId = CodexJson.Text(threads[index], "id"),
                 limit = 1, sortDirection = "desc", itemsView = "summary" }, cancellation);
-            agents[index] = Subagent(threads[index], SummarizeTurn(CodexJson.Items(CodexJson.Field(turn, "data")).FirstOrDefault()).State);
+            var summary = SubagentTaskSummary(tasks, CodexJson.Text(threads[index], "id"));
+            agents[index] = Subagent(threads[index], SummarizeTurn(CodexJson.Items(CodexJson.Field(turn, "data")).FirstOrDefault()).State)
+                with { Task = summary.Task, TaskState = summary.State, TaskVersion = summary.Version };
         });
         return new { agents, nextCursor = CodexJson.Text(page, "nextCursor") is { Length: > 0 } next ? next : null };
     }
