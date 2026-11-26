@@ -1,5 +1,31 @@
 import Foundation
 
+@MainActor private final class TestClock {
+    private(set) var now = ContinuousClock.now
+    private var sleepers: [UUID: (ContinuousClock.Instant, CheckedContinuation<Void, Error>)] = [:]
+    var pendingSleeps: Int { sleepers.count }
+
+    func sleep(until deadline: ContinuousClock.Instant) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                if deadline <= now { continuation.resume() }
+                else { sleepers[id] = (deadline, continuation) }
+            }
+        } onCancel: {
+            Task { @MainActor in self.sleepers.removeValue(forKey: id)?.1.resume(throwing: CancellationError()) }
+        }
+    }
+
+    func advance(by duration: Duration) {
+        now = now.advanced(by: duration)
+        for (id, sleeper) in sleepers where sleeper.0 <= now {
+            sleepers.removeValue(forKey: id)?.1.resume()
+        }
+    }
+}
+
 @MainActor private final class Poller {
     var starts = 0
     var active = 0
@@ -27,7 +53,8 @@ import Foundation
     }
 
     @MainActor static func main() async throws {
-        let sync = WorkshopSynchronization(grace: .milliseconds(200))
+        let clock = TestClock()
+        let sync = WorkshopSynchronization(grace: .milliseconds(200), now: { clock.now }, sleepUntil: { try await clock.sleep(until: $0) })
         let catalog = Poller(), conversation = Poller()
         let catalogID = UUID(), conversationID = UUID(), listOwner = UUID(), detailOwner = UUID()
         sync.register(catalogID, kind: .catalog) { await catalog.run() }
@@ -54,14 +81,24 @@ import Foundation
 
         let ticksBeforeExit = conversation.ticks
         sync.leave(listOwner)
-        try await Task.sleep(for: .milliseconds(40))
+        try await until { clock.pendingSleeps == 1 }
+        clock.advance(by: .milliseconds(40))
+        try await until { conversation.ticks > ticksBeforeExit }
         precondition(conversation.ticks > ticksBeforeExit && catalog.active == 1,
             "Both the catalog and conversation must keep syncing during the exit grace period")
         sync.enter(listOwner, conversation: false)
-        try await Task.sleep(for: .milliseconds(220))
+        try await until { clock.pendingSleeps == 0 }
+        clock.advance(by: .milliseconds(220))
+        await Task.yield()
         precondition(conversation.starts == startsBeforeRouteChange + 1 && conversation.active == 1, "Reentry must cancel the previous expiration without restarting synchronization")
 
         sync.leave(listOwner)
+        try await until { clock.pendingSleeps == 1 }
+        clock.advance(by: .milliseconds(199))
+        let ticksBeforeDeadline = conversation.ticks
+        try await until { conversation.ticks > ticksBeforeDeadline }
+        precondition(conversation.active == 1 && catalog.active == 1, "Grace must remain active until its deadline")
+        clock.advance(by: .milliseconds(1))
         try await until { conversation.active == 0 && catalog.active == 0 }
         let stoppedTicks = conversation.ticks
         try await Task.sleep(for: .milliseconds(20))

@@ -10,7 +10,8 @@ import Foundation
     }
     private struct Running { let generation: UUID; let task: Task<Void, Never> }
     private let grace: Duration
-    private let clock = ContinuousClock()
+    private let now: () -> ContinuousClock.Instant
+    private let sleepUntil: (ContinuousClock.Instant) async throws -> Void
     private var owners: [UUID: Bool] = [:]
     private var work: [UUID: Work] = [:]
     private var running: [UUID: Running] = [:]
@@ -18,7 +19,13 @@ import Foundation
     private var expiration: Task<Void, Never>?
     private var foreground = true
 
-    init(grace: Duration = .seconds(60)) { self.grace = grace }
+    init(grace: Duration = .seconds(60),
+         now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now },
+         sleepUntil: @escaping (ContinuousClock.Instant) async throws -> Void = { try await ContinuousClock().sleep(until: $0) }) {
+        self.grace = grace
+        self.now = now
+        self.sleepUntil = sleepUntil
+    }
     var hasVisibleOwners: Bool { !owners.isEmpty }
 
     func register(_ id: UUID, kind: Kind, operation: @escaping @MainActor () async -> Void) {
@@ -46,11 +53,11 @@ import Foundation
     func leave(_ owner: UUID) {
         guard owners.removeValue(forKey: owner) != nil else { return }
         if owners.isEmpty {
-            let end = clock.now.advanced(by: grace)
+            let end = now().advanced(by: grace)
             deadline = end
             expiration?.cancel()
-            expiration = Task { [weak self, clock] in
-                do { try await clock.sleep(until: end) } catch { return }
+            expiration = Task { [weak self, sleepUntil] in
+                do { try await sleepUntil(end) } catch { return }
                 guard let self, self.owners.isEmpty, self.deadline == end else { return }
                 self.deadline = nil
                 self.reconcile()
@@ -68,7 +75,7 @@ import Foundation
     }
 
     private func reconcile() {
-        let leased = !owners.isEmpty || deadline.map { clock.now < $0 } == true
+        let leased = !owners.isEmpty || deadline.map { now() < $0 } == true
         let conversationVisible = owners.values.contains(true)
         for (id, item) in work {
             guard foreground && leased && (item.kind == .conversation || !conversationVisible) else {
