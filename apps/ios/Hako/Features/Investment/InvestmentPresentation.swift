@@ -149,8 +149,20 @@ struct InvestmentPreparedWrite {
     let through: String?
 
     init(draft: InvestmentBook, current: InvestmentBook, state: InvestmentServerState,
-         dirtyFrom: String?, includeInputs: Bool, includeSnapshots: Bool) throws {
+         dirtyFrom: String?, includeInputs: Bool, includeSnapshots: Bool,
+         snapshotBatch: InvestmentSnapshotBatch? = nil) throws {
         let records = InvestmentServerRecords()
+        if let batch = snapshotBatch {
+            guard includeSnapshots, !includeInputs else { throw InvestmentError.invalid("快照分批提交不能包含原始流水。") }
+            let selected = records.encodeSnapshotBatch(draft, revision: state.revision, batch: batch)
+            through = batch.completedThrough.map(records.day.string(from:))
+            try InvestmentWriteValidation.validate(generation: state.generation, revision: state.revision,
+                dirtyFrom: dirtyFrom, through: through, changes: [batch.table: selected], current: state.tables)
+            let replacement = InvestmentServerRecords.ordered((state.tables[batch.table] ?? []).filter { !batch.includes($0) } + selected)
+            delta = InvestmentRecordChange.difference(changes: [batch.table: replacement], current: state.tables)
+            changes = delta.isEmpty ? [:] : [batch.table: replacement]
+            return
+        }
         if includeInputs { try records.validateEventInputs(draft, comparedTo: current) }
         let old = try records.encode(records.decode(state), revision: state.revision)
         let next = try records.encode(draft, revision: state.revision)
@@ -214,10 +226,73 @@ struct InvestmentDeltaResponse: Decodable {
             var rows = Dictionary((state.tables[table] ?? []).map { (key($0), $0) }, uniquingKeysWith: { _, last in last })
             for row in change.deletes { rows[key(row)] = nil }
             for row in change.upserts { rows[key(row)] = row }
-            state.tables[table] = InvestmentServerRecords.ordered(Array(rows.values))
+            if InvestmentServerRecords.snapshotTables.contains(table) {
+                state.tables[table] = rows.keys.sorted().compactMap { rows[$0] }
+            } else {
+                state.tables[table] = InvestmentServerRecords.ordered(Array(rows.values))
+            }
         }
         state.generation = generation; state.revision = revision
         state.dirtyFrom = dirtyFrom; state.through = through
         return state
+    }
+}
+
+extension InvestmentBook {
+    func snapshotCalculationStart(forMonthStarting day: Date) -> Date {
+        // Recompute the preceding day's unrounded cumulative gain so the first
+        // daily P&L in a month matches a single continuous calculation.
+        max(earliest ?? day, Self.addDays(-1, to: day))
+    }
+
+    static func snapshotMonthEnd(containing day: Date) -> Date {
+        let next = calendar.date(byAdding: .month, value: 1, to: calendar.dateInterval(of: .month, for: day)!.start)!
+        return addDays(-1, to: next)
+    }
+
+    func snapshotBatchStart(state: InvestmentServerState, through end: Date, rebuild: Bool) -> Date? {
+        let formatter = Self.snapshotDateFormatter()
+        let existing = InvestmentServerRecords.snapshotTables.flatMap { state.tables[$0] ?? [] }
+        let oldDates = existing.compactMap { $0["snapshot_date"].flatMap(formatter.date(from:)) }
+        guard let earliest else { return oldDates.min() }
+        let dirty = state.dirtyFrom.flatMap(formatter.date(from:))
+        var start: Date?
+        if rebuild {
+            // A total row is the checkpoint after every account in that month was
+            // committed. Reuse a prefix only when it belongs to these exact inputs.
+            let rows = Dictionary((state.tables["investment_daily_snapshots"] ?? []).compactMap { row in
+                row["snapshot_date"].map { ($0, row) }
+            }, uniquingKeysWith: { _, last in last })
+            var checked = earliest
+            if let dirty {
+                while checked < dirty, checked <= end,
+                      rows[formatter.string(from: checked)]?["computed_revision"] == String(state.revision) {
+                    checked = Self.addDays(1, to: checked)
+                }
+                start = checked >= dirty ? dirty : earliest
+            } else { start = earliest }
+        } else { start = dirty ?? snapshotStart(rebuild: false) }
+        // Explicit rebuilds also remove obsolete derived rows before a ledger or
+        // account's new start date; no source records are touched.
+        if rebuild {
+            for row in existing {
+                guard let day = row["snapshot_date"].flatMap(formatter.date(from:)) else { continue }
+                let first = row["account_id"].flatMap(UUID.init(uuidString:)).flatMap { account($0)?.earliest }
+                let obsolete = row["account_id"] == nil ? day < earliest : first.map { day < $0 } ?? true
+                if obsolete { start = min(start ?? day, day) }
+            }
+        }
+        return start
+    }
+
+    func snapshotBatchAccountIDs(in window: ClosedRange<Date>, state: InvestmentServerState) -> [UUID] {
+        var ids = accounts.filter { $0.earliest.map { $0 <= window.upperBound } ?? false }.map(\.id)
+        let formatter = Self.snapshotDateFormatter()
+        let old = (state.tables["investment_account_daily_snapshots"] ?? []).compactMap { row -> UUID? in
+            guard let day = row["snapshot_date"].flatMap(formatter.date(from:)), window.contains(day) else { return nil }
+            return row["account_id"].flatMap(UUID.init(uuidString:))
+        }
+        for id in Set(old).sorted(by: { $0.uuidString < $1.uuidString }) where !ids.contains(id) { ids.append(id) }
+        return ids
     }
 }

@@ -9,6 +9,19 @@ struct HakoLogsView: View {
     @State private var level: HakoLogLevel?
     @State private var search = ""
     @State private var confirmingClear = false
+    @State private var copied = false
+    private let fixedSource: HakoLogSource?
+    private let title: String
+
+    init(source: HakoLogSource? = nil, title: String = "日志") {
+        fixedSource = source
+        self.title = title
+        _source = State(initialValue: source)
+    }
+
+    private var allEntries: [HakoLogEntry] {
+        entries.filter { fixedSource == nil || $0.source == fixedSource }
+    }
 
     private var filtered: [HakoLogEntry] {
         entries.filter { entry in
@@ -19,16 +32,26 @@ struct HakoLogsView: View {
     var body: some View {
         List {
             Section {
-                Picker("子应用", selection: $source) {
-                    Text("全部").tag(Optional<HakoLogSource>.none)
-                    ForEach(HakoLogSource.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
+                if fixedSource == nil {
+                    Picker("子应用", selection: $source) {
+                        Text("全部").tag(Optional<HakoLogSource>.none)
+                        ForEach(HakoLogSource.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
+                    }
+                    .logRowSeparators()
                 }
-                .logRowSeparators()
                 Picker("级别", selection: $level) {
                     Text("全部").tag(Optional<HakoLogLevel>.none)
                     ForEach(HakoLogLevel.allCases, id: \.self) { Text($0.rawValue).tag(Optional($0)) }
                 }
                 .logRowSeparators()
+                Button {
+                    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+                    let text = HakoLogExport.text(title: title, entries: allEntries, version: version)
+                    UIPasteboard.general.setItems([["public.utf8-plain-text": text]], options: [.localOnly: true])
+                    copied = true
+                } label: {
+                    Label(copied ? "已复制全部日志" : "复制全部日志", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }.disabled(allEntries.isEmpty).logRowSeparators()
             } footer: { Text("仅保存在本机，保留最近 \(HakoLogStore.capacity) 条。HTTP 请求头、响应头和不超过 8 KiB 的文本正文会脱敏后记录。") }
             if let storageIssue { Section { Text(storageIssue).foregroundStyle(.orange).font(.footnote) } }
             Section("\(filtered.count) 条日志 · 最新在前") {
@@ -52,21 +75,21 @@ struct HakoLogsView: View {
                 }
             }
         }
-        .navigationTitle("日志")
+        .navigationTitle(title)
         .searchable(text: $search, prompt: "搜索日志内容")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     ShareLink(item: filtered.map(\.text).joined(separator: "\n\n")) { Label("分享当前筛选的日志", systemImage: "square.and.arrow.up") }
                         .disabled(filtered.isEmpty)
-                    Button("清空全部日志", systemImage: "trash", role: .destructive) { confirmingClear = true }
-                        .disabled(entries.isEmpty)
+                    Button(fixedSource.map { "清空\($0.rawValue)日志" } ?? "清空全部日志", systemImage: "trash", role: .destructive) { confirmingClear = true }
+                        .disabled(allEntries.isEmpty)
                 } label: { Image(systemName: "ellipsis.circle") }
                 .accessibilityLabel("日志操作")
             }
         }
-        .hakoDeleteConfirmation(Text("清空本机全部日志？"), isPresented: $confirmingClear) {
-            HakoLogStore.shared.clear()
+        .hakoDeleteConfirmation(Text(fixedSource.map { "清空本机\($0.rawValue)日志？" } ?? "清空本机全部日志？"), isPresented: $confirmingClear) {
+            HakoLogStore.shared.clear(source: fixedSource)
             reload()
         }
         .refreshable { reload() }

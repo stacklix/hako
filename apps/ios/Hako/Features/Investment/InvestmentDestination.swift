@@ -704,6 +704,15 @@ private struct InvestmentSettings: View {
             } header: {
                 Text("数据")
             }
+            Section {
+                NavigationLink {
+                    HakoLogsView(source: .investment, title: "投资运行日志")
+                } label: {
+                    Label("运行日志", systemImage: "doc.text.magnifyingglass")
+                }.investmentListRow()
+            } footer: {
+                Text("查看自动更新、行情缓存、快照计算与保存的详细过程，可一键复制本机保留的全部投资日志。")
+            }
         }
         .navigationTitle("投资记账设置")
         .sheet(item: $sheet) { item in
@@ -923,31 +932,57 @@ private struct InvestmentDataInspection: View {
         Form {
             Section {
                 Text("读取服务端最新保存的完整账本，检查全部账户（包括归档账户）的交易、历史估值、汇率和日终快照。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(.secondary).investmentListRow()
                 Button(checking ? "正在检验…" : report == nil ? "开始检验" : "重新检验") { checking = true }
                     .buttonStyle(HakoActionButtonStyle())
                     .disabled(checking || store.saving)
-                if checking { ProgressView("正在读取并检验数据") }
-                if let error { Text(error).foregroundStyle(.red) }
+                    .investmentListRow()
+                if checking {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("正在读取并检验数据").foregroundStyle(.secondary)
+                    }.investmentListRow()
+                }
+                if let error { Text(error).foregroundStyle(.red).investmentListRow() }
             } footer: {
                 Text("仅检验，不修改交易、补查行情或重算快照。保险未录入现金价值时按零估值，并显示提醒。")
             }
             if let report {
                 Section("检验结果") {
-                    LabeledContent("影响计算", value: "\(report.errors) 项")
-                    LabeledContent("请留意", value: "\(report.notices) 项")
-                    LabeledContent("检查数据", value: "\(report.accounts) 个账户 · \(report.events) 笔交易")
+                    LabeledContent("影响计算", value: "\(report.errors) 项").investmentListRow()
+                    LabeledContent("请留意", value: "\(report.notices) 项").investmentListRow()
+                    LabeledContent("检查数据", value: "\(report.accounts) 个账户 · \(report.events) 笔交易").investmentListRow()
                     if let first = report.firstDay {
                         Text("检查范围：" + InvestmentText.date(first) + " 至 " + InvestmentText.date(report.lastDay))
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(.secondary).investmentListRow()
                     }
                     Text("检验时间：" + report.checkedAt.formatted(date: .abbreviated, time: .standard))
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(.secondary).investmentListRow()
                     if changedSinceCheck {
-                        Text("账本已更新，请重新检验以获取最新结果。").foregroundStyle(.orange)
-                    } else if report.issues.isEmpty {
-                        Label("未发现问题", systemImage: "checkmark.circle").foregroundStyle(.green)
+                        Text("账本已更新，请重新检验以获取最新结果。").foregroundStyle(.orange).investmentListRow()
+                    } else if report.issues.isEmpty && report.snapshotDirtyFrom == nil {
+                        Label("未发现问题", systemImage: "checkmark.circle").foregroundStyle(.green).investmentListRow()
                     }
+                }
+                Section {
+                    LabeledContent("可用日终快照", value: "\(report.snapshotDays) 天").investmentListRow()
+                    LabeledContent("最新有效日期", value: report.latestSnapshotDay.map(InvestmentText.date) ?? "暂无")
+                        .investmentListRow()
+                    if report.missingSnapshotDays > 0 {
+                        LabeledContent("尚无有效快照", value: "\(report.missingSnapshotDays) 天").investmentListRow()
+                    }
+                    if let dirty = report.snapshotDirtyFrom {
+                        Text("账本或估值已更新，需从 " + InvestmentText.date(dirty) + " 起重新计算。现存快照尚未反映全部变化。")
+                            .font(.footnote).foregroundStyle(.orange).investmentListRow()
+                    }
+                    if let failure = store.snapshotSaveError {
+                        Text("自动计算快照未完成：" + failure)
+                            .font(.footnote).foregroundStyle(.red).investmentListRow()
+                    }
+                } header: {
+                    Text("日终快照")
+                } footer: {
+                    Text("按北京时间检查至昨天。快照由投资记账或更新快捷指令计算；本次检验仅读取已保存的结果。")
                 }
                 issueSection(report.issues.filter { $0.level == .error }, title: "影响计算的问题")
                 issueSection(report.issues.filter { $0.level == .notice }, title: "需要留意的情况")

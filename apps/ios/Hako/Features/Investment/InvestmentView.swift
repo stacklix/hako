@@ -88,15 +88,19 @@ struct InvestmentView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            await store.load(force: true)
-            await store.refreshIfNeeded(checkUnconfirmedRates: true)
-            await store.settleDuePlans()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(300)) }
-                catch { return }
+            await InvestmentDiagnostics.run("进入投资记账并自动更新") {
                 await store.load(force: true)
                 await store.refreshIfNeeded(checkUnconfirmedRates: true)
                 await store.settleDuePlans()
+            }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(300)) }
+                catch { return }
+                await InvestmentDiagnostics.run("前台定时检查投资更新") {
+                    await store.load(force: true)
+                    await store.refreshIfNeeded(checkUnconfirmedRates: true)
+                    await store.settleDuePlans()
+                }
             }
         }
         .onChange(of: store.refreshing ? nil : store.rateCurrencies) { _, currencies in

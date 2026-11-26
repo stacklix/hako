@@ -961,6 +961,7 @@ struct InvestmentAgentTests {
         prepared.addQuotes([.init(day: day, price: 12, source: "东方财富")], assetID: asset)
         prepared.dailySnapshots = prepared.makeDailySnapshots(through: day, rebuild: true)
         let proposal = try InvestmentAgentProposal(base: snapshot(book), actions: [.init(kind: .rebuildSnapshots, values: [:])], prepared: prepared)
+        precondition(proposal.snapshotsOnly, "The approved snapshot preview must use the separate-inputs/monthly-output confirmation path")
         precondition(proposal.changes.contains { $0.id.hasPrefix("market_daily_prices:") })
         precondition(!proposal.changes.contains { $0.id.hasPrefix("investment_manual_prices:") })
         precondition(proposal.changes.contains { $0.id.hasPrefix("investment_daily_snapshots:") })

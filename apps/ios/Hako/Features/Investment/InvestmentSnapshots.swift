@@ -29,6 +29,10 @@ struct InvestmentDataReport: Sendable {
     let lastDay: Date
     let accounts: Int
     let events: Int
+    let snapshotDays: Int
+    let latestSnapshotDay: Date?
+    let missingSnapshotDays: Int
+    var snapshotDirtyFrom: Date? = nil
     var issues: [InvestmentDataIssue]
     var errors: Int { issues.filter { $0.level == .error }.count }
     var notices: Int { issues.filter { $0.level == .notice }.count }

@@ -53,6 +53,7 @@ final class InvestmentStore: ObservableObject {
     private var loaded = false
     @Published private(set) var ledgerRevision = UUID()
     private var dailySnapshotTask: Task<Void, Never>?
+    private var snapshotWriteRunning = false
     private var lastAutomaticRefresh: Date?
     private var lastAutomaticCurrencies: Set<InvestmentCurrency> = []
     private var lastAutomaticMarketQuotes: Set<UUID> = []
@@ -112,6 +113,12 @@ final class InvestmentStore: ObservableObject {
     }
 
     func load(force: Bool = false, scheduleSnapshots: Bool = true) async {
+        await InvestmentDiagnostics.run("读取投资账本") {
+            await readBook(force: force, scheduleSnapshots: scheduleSnapshots)
+        }
+    }
+
+    private func readBook(force: Bool, scheduleSnapshots: Bool) async {
         discardExpiredSession()
         guard !loading, !saving, force || !loaded || cacheWasCleared else { return }
         loading = true
@@ -146,6 +153,7 @@ final class InvestmentStore: ObservableObject {
             try Task.checkCancellation()
             guard context == authentication.requestContext else { throw CancellationError() }
             let state = try await Task.detached { try JSONDecoder().decode(InvestmentServerState.self, from: data) }.value
+            HakoExecutionDiagnostics.record("服务端账本状态", detail: "版本 \(state.revision)，代次 \(state.generation)；快照截止 \(state.through ?? "无")；待重算起点 \(state.dirtyFrom ?? "无")。总快照 \(state.tables["investment_daily_snapshots"]?.count ?? 0) 条，账户快照 \(state.tables["investment_account_daily_snapshots"]?.count ?? 0) 条。")
             if !loaded || (serverState?.generation != state.generation || serverState?.revision != state.revision) {
                 let decoded = try await Task.detached { try InvestmentServerRecords().decode(state) }.value
                 try await publish(try await restoringMarketQuotes(in: decoded, scope: scope), context: context)
@@ -163,10 +171,12 @@ final class InvestmentStore: ObservableObject {
             configuredSources = Set(keys().keys)
             if scheduleSnapshots { scheduleDailySnapshots() }
         } catch is CancellationError {
+            HakoExecutionDiagnostics.record("读取投资账本取消", state: .cancelled)
             return
         } catch let error as ServerHTTPError where error.status == 404 {
             loadError = "当前 Hako 服务端版本还未提供投资账本接口。"
         } catch {
+            HakoExecutionDiagnostics.record("读取投资账本失败", state: .failed, detail: HakoExecutionDiagnostics.failure(error))
             if loaded { quoteStatus = error.localizedDescription }
             else { loadError = error.localizedDescription }
         }
@@ -217,6 +227,12 @@ final class InvestmentStore: ObservableObject {
     }
 
     func update(scheduleSnapshots: Bool = true, _ change: (inout InvestmentBook) throws -> Void) async throws {
+        try await InvestmentDiagnostics.run("保存投资账本变更") {
+            try await updateBook(scheduleSnapshots: scheduleSnapshots, change)
+        }
+    }
+
+    private func updateBook(scheduleSnapshots: Bool, _ change: (inout InvestmentBook) throws -> Void) async throws {
         if cacheWasCleared {
             await load(force: true, scheduleSnapshots: scheduleSnapshots)
             guard lastServerReadSucceeded else { throw InvestmentError.invalid("请恢复服务端连接后再保存。") }
@@ -308,8 +324,24 @@ final class InvestmentStore: ObservableObject {
         guard current.generation == proposal.generation else { throw InvestmentAgentCommitError.stale }
         do {
             if proposal.snapshotsOnly {
-                try await write(proposal.book, dirtyFrom: nil, includeInputs: true, includeSnapshots: true)
-                snapshotSaveError = nil
+                try await InvestmentDiagnostics.run("确认助手快照重算") {
+                    // The approved preview may contain freshly fetched prices/FX.
+                    // Commit those inputs first, then recalculate through the same
+                    // account/month checkpoint pipeline as app and Shortcuts.
+                    try await update(scheduleSnapshots: false) { draft in
+                        let live = try agentSnapshot()
+                        guard live.session == proposal.session else { throw CancellationError() }
+                        guard live.generation == proposal.generation else { throw InvestmentAgentCommitError.stale }
+                        draft = proposal.book
+                    }
+                    try Task.checkCancellation()
+                    guard try agentSnapshot().session == proposal.session else { throw CancellationError() }
+                    do { _ = try await saveDailySnapshots(rebuild: true) }
+                    catch {
+                        snapshotSaveError = error.localizedDescription
+                        throw error
+                    }
+                }
             } else {
                 let deletesHistory = proposal.actions.contains { $0.kind == .removeAccount || $0.kind == .removePosition }
                 try await update(scheduleSnapshots: deletesHistory) { draft in
@@ -380,8 +412,8 @@ final class InvestmentStore: ObservableObject {
         while refreshing { try await Task.sleep(for: .milliseconds(150)) }
         try Task.checkCancellation()
         var source = base.book
-        // The page fills missing historical inputs before recalculating. Keep both steps
-        // in memory here so the confirmation commits the inputs and snapshots together.
+        // Keep fetched inputs and calculated snapshots in memory for the preview.
+        // Confirmation saves approved inputs first, then recalculates monthly batches.
         try await refreshQuotes(fullSnapshotHistory: true, preview: { source = $0 })
         try Task.checkCancellation()
         let refreshed = try agentSnapshot()
@@ -402,7 +434,8 @@ final class InvestmentStore: ObservableObject {
         guard !saving, !loading else { throw InvestmentError.invalid("账本正在同步，请稍后重试。") }
     }
 
-    private func write(_ draft: InvestmentBook, dirtyFrom: String?, includeInputs: Bool, includeSnapshots: Bool) async throws {
+    private func write(_ draft: InvestmentBook, dirtyFrom: String?, includeInputs: Bool, includeSnapshots: Bool,
+                       snapshotBatch: InvestmentSnapshotBatch? = nil) async throws {
         try checkWritable()
         guard var state = serverState else { return }
         let context = authentication.requestContext
@@ -414,7 +447,7 @@ final class InvestmentStore: ObservableObject {
         }) {
             try await Task.detached(priority: .userInitiated) {
                 try InvestmentPreparedWrite(draft: draft, current: current, state: originalState,
-                    dirtyFrom: dirtyFrom, includeInputs: includeInputs, includeSnapshots: includeSnapshots)
+                    dirtyFrom: dirtyFrom, includeInputs: includeInputs, includeSnapshots: includeSnapshots, snapshotBatch: snapshotBatch)
             }.value
         }
         guard context == authentication.requestContext else { throw CancellationError() }
@@ -433,7 +466,13 @@ final class InvestmentStore: ObservableObject {
         }
         do {
             let data = try await HakoExecutionDiagnostics.measure("提交账本变化") {
-                try await authentication.send(Self.bookPath + "/changes", method: "POST", body: body, logSource: .hako)
+                let bytes = try JSONSerialization.data(withJSONObject: body).count
+                let counts = prepared.delta.keys.sorted().map { name in
+                    let change = prepared.delta[name]!
+                    return "\(name)：写入 \(change.upserts.count)，删除 \(change.deletes.count)"
+                }.joined(separator: "\n")
+                HakoExecutionDiagnostics.record("账本提交请求", detail: "POST \(Self.bookPath)/changes\n请求正文 \(bytes) 字节；版本 \(state.revision)，代次 \(state.generation)；快照截止 \(through ?? "无")；待重算起点 \(dirtyFrom ?? "无")。\n" + counts)
+                return try await authentication.send(Self.bookPath + "/changes", method: "POST", body: body, logSource: .hako)
             }
             guard context == authentication.requestContext else { throw CancellationError() }
             let previousState = state
@@ -471,12 +510,22 @@ final class InvestmentStore: ObservableObject {
             state.tables.merge(confirmed.tables) { _, incoming in incoming }
             let confirmedState = state
             let decoded = try await HakoExecutionDiagnostics.measure("解码已确认账本") {
-                try await Task.detached { try InvestmentServerRecords().decode(confirmedState) }.value
+                try await Task.detached {
+                    let records = InvestmentServerRecords()
+                    if snapshotBatch != nil, confirmedState.revision == previousState.revision,
+                       confirmedState.generation >= previousState.generation,
+                       confirmedState.generation <= previousState.generation + 1 {
+                        return try records.updatingSnapshots(confirmedState, in: current)
+                    }
+                    return try records.decode(confirmedState)
+                }.value
             }
             try await publish(decoded, context: context)
             serverState = state
             await persistCache(state, scope: dataCacheScope)
         } catch let error as ServerHTTPError where error.status == 409 {
+            HakoExecutionDiagnostics.record("账本提交冲突", state: .failed,
+                detail: "POST \(Self.bookPath)/changes；HTTP \(error.status)；错误码 \(error.code)。将重新读取服务端账本。")
             saving = false
             await load(force: true, scheduleSnapshots: false)
             let refreshed = serverState?.generation != state.generation
@@ -484,6 +533,10 @@ final class InvestmentStore: ObservableObject {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            if let failure = error as? ServerHTTPError {
+                HakoExecutionDiagnostics.record("账本提交失败", state: .failed,
+                    detail: "POST \(Self.bookPath)/changes；HTTP \(failure.status)；错误码 \(failure.code)。")
+            }
             saving = false
             await load(force: true, scheduleSnapshots: false)
             if let confirmed = serverState, context == authentication.requestContext, confirmed.generation > state.generation,
@@ -501,47 +554,124 @@ final class InvestmentStore: ObservableObject {
     }
 
     func inspectData() async throws -> InvestmentDataReport {
+        try await InvestmentDiagnostics.run("检验投资数据") { try await inspectServerData() }
+    }
+
+    private func inspectServerData() async throws -> InvestmentDataReport {
         await authentication.restore()
         guard authentication.authenticated else { throw InvestmentError.invalid("请先在 Hako 设置中登录服务端。") }
         let context = authentication.requestContext
         let data = try await authentication.send(Self.bookPath, method: "GET", body: nil, logSource: .hako)
         guard context == authentication.requestContext else { throw CancellationError() }
-        let source = try records.decode(JSONDecoder().decode(InvestmentServerState.self, from: data))
+        let state = try JSONDecoder().decode(InvestmentServerState.self, from: data)
+        let source = try records.decode(state)
         let worker = Task.detached(priority: .utility) { source.inspectData() }
-        let report = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        var report = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
         try Task.checkCancellation()
         guard context == authentication.requestContext else { throw CancellationError() }
+        report.snapshotDirtyFrom = state.dirtyFrom.flatMap(records.day.date(from:))
         return report
     }
 
     func saveDailySnapshots(rebuild: Bool = false) async throws -> InvestmentDailySnapshotReport {
-        await load()
+        try await InvestmentDiagnostics.run("计算并保存日终快照") {
+            let report = try await saveSnapshots(rebuild: rebuild)
+            HakoExecutionDiagnostics.record("日终快照保存结果", detail: report.message + "\n截止日期：" + records.day.string(from: report.day))
+            return report
+        }
+    }
+
+    private func saveSnapshots(rebuild: Bool) async throws -> InvestmentDailySnapshotReport {
+        while snapshotWriteRunning { try await Task.sleep(for: .milliseconds(50)) }
+        try Task.checkCancellation()
+        snapshotWriteRunning = true
+        defer { snapshotWriteRunning = false }
+        await load(scheduleSnapshots: false)
+        while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
         try checkWritable()
         let resetVersion = ledgerRevision
         let end = InvestmentBook.addDays(-1, to: InvestmentBook.day())
-        for _ in 0..<3 {
-            try Task.checkCancellation()
-            guard ledgerRevision == resetVersion else { throw CancellationError() }
-            var source = book
-            let dirty = serverState?.dirtyFrom.flatMap(records.day.date(from:))
-            if let dirty {
-                source.invalidateDailySnapshots(from: dirty)
-            }
-            if !rebuild, dirty == nil, !source.needsDailySnapshots(through: end) {
-                return source.dailySnapshotReport(through: end)
-            }
-            let version = bookVersion
-            source = try await calculatedSnapshots(source, through: end, rebuild: rebuild)
-            guard ledgerRevision == resetVersion else { throw CancellationError() }
-            guard version == bookVersion else { continue }
-            try await write(source, dirtyFrom: nil, includeInputs: false, includeSnapshots: true)
-            snapshotSaveError = nil
+        guard let initial = serverState else { throw InvestmentError.invalid("请先读取服务端投资账本。") }
+        guard let start = book.snapshotBatchStart(state: initial, through: end, rebuild: rebuild) else {
             return book.dailySnapshotReport(through: end)
         }
-        throw InvestmentError.invalid("账本正在更新，请稍后重新计算快照。")
+        let oldLast = InvestmentServerRecords.snapshotTables.flatMap { initial.tables[$0] ?? [] }
+            .compactMap { $0["snapshot_date"].flatMap(records.day.date(from:)) }.max()
+        let processingEnd = rebuild || book.earliest == nil ? max(end, oldLast ?? end) : end
+        let inputRevision = initial.revision
+        var expectedGeneration = initial.generation
+        var cursor = start
+        HakoExecutionDiagnostics.record("检查日终快照", detail: "按账户和月份分别保存；计算至 \(records.day.string(from: end))；从 \(records.day.string(from: start)) 继续；现存截止 \(initial.through ?? "无")；待重算起点 \(initial.dirtyFrom ?? "无")；输入版本 \(inputRevision)。")
+        while cursor <= processingEnd {
+            while saving || loading { try await Task.sleep(for: .milliseconds(50)) }
+            try Task.checkCancellation()
+            guard ledgerRevision == resetVersion else { throw CancellationError() }
+            guard let state = serverState, state.revision == inputRevision, state.generation == expectedGeneration else {
+                throw InvestmentError.invalid("快照分批计算期间账本或行情已更新，已保存的批次会保留，请重试剩余区间。")
+            }
+            let last = min(InvestmentBook.snapshotMonthEnd(containing: cursor), processingEnd)
+            let window = cursor...last
+            let calculationEnd = min(end, last)
+            var source = book
+            source.invalidateDailySnapshots(from: source.snapshotCalculationStart(forMonthStarting: cursor))
+            let version = bookVersion
+            source = try await calculatedSnapshots(source, through: calculationEnd, rebuild: false)
+            guard ledgerRevision == resetVersion else { throw CancellationError() }
+            guard version == bookVersion else {
+                throw InvestmentError.invalid("快照计算期间账本已更新，已保存的月份会保留，请重试。")
+            }
+            let label = records.day.string(from: cursor) + " 至 " + records.day.string(from: last)
+            let checkpoint = state.through.flatMap(records.day.date(from:)).map { min($0, InvestmentBook.addDays(-1, to: cursor)) }
+            let pending = records.day.string(from: cursor)
+            for id in source.snapshotBatchAccountIDs(in: window, state: state) {
+                try Task.checkCancellation()
+                guard ledgerRevision == resetVersion,
+                      serverState?.revision == inputRevision, serverState?.generation == expectedGeneration else {
+                    throw InvestmentError.invalid("账户快照提交前账本或行情已更新，剩余批次需重新计算。")
+                }
+                let name = source.account(id)?.name ?? "已删除账户"
+                let batch = InvestmentSnapshotBatch(window: window, accountID: id, completedThrough: checkpoint)
+                try await HakoExecutionDiagnostics.measure("保存账户月批 · " + name, success: { _ in label + "；本账户当月快照已确认。" }) {
+                    try await write(source, dirtyFrom: pending, includeInputs: false, includeSnapshots: true, snapshotBatch: batch)
+                }
+                guard let confirmed = serverState, confirmed.revision == inputRevision else {
+                    throw InvestmentError.invalid("账户快照提交期间行情已更新，请继续重算未完成月份。")
+                }
+                expectedGeneration = confirmed.generation
+            }
+            try Task.checkCancellation()
+            guard ledgerRevision == resetVersion,
+                  serverState?.revision == inputRevision, serverState?.generation == expectedGeneration else {
+                throw InvestmentError.invalid("组合快照提交前账本或行情已更新，本月仍保持待重算。")
+            }
+            let next = InvestmentBook.addDays(1, to: last)
+            let nextDirty = next <= processingEnd ? records.day.string(from: next) : nil
+            let completed = source.earliest.map { $0 <= calculationEnd } == true ? calculationEnd : nil
+            let total = InvestmentSnapshotBatch(window: window, accountID: nil, completedThrough: completed)
+            try await HakoExecutionDiagnostics.measure("保存组合总快照月批", success: { _ in label + "；本月全部账户与组合总快照已确认。" }) {
+                try await write(source, dirtyFrom: nextDirty, includeInputs: false, includeSnapshots: true, snapshotBatch: total)
+            }
+            guard let confirmed = serverState, confirmed.revision == inputRevision,
+                  confirmed.dirtyFrom == nextDirty, confirmed.through == completed.map(records.day.string(from:)) else {
+                throw InvestmentError.invalid("服务端快照进度已发生变化，请继续重算未完成月份。")
+            }
+            expectedGeneration = confirmed.generation
+            cursor = next
+        }
+        snapshotSaveError = nil
+        return book.dailySnapshotReport(through: end)
     }
 
     private func calculatedSnapshots(_ source: InvestmentBook, through end: Date, rebuild: Bool) async throws -> InvestmentBook {
+        try await HakoExecutionDiagnostics.measure("回放流水并计算总快照与账户快照", success: { result in
+            let report = result.dailySnapshotReport(through: end)
+            return report.message + "\n账户快照 \(result.dailySnapshots?.accountValues?.values.reduce(0, { $0 + $1.count }) ?? 0) 条；缺少美元折算 \(report.missingUSD) 天。"
+        }) {
+            try await computeSnapshots(source, through: end, rebuild: rebuild)
+        }
+    }
+
+    private func computeSnapshots(_ source: InvestmentBook, through end: Date, rebuild: Bool) async throws -> InvestmentBook {
         let worker = Task.detached(priority: .utility) {
             var result = source
             if let snapshots = source.makeDailySnapshots(through: end, rebuild: rebuild) { result.dailySnapshots = snapshots }
@@ -562,11 +692,16 @@ final class InvestmentStore: ObservableObject {
         }
         dailySnapshotTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(300))
                 guard let self else { return }
-                guard self.book.needsDailySnapshots(through: end) || self.serverState?.dirtyFrom != nil else { return }
-                try await self.refreshSnapshotHistory(fullHistory: false)
-                _ = try await self.saveDailySnapshots()
+                try await InvestmentDiagnostics.run("自动更新日终快照", independent: true) {
+                    try await Task.sleep(for: .milliseconds(300))
+                    guard self.book.needsDailySnapshots(through: end) || self.serverState?.dirtyFrom != nil else {
+                        HakoExecutionDiagnostics.record("跳过日终快照", detail: "已计算至昨天，且无待重算日期。")
+                        return
+                    }
+                    try await self.refreshSnapshotHistory(fullHistory: false)
+                    _ = try await self.saveDailySnapshots()
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -611,6 +746,12 @@ final class InvestmentStore: ObservableObject {
     }
 
     func searchInstruments(_ search: InvestmentInstrumentSearch, consolidateUSListings: Bool = true) async throws -> [InvestmentAsset] {
+        try await InvestmentDiagnostics.run("搜索投资标的") {
+            try await findInstruments(search, consolidateUSListings: consolidateUSListings)
+        }
+    }
+
+    private func findInstruments(_ search: InvestmentInstrumentSearch, consolidateUSListings: Bool) async throws -> [InvestmentAsset] {
         if search.kind.requiresCatalog {
             let entries: [InvestmentAsset]
             if search.kind == .crypto {
@@ -648,15 +789,25 @@ final class InvestmentStore: ObservableObject {
     }
 
     func watchQuotes(for asset: InvestmentAsset) async throws -> [InvestmentQuote] {
+        try await InvestmentDiagnostics.run("准备关注报价 · " + asset.displayCode) { try await readWatchQuotes(for: asset) }
+    }
+
+    private func readWatchQuotes(for asset: InvestmentAsset) async throws -> [InvestmentQuote] {
         let target = book.assets.values.first(where: { $0.matches(asset) }) ?? asset
         let today = InvestmentBook.day(), start = InvestmentBook.addDays(target.usesPublishedFundNAV ? -30 : -14, to: InvestmentBook.day())
         let scope = dataCacheScope, credentials = keys()
         if let cached = try await diskCache.history(scope: scope, asset: target, start: start, end: today, today: today),
-           let latest = cached.last, latest.day >= start { return cached }
+           let latest = cached.last, latest.day >= start {
+            HakoExecutionDiagnostics.record("关注报价命中本地缓存", detail: InvestmentQuoteProvider.quoteSummary(cached))
+            return cached
+        }
         if let state = serverState {
             let shared = try records.sharedQuotes(for: target, in: state).filter { $0.day >= start && $0.day <= today }
             let required = target.kind == .crypto ? today : target.lastClosedMarketDay(at: .now)
-            if let latest = shared.last, latest.day >= (target.usesPublishedFundNAV ? start : required) { return shared }
+            if let latest = shared.last, latest.day >= (target.usesPublishedFundNAV ? start : required) {
+                HakoExecutionDiagnostics.record("关注报价复用服务端记录", detail: InvestmentQuoteProvider.quoteSummary(shared))
+                return shared
+            }
         }
         let quotes = try await MarketAPIRequestContext.$reason.withValue("新增关注报价校验") {
             try await InvestmentQuoteProvider().watchQuotes(for: target, keys: credentials, through: today)
@@ -671,6 +822,13 @@ final class InvestmentStore: ObservableObject {
     }
 
     func prepareEntryValuation(for asset: InvestmentAsset, account: InvestmentAccount) async throws
+        -> (quotes: [InvestmentQuote], rates: [InvestmentCurrency: [InvestmentQuote]]) {
+        try await InvestmentDiagnostics.run("准备持仓估值 · " + asset.displayCode) {
+            try await readEntryValuation(for: asset, account: account)
+        }
+    }
+
+    private func readEntryValuation(for asset: InvestmentAsset, account: InvestmentAccount) async throws
         -> (quotes: [InvestmentQuote], rates: [InvestmentCurrency: [InvestmentQuote]]) {
         while loading { try await Task.sleep(for: .milliseconds(50)) }
         try Task.checkCancellation()
@@ -844,6 +1002,12 @@ final class InvestmentStore: ObservableObject {
     // Disk -> confirmed server observations -> API for uncovered ranges. Newly
     // fetched observations are saved on both tiers without creating transactions.
     func holdingPriceHistory(assetID: UUID, from start: Date, through end: Date) async throws -> InvestmentPriceHistoryResult {
+        try await InvestmentDiagnostics.run("读取标的价格走势") {
+            try await readHoldingPriceHistory(assetID: assetID, from: start, through: end)
+        }
+    }
+
+    private func readHoldingPriceHistory(assetID: UUID, from start: Date, through end: Date) async throws -> InvestmentPriceHistoryResult {
         discardExpiredSession()
         if cacheWasCleared { await load(force: true) }
         guard loaded else { throw InvestmentError.invalid("请先加载投资账本。") }
@@ -921,6 +1085,7 @@ final class InvestmentStore: ObservableObject {
     private func restoringMarketQuotes(in source: InvestmentBook, scope: String) async throws -> InvestmentBook {
         let restored = try await diskCache.restoringMarketQuotes(in: source, scope: scope)
         guard scope == dataCacheScope else { throw CancellationError() }
+        HakoExecutionDiagnostics.record("合并本地行情缓存", detail: "合并前可用总快照 \(source.dailySnapshots?.values.count ?? 0) 天，合并后 \(restored.dailySnapshots?.values.count ?? 0) 天。新增历史估值会使受影响的旧快照待重算，不会删除服务端快照。")
         return restored
     }
 
@@ -963,6 +1128,17 @@ final class InvestmentStore: ObservableObject {
                                historyNotBefore: Date? = nil,
                                includeClosedMarkets: Bool = false,
                                preview: ((InvestmentBook) -> Void)? = nil) async throws {
+        try await InvestmentDiagnostics.run("准备行情与汇率") {
+            try await performQuoteRefresh(publicQuotesOnly: publicQuotesOnly, fullSnapshotHistory: fullSnapshotHistory,
+                reuseDailyCryptoQuotes: reuseDailyCryptoQuotes, includeHistoricalPlans: includeHistoricalPlans,
+                historyNotBefore: historyNotBefore, includeClosedMarkets: includeClosedMarkets, preview: preview)
+        }
+    }
+
+    private func performQuoteRefresh(publicQuotesOnly: Bool, fullSnapshotHistory: Bool?,
+                                     reuseDailyCryptoQuotes: Bool, includeHistoricalPlans: Bool,
+                                     historyNotBefore: Date?, includeClosedMarkets: Bool,
+                                     preview: ((InvestmentBook) -> Void)?) async throws {
         guard loaded, !refreshing else { return }
         guard lastServerReadSucceeded else {
             throw InvestmentError.invalid("服务端暂不可用，继续使用本地行情与汇率；确认服务端缺失后才会查询行情接口。")
@@ -998,7 +1174,10 @@ final class InvestmentStore: ObservableObject {
                     await worker.value
                 } onCancel: { worker.cancel() }
                 try checkRefresh()
-                if let snapshotRequests, snapshotRequests.assets.isEmpty, snapshotRequests.rates.isEmpty { return }
+                if let snapshotRequests, snapshotRequests.assets.isEmpty, snapshotRequests.rates.isEmpty {
+                    HakoExecutionDiagnostics.record("历史估值数据已齐备", detail: "无需补查行情和汇率，可直接计算日终快照。")
+                    return
+                }
             }
             let keys = publicQuotesOnly ? [:] : self.keys()
             let currencies = publicQuotesOnly ? [] : rateCurrencies

@@ -3,6 +3,7 @@ import Foundation
 enum HakoLogSource: String, Codable, CaseIterable, Sendable {
     case stockTrade = "A 股选股"
     case codeWorkshop = "代码工坊"
+    case investment = "投资记账"
     case hako = "Hako", cloudServers = "云服务器", containers = "容器管理", devices = "设备监控", usage = "使用时间", qinglong = "青龙", headplane = "组网管理", crypto = "加密资产"
 }
 
@@ -21,6 +22,20 @@ struct HakoLogEntry: Codable, Identifiable, Sendable {
     var text: String {
         "[\(time.formatted(date: .numeric, time: .standard))] [\(source.rawValue)] [\(level.rawValue)] \(message)"
             + (detail.isEmpty ? "" : "\n\(detail)")
+    }
+}
+
+enum HakoLogExport {
+    static func text(title: String, entries: [HakoLogEntry], version: String, now: Date = .now) -> String {
+        let date = ISO8601DateFormatter()
+        date.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var lines = [title, "应用版本：" + version, "导出时间：" + date.string(from: now),
+                     "当前保留 \(entries.count) 条，按时间先后排列；不受当前筛选影响。",
+                     "日志仅保存在本机；全部模块共保留最近 \(HakoLogStore.capacity) 条，较早记录可能已被移除。"]
+        for entry in entries.reversed() {
+            lines.append("[\(date.string(from: entry.time))] [\(entry.source.rawValue)] [\(entry.level.rawValue)] \(entry.message)\n\(entry.detail)")
+        }
+        return HakoLog.sanitize(lines.joined(separator: "\n\n"), limit: Int.max)
     }
 }
 
@@ -66,7 +81,14 @@ final class HakoLogStore: @unchecked Sendable {
     }
 
     func snapshot() -> (entries: [HakoLogEntry], issue: String?) { queue.sync { (Array(values.reversed()), storageIssue) } }
-    func clear() { queue.sync { pendingSave = false; saveTicket = UUID(); values.removeAll(); save() } }
+    func clear(source: HakoLogSource? = nil) {
+        queue.sync {
+            pendingSave = false; saveTicket = UUID()
+            if let source { values.removeAll { $0.source == source } }
+            else { values.removeAll() }
+            save()
+        }
+    }
     // Also used by deterministic storage tests.
     func flush() { queue.sync { pendingSave = false; saveTicket = UUID(); save() } }
 

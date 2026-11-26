@@ -1792,8 +1792,13 @@ extension InvestmentBook {
                 day = Self.addDays(1, to: day)
             }
         }
+        let end = Self.addDays(-1, to: today)
+        let snapshots = dailySnapshotReport(through: end)
         return InvestmentDataReport(checkedAt: .now, firstDay: earliest, lastDay: today, accounts: accounts.count,
-                                    events: accounts.reduce(0) { $0 + $1.events.count }, issues: issues)
+                                    events: accounts.reduce(0) { $0 + $1.events.count },
+                                    snapshotDays: snapshots.saved,
+                                    latestSnapshotDay: dailySnapshots?.values.keys.filter { $0 <= end && $0 >= (earliest ?? today) }.max(),
+                                    missingSnapshotDays: snapshots.missing, issues: issues)
     }
 }
 

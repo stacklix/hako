@@ -1537,12 +1537,23 @@ struct InvestmentBookTests {
         let gains = restored.dailyGains(from: date(1), through: date(3))
         precondition(gains[date(1)] == 10 && gains[date(2)] == 0 && gains[date(3)] == 0,
                      "Server snapshot mode must show the first day's actual gain without a nonexistent prior snapshot")
-        precondition(restored.inspectData(through: date(3)).issues.isEmpty)
+        let inspection = restored.inspectData(through: date(3))
+        precondition(inspection.issues.isEmpty)
+        precondition(inspection.snapshotDays == 2 && inspection.latestSnapshotDay == date(2)
+                     && inspection.missingSnapshotDays == 0,
+                     "Inspection reports saved closed days without counting today's snapshot")
         restored.dailySnapshots?.values.removeValue(forKey: date(2))
         let gap = restored.dailyGains(from: date(1), through: date(3))
         precondition(gap[date(1)] == 10 && gap[date(2)] == nil && gap[date(3)] == nil,
                      "Real gaps and the day following a gap cannot be filled with zero")
         precondition(restored.inspectData(through: date(3)).issues.contains { $0.title == "缺少日终快照" && $0.dates.contains(date(2)) })
+        let missingInspection = restored.inspectData(through: date(3))
+        precondition(missingInspection.snapshotDays == 1 && missingInspection.latestSnapshotDay == date(1)
+                     && missingInspection.missingSnapshotDays == 1,
+                     "Snapshot summary must expose an actual gap even when through is up to date")
+        let emptyInspection = InvestmentBook().inspectData(through: date(3))
+        precondition(emptyInspection.snapshotDays == 0 && emptyInspection.latestSnapshotDay == nil
+                     && emptyInspection.missingSnapshotDays == 0)
         restored.dailySnapshots?.values.removeValue(forKey: date(1))
         precondition(restored.dailyGains(from: date(1), through: date(1))[date(1)] == nil,
                      "A missing first snapshot must remain missing")

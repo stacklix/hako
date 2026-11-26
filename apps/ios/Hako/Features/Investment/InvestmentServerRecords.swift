@@ -11,6 +11,32 @@ struct InvestmentServerState: Codable {
     var tables: InvestmentServerTables
 }
 
+// Only one account (or the portfolio total) for one calendar month is committed
+// at a time. The cutoff is a checkpoint of fully committed portfolio months.
+struct InvestmentSnapshotBatch: Sendable {
+    let window: ClosedRange<Date>
+    let accountID: UUID?
+    let completedThrough: Date?
+    private let firstDay: String
+    private let lastDay: String
+
+    init(window: ClosedRange<Date>, accountID: UUID?, completedThrough: Date?) {
+        self.window = window
+        self.accountID = accountID
+        self.completedThrough = completedThrough
+        let formatter = InvestmentBook.snapshotDateFormatter()
+        firstDay = formatter.string(from: window.lowerBound)
+        lastDay = formatter.string(from: window.upperBound)
+    }
+
+    var table: String { accountID == nil ? "investment_daily_snapshots" : "investment_account_daily_snapshots" }
+
+    func includes(_ row: InvestmentServerRow) -> Bool {
+        guard let day = row["snapshot_date"], day >= firstDay, day <= lastDay else { return false }
+        return accountID.map { row["account_id"] == $0.uuidString } ?? true
+    }
+}
+
 struct InvestmentServerRecords {
     let day = InvestmentBook.snapshotDateFormatter()
     private let timestamp: ISO8601DateFormatter = {
@@ -283,6 +309,39 @@ struct InvestmentServerRecords {
         return (row, detail)
     }
 
+    func encodeSnapshotBatch(_ book: InvestmentBook, revision: Int64,
+                             batch: InvestmentSnapshotBatch) -> [InvestmentServerRow] {
+        guard let snapshots = book.dailySnapshots else { return [] }
+        if let id = batch.accountID {
+            guard let first = book.account(id)?.earliest else { return [] }
+            return (snapshots.accountValues?[id] ?? [:]).sorted { $0.key < $1.key }.compactMap { date, value in
+                guard date >= first, date <= snapshots.through, batch.window.contains(date) else { return nil }
+                var row = ["account_id": id.uuidString, "snapshot_date": day.string(from: date),
+                           "cash_native": string(value.cash)!, "status": value.holdings == nil ? "partial" : "complete"]
+                row["holdings_native"] = string(value.holdings)
+                row["gain_native"] = string(value.gain)
+                return row
+            }
+        }
+        guard let first = book.earliest else { return [] }
+        var date = max(first, batch.window.lowerBound)
+        let end = min(snapshots.through, batch.window.upperBound)
+        var result: [InvestmentServerRow] = []
+        while date <= end {
+            let value = snapshots.values[date]
+            var row = ["snapshot_date": day.string(from: date), "computed_revision": String(revision),
+                       "status": value == nil ? "missing" : (value?.valueUSD == nil ? "partial" : "complete")]
+            row["total_cny"] = string(value?.value)
+            row["total_usd"] = string(value?.valueUSD)
+            row["cumulative_gain_cny"] = string(value?.gain)
+            let previous: Decimal? = date == first ? 0 : snapshots.values[InvestmentBook.addDays(-1, to: date)]?.gain
+            if let current = value?.gain, let previous { row["daily_gain_cny"] = string(current - previous) }
+            result.append(row)
+            date = InvestmentBook.addDays(1, to: date)
+        }
+        return result
+    }
+
     private func encodeSnapshots(_ book: InvestmentBook, revision: Int64, into result: inout InvestmentServerTables) {
         guard let snapshots = book.dailySnapshots, let first = book.earliest, first <= snapshots.through else { return }
         var date = first
@@ -375,21 +434,7 @@ struct InvestmentServerRecords {
         }
         book.fx = book.fx.mapValues { InvestmentBook.merge([], $0) }
 
-        if let through = state.through.flatMap(day.date(from:)) {
-            var values: [Date: InvestmentValuation] = [:]
-            var accountValues: [UUID: [Date: InvestmentAccountDay]] = [:]
-            for row in records("investment_daily_snapshots") {
-                guard let total = decimal(row["total_cny"]), let gain = decimal(row["cumulative_gain_cny"]) else { continue }
-                values[try date(row, "snapshot_date")] = InvestmentValuation(value: total, gain: gain, valueUSD: decimal(row["total_usd"]))
-            }
-            for row in records("investment_account_daily_snapshots") {
-                guard let cash = decimal(row["cash_native"]) else { continue }
-                let id = try uuid(row, "account_id")
-                accountValues[id, default: [:]][try date(row, "snapshot_date")] = InvestmentAccountDay(
-                    cash: cash, holdings: decimal(row["holdings_native"]), gain: decimal(row["gain_native"]))
-            }
-            book.dailySnapshots = InvestmentDailySnapshots(through: through, values: values, hasUSD: true, accountValues: accountValues)
-        }
+        book = try updatingSnapshots(state, in: book)
         let balance = Dictionary(grouping: records("investment_balance_records")) { $0["balance_account_id"] ?? "" }
         let balanceAccounts = try records("investment_balance_accounts").sorted { ordering($0) < ordering($1) }.map { row in
             let id = try uuid(row, "id")
@@ -403,6 +448,31 @@ struct InvestmentServerRecords {
         }
         if !balanceAccounts.isEmpty {
             book.balanceSheet = InvestmentBalanceLedger(accounts: balanceAccounts)
+        }
+        return book
+    }
+
+    // Snapshot-only confirmations cannot change source records. Reuse the already
+    // decoded inputs instead of reparsing thousands of prices and FX observations.
+    func updatingSnapshots(_ state: InvestmentServerState, in source: InvestmentBook) throws -> InvestmentBook {
+        var book = source
+        book.usesServerSnapshots = true
+        book.dailySnapshots = nil
+        if let through = state.through.flatMap(day.date(from:)) {
+            var values: [Date: InvestmentValuation] = [:]
+            var accountValues: [UUID: [Date: InvestmentAccountDay]] = [:]
+            for row in (state.tables["investment_daily_snapshots"] ?? []) {
+                guard let total = decimal(row["total_cny"]), let gain = decimal(row["cumulative_gain_cny"]),
+                      try date(row, "snapshot_date") <= through else { continue }
+                values[try date(row, "snapshot_date")] = InvestmentValuation(value: total, gain: gain, valueUSD: decimal(row["total_usd"]))
+            }
+            for row in (state.tables["investment_account_daily_snapshots"] ?? []) {
+                guard let cash = decimal(row["cash_native"]), try date(row, "snapshot_date") <= through else { continue }
+                let id = try uuid(row, "account_id")
+                accountValues[id, default: [:]][try date(row, "snapshot_date")] = InvestmentAccountDay(
+                    cash: cash, holdings: decimal(row["holdings_native"]), gain: decimal(row["gain_native"]))
+            }
+            book.dailySnapshots = InvestmentDailySnapshots(through: through, values: values, hasUSD: true, accountValues: accountValues)
         }
         if let dirty = state.dirtyFrom.flatMap(day.date(from:)) { book.invalidateDailySnapshots(from: dirty) }
         return book

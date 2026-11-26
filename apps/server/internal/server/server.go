@@ -212,6 +212,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPut && r.URL.Path == "/api/v1/investment/book" {
 		limit = 32 * 1024 * 1024
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/investment/book/changes" {
+		limit = 256 * 1024
+	}
 	if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/webhook/notifications/") ||
 		strings.HasPrefix(r.URL.Path, "/consilium/api/notifications/webhooks/") ||
 		strings.HasPrefix(r.URL.Path, "/api/v1/notifications/manage/webhooks/")) {

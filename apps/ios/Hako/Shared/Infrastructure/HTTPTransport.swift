@@ -12,6 +12,8 @@ final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sen
 
 enum HTTPTransport {
     static let shared = makeSession()
+    static let logSource = TaskLocal<HakoLogSource?>(wrappedValue: nil)
+    static let logContext = TaskLocal<String?>(wrappedValue: nil)
 
     static func isTaskCancellation(_ error: Error, taskCancelled: Bool = Task.isCancelled) -> Bool {
         taskCancelled || error is CancellationError
@@ -26,7 +28,8 @@ enum HTTPTransport {
         let logRequest = preparedLogRequest
         let marketReason = MarketAPIRequestContext.reason
         let send: @Sendable () async throws -> (Data, URLResponse) = {
-            try await perform(logRequest, source: source, secrets: secrets, body: { logBody ? $0 : nil }) {
+            try await perform(logRequest, source: source, secrets: secrets,
+                              requestBodyBytes: request.httpBody?.count, body: { logBody ? $0 : nil }) {
                 try Task.checkCancellation()
                 let started = Date.now
                 do {
@@ -77,23 +80,23 @@ enum HTTPTransport {
     }
 
     private static func perform<Value>(
-        _ request: URLRequest, source: HakoLogSource, secrets: [String], body: (Value) -> Data?,
+        _ request: URLRequest, source: HakoLogSource, secrets: [String], requestBodyBytes: Int? = nil, body: (Value) -> Data?,
         send: () async throws -> (Value, URLResponse)
     ) async throws -> (Value, URLResponse) {
         let started = ContinuousClock.now
         do {
             let (value, response) = try await send()
-            record(request, source: source, secrets: secrets, started: started,
+            record(request, source: source, secrets: secrets, started: started, requestBodyBytes: requestBodyBytes,
                    response: response as? HTTPURLResponse, data: body(value))
             return (value, response)
         } catch {
-            record(request, source: source, secrets: secrets, started: started, error: error)
+            record(request, source: source, secrets: secrets, started: started, requestBodyBytes: requestBodyBytes, error: error)
             throw error
         }
     }
 
     private static func record(_ request: URLRequest, source: HakoLogSource, secrets: [String],
-                               started: ContinuousClock.Instant, response: HTTPURLResponse? = nil,
+                               started: ContinuousClock.Instant, requestBodyBytes: Int? = nil, response: HTTPURLResponse? = nil,
                                data: Data? = nil, error: Error? = nil) {
         var redactor = HTTPLogRedactor(request: request, secrets: secrets)
         let responseDetail = response.map { redactor.response($0, data: data) } ?? "未收到 HTTP 响应"
@@ -104,9 +107,11 @@ enum HTTPTransport {
         let cause = error.map { $0 as NSError }.map { "\n传输错误：\($0.domain) \($0.code)" } ?? ""
         let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
         let level: HakoLogLevel = cancelled ? .warning : response == nil || (response?.statusCode ?? 0) >= 400 ? .error : .info
-        let detail = redactor.request(request) + "\n\nHTTP 状态：\(status)\n耗时："
+        let detail = (logContext.get().map { $0 + "\n" } ?? "")
+            + "请求正文：\(requestBodyBytes ?? request.httpBody?.count ?? 0) 字节\n"
+            + redactor.request(request) + "\n\nHTTP 状态：\(status)\n耗时："
             + String(format: "%.0f ms", elapsed) + cause + "\n" + responseDetail
-        HakoLogStore.shared.append(source: source, level: level, message: "HTTP \(method) · \(status)",
+        HakoLogStore.shared.append(source: logSource.get() ?? source, level: level, message: "HTTP \(method) · \(status)",
                                    detail: detail, fullDetail: true)
     }
 

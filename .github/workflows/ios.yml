@@ -73,6 +73,8 @@ jobs:
           /tmp/hako-investment-book-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentWriteValidation.swift Hako/Features/Investment/InvestmentPresentation.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentDiskCache.swift Tests/InvestmentPresentationTests.swift -o /tmp/hako-investment-presentation-tests
           /tmp/hako-investment-presentation-tests
+          swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentWriteValidation.swift Hako/Features/Investment/InvestmentPresentation.swift Tests/InvestmentSnapshotBatchTests.swift -o /tmp/hako-investment-snapshot-batch-tests
+          /tmp/hako-investment-snapshot-batch-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentProfitCalendarData.swift Tests/InvestmentProfitCalendarTests.swift -o /tmp/hako-investment-profit-calendar-tests
           /tmp/hako-investment-profit-calendar-tests
           swiftc Hako/Features/Investment/InvestmentBook.swift Hako/Features/Investment/InvestmentBalanceBook.swift Hako/Features/Investment/InvestmentSnapshots.swift Hako/Features/Investment/InvestmentServerRecords.swift Hako/Features/Investment/InvestmentPriceHistory.swift Hako/Features/Investment/InvestmentPerformance.swift Hako/Features/Investment/InvestmentBenchmark.swift Tests/InvestmentPerformanceTests.swift -o /tmp/hako-investment-performance-tests
@@ -205,6 +207,8 @@ jobs:
         run: |
           swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Tests/ExecutionDiagnosticsTests.swift -o /tmp/hako-execution-diagnostics-tests
           /tmp/hako-execution-diagnostics-tests
+          swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/MarketAPIUsage.swift Hako/Shared/Infrastructure/HTTPTransport.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Features/Investment/InvestmentDiagnostics.swift Tests/InvestmentDiagnosticsTests.swift -o /tmp/hako-investment-diagnostics-tests
+          /tmp/hako-investment-diagnostics-tests
       - name: Test shortcut history retries
         run: |
           swiftc Hako/Shared/Infrastructure/Logging/HakoLog.swift Hako/Shared/Infrastructure/ExecutionDiagnostics.swift Hako/Shared/Infrastructure/HakoError.swift Hako/App/HakoShortcutHistory.swift Hako/Shared/Infrastructure/HakoShortcutSkip.swift Hako/Shared/Infrastructure/HakoShortcutExecution.swift Hako/App/HakoShortcutRegistry.swift Tests/HakoShortcutRetryTests.swift -o /tmp/hako-shortcut-retry-tests

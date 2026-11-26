@@ -92,6 +92,13 @@ func (s *Server) persistInvestmentChanges(ctx context.Context, owner string, inp
 	if !marketOnly && result.Generation != input.Generation {
 		return result, errInvestmentConflict
 	}
+	// An unchanged snapshot batch can advance its checkpoint without row writes.
+	// Its metadata still depends on the exact input revision: a late NAV must not
+	// lose an earlier dirty date merely because this request has an empty delta.
+	metadataChanged := !reflect.DeepEqual(result.DirtyFrom, input.DirtyFrom) || !reflect.DeepEqual(result.Through, input.Through)
+	if len(input.Changes) == 0 && metadataChanged && result.Revision != input.Revision {
+		return result, errInvestmentConflict
+	}
 	// Quotes change independently of ledger generation. This hints a cache reload;
 	// it never rejects a quote write based on the revision supplied by the client.
 	result.ReloadRequired = result.Revision != input.Revision || result.Generation != input.Generation
